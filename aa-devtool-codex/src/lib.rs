@@ -286,7 +286,12 @@ impl DevToolAdapter for CodexAdapter {
         // `CodexPaths::settings_path` rather than re-deriving `.codex/...`
         // here, so this path and the one Codex's launch-env store resolves
         // from can't drift apart again.
-        let config_path = self.launch_paths().settings_path().map_err(|e| {
+        // The scope is named rather than implied. Codex's only configuration
+        // surface is the user's, and `settings_path` now refuses every other
+        // scope instead of quietly returning this file for it (AAASM-5913), so
+        // the one scope this adapter-level call can mean is stated here.
+        let scope = aa_devtool_contract::SettingsScope::User;
+        let config_path = self.launch_paths().settings_path(scope).map_err(|e| {
             AdapterError::SettingsApplyFailed(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
         })?;
 

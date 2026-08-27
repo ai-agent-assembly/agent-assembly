@@ -37,6 +37,7 @@ use super::model::InstallReport;
 use super::plan::PlanArgs;
 use super::render::{emit, Report};
 use super::session::SessionOptions;
+use super::target::Target;
 use super::trusted_upstream::{write_trusted_upstream_config, TrustedUpstreamArgs};
 use super::{confirm, exit::Outcome, open, run_blocking, verb_failure, ProfileArg, ScopeArg};
 
@@ -146,9 +147,16 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         };
         confirm(args.yes, output, &prompt)?;
 
+        // Resolved again here, in this process, rather than carried forward from
+        // the plan: the point of naming it is that *this* invocation says where
+        // it is, and a value threaded through the report would be one more thing
+        // that could arrive stale. It is the same directory the plan named
+        // moments ago — same process, same rule (`Target::here`) — so the
+        // service's comparison passes for the caller who authored the plan and
+        // fails for one presenting it from somewhere else.
         let applied = session
             .client
-            .apply(&args.tool, &plan.plan_id)
+            .apply(&args.tool, &plan.plan_id, Target::here()?.as_request())
             .await
             .map_err(verb_failure)?;
 

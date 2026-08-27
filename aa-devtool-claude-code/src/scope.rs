@@ -105,11 +105,30 @@ impl ClaudeCodePaths {
     ///
     /// Missing roots stay `None` rather than being guessed; the scope that
     /// needed one reports [`ScopeError::Unresolvable`] when it is asked for.
+    ///
+    /// # Why the project root is *not* among them (AAASM-5913)
+    ///
+    /// It used to be, read from `std::env::current_dir()`. That is only ever
+    /// right when the process resolving it is the process the user invoked. The
+    /// production caller of this constructor is the developer-integration daemon,
+    /// constructed once at boot from whichever directory launched it, and shared
+    /// by every client on the host — so the "current" directory belonged to some
+    /// earlier caller, or to no project at all. It wrote Agent Assembly's managed
+    /// keys into a repository the user had not named, and picked a different one
+    /// after each daemon restart.
+    ///
+    /// So the project root is now supplied per request, by the client that knows
+    /// it, through [`with_project`](Self::with_project). Nothing else here reads
+    /// the working directory: the artifacts Agent Assembly owns
+    /// ([`owned_root`](Self::owned_root) and everything derived from it) live
+    /// under the state root, and only [`settings_path`](Self::settings_path) at
+    /// [`Project`](SettingsScope::Project) scope and
+    /// [`detected_surfaces`](Self::detected_surfaces) consult the project at all.
     pub fn from_env() -> Self {
         Self {
             config_dir: non_empty_var("CLAUDE_CONFIG_DIR"),
             home: non_empty_var("HOME"),
-            project: std::env::current_dir().ok(),
+            project: None,
             state: state_root(),
             ca_source: ca_source(),
             managed_root: non_empty_var("AASM_CLAUDE_MANAGED_ROOT"),
@@ -186,7 +205,13 @@ impl ClaudeCodePaths {
             SettingsScope::Project => {
                 let project = self.project.as_ref().ok_or_else(|| ScopeError::Unresolvable {
                     scope,
-                    detail: "no project root was given and the working directory could not be read".to_string(),
+                    // Deliberately not "so we used the working directory": the
+                    // working directory of whatever process is asking is not the
+                    // caller's project, and a message that admitted a fallback
+                    // would be describing AAASM-5913.
+                    detail: "no project root was given, and the project a change lands in is never taken \
+                             from the working directory of the process resolving it"
+                        .to_string(),
                 })?;
                 Ok(project.join(DOT_CLAUDE).join(SETTINGS_FILE))
             }

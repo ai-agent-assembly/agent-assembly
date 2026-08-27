@@ -36,7 +36,7 @@ use prost::Message;
 use aa_proto::assembly::devint::v1 as wire;
 
 use super::apply_outcome::{ApplyMutation, MutationUnknown};
-use super::client::DevIntClient;
+use super::client::{DevIntClient, TargetRequest};
 use super::negotiate::{DI_API_APPLY_OUTCOME_SINCE, DI_API_MIN_SUPPORTED};
 use super::projection;
 use super::scope::{TokenScope, ToolScope};
@@ -125,7 +125,10 @@ async fn the_rejected_bool_field_reports_a_false_unchanged_for_every_older_peer(
     let server = TestServer::start(FakeLifecycle::default()).await;
     for version in DI_API_MIN_SUPPORTED..DI_API_APPLY_OUTCOME_SINCE {
         let mut client = connect_offering(&server, &[version]).await;
-        let applied = client.apply(&claude_code_id(), "plan-1").await.expect("apply");
+        let applied = client
+            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .await
+            .expect("apply");
 
         // The fabrication, produced on demand.
         assert_eq!(

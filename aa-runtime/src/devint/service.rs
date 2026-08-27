@@ -62,8 +62,8 @@ use aa_core::integration::{
 
 use super::apply_outcome::ApplyMutation;
 use super::lifecycle::{
-    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
-    ScopedSecurityEvent, ToolDescriptor,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, LifecycleTarget,
+    RepairReport, ScopedSecurityEvent, ToolDescriptor,
 };
 use super::projection::tool_id;
 
@@ -242,8 +242,170 @@ impl EngineLifecycle {
             .find(|scope| self.store.receipt_exists(tool, *scope))
     }
 
-    fn scope_or_default(&self, tool: &DevToolKind) -> SettingsScope {
-        self.installed_scope(tool).unwrap_or(SettingsScope::User)
+    /// The scope to act on, and the receipt if one is stored there.
+    ///
+    /// Two questions the callers used to answer separately, joined because the
+    /// second one validates the first: the scope a caller named is not a scope
+    /// until the receipt found there is confirmed to be the installation they
+    /// meant.
+    ///
+    /// A caller that named no scope gets [`Self::installed_scope`]'s answer —
+    /// "there should be exactly one, use it". That was the whole of the old
+    /// behaviour, and on a host with one installation it is still right.
+    fn resolve_target(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(SettingsScope, Option<IntegrationReceipt>), LifecycleError> {
+        let scope = self.target_scope(tool, target);
+        let receipt = self
+            .store
+            .load_receipt(tool, scope)
+            .map_err(|e| LifecycleError::Failed {
+                detail: format!("the integration receipt could not be read: {e}"),
+            })?;
+        if let Some(receipt) = &receipt {
+            Self::confirm_project(tool, receipt, target)?;
+        }
+        Ok((scope, receipt))
+    }
+
+    /// As [`Self::resolve_target`], for the verbs that have nothing to do
+    /// without a receipt.
+    fn require_target(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(SettingsScope, IntegrationReceipt), LifecycleError> {
+        let scope = self.target_scope(tool, target);
+        let receipt = self.receipt(tool, scope)?;
+        Self::confirm_project(tool, &receipt, target)?;
+        Ok((scope, receipt))
+    }
+
+    fn target_scope(&self, tool: &DevToolKind, target: &LifecycleTarget) -> SettingsScope {
+        target
+            .settings_scope
+            .or_else(|| self.installed_scope(tool))
+            .unwrap_or(SettingsScope::User)
+    }
+
+    /// Refuse a project-scope receipt the request does not name (AAASM-5913).
+    ///
+    /// A project-scope receipt belongs to one project, and until now nothing in
+    /// a `status`/`verify`/`repair`/`remove` request said which project the
+    /// caller had in mind. There is exactly one project-scope receipt slot per
+    /// tool on a host, so a caller standing in an unrelated repository was told
+    /// that repository was protected — and `repair` and `remove`, which act on
+    /// the paths the receipt records, would then have written to and deleted
+    /// from the *other* project's files.
+    ///
+    /// So the request has to name the project, and the name has to match. The
+    /// three ways it can fail are all refusals, deliberately:
+    ///
+    /// - **Nothing named.** A pre-DI-API-6 client, or one whose working
+    ///   directory could not be read. Nothing here can honestly stand in for
+    ///   it; this daemon's own directory least of all.
+    /// - **A different project named.** The caller is somewhere else. Neither
+    ///   answer — reporting the stored project, or reporting "not installed" —
+    ///   is true of what they asked, so neither is given.
+    /// - **The receipt cannot say.** A project-scope receipt with no applied
+    ///   settings write records no project, so there is nothing to compare and
+    ///   the comparison cannot be skipped.
+    ///
+    /// User and managed scope are unaffected: their destinations were never the
+    /// caller's to name, so there is nothing to disagree about.
+    ///
+    /// None of the refusals name the other project's path. These details reach
+    /// a client verbatim as `DENY_CODE_LIFECYCLE_ERROR`, and "which other
+    /// repository this developer has on disk" is not something the caller asked
+    /// about or is owed.
+    fn confirm_project(
+        tool: &DevToolKind,
+        receipt: &IntegrationReceipt,
+        target: &LifecycleTarget,
+    ) -> Result<(), LifecycleError> {
+        if receipt.settings_scope != SettingsScope::Project {
+            return Ok(());
+        }
+        let Some(requested) = target.project_root.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "{} is installed at project scope, and this request does not say which project it is \
+                     about; re-run from the project's directory with a client that speaks DI-API {}",
+                    tool_id(tool),
+                    crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE
+                ),
+            });
+        };
+        let Some(recorded) = receipt.project_root() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "the stored project-scope receipt for {} does not record which project it wrote, so it \
+                     cannot be shown to be this one; remove and re-install the integration",
+                    tool_id(tool)
+                ),
+            });
+        };
+        if same_project(recorded, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: format!(
+                "the project-scope integration for {} belongs to another project, not this one; run this \
+                 command from the project it was installed into",
+                tool_id(tool)
+            ),
+        })
+    }
+
+    /// Refuse a cached plan the caller cannot claim as this project's
+    /// (AAASM-5913).
+    ///
+    /// [`Self::confirm_project`]'s question asked on the write path, where it is
+    /// a different question with a different source of truth. There a stored
+    /// receipt says which project the installation is in; here nothing is
+    /// installed yet, and the *plan* says which project it was authored for.
+    ///
+    /// The plan cache is process-global and keyed only by the plan id, so an
+    /// authored plan outlives the invocation that asked for it: a client can hold
+    /// the id, the developer can move to another repository, and applying it from
+    /// there would still write the project it was authored for. Agent Assembly's
+    /// managed keys would land in a checked-in `.claude/settings.json` the caller
+    /// never named, under a receipt claiming a project they are not in.
+    ///
+    /// A plan id now names its project, which is what makes a stale one
+    /// diagnosable in a log — but a label nobody compares is decoration. This is
+    /// the comparison, and it is made against the full canonical paths rather
+    /// than the truncated digest in the id.
+    ///
+    /// As with [`Self::confirm_project`], no refusal names the other project's
+    /// path: these details reach a client verbatim, and which other repository a
+    /// developer has on disk is not what the caller asked about.
+    fn confirm_plan_project(plan: &IntegrationPlan, target: &LifecycleTarget) -> Result<(), LifecycleError> {
+        // A user- or managed-scope plan is about the host, not a project, so
+        // there is nothing for the caller's directory to disagree with.
+        let Some(authored_for) = plan.project_root.as_deref() else {
+            return Ok(());
+        };
+        let Some(requested) = target.project_root.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "this plan was authored for a project, and this request does not say which project it \
+                     is being applied from; re-run the install from that project's directory with a \
+                     client that speaks DI-API {}",
+                    crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE
+                ),
+            });
+        };
+        if same_project(authored_for, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: "this plan was authored for another project, not this one; re-run the install from \
+                     the project you mean to change"
+                .to_string(),
+        })
     }
 
     /// An engine whose executor holds the content `plan` describes.
@@ -280,13 +442,22 @@ impl EngineLifecycle {
     /// receipt's own profile and scope is what keeps a repair a *repair*: it
     /// restores the integration the user chose, not the one today's defaults
     /// would produce.
+    ///
+    /// The project a project-scoped install went into is part of "the integration
+    /// the user chose", and `repair` carries no request from the caller — so it
+    /// comes from the receipt's own record of the file it wrote, never from this
+    /// process's working directory (AAASM-5913). A receipt that cannot name its
+    /// project produces a request with none, and the adapter refuses; that is the
+    /// intended outcome, because there is nothing here that could honestly stand
+    /// in for it.
     async fn plan_from_receipt(
         &self,
         registered: &RegisteredIntegration,
         receipt: &IntegrationReceipt,
     ) -> Result<IntegrationPlan, LifecycleError> {
-        let request = IntegrationRequest::new(receipt.tool.clone(), receipt.profile, receipt.settings_scope)
+        let mut request = IntegrationRequest::new(receipt.tool.clone(), receipt.profile, receipt.settings_scope)
             .requesting_level(receipt.planned_level);
+        request.project_root = receipt.project_root().map(std::path::Path::to_path_buf);
         registered
             .integration
             .plan_integration(&request)
@@ -385,6 +556,26 @@ fn finding_mechanism(kind: DriftKind) -> IntegrationCapability {
     }
 }
 
+/// Whether two paths name the same project directory.
+///
+/// The caller's root arrives canonicalized, and a receipt written since
+/// AAASM-5913 recorded a canonical one — but a receipt written *before* it
+/// recorded whatever the daemon's working directory happened to be spelled as,
+/// and on macOS `/tmp` and `/private/tmp` are the same directory under two
+/// names. Comparing the raw strings would refuse a legitimately installed
+/// project on the strength of a symlink, which reads to the developer as "your
+/// install is broken".
+///
+/// Canonicalizing here rather than migrating the receipt keeps the receipt's
+/// serialized form — and therefore every already-stored receipt's integrity
+/// hash — untouched. A directory that no longer exists cannot be canonicalized;
+/// the raw path is then all there is, and comparing it is still strictly better
+/// than not comparing.
+fn same_project(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    a == b || canonical(a) == canonical(b)
+}
+
 fn engine_error(e: EngineError) -> LifecycleError {
     match e {
         EngineError::NoReceipt { scope } => LifecycleError::Refused {
@@ -451,7 +642,12 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(plan)
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError> {
         let registered = self.registered(tool)?;
         let authored = self
             .plans
@@ -464,6 +660,9 @@ impl IntegrationLifecycle for EngineLifecycle {
                 plan_id: plan_id.to_string(),
             })?;
         let plan = authored.plan;
+        // Which project, before what it may do in it: a plan belonging to
+        // somewhere else is not a consent question, so it is settled first.
+        Self::confirm_plan_project(&plan, target)?;
 
         // §6.6: a privileged host step is never implied by a profile. The
         // request that authored the plan is the record of what was consented
@@ -517,17 +716,9 @@ impl IntegrationLifecycle for EngineLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = match self.store.load_receipt(tool, scope) {
-            Ok(receipt) => receipt,
-            Err(e) => {
-                return Err(LifecycleError::Failed {
-                    detail: format!("the integration receipt could not be read: {e}"),
-                })
-            }
-        };
+        let (scope, receipt) = self.resolve_target(tool, target)?;
 
         let mut status = registered
             .integration
@@ -548,10 +739,9 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(status)
     }
 
-    async fn verify(&self, tool: &DevToolKind) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<VerificationResult, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
 
         let result = registered
             .integration
@@ -571,10 +761,13 @@ impl IntegrationLifecycle for EngineLifecycle {
         Ok(result)
     }
 
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
         let plan = self.plan_from_receipt(registered, &receipt).await?;
 
         let status_before = registered
@@ -602,14 +795,18 @@ impl IntegrationLifecycle for EngineLifecycle {
                 .map(|f| (finding_mechanism(f.kind), f.detail.clone()))
                 .collect(),
         };
-        let status = self.status(tool).await?;
+        let status = self.status(tool, target).await?;
         Ok((repaired, status))
     }
 
-    async fn remove(&self, tool: &DevToolKind, plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError> {
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+        plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError> {
         let registered = self.registered(tool)?;
-        let scope = self.scope_or_default(tool);
-        let receipt = self.receipt(tool, scope)?;
+        let (scope, receipt) = self.require_target(tool, target)?;
 
         let mut plan = registered
             .integration
@@ -742,7 +939,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let first = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let after_first = std::fs::read_to_string(&h.settings).expect("read");
@@ -752,7 +949,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("re-plan");
         let second = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("re-apply");
         assert_eq!(
@@ -781,7 +978,11 @@ mod tests {
         let h = harness(|f| f);
         match h
             .service
-            .apply(&DevToolKind::ClaudeCode, "plan-someone-else-made")
+            .apply(
+                &DevToolKind::ClaudeCode,
+                "plan-someone-else-made",
+                &LifecycleTarget::unspecified(),
+            )
             .await
         {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "plan-someone-else-made"),
@@ -795,7 +996,11 @@ mod tests {
     async fn a_privileged_step_without_consent_is_refused() {
         let h = harness(|f| f.requiring_privilege());
         let plan = h.service.plan(request()).await.expect("plan");
-        match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id).await {
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("host state"), "{detail}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -818,11 +1023,15 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::ReadBackOnly));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
-        let result = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
+        let result = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
         assert!(!exercised_the_protected_path(&result));
         assert!(
             justified_level(&result, result.verified_at_unix_secs, DEFAULT_FRESHNESS_WINDOW_SECS)
@@ -830,7 +1039,11 @@ mod tests {
             "read-back evidence justified a traffic-level claim"
         );
 
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
     }
 
@@ -839,10 +1052,14 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
-        let result = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
+        let result = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
         assert!(exercised_the_protected_path(&result));
     }
 
@@ -853,18 +1070,29 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::Leaked));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
-        h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        h.service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
     }
 
     #[tokio::test]
     async fn verifying_without_an_installation_is_refused_rather_than_passing() {
         let h = harness(|f| f);
-        match h.service.verify(&DevToolKind::ClaudeCode).await {
+        match h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("install"), "{detail}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -876,16 +1104,24 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
         let before = std::fs::read_to_string(&h.settings).expect("read");
 
-        let removal = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let removal = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
         assert!(!removal.steps.is_empty());
         assert_eq!(std::fs::read_to_string(&h.settings).expect("read"), before);
         assert!(
-            h.service.status(&DevToolKind::ClaudeCode).await.expect("status").phase
+            h.service
+                .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                .await
+                .expect("status")
+                .phase
                 == aa_core::integration::LifecyclePhase::Installed,
             "a preview removed the integration"
         );
@@ -897,13 +1133,21 @@ mod tests {
         std::fs::write(&h.settings, r#"{"theme":"solarized"}"#).expect("seed");
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
-        let preview = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let preview = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
         h.service
-            .remove(&DevToolKind::ClaudeCode, Some(&preview.plan_id))
+            .remove(
+                &DevToolKind::ClaudeCode,
+                &LifecycleTarget::unspecified(),
+                Some(&preview.plan_id),
+            )
             .await
             .expect("remove");
 
@@ -917,10 +1161,18 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
-        match h.service.remove(&DevToolKind::ClaudeCode, Some("removal-nope")).await {
+        match h
+            .service
+            .remove(
+                &DevToolKind::ClaudeCode,
+                &LifecycleTarget::unspecified(),
+                Some("removal-nope"),
+            )
+            .await
+        {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "removal-nope"),
             other => panic!("expected UnknownPlan, got {other:?}"),
         }
@@ -931,25 +1183,37 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
 
         std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"solarized"}"#).expect("tamper");
-        let drifted = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
+        let drifted = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
         assert!(
             matches!(drifted.state, ProtectionState::Drifted { .. }),
             "tampering with a managed key must report drift, got {:?}",
             drifted.state
         );
 
-        let (report, _) = h.service.repair(&DevToolKind::ClaudeCode).await.expect("repair");
+        let (report, _) = h
+            .service
+            .repair(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("repair");
         assert_eq!(report.repaired, vec!["settings".to_string()]);
         let repaired = std::fs::read_to_string(&h.settings).expect("read");
         assert!(repaired.contains("solarized"), "repair discarded the user's own key");
         assert!(
             !matches!(
-                h.service.status(&DevToolKind::ClaudeCode).await.expect("status").state,
+                h.service
+                    .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                    .await
+                    .expect("status")
+                    .state,
                 ProtectionState::Drifted { .. }
             ),
             "repair did not clear the drift"
@@ -959,10 +1223,305 @@ mod tests {
     #[tokio::test]
     async fn a_tool_no_adapter_knows_is_an_unknown_tool_not_a_crash() {
         let h = harness(|f| f);
-        match h.service.status(&DevToolKind::Codex).await {
+        match h
+            .service
+            .status(&DevToolKind::Codex, &LifecycleTarget::unspecified())
+            .await
+        {
             Err(LifecycleError::UnknownTool { tool_id }) => assert_eq!(tool_id, "codex"),
             other => panic!("expected UnknownTool, got {other:?}"),
         }
+    }
+
+    // ── AAASM-5913: which project a read-or-reverse verb is about ──────────
+
+    /// A harness whose fixture writes where a project-scope install writes.
+    ///
+    /// The path matters: [`IntegrationReceipt::project_root`] derives the
+    /// project from the settings file's grandparent, so a fixture writing
+    /// `<dir>/settings.json` produces a receipt that records the *tempdir's
+    /// parent* as its project. Writing `<project>/.claude/settings.json` is what
+    /// a real project-scope install does, and the only shape these tests can
+    /// honestly assert against.
+    fn project_harness() -> (Harness, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let project = dir.path().join("project");
+        let settings = project.join(".claude").join("settings.json");
+        std::fs::create_dir_all(settings.parent().expect("parent")).expect("mkdir");
+        let store_root = dir.path().join("store");
+        let fixture = FixtureIntegration::new(DevToolKind::ClaudeCode, &settings);
+        let content = Arc::new(FixtureContent::new(fixture.rendered()));
+        let service = EngineLifecycle::new(
+            vec![RegisteredIntegration::new(DevToolKind::ClaudeCode, Arc::new(fixture)).with_content(content)],
+            ReceiptStore::at(&store_root),
+        );
+        (
+            Harness {
+                _dir: dir,
+                settings,
+                store_root,
+                service,
+            },
+            project,
+        )
+    }
+
+    /// Install at project scope, naming `project`, and return the harness.
+    async fn installed_into_project() -> (Harness, std::path::PathBuf) {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+        let applied = h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(&project))
+            .await
+            .expect("apply");
+        assert_eq!(
+            applied.receipt.project_root(),
+            Some(project.as_path()),
+            "the receipt must record the project it wrote, or these tests assert nothing"
+        );
+        (h, project)
+    }
+
+    fn target_for(project: &std::path::Path) -> LifecycleTarget {
+        LifecycleTarget {
+            settings_scope: None,
+            project_root: Some(project.to_path_buf()),
+        }
+    }
+
+    /// The project the request names is the project that is reported on.
+    #[tokio::test]
+    async fn the_project_a_request_names_is_the_one_reported_on() {
+        let (h, project) = installed_into_project().await;
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &target_for(&project))
+            .await
+            .expect("status");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
+    }
+
+    /// AAASM-5913: a request that names no project cannot be answered from a
+    /// project-scope receipt, because there is nothing to compare it to. The
+    /// daemon's own working directory is not a substitute — it is the defect.
+    #[tokio::test]
+    async fn a_project_scope_installation_is_not_reported_to_a_request_that_names_no_project() {
+        let (h, _project) = installed_into_project().await;
+        match h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("does not say which project"),
+                    "the refusal must say what is missing: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// The defect as a user met it: standing in an unrelated repository, being
+    /// told it was protected. Every read-or-reverse verb refuses now, because
+    /// `repair` and `remove` would have written to and deleted from the other
+    /// project's files.
+    #[tokio::test]
+    async fn every_read_or_reverse_verb_refuses_a_project_that_is_not_the_installed_one() {
+        let (h, project) = installed_into_project().await;
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let other = target_for(elsewhere.path());
+        let tool = DevToolKind::ClaudeCode;
+
+        let refusals = [
+            ("status", h.service.status(&tool, &other).await.err()),
+            ("verify", h.service.verify(&tool, &other).await.err()),
+            ("repair", h.service.repair(&tool, &other).await.err()),
+            ("remove", h.service.remove(&tool, &other, None).await.err()),
+        ];
+        for (verb, error) in refusals {
+            match error {
+                Some(LifecycleError::Refused { detail }) => {
+                    assert!(
+                        detail.contains("another project"),
+                        "{verb} must say the installation belongs elsewhere: {detail}"
+                    );
+                    assert!(
+                        !detail.contains(&project.display().to_string()),
+                        "{verb} disclosed the other project's path: {detail}"
+                    );
+                }
+                other => panic!("{verb} must be refused, got {other:?}"),
+            }
+        }
+
+        // And nothing was written to or removed from the installed project on
+        // the way to those refusals.
+        assert!(h.settings.exists(), "a refused verb touched the other project's files");
+    }
+
+    /// AAASM-5913, the write path: a plan authored for one project cannot be
+    /// executed from another.
+    ///
+    /// The read verbs compare the caller's project against a *receipt*, which
+    /// only exists once something is installed. An apply has no receipt yet, so
+    /// the comparison is against the plan — and it has to happen, because the
+    /// plan cache is process-global and keyed on the plan id alone. Any client
+    /// on the host that holds an id can present it later, from anywhere, and
+    /// before this check the service would have written the project the plan was
+    /// authored for while the caller was standing somewhere else entirely.
+    ///
+    /// The refusal is asserted to *not* name the authoring project. A detail
+    /// string reaches a client verbatim, and which other repository a developer
+    /// has on disk is not what this caller asked about.
+    #[tokio::test]
+    async fn a_plan_authored_for_one_project_is_not_applyable_from_another() {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(elsewhere.path()))
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("another project"),
+                    "the refusal must say the plan belongs elsewhere: {detail}"
+                );
+                assert!(
+                    !detail.contains(&project.display().to_string()),
+                    "the refusal disclosed the authoring project's path: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            !h.settings.exists(),
+            "the refused apply wrote the authoring project's settings anyway"
+        );
+        assert!(
+            !h.store_root.exists(),
+            "the refused apply recorded a receipt for an install that did not happen"
+        );
+
+        // Refused, not consumed: the developer who authored it can still apply
+        // it from the project it is about. A check that invalidated the plan
+        // would turn one client's mistake into another client's failure.
+        let applied = h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(&project))
+            .await
+            .expect("the authoring project may still apply its own plan");
+        assert_eq!(applied.receipt.project_root(), Some(project.as_path()));
+    }
+
+    /// A caller that names no project cannot execute a plan that is about one.
+    ///
+    /// Distinct from the case above, and it is the one a pre-DI-API-6 client
+    /// produces: not "the wrong project" but "no project at all". Answering it
+    /// from the daemon's own directory is the defect, so the only sound answer is
+    /// to refuse — and to say which version carries the field, since a client too
+    /// old to send it cannot discover that from the wire.
+    #[tokio::test]
+    async fn a_project_scope_plan_is_not_applyable_by_a_request_that_names_no_project() {
+        let (h, project) = project_harness();
+        let request = IntegrationRequest::new(
+            DevToolKind::ClaudeCode,
+            ProtectionProfile::Recommended,
+            SettingsScope::Project,
+        )
+        .with_project_root(&project);
+        let plan = h.service.plan(request).await.expect("plan");
+
+        match h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("does not say which project"),
+                    "the refusal must say what is missing: {detail}"
+                );
+                assert!(
+                    detail.contains(&crate::devint::negotiate::DI_API_PROJECT_ROOT_SINCE.to_string()),
+                    "the refusal must name the version that carries the field: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(!h.settings.exists(), "the refused apply wrote settings anyway");
+    }
+
+    /// A user-scope plan is about the host, not a project, so a caller's
+    /// directory has nothing to disagree with — including a caller that names
+    /// one. This is what keeps the check fail-open exactly where it should be:
+    /// every pre-v6 client's plans are user or managed scope, so none of them
+    /// starts being refused.
+    #[tokio::test]
+    async fn a_host_wide_plan_is_applyable_from_any_directory() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &target_for(elsewhere.path()))
+            .await
+            .expect("a host-wide plan is not about the caller's directory");
+    }
+
+    /// Two spellings of one directory are one project. A receipt written before
+    /// this fix recorded whatever path the daemon's own directory was spelled
+    /// as, and on macOS `/tmp` and `/private/tmp` are the same place.
+    #[tokio::test]
+    async fn a_second_spelling_of_the_same_project_is_the_same_project() {
+        let (h, project) = installed_into_project().await;
+        let link = h
+            .settings
+            .parent()
+            .and_then(std::path::Path::parent)
+            .and_then(std::path::Path::parent)
+            .expect("tempdir root")
+            .join("link-to-project");
+        std::os::unix::fs::symlink(&project, &link).expect("symlink");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &target_for(&link))
+            .await
+            .expect("a symlink to the installed project is the installed project");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
+    }
+
+    /// User scope is unaffected: its destination was never the caller's to name,
+    /// so there is nothing to disagree about and nothing new to supply.
+    #[tokio::test]
+    async fn a_user_scope_installation_still_needs_no_project_named() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .await
+            .expect("apply");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("a user-scope installation answers an unspecified target");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
     }
 
     /// Nothing this service returns can carry the rendered settings body, so a
@@ -973,12 +1532,24 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let receipt = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id)
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .expect("apply");
-        let status = h.service.status(&DevToolKind::ClaudeCode).await.expect("status");
-        let verification = h.service.verify(&DevToolKind::ClaudeCode).await.expect("verify");
-        let removal = h.service.remove(&DevToolKind::ClaudeCode, None).await.expect("preview");
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("status");
+        let verification = h
+            .service
+            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+            .expect("verify");
+        let removal = h
+            .service
+            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .await
+            .expect("preview");
 
         let sentinel = crate::devint::fixture::LEAK_SENTINEL;
         for (what, rendered) in [

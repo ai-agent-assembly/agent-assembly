@@ -34,7 +34,7 @@ use aa_core::dev_tool::DevToolKind;
 use aa_core::integration::ReceiptStore;
 use aa_runtime::devint::fixture::{FixtureContent, FixtureIntegration};
 use aa_runtime::devint::{
-    DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, RegisteredIntegration, TokenStore,
+    DevIntServer, DevIntServerConfig, DevIntServices, EngineLifecycle, RegisteredIntegration, TargetRequest, TokenStore,
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -192,7 +192,7 @@ fn the_service_refuses_the_repair_verb_without_a_receipt() {
                 .expect("connect");
 
         let refusal = client
-            .repair("claude-code")
+            .repair("claude-code", TargetRequest::default())
             .await
             .expect_err("the service accepted a repair for a tool it holds no receipt for");
         let rendered = format!("{refusal:?}");
@@ -203,7 +203,10 @@ fn the_service_refuses_the_repair_verb_without_a_receipt() {
 
         // …and the verb the CLI actually sends does *not* refuse, which is the
         // asymmetry that let the no-op pass as a success in the first place.
-        let status = client.status("claude-code").await.expect("status");
+        let status = client
+            .status("claude-code", TargetRequest::default())
+            .await
+            .expect("status");
         assert_eq!(status.phase, "detected_not_integrated", "{status:?}");
         assert!(
             status.drift_mismatched.is_empty(),

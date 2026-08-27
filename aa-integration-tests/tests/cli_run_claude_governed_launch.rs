@@ -574,7 +574,7 @@ mod real_binary_governed_launch {
     use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
     use aa_proxy::tls::CaStore;
     use aa_runtime::devint::adapters::claude_code_registration;
-    use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
+    use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle, LifecycleTarget};
 
     use super::conformance_support::{self, Measurement, SYNTHETIC_SECRET};
     use super::grpc_gateway_support::GrpcGateway;
@@ -751,7 +751,7 @@ mod real_binary_governed_launch {
             .await
             .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
         service
-            .apply(&tool, &plan.plan_id)
+            .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
 

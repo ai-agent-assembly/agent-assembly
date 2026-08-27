@@ -14,6 +14,7 @@ This file is the operational half.
 ```
 src/
   discovery.ts   socket resolution ($AA_DEVINT_SOCKET, else ~/.aa/run/devint.sock)
+  project.ts     which project a request is for ($AA_DEVINT_PROJECT_ROOT, else cwd)
   credential.ts  the one credential type a thin client may hold
   framing.ts     [tag][varint length][payload], client side
   client.ts      nine methods, because the verb space has nine members
@@ -62,6 +63,10 @@ node dist/cli.js tools
 node dist/cli.js status claude-code
 node dist/cli.js install claude-code recommended user
 node dist/cli.js events claude-code
+
+# A project-scoped plan is for the directory you run it from — the runtime is
+# shared by every client on this host and will not infer which project you meant.
+cd /path/to/some/repo && node dist/cli.js plan claude-code recommended project
 
 # Then swap in the "claudeOnly" token and try a different tool — every verb is
 # refused, which is the point.

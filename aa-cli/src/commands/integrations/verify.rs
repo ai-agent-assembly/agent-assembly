@@ -31,6 +31,7 @@ use crate::output::OutputFormat;
 use super::model::{RuntimeInfo, VerifyReport};
 use super::render::emit;
 use super::session::SessionOptions;
+use super::target::Target;
 use super::{exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
 /// `aasm integrations verify` arguments.
@@ -44,9 +45,14 @@ pub struct VerifyArgs {
 pub fn run(args: VerifyArgs, options: SessionOptions, output: OutputFormat) -> ExitCode {
     run_blocking(async move {
         let mut session = open(options).await?;
+        let target = Target::here()?;
         resolve_tool(&mut session, &args.tool, true).await?;
         let runtime = RuntimeInfo::from_session(&session);
-        let view = session.client.verify(&args.tool).await.map_err(verb_failure)?;
+        let view = session
+            .client
+            .verify(&args.tool, target.as_request())
+            .await
+            .map_err(verb_failure)?;
         let report = VerifyReport::from_view(runtime, &args.tool, &view);
 
         let outcome = if report.established_protection() {

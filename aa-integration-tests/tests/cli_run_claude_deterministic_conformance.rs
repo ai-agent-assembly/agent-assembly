@@ -83,7 +83,7 @@ mod deterministic_conformance {
     use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
     use aa_proxy::tls::CaStore;
     use aa_runtime::devint::adapters::claude_code_registration;
-    use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
+    use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle, LifecycleTarget};
 
     use aa_gateway::registry::convert::proto_agent_id_to_key;
     use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
@@ -309,7 +309,8 @@ mod deterministic_conformance {
             .await
             .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
         service
-            .apply(&tool, &plan.plan_id)
+            // User scope: one installation, no project to name.
+            .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
             .await
             .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
         // Must run after `apply` — see `enable_mcp_server`'s doc for why.

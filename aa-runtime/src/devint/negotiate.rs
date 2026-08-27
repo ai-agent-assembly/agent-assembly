@@ -41,24 +41,45 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 
 /// The newest DI-API version this runtime speaks.
 ///
-/// **None of v3, v4 or v5 adds a verb.** v3 records that `status` and `verify`
+/// **None of v3, v4, v5 or v6 adds a verb.** v3 records that `status` and `verify`
 /// carry a [`PolicyView`](aa_proto::assembly::devint::v1::PolicyView) — which
 /// policy a governed launch would run under (AAASM-5349). v4 records that the
 /// `HelloAck` carries a
 /// [`RuntimeProvenance`](aa_proto::assembly::devint::v1::RuntimeProvenance) —
 /// which build is answering (AAASM-5628). v5 records that `apply` carries an
 /// [`ApplyOutcomeView`](aa_proto::assembly::devint::v1::ApplyOutcomeView) —
-/// whether the apply modified anything (AAASM-5674). A v2, v3 or v4 peer is
+/// whether the apply modified anything (AAASM-5674). v6 records that `plan`
+/// carries a caller-chosen `project_root` (AAASM-5913). A v2..=v5 peer is
 /// therefore *not* [`Negotiation::Degraded`]: it has every verb, and
 /// `unavailable_verbs` stays empty, because nothing became unavailable.
 ///
-/// These versions exist for what a client can *say* rather than what it can
+/// That is also the limit of what this enum can express, and v6 is where the
+/// limit starts to matter. `Degraded` names *missing verbs*; it has no way to
+/// say "the verb is there but one of its arguments will be ignored." A v5 peer
+/// serves `plan` completely for user and managed scope and cannot serve it at
+/// all for project scope, and no value of `unavailable_verbs` states that. So
+/// the project-scope gate lives at the call site
+/// ([`DI_API_PROJECT_ROOT_SINCE`]), not here.
+///
+/// Those versions exist for what a client can *say* rather than what it can
 /// call. Protobuf message presence already makes a field's absence
 /// unambiguous, so behaviour is correct without consulting the version at all;
 /// knowing the peer speaks 3 lets the client name the reason — "this runtime
 /// speaks DI-API 3; build provenance arrived in 4" — instead of the vaguer
 /// "the field is missing".
-pub const DI_API_MAX_SUPPORTED: u32 = 5;
+///
+/// **v6 is the first version where that reasoning does not hold**, and the
+/// difference is worth stating because the three versions before it establish
+/// the opposite habit. v6 adds `PlanRequest.project_root`
+/// ([`DI_API_PROJECT_ROOT_SINCE`]), and proto3 drops an unknown field
+/// *silently*: a v6-speaking client sending a project root to a v5 daemon gets
+/// no error, no `unavailable_verbs` entry, and a plan resolved against the
+/// daemon's own boot directory — AAASM-5913 recurring with no negotiation
+/// signal at all. Field presence cannot rescue this one, because the field is
+/// absent on the side that would have to notice. So v6 is gated by comparing
+/// versions before the request is sent, not by testing a field after it
+/// arrives.
+pub const DI_API_MAX_SUPPORTED: u32 = 6;
 
 /// The first DI-API version whose `status` and `verify` carry a policy posture.
 ///
@@ -83,6 +104,30 @@ pub const DI_API_PROVENANCE_SINCE: u32 = 4;
 /// this field, so whatever arrives in its place is not an answer this client
 /// is entitled to consume (AAASM-5674).
 pub const DI_API_APPLY_OUTCOME_SINCE: u32 = 5;
+
+/// The first DI-API version whose requests honour a caller-chosen project root.
+///
+/// It covers `PlanArgs.project_root` and `TargetArgs.project_root` together —
+/// one constant, because they are one promise read from two directions. `plan`
+/// uses the root to *choose* the project it writes; `status`, `verify`, `repair`
+/// and `remove` use it to *confirm* the project they were asked about is the one
+/// the receipt records. Splitting them into two versions would let a peer
+/// promise to write the right project while still reporting on the wrong one.
+///
+/// Below this, the absence of `PlanRequest.project_root` on the wire means the
+/// peer **will substitute its own working directory** — not that it will ask,
+/// and not that it will refuse. That is the one reading no field test can
+/// recover, because proto3 discards an unknown field before any handler sees
+/// it: the sender has evidence it sent a root, the receiver has no evidence one
+/// was ever sent, and both proceed. The result is a plan written under whatever
+/// directory the shared daemon happened to boot in, reported as a plan for the
+/// caller's project (AAASM-5913).
+///
+/// So this constant is consumed *before* the request, not after the reply. A
+/// client that negotiated below it must refuse project scope outright rather
+/// than send a root and hope; the other two scopes are unaffected, because
+/// their destinations were never the caller's to name.
+pub const DI_API_PROJECT_ROOT_SINCE: u32 = 6;
 
 /// Verbs that did not exist at DI-API v1.
 ///

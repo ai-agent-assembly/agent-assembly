@@ -30,6 +30,7 @@ use crate::output::OutputFormat;
 use super::model::{RuntimeInfo, StatusReport};
 use super::render::emit;
 use super::session::SessionOptions;
+use super::target::Target;
 use super::{exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
 /// `aasm integrations status` arguments.
@@ -46,9 +47,14 @@ pub fn run(args: StatusArgs, options: SessionOptions, output: OutputFormat) -> E
         // A tool that is registered but absent is a legitimate thing to ask
         // about — "not installed" is an answer, not a failure — so detection is
         // not required here.
+        let target = Target::here()?;
         let summary = resolve_tool(&mut session, &args.tool, false).await?;
         let runtime = RuntimeInfo::from_session(&session);
-        let view = session.client.status(&args.tool).await.map_err(verb_failure)?;
+        let view = session
+            .client
+            .status(&args.tool, target.as_request())
+            .await
+            .map_err(verb_failure)?;
         let report = StatusReport::from_view(runtime, &view, Some(&summary));
 
         // The state the service derived decides the exit code. Drift and

@@ -247,6 +247,42 @@ pub struct ApprovalRelayReceipt {
     pub accepted_at_unix_secs: u64,
 }
 
+/// Which installed integration a read-or-reverse verb acts on.
+///
+/// The wire form is `TargetArgs`; this is it after the server's own vetting, so
+/// `project_root` is absolute, existing and **canonicalized** by the time it
+/// gets here. An implementation compares it, and never resolves a destination
+/// from it.
+///
+/// # Why the scope is optional and the root is not derived
+///
+/// `settings_scope: None` means "there should be exactly one installation of
+/// this tool, act on it" — the behaviour every client had before DI-API 6, kept
+/// because it is right in the common case and wrong only when it is ambiguous.
+/// It cannot widen what a caller reaches: if the one installation found is
+/// project-scoped, `project_root` still has to name that same project.
+///
+/// `project_root: None` is not "the current directory". This is a long-lived
+/// daemon shared by every client on the host, so its own working directory
+/// names no caller's project; substituting it is the AAASM-5913 defect. An
+/// implementation that needs a project and was given none must refuse.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LifecycleTarget {
+    /// The surface the caller means, or `None` to use the one that exists.
+    pub settings_scope: Option<aa_core::integration::SettingsScope>,
+    /// The canonical root of the project the caller means, when it named one.
+    pub project_root: Option<std::path::PathBuf>,
+}
+
+impl LifecycleTarget {
+    /// The target a caller that named nothing implies: find the one
+    /// installation, and refuse if it turns out to be project-scoped.
+    #[must_use]
+    pub fn unspecified() -> Self {
+        Self::default()
+    }
+}
+
 /// The nine operations the DI-API can perform, and no others.
 ///
 /// One method per member of the closed verb space. Implemented by AAASM-5278's
@@ -265,19 +301,43 @@ pub trait IntegrationLifecycle: Send + Sync {
     /// Returns whether the host changed alongside the receipt. An
     /// implementation states what it knows and never guesses: the answer is a
     /// public contract, and a wrong `unchanged` is worse than an absent one.
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError>;
+    ///
+    /// `target` says which project the caller is applying *from*, so a plan
+    /// authored for another one is refused instead of executed. An authored plan
+    /// outlives the invocation that asked for it — the service caches it and any
+    /// client holding the id can present it later, from anywhere — so "the plan
+    /// exists" and "this caller may execute it here" are two questions, and only
+    /// the first one is answered by the id.
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError>;
 
     /// Derive the protection state from current evidence.
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError>;
+    ///
+    /// `target` says which installation of `tool` is meant; see
+    /// [`LifecycleTarget`] for why that cannot be inferred here.
+    async fn status(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError>;
 
     /// Run the protection test and adjudicate it.
-    async fn verify(&self, tool: &DevToolKind) -> Result<VerificationResult, LifecycleError>;
+    async fn verify(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<VerificationResult, LifecycleError>;
 
     /// Restore AASM-owned keys that drifted.
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError>;
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError>;
 
     /// Author and execute the reversal.
-    async fn remove(&self, tool: &DevToolKind, plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError>;
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        target: &LifecycleTarget,
+        plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError>;
 
     /// Recent security events relevant to this integration, already redacted.
     async fn scoped_events(

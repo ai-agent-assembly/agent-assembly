@@ -109,6 +109,20 @@ fn request(scope: SettingsScope) -> IntegrationRequest {
     IntegrationRequest::new(DevToolKind::ClaudeCode, ProtectionProfile::Recommended, scope)
 }
 
+/// The same request, naming the project it is for when it needs to.
+///
+/// Since AAASM-5913 a project-scope request carries the project explicitly: the
+/// adapter runs inside a service shared by every client on the host, so there is
+/// nothing it could honestly substitute for a project the caller did not name.
+fn request_in(scope: SettingsScope, fixture: &Fixture) -> IntegrationRequest {
+    let request = request(scope);
+    if scope == SettingsScope::Project {
+        request.with_project_root(fixture.root().join("repo"))
+    } else {
+        request
+    }
+}
+
 // ── Contract conformance ────────────────────────────────────────────────────
 
 #[test]
@@ -294,7 +308,7 @@ async fn a_project_scoped_plan_writes_only_the_project_surface() {
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::Project))
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
         .await
         .expect("plan");
     plan.validate().expect("validate");
@@ -304,6 +318,174 @@ async fn a_project_scoped_plan_writes_only_the_project_surface() {
             assert_eq!(scope, SettingsScope::Project, "step {} escaped the scope", step.id);
         }
     }
+}
+
+/// AAASM-5913, matrix row (g), at the adapter boundary: the project a plan
+/// writes into comes from the request, and the request outranks anything the
+/// adapter was configured with.
+///
+/// The fixture's own `ClaudeCodePaths` name `<root>/repo` — the stand-in for the
+/// long-lived service's idea of "the project". A caller naming `<root>/elsewhere`
+/// must be planned into `<root>/elsewhere`, and nothing may be planned into
+/// `<root>/repo`.
+#[tokio::test]
+async fn the_project_a_plan_writes_into_comes_from_the_request_not_the_adapter() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let elsewhere = fixture.root().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".claude")).expect("second project");
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let plan = integration
+        .plan_integration(&request(SettingsScope::Project).with_project_root(&elsewhere))
+        .await
+        .expect("plan");
+    plan.validate().expect("validate");
+
+    assert_eq!(
+        plan.project_root.as_deref(),
+        Some(elsewhere.as_path()),
+        "the plan must record the project it is for, so an approver can read it"
+    );
+    let settings = plan
+        .steps
+        .iter()
+        .find(|s| s.id == STEP_MANAGED_SETTINGS)
+        .expect("settings step");
+    match &settings.action {
+        StepAction::WriteManagedSettings { path, .. } => {
+            assert_eq!(path, &elsewhere.join(".claude").join("settings.json"));
+        }
+        other => panic!("expected managed settings, got {other:?}"),
+    }
+    for step in &plan.steps {
+        for artifact in step.action.affected_paths() {
+            assert!(
+                !artifact.starts_with(fixture.root().join("repo")),
+                "step {} writes {} — the project the adapter was configured with, not the one the \
+                 caller named",
+                step.id,
+                artifact.display()
+            );
+        }
+    }
+}
+
+/// AAASM-5913 review finding N-2: a plan id has to tell two authorings apart,
+/// because the service caches authored plans in a process-global map keyed by it.
+///
+/// Both halves are checked here and each is the other's control. Two plans for
+/// *different* projects must not share an id, or the caller in one applies the
+/// plan of the other and writes Agent Assembly's keys into a repository it never
+/// named. Two plans for the *same* project must not share one either: the id was
+/// `claude-code-{scope}-{unix_secs}`, so **any** two authorings inside one second
+/// collided and the later silently replaced the earlier in the cache — the
+/// projects they named never entered into it.
+#[tokio::test]
+async fn two_authorings_never_share_a_plan_id_and_each_names_its_own_project() {
+    // Everything before the final `-` is what the id says it is about; the final
+    // segment is the nonce that makes this authoring distinct. Read that way
+    // rather than by recomputing the digest, so the test cannot agree with a
+    // wrong implementation by repeating it.
+    fn about(id: &str) -> &str {
+        id.rsplit_once('-').expect("a plan id ends in a nonce").0
+    }
+    fn nonce(id: &str) -> &str {
+        id.rsplit_once('-').expect("a plan id ends in a nonce").1
+    }
+
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let elsewhere = fixture.root().join("elsewhere");
+    std::fs::create_dir_all(elsewhere.join(".claude")).expect("second project");
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let first_here = integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("plan");
+    let again_here = integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("plan");
+    let there = integration
+        .plan_integration(&request(SettingsScope::Project).with_project_root(&elsewhere))
+        .await
+        .expect("plan");
+    for plan in [&first_here, &again_here, &there] {
+        plan.validate().expect("validate");
+    }
+
+    assert_ne!(
+        first_here.plan_id, again_here.plan_id,
+        "two authorings of the same project must stay separately applyable, or approving one \
+         executes the other"
+    );
+    assert_ne!(
+        first_here.plan_id, there.plan_id,
+        "two projects must never share a plan id"
+    );
+
+    assert_eq!(
+        about(&first_here.plan_id),
+        about(&again_here.plan_id),
+        "the same installation must be recognisable across authorings"
+    );
+    assert_ne!(
+        about(&first_here.plan_id),
+        about(&there.plan_id),
+        "the id must name which installation it is about, so two plans in one log can be told apart"
+    );
+
+    // Shape, not value: 128 bits of hex is what makes a concurrent authoring
+    // unable to repeat this id. Asserting the digits rather than a literal keeps
+    // the nonce free to be entropy.
+    let n = nonce(&first_here.plan_id);
+    assert_eq!(n.len(), 32, "expected a 128-bit hex nonce, got {n:?}");
+    assert!(n.chars().all(|c| c.is_ascii_hexdigit()), "{n:?}");
+
+    // A host-wide plan is about no project, so it must not be labelled with one —
+    // the caller's directory is optional context at user scope, not identity.
+    let user = integration
+        .plan_integration(&request(SettingsScope::User))
+        .await
+        .expect("plan");
+    assert!(
+        about(&user.plan_id).ends_with("hostwide"),
+        "a user-scope plan must not be labelled with a project: {}",
+        user.plan_id
+    );
+}
+
+/// The other half of row (g): a project-scope request that names no project is
+/// refused, loudly, rather than being resolved against whatever directory the
+/// service happens to be sitting in.
+///
+/// The fixture's paths *do* carry a project, so this also pins that a configured
+/// project is not allowed to stand in for one the caller failed to name.
+#[tokio::test]
+async fn a_project_scoped_request_that_names_no_project_is_refused() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let err = integration
+        .plan_integration(&request(SettingsScope::Project))
+        .await
+        .expect_err("a project-scope request with no project must not produce a plan");
+    let message = err.to_string();
+    assert!(
+        message.contains("names no project"),
+        "the refusal must say what is missing: {message}"
+    );
+
+    // Positive control: the same fixture, same scope, with the project named,
+    // does plan — so the refusal above is about the missing project and not
+    // about the fixture being unable to plan at all.
+    integration
+        .plan_integration(&request_in(SettingsScope::Project, &fixture))
+        .await
+        .expect("naming the project makes the same request plannable");
 }
 
 // ── The one privileged step (AAASM-5298) ────────────────────────────────────
@@ -318,7 +500,7 @@ async fn a_normal_install_contains_no_privileged_step_and_cannot_claim_host_enfo
 
     for scope in [SettingsScope::User, SettingsScope::Project] {
         let plan = integration
-            .plan_integration(&request(scope).requesting_level(ProtectionLevel::HostEnforced))
+            .plan_integration(&request_in(scope, &fixture).requesting_level(ProtectionLevel::HostEnforced))
             .await
             .expect("plan");
         plan.validate().expect("validate");

@@ -54,6 +54,7 @@ use crate::output::OutputFormat;
 use super::model::{RepairReport, RuntimeInfo, StatusReport, UnsupportedRow};
 use super::render::emit;
 use super::session::SessionOptions;
+use super::target::Target;
 use super::{confirm, exit::Outcome, open, resolve_tool, run_blocking, verb_failure};
 
 /// What `repair` reports, and why `&& echo repaired` is the wrong test.
@@ -102,12 +103,17 @@ pub struct RepairArgs {
 pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> ExitCode {
     run_blocking(async move {
         let mut session = open(options).await?;
+        let target = Target::here()?;
         let summary = resolve_tool(&mut session, &args.tool, true).await?;
         let runtime = RuntimeInfo::from_session(&session);
 
         // Read the drift first, so the preview and the confirmation describe
         // the state that is actually being repaired.
-        let before = session.client.status(&args.tool).await.map_err(verb_failure)?;
+        let before = session
+            .client
+            .status(&args.tool, target.as_request())
+            .await
+            .map_err(verb_failure)?;
         let drifted = before.drift_mismatched.clone();
 
         // Repair can only act on state a receipt accounts for, and the service
@@ -193,7 +199,11 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
             &format!("Rewrite the {} AASM-owned artifact(s) above?", drifted.len()),
         )?;
 
-        let view = session.client.repair(&args.tool).await.map_err(verb_failure)?;
+        let view = session
+            .client
+            .repair(&args.tool, target.as_request())
+            .await
+            .map_err(verb_failure)?;
         let unresolved: Vec<UnsupportedRow> = view.unrepairable.iter().map(UnsupportedRow::from).collect();
         let status = view
             .status
