@@ -3481,12 +3481,23 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         let ca_dir = std::env::var_os("AA_CA_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(launch_state::shared_ca_dir);
+        // AAASM-5978: skip the macOS System Keychain CA install only when
+        // this specific launch's adapter reports it already gives the tool
+        // process-scoped trust in the proxy CA (e.g. Claude Code's installed
+        // `NODE_EXTRA_CA_CERTS`). `exec`/generic-command launches (no
+        // adapter) and every adapter that hasn't verified this default to
+        // `Auto` — today's behaviour, unchanged.
+        let system_trust_install = match adapter.and_then(|a| a.process_scoped_ca_trust_var()) {
+            Some(_) => aa_proxy::config::SystemTrustInstall::Never,
+            None => aa_proxy::config::SystemTrustInstall::Auto,
+        };
         let opts = ProxyGuardOptions {
             ready_file: state.ready_file,
             ca_dir,
             agent_id: Some(handle.agent_id.clone()),
             gateway_endpoint: Some(run_registration::gateway_endpoint()),
             audit_jsonl_path: Some(state.audit_jsonl_path),
+            system_trust_install,
         };
         Some(
             ProxyGuard::spawn(opts)

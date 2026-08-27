@@ -42,8 +42,11 @@ pub use error::ProxyError;
 /// Start the proxy with the given configuration.
 ///
 /// Loads or creates the CA from `config.ca_dir`, installs it into the macOS
-/// System Keychain if not already trusted, constructs a [`proxy::ProxyServer`],
-/// and enters the TCP accept loop. Returns only on unrecoverable error.
+/// System Keychain if not already trusted **and** `AA_PROXY_SYSTEM_TRUST_INSTALL`
+/// hasn't opted the launch out (AAASM-5978 — a launch with its own process-scoped
+/// CA trust, e.g. a managed dev-tool integration, sets `never`), constructs a
+/// [`proxy::ProxyServer`], and enters the TCP accept loop. Returns only on
+/// unrecoverable error.
 pub async fn run(
     config: ProxyConfig,
     event_tx: tokio::sync::broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
@@ -67,11 +70,26 @@ pub async fn run(
 
     let ca = tls::CaStore::load_or_create(&config.ca_dir).await?;
 
+    // AAASM-5978: this governs only whether the CA is added to the macOS
+    // System Keychain, never certificate validation — see
+    // `config::SystemTrustInstall`. `Never` skips the whole block, including
+    // `ca.is_installed()?`'s `security find-certificate` lookup: a launch that
+    // already has process-scoped trust for this CA must make zero `security`
+    // CLI invocations, not merely skip the install branch.
     #[cfg(target_os = "macos")]
-    if !ca.is_installed()? {
-        tracing::info!("CA not yet trusted — installing into macOS System Keychain");
-        ca.install()?;
-        tracing::info!("CA installed successfully");
+    match config::system_trust_install_from_env()? {
+        config::SystemTrustInstall::Never => tracing::info!(
+            "system trust install disabled (AA_PROXY_SYSTEM_TRUST_INSTALL=never) — \
+             this launch supplies its own process-scoped CA trust; certificate \
+             validation is unaffected"
+        ),
+        config::SystemTrustInstall::Auto => {
+            if !ca.is_installed()? {
+                tracing::info!("CA not yet trusted — installing into macOS System Keychain");
+                ca.install()?;
+                tracing::info!("CA installed successfully");
+            }
+        }
     }
 
     // AAASM-5358: until now nothing in production ever constructed the JSONL

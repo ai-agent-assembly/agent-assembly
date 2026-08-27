@@ -96,6 +96,10 @@ prost       = { workspace = true }
 reqwest     = { workspace = true, features = ["json", "rustls", "blocking"] }
 rustls      = { workspace = true, features = ["ring"] }
 tokio-rustls = { workspace = true }
+# AAASM-5978: parses a minted CA's PEM into DER for a real `RootCertStore`.
+# Already resolved in the workspace lock (aa-proxy pins the same "0.18"), so
+# this adds no new crate to the tree — same version pin for consistency.
+x509-parser = "0.18"
 tracing      = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 rstest      = { workspace = true }
