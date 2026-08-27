@@ -833,9 +833,18 @@ journeys:
   browser_required: false
   outcome: See AAASM-4610 for the full acceptance contract; this row is a selection index only.
   lifecycle_state: automated
+# AAASM-5885: this row previously claimed SCIM coverage no crate in this repo
+# implements (`grep -rli scim aa-api/src aa-gateway/src` returns nothing) —
+# per the product-north-star spec and the workspace-root repo map, SCIM is
+# tiered as a closed-source SaaS/Enterprise capability owned by the `cloud`
+# repo's own release-QA registry, not this monorepo's. Narrowed to the
+# multi-tenancy/RBAC claim this repo actually owns and has real coverage
+# for (aa-api/tests/{iam,policy_rbac_integration,capability}.rs,
+# aa-gateway/tests/{inter_team_fixture,tokenless_tenancy_neutralized}_test.rs
+# — all present, none `#[ignore]`d, run by the required workspace test job).
 - id: J47
   jira: AAASM-4614
-  name: Org / team admin — multi-tenancy, teams, RBAC, SCIM (SaaS control plane)
+  name: Org / team admin — multi-tenancy, teams, RBAC
   priority: P1
   persona_track: Function
   surfaces:
@@ -849,8 +858,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4614 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: partial
-  gap_owner: AAASM-5885
+  lifecycle_state: automated
 - id: J48
   jira: AAASM-4616
   name: Enterprise self-hosted governance onboarding
