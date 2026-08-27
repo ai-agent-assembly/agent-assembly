@@ -609,6 +609,9 @@ jobs:
               - 'scripts/propagate_versions.py'
               - '.ci/check-metadata-drift.sh'
               - 'scripts/check_absolutes_unwaivable.py'
+              # AAASM-5888: glob-for-glob copy of the same addition in
+              # docs.yml / docs-governance.yml's own `changes` routers.
+              - 'scripts/qa/verify-documented-commands.py'
               - 'TRUTH-ADOPTION.md'
               - 'verification-reports/**/*.md'
               - 'design/**'

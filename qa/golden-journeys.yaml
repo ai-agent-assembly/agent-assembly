@@ -389,7 +389,20 @@ journeys:
   evidence:
   - repo: agent-assembly
     kind: ci_job
-    selector: 'doc-links.yml (link integrity only, not full command matrix)'
+    selector: 'doc-links.yml (link integrity only, not the command matrix)'
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'docs.yml/docs-governance.yml verify-commands: scripts/qa/verify-documented-commands.py
+      --run extracts and classifies every fenced sh/bash/console command in
+      docs/src/quick-start/ and README''s onboarding sections; each is either
+      executed with an assertion on its documented outcome, or allowlisted
+      with a stated reason (network installers, Homebrew, release-tarball +
+      cosign verification, `make dev-setup`/`dev-verify`, `docker compose
+      up`) — an unclassified command fails the job (AAASM-5888). Still
+      `partial`, not `automated`: the allowlisted commands genuinely do not
+      run, so the journey name (''every documented command'') is not yet
+      fully true — the gap is now a machine-enforced, documented boundary
+      instead of an unowned hole.'
   execution_lanes:
   - pr
   fidelity: real_local_process
