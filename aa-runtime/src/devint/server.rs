@@ -928,6 +928,42 @@ mod tests {
         assert!(owned_surface_within(&home.join(".claude-notes"), &surfaces).is_none());
     }
 
+    /// AAASM-5987: the falsification control for the decision not to strip this
+    /// entry — `/` swallows every surface at once, so this is the one case that
+    /// proves the PRODUCTION surface list (`surfaces_not_owned_by_a_project()`,
+    /// not the synthetic table above) reaches the refusal. Before the fix this
+    /// still passed, because the bug was a stripped-build compile failure, not a
+    /// wrong runtime value — this test only guards the value.
+    #[test]
+    fn the_root_directory_is_refused_by_the_real_surface_list() {
+        let refusal = parse_project_root(SettingsScope::Project, "/").expect_err("/ is not a project");
+        assert!(matches!(refusal, LifecycleError::Refused { .. }), "{refusal:?}");
+    }
+
+    /// AAASM-5987: the managed surface has to be in the refusal set of a runtime
+    /// with no `aa-devtool-*` crate compiled into it — which is every published
+    /// one (ADR 0030 §6.3: this module is unconditionally compiled in, adapters
+    /// are consumed out-of-tree). Reading the default from `aa_core::dev_tool`
+    /// rather than `aa_devtool_claude_code::scope` is exactly what makes that
+    /// possible; this test would not compile against the pre-fix import.
+    #[test]
+    fn the_managed_surface_is_in_the_refusal_set() {
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+        let raw = std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR);
+        let expected = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+        assert!(surfaces_not_owned_by_a_project().contains(&expected));
+
+        // An operator override is honoured instead of the default, not in
+        // addition to it — the env var exists so a host that keeps managed
+        // settings somewhere else still gets a correct refusal set.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let surfaces = surfaces_not_owned_by_a_project();
+        assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
+        assert!(!surfaces.contains(&raw));
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+    }
+
     #[test]
     fn a_root_is_only_required_where_a_destination_is_derived_from_it() {
         // User and managed scope use the root for disclosure only, so not knowing
