@@ -18,10 +18,11 @@ serde_json   = { workspace = true, optional = true }
 serde_yaml   = { workspace = true, optional = true }
 sha2         = { workspace = true, default-features = false, optional = true }
 thiserror    = { workspace = true, optional = true }
+toml         = { workspace = true, optional = true }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "serde?/std"]
+std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "dep:toml", "serde?/std"]
 alloc      = ["dep:sha2"]
 serde      = ["dep:serde", "aa-security?/serde"]
 schemars   = ["dep:schemars"]

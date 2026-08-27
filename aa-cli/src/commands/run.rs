@@ -2906,6 +2906,19 @@ fn unknown_tool_error(tool: &str) -> anyhow::Error {
     )
 }
 
+/// The tool token is recognised, but [`aa_devtool::registry::adapter_for`]
+/// could not build an adapter for it in this environment (AAASM-5976 — e.g.
+/// Windsurf's paths depend on `$HOME`, which may be unresolvable). Folding
+/// this into [`unknown_tool_error`] would send an operator chasing a typo
+/// that isn't there.
+fn unresolvable_adapter_error(tool: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{tool} is a supported tool, but its configuration could not be resolved in this \
+         environment (for example, $HOME may be unset) — check the environment this was \
+         launched with rather than the tool name"
+    )
+}
+
 /// Return the adapter for `tool`, or an error for unrecognised tool names.
 ///
 /// Resolution goes through [`aa_devtool::registry`] — the same table
@@ -2916,9 +2929,8 @@ fn unknown_tool_error(tool: &str) -> anyhow::Error {
 ///
 /// `tool` may be either spelling; see [`canonical_tool_id`].
 fn resolve_adapter(tool: &str) -> Result<Box<dyn DevToolAdapter>> {
-    canonical_tool_id(tool)
-        .and_then(aa_devtool::registry::adapter_for)
-        .ok_or_else(|| unknown_tool_error(tool))
+    let canonical = canonical_tool_id(tool).ok_or_else(|| unknown_tool_error(tool))?;
+    aa_devtool::registry::adapter_for(canonical).ok_or_else(|| unresolvable_adapter_error(canonical))
 }
 
 /// The command and argv this launch is recorded under in the audit trail.
@@ -4634,6 +4646,7 @@ mod tests {
                         managed_keys: vec!["permissions".to_string()],
                         content_sha256: "test-fixture-sha".to_string(),
                         merge: aa_core::integration::step::SettingsMerge::MergeManagedKeys,
+                        format: aa_core::integration::step::DocumentFormat::Json,
                     },
                     "write the managed settings block",
                 );

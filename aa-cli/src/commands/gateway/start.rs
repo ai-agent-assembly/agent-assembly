@@ -1,6 +1,6 @@
 //! `aasm gateway start` — spawn aa-gateway as a detached background process.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,19 @@ use super::pid;
 const DEFAULT_LISTEN: &str = "127.0.0.1:50051";
 const READINESS_TIMEOUT: Duration = Duration::from_secs(10);
 const READINESS_POLL: Duration = Duration::from_millis(200);
+
+/// What to tell an operator when `aa-gateway` cannot be found.
+///
+/// A named constant rather than an inline literal so a test can assert that it
+/// lists only lookups [`resolve_binary`] actually performs. The two drifted
+/// before: the message advertised `./target/release/aa-gateway` for as long as
+/// the fallback existed, and an error that names a lookup which no longer
+/// happens is worse than terse — here it would have read as an instruction to
+/// reinstate the AAASM-5937 vulnerability by hand.
+const BINARY_NOT_FOUND_HELP: &str = "error: aa-gateway binary not found.\n\
+     Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway\n\
+     A path relative to the current directory is deliberately not tried (AAASM-5937);\n\
+     install aa-gateway alongside aasm, or put it on $PATH.";
 
 /// Arguments for `aasm gateway start`.
 #[derive(Debug, Args)]
@@ -45,10 +58,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let binary = match resolve_binary() {
         Some(b) => b,
         None => {
-            eprintln!(
-                "error: aa-gateway binary not found.\n\
-                 Tried: alongside aasm, $PATH, ~/.cargo/bin/aa-gateway, ./target/release/aa-gateway, ./target/debug/aa-gateway"
-            );
+            eprintln!("{BINARY_NOT_FOUND_HELP}");
             return ExitCode::FAILURE;
         }
     };
@@ -169,35 +179,92 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
 /// Resolve the `aa-gateway` binary path.
 ///
 /// Search order: directory of the running `aasm` executable →
-/// directories in `$PATH` → `~/.cargo/bin/aa-gateway` →
-/// `./target/release/aa-gateway` → `./target/debug/aa-gateway`.
+/// directories in `$PATH` → `~/.cargo/bin/aa-gateway`. Every candidate is an
+/// absolute location derived from the *installation*, never from where the
+/// process happens to have been started.
 ///
 /// The exe-dir lookup is first so a release / Homebrew install — where
 /// `aa-gateway` ships alongside `aasm` in the same directory (AAASM-2975) —
 /// works even when that directory is not on `$PATH` (e.g. a tarball unpacked
-/// to an arbitrary location).
+/// to an arbitrary location). It is also what ADR 0030 §6.4 requires: `aasm`
+/// and its children ship as one versioned unit, so a `$PATH` hit from some
+/// other installation must not win over the sibling that was shipped with
+/// this one.
+///
+/// # Why there is no `./target/...` fallback
+///
+/// This function used to end with `./target/release/aa-gateway` →
+/// `./target/debug/aa-gateway`, which is the exact pattern AAASM-4020 removed
+/// from the `aa-proxy` launcher on security grounds and which AAASM-5937
+/// removed here. Resolving relative to the current working directory lets
+/// whoever controls where `aasm` is invoked substitute an attacker-planted
+/// `aa-gateway`, and `./target/` is the conventional Rust build output path, so
+/// a planted file there looks unremarkable.
+///
+/// The population it exposed is the one least able to notice: the fallback is
+/// only reached when `aa-gateway` is absent from the exe directory, `$PATH`
+/// *and* `~/.cargo/bin`, which is precisely the state of a `cargo build`-only
+/// checkout — a developer or CI job sitting in a repository root.
+///
+/// Nothing legitimate is lost. A `cargo build` puts `aasm` and `aa-gateway`
+/// side by side in the same `target/<profile>/` directory, so the sibling
+/// lookup above already finds it, and finds *the matching build* rather than
+/// whichever `target/` the cwd happened to contain. The only case the fallback
+/// uniquely served was an *installed* `aasm` picking a `target/` gateway out of
+/// an unrelated repository, which is a version-mismatch hazard as much as a
+/// substitution one.
 pub fn resolve_binary() -> Option<PathBuf> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(candidate) = sibling_binary(&exe) {
-            return Some(candidate);
-        }
+    resolve_from(
+        std::env::current_exe().ok().as_deref(),
+        std::env::var("PATH").ok().as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+/// The search itself, over the three facts [`resolve_binary`] reads from the
+/// environment.
+///
+/// Split out so the search order and the absence of a cwd-relative fallback can
+/// both be asserted without mutating process-global state: a test names the exe
+/// path, the `$PATH` string and the home directory it wants, and this function
+/// has no other input. That is also the structural half of AAASM-5937 — a
+/// function that is not given the current directory cannot resolve against it,
+/// so the removed fallback cannot come back by accident. The behavioural half is
+/// still pinned by a test that plants a binary under a temporary cwd.
+///
+/// # Why `$PATH` entries are filtered
+///
+/// Deleting the `./target/...` fallback is not on its own enough to make the
+/// claim above true, because `$PATH` is a second door into the same room.
+/// POSIX defines a **zero-length** `$PATH` entry as the current working
+/// directory, so `PATH=":/usr/bin"`, `PATH="/usr/bin:"` and `PATH="/a::/b"` each
+/// contribute one candidate that `PathBuf::join` renders as the bare relative
+/// path `aa-gateway` — and `is_executable` resolves that against the cwd. A
+/// non-empty but relative entry (`PATH="target/debug"`) does the same. Either
+/// one reinstates exactly the attacker-substitution primitive AAASM-5937
+/// removes, and an empty entry is not even malformed: it is a documented, if
+/// discouraged, way to put `.` on `$PATH`, so it occurs on real hosts by
+/// accident — a trailing `:` from a shell profile appending `$PATH` to an unset
+/// variable is the usual origin.
+///
+/// So a candidate directory is used only if it is absolute. Non-absolute entries
+/// are skipped, not rejected: an operator with a stray `:` in `$PATH` keeps every
+/// other entry they wrote, and the only lookup they lose is the one that could
+/// never have been safe.
+fn resolve_from(exe: Option<&Path>, path_var: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(candidate) = exe.and_then(sibling_binary) {
+        return Some(candidate);
     }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            let candidate = PathBuf::from(dir).join("aa-gateway");
+    if let Some(path_var) = path_var {
+        for dir in path_var.split(':').map(Path::new).filter(|d| d.is_absolute()) {
+            let candidate = dir.join("aa-gateway");
             if is_executable(&candidate) {
                 return Some(candidate);
             }
         }
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home {
         let candidate = home.join(".cargo").join("bin").join("aa-gateway");
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
-    }
-    for rel in &["./target/release/aa-gateway", "./target/debug/aa-gateway"] {
-        let candidate = PathBuf::from(rel);
         if is_executable(&candidate) {
             return Some(candidate);
         }
@@ -573,5 +640,213 @@ mod tests {
         // A non-executable file named aa-gateway must not be selected.
         std::fs::write(dir.path().join("aa-gateway"), b"not a binary").unwrap();
         assert_eq!(sibling_binary(&exe), None);
+    }
+
+    // ── AAASM-5937: no cwd-relative resolution ────────────────────────────
+
+    /// An `aa-gateway` planted under the current directory must never be
+    /// selected (AAASM-5937).
+    ///
+    /// This is the negative control for the removed
+    /// `./target/{release,debug}/aa-gateway` fallback, and it is written as an
+    /// end-to-end statement of the property rather than an assertion about the
+    /// code's shape: it plants an executable at exactly the two paths the old
+    /// implementation used, relative to a temporary cwd, with all three trusted
+    /// lookups deliberately empty — the state the old fallback existed to
+    /// serve — and requires `None`.
+    ///
+    /// It also plants a bare `./aa-gateway`, which is the candidate an **empty
+    /// `$PATH` entry** produces: `PathBuf::from("").join("aa-gateway")` is the
+    /// relative path `aa-gateway`, and POSIX defines a zero-length `$PATH` entry
+    /// as the current directory. Without that plant this test passes `Some("")`
+    /// — the very input that opens the door — and never looks at the path that
+    /// comes out of it, so it would assert the property while being blind to a
+    /// live instance of the defect.
+    ///
+    /// Verified to fail against the previous implementation rather than assumed
+    /// to. Restoring the deleted `for rel in &["./target/release/aa-gateway",
+    /// ...]` loop reddens this test on the `./target/release` plant; dropping the
+    /// `is_absolute` filter from the `$PATH` loop reddens it on the bare plant.
+    /// Neither reddens anything else in this module.
+    ///
+    /// `resolve_from` is called rather than `resolve_binary` so the exe path,
+    /// `$PATH` and home directory are all named by the test. `resolve_binary`'s
+    /// own exe path is `target/debug/deps/…`, whose sibling set is a build
+    /// artefact this test must not depend on.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_from_ignores_a_gateway_planted_under_the_current_directory() {
+        // Serialized against the other cwd/env-sensitive tests in this crate:
+        // `set_current_dir` is process-global.
+        let _lock = crate::test_support::env_guard();
+
+        let cwd = tempfile::tempdir().unwrap();
+        for profile in ["release", "debug"] {
+            let dir = cwd.path().join("target").join(profile);
+            std::fs::create_dir_all(&dir).unwrap();
+            touch_executable(&dir.join("aa-gateway"));
+        }
+        // The empty-`$PATH`-entry candidate.
+        touch_executable(&cwd.path().join("aa-gateway"));
+
+        // Empty, not absent: an empty `$PATH` and a home directory with no
+        // `.cargo/bin` are the "three trusted lookups all miss" state.
+        let empty_home = tempfile::tempdir().unwrap();
+        let exe_dir = tempfile::tempdir().unwrap();
+        let exe = exe_dir.path().join("aasm");
+        touch_executable(&exe);
+
+        let prior_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd.path()).unwrap();
+        let resolved = resolve_from(Some(&exe), Some(""), Some(empty_home.path()));
+        // Restored before asserting, so a failure does not leave every later
+        // test in this binary running from a deleted temporary directory.
+        std::env::set_current_dir(&prior_cwd).unwrap();
+
+        assert_eq!(
+            resolved, None,
+            "resolved a gateway relative to the current directory — the AAASM-5937 fallback is back"
+        );
+    }
+
+    /// A relative `$PATH` entry contributes no candidate, and the absolute
+    /// entries beside it still do (AAASM-5937).
+    ///
+    /// The second half is what makes the first safe to ship. A filter that
+    /// dropped *every* entry would pass a "nothing relative is resolved" test
+    /// just as well as a correct one while breaking the `$PATH` lookup outright —
+    /// so the same `$PATH` string that carries the unsafe entries also carries a
+    /// real directory, and the real directory must still win.
+    ///
+    /// The `PATH="/usr/bin:"` and `PATH="/a::/b"` shapes are covered rather than
+    /// only `""` because a stray trailing or doubled `:` is how this reaches real
+    /// hosts — a shell profile appending to an unset variable — and it is the
+    /// shape most likely to survive review as harmless.
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_path_entry_contributes_no_candidate() {
+        let _lock = crate::test_support::env_guard();
+
+        let cwd = tempfile::tempdir().unwrap();
+        // What an empty entry resolves to, and what a relative entry resolves to.
+        touch_executable(&cwd.path().join("aa-gateway"));
+        let rel_dir = cwd.path().join("rel").join("bin");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        touch_executable(&rel_dir.join("aa-gateway"));
+
+        // A genuine, absolute `$PATH` directory to prove the lookup still works.
+        let real = tempfile::tempdir().unwrap();
+        let real_gateway = real.path().join("aa-gateway");
+        touch_executable(&real_gateway);
+        let real_dir = real.path().to_str().unwrap();
+
+        let empty_home = tempfile::tempdir().unwrap();
+        let exe_dir = tempfile::tempdir().unwrap();
+        let exe = exe_dir.path().join("aasm");
+        touch_executable(&exe);
+
+        let prior_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd.path()).unwrap();
+        let results: Vec<_> = [
+            // Unsafe entries only: nothing may resolve.
+            ("", None),
+            (":", None),
+            ("rel/bin", None),
+            ("./rel/bin", None),
+            // Unsafe entries alongside a real one: the real one resolves, and
+            // does so even when the unsafe entry comes first and would have won.
+            (&*format!(":{real_dir}"), Some(real_gateway.clone())),
+            (&*format!("{real_dir}:"), Some(real_gateway.clone())),
+            (&*format!("rel/bin:{real_dir}"), Some(real_gateway.clone())),
+        ]
+        .into_iter()
+        .map(|(path_var, want)| {
+            (
+                path_var.to_string(),
+                resolve_from(Some(&exe), Some(path_var), Some(empty_home.path())),
+                want,
+            )
+        })
+        .collect();
+        std::env::set_current_dir(&prior_cwd).unwrap();
+
+        for (path_var, got, want) in results {
+            assert_eq!(
+                got, want,
+                "PATH={path_var:?} resolved {got:?}, expected {want:?} — a non-absolute $PATH \
+                 entry is a cwd-relative lookup by another name (AAASM-5937)"
+            );
+        }
+    }
+
+    /// The surviving search order is exe-dir → `$PATH` → `~/.cargo/bin`, and
+    /// the exe-dir hit must win (ADR 0030 §6.4).
+    ///
+    /// Pinned because the ordering is the security property, not a preference:
+    /// `aasm` and its children ship as one versioned unit, so a `$PATH` entry
+    /// belonging to some other installation must not shadow the sibling that
+    /// was shipped with this `aasm`. A refactor that reorders these three
+    /// lookups is a silent downgrade, and this test is what makes it loud.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_from_prefers_the_exe_sibling_over_path_and_cargo_bin() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let path_dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+
+        let exe = exe_dir.path().join("aasm");
+        touch_executable(&exe);
+        let sibling = exe_dir.path().join("aa-gateway");
+        touch_executable(&sibling);
+        touch_executable(&path_dir.path().join("aa-gateway"));
+        let cargo_bin = home.path().join(".cargo").join("bin");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        touch_executable(&cargo_bin.join("aa-gateway"));
+
+        // All three present: the sibling wins.
+        assert_eq!(
+            resolve_from(Some(&exe), Some(path_dir.path().to_str().unwrap()), Some(home.path())),
+            Some(sibling)
+        );
+
+        // Sibling absent: `$PATH` wins over `~/.cargo/bin`.
+        let bare_exe_dir = tempfile::tempdir().unwrap();
+        let bare_exe = bare_exe_dir.path().join("aasm");
+        touch_executable(&bare_exe);
+        assert_eq!(
+            resolve_from(
+                Some(&bare_exe),
+                Some(path_dir.path().to_str().unwrap()),
+                Some(home.path())
+            ),
+            Some(path_dir.path().join("aa-gateway"))
+        );
+
+        // Sibling and `$PATH` absent: `~/.cargo/bin` is the last resort.
+        assert_eq!(
+            resolve_from(Some(&bare_exe), Some(""), Some(home.path())),
+            Some(cargo_bin.join("aa-gateway"))
+        );
+
+        // Nothing anywhere: `None`, and no fourth lookup behind it.
+        let empty_home = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_from(Some(&bare_exe), Some(""), Some(empty_home.path())), None);
+    }
+
+    /// The remediation message must name only lookups that still exist — an
+    /// error telling an operator to check `./target/release/aa-gateway` would
+    /// send them to reinstate the vulnerability by hand.
+    #[test]
+    fn binary_not_found_message_lists_only_the_lookups_that_still_happen() {
+        assert!(
+            !BINARY_NOT_FOUND_HELP.contains("./target/"),
+            "the not-found remediation still points at a cwd-relative path:\n{BINARY_NOT_FOUND_HELP}"
+        );
+        for lookup in ["alongside aasm", "$PATH", "~/.cargo/bin/aa-gateway"] {
+            assert!(
+                BINARY_NOT_FOUND_HELP.contains(lookup),
+                "remediation omits the {lookup} lookup, which resolve_binary does perform"
+            );
+        }
     }
 }

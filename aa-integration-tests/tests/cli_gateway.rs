@@ -31,12 +31,27 @@ use tempfile::TempDir;
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
-const MINIMAL_POLICY: &str = "\
-apiVersion: agent-assembly.dev/v1alpha1\n\
-kind: Policy\n\
-spec:\n\
-  budget:\n\
-    daily_limit_usd: 1000.0\n";
+/// A policy the gateway accepts, in the raw-string form the other suites use.
+///
+/// # Why this is not a `\`-continued literal
+///
+/// It was one, and Rust's `\`-newline escape skips the newline *and the leading
+/// whitespace of the next line*, so `  budget:` and `    daily_limit_usd:` both
+/// arrived unindented. YAML then read them as top-level keys and the validator
+/// refused the document — `unknown top-level key 'daily_limit_usd'`, with
+/// `budget` absent from the complaint precisely because it is a valid key at the
+/// level it had been flattened to. Every gateway here died before binding.
+///
+/// A raw string has no escapes to strip, so the indentation cannot be lost
+/// again. The sibling suites that do use `\`-continuation write `\x20` for the
+/// leading spaces for the same reason.
+const MINIMAL_POLICY: &str = r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: Policy
+spec:
+  budget:
+    daily_limit_usd: 1000.0
+"#;
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
@@ -50,6 +65,23 @@ fn write_policy_file(dir: &TempDir) -> std::path::PathBuf {
     let path = dir.path().join("policy.yaml");
     std::fs::write(&path, MINIMAL_POLICY).expect("write policy.yaml");
     path
+}
+
+/// The gateway's own log, ready to be inlined into an assertion message.
+///
+/// `aasm gateway start` tells the operator to "Check logs at <path>" when the
+/// child exits before binding, but under test that path is inside a `TempDir`
+/// that is removed while the panic unwinds. The advice is therefore unusable
+/// exactly when it is needed, and a CI failure reports only that the gateway
+/// "exited before becoming ready" with no way to find out why. Inlining the log
+/// into the failure message is the only form of it that survives to the CI
+/// transcript.
+fn gateway_log_tail(log_file: &std::path::Path) -> String {
+    match std::fs::read_to_string(log_file) {
+        Ok(log) if log.trim().is_empty() => format!("\n--- {} is empty ---", log_file.display()),
+        Ok(log) => format!("\n--- {} ---\n{log}--- end ---", log_file.display()),
+        Err(e) => format!("\n--- {} unreadable: {e} ---", log_file.display()),
+    }
 }
 
 fn read_pid_file(data_dir: &std::path::Path) -> Option<(u32, String)> {
@@ -90,6 +122,15 @@ fn kill_process(pid: u32, signal: libc::c_int) {
 /// test suite (not the full workspace) has been built (e.g. the `Test` CI
 /// job which runs `cargo nextest run --workspace` without a prior
 /// `cargo build -p aa-gateway`).
+///
+/// The mirror has to track that function's search order, not merely its
+/// outcome: a lookup listed here that `resolve_binary` does not perform makes
+/// these tests *run* against a CLI that will refuse to start the gateway, which
+/// surfaces as a puzzling assertion failure instead of a skip. AAASM-5937
+/// removed the `./target/{release,debug}/aa-gateway` cwd-relative fallback from
+/// both, and added the exe-sibling lookup here — which is the one that actually
+/// fires in CI, since the `aasm` under test is `target/<profile>/aasm` and the
+/// gateway is built next to it.
 fn gateway_binary_available() -> bool {
     #[cfg(unix)]
     fn binary_runnable(path: &std::path::Path) -> bool {
@@ -101,9 +142,33 @@ fn gateway_binary_available() -> bool {
         path.exists()
     }
 
+    // Sibling of the `aasm` these tests will actually invoke. `AASM_BIN_PATH`
+    // is what CI stages (see `common::cli::aasm_command`); without it the
+    // invocation is `cargo run`, which execs `target/<profile>/aasm` — the
+    // directory two levels above this test binary in `target/<profile>/deps/`.
+    let aasm_dir = match std::env::var_os("AASM_BIN_PATH") {
+        Some(bin) => std::path::PathBuf::from(bin).parent().map(|p| p.to_path_buf()),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|deps| deps.parent()).map(|p| p.to_path_buf())),
+    };
+    if let Some(dir) = aasm_dir {
+        if binary_runnable(&dir.join("aa-gateway")) {
+            return true;
+        }
+    }
+
+    // `is_absolute` mirrors `resolve_from`: a zero-length or relative `$PATH`
+    // entry yields a cwd-relative candidate, which the CLI under test will not
+    // resolve. Counting one here would report the gateway as available and then
+    // fail the test against a CLI that refuses to start it.
     if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            if binary_runnable(&std::path::Path::new(dir).join("aa-gateway")) {
+        for dir in path_var
+            .split(':')
+            .map(std::path::Path::new)
+            .filter(|d| d.is_absolute())
+        {
+            if binary_runnable(&dir.join("aa-gateway")) {
                 return true;
             }
         }
@@ -114,11 +179,6 @@ fn gateway_binary_available() -> bool {
             .join("bin")
             .join("aa-gateway");
         if binary_runnable(&p) {
-            return true;
-        }
-    }
-    for rel in ["./target/release/aa-gateway", "./target/debug/aa-gateway"] {
-        if binary_runnable(std::path::Path::new(rel)) {
             return true;
         }
     }
@@ -199,10 +259,15 @@ async fn gateway_start_spawns_grpc_listener_and_writes_pidfile() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "start should exit 0; stderr:\n{stderr}");
+    assert!(
+        out.status.success(),
+        "start should exit 0; stderr:\n{stderr}{}",
+        gateway_log_tail(&log_file)
+    );
     assert!(
         stdout.contains(&format!("grpc://{listen}")),
-        "stdout should contain 'grpc://{listen}':\n{stdout}"
+        "stdout should contain 'grpc://{listen}':\n{stdout}{}",
+        gateway_log_tail(&log_file)
     );
 
     // PID file must exist with matching listen address.

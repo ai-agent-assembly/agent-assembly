@@ -26,12 +26,12 @@ use std::path::PathBuf;
 use aa_devtool_contract::PolicyPosture;
 use aa_devtool_contract::{
     capability_conformance, AdapterError, ArtifactOperation, DevToolCapabilities, DevToolInfo, DevToolIntegration,
-    DevToolKind, EnvValue, EvidenceKind, ExerciseOutcome, GovernanceLevel, HookableTool, IntegrationCapability,
-    IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep, LaunchSpec,
-    LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, PlanError, ProbeDescriptor, ProtectionEvidence,
-    ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsMerge, SettingsScope, StateDerivation,
-    StepAction, SupportedToolVersions, ToolVersion, TrustMaterialKind, VerificationOutcome, VerificationResult,
-    VersionCompatibility, VersionSupport, DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
+    DevToolKind, DocumentFormat, EnvValue, EvidenceKind, ExerciseOutcome, GovernanceLevel, HookableTool,
+    IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep,
+    LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, PlanError, ProbeDescriptor,
+    ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsMerge, SettingsScope,
+    StateDerivation, StepAction, SupportedToolVersions, ToolVersion, TrustMaterialKind, VerificationOutcome,
+    VerificationResult, VersionCompatibility, VersionSupport, DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
 };
 
 const NOW: u64 = 1_700_000_000;
@@ -133,6 +133,7 @@ impl DevToolIntegration for CliTool {
                     managed_keys: vec!["permissions".to_string()],
                     content_sha256: "sha-settings".to_string(),
                     merge: SettingsMerge::MergeManagedKeys,
+                    format: DocumentFormat::Json,
                 },
                 "write the managed settings block",
             )
@@ -395,6 +396,7 @@ impl DevToolIntegration for IdeHostedTool {
                     managed_keys: vec!["github.copilot.advanced".to_string()],
                     content_sha256: "sha-vscode".to_string(),
                     merge: SettingsMerge::MergeManagedKeys,
+                    format: DocumentFormat::Json,
                 },
                 "merge the managed keys into the IDE host's user settings",
             )
@@ -839,6 +841,7 @@ fn sample_receipt() -> IntegrationReceipt {
             managed_keys: vec!["permissions".to_string()],
             content_sha256: "sha-settings".to_string(),
             merge: SettingsMerge::MergeManagedKeys,
+            format: DocumentFormat::Json,
         },
         "write the managed settings block",
     )

@@ -161,6 +161,7 @@ impl FixtureIntegration {
             managed_keys: self.managed_keys.clone(),
             content_sha256: sha256_hex(&self.rendered),
             merge: SettingsMerge::MergeManagedKeys,
+            format: aa_core::integration::DocumentFormat::Json,
         };
         let step = IntegrationStep::new("settings", action, "write the managed settings block");
         if self.privileged {

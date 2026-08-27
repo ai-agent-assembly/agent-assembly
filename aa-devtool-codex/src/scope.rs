@@ -7,7 +7,7 @@
 //! (user/project/managed), a `CLAUDE_CONFIG_DIR` redirection, an
 //! administrator-authorized managed-settings root, and a per-integration MitM
 //! hosts file. Codex has exactly one settings file the CLI itself reads
-//! (`$HOME/.codex/config.json` — Codex has no project-scoped or
+//! (`$HOME/.codex/config.toml` — Codex has no project-scoped or
 //! endpoint-managed config surface AASM can address), and this integration's
 //! plan deliberately carries no side-channel/MitM-hosts step (AAASM-5917), so
 //! there is no `mitm_hosts_file` to resolve either. What remains —
@@ -58,8 +58,8 @@ impl CodexPaths {
     pub fn from_env() -> Self {
         Self {
             home: non_empty_var("HOME"),
-            state: Some(state_root()),
-            ca_source: Some(ca_source()),
+            state: state_root(),
+            ca_source: ca_source(),
         }
     }
 
@@ -84,7 +84,14 @@ impl CodexPaths {
         self
     }
 
-    /// The Codex CLI's own configuration file — `$HOME/.codex/config.json`.
+    /// The Codex CLI's own configuration file — `$HOME/.codex/config.toml`.
+    ///
+    /// TOML, not JSON (AAASM-5336): the real `codex` CLI reads and writes
+    /// `config.toml` — confirmed empirically via `codex mcp add` and `codex
+    /// exec -c key=value` (`-c`'s own `--help` states its value is
+    /// TOML-parsed) against a real, isolated `CODEX_HOME`. A prior version of
+    /// this path pointed at `config.json`, a file the real CLI never opens —
+    /// every managed setting this adapter wrote was silently ungoverned.
     ///
     /// Unlike Claude Code's `settings_path`, this does not vary by `scope`:
     /// Codex has one configuration surface, not three. A caller still names a
@@ -100,7 +107,7 @@ impl CodexPaths {
             scope: SettingsScope::User,
             detail: "HOME is not set".to_string(),
         })?;
-        Ok(home.join(".codex").join("config.json"))
+        Ok(home.join(".codex").join("config.toml"))
     }
 
     /// Root for the artifacts Agent Assembly owns for this scope.
@@ -161,25 +168,69 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
 
 /// `${AASM_STATE_DIR:-$HOME/.aasm}/integrations`, matching the receipt store's
 /// own root so an integration's artifacts and its receipt share a lifetime.
-fn state_root() -> PathBuf {
-    let base = non_empty_var("AASM_STATE_DIR").unwrap_or_else(|| {
-        non_empty_var("HOME")
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".aasm")
-    });
-    base.join("integrations")
+///
+/// `None` when neither root is known, which is what makes
+/// [`CodexPaths::owned_root`]'s [`ScopeError::Unresolvable`] reachable.
+fn state_root() -> Option<PathBuf> {
+    state_root_from(non_empty_var("AASM_STATE_DIR"), non_empty_var("HOME"))
 }
 
 /// `${AA_CA_DIR:-$HOME/.aa/ca}/ca-cert.pem` — where `aa-proxy` persists the CA
 /// it signs intercepted leaf certificates with.
-fn ca_source() -> PathBuf {
-    let dir = non_empty_var("AA_CA_DIR").unwrap_or_else(|| {
-        non_empty_var("HOME")
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".aa")
-            .join("ca")
-    });
-    dir.join("ca-cert.pem")
+///
+/// `None` when neither root is known, which is what makes the
+/// "location is unknown" refusal in `lifecycle` reachable.
+fn ca_source() -> Option<PathBuf> {
+    ca_source_from(non_empty_var("AA_CA_DIR"), non_empty_var("HOME"))
+}
+
+/// The resolution rule for [`state_root`], with the environment passed in.
+///
+/// # Why there is no `.` fallback
+///
+/// This used to end in `unwrap_or_else(|| PathBuf::from("."))`, so an unset
+/// `HOME` produced `./.aasm/integrations` — resolved against the *daemon's*
+/// spawn-time working directory, since [`CodexPaths::from_env`] runs once at
+/// boot. Install receipts then landed somewhere a later `integrations remove`
+/// resolving a different cwd would not find, leaving managed keys merged into a
+/// user-owned settings file with no recorded `prior_state` to reverse: an
+/// unreversible edit, arrived at silently (AAASM-5956, same root cause as
+/// AAASM-5913).
+///
+/// Nothing legitimate is lost. `AASM_STATE_DIR` or `HOME` is set for every
+/// ordinary invocation; when neither is, there is no correct answer to guess,
+/// and the caller already has a fail-closed path for that.
+///
+/// # Why the environment is an argument
+///
+/// A function not *given* the process environment cannot resolve against it, so
+/// the removed fallback cannot return by accident — and the rule stays assertable
+/// without any test mutating process-global state.
+fn state_root_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let base = override_dir.or_else(|| home.map(|home| home.join(".aasm")))?;
+    Some(base.join("integrations"))
+}
+
+/// The resolution rule for [`ca_source`], with the environment passed in.
+///
+/// # Why there is no `.` fallback
+///
+/// The stakes here are higher than for [`state_root_from`]. `lifecycle` reads
+/// this path and embeds its contents into the governed tool's configuration as
+/// **trust material**. With a `.` fallback that path was
+/// `./.aa/ca/ca-cert.pem` relative to the daemon's cwd, so anyone able to write
+/// a file into a directory the daemon might boot from could have a certificate
+/// authority of their choosing installed as trusted by Codex — the
+/// attacker-substitution shape of AAASM-4020 and AAASM-5937, on trust material
+/// rather than on an executable.
+///
+/// The `is_file()` filter on [`CodexPaths::ca_source`] did not mitigate that: it
+/// made an *absent* planted file report the capability unsupported, while a
+/// *present* one reported Supported and was read. Removing the guessed root is
+/// what closes the vector, because no relative path can be synthesised at all.
+fn ca_source_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    let dir = override_dir.or_else(|| home.map(|home| home.join(".aa").join("ca")))?;
+    Some(dir.join("ca-cert.pem"))
 }
 
 #[cfg(test)]
@@ -194,12 +245,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_path_is_home_dot_codex_config_json() {
+    fn settings_path_is_home_dot_codex_config_toml() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
         assert_eq!(
             p.settings_path().unwrap(),
-            dir.path().join("home").join(".codex").join("config.json")
+            dir.path().join("home").join(".codex").join("config.toml")
         );
     }
 
@@ -240,6 +291,119 @@ mod tests {
         assert_eq!(p.ca_source(), Some(ca.as_path()));
     }
 
+    /// Neither root helper may invent a root when it has none (AAASM-5956).
+    ///
+    /// This is the load-bearing test of the pair. `an_unresolvable_root_is_an_error_not_a_guess`
+    /// above already proves that a `None` root *produces* `ScopeError::Unresolvable` —
+    /// but before this fix `from_env` could never hand it a `None`, so that branch
+    /// was unreachable and the assertion proved nothing about the shipped path.
+    /// What was missing is the half asserted here: that the resolution rule
+    /// itself yields nothing rather than `.`.
+    ///
+    /// Reverting either helper to `unwrap_or_else(|| PathBuf::from("."))` reddens
+    /// exactly this test.
+    #[test]
+    fn neither_root_rule_synthesises_a_relative_root_when_nothing_is_set() {
+        assert_eq!(
+            state_root_from(None, None),
+            None,
+            "an unset AASM_STATE_DIR and HOME must yield no state root, not ./.aasm/integrations"
+        );
+        assert_eq!(
+            ca_source_from(None, None),
+            None,
+            "an unset AA_CA_DIR and HOME must yield no CA path, not ./.aa/ca/ca-cert.pem"
+        );
+    }
+
+    /// The resolution order and its results are unchanged whenever anything is
+    /// set, which is every ordinary invocation (AC2 — no behaviour change).
+    #[test]
+    fn both_root_rules_are_unchanged_when_an_override_or_home_is_set() {
+        let over = PathBuf::from("/o");
+        let home = PathBuf::from("/h");
+
+        // Override wins over HOME, for both.
+        assert_eq!(
+            state_root_from(Some(over.clone()), Some(home.clone())),
+            Some(PathBuf::from("/o/integrations"))
+        );
+        assert_eq!(
+            ca_source_from(Some(over.clone()), Some(home.clone())),
+            Some(PathBuf::from("/o/ca-cert.pem"))
+        );
+
+        // HOME alone gives the documented default layout.
+        assert_eq!(
+            state_root_from(None, Some(home.clone())),
+            Some(PathBuf::from("/h/.aasm/integrations"))
+        );
+        assert_eq!(
+            ca_source_from(None, Some(home)),
+            Some(PathBuf::from("/h/.aa/ca/ca-cert.pem"))
+        );
+
+        // An override alone works with no HOME at all.
+        assert_eq!(
+            state_root_from(Some(over.clone()), None),
+            Some(PathBuf::from("/o/integrations"))
+        );
+        assert_eq!(ca_source_from(Some(over), None), Some(PathBuf::from("/o/ca-cert.pem")));
+    }
+
+    /// A CA certificate is reachable only when a root explicitly names it
+    /// (AAASM-5956 AC6).
+    ///
+    /// The substitution vector needed one specific input — no `AA_CA_DIR` and no
+    /// `HOME` — to make the resolver name a cwd-relative path. A real file is
+    /// planted at exactly the layout the old code would have produced, and the
+    /// test turns the root on and off around it: with a root, this very file is
+    /// what the rule names, which is what makes the plant a faithful stand-in for
+    /// the old `.` fallback's target rather than an arbitrary temporary file;
+    /// with no root, that same file becomes unnameable, so no arrangement of the
+    /// daemon's working directory can select it.
+    ///
+    /// Both halves are needed. Asserting only that nothing is named would hold
+    /// just as well for a rule that had stopped resolving anything at all, and
+    /// the plant would then be decorative — created, but causally absent from
+    /// every assertion.
+    ///
+    /// The plant is deliberately a file that *exists*: [`CodexPaths::ca_source`]
+    /// filters on `is_file()`, which meant an absent plant reported the
+    /// capability unsupported while a present one reported Supported and was
+    /// read. Testing with an absent file would therefore have tested the case
+    /// that was never the problem.
+    #[test]
+    fn a_certificate_is_reachable_only_when_a_root_explicitly_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let planted = dir.path().join(".aa").join("ca").join("ca-cert.pem");
+        std::fs::create_dir_all(planted.parent().unwrap()).unwrap();
+        std::fs::write(&planted, "-----BEGIN CERTIFICATE-----\nattacker\n").unwrap();
+        assert!(planted.is_file(), "the plant must exist for this test to mean anything");
+
+        assert_eq!(
+            ca_source_from(None, Some(dir.path().to_path_buf())),
+            Some(planted.clone()),
+            "given a root, the rule must name exactly the planted layout — otherwise the \
+             plant is not the file the old fallback would have selected"
+        );
+
+        assert_eq!(
+            ca_source_from(None, None),
+            None,
+            "with no AA_CA_DIR and no HOME the resolver must name no CA path, so that same \
+             file is unreachable from any working directory"
+        );
+
+        // And the same for the state root, whose guessed form was the sibling
+        // `./.aasm/integrations` under that same directory.
+        assert_eq!(
+            state_root_from(None, Some(dir.path().to_path_buf())),
+            Some(dir.path().join(".aasm").join("integrations"))
+        );
+        assert_eq!(state_root_from(None, None), None);
+    }
+
     #[test]
     fn settings_path_does_not_vary_by_scope() {
         // Codex has one configuration surface, unlike Claude's three.
@@ -247,6 +411,6 @@ mod tests {
         let p = paths(dir.path());
         let path = p.settings_path().unwrap();
         assert_eq!(path, p.settings_path().unwrap());
-        assert!(path.ends_with(".codex/config.json"));
+        assert!(path.ends_with(".codex/config.toml"));
     }
 }

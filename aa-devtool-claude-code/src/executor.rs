@@ -470,6 +470,7 @@ mod tests {
                     .collect(),
                 content_sha256: sha256_hex(content),
                 merge: aa_devtool_contract::SettingsMerge::Replace,
+                format: aa_devtool_contract::DocumentFormat::Json,
             },
             "install the endpoint managed-settings file",
         )

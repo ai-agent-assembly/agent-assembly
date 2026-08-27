@@ -588,6 +588,7 @@ mod tests {
                 managed_keys: vec!["permissions".to_string()],
                 content_sha256: "abc".to_string(),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: crate::integration::step::DocumentFormat::Json,
             },
             "write the managed settings block",
         )

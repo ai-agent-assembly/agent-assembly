@@ -44,10 +44,30 @@ pub const WINDSURF_BIN_ENV: &str = "WINDSURF_BIN";
 // Private helpers
 // ---------------------------------------------------------------------------
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+/// `$HOME`, or `None` when it is unset or empty.
+///
+/// AAASM-5976: this used to fall back to `PathBuf::from(".")`, so an absent
+/// `HOME` silently resolved every default path against the process's
+/// spawn-time working directory instead of refusing. For the `aasm` devint
+/// daemon that directory is fixed at boot and unrelated to any caller — a
+/// governed install would report success while writing (and, worse for
+/// [`apply_mcp_governance`], reading back) a file nothing real ever
+/// consults. There is no correct root to guess here, so this returns `None`
+/// rather than guessing one; callers must propagate that as a resolution
+/// failure, not paper over it with a default.
+fn home_dir() -> Option<PathBuf> {
+    home_dir_from(std::env::var_os("HOME"))
+}
+
+/// [`home_dir`]'s pure resolution rule, taking the raw `$HOME` value as an
+/// argument instead of reading it from the process environment.
+///
+/// AAASM-5976 AC 8: exists so a test can assert the unresolvable-`HOME` case
+/// without mutating `std::env` — the previous test suite's own doc comment on
+/// `with_env` (below) shows why that would need serializing against every
+/// other test in this binary rather than just calling a function.
+fn home_dir_from(home: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    home.filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 /// Locate the Windsurf binary.
@@ -96,14 +116,16 @@ fn probe_version(binary: &Path) -> Option<String> {
 // Public path helpers
 // ---------------------------------------------------------------------------
 
-/// Default path to the Windsurf admin settings file.
-pub fn default_admin_settings_path() -> PathBuf {
-    home_dir().join(".codeium/windsurf/admin_settings.json")
+/// Default path to the Windsurf admin settings file, or `None` when `$HOME`
+/// cannot be resolved (AAASM-5976 — no cwd-relative guess).
+pub fn default_admin_settings_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".codeium/windsurf/admin_settings.json"))
 }
 
-/// Default path to the Windsurf MCP configuration file.
-pub fn default_mcp_config_path() -> PathBuf {
-    home_dir().join(".codeium/windsurf/mcp_settings.json")
+/// Default path to the Windsurf MCP configuration file, or `None` when
+/// `$HOME` cannot be resolved (AAASM-5976 — no cwd-relative guess).
+pub fn default_mcp_config_path() -> Option<PathBuf> {
+    Some(home_dir()?.join(".codeium/windsurf/mcp_settings.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -179,11 +201,19 @@ pub struct WindsurfCascadeAdapter {
 
 impl WindsurfCascadeAdapter {
     /// Construct an adapter using default Windsurf configuration paths.
-    pub fn new() -> Self {
-        Self {
-            admin_settings_path: default_admin_settings_path(),
-            mcp_config_path: default_mcp_config_path(),
-        }
+    ///
+    /// Returns `None` when `$HOME` cannot be resolved (AAASM-5976): there is
+    /// no correct root to guess, and returning an adapter built on one would
+    /// let [`apply_settings`](Self::apply_settings)/
+    /// [`apply_mcp_governance`](Self::apply_mcp_governance) write and read
+    /// back a file Windsurf never consults while reporting success. No
+    /// `Default` impl is provided for the same reason — `Default::default`
+    /// cannot express this failure.
+    pub fn new() -> Option<Self> {
+        Some(Self {
+            admin_settings_path: default_admin_settings_path()?,
+            mcp_config_path: default_mcp_config_path()?,
+        })
     }
 
     /// Construct an adapter with explicit configuration paths (for testing).
@@ -202,12 +232,6 @@ impl WindsurfCascadeAdapter {
     /// Path to the MCP configuration file this adapter reads.
     pub fn mcp_config_path(&self) -> &Path {
         &self.mcp_config_path
-    }
-}
-
-impl Default for WindsurfCascadeAdapter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -449,23 +473,54 @@ mod tests {
     fn default_paths_live_under_codeium_windsurf() {
         // The default paths are derived from $HOME; assert the stable suffix
         // rather than the absolute prefix so the test is host-independent.
-        assert!(default_admin_settings_path().ends_with(".codeium/windsurf/admin_settings.json"));
-        assert!(default_mcp_config_path().ends_with(".codeium/windsurf/mcp_settings.json"));
+        assert!(default_admin_settings_path()
+            .expect("HOME must be set for this test")
+            .ends_with(".codeium/windsurf/admin_settings.json"));
+        assert!(default_mcp_config_path()
+            .expect("HOME must be set for this test")
+            .ends_with(".codeium/windsurf/mcp_settings.json"));
     }
 
     #[test]
-    fn new_and_default_use_the_default_paths() {
-        let a = WindsurfCascadeAdapter::new();
-        assert_eq!(a.admin_settings_path(), default_admin_settings_path());
-        assert_eq!(a.mcp_config_path(), default_mcp_config_path());
-        let d = WindsurfCascadeAdapter::default();
-        assert_eq!(d.admin_settings_path(), default_admin_settings_path());
+    fn new_uses_the_default_paths() {
+        let a = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
+        assert_eq!(a.admin_settings_path(), default_admin_settings_path().unwrap());
+        assert_eq!(a.mcp_config_path(), default_mcp_config_path().unwrap());
+    }
+
+    #[test]
+    fn an_unresolvable_home_is_none_not_a_guessed_cwd_relative_root() {
+        // AAASM-5976: the regression this ticket exists for — a missing
+        // HOME must not silently resolve to ".". home_dir_from is the pure
+        // rule every default-path helper and WindsurfCascadeAdapter::new()
+        // is built on (all of them short-circuit via `?` the moment this
+        // returns None), so pinning it here covers the whole call chain
+        // without mutating std::env.
+        assert_eq!(home_dir_from(None), None);
+        assert_eq!(home_dir_from(Some(std::ffi::OsString::new())), None);
+    }
+
+    #[test]
+    fn an_empty_home_env_var_fails_construction_end_to_end() {
+        // AAASM-5976 AC 5/6: with HOME set-but-empty (the shape a misconfigured
+        // spawn environment produces), every public entry point must refuse
+        // rather than resolve to a cwd-relative path — no directory gets
+        // created and no operation is attempted under the process's working
+        // directory. `with_env` (not `home_dir_from`) exercises this through
+        // the real `std::env::var_os` read, unlike the pure test above.
+        with_env("HOME", "", || {
+            assert_eq!(default_admin_settings_path(), None);
+            assert_eq!(default_mcp_config_path(), None);
+            assert!(WindsurfCascadeAdapter::new().is_none());
+        });
     }
 
     #[test]
     fn governance_level_is_l2_enforce() {
         assert_eq!(
-            WindsurfCascadeAdapter::new().governance_level(),
+            WindsurfCascadeAdapter::new()
+                .expect("HOME must be set for this test")
+                .governance_level(),
             GovernanceLevel::L2Enforce
         );
     }
@@ -474,6 +529,7 @@ mod tests {
     fn detect_via_env_var_reports_l2_enforce_with_mcp_support() {
         with_env(WINDSURF_BIN_ENV, FAKE_BIN, || {
             let info = WindsurfCascadeAdapter::new()
+                .expect("HOME must be set for this test")
                 .detect()
                 .expect("env hook should yield DevToolInfo");
             assert_eq!(info.kind, DevToolKind::WindsurfCascade);
@@ -488,7 +544,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_disables_denied_mcp_servers() {
-        let adapter = WindsurfCascadeAdapter::new();
+        let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
         let doc = policy(vec![
             rule("mcp_tool:filesystem", PolicyDecision::Deny),
             rule("mcp_tool:github:deny", PolicyDecision::Deny),
@@ -509,7 +565,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_terminal_allowlist_built_from_allow_rules() {
-        let adapter = WindsurfCascadeAdapter::new();
+        let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
         let doc = policy(vec![
             rule("terminal_exec:git", PolicyDecision::Allow),
             rule("terminal_exec:ls", PolicyDecision::Allow),
@@ -524,7 +580,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_terminal_deny_all_clears_allowlist() {
-        let adapter = WindsurfCascadeAdapter::new();
+        let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
         // A blanket `terminal_exec` deny must override any per-command allows:
         // the resulting allowlist is empty (deny-all wins).
         let doc = policy(vec![
@@ -540,7 +596,7 @@ mod tests {
 
     #[test]
     fn generate_managed_settings_registry_url_from_env_when_team_sync_allowed() {
-        let adapter = WindsurfCascadeAdapter::new();
+        let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
         let doc = policy(vec![rule("team_policy_sync", PolicyDecision::Allow)]);
 
         // The env var is read synchronously inside generate_managed_settings, so
@@ -561,7 +617,7 @@ mod tests {
 
     #[tokio::test]
     async fn generate_managed_settings_omits_policy_block_when_empty() {
-        let adapter = WindsurfCascadeAdapter::new();
+        let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
         let doc = policy(vec![]);
 
         let json = adapter.generate_managed_settings(&doc).await.unwrap();
@@ -696,7 +752,7 @@ mod tests {
     #[test]
     fn build_launch_command_threads_governance_env() {
         with_env(WINDSURF_BIN_ENV, FAKE_BIN, || {
-            let adapter = WindsurfCascadeAdapter::new();
+            let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
             let cmd = adapter
                 .build_launch_command(
                     &["--flag".to_string()],
@@ -742,7 +798,7 @@ mod tests {
     #[test]
     fn build_launch_command_normalizes_a_bare_authority_proxy_addr() {
         with_env(WINDSURF_BIN_ENV, FAKE_BIN, || {
-            let adapter = WindsurfCascadeAdapter::new();
+            let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
             let cmd = adapter
                 .build_launch_command(&[], "agent-7", None, Some("127.0.0.1:8888"))
                 .expect("env hook supplies the binary path");
@@ -765,7 +821,7 @@ mod tests {
     #[test]
     fn build_launch_command_omits_optional_env_when_absent() {
         with_env(WINDSURF_BIN_ENV, FAKE_BIN, || {
-            let adapter = WindsurfCascadeAdapter::new();
+            let adapter = WindsurfCascadeAdapter::new().expect("HOME must be set for this test");
             let cmd = adapter
                 .build_launch_command(&[], "solo-agent", None, None)
                 .expect("env hook supplies the binary path");
