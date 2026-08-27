@@ -225,13 +225,33 @@ pub fn resolve_binary() -> Option<PathBuf> {
 /// function that is not given the current directory cannot resolve against it,
 /// so the removed fallback cannot come back by accident. The behavioural half is
 /// still pinned by a test that plants a binary under a temporary cwd.
+///
+/// # Why `$PATH` entries are filtered
+///
+/// Deleting the `./target/...` fallback is not on its own enough to make the
+/// claim above true, because `$PATH` is a second door into the same room.
+/// POSIX defines a **zero-length** `$PATH` entry as the current working
+/// directory, so `PATH=":/usr/bin"`, `PATH="/usr/bin:"` and `PATH="/a::/b"` each
+/// contribute one candidate that `PathBuf::join` renders as the bare relative
+/// path `aa-gateway` — and `is_executable` resolves that against the cwd. A
+/// non-empty but relative entry (`PATH="target/debug"`) does the same. Either
+/// one reinstates exactly the attacker-substitution primitive AAASM-5937
+/// removes, and an empty entry is not even malformed: it is a documented, if
+/// discouraged, way to put `.` on `$PATH`, so it occurs on real hosts by
+/// accident — a trailing `:` from a shell profile appending `$PATH` to an unset
+/// variable is the usual origin.
+///
+/// So a candidate directory is used only if it is absolute. Non-absolute entries
+/// are skipped, not rejected: an operator with a stray `:` in `$PATH` keeps every
+/// other entry they wrote, and the only lookup they lose is the one that could
+/// never have been safe.
 fn resolve_from(exe: Option<&Path>, path_var: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
     if let Some(candidate) = exe.and_then(sibling_binary) {
         return Some(candidate);
     }
     if let Some(path_var) = path_var {
-        for dir in path_var.split(':') {
-            let candidate = PathBuf::from(dir).join("aa-gateway");
+        for dir in path_var.split(':').map(Path::new).filter(|d| d.is_absolute()) {
+            let candidate = dir.join("aa-gateway");
             if is_executable(&candidate) {
                 return Some(candidate);
             }

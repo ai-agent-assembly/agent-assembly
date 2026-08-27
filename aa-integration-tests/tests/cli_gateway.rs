@@ -158,9 +158,17 @@ fn gateway_binary_available() -> bool {
         }
     }
 
+    // `is_absolute` mirrors `resolve_from`: a zero-length or relative `$PATH`
+    // entry yields a cwd-relative candidate, which the CLI under test will not
+    // resolve. Counting one here would report the gateway as available and then
+    // fail the test against a CLI that refuses to start it.
     if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            if binary_runnable(&std::path::Path::new(dir).join("aa-gateway")) {
+        for dir in path_var
+            .split(':')
+            .map(std::path::Path::new)
+            .filter(|d| d.is_absolute())
+        {
+            if binary_runnable(&dir.join("aa-gateway")) {
                 return true;
             }
         }
