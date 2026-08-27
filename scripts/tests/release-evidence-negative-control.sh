@@ -371,6 +371,113 @@ assert_exit "T2d" 1 "$dir" "$D"
 assert_output_contains "T2d names R1b" "authorization record modified"
 
 # ---------------------------------------------------------------------------
+# T2e: a DEPENDENCY's own version pin edited in Cargo.toml, disguised as a
+# release-version bump -> BLOCK. AAASM-5998's adversarial review found the
+# old line-regex classifier (`^[+-]version = "..."$`) could not tell a
+# dependency's `version = "..."` line inside a `[dependencies.foo]` table
+# from the package's own `[package] version` field — both match the same
+# regex, so a pure dependency-pin edit was misclassified MECHANICAL.
+# ---------------------------------------------------------------------------
+echo "== T2e: a dependency's own version pin (not the package's) -> BLOCK =="
+dir=$(new_repo t2e)
+write_common_files "$dir"
+cat >> "$dir/Cargo.toml" <<'EOF'
+
+[dependencies.serde]
+version = "1.0.0"
+EOF
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+sed -i.bak 's/version = "1.0.0"/version = "99.9.9-malicious"/' "$dir/Cargo.toml"
+rm -f "$dir/Cargo.toml.bak"
+C=$(commit_all "$dir" "attack: swap a dependency pin, not the package version")
+assert_exit "T2e" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
+# T2f: Cargo.lock swaps an EXTERNALLY-sourced dependency's version/checksum
+# while riding along with a genuine, separate mechanical Cargo.toml version
+# bump -> BLOCK. AAASM-5998's adversarial review reproduced this end-to-end
+# against the real release-tag-guard.sh (a poisoned `serde` pin + checksum,
+# tag actually pushed) — Cargo.lock's old classification was "MECHANICAL if
+# ANY Cargo.toml bump exists anywhere in range", with no check that the
+# lockfile's own diff was actually confined to local workspace-member
+# versions matching that bump.
+# ---------------------------------------------------------------------------
+echo "== T2f: Cargo.lock swaps an external dependency alongside a real version bump -> BLOCK =="
+dir=$(new_repo t2f)
+write_common_files "$dir"
+cat >> "$dir/Cargo.lock" <<'EOF'
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deadbeef"
+EOF
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+sed -i.bak 's/version = "0.0.0-test"/version = "0.0.1-test"/' "$dir/Cargo.toml"
+rm -f "$dir/Cargo.toml.bak"
+python3 - "$dir/Cargo.lock" <<'PYEOF'
+import sys
+p = sys.argv[1]
+text = open(p).read()
+text = text.replace('name = "test-pkg"\nversion = "0.0.0-test"', 'name = "test-pkg"\nversion = "0.0.1-test"')
+text = text.replace('version = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "deadbeef"',
+                     'version = "1.0.0-evil-supply-chain"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "EVILEVILEVIL"')
+open(p, "w").write(text)
+PYEOF
+C=$(commit_all "$dir" "attack: real version bump + poisoned external dependency swap")
+assert_exit "T2f" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
+# T2g: evidence file deleted then RE-ADDED with different content, instead
+# of directly modified -> BLOCK (R1b). git types this D then A, never M —
+# the old `--diff-filter=M` query returned no commits at all for this
+# sequence, silently missing the tamper (AAASM-5998 adversarial review).
+# ---------------------------------------------------------------------------
+echo "== T2g: evidence file removed then re-added with different content -> BLOCK (R1b) =="
+dir=$(new_repo t2g)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+rm "$dir/docs/release/qa-signoff/v$VERSION.evidence.json"
+commit_all "$dir" "delete evidence" >/dev/null
+gen_evidence "$dir" "$A"
+patch_evidence "$dir" "doc['journeys'][0]['status'] = 'FAIL'"
+D=$(commit_all "$dir" "attack: re-add evidence with a different (tampered) journeys status")
+assert_exit "T2g" 1 "$dir" "$D"
+assert_output_contains "T2g names R1b" "authorization record modified"
+
+# ---------------------------------------------------------------------------
+# T2h: a sign-off .md file edited after the candidate was captured -> BLOCK.
+# Sign-off files previously fell under R1's blanket docs/release/ MECHANICAL
+# prefix (they ARE under docs/release/), so a forged sign-off plus a
+# regenerated, internally-consistent evidence.json could pass both R1 and
+# R7 (which only cross-checks evidence.json against whatever the sign-off
+# CURRENTLY says) — AAASM-5998 adversarial review.
+# ---------------------------------------------------------------------------
+echo "== T2h: sign-off file edited after candidate was captured -> BLOCK =="
+dir=$(new_repo t2h)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+echo "<!-- forged addendum -->" >> "$dir/docs/release/qa-signoff/v$VERSION.md"
+C=$(commit_all "$dir" "attack: edit the qa sign-off after candidate was captured")
+assert_exit "T2h" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
 # T3a: catalog gains a new release-blocking journey at target not in evidence -> BLOCK
 # ---------------------------------------------------------------------------
 echo "== T3a: new required journey added to catalog at target -> BLOCK =="

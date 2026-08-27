@@ -198,8 +198,8 @@ echo "== Case 4/5: candidate binding through a REAL committed evidence file (AAA
 # sub-case below stops gitignoring the evidence file and commits it for
 # real, the same way qa-verification-manifest-schema.md's own documented
 # Generation step does.
-add_real_evidence() { # add_real_evidence <fixture-repo-dir> — commits code
-  # sha into $WORK/A_SHA and evidence-add sha into $WORK/B_SHA.
+add_real_evidence() { # add_real_evidence <fixture-repo-dir> — commits the
+  # evidence-add sha into $WORK/B_SHA.
   local dir="$1"
   (
     cd "$dir"
@@ -260,7 +260,6 @@ SECSIGNOFF
     git add -A
     git commit -qm "test: stop gitignoring the evidence file + use a catalog/signoffs that reach a real PASS verdict"
     A_SHA="$(git rev-parse HEAD)"
-    echo "$A_SHA" > "$WORK/A_SHA"
     python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
       --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
       --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
@@ -355,6 +354,40 @@ json.dump(d, open(p, 'w'), indent=2)
   if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a non-ancestor candidate_sha"; else fail "guard should have refused a non-ancestor candidate_sha"; fi
   echo "$GUARD_OUT" | grep -qE 'Traceback' && fail "guard crashed with a traceback instead of a clean refusal (AAASM-5998's R1b/R6 crash guard regressed): $GUARD_OUT" || pass "guard refused cleanly, no crash"
   if git rev-parse -q --verify refs/tags/v0.0.1-fx >/dev/null; then fail "guard must not create the tag on a non-ancestor refusal"; else pass "no local tag created on the non-ancestor refusal"; fi
+)
+
+# Sub-case (e): non-ancestor candidate_sha COMBINED with a catalog digest
+# drift at tag_target — sub-case (d) alone never exercises R2/R3's
+# candidate_sha-dependent branch (it only runs when the digest actually
+# differs). Without R2/R3 also skipped for a non-ancestor candidate, this
+# input reaches _load_catalog_text(candidate_sha) with a bogus SHA and
+# bails via a bare "does not exist" SystemExit that (a) misleadingly claims
+# the catalog is missing when it exists at tag_target, and (b) skips the
+# normal "BLOCK — N rule violation(s)" report R4-R8 would otherwise
+# contribute to (found in this PR's own adversarial review).
+FIXDIR_BOGUS_DRIFT="$WORK/fx45-notancestor-drift"
+setup_fixture_repo "$FIXDIR_BOGUS_DRIFT"
+add_real_evidence "$FIXDIR_BOGUS_DRIFT/repo"
+(
+  cd "$FIXDIR_BOGUS_DRIFT/repo"
+  # Drift the catalog at tag_target (a digest-relevant field) so R2 sees a
+  # real mismatch and takes the candidate_sha-resolving branch.
+  sed -i.bak 's/fidelity: mock/fidelity: real_local_process/' qa/golden-journeys.yaml && rm -f qa/golden-journeys.yaml.bak
+  python3 -c "
+import json
+p = 'docs/release/qa-signoff/v0.0.1-fx.evidence.json'
+d = json.load(open(p))
+d['candidate']['candidate_sha'] = '0000000000000000000000000000000000dead'
+json.dump(d, open(p, 'w'), indent=2)
+"
+  git add -A
+  git commit -qm "test: drift the catalog digest AND point candidate_sha at a bogus sha"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a non-ancestor candidate_sha with a drifted catalog"; else fail "guard should have refused"; fi
+  echo "$GUARD_OUT" | grep -qE 'Traceback' && fail "guard crashed with a traceback (R2/R3 not-ancestor guard regressed): $GUARD_OUT" || pass "guard refused cleanly, no crash"
+  echo "$GUARD_OUT" | grep -qE 'does not exist at' && fail "guard fell through to the misleading 'does not exist' SystemExit instead of a normal BLOCK report: $GUARD_OUT" || pass "no misleading 'does not exist' message — normal BLOCK reporting used instead"
+  echo "$GUARD_OUT" | grep -qE 'BLOCK — [0-9]+ rule violation' && pass "guard's refusal uses the normal BLOCK — N rule violation(s) report" || fail "guard refusal did not use the normal report format: $GUARD_OUT"
 )
 
 # ---------------------------------------------------------------------------
