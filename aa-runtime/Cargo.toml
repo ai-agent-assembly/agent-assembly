@@ -80,7 +80,6 @@ tokio-util                  = { workspace = true, features = ["rt"] }
 tonic                       = { workspace = true }
 tracing                     = { workspace = true }
 tracing-subscriber          = { workspace = true, features = ["json", "env-filter"] }
-which                       = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aa-ebpf = { path = "../aa-ebpf", version = "0.0.1-rc.6" }
