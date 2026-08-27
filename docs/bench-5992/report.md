@@ -1,6 +1,6 @@
 # AAASM-5992 — Maximum-Throughput Rust Development Profile: Benchmark Report
 
-Status: IN PROGRESS (append-only working doc; finalized at Spike close)
+Status: FINAL (adversarially reviewed 2026-08-27; findings resolved — see git history for the pre-review version)
 Parent: AAASM-5991. Spike: AAASM-5992.
 
 ## 0. Methodology / contamination controls
@@ -34,7 +34,7 @@ See sub-agent audit — condensed:
 |---|---|---|
 | Dev debuginfo | `debug = "line-tables-only"` workspace-wide (Cargo.toml:186) | YES |
 | Dep opt-level (dev) | `[profile.dev.package."*"]` opt-level=1, debug=false (Cargo.toml:188-198) | YES |
-| Incremental | Cargo default locally; `CARGO_INCREMENTAL=0` pinned in CI only (ci.yml:230) | YES (CI); local untouched by design |
+| Incremental | Cargo default locally; `CARGO_INCREMENTAL=0` pinned in CI only (ci.yml:233) | YES (CI); local untouched by design |
 | Codegen-units | release=16, dist=1+LTO; dev=default(256) | YES (release/dist); dev not tuned |
 | Split-debuginfo | Not configured anywhere | NO — candidate |
 | Linker | CI: mold on Linux (ci.yml, multiple jobs); local `.cargo/config.toml` has it commented out/opt-in; macOS uses Apple's default linker (no override) | PARTIAL |
@@ -71,24 +71,28 @@ Harness: existing repo harness `scripts/build-baseline.sh` (AAASM-2557), reused 
 | `cargo tree -d` | 44 packages with >1 resolved version, 128 distinct duplicate (name,version) units | mostly transitive; workspace-pinned crates (hmac/sha2/thiserror/tokio-tungstenite/toml) still split because third-party deps don't respect the workspace pin (matches audit in §2) |
 | Peak disk for this single isolated lane | **29 GiB** (`du -sh lane1`) after cold build + full test-binary compile | machine free space 417→373 GiB over the whole campaign (44 GiB, includes sccache experiments below) |
 
-### 4.1 Live reproduction of the AAASM-5909/5910 dyld first-launch-validation stall
+### 4.1 Process-state pattern consistent with the AAASM-5909/5910 dyld first-launch-validation stall
 
-During the `--no-run` step, `ps` captured **32 concurrently-spawned, freshly-linked test binaries**, each invoked twice by nextest (`--list --format terse` and `--list --format terse --ignored`), all sitting in low-CPU sleep (`STAT SN`, `%CPU 0.0`) rather than doing real work — e.g. `edge_repo_test-159d7bd0eb74026a --list --format terse`. This is the exact mechanism AAASM-5909/5910 diagnosed via `sample`/stack-trace on a *contended, multi-worktree* machine. **This run reproduces it on a single isolated lane with zero foreign build activity** — meaning the stall is not purely a shared-target contention artifact; it is an inherent per-binary macOS Gatekeeper/codesign first-launch cost that nextest's discovery pass pays once per freshly-linked test binary, serialized across however many test targets a `--workspace`-scoped invocation discovers.
+During the `--no-run` step, `ps` captured **32 concurrently-spawned, freshly-linked test binaries**, each invoked twice by nextest (`--list --format terse` and `--list --format terse --ignored`), all sitting in low-CPU sleep (`STAT SN`, `%CPU 0.0`) rather than doing real work — e.g. `edge_repo_test-159d7bd0eb74026a --list --format terse`. This process-state pattern is **consistent with** the mechanism AAASM-5909/5910 diagnosed via `sample`/stack-trace on a contended, multi-worktree machine — but this run did not independently take a `sample`/stack-trace of its own, so it is an inference by analogy, not an independently re-proven mechanism. `STAT SN`/`0.0% CPU` is also consistent with codesign IPC, filesystem I/O wait, or nextest's own internal synchronization. Treat "this is the same dyld/syspolicyd stall" as a plausible, not confirmed, explanation for this specific run.
+
+What *is* directly measured, independent of mechanism: this run's discovery pass on a single isolated lane with zero foreign build activity took materially longer than the compile step that preceded it (below) — so whatever the exact cause, the cost is not purely a shared-target contention artifact; it recurs even in full isolation, scaling with the number of freshly-linked test binaries discovered.
 
 Consequence for §5.6 of the ticket ("do not summarize a 60-minute command as `test took 60 minutes` if the test itself executed in 50ms"): the harness's own `test build: 584s` line conflates 157s of real compilation with ~427s of first-launch discovery overhead across dozens of binaries that ran zero test code. This is exactly why AAASM-5911's `--lib`/`--test <stem>` targeting convention matters even *within* a single clean lane, not only under cross-worktree contention — narrowing discovery scope is a discovery-*count* fix, and discovery count is what this stall is proportional to.
 
 ## 5. sccache experiment
 
-Micro-experiment on `aa-cache` (small leaf crate), isolated `CARGO_TARGET_DIR`, campaign-owned `SCCACHE_DIR` (10 GiB cap, sccache's own LRU eviction — no unbounded growth), sccache v0.17.0.
+Micro-experiment on `aa-cache` (small leaf crate), isolated `CARGO_TARGET_DIR`, campaign-owned `SCCACHE_DIR` (10 GiB cap, sccache's own LRU eviction — no unbounded growth), sccache v0.17.0. Per §0's repetition policy, the decisive comparison (cache-hit vs. no-sccache control) was run **3× each**, `cargo clean` between every rep, median reported — the initial single-sample 11s→7s number from the first pass through this experiment is superseded by the table below.
 
-**Test A — `CARGO_INCREMENTAL=0` (the only regime where sccache can act at all per upstream docs, §3):**
+**Test A — `CARGO_INCREMENTAL=0` (the only regime where sccache can act at all per upstream docs, §3), 3 reps each, `cargo clean` before every rep:**
 
-| Run | Wall-clock | sccache hits | sccache misses |
-|---|---|---|---|
-| Run 1 (cold) | 11s | 0 | 57 |
-| `cargo clean` (this lane only), Run 2 (identical) | 7s | **57 (100%)** | 57 (cumulative) |
+| Condition | Reps (s) | Median |
+|---|---|---|
+| sccache cache-hit (populated from a prior run, `RUSTC_WRAPPER=sccache`) | 9, 6, 6 | **6s** |
+| No-sccache control (`RUSTC_WRAPPER` unset, same clean-rebuild pattern) | 8, 7, 8 | **8s** |
 
-Clean rebuild of an already-seen crate graph: **100% hit rate, ~36% wall-clock reduction** on this small crate. This is the regime sccache is designed for: CI runners, fresh worktrees, or any from-scratch rebuild of previously-compiled code — exactly AAASM-5910's original "isolated target-dirs would cost cold-rebuild time back" concern.
+Cumulative sccache stats after the hit-reps: 114 hits / 66.67% hit rate (includes the warm-up run that populated the cache). **~25% median wall-clock reduction** on this small crate for a from-scratch rebuild of an already-seen crate graph — real but more modest than the uncontrolled first pass suggested. This is the regime sccache is designed for: CI runners, fresh worktrees, or any from-scratch rebuild of previously-compiled code — exactly AAASM-5910's original "isolated target-dirs would cost cold-rebuild time back" concern.
+
+**Correctness check:** after a cache-hit build (`cargo clean` → `cargo check` to populate → `cargo clean` → cache-hit rebuild), `cargo test -p aa-cache --lib` was run against the cache-hit artifact: 6/6 tests passed. The faster build is not silently producing different output for this crate.
 
 **Test B — default incremental (the actual local dev edit loop):**
 
@@ -120,6 +124,10 @@ Both facts point the same direction and are recent/durable enough that a new con
 | FULL_VERIFY (workspace build + full test compile) | Current: 139s cold build + 584s test compile (mostly discovery overhead, §4.1) | Candidate follow-up: reduce discovery overhead structurally (see §9) rather than just accepting it |
 | RELEASE / dist | AAASM-2551's existing release/dist profile split (fat LTO, codegen-units=1 for `dist`; thinner for `release`) | Already merged, DIRECTLY_REUSABLE, not re-measured (out of scope — this is a correctness/size boundary, not a dev-speed lever per the ticket's own instruction) |
 
+### 6.1 Reuse check for the AAASM-5981 reclaimer
+
+Before recommending AAASM-5981 build new code, checked for an existing OSS bounded-lifecycle/reclamation tool: `cargo-sweep` (community tool, prunes `target/` artifacts older than N days or not matching the current toolchain) covers *time/toolchain-based* pruning of a single target dir, but has no notion of "is this worktree's branch merged/abandoned," no cross-lane aggregate quota, and no live-process/open-handle safety check — the exact three things AAASM-5981's acceptance criteria require (per §1's evidence classification) and that the 2026-08-26 incident's manual recovery procedure exercised by hand. `cargo-sweep` is a reasonable component to call *from* AAASM-5981's reclaimer (e.g. as the TTL-based leaf policy) rather than a substitute for it — BORROW_PATTERN, not REUSE_DIRECTLY.
+
 ## 8. GitHub repo decision
 
 **A. NO_NEW_REPO.**
@@ -130,7 +138,7 @@ Every concrete lever identified this session is either (a) a native Cargo profil
 
 Created under AAASM-5991 (see Jira comment on AAASM-5992 for links) — only items with direct measurement support this session:
 
-1. **sccache CI adoption (CONDITIONAL, CI-only).** Wire `RUSTC_WRAPPER=sccache` into CI jobs that already run with `CARGO_INCREMENTAL=0` (ci.yml:230), using a bounded, Swatinem/rust-cache-coexisting cache dir. Evidence: §5 Test A, 100% hit rate / ~36% wall-clock cut on clean rebuild. Explicitly NOT for local dev profile (§5 Test B).
+1. **sccache CI adoption (CONDITIONAL, CI-only).** Wire `RUSTC_WRAPPER=sccache` into CI jobs that already run with `CARGO_INCREMENTAL=0` (ci.yml:233), using a bounded, Swatinem/rust-cache-coexisting cache dir. Evidence: §5 Test A, 3-rep median ~25% wall-clock cut on clean rebuild, correctness-checked. Explicitly NOT for local dev profile (§5 Test B).
 2. **Reuse AAASM-5981** (already filed, To Do) as the target-dir architecture implementation — this session's §6 evidence reinforces rather than duplicates it; added a comment cross-referencing this report instead of a new ticket.
 3. **Investigate nextest discovery-overhead reduction** (new candidate, not yet a ticket — filed as a Spike-follow-up idea only, see Jira comment): §4.1's 427s discovery/157s-compile split on a single clean lane suggests the AAASM-5911 convention (targeted `--lib`/`--test`) should extend to a *default* CI/local invocation pattern for `--workspace`-scope runs, not just an incident-response convention. Needs its own measurement before scoping — not implemented this session.
 4. **`.cargo/config.toml`'s commented-out macOS `lld` block is stale/incorrect** per current upstream docs (§3: rust-lld does not properly support macOS targets; Apple's own default linker since Xcode 15 already fills that role at zero config). Low-risk doc fix — correct or remove the macOS block so a contributor who uncomments it doesn't chase a broken linker flag.
