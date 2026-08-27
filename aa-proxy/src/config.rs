@@ -688,6 +688,44 @@ pub fn audit_export_target_from_env() -> ExportTarget {
     }
 }
 
+/// Whether [`crate::run`] should attempt to install the MitM CA into the
+/// macOS System Keychain at startup (AAASM-5978).
+///
+/// `Auto` is today's historical behaviour: install when [`crate::tls::CaStore`]
+/// reports the CA isn't already trusted there. `Never` means the launch already
+/// has its own trust arrangement for this CA — e.g. a managed dev-tool launch
+/// that injects `NODE_EXTRA_CA_CERTS` (AAASM-5276) — so the System Keychain
+/// step is skipped **entirely**, including the `security find-certificate`
+/// lookup, not merely its install branch.
+///
+/// This governs **only** whether that host-wide trust-store mutation happens.
+/// It has no effect on certificate validation anywhere in the request path —
+/// deliberately not a [`ProxyConfig`] field for exactly that reason (same
+/// rationale as [`audit_jsonl_path_from_env`]): a `ProxyConfig` field would
+/// flow into `ProxyServer`, which is reachable from the data path, and this
+/// knob must be structurally incapable of reaching it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SystemTrustInstall {
+    #[default]
+    Auto,
+    Never,
+}
+
+/// Parse the `AA_PROXY_SYSTEM_TRUST_INSTALL` env var or return the default
+/// (`Auto`, i.e. unchanged historical behaviour).
+pub fn system_trust_install_from_env() -> Result<SystemTrustInstall, ProxyError> {
+    match env_optional("AA_PROXY_SYSTEM_TRUST_INSTALL") {
+        None => Ok(SystemTrustInstall::default()),
+        Some(val) => match val.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(SystemTrustInstall::Auto),
+            "never" => Ok(SystemTrustInstall::Never),
+            other => Err(ProxyError::Config(format!(
+                "invalid AA_PROXY_SYSTEM_TRUST_INSTALL: {other:?} (expected auto | never)"
+            ))),
+        },
+    }
+}
+
 /// Read an env var as `Some(value)` when set and non-empty, otherwise `None`.
 fn env_optional(name: &str) -> Option<String> {
     match std::env::var(name) {
