@@ -2718,7 +2718,17 @@ fn format_dry_run_output(
     const SETTINGS_LIMIT: usize = 1024;
 
     let truncated_settings = if settings.len() > SETTINGS_LIMIT {
-        format!("{}... [truncated]", &settings[..SETTINGS_LIMIT])
+        // AAASM-5971: `settings[..SETTINGS_LIMIT]` panics whenever byte 1024
+        // falls inside a multi-byte character (a non-ASCII path component,
+        // policy value, or pasted smart quote in real managed-settings JSON
+        // over 1 KiB — not a contrived input). Walk back to the nearest char
+        // boundary at or before the limit instead; at most 3 steps, since no
+        // UTF-8 character is more than 4 bytes.
+        let mut boundary = SETTINGS_LIMIT;
+        while !settings.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}... [truncated]", &settings[..boundary])
     } else {
         settings.to_string()
     };
@@ -5248,6 +5258,47 @@ mod tests {
         assert!(
             output.contains("ANTHROPIC_API_KEY=<removed by adapter>"),
             "a removal must be shown as a removal, not hidden or shown as set: {output}"
+        );
+    }
+
+    /// AAASM-5971: byte 1024 must not be allowed to land inside a multi-byte
+    /// character. `settings` is built so the 1024th byte falls exactly inside
+    /// the 'é' at bytes 1023..1025 — a settings string that merely *contains*
+    /// non-ASCII somewhere else would pass against the pre-fix
+    /// `&settings[..SETTINGS_LIMIT]`, since it only panics when the boundary
+    /// itself is mid-character.
+    #[test]
+    fn dry_run_truncation_does_not_split_a_multibyte_char_at_the_limit() {
+        let mut settings = "a".repeat(1023);
+        settings.push('é'); // 2 bytes: straddles the byte-1024 cut point
+        settings.push_str(&"b".repeat(64));
+        assert_eq!(&settings.as_bytes()[1023..1025], "é".as_bytes());
+
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("claude");
+        let env: HashMap<String, String> = HashMap::new();
+
+        // Must not panic.
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            &settings,
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        assert!(
+            output.contains("[truncated]"),
+            "settings over the limit must still truncate: {output}"
+        );
+        // The 'é' must be whole — either included complete or dropped complete,
+        // never split into a lone continuation byte the display would corrupt.
+        assert!(
+            !output.contains('\u{FFFD}'),
+            "truncation must never emit a replacement character: {output}"
         );
     }
 
