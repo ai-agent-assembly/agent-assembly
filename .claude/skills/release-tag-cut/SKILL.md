@@ -1,6 +1,6 @@
 ---
 name: release-tag-cut
-description: Cut a coordinated agent-assembly release tag: bump every workspace Cargo version literal, regenerate Cargo.lock, create the annotated tag, and push it to trigger release.yml. Use when an operator is ready to cut a new pre-release agent-assembly tag (the current cadence is the 0.0.1-beta.N series; earlier cuts were 0.0.1-alpha.N) on a green main and wants the version bump, tag, release-notes, and downstream fan-out handled in the correct order.
+description: Cut a coordinated agent-assembly release tag on an already-bumped main: verify the version/CHANGELOG/release-notes bump PR landed, run the release-readiness gate (security/QA sign-off + evidence binding), then create and push the annotated tag to trigger release.yml. Use when an operator is ready to cut a new pre-release agent-assembly tag (the current cadence is the 0.0.1-beta.N series; earlier cuts were 0.0.1-alpha.N) on a green main, with the bump PR merged and gates PASS, and wants the readiness check, tag, and downstream fan-out handled in the correct order.
 ---
 
 # release-tag-cut
@@ -26,8 +26,9 @@ an LLM to "fix" downstream channels from inside the cut. Run them in order:
    unaddressed High/Critical) stops the release *before* this skill runs;
    `scripts/release-readiness.sh` check 11 enforces it. See
    [`release-security-gate/SKILL.md`](../release-security-gate/SKILL.md).
-1. **`release-tag-cut`** (this skill, write) — bump the workspace version, tag,
-   push the tag. Ends the moment `git push remote v<X>` fires `release.yml`.
+1. **`release-tag-cut`** (this skill, write) — verify the bump PR (RUNBOOK
+   section 1) already landed, run the release-readiness gate, tag, push the
+   tag. Ends the moment `git push remote v<X>` fires `release.yml`.
 2. **fan-out** (automatic, owned by `release.yml`) — the pushed tag triggers
    GitHub Release + cosign signing, `cargo publish` of the workspace,
    `notify-downstream` `repository_dispatch` to node-sdk + python-sdk, the
@@ -56,8 +57,9 @@ Pick this skill when **all** of the following hold:
   (current cadence: the beta series, e.g. cutting `0.0.1-beta.3` after
   `0.0.1-beta.2`; the same path served the earlier `0.0.1-alpha.N` cuts).
 - The most recent CI run on `main` is green.
-- Draft release notes exist (or the operator is prepared to write them inline
-  during step 5).
+- The bump PR (RUNBOOK section 1: version/CHANGELOG/release notes) is
+  already merged to `main` — step 1 verifies this and refuses if not; this
+  skill does not write release notes itself.
 - The working tree is clean and `main` is up to date with `remote/main`.
 
 The triggering operator phrasing is typically:
@@ -153,34 +155,35 @@ operator-supplied `<X>` throughout. Per-step commands, edge-cases, and the
 no-op guard rationale are in
 [REFERENCE.md → Executable plan](REFERENCE.md#executable-plan).
 
-1. **Resolve the current literal** — read the workspace version from
-   `Cargo.toml` into `$CURRENT`; refuse the run if `$CURRENT == <X>` (no-op).
-2. **Bump version literals + regenerate lockfile** — run
-   `./scripts/release-tag-cut.sh "$CURRENT" "<X>"`. The bundled helper
-   enumerates every `**/Cargo.toml` declaring `$CURRENT`, sed-replaces each,
-   bumps `sonar.projectVersion` in `sonar-project.properties` from `$CURRENT`
-   to `<X>` (so SonarCloud's reported version tracks the release — AAASM-3819),
-   regenerates `Cargo.lock`, and refuses no-op invocations.
-3. **Commit the bump (manifests + sonar)** —
-   `🔧 (release): Bump workspace to v<X>` — stage the `Cargo.toml` files and
-   `sonar-project.properties`; verify the old literal is gone.
-4. **Commit `Cargo.lock` separately** —
-   `🔧 (release): Regenerate Cargo.lock for v<X>` (reviewable in isolation).
-5. **Finalize release notes** — ensure `docs/release/v<X>.md` exists (copy
-   from the previous release + edit) and commit it. Version metadata,
-   CHANGELOG, and release notes must all be finalized on this commit
-   **before** the gate in step 6 runs — that ordering is what lets step 7's
-   candidate-binding check require the evidence's `candidate_sha` to equal
-   this exact commit with zero drift.
-6. **Run the release gate** — `bash scripts/release-readiness.sh <X>` from
+1. **Verify the bump PR already landed on `remote/main`** — per
+   [RUNBOOK section 1](../../../docs/release/RUNBOOK.md#1-pre-release--bump-pr),
+   the version/CHANGELOG/release-notes bump is its own separate, reviewed PR
+   merged to `main` *before* this skill is invoked, so that when the QA/
+   security gates below capture their evidence, they capture it against the
+   exact commit that will be tagged — not a commit this skill is still about
+   to create. Confirm `Cargo.toml` workspace version is already `<X>`,
+   `CHANGELOG.md` already has a `## [<X>]` section, and
+   `docs/release/v<X>.md` already exists. If any is missing, **stop and
+   point the operator at RUNBOOK section 1** — do not bump inline. (A prior
+   version of this step bumped version/lockfile/notes as local commits
+   inside this skill itself; that created commits `remote/main` never had,
+   which made step 3's readiness check 3 — local `main` matches
+   `remote/main` — and step 4's strict `candidate_sha == HEAD` binding both
+   fail by construction. Removed for that reason: those checks require
+   nothing to change locally between "bump merged" and "tag pushed.")
+2. **Confirm the security and QA sign-offs are for this exact `<X>`** —
+   pre-conditions 5/6 above; this is the RUNBOOK section 1.5/1.6 gate
+   already having produced fresh evidence bound to the commit verified in
+   step 1.
+3. **Run the release gate** — `bash scripts/release-readiness.sh <X>` from
    this exact commit. All 14 checks (mechanical version/CHANGELOG/notes
    state, secrets, stale tap PRs, security sign-off PASS, QA sign-off PASS,
    and release-evidence binding to HEAD) must report ✓. Any ✗ stops the run
-   here — do not proceed to step 7, and do not skip a check to get to green.
-7. **Create and push the annotated tag** —
+   here — do not proceed to step 4, and do not skip a check to get to green.
+4. **Create and push the annotated tag** —
    `bash scripts/release-tag-guard.sh <X>`. This is the only sanctioned way
    this skill creates/pushes the tag: the guard re-verifies remote identity,
-   clean tree, re-runs step 6's readiness gate, enforces a strict
+   clean tree, re-runs step 3's readiness gate, enforces a strict
    `candidate_sha == HEAD` binding (stricter than the readiness gate's own
    R1 mechanical-drift relaxation), refuses if the tag already exists, and
    has no skip flag. See [`release-tag-guard.sh`](../../../scripts/release-tag-guard.sh).
@@ -188,7 +191,7 @@ no-op guard rationale are in
 
 ## Post-conditions
 
-After step 7, both MUST hold (full detail in
+After step 4, both MUST hold (full detail in
 [REFERENCE.md → Post-conditions](REFERENCE.md#post-conditions)):
 
 1. **Tag exists on remote** — `git ls-remote --tags remote "v<X>"` returns one line.
@@ -241,5 +244,10 @@ One level deep from this SKILL.md:
 - **Worked example** (concrete alpha-10 walk-through) → [EXAMPLES.md](EXAMPLES.md)
 - **Step-by-step detail** (per-step commands, edge-cases, pre/post-conditions,
   auto-handled rationale) → [REFERENCE.md](REFERENCE.md)
-- **Helper script** (the version-bump + lockfile regenerator) →
+- **Bump-PR helper script** (the version-bump + lockfile regenerator, for
+  the separate RUNBOOK section 1 bump PR — no longer invoked by this
+  skill's own executable plan, AAASM-5879) →
   `scripts/release-tag-cut.sh` (bundled inside this skill dir)
+- **Release gate** → `scripts/release-readiness.sh` (executable plan step 3)
+- **Tag guard** (the only sanctioned tag-create/push path) →
+  `scripts/release-tag-guard.sh` (executable plan step 4)
