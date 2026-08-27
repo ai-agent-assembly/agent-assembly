@@ -458,6 +458,7 @@ dependencies = [
  "url",
  "uuid",
  "wat",
+ "x509-parser",
 ]
 
 [[package]]
