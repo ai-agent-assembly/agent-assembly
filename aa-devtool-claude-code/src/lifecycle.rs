@@ -700,14 +700,22 @@ const PROBE_NOT_RUN_REASON: &str =
 ///
 /// Stated as a *reason it is not active here*, not as a blanket unavailability:
 /// since AAASM-5298 there is a path to it, and it is opt-in, privileged and
-/// verified. Kernel-level enforcement remains Linux-only and the proxy CA is
-/// still never added to the macOS system trust store — trust is established
-/// per-launch through `NODE_EXTRA_CA_CERTS`.
+/// verified. Kernel-level enforcement remains Linux-only. This integration
+/// does not rely on the macOS system trust store — trust is established
+/// per-launch through `NODE_EXTRA_CA_CERTS` — but that is a claim about this
+/// integration's own launch, not about the product: the `aa-proxy` binary
+/// itself does attempt a keychain install at startup on an unmanaged launch
+/// (AAASM-5978, `AA_PROXY_SYSTEM_TRUST_INSTALL=auto`, the default outside a
+/// governed launch like this one). AAASM-5639 corrected this string after it
+/// asserted the broader, false, product-scope claim; keep it in the same
+/// scope as the ADR 0033 §5.3 / AAASM-5528 documentation wording rather than
+/// letting the two drift apart again.
 const HOST_ENFORCEMENT_REASON: &str = "host enforcement is not active: no endpoint-managed settings file \
      installed by Agent Assembly was verified on this host. Install it with \
      `aasm integrations install claude-code --install-managed-settings`, which asks for administrator \
-     authorization for one file write. Kernel-level enforcement remains Linux-only, and Agent Assembly \
-     never adds its certificate authority to the macOS system trust store";
+     authorization for one file write. Kernel-level enforcement remains Linux-only. This integration does \
+     not rely on the macOS system trust store — trust is established per-launch via NODE_EXTRA_CA_CERTS \
+     — but the Agent Assembly proxy itself does attempt a keychain install on an unmanaged launch";
 
 /// What an endpoint-managed attestation does, and does not, claim.
 const HOST_ATTESTATION_CAVEAT: &str = "Agent Assembly verified that the managed policy is installed, owned \

@@ -181,6 +181,9 @@ on:
       # AAASM-5951: soft-timeout classification + hard-stall termination
       # (`enforce`) — same qa_registry router.
       - "scripts/qa/qa-watchdog-stall-termination-test.sh"
+      # AAASM-5952: per-resource-class circuit breaker (`breaker`) — same
+      # qa_registry router.
+      - "scripts/qa/qa-watchdog-breaker-test.sh"
       # AAASM-5878/5899: the release-evidence freshness checker and its
       # digest module. Same ADR 0028 pairing rule as above — every path here
       # has a matching `qa_registry` router filter entry below.
@@ -493,6 +496,8 @@ jobs:
               - 'scripts/qa/qa-watchdog-progress-signals-test.sh'
               # AAASM-5951: watchdog soft-timeout/hard-stall termination.
               - 'scripts/qa/qa-watchdog-stall-termination-test.sh'
+              # AAASM-5952: watchdog per-resource-class circuit breaker.
+              - 'scripts/qa/qa-watchdog-breaker-test.sh'
               # AAASM-5878/5899: the release-evidence freshness checker.
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
@@ -564,6 +569,9 @@ jobs:
               - '.sqlx/**'
               - '.ci/**'
               - 'scripts/**'
+              # AAASM-5987: glob-for-glob copy of the same addition in
+              # release-completeness.yml — see the comment there.
+              - 'aa-*/src/**'
             # AAASM-5677: glob-for-glob copy of docs.yml's own `changes`
             # router — the same selection that gates its governance-gate jobs
             # (`build`, `verify-commands`, `version-drift`, `metadata-drift`).
@@ -1345,6 +1353,13 @@ jobs:
       # provably own.
       - name: Self-test qa-watchdog.py soft/hard-stall termination
         run: bash scripts/qa/qa-watchdog-stall-termination-test.sh
+
+      # AAASM-5952: negative-control tests for the per-resource-class
+      # circuit breaker, including class isolation (one class's open
+      # breaker must never affect another) and threshold-override
+      # resolution falling back safely when the registry is unloadable.
+      - name: Self-test qa-watchdog.py breaker
+        run: bash scripts/qa/qa-watchdog-breaker-test.sh
 
   ci-watch-health-gate:
     needs: [changes]

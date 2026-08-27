@@ -82,6 +82,62 @@ port-collision confusion and wasted setup/teardown time.
   that surface's verification mutates state — not applied blanket across the
   whole run.
 
+## Resource classes
+
+A different axis from the role/worker ceiling above: the 10-worker cap
+bounds *reasoning* concurrency (Agent-tool sub-agents), and applies whether
+or not any of them ever touch a machine resource. Some of the shell
+commands a worker or the coordinator itself runs — a workspace-wide
+`cargo build`/`cargo doc`, a `cargo nextest` run, a macOS Keychain
+operation — contend on a genuinely limited *machine* resource (one shared
+`CARGO_TARGET_DIR`, one Keychain, one VM rootfs) independent of how many
+Agent-tool workers are in flight. AAASM-5891/5893-5895 is the mechanism for
+that second axis: `scripts/qa/resource-lock.py` (the pool/slot
+registry, `qa/resource-classes.yaml`) plus `scripts/qa/qa-watchdog.py`
+(progress-aware stall detection and a per-class circuit breaker).
+
+- **Wrap, don't reimplement.** A command that already has a registered
+  `class` in `qa/resource-classes.yaml` (`cargo-doc`,
+  `cargo-build-workspace`, `cargo-nextest-workspace`, `macos-security`,
+  `vm-start`, `dashboard-build`, `lint-unit`) should be invoked through
+  `resource-lock.py run --class <name> -- <cmd...>`, not run bare — this is
+  how the pre-push `cargo doc` hook itself is wired
+  (`lefthook.toml`'s `pre-push.commands.doc`, AAASM-5895).
+- **Fail-fast, not queue-and-block.** Every class's `wait_secs` defaults to
+  0 (`qa/resource-classes.yaml`'s `defaults`) — a saturated pool returns
+  immediately with a distinct exit code (`EXIT_SATURATED=75`,
+  `EXIT_DUPLICATE=76`), never blocks a foreground shell waiting for the
+  slot to free. Do not pass `--wait` with a nonzero value to make a
+  campaign command block instead — see the next point for what to do with
+  the busy signal instead.
+- **RESOURCE_BUSY is not QA_FAILED.** A worker or coordinator step that
+  gets `EXIT_SATURATED`/`EXIT_DUPLICATE` back has not failed its actual
+  work — it hit resource contention. Do not report it as a QA finding,
+  retry it as if it were a flaky test, or (worst) fall back to running the
+  command unwrapped/bare to "just get it done." The correct response is
+  the auto-retry pattern below.
+- **Automatic agent-side retry belongs to the orchestration layer, not the
+  hook.** On `EXIT_SATURATED`/`EXIT_DUPLICATE`: record the retryable state,
+  continue other dependency-ready work in the same wave, and retry the
+  command on a later poll once the slot is likely free — do not stop and
+  ask a human merely because another worktree/session currently holds a
+  shared-resource slot. This mirrors the campaign's own dynamic-`/loop`
+  polling pattern (poll, do other work, come back) rather than introducing
+  a second waiting mechanism.
+- **Fairness is informal, by design.** There is no queue, no priority, no
+  new locking primitive here — a worktree that loses a race for a slot
+  simply retries on its own next poll. This is the simplest mechanism
+  consistent with `wait_secs: 0` fail-fast semantics; it has not needed
+  anything stronger in practice, and adding one is out of scope unless a
+  real starvation pattern is observed (see `qa-watchdog.py breaker` for
+  the one piece of state this system *does* keep across attempts — a
+  repeatedly-stalling class's circuit breaker, not a fairness queue).
+- **Stale-lock recovery is already handled** — `resource-lock.py sweep`
+  (dead-pid/reused-pid-safe, AAASM-5893) plus `qa-watchdog.py`'s ownership
+  re-verification (AAASM-5949/5951) before every stall-termination signal.
+  Nothing in this section reimplements that; it only documents where to
+  look.
+
 ## Typical wave shape
 
 - **Patch, narrow scope** (e.g. only `docs/src/qa/*` changed): 1 worker

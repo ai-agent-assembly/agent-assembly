@@ -63,6 +63,70 @@ for f in "$CLI_MOD" "$RUNTIME_RS"; do
     [[ -f "$f" ]] || { echo "::error::expected file missing after strip: ${f#$WORK/}" >&2; exit 1; }
 done
 
+# AAASM-5987: no publishable crate's source may name a held-back (publish =
+# false) crate as a path prefix. .ci/strip-for-publish.sh only edits the files
+# it is explicitly told about (MARKED_FILES/DELETED_FILES) — a file it was
+# never told about keeps compiling against a dependency the same strip just
+# removed from that crate's Cargo.toml, and cargo package/build fails only
+# when someone actually runs the packaged-artifact gate. This is the class of
+# defect AAASM-5987 was: aa-runtime/src/devint/server.rs referenced
+# aa_devtool_claude_code::scope::MANAGED_SETTINGS_DIR with no strip region
+# covering it. Both lists below are derived from the stripped tree itself, not
+# hardcoded, so a crate added on either side tomorrow is covered automatically.
+held_back_idents=()
+while IFS= read -r toml; do
+    name="$(sed -n 's/^name[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' "$toml" | head -1)"
+    [[ -n "$name" ]] || continue
+    held_back_idents+=("${name//-/_}")
+done < <(grep -rl '^publish[[:space:]]*=[[:space:]]*false' --include=Cargo.toml "$WORK")
+
+publishable_src_dirs=()
+while IFS= read -r toml; do
+    dir="$(dirname "$toml")"
+    [[ -d "$dir/src" ]] && publishable_src_dirs+=("$dir/src")
+done < <(grep -rL '^publish[[:space:]]*=[[:space:]]*false' --include=Cargo.toml "$WORK" | grep -v "^$WORK/Cargo.toml\$")
+
+# Positive controls: an empty list here would make the loop below a silent
+# no-op that always passes.
+if [ "${#held_back_idents[@]}" -eq 0 ] || ! printf '%s\n' "${held_back_idents[@]}" | grep -qx 'aa_devtool_claude_code'; then
+    echo "::error::publish-surface gate: held-back crate ident list is empty or missing aa_devtool_claude_code — the check below would be a no-op" >&2
+    exit 1
+fi
+if [ "${#publishable_src_dirs[@]}" -eq 0 ] || ! printf '%s\n' "${publishable_src_dirs[@]}" | grep -qx "$WORK/aa-runtime/src"; then
+    echo "::error::publish-surface gate: publishable src-dir list is empty or missing aa-runtime/src — the check below would be a no-op" >&2
+    exit 1
+fi
+
+# `\b` is not honoured by this shell's grep -E (confirmed empirically); use an
+# explicit non-identifier-or-`::` boundary instead. Three distinct reference
+# forms, matched separately rather than by loosening the boundary on a single
+# pattern: a bare word boundary alone false-positives on the ident appearing
+# as an unrelated local module name or inside a string literal (e.g.
+# `pub mod conformance;`, `"../conformance/vectors"` — neither is a reference
+# to the held-back `conformance` crate). `ident::path` is the path-prefix
+# form; `use ident` / `extern crate ident` are the two bare forms the
+# path-prefix pattern alone misses (AAASM-5987 review finding).
+held_back_pattern="$(IFS='|'; echo "${held_back_idents[*]}")"
+crate_ref_fail=0
+while IFS= read -r rs; do
+    hit="$(grep -nE \
+        -e "(^|[^A-Za-z0-9_:])(${held_back_pattern})::" \
+        -e "(^|[^A-Za-z0-9_])use[[:space:]]+(${held_back_pattern})([^A-Za-z0-9_]|$)" \
+        -e "(^|[^A-Za-z0-9_])extern[[:space:]]+crate[[:space:]]+(${held_back_pattern})([^A-Za-z0-9_]|$)" \
+        "$rs" | grep -v ':[[:space:]]*//' || true)"
+    if [ -n "$hit" ]; then
+        echo "::error::${rs#$WORK/} references a held-back (publish = false) crate after stripping — this crate will fail to compile from a published tarball:" >&2
+        echo "$hit" >&2
+        crate_ref_fail=1
+    fi
+done < <(find "${publishable_src_dirs[@]}" -name '*.rs')
+
+if [ "$crate_ref_fail" -ne 0 ]; then
+    echo "publish-surface gate: FAILED (held-back crate reference)" >&2
+    exit 1
+fi
+echo "publish-surface gate: no publishable crate references a held-back crate"
+
 # Does anything in the published runtime actually bring the DI-API up? Comment
 # lines are excluded so a leftover mention in prose cannot vouch for a bind.
 if grep -v '^[[:space:]]*//' "$RUNTIME_RS" | grep -q "$DEVINT_BRINGUP"; then
