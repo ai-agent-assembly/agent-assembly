@@ -69,14 +69,24 @@ fail() {
 #     the real org repo (accidentally or otherwise) is refused outright,
 #     not silently allowed through the "explicit opt-out" branch.
 REMOTE_URL="$(git remote get-url "$REMOTE_NAME" 2>/dev/null || true)"
-# Anchored at the end (no trailing text after "agent-assembly"[.git]) so a
-# different, real repo whose name merely starts with "agent-assembly" —
-# e.g. ai-agent-assembly/agent-assembly-enterprise — cannot be
-# misclassified as the canonical org remote by a plain substring match.
-case "$REMOTE_URL" in
-  */ai-agent-assembly/agent-assembly|*/ai-agent-assembly/agent-assembly.git|*:ai-agent-assembly/agent-assembly|*:ai-agent-assembly/agent-assembly.git) REMOTE_IS_ORG=1 ;;
-  *) REMOTE_IS_ORG=0 ;;
-esac
+# Exact scheme+host+path match, not a substring/suffix pattern — a suffix
+# anchor alone (e.g. `*/ai-agent-assembly/agent-assembly.git`) still matches
+# ANY host or path that merely ENDS with that segment
+# (https://attacker.example/mirror/ai-agent-assembly/agent-assembly.git,
+# or a local fixture path shaped the same way), which a security review
+# demonstrated concretely repoints the "real org remote" classification at
+# an attacker-controlled location. Only github.com, with exactly this
+# org/repo path and an optional trailing "/"+".git", counts as the org.
+# Case-insensitive: GitHub org/repo names are case-insensitive and this
+# repo's own configured `remote` URL uses "AI-agent-assembly" (capitalized),
+# not "ai-agent-assembly" — a case-sensitive match would break the normal,
+# non-bypassing caller too.
+REMOTE_URL_LC="$(printf '%s' "$REMOTE_URL" | tr '[:upper:]' '[:lower:]')"
+if [[ "$REMOTE_URL_LC" =~ ^(https://github\.com/|git@github\.com:)ai-agent-assembly/agent-assembly(\.git)?/?$ ]]; then
+  REMOTE_IS_ORG=1
+else
+  REMOTE_IS_ORG=0
+fi
 if [ "$REMOTE_EXPLICIT" -eq 0 ] && [ "$REMOTE_IS_ORG" -eq 0 ]; then
   fail "remote '$REMOTE_NAME' does not resolve to ai-agent-assembly/agent-assembly (got: '${REMOTE_URL:-<missing>}') — pass --remote explicitly only for a throwaway fixture repo, never for a real push"
 fi

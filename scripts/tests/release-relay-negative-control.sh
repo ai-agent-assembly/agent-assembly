@@ -323,14 +323,18 @@ else
   pass "release-tag-guard.sh defines no skip/force flag"
 fi
 
-echo "== Case 8b: --remote cannot be used to point at the real org remote =="
-# An explicit --remote is meant ONLY for a throwaway fixture — it must not
-# become a way to reuse the "explicit opt-out" branch while still resolving
-# to the real ai-agent-assembly/agent-assembly remote (e.g. `--remote
-# remote` naming the default remote explicitly). Build a local bare repo
-# whose path literally contains "ai-agent-assembly/agent-assembly" — good
-# enough to fool a URL substring check — and confirm the guard refuses
-# rather than silently skipping the org-identity check for it.
+echo "== Case 8b: a local path shaped like the org's directory structure is treated as an ordinary local fixture, not misclassified as the real org remote =="
+# Earlier substring/suffix-based org matching misclassified ANY URL merely
+# ending in ".../ai-agent-assembly/agent-assembly[.git]" as the real org
+# remote — including a purely local bare repo whose path happens to be
+# shaped that way (a security review demonstrated this concretely: see Case
+# 8c). The fix moved to an exact scheme+host+path match
+# (github.com/ai-agent-assembly/agent-assembly only), so a local lookalike
+# path is now correctly recognized as NOT the org — it is just an ordinary
+# local fixture, admitted like any other local --remote target, and fails
+# downstream for an unrelated reason (no evidence record here), never on
+# the org-identity check. Asserting the OLD "refused on org-identity"
+# behavior here would mean asserting the bug is still present.
 FIX8B="$WORK/fx8b"
 mkdir -p "$FIX8B/ai-agent-assembly/agent-assembly.git"
 git init --bare -q "$FIX8B/ai-agent-assembly/agent-assembly.git"
@@ -352,17 +356,15 @@ STUB
   git commit -qm base
   OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx8b --remote lookalike 2>&1)"
   EXIT=$?
-  # Asserting only EXIT -ne 0 here would be vacuous: this fixture has no
-  # v0.0.1-fx8b.evidence.json, so with the org-identity bypass wide open
-  # the guard would still refuse downstream (step 5, missing evidence
-  # record) for an unrelated reason, making the test pass whether or not
-  # the bypass is actually closed. Assert on the SPECIFIC refusal reason
-  # instead, and require it to fire before the evidence check would even
-  # be reached.
-  if [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'resolves to the real ai-agent-assembly/agent-assembly remote'; then
-    pass "guard refuses an explicit --remote whose URL resolves to the real org repo (org-identity check, not a downstream reason)"
+  # Must NOT refuse on the org-identity check (that would mean the local
+  # path is still being misclassified as the real org repo). It correctly
+  # refuses downstream instead, on this fixture's missing evidence record.
+  if printf '%s' "$OUT" | grep -qE 'resolves to the real ai-agent-assembly/agent-assembly remote'; then
+    fail "guard still misclassifies a local lookalike path as the real org remote (the bug Case 8c's fix addresses)"
+  elif [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'release-evidence record missing'; then
+    pass "guard treats a local org-lookalike path as an ordinary local fixture (correctly refuses on missing evidence, not on org-identity)"
   else
-    fail "guard did not refuse on the org-identity check specifically (exit=$EXIT): $OUT"
+    fail "unexpected guard outcome for the local lookalike fixture (exit=$EXIT): $OUT"
   fi
 )
 
@@ -410,6 +412,43 @@ git init -q "$FIX8C/repo"
     pass "guard refuses an explicit --remote pointing at a real, non-org GitHub remote"
   else
     fail "guard did not refuse the real non-org remote on the local-path check (exit=$EXIT_B): $OUT_B"
+  fi
+)
+
+echo "== Case 8d: a URL merely ENDING in the org path segment, on an unrelated host, is not misclassified as the org (no --remote needed) =="
+# Adversarial security review demonstrated the most severe variant: with NO
+# --remote flag at all, simply repointing the DEFAULT remote's URL to
+# anything ending in ".../ai-agent-assembly/agent-assembly.git" — including
+# a completely unrelated attacker host, or a local path shaped that way —
+# made the guard's identity check treat it as the genuine org remote
+# (REMOTE_IS_ORG=1), taking the normal, no-override code path straight
+# through to a real tag+push against that spoofed location. The fix moved
+# from a suffix pattern to an exact scheme+host+path match
+# (github.com/ai-agent-assembly/agent-assembly only) — assert that an
+# attacker-host URL shaped to defeat a suffix match is now refused as
+# "not the org remote", the correct default-path outcome for anything that
+# isn't actually github.com/ai-agent-assembly/agent-assembly.
+FIX8D="$WORK/fx8d"
+mkdir -p "$FIX8D/repo"
+git init -q "$FIX8D/repo"
+(
+  cd "$FIX8D/repo"
+  git config user.email t@t.com
+  git config user.name t
+  # Renamed to the script's own default remote name ("remote") so this
+  # exercises the DEFAULT, no --remote code path — the one a real caller
+  # actually uses.
+  git remote add remote "https://attacker.example.com/mirror/ai-agent-assembly/agent-assembly.git"
+  mkdir -p scripts
+  cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
+  chmod +x scripts/release-tag-guard.sh
+
+  OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx8d 2>&1)"
+  EXIT=$?
+  if [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE "does not resolve to ai-agent-assembly/agent-assembly"; then
+    pass "guard refuses an attacker-host URL shaped to defeat a suffix-only org match (exact host+path match holds)"
+  else
+    fail "guard did not refuse the attacker-host lookalike on the default path (exit=$EXIT): $OUT"
   fi
 )
 
