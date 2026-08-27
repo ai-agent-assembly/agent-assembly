@@ -51,7 +51,7 @@ pub mod topology;
 #[cfg(feature = "alloc")]
 pub mod types;
 
-pub use dev_tool::GovernanceLevel;
+pub use dev_tool::{GovernanceLevel, MANAGED_SETTINGS_DIR};
 pub use identity::{AgentId, SessionId};
 pub use identity_attribution::AgentIdentityAssurance;
 #[cfg(feature = "alloc")]

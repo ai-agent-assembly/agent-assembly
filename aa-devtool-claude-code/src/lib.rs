@@ -427,6 +427,21 @@ impl DevToolAdapter for ClaudeCodeAdapter {
     fn governance_level(&self) -> GovernanceLevel {
         GovernanceLevel::L2Enforce
     }
+
+    /// AAASM-5978: reads the exact same source `build_launch_command` reads
+    /// (`launch_env::installed_environment`), so the two cannot disagree
+    /// within one process. `Some` only when this host's launch actually
+    /// carries `NODE_EXTRA_CA_CERTS` — the mechanism AAASM-5276 proved gives
+    /// the real `claude` binary process-scoped trust in the proxy CA, with no
+    /// System Keychain involvement. A host with no installed Claude Code
+    /// integration contributes an empty map here (`launch_env.rs`), so this
+    /// correctly returns `None` and the caller falls back to today's
+    /// System Keychain behaviour, unchanged.
+    fn process_scoped_ca_trust_var(&self) -> Option<&'static str> {
+        launch_env::installed_environment(&self.launch_paths())
+            .contains_key(lifecycle::CA_ENV_VAR)
+            .then_some(lifecycle::CA_ENV_VAR)
+    }
 }
 
 #[cfg(test)]
@@ -527,6 +542,50 @@ mod tests {
     #[test]
     fn governance_level_is_l2_enforce() {
         assert_eq!(ClaudeCodeAdapter::new().governance_level(), GovernanceLevel::L2Enforce);
+    }
+
+    /// AAASM-5978: `process_scoped_ca_trust_var` must track real install
+    /// state, not the adapter's mere existence — `None` on a host with no
+    /// installed integration (today's `aasm run` behaviour must be
+    /// unchanged), `Some(CA_ENV_VAR)` only once the exact mechanism
+    /// `build_launch_command` itself reads has actually been written.
+    ///
+    /// Serialised on a local lock: `AASM_STATE_DIR` is process-global and
+    /// `cargo test`'s default in-process threading would otherwise race this
+    /// against any other test mutating it (matches `aa-proxy/src/config.rs`'s
+    /// `ENV_LOCK` precedent for the same reason).
+    #[test]
+    fn process_scoped_ca_trust_var_tracks_real_install_state() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prior_state = std::env::var_os("AASM_STATE_DIR");
+        std::env::set_var("AASM_STATE_DIR", dir.path().join("state"));
+
+        let adapter = ClaudeCodeAdapter::with_overrides(None, Some(dir.path().join("home")));
+
+        assert_eq!(
+            adapter.process_scoped_ca_trust_var(),
+            None,
+            "a host with no installed Claude Code integration must report no process-scoped trust"
+        );
+
+        let paths = adapter.launch_paths();
+        launch_env::LaunchEnvStore::at(paths.launch_env_dir(aa_devtool_contract::SettingsScope::User).unwrap())
+            .set(lifecycle::CA_ENV_VAR, "/some/ca.pem")
+            .unwrap();
+
+        assert_eq!(
+            adapter.process_scoped_ca_trust_var(),
+            Some(lifecycle::CA_ENV_VAR),
+            "once the real installed-environment store carries NODE_EXTRA_CA_CERTS, \
+             the adapter must report it"
+        );
+
+        match prior_state {
+            Some(v) => std::env::set_var("AASM_STATE_DIR", v),
+            None => std::env::remove_var("AASM_STATE_DIR"),
+        }
     }
 
     #[test]

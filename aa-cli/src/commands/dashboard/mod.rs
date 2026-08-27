@@ -266,8 +266,11 @@ fn apply_feed_message(state: &mut DashboardState, msg: FeedMessage) {
 fn fetch_policy_yaml() -> Option<String> {
     use aa_gateway::policy::history::{FsHistoryStore, HistoryConfig, PolicyHistoryStore};
 
-    let config = HistoryConfig::default_config();
-    let store = FsHistoryStore::new(config);
+    // A locatable history directory is a precondition, not something to guess at:
+    // the dashboard would otherwise read an empty history from a
+    // working-directory-relative path and render "no policy" for a governed
+    // session that has one (AAASM-5959).
+    let store = FsHistoryStore::new(HistoryConfig::default_config().ok()?);
 
     let rt = tokio::runtime::Handle::current();
     let versions = rt.block_on(store.list(1)).ok()?;

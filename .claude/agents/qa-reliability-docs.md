@@ -49,6 +49,11 @@ Out of scope: functional/CLI happy-path QA (`qa-functional`), SDK journeys
   genuine product defect — see the finding-verification protocol
   (AAASM-5827); don't report your own setup issues as product findings.
 - Never open a Jira Bug yourself.
+- Verifying the doc-build gate itself means invoking it exactly as the
+  hook does — `scripts/qa/resource-lock.py run --class cargo-doc --
+  cargo doc --workspace --no-deps` — not a bare `cargo doc`, per
+  `qa/ORCHESTRATION.md`'s "Resource classes". A saturated slot here is
+  resource contention, not the reliability finding you're checking for.
 
 ## Output
 

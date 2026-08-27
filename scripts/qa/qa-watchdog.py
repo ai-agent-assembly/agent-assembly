@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Mechanical liveness/ownership watchdog for resource-lock.py jobs
-(AAASM-5949/5950/5951, first three slices of AAASM-5891's resource-aware
+(AAASM-5949/5950/5951/5952, first four slices of AAASM-5891's resource-aware
 QA-campaign scheduler — split from the original AAASM-5894 subtask by
 opus-architect design review, since watchdog + progress signals + stall
 termination + breaker + harness wiring was too large for one commit).
@@ -51,6 +51,29 @@ re-deriving it here via a second code path risks the two silently drifting
 apart. Shelling out keeps `list` a thin consumer of that one source of
 truth, at the cost of a subprocess per poll — acceptable for a periodic
 mechanical watchdog, not a hot loop.
+
+AAASM-5952: `breaker` — a per-resource-class circuit breaker, deliberately
+NOT the same thing as `~/.claude/hooks/circuit-breaker-gate.sh` (confirmed
+a false cognate by design review: that script is keyed per-ticket, its
+state lives outside this repo under `~/.claude/circuit-breaker/`, and it
+is absent in CI — this Story needs one keyed per resource *class*, living
+in-repo, running in CI). Mirrors that script's CLI verbs and JSON state
+shape (`check`/`record-failure`/`record-success`/`reset`) for consistency
+with the pattern this org already knows, translated to class-keyed state
+under `$AA_QA_LOCK_DIR/breaker/<class>.json`. Reads
+`resource-classes.yaml`'s existing `breaker_open_threshold` field per
+class (AAASM-5893) unless overridden on the CLI.
+
+`breaker` enforces nothing on its own — like `enforce`, it is a
+single-shot, stateless-per-invocation check. It is the calling campaign
+harness's (AAASM-5953's) responsibility to call `breaker check <class>`
+before attempting a new acquisition of that class (and skip/defer it on
+EXIT_BREAKER_OPEN) and to call `record-failure`/`record-success` after
+each job of that class finishes (a hard-stall per AAASM-5951's `enforce`
+being the intended failure signal) — this is what makes one class's
+repeated stalls lower only that class's effective concurrency without
+ever touching resource-lock.py's slot mechanism itself or serializing
+the whole campaign.
 """
 
 from __future__ import annotations
@@ -69,9 +92,11 @@ EXIT_BAD_INPUT = 2
 EXIT_SOFT_STALL = 3
 EXIT_HARD_STALL = 4
 EXIT_NOT_OWNED = 5
+EXIT_BREAKER_OPEN = 6
 
 _LOCK_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resource-lock.py")
 _STATE_DIR_NAME = "watchdog"  # sibling of resource-lock.py's own jobs/slots dirs
+_BREAKER_DIR_NAME = "breaker"  # per-resource-class circuit breaker state (AAASM-5952)
 
 # Matches every shape `ps -o time=` is documented/observed to emit:
 #   SS                      (bare seconds — rare, defensive)
@@ -625,15 +650,117 @@ def cmd_enforce(rest: list[str]) -> int:
     return EXIT_OK
 
 
+def breaker_state_path(cls: str) -> str:
+    m = _lock_mod()
+    return os.path.join(m.lock_dir(), _BREAKER_DIR_NAME, f"{cls}.json")
+
+
+def read_breaker_state(cls: str) -> dict | None:
+    try:
+        with open(breaker_state_path(cls)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_breaker_state(cls: str, failures: int, state: str, threshold: int) -> None:
+    m = _lock_mod()
+    d = os.path.join(m.lock_dir(), _BREAKER_DIR_NAME)
+    os.makedirs(d, exist_ok=True)
+    path = breaker_state_path(cls)
+    tmp = path + f".tmp.{os.getpid()}"
+    record = {
+        "class": cls,
+        "consecutive_failures": failures,
+        "state": state,
+        "threshold": threshold,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with open(tmp, "w") as f:
+        json.dump(record, f, indent=2)
+    os.replace(tmp, path)
+
+
+def resolve_breaker_threshold(cls: str, override: int | None) -> int:
+    """CLI-supplied override wins (mirrors circuit-breaker-gate.sh's
+    optional positional threshold arg); otherwise the class's own
+    `breaker_open_threshold` from resource-classes.yaml (AAASM-5893);
+    otherwise resource-lock.py's own DEFAULT_FIELDS default, so an
+    unresolvable/unloadable registry still degrades to a sane threshold
+    rather than making `breaker` unusable."""
+    if override is not None:
+        return override
+    m = _lock_mod()
+    cfg_result = class_config(cls)
+    if cfg_result is not None:
+        _, _, cls_cfg = cfg_result
+        return int(cls_cfg.get("breaker_open_threshold", m.DEFAULT_FIELDS["breaker_open_threshold"]))
+    return int(m.DEFAULT_FIELDS["breaker_open_threshold"])
+
+
+def cmd_breaker(rest: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="qa-watchdog.py breaker")
+    parser.add_argument("verb", choices=["check", "record-failure", "record-success", "reset"])
+    parser.add_argument("cls")
+    parser.add_argument("threshold", type=int, nargs="?", default=None)
+    args = parser.parse_args(rest)
+
+    try:
+        threshold = resolve_breaker_threshold(args.cls, args.threshold)
+    except Exception as e:
+        sys.stderr.write(f"qa-watchdog breaker: cannot resolve threshold for {args.cls}: {e}\n")
+        return EXIT_BAD_INPUT
+
+    if args.verb == "check":
+        rec = read_breaker_state(args.cls)
+        if rec is None:
+            print(f"[breaker] no state for {args.cls} — closed")
+            return EXIT_OK
+        if rec.get("state") == "open":
+            sys.stderr.write(
+                f"[breaker] OPEN for {args.cls} — {rec.get('consecutive_failures')} "
+                f"consecutive failures (threshold: {rec.get('threshold')})\n"
+            )
+            sys.stderr.write(f"Reset with: qa-watchdog.py breaker reset {args.cls}\n")
+            return EXIT_BREAKER_OPEN
+        print(f"[breaker] closed for {args.cls} — {rec.get('consecutive_failures')} consecutive failures")
+        return EXIT_OK
+
+    if args.verb == "record-failure":
+        rec = read_breaker_state(args.cls)
+        failures = (rec.get("consecutive_failures", 0) if rec else 0) + 1
+        new_state = "open" if failures >= threshold else "closed"
+        write_breaker_state(args.cls, failures, new_state, threshold)
+        print(f"[breaker] failure recorded for {args.cls}: {failures}/{threshold} — state: {new_state}")
+        if new_state == "open":
+            sys.stderr.write("[breaker] CIRCUIT OPEN — this class's effective concurrency is reduced\n")
+            return EXIT_BREAKER_OPEN
+        return EXIT_OK
+
+    if args.verb == "record-success":
+        write_breaker_state(args.cls, 0, "closed", threshold)
+        print(f"[breaker] success recorded for {args.cls} — reset to closed")
+        return EXIT_OK
+
+    # reset
+    try:
+        os.unlink(breaker_state_path(args.cls))
+    except OSError:
+        pass
+    print(f"[breaker] reset for {args.cls}")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
-        sys.stderr.write("usage: qa-watchdog.py {list,enforce} ...\n")
+        sys.stderr.write("usage: qa-watchdog.py {list,enforce,breaker} ...\n")
         return EXIT_BAD_INPUT
     sub, rest = argv[0], argv[1:]
     dispatch = {
         "list": cmd_list,
         "enforce": cmd_enforce,
+        "breaker": cmd_breaker,
     }
     handler = dispatch.get(sub)
     if handler is None:

@@ -53,22 +53,71 @@ const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 /// Default audit directory.
 ///
 /// Resolves in this order:
-/// 1. `AA_AUDIT_DIR` environment variable, when set (used by integration
-///    tests that need per-test audit isolation — AAASM-1601).
+/// 1. `AA_AUDIT_DIR` environment variable, when set and non-empty (used by
+///    integration tests that need per-test audit isolation — AAASM-1601).
 /// 2. `dirs::data_dir()/aa/audit` (e.g. `~/.local/share/aa/audit` on
 ///    Linux, `~/Library/Application Support/aa/audit` on macOS).
-/// 3. `./aa/audit` if neither the env var nor a system data dir is
-///    available.
-fn default_audit_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("AA_AUDIT_DIR") {
-        if !dir.is_empty() {
-            return PathBuf::from(dir);
-        }
+///
+/// `None` when neither yields a directory, which makes the gateway refuse to
+/// start rather than audit to a relative path — see [`audit_dir_from`].
+fn default_audit_dir() -> Option<PathBuf> {
+    audit_dir_from(non_empty_env("AA_AUDIT_DIR"), dirs::data_dir())
+}
+
+/// Screen an override value, treating empty as absent.
+///
+/// # Why this is separate from [`non_empty_env`]
+///
+/// This screen is the *only* thing standing between an empty `AA_AUDIT_DIR` and a
+/// cwd-relative audit sink: [`audit_dir_from`] uses an override verbatim, so
+/// `Some("")` becomes the audit directory itself and `audit_file_path` joins the
+/// governance JSONL onto `""` — the forked-hash-chain outcome described below,
+/// reached without any `.` fallback existing. A screen that reads the variable
+/// itself cannot be asserted without a test mutating a process-global, which is
+/// the same reason [`audit_dir_from`] takes its environment as arguments.
+fn non_empty(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+fn non_empty_env(name: &str) -> Option<PathBuf> {
+    non_empty(std::env::var_os(name))
+}
+
+/// The resolution rule for [`default_audit_dir`], with the environment passed in.
+///
+/// # Why there is no `.` fallback
+///
+/// Step 3 used to be `./aa/audit`, and this doc comment used to advertise it as
+/// intended behaviour. That was a considered choice for a diagnostic directory
+/// and it is the wrong one for this directory specifically, because this is the
+/// *audit* sink: `audit_file_path` writes governance audit JSONL here, and
+/// `setup_audit` reads the last persisted hash and sequence number back out of it
+/// to maintain hash-chain continuity across restarts.
+///
+/// Resolved relative to the working directory, a gateway started from elsewhere
+/// finds no prior file, so `read_last_hash` yields `None`, the chain restarts from
+/// `[0u8; 32]` and the sequence counter from 0. The result is not a missing audit
+/// trail but a **silently forked** one, with no record in either fork that the
+/// other exists. For the artifact that constitutes the compliance record, failing
+/// to open is the stronger outcome (AAASM-5959 AC 1).
+///
+/// Nothing legitimate is lost. `dirs::data_dir()` already consults the passwd
+/// database on Unix, so reaching `None` takes a substantially more degraded
+/// environment than a merely unset variable, and `AA_AUDIT_DIR` remains the
+/// explicit override for every case where it is set.
+///
+/// # Why the environment is an argument
+///
+/// A function not given the environment cannot resolve against the process
+/// working directory, so the removed fallback cannot return by accident — and the
+/// rule stays assertable without any test mutating process-global state.
+fn audit_dir_from(override_dir: Option<PathBuf>, data_dir: Option<PathBuf>) -> Option<PathBuf> {
+    match override_dir {
+        // Deliberately not joined with `aa/audit`: an explicit override names the
+        // audit directory itself, which is what the integration tests rely on.
+        Some(dir) => Some(dir),
+        None => Some(data_dir?.join("aa").join("audit")),
     }
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("aa")
-        .join("audit")
 }
 
 /// Resolve the JSONL path for the given agent/session pair.
@@ -89,7 +138,12 @@ async fn setup_audit(
     session_id: &str,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(tokio::sync::mpsc::Sender<AuditEntry>, Arc<AtomicU64>, [u8; 32], u64), Box<dyn std::error::Error>> {
-    let audit_dir = default_audit_dir();
+    let audit_dir = default_audit_dir().ok_or_else(|| {
+        "no governance audit directory is known on this host: neither AA_AUDIT_DIR nor a system \
+         data directory could be resolved. Set AA_AUDIT_DIR to the directory the audit trail must \
+         be written to."
+            .to_string()
+    })?;
 
     // Read the last hash AND seq from the existing JSONL file (if any) so both
     // the hash chain and the monotonic sequence counter are maintained across
@@ -1189,6 +1243,125 @@ mod tests {
 
         let _ = shutdown_tx.send(());
         server.await.unwrap();
+    }
+
+    /// The audit directory rule yields nothing rather than a relative path
+    /// (AAASM-5959 AC 1/AC 5).
+    ///
+    /// This is the load-bearing half of the pair. `setup_audit` already
+    /// propagates the `None` as a startup error, but before this fix
+    /// `default_audit_dir` could never hand it one — the `.` fallback made that
+    /// branch unreachable, so nothing about the shipped path was asserted.
+    ///
+    /// Reverting `audit_dir_from` to `unwrap_or_else(|| PathBuf::from("."))`
+    /// reddens exactly this test.
+    #[test]
+    fn no_audit_directory_is_synthesised_when_nothing_is_set() {
+        assert_eq!(
+            audit_dir_from(None, None),
+            None,
+            "with no AA_AUDIT_DIR and no system data directory the rule must name no audit \
+             directory, not ./aa/audit — a working-directory-relative audit sink forks the \
+             hash chain instead of continuing it"
+        );
+    }
+
+    /// The resolution order and its results are unchanged whenever anything is
+    /// set, which is every ordinary invocation (AAASM-5959 AC 2 — no behaviour
+    /// change).
+    #[test]
+    fn the_audit_directory_rule_is_unchanged_when_an_override_or_data_dir_is_set() {
+        let over = PathBuf::from("/o");
+        let data = PathBuf::from("/d");
+
+        // The override wins, and is used verbatim — the integration-test
+        // isolation in AAASM-1601 depends on it naming the directory itself
+        // rather than a parent of `aa/audit`.
+        assert_eq!(
+            audit_dir_from(Some(over.clone()), Some(data.clone())),
+            Some(over.clone())
+        );
+        assert_eq!(audit_dir_from(Some(over), None), Some(PathBuf::from("/o")));
+
+        // The data directory alone gives the documented default layout.
+        assert_eq!(audit_dir_from(None, Some(data)), Some(PathBuf::from("/d/aa/audit")));
+    }
+
+    /// An audit directory is reachable only when a root explicitly names it
+    /// (AAASM-5959 AC 6).
+    ///
+    /// A real directory is planted at exactly the layout the old `.` fallback
+    /// would have produced, and the test turns the root on and off around it.
+    /// With a root, this very directory is what the rule names — which is what
+    /// makes the plant a faithful stand-in for the old fallback's target rather
+    /// than an arbitrary temporary path. With no root, that same directory
+    /// becomes unnameable, so no arrangement of the gateway's working directory
+    /// can select it.
+    ///
+    /// Both halves are needed. Asserting only that nothing is named would hold
+    /// just as well for a rule that had stopped resolving anything at all, and
+    /// the plant would then be decorative — created, but causally absent from
+    /// every assertion.
+    #[test]
+    fn an_audit_directory_is_reachable_only_when_a_root_explicitly_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let planted = dir.path().join("aa").join("audit");
+        std::fs::create_dir_all(&planted).unwrap();
+        assert!(planted.is_dir(), "the plant must exist for this test to mean anything");
+
+        assert_eq!(
+            audit_dir_from(None, Some(dir.path().to_path_buf())),
+            Some(planted),
+            "given a data directory, the rule must name exactly the planted layout — otherwise \
+             the plant is not the directory the old fallback would have selected"
+        );
+
+        assert_eq!(
+            audit_dir_from(None, None),
+            None,
+            "with no root the resolver must name no audit directory, so that same directory is \
+             unreachable from any working directory"
+        );
+    }
+
+    /// An empty `AA_AUDIT_DIR` is screened out before it can become the audit
+    /// directory (AAASM-5959 AC 1/AC 5).
+    ///
+    /// This screen is the only guard on that route, and the route does not need a
+    /// `.` fallback to exist. `audit_dir_from` uses an override verbatim rather
+    /// than joining onto it — AAASM-1601's per-test isolation depends on the
+    /// variable naming the audit directory itself — so `Some("")` would *be* the
+    /// audit directory, `audit_file_path` would join the governance JSONL onto
+    /// `""`, and the trail would land under whatever directory the gateway was
+    /// launched from. That is the forked-hash-chain outcome `audit_dir_from`
+    /// documents, reached by a second route.
+    ///
+    /// Removing `.filter(|v| !v.is_empty())` from `non_empty` reddens exactly the
+    /// first assertion.
+    #[test]
+    fn an_empty_audit_dir_override_is_not_treated_as_a_root() {
+        assert_eq!(
+            non_empty(Some(std::ffi::OsString::new())),
+            None,
+            "an empty AA_AUDIT_DIR must be screened out, not used verbatim as the audit directory"
+        );
+
+        // The two halves that make that refusal safe: a set value is still
+        // honoured verbatim, and an absent one is still absent.
+        assert_eq!(
+            non_empty(Some(std::ffi::OsString::from("/o"))),
+            Some(PathBuf::from("/o"))
+        );
+        assert_eq!(non_empty(None), None);
+
+        // With the empty override screened out, the rule falls through to the
+        // system data directory rather than becoming "".
+        assert_eq!(
+            audit_dir_from(non_empty(Some(std::ffi::OsString::new())), Some(PathBuf::from("/d"))),
+            Some(PathBuf::from("/d/aa/audit")),
+            "an empty override must fall through to the data directory, not become the audit \
+             directory itself"
+        );
     }
 
     fn new_tracker() -> Arc<BudgetTracker> {

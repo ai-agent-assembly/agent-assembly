@@ -21,8 +21,8 @@ use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
 use aa_devtool_claude_code::managed_settings::{PrivilegedFileAuthority, MANAGED_ONLY_KEYS};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::{
-    capability_conformance, DevToolIntegration, DevToolKind, EnvValue, IntegrationCapability, IntegrationRequest,
-    LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
+    capability_conformance, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind, IntegrationCapability,
+    IntegrationRequest, LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
 };
 
 /// A fabricated PEM. Nothing verifies it here; the tests assert it is *copied*,
@@ -907,4 +907,41 @@ async fn a_conflicting_managed_file_is_disclosed_in_the_plan_as_a_refusal() {
 
     // And the third party's file is untouched by planning.
     assert!(std::fs::read_to_string(&managed).expect("read").contains("Bash"));
+}
+
+#[tokio::test]
+async fn host_enforcement_reason_does_not_overclaim_product_scope() {
+    // AAASM-5639: this string is the one an operator reads while deciding
+    // whether to trust the rest of the CLI's output. It must stay scoped to
+    // what is true of *this integration's own launch* (no reliance on the
+    // macOS system trust store — trust comes from `NODE_EXTRA_CA_CERTS`) and
+    // never regress into the broader, false, product-scope claim that
+    // Agent Assembly as a whole never touches that trust store — the
+    // `aa-proxy` binary itself does, on an unmanaged launch (AAASM-5978).
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let status = integration.integration_status(None).await.expect("status");
+    let reason = status
+        .evidence
+        .iter()
+        .find_map(|e| match (&e.mechanism, &e.kind) {
+            (IntegrationCapability::HostEnforcement, EvidenceKind::Absent { reason }) => Some(reason.as_str()),
+            _ => None,
+        })
+        .expect("a HostEnforcement Absent evidence row on an uninstalled host");
+
+    assert!(
+        !reason.contains("Agent Assembly never adds"),
+        "reason must not assert the product never adds a CA to the system trust store: {reason}"
+    );
+    assert!(
+        reason.contains("does not rely on the macOS system trust store"),
+        "reason must state the claim scoped to this integration's own launch: {reason}"
+    );
+    assert!(
+        reason.contains("NODE_EXTRA_CA_CERTS"),
+        "reason must name how this integration establishes trust instead: {reason}"
+    );
 }

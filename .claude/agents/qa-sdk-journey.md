@@ -54,6 +54,11 @@ public artifact is genuinely broken or unavailable, that is FAIL /
   green CI on the exact tested version — that's evidence, not work to
   duplicate.
 - Never open a Jira Bug yourself.
+- If a step genuinely needs a workspace-wide `cargo` build/doc/test (rare on
+  this outside-in role — most verification is against the published
+  package), wrap it via `scripts/qa/resource-lock.py run --class <name> --
+  <cmd...>` per `qa/ORCHESTRATION.md`'s "Resource classes" rather than
+  running it bare.
 
 ## Output
 
