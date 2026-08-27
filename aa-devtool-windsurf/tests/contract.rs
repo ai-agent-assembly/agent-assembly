@@ -14,7 +14,7 @@ fn fixture_path() -> PathBuf {
 }
 
 fn adapter() -> WindsurfCascadeAdapter {
-    WindsurfCascadeAdapter::new()
+    WindsurfCascadeAdapter::new().expect("HOME must be set for this test")
 }
 
 fn adapter_with_fixture() -> WindsurfCascadeAdapter {

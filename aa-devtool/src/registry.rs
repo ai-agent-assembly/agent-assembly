@@ -52,7 +52,9 @@ pub fn adapter_for(tool: &str) -> Option<Box<dyn DevToolAdapter>> {
         "claude" => Some(Box::new(aa_devtool_claude_code::ClaudeCodeAdapter::new())),
         "codex" => Some(Box::new(aa_devtool_codex::CodexAdapter::default())),
         "copilot" => Some(Box::new(aa_devtool_copilot::CopilotAdapter::new())),
-        "windsurf" => Some(Box::new(aa_devtool_windsurf::WindsurfCascadeAdapter::new())),
+        "windsurf" => {
+            aa_devtool_windsurf::WindsurfCascadeAdapter::new().map(|a| Box::new(a) as Box<dyn DevToolAdapter>)
+        }
         _ => None,
     }
 }
