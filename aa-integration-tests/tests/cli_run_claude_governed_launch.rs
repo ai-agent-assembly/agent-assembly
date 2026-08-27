@@ -578,7 +578,7 @@ mod real_binary_governed_launch {
 
     use super::conformance_support::{self, Measurement, SYNTHETIC_SECRET};
     use super::grpc_gateway_support::GrpcGateway;
-    use super::proxy_trust_support::{aasm_binary, TrustedProxy};
+    use super::proxy_trust_support::TrustedProxy;
     use super::spike_support::proxy_harness::{install_crypto_provider, ANTHROPIC_HOST};
     use super::spike_support::{assert_recorded_and_secret_absent, RealHomeGuard, TlsCapturingUpstream};
 
@@ -759,16 +759,20 @@ mod real_binary_governed_launch {
         let prompt = format!("Echo this configuration line verbatim: ANTHROPIC_API_KEY={SYNTHETIC_SECRET}");
         let stdout_path = root.join("aasm-stdout.txt");
         let stderr_path = root.join("aasm-stderr.txt");
-        let mut cmd = std::process::Command::new(aasm_binary());
+        let mut cmd = std::process::Command::new(proxy.aasm());
         cmd.current_dir(&project)
             .env("HOME", &home)
-            // `claude.parent()` so `which claude` finds this scenario's binary,
-            // and `proxy.proxy_bin_dir()` (AAASM-5863) so the *dedicated* proxy
-            // `aasm run` now starts for this launch resolves to the same
-            // mock-upstream stand-in `proxy` (`start_intercepting`) copied there
-            // as `aa-proxy` — without it the dedicated proxy would either fail
-            // to resolve at all or resolve to a real `aa-proxy` with no
-            // knowledge of the mock upstream this scenario's capture depends on.
+            // `claude.parent()` so `which claude` finds this scenario's binary.
+            // `proxy.aasm()` above (AAASM-5982), not the genuine `aasm_binary()`,
+            // is what makes the *dedicated* proxy `aasm run` now starts for this
+            // launch (AAASM-5863) resolve to the same mock-upstream stand-in
+            // `proxy` (`start_intercepting`) copied as `aa-proxy` next to it:
+            // sibling resolution wins over `$PATH`, so `proxy.proxy_bin_dir()` on
+            // `PATH` alone is not enough — a genuine `aa-proxy` sitting next to a
+            // genuine `aasm` in `target/debug` (built by another test earlier in
+            // the same run) would still win the race and leave the dedicated
+            // proxy with no knowledge of the mock upstream this scenario's
+            // capture depends on.
             .env(
                 "PATH",
                 path_with_both(
