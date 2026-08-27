@@ -67,6 +67,23 @@ fn write_policy_file(dir: &TempDir) -> std::path::PathBuf {
     path
 }
 
+/// The gateway's own log, ready to be inlined into an assertion message.
+///
+/// `aasm gateway start` tells the operator to "Check logs at <path>" when the
+/// child exits before binding, but under test that path is inside a `TempDir`
+/// that is removed while the panic unwinds. The advice is therefore unusable
+/// exactly when it is needed, and a CI failure reports only that the gateway
+/// "exited before becoming ready" with no way to find out why. Inlining the log
+/// into the failure message is the only form of it that survives to the CI
+/// transcript.
+fn gateway_log_tail(log_file: &std::path::Path) -> String {
+    match std::fs::read_to_string(log_file) {
+        Ok(log) if log.trim().is_empty() => format!("\n--- {} is empty ---", log_file.display()),
+        Ok(log) => format!("\n--- {} ---\n{log}--- end ---", log_file.display()),
+        Err(e) => format!("\n--- {} unreadable: {e} ---", log_file.display()),
+    }
+}
+
 fn read_pid_file(data_dir: &std::path::Path) -> Option<(u32, String)> {
     let content = std::fs::read_to_string(data_dir.join("gateway.pid")).ok()?;
     let mut lines = content.lines();
@@ -234,10 +251,15 @@ async fn gateway_start_spawns_grpc_listener_and_writes_pidfile() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "start should exit 0; stderr:\n{stderr}");
+    assert!(
+        out.status.success(),
+        "start should exit 0; stderr:\n{stderr}{}",
+        gateway_log_tail(&log_file)
+    );
     assert!(
         stdout.contains(&format!("grpc://{listen}")),
-        "stdout should contain 'grpc://{listen}':\n{stdout}"
+        "stdout should contain 'grpc://{listen}':\n{stdout}{}",
+        gateway_log_tail(&log_file)
     );
 
     // PID file must exist with matching listen address.
