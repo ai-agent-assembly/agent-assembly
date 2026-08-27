@@ -125,6 +125,14 @@ impl Harness {
             .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
             .env("AASM_STATE_DIR", self.dir.path().join("state"))
             .env("HOME", self.dir.path())
+            // AAASM-5957: the client now states its own user-scope configuration
+            // home per request. The fixture's settings file lives at this
+            // harness's root directly (not under a `.claude` subdirectory), so
+            // `CLAUDE_CONFIG_DIR` is pointed at that same root rather than left
+            // to the `$HOME/.claude` default — otherwise the client would name
+            // a configuration home the receipt (derived from where the settings
+            // step actually wrote) never recorded.
+            .env("CLAUDE_CONFIG_DIR", self.dir.path())
             .env("AASM_API_KEY", "");
         cmd.output().expect("run aasm")
     }

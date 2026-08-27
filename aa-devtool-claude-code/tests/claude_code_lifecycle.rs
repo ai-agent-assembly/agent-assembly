@@ -58,6 +58,11 @@ impl Fixture {
     fn paths(&self) -> ClaudeCodePaths {
         ClaudeCodePaths::default()
             .with_home(self.root().join("home"))
+            // AAASM-5957: `with_config_dir` no longer has a `$HOME`-derived
+            // fallback to fall back to, so every fixture that exercises User
+            // scope has to state this explicitly now — this is the caller
+            // stating what used to be inferred, not a change in destination.
+            .with_config_dir(self.user_config_home())
             .with_project(self.root().join("repo"))
             .with_state(self.root().join("state"))
             .with_ca_source(self.ca_source())
@@ -66,6 +71,14 @@ impl Fixture {
             // so nothing here can reach an administrator prompt or the real
             // `/Library/Application Support/ClaudeCode`.
             .with_managed_root(self.root().join("ClaudeCode"))
+    }
+
+    /// The user-scope configuration home this fixture's paths resolve to
+    /// (AAASM-5957) — `$HOME/.claude`, spelled out so a request can name it
+    /// explicitly rather than rely on an inference `ClaudeCodePaths` no
+    /// longer performs.
+    fn user_config_home(&self) -> PathBuf {
+        self.root().join("home").join(aa_devtool_claude_code::scope::DOT_CLAUDE)
     }
 
     /// A stub `claude` binary file. Never executed — the version probe is
@@ -109,17 +122,20 @@ fn request(scope: SettingsScope) -> IntegrationRequest {
     IntegrationRequest::new(DevToolKind::ClaudeCode, ProtectionProfile::Recommended, scope)
 }
 
-/// The same request, naming the project it is for when it needs to.
+/// The same request, naming the project — or the user-scope configuration
+/// home (AAASM-5957) — it is for when it needs to.
 ///
-/// Since AAASM-5913 a project-scope request carries the project explicitly: the
-/// adapter runs inside a service shared by every client on the host, so there is
-/// nothing it could honestly substitute for a project the caller did not name.
+/// Since AAASM-5913 a project-scope request carries the project explicitly, and
+/// since AAASM-5957 a user-scope request carries the configuration home the same
+/// way: the adapter runs inside a service shared by every client on the host, so
+/// there is nothing it could honestly substitute for either one the caller did
+/// not name.
 fn request_in(scope: SettingsScope, fixture: &Fixture) -> IntegrationRequest {
     let request = request(scope);
-    if scope == SettingsScope::Project {
-        request.with_project_root(fixture.root().join("repo"))
-    } else {
-        request
+    match scope {
+        SettingsScope::Project => request.with_project_root(fixture.root().join("repo")),
+        SettingsScope::User => request.with_user_config_home(fixture.user_config_home()),
+        SettingsScope::Managed => request,
     }
 }
 
@@ -194,7 +210,7 @@ async fn the_plan_carries_the_ca_and_the_variable_that_makes_it_work() {
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     plan.validate().expect("the plan must validate");
@@ -249,7 +265,7 @@ async fn without_the_proxy_ca_the_plan_cannot_claim_protection() {
     let fixture = Fixture::new();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     plan.validate().expect("the plan must validate");
@@ -276,7 +292,7 @@ async fn a_project_directory_does_not_capture_a_user_scoped_plan() {
     std::fs::write(fixture.settings_path(SettingsScope::Project), "{}").expect("project settings");
 
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     plan.validate().expect("validate");
@@ -447,7 +463,7 @@ async fn two_authorings_never_share_a_plan_id_and_each_names_its_own_project() {
     // A host-wide plan is about no project, so it must not be labelled with one —
     // the caller's directory is optional context at user scope, not identity.
     let user = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     assert!(
@@ -612,7 +628,7 @@ async fn the_plan_scopes_the_tools_side_channels_without_touching_other_hosts() 
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
 
@@ -642,7 +658,8 @@ async fn observe_only_never_plans_for_protection() {
         DevToolKind::ClaudeCode,
         ProtectionProfile::ObserveOnly,
         SettingsScope::User,
-    );
+    )
+    .with_user_config_home(fixture.user_config_home());
     let plan = integration.plan_integration(&request).await.expect("plan");
     plan.validate().expect("validate");
     assert_eq!(
@@ -732,7 +749,7 @@ async fn a_bypass_permission_mode_is_detected_and_surfaced_in_the_plan() {
 
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     assert!(
@@ -748,7 +765,7 @@ async fn known_unobservable_bypasses_are_stated_rather_than_implied_absent() {
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
     let plan = integration
-        .plan_integration(&request(SettingsScope::User))
+        .plan_integration(&request_in(SettingsScope::User, &fixture))
         .await
         .expect("plan");
     assert!(

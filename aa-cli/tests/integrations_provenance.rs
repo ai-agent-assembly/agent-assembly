@@ -198,6 +198,12 @@ impl Harness {
             .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
             .env("AASM_STATE_DIR", self.dir.path().join("state"))
             .env("HOME", self.dir.path())
+            // AAASM-5957: each fixture's settings file lives directly under
+            // this harness's root, so the caller-supplied configuration home
+            // is pointed there rather than left to the `$HOME/.claude`
+            // default — otherwise it would name a home the receipt never
+            // recorded.
+            .env("CLAUDE_CONFIG_DIR", self.dir.path())
             .env("AASM_API_KEY", "");
         cmd.output().expect("run aasm")
     }
