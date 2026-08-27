@@ -62,7 +62,13 @@ pub struct LogsArgs {
 
 /// Dispatch `aasm gateway logs`.
 pub fn dispatch(args: LogsArgs) -> ExitCode {
-    let log_path = resolve_log_path(&args);
+    let log_path = match super::resolve_log_path(args.log_file.as_deref()) {
+        Some(p) => p,
+        None => {
+            eprintln!("{}", super::NO_LOG_PATH);
+            return ExitCode::FAILURE;
+        }
+    };
 
     let file = match std::fs::File::open(&log_path) {
         Ok(f) => f,
@@ -79,17 +85,6 @@ pub fn dispatch(args: LogsArgs) -> ExitCode {
     } else {
         tail_logs(file, args.lines, level_filter)
     }
-}
-
-fn resolve_log_path(args: &LogsArgs) -> PathBuf {
-    if let Some(ref p) = args.log_file {
-        return p.clone();
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".aasm")
-        .join("logs")
-        .join("gateway.log")
 }
 
 /// Print the last `n` lines of `file`, filtered by `level_filter`.
