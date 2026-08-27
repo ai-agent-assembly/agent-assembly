@@ -34,7 +34,13 @@ pub fn run(args: GetArgs, ctx: &ResolvedContext) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
         match args.version {
-            Some(version) => get_by_version(&version, HistoryConfig::default_config()).await,
+            Some(version) => match HistoryConfig::default_config() {
+                Ok(config) => get_by_version(&version, config).await,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            },
             None => get_active(ctx).await,
         }
     })
