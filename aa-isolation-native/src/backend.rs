@@ -138,7 +138,6 @@ impl CompletedRun {
 }
 
 /// The AASM-native Linux process-isolation backend.
-#[derive(Debug)]
 pub struct NativeBackend {
     identity: BackendIdentity,
     capabilities: BackendCapabilities,
@@ -159,6 +158,28 @@ pub struct NativeBackend {
     pids: Mutex<HashMap<String, u32>>,
     completed: Mutex<HashMap<String, CompletedRun>>,
     next_token: AtomicU64,
+}
+
+/// Hand-written because [`NativeBackend::child_environment`] holds credential
+/// values by design (AAASM-5711's exact-environment override): a derived
+/// `Debug` would print every `NAME=VALUE` pair the caller resolved into any
+/// log line or panic message that formats this backend. AAASM-5942 — mirrors
+/// `aa-isolation-macos-vm::MacosVmBackend`'s own hand-written impl.
+impl core::fmt::Debug for NativeBackend {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("NativeBackend")
+            .field("identity", &self.identity)
+            .field("available", &self.facts.is_some())
+            .field("capture_output", &self.capture_output)
+            .field(
+                "child_environment",
+                &self
+                    .child_environment
+                    .as_ref()
+                    .map(|env| format!("<{} var(s)>", env.len())),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl NativeBackend {
@@ -1001,6 +1022,32 @@ mod tests {
                 ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)
                     .with_scope(RequirementScope::Selectors(vec![permit_only_selector("/tmp")])),
             )
+    }
+
+    /// **AAASM-5942, falsifiability-critical.** `{:?}` on a backend holding a
+    /// resolved child environment must not recover the sentinel value —
+    /// absence, not a mask token, per this ticket's own warning that a test
+    /// grepping for a mask string "passes against the vulnerable code and
+    /// proves nothing".
+    ///
+    /// The negative control is documented rather than left committed: with
+    /// `#[derive(Debug)]` restored on `NativeBackend` in place of its
+    /// hand-written impl, this exact assertion reddened with the sentinel
+    /// visible in the formatted output, confirming the test can fail. See
+    /// this ticket's implementation report for the before/after transcript.
+    #[test]
+    fn debug_formatting_of_a_resolved_child_environment_never_recovers_its_value() {
+        const SENTINEL: &str = "aaasm-5942-sentinel-not-a-real-secret-9f3c9e2b";
+        let mut b = backend();
+        b.set_child_environment(BTreeMap::from([(
+            "AASM_TEST_CREDENTIAL".to_string(),
+            SENTINEL.to_string(),
+        )]));
+        let rendered = format!("{b:?}");
+        assert!(
+            !rendered.contains(SENTINEL),
+            "Debug output recovered the sentinel value: {rendered}"
+        );
     }
 
     /// Discovery must never panic and never leave the caller without a usable

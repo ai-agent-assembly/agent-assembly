@@ -202,7 +202,7 @@ pub enum Disposition {
 /// happened to share a field shape could be silently confused. A tagged enum
 /// makes "which message is this" a fact read once, explicitly, not inferred
 /// from which fields happen to be present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Message {
     /// Guest → host, sent once, immediately after the vsock connection opens
@@ -346,6 +346,96 @@ pub enum Message {
     },
 }
 
+/// Hand-written because [`Message::LaunchRequest::env`] holds credential
+/// values by design — mirroring every other backend in this workspace, the
+/// confined program's environment is built explicitly rather than inherited,
+/// so it is exactly where a governance identity, a proxy address or a
+/// delegated secret lives on the wire. A derived `Debug` would print every
+/// `NAME=VALUE` pair, and this type is printed: `protocol-harness`, this
+/// crate's real-hardware verification binary, logs every [`Message`] it
+/// sends and receives (AAASM-5942). Every other field here is already public
+/// on the wire (via `Serialize`) or free of credential material, so only
+/// `LaunchRequest::env` is redacted to a count.
+impl core::fmt::Debug for Message {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::GuestReady {
+                protocol_version,
+                guest_notes,
+            } => f
+                .debug_struct("GuestReady")
+                .field("protocol_version", protocol_version)
+                .field("guest_notes", guest_notes)
+                .finish(),
+            Self::LaunchRequest {
+                request_id,
+                program,
+                args,
+                env,
+                working_dir,
+                fs_read,
+                fs_write,
+                syscall_filter,
+            } => f
+                .debug_struct("LaunchRequest")
+                .field("request_id", request_id)
+                .field("program", program)
+                .field("args", args)
+                .field("env", &format!("<{} var(s)>", env.len()))
+                .field("working_dir", working_dir)
+                .field("fs_read", fs_read)
+                .field("fs_write", fs_write)
+                .field("syscall_filter", syscall_filter)
+                .finish(),
+            Self::LaunchAccepted { request_id } => f
+                .debug_struct("LaunchAccepted")
+                .field("request_id", request_id)
+                .finish(),
+            Self::LaunchRefused { request_id, reason } => f
+                .debug_struct("LaunchRefused")
+                .field("request_id", request_id)
+                .field("reason", reason)
+                .finish(),
+            Self::LaunchOutcome {
+                request_id,
+                disposition,
+                launcher_refused,
+                launcher_stderr,
+                stdout,
+                stderr,
+                output_truncated,
+                implicit_grants,
+            } => f
+                .debug_struct("LaunchOutcome")
+                .field("request_id", request_id)
+                .field("disposition", disposition)
+                .field("launcher_refused", launcher_refused)
+                .field("launcher_stderr", launcher_stderr)
+                .field("stdout", stdout)
+                .field("stderr", stderr)
+                .field("output_truncated", output_truncated)
+                .field("implicit_grants", implicit_grants)
+                .finish(),
+            Self::TerminateRequest { request_id, mode } => f
+                .debug_struct("TerminateRequest")
+                .field("request_id", request_id)
+                .field("mode", mode)
+                .finish(),
+            Self::TerminateAck {
+                request_id,
+                delivered,
+                detail,
+            } => f
+                .debug_struct("TerminateAck")
+                .field("request_id", request_id)
+                .field("delivered", delivered)
+                .field("detail", detail)
+                .finish(),
+            Self::ProtocolError { reason } => f.debug_struct("ProtocolError").field("reason", reason).finish(),
+        }
+    }
+}
+
 /// Whether a termination request gives the process a chance to decline.
 ///
 /// Mirrors `aa_isolation::TerminationRequest` for the same reason
@@ -453,6 +543,37 @@ mod tests {
             fs_write: vec!["/tmp".to_string()],
             syscall_filter: None,
         }
+    }
+
+    /// **AAASM-5942, falsifiability-critical.** `{:?}` on a `LaunchRequest`
+    /// carrying a resolved `env` must not recover the sentinel value —
+    /// absence, not a mask token, per this ticket's own warning that a test
+    /// grepping for a mask string "passes against the vulnerable code and
+    /// proves nothing".
+    ///
+    /// The negative control is documented rather than left committed: with
+    /// `#[derive(Debug)]` restored on `Message` in place of its hand-written
+    /// impl, this exact assertion reddened with the sentinel visible in the
+    /// formatted output, confirming the test can fail. See this ticket's
+    /// implementation report for the before/after transcript.
+    #[test]
+    fn debug_formatting_of_a_launch_request_env_never_recovers_its_value() {
+        const SENTINEL: &str = "aaasm-5942-sentinel-not-a-real-secret-9f3c9e2b";
+        let request = Message::LaunchRequest {
+            request_id: "r1".to_string(),
+            program: "/usr/local/bin/busybox".to_string(),
+            args: Vec::new(),
+            env: std::collections::BTreeMap::from([("AASM_TEST_CREDENTIAL".to_string(), SENTINEL.to_string())]),
+            working_dir: None,
+            fs_read: Vec::new(),
+            fs_write: Vec::new(),
+            syscall_filter: None,
+        };
+        let rendered = format!("{request:?}");
+        assert!(
+            !rendered.contains(SENTINEL),
+            "Debug output recovered the sentinel value: {rendered}"
+        );
     }
 
     #[test]

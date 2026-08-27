@@ -48,7 +48,7 @@ use super::version::VersionSupport;
 /// to point at the CA an earlier plan step materialised. A launch surface with
 /// no way to carry that variable cannot express the highest-value fix the
 /// AAASM-5276 spike identified.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct LaunchSpec {
     /// Arguments to pass through to the tool untouched.
     pub tool_args: Vec<String>,
@@ -60,6 +60,26 @@ pub struct LaunchSpec {
     pub proxy_addr: Option<String>,
     /// Extra environment variables to inject, name to value.
     pub env: BTreeMap<String, String>,
+}
+
+/// Hand-written because [`LaunchSpec::env`] may hold credential values — the
+/// crate documentation above states exactly why the field exists
+/// (`NODE_EXTRA_CA_CERTS`, and any other variable a launch step decided the
+/// tool needs). AAASM-5942: no `Debug` print of a `LaunchSpec` exists in this
+/// workspace today, but a type whose only sensitive field a derived `Debug`
+/// would expose is fixed pre-emptively, matching every other backend struct
+/// carrying a child environment, rather than left correct only by the
+/// accident of no caller having printed it yet.
+impl core::fmt::Debug for LaunchSpec {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LaunchSpec")
+            .field("tool_args", &self.tool_args)
+            .field("agent_id", &self.agent_id)
+            .field("team_id", &self.team_id)
+            .field("proxy_addr", &self.proxy_addr)
+            .field("env", &format!("<{} var(s)>", self.env.len()))
+            .finish()
+    }
 }
 
 impl LaunchSpec {
@@ -356,6 +376,28 @@ mod tests {
     use crate::integration::version::{SupportedToolVersions, ToolVersion, LIFECYCLE_SCHEMA_VERSION};
     use crate::integration::{LifecyclePhase, ProtectionState, VerificationResult, VersionCompatibility};
     use crate::GovernanceLevel;
+
+    /// **AAASM-5942, falsifiability-critical.** `{:?}` on a `LaunchSpec`
+    /// carrying a resolved `env` must not recover the sentinel value —
+    /// absence, not a mask token, per this ticket's own warning that a test
+    /// grepping for a mask string "passes against the vulnerable code and
+    /// proves nothing".
+    ///
+    /// The negative control is documented rather than left committed: with
+    /// `#[derive(Debug)]` restored on `LaunchSpec` in place of its
+    /// hand-written impl, this exact assertion reddened with the sentinel
+    /// visible in the formatted output, confirming the test can fail. See
+    /// this ticket's implementation report for the before/after transcript.
+    #[test]
+    fn debug_formatting_of_a_launch_spec_env_never_recovers_its_value() {
+        const SENTINEL: &str = "aaasm-5942-sentinel-not-a-real-secret-9f3c9e2b";
+        let spec = LaunchSpec::new("agent-under-test").with_env("AASM_TEST_CREDENTIAL", SENTINEL);
+        let rendered = format!("{spec:?}");
+        assert!(
+            !rendered.contains(SENTINEL),
+            "Debug output recovered the sentinel value: {rendered}"
+        );
+    }
 
     /// Minimal integration whose capability declaration the tests vary.
     struct Stub {
