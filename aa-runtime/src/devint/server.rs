@@ -891,8 +891,8 @@ fn surfaces_not_owned_by_user_config() -> Vec<std::path::PathBuf> {
 
     let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
     let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
-    let managed = var("AASM_CLAUDE_MANAGED_ROOT")
-        .unwrap_or_else(|| PathBuf::from(aa_devtool_claude_code::scope::MANAGED_SETTINGS_DIR));
+    let managed =
+        var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
 
     [state, ca, Some(managed)]
         .into_iter()
@@ -1086,6 +1086,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
         let surfaces = surfaces_not_owned_by_a_project();
+        assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
+        assert!(!surfaces.contains(&raw));
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+    }
+
+    /// The sibling `surfaces_not_owned_by_user_config` carried the same
+    /// pre-AAASM-5987 `aa_devtool_claude_code::scope` reference this module's
+    /// other managed-surface function was fixed to drop — copied in
+    /// separately, so the fix for one did not carry to the other, and this
+    /// module's own regression test above only ever exercised
+    /// `surfaces_not_owned_by_a_project`. Found and fixed alongside AAASM-5957
+    /// when it broke that PR's packaged-artifact gate; this test closes the
+    /// coverage gap that let it recur silently.
+    #[test]
+    fn the_managed_surface_is_in_the_user_config_refusal_set_too() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+        let raw = std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR);
+        let expected = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+        assert!(surfaces_not_owned_by_user_config().contains(&expected));
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let surfaces = surfaces_not_owned_by_user_config();
         assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
         assert!(!surfaces.contains(&raw));
         std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
