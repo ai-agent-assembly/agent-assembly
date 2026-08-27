@@ -98,11 +98,22 @@ if [ "${#publishable_src_dirs[@]}" -eq 0 ] || ! printf '%s\n' "${publishable_src
 fi
 
 # `\b` is not honoured by this shell's grep -E (confirmed empirically); use an
-# explicit non-identifier-or-`::` boundary instead.
+# explicit non-identifier-or-`::` boundary instead. Three distinct reference
+# forms, matched separately rather than by loosening the boundary on a single
+# pattern: a bare word boundary alone false-positives on the ident appearing
+# as an unrelated local module name or inside a string literal (e.g.
+# `pub mod conformance;`, `"../conformance/vectors"` — neither is a reference
+# to the held-back `conformance` crate). `ident::path` is the path-prefix
+# form; `use ident` / `extern crate ident` are the two bare forms the
+# path-prefix pattern alone misses (AAASM-5987 review finding).
 held_back_pattern="$(IFS='|'; echo "${held_back_idents[*]}")"
 crate_ref_fail=0
 while IFS= read -r rs; do
-    hit="$(grep -nE "(^|[^A-Za-z0-9_:])(${held_back_pattern})::" "$rs" | grep -v ':[[:space:]]*//' || true)"
+    hit="$(grep -nE \
+        -e "(^|[^A-Za-z0-9_:])(${held_back_pattern})::" \
+        -e "(^|[^A-Za-z0-9_])use[[:space:]]+(${held_back_pattern})([^A-Za-z0-9_]|$)" \
+        -e "(^|[^A-Za-z0-9_])extern[[:space:]]+crate[[:space:]]+(${held_back_pattern})([^A-Za-z0-9_]|$)" \
+        "$rs" | grep -v ':[[:space:]]*//' || true)"
     if [ -n "$hit" ]; then
         echo "::error::${rs#$WORK/} references a held-back (publish = false) crate after stripping — this crate will fail to compile from a published tarball:" >&2
         echo "$hit" >&2
