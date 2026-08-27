@@ -934,10 +934,12 @@ journeys:
   # proves the containerized aa-runtime sidecar itself enforces allow/deny for
   # real). Still `partial`, not `automated`: J52 is "govern a containerized
   # AGENT", and the agent's own path stays transport=offline until the
-  # published base images ship the SDK's native _core client (AAASM-1202) —
-  # this row is not a truthful `automated` claim until that lands.
+  # published base images ship the SDK's native _core client — tracked by
+  # AAASM-4764 (open, filed at the journey level for exactly this class of
+  # gap), not AAASM-1202 (a different, already-Done, Python-only ticket that
+  # would leave this row silently orphaned).
   lifecycle_state: partial
-  gap_owner: AAASM-1202
+  gap_owner: AAASM-4764
 - id: J53
   jira: AAASM-4751
   name: Pull, configure & operate the aa-gateway container image
