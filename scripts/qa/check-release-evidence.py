@@ -926,7 +926,23 @@ def main() -> int:
     )
     all_blocks += r1_blocks
 
-    r1b_blocks = rule_r1b_self_protection(git, evidence, args.tag_target, evidence_relpath)
+    # R1b's git-log range query assumes candidate_sha..tag_target is a valid,
+    # resolvable range — true whenever candidate_sha is an ancestor of
+    # tag_target, false for "not-ancestor" (a candidate_sha that doesn't
+    # even reach tag_target, e.g. a bogus/unrelated SHA). Without this
+    # guard, that case reaches `git log --diff-filter=M candidate..target`
+    # with an unrelated/invalid range and git exits non-zero, which
+    # surfaces as an uncaught CalledProcessError traceback instead of the
+    # clean "BLOCK — ..." report every other refusal produces (found via
+    # AAASM-5998's own falsification testing of the not-ancestor case).
+    # R1 has already refused in this case; R1b's "was it modified after
+    # the fact" question doesn't apply to a candidate that was never a
+    # valid ancestor to begin with.
+    r1b_blocks = (
+        rule_r1b_self_protection(git, evidence, args.tag_target, evidence_relpath)
+        if reuse_class != "not-ancestor"
+        else []
+    )
     all_blocks += r1b_blocks
 
     if r1_blocks:
@@ -947,7 +963,10 @@ def main() -> int:
     r5_blocks = rule_r5_negative_control(git, evidence, args.tag_target, catalog_relpath)
     all_blocks += r5_blocks
 
-    r6_blocks = rule_r6_temporal(git, evidence)
+    # Same not-ancestor guard as R1b above — R6 also resolves candidate_sha
+    # directly (committer_date), which crashes on a bogus/unrelated SHA that
+    # R1 has already refused.
+    r6_blocks = rule_r6_temporal(git, evidence) if reuse_class != "not-ancestor" else []
     all_blocks += r6_blocks
 
     r7_blocks = rule_r7_signoff_consistency(
