@@ -132,6 +132,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # AAASM-5888: the checker uses `X | Y` union syntax as a runtime
+      # value (not just an annotation), which needs Python >= 3.10 — same
+      # "don't rely on the runner's default python3" reasoning as
+      # version-drift's setup-python step below.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       # AAASM-5888: cheap classify-only pass first — fails fast, before
       # spending any build time, if a doc gained a command that is neither
       # executed nor allowlisted below.

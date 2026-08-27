@@ -58,9 +58,12 @@ Usage:
 
     python3 scripts/qa/verify-documented-commands.py --run
         Coverage check, then actually execute every EXECUTORS entry in
-        order against `./target/debug/aasm`. Builds it itself
-        (`cargo build -p aa-cli`) if `cargo build --workspace --exclude
-        aa-ebpf` hasn't already. This is what CI runs.
+        order. Builds `./target/debug/aasm` itself (`cargo build -p
+        aa-cli`) and, on demand, `./target/debug/aa-gateway` (the separate
+        binary `aasm gateway start` execs — built via `cargo build -p
+        aa-gateway` if not already present). This is what CI runs, after
+        the workflow's own `cargo build --workspace --exclude aa-ebpf`
+        step, which normally makes both already-built.
 
     python3 scripts/qa/verify-documented-commands.py --selftest
         Proves the two load-bearing mechanisms in isolation, using inline
@@ -83,7 +86,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -482,6 +485,26 @@ def _exec_build_aa_cli() -> None:
         raise AssertionError(f"expected binary at {binary}, not found")
 
 
+def _ensure_binary_built(package: str, binary_name: str) -> Path:
+    """`aasm gateway start` execs a separate `aa-gateway` binary that
+    `cargo build -p aa-cli` does not produce (first-run.md: it looks in
+    $PATH, ~/.cargo/bin, ./target/{debug,release}). In CI this only exists
+    because the workflow's earlier `cargo build --workspace --exclude
+    aa-ebpf` step already built it — an undeclared cross-step dependency
+    otherwise. Build it here if it's missing, so --run is self-sufficient
+    on its own (e.g. for local reproduction) rather than silently relying
+    on that earlier step."""
+    binary = REPO_ROOT / "target" / "debug" / binary_name
+    if binary.exists():
+        return binary
+    r = _run(["cargo", "build", "-p", package], cwd=REPO_ROOT, timeout=1800)
+    if r.returncode != 0:
+        raise AssertionError(f"cargo build -p {package} failed:\n{r.stderr}")
+    if not binary.exists():
+        raise AssertionError(f"expected binary at {binary} after building -p {package}, not found")
+    return binary
+
+
 def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     # `cargo install --path aa-cli` (the doc's own next step) triggers its own
     # uncached release build in a separate target dir — the rust-cache /
@@ -645,6 +668,7 @@ def _exec_config_validate() -> None:
     "`aasm gateway start` boots the managed gateway on 127.0.0.1:50051",
 )
 def _exec_gateway_start() -> None:
+    _ensure_binary_built("aa-gateway", "aa-gateway")
     r = _aasm("gateway", "start", "--policy", "policy-examples/low-risk.yaml", timeout=30)
     if r.returncode != 0:
         raise AssertionError(f"aasm gateway start failed:\n{r.stdout}\n{r.stderr}")
@@ -663,7 +687,10 @@ def _exec_gateway_status_running() -> None:
     r = _aasm("gateway", "status")
     if r.returncode != 0:
         raise AssertionError(f"aasm gateway status failed:\n{r.stdout}\n{r.stderr}")
-    _assert_in(r.stdout, "running", "aasm gateway status")
+    # Plain "running" also matches the doc's own "Gateway: not running"
+    # example — the substring assertion has to name the state, not a word
+    # both states contain.
+    _assert_in(r.stdout, "Gateway: running", "aasm gateway status")
 
 
 @_executor(
