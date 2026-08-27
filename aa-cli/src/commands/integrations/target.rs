@@ -64,14 +64,7 @@ impl Target {
             Ok(dir) => nameable_on_the_wire(&dir)?,
             Err(_) => String::new(),
         };
-        let user_config_home = match aa_devtool_claude_code::scope::user_config_home_from(
-            std::env::var_os("CLAUDE_CONFIG_DIR")
-                .filter(|v| !v.is_empty())
-                .map(std::path::PathBuf::from),
-            std::env::var_os("HOME")
-                .filter(|v| !v.is_empty())
-                .map(std::path::PathBuf::from),
-        ) {
+        let user_config_home = match user_config_home_from_env() {
             Some(dir) => nameable_on_the_wire(&dir)?,
             None => String::new(),
         };
@@ -129,13 +122,7 @@ pub(crate) fn project_root_for_plan(scope: &str) -> Result<String, Failure> {
 /// "nothing was changed: ... could not be determined" can act, where one told
 /// nothing cannot.
 pub(crate) fn user_config_home_for_plan(scope: &str) -> Result<String, Failure> {
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from);
-    let home = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from);
-    let Some(dir) = aa_devtool_claude_code::scope::user_config_home_from(config_dir, home) else {
+    let Some(dir) = user_config_home_from_env() else {
         if scope != ScopeArg::User.as_wire() {
             return Ok(String::new());
         }
@@ -148,6 +135,29 @@ pub(crate) fn user_config_home_for_plan(scope: &str) -> Result<String, Failure> 
         ));
     };
     nameable_on_the_wire(&dir)
+}
+
+/// `$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`, or neither (AAASM-5957).
+///
+/// Deliberately duplicated rather than called from
+/// `aa_devtool_claude_code::scope::user_config_home_from` — that crate is
+/// `publish = false` and only ever a dependency of `aa-cli` inside the
+/// `strip-for-publish:begin devtool` region (`.ci/strip-for-publish.sh`),
+/// which does not cover this file or `plan.rs`: both are compiled into the
+/// published `aa-cli` crate unconditionally, the same as
+/// [`project_root_for_plan`] below, which resolves its own root without
+/// reaching into any `aa-devtool-*` crate for exactly this reason. The rule
+/// itself — three lines — is worth restating here rather than worth a
+/// held-back dependency.
+fn user_config_home_from_env() -> Option<std::path::PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .filter(|v| !v.is_empty())
+                .map(|home| std::path::PathBuf::from(home).join(".claude"))
+        })
 }
 
 /// `dir` as the wire can carry it, or a refusal.
