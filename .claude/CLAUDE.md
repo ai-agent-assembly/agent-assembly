@@ -33,9 +33,11 @@ absent rather than picked up by the next. Listed lowest-latency first:
    minted from a local root CA; refuses or redacts a request before it leaves the
    machine, without changing the *agent's* own code. Requires the process to honour
    `HTTP_PROXY`/`HTTPS_PROXY` and trust the CA
-   (on macOS *attempted* at proxy start via `security add-trusted-cert`, which needs
-   admin authorization — a refused prompt fails proxy startup, `aa-proxy/src/lib.rs:68-73`
-   + `tls/keychain.rs:16`; on Linux `sudo aasm proxy install-ca`,
+   (on macOS *attempted* at proxy start via `security add-trusted-cert` unless
+   `AA_PROXY_SYSTEM_TRUST_INSTALL=never` (AAASM-5978 — set for a managed launch
+   with process-scoped trust, e.g. Claude Code's `NODE_EXTRA_CA_CERTS`); on the
+   unopted-out path it needs admin authorization — a refused prompt fails proxy
+   startup, `aa-proxy/src/lib.rs:80-91` + `tls/keychain.rs:16`; on Linux `sudo aasm proxy install-ca`,
    `aa-cli/src/commands/proxy/ca.rs:150-188`; Windows unsupported). HTTP/1.1 only on
    MitM'd hosts, and `llm_only` defaults to `true`, so only the built-in LLM hosts
    are decrypted.

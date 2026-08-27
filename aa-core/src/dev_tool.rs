@@ -15,6 +15,16 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// The directory macOS reserves for Claude Code's endpoint-managed settings.
+///
+/// Owned here rather than in `aa-devtool-claude-code` because the DI-API's
+/// project-root refusal (`aa_runtime::devint::server::surfaces_not_owned_by_a_project`)
+/// has to name this surface in a published runtime, where no `publish = false`
+/// adapter crate exists (AAASM-5987 / AAASM-2340) — `aa-devtool-claude-code`
+/// re-exports this constant rather than defining it, so there is exactly one
+/// definition for both the adapter's own use and the runtime's.
+pub const MANAGED_SETTINGS_DIR: &str = "/Library/Application Support/ClaudeCode";
+
 /// Governance level applied to a managed AI dev tool or agent.
 ///
 /// Variants are ordered such that
@@ -370,6 +380,31 @@ pub trait DevToolAdapter: Send + Sync {
     ///   short-circuit policy decisions when an action would require
     ///   a level the adapter cannot enforce.
     fn governance_level(&self) -> GovernanceLevel;
+
+    /// Environment variable name this adapter's [`build_launch_command`] will
+    /// set, on this host, to give the launched tool its own process-scoped
+    /// trust in the proxy's MitM CA — or `None` if this launch has no such
+    /// mechanism (AAASM-5978).
+    ///
+    /// ### Contract
+    /// * Return `Some(var)` only if `build_launch_command` will, **for this
+    ///   specific launch**, actually set `var` to a value the tool's runtime
+    ///   consults for CA trust (e.g. `NODE_EXTRA_CA_CERTS` for a Node-based
+    ///   tool that has the trust material installed). This is install state,
+    ///   not a static per-adapter property — an adapter whose managed
+    ///   integration hasn't been installed on this host must return `None`
+    ///   even if it supports the mechanism in general.
+    /// * The default `None` is correct for any adapter that hasn't verified
+    ///   this against its tool's real runtime: a wrong `Some` here means the
+    ///   caller skips the macOS System Keychain CA install believing the tool
+    ///   trusts the CA some other way, when it does not.
+    /// * Must not perform I/O beyond what `build_launch_command` already
+    ///   does — this is consulted on the same hot launch path.
+    ///
+    /// [`build_launch_command`]: Self::build_launch_command
+    fn process_scoped_ca_trust_var(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 #[cfg(test)]

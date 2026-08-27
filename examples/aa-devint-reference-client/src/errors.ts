@@ -108,6 +108,39 @@ export class VerbUnavailableError extends DevIntError {
   }
 }
 
+/**
+ * The negotiated connection cannot carry a caller-chosen project root.
+ *
+ * Sibling of {@link VerbUnavailableError} and raised the same way — before the
+ * request is written — but for a reason that has no server-side equivalent.
+ * `PlanArgs.project_root` arrived at DI-API 6; protobuf drops an unknown field
+ * during decode, so an older runtime never learns one was sent. It cannot
+ * answer `UNAVAILABLE_AT_VERSION`, cannot report a degraded connection, and
+ * cannot deny the request. It authors a plan against its own working directory
+ * and returns it as a success (AAASM-5913).
+ *
+ * So unlike the empty-root refusal — which is the *service's* rule, and is left
+ * to the service precisely so there is one copy of it — this one has to live
+ * here. There is no round trip that produces it.
+ */
+export class ProjectRootUnsupportedError extends DevIntError {
+  override readonly name = 'ProjectRootUnsupportedError';
+  readonly remediation: string;
+  constructor(
+    readonly negotiatedVersion: number,
+    readonly since: number,
+  ) {
+    super(
+      `this connection negotiated DI-API ${negotiatedVersion}; a caller-chosen project root ` +
+        `arrived in DI-API ${since}, so a project-scope plan authored over it would be ` +
+        `resolved against the runtime's own working directory rather than yours`,
+    );
+    this.remediation =
+      `Update the AASM runtime to one speaking DI-API ${since} or later. ` +
+      'User and managed scope are unaffected and work against this runtime as-is.';
+  }
+}
+
 /** One line a UI can show for any failure: what happened, then what to do. */
 export function actionable(error: unknown): string {
   if (error instanceof DevIntError) return `${error.message} — ${error.remediation}`;

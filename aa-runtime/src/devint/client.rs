@@ -35,11 +35,12 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
-use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED};
+use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE};
+use super::projection::parse_scope;
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
 use super::verb::DiVerb;
-use aa_core::integration::LIFECYCLE_SCHEMA_VERSION;
+use aa_core::integration::{SettingsScope, LIFECYCLE_SCHEMA_VERSION};
 
 /// How long the DI-API handshake may take before the runtime is treated as
 /// non-responsive (AAASM-5667).
@@ -75,6 +76,61 @@ fn handshake_timed_out(path: &Path, timeout: Duration) -> ClientError {
             timeout
         ),
     )))
+}
+
+/// Refuse `project` scope on a connection whose peer cannot carry a project
+/// root (AAASM-5913).
+///
+/// Shared by `Plan`, which chooses a destination, and by the read-or-reverse
+/// verbs, which name the installation they act on: both carry a `project_root`,
+/// and neither can be honoured by a peer that does not know the field exists.
+///
+/// The check is *before the send*, and that is the whole point. `project_root`
+/// is `PlanArgs` field 6 and `TargetArgs` field 2, both added at
+/// [`DI_API_PROJECT_ROOT_SINCE`](super::negotiate::DI_API_PROJECT_ROOT_SINCE);
+/// proto3 discards an unknown field during decode, so a pre-v6 runtime never
+/// learns one was sent. It does not deny the request, does not report a
+/// degraded connection, and does not leave the field visibly empty on the
+/// caller's side either — the plan simply comes back authored under the
+/// daemon's own working directory, which is the original defect wearing a
+/// successful response. No amount of inspecting the reply recovers this,
+/// because the two cases are byte-identical: a v5 runtime that ignored the root
+/// and a v5 runtime that was never sent one produce the same `PlanView`.
+///
+/// The scope token is parsed with [`parse_scope`] rather than compared as a
+/// string, so "is this project scope" means exactly what the server will decide
+/// it means. A token this client cannot parse is passed through untouched: the
+/// server owns rejecting it, and guessing here would turn one clear refusal
+/// into two competing ones.
+///
+/// Reported as [`ClientError::Incompatible`] built locally — not sent by the
+/// peer — for the reason [`handshake_timed_out`] does the same thing: that enum
+/// is `pub` and exhaustively matchable, so a new variant would be a source
+/// break (AAASM-5669), and a version-shaped refusal carrying reason,
+/// remediation and the supported window is precisely what `Incompatible`
+/// already models. The reason names the negotiated version, so nothing is lost
+/// by the origin being local.
+fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_PROJECT_ROOT_SINCE {
+        return Ok(());
+    }
+    if parse_scope(settings_scope) != Some(SettingsScope::Project) {
+        return Ok(());
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; a caller-chosen project root \
+             arrived in DI-API {DI_API_PROJECT_ROOT_SINCE}, so a project-scope request made over \
+             it would be resolved against the runtime's own working directory rather than yours"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API \
+             {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
+             unaffected and work against this runtime as-is"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
 }
 
 /// Why a client call did not produce a response.
@@ -204,6 +260,82 @@ impl Negotiated {
     pub fn apply_mutation(&self, applied: &wire::ApplyView) -> ApplyMutation {
         ApplyMutation::from_view(applied.outcome.as_ref(), self.di_api_version)
     }
+}
+
+/// Everything a `Plan` invocation carries.
+///
+/// A struct rather than a parameter list because the two shortest fields are
+/// both `&str` and both optional-by-emptiness: `plan(tool, profile, scope, "",
+/// false, "", "")` read as a row of placeholders, and a project root added to
+/// that row (AAASM-5913) would be indistinguishable at the call site from the
+/// policy profile beside it. Named fields make the caller state which of them it
+/// is leaving empty.
+///
+/// # `Default` is kept, deliberately, and it does undercut the paragraph above
+///
+/// `..PlanRequest::default()` lets a caller *not* state a field, which is the
+/// placeholder row again in another spelling — and for `project_root` it spells
+/// `""`, the value that is a refusal at project scope. That is a real cost and it
+/// is accepted rather than unnoticed: every `..default()` site is a test, both
+/// production callers name every field, and the invariant does not rest on the
+/// type either way. Empty is refused twice — client-side before the send, and at
+/// the service boundary — because `""` is a *legitimate* root at user and managed
+/// scope, so no type-level default could distinguish "none to state" from
+/// "forgot", and something had to check the scope. Dropping the derive would move
+/// seven test callsites and buy no invariant that is not already enforced.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlanRequest<'a> {
+    /// Which tool to author a plan for.
+    pub tool_id: &'a str,
+    /// The protection profile to author against.
+    pub profile: &'a str,
+    /// Which settings surface the plan may write: `user`, `project`, `managed`.
+    pub settings_scope: &'a str,
+    /// The policy profile to resolve, or `""` for the service's default.
+    pub policy_profile_id: &'a str,
+    /// Whether the caller has opted into the one privileged step.
+    pub allow_privileged_host_steps: bool,
+    /// The protection level asked for, or `""` for the profile's own.
+    pub requested_level: &'a str,
+    /// The absolute path of the project the **caller** is in, resolved by the
+    /// caller at invocation time.
+    ///
+    /// Mandatory at `project` scope: the service is shared and long-lived, so a
+    /// caller that does not say which project it means leaves the service with
+    /// nothing to name but whichever directory it was spawned in — which is the
+    /// defect in AAASM-5913, not a fallback. Pass `""` when there is none to
+    /// state and expect a refusal, not a default, if the scope needed one.
+    pub project_root: &'a str,
+}
+
+/// Which installed integration a read-or-reverse invocation is about.
+///
+/// `Status`, `Verify`, `Repair` and `Remove` all act on something that is
+/// already installed, and until DI-API 6 they carried no way to say *which*
+/// installation that was. The service filled the gap from its own working
+/// directory, which is a daemon's, not a caller's — AAASM-5913. This is how a
+/// caller says it instead.
+///
+/// Both fields are optional-by-emptiness, and empty means different things:
+///
+/// * `settings_scope: ""` — "there should be exactly one installation of this
+///   tool; act on it". Right in the common case, and the service refuses rather
+///   than picks when the one it finds needs a project the caller did not name.
+/// * `project_root: ""` — "this invocation names no project". Not "use yours":
+///   a service that substituted its own would be the defect again.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TargetRequest<'a> {
+    /// Which surface the installation is on — `user`, `project`, `managed` — or
+    /// `""` to let the service find the one that exists.
+    pub settings_scope: &'a str,
+    /// The absolute path of the project the **caller** is in, resolved by the
+    /// caller at invocation time, or `""` when it has none to state.
+    ///
+    /// Compared, never resolved into a destination — against the receipt for a
+    /// read or reverse verb, and against the plan's authoring project for an
+    /// apply, where nothing is installed yet. Either way a project-scope
+    /// operation the caller cannot name is refused.
+    pub project_root: &'a str,
 }
 
 /// A connected, negotiated DI-API client.
@@ -373,31 +505,44 @@ impl DevIntClient {
         response.tool_list.ok_or(ClientError::UnexpectedFrame)
     }
 
-    /// Author a dry run for `tool_id`.
-    pub async fn plan(
-        &mut self,
-        tool_id: &str,
-        profile: &str,
-        settings_scope: &str,
-        policy_profile_id: &str,
-        allow_privileged_host_steps: bool,
-        requested_level: &str,
-    ) -> Result<wire::PlanView, ClientError> {
-        let mut request = self.request(DiVerb::Plan, tool_id);
+    /// Author a dry run for [`PlanRequest::tool_id`].
+    ///
+    /// Refuses before sending if this connection negotiated a version that
+    /// cannot carry [`PlanRequest::project_root`] and the scope needs one — see
+    /// [`refuse_project_scope_below_v6`].
+    pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
+        refuse_project_scope_below_v6(self.negotiated.di_api_version, args.settings_scope)?;
+        let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
-            profile: profile.to_string(),
-            requested_level: requested_level.to_string(),
-            settings_scope: settings_scope.to_string(),
-            allow_privileged_host_steps,
-            policy_profile_id: policy_profile_id.to_string(),
+            profile: args.profile.to_string(),
+            requested_level: args.requested_level.to_string(),
+            settings_scope: args.settings_scope.to_string(),
+            allow_privileged_host_steps: args.allow_privileged_host_steps,
+            policy_profile_id: args.policy_profile_id.to_string(),
+            project_root: args.project_root.to_string(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
     }
 
     /// Apply a plan the user has reviewed and approved.
-    pub async fn apply(&mut self, tool_id: &str, plan_id: &str) -> Result<wire::ApplyView, ClientError> {
-        let mut request = self.request(DiVerb::Apply, tool_id);
+    ///
+    /// `target` says which project the caller is applying *from*. A plan id is
+    /// handed out by the service and can be presented later, from anywhere, so
+    /// the id alone does not establish that this caller may execute this plan
+    /// here; the service compares the two projects and refuses when they
+    /// disagree (AAASM-5913).
+    ///
+    /// The scope is left to the target as it is for the read verbs. A plan
+    /// already carries the scope it was authored at, and a second, client-stated
+    /// one could only contradict it.
+    pub async fn apply(
+        &mut self,
+        tool_id: &str,
+        plan_id: &str,
+        target: TargetRequest<'_>,
+    ) -> Result<wire::ApplyView, ClientError> {
+        let mut request = self.targeted(DiVerb::Apply, tool_id, target)?;
         request.apply = Some(wire::ApplyArgs {
             plan_id: plan_id.to_string(),
         });
@@ -411,26 +556,38 @@ impl DevIntClient {
     /// state locally, and a client built on it should render
     /// `observed_at_unix_secs` alongside the level: the claim is "verified at
     /// T", not "true now".
-    pub async fn status(&mut self, tool_id: &str) -> Result<wire::StatusView, ClientError> {
-        let response = self.call(self.request(DiVerb::Status, tool_id)).await?;
+    pub async fn status(&mut self, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::StatusView, ClientError> {
+        let request = self.targeted(DiVerb::Status, tool_id, target)?;
+        let response = self.call(request).await?;
         response.status.ok_or(ClientError::UnexpectedFrame)
     }
 
     /// Run the protection test.
-    pub async fn verify(&mut self, tool_id: &str) -> Result<wire::VerificationView, ClientError> {
-        let response = self.call(self.request(DiVerb::Verify, tool_id)).await?;
+    pub async fn verify(
+        &mut self,
+        tool_id: &str,
+        target: TargetRequest<'_>,
+    ) -> Result<wire::VerificationView, ClientError> {
+        let request = self.targeted(DiVerb::Verify, tool_id, target)?;
+        let response = self.call(request).await?;
         response.verification.ok_or(ClientError::UnexpectedFrame)
     }
 
     /// Repair drift.
-    pub async fn repair(&mut self, tool_id: &str) -> Result<wire::RepairView, ClientError> {
-        let response = self.call(self.request(DiVerb::Repair, tool_id)).await?;
+    pub async fn repair(&mut self, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::RepairView, ClientError> {
+        let request = self.targeted(DiVerb::Repair, tool_id, target)?;
+        let response = self.call(request).await?;
         response.repair.ok_or(ClientError::UnexpectedFrame)
     }
 
     /// Author and execute the reversal.
-    pub async fn remove(&mut self, tool_id: &str, plan_id: &str) -> Result<wire::RemovalView, ClientError> {
-        let mut request = self.request(DiVerb::Remove, tool_id);
+    pub async fn remove(
+        &mut self,
+        tool_id: &str,
+        plan_id: &str,
+        target: TargetRequest<'_>,
+    ) -> Result<wire::RemovalView, ClientError> {
+        let mut request = self.targeted(DiVerb::Remove, tool_id, target)?;
         request.remove = Some(wire::RemoveArgs {
             plan_id: plan_id.to_string(),
         });
@@ -470,6 +627,27 @@ impl DevIntClient {
         response.approval.ok_or(ClientError::UnexpectedFrame)
     }
 
+    /// A request for a verb that acts on an installation the caller must name.
+    ///
+    /// One builder for all four rather than four copies of the same three
+    /// lines: the version refusal is the part that must not be forgotten, and a
+    /// verb that forgot it would send a project root into a peer that discards
+    /// it undetectably ([`refuse_project_scope_below_v6`]).
+    ///
+    /// The target is attached unconditionally, empty fields included. An absent
+    /// `TargetArgs` and one saying "no scope, no project" decode identically on
+    /// a v6 peer, so there is nothing to gain by omitting it and one fewer
+    /// branch by not trying.
+    fn targeted(&self, verb: DiVerb, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::Request, ClientError> {
+        refuse_project_scope_below_v6(self.negotiated.di_api_version, target.settings_scope)?;
+        let mut request = self.request(verb, tool_id);
+        request.target = Some(wire::TargetArgs {
+            settings_scope: target.settings_scope.to_string(),
+            project_root: target.project_root.to_string(),
+        });
+        Ok(request)
+    }
+
     fn request(&self, verb: DiVerb, tool_id: &str) -> wire::Request {
         wire::Request {
             request_id: self.next_request_id,
@@ -482,7 +660,7 @@ impl DevIntClient {
 
     async fn call(&mut self, request: wire::Request) -> Result<wire::Response, ClientError> {
         self.next_request_id += 1;
-        codec::write_client_frame(&mut self.writer, DiFrame::Request(request)).await?;
+        codec::write_client_frame(&mut self.writer, DiFrame::Request(Box::new(request))).await?;
         match codec::read_response_frame(&mut self.reader).await? {
             DiResponseFrame::Response(response) => Ok(*response),
             DiResponseFrame::Denied(denied) => Err(ClientError::Denied(denied)),
@@ -591,19 +769,54 @@ mod tests {
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
         let plan = client
-            .plan(&tool, "recommended", "user", "team-default", false, "")
+            .plan(PlanRequest {
+                tool_id: &tool,
+                profile: "recommended",
+                settings_scope: "user",
+                policy_profile_id: "team-default",
+                ..PlanRequest::default()
+            })
             .await
             .expect("plan");
         assert_eq!(plan.plan_id, "plan-1");
         assert_eq!(
-            client.apply(&tool, &plan.plan_id).await.expect("apply").receipt_id,
+            client
+                .apply(&tool, &plan.plan_id, TargetRequest::default())
+                .await
+                .expect("apply")
+                .receipt_id,
             "receipt-1"
         );
-        assert_eq!(client.status(&tool).await.expect("status").achieved_level, "integrated");
-        assert_eq!(client.verify(&tool).await.expect("verify").outcome, "passed");
-        assert_eq!(client.repair(&tool).await.expect("repair").repaired, vec!["settings"]);
         assert_eq!(
-            client.remove(&tool, "plan-1").await.expect("remove").plan_id,
+            client
+                .status(&tool, TargetRequest::default())
+                .await
+                .expect("status")
+                .achieved_level,
+            "integrated"
+        );
+        assert_eq!(
+            client
+                .verify(&tool, TargetRequest::default())
+                .await
+                .expect("verify")
+                .outcome,
+            "passed"
+        );
+        assert_eq!(
+            client
+                .repair(&tool, TargetRequest::default())
+                .await
+                .expect("repair")
+                .repaired,
+            vec!["settings"]
+        );
+        assert_eq!(
+            client
+                .remove(&tool, "plan-1", TargetRequest::default())
+                .await
+                .expect("remove")
+                .plan_id,
             "removal-1"
         );
         assert_eq!(
@@ -627,7 +840,13 @@ mod tests {
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
         let plan = client
-            .plan(&claude_code_id(), "recommended", "user", "team-default", false, "")
+            .plan(PlanRequest {
+                tool_id: &claude_code_id(),
+                profile: "recommended",
+                settings_scope: "user",
+                policy_profile_id: "team-default",
+                ..PlanRequest::default()
+            })
             .await
             .expect("plan");
         let rendered = format!("{plan:?}");
@@ -645,7 +864,7 @@ mod tests {
         // Negotiation still succeeds — that is how a client learns what to tell
         // the user — but there is no anonymous tier behind it.
         assert_eq!(client.negotiated().di_api_version, DI_API_MAX_SUPPORTED);
-        match client.status(&claude_code_id()).await {
+        match client.status(&claude_code_id(), TargetRequest::default()).await {
             Err(ClientError::Denied(denied)) => {
                 assert_eq!(denied.code, wire::DenyCode::Unauthenticated as i32);
                 assert!(denied.remediation.contains("enrol"));

@@ -12,11 +12,23 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { TargetOptions } from '../src/client.js';
+
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = dirname(dirname(pkgRoot));
 const BINARY = join(repoRoot, 'target', 'debug', 'aa-devint-harness');
 
 /** The fixture enrolments the harness issues, one per boundary under test. */
+/**
+ * A target that names no project.
+ *
+ * The harness's fake lifecycle installs host-wide, so there is no project for a
+ * caller's directory to disagree with. A test about *which* project is answered
+ * builds its own target rather than widening this one — a shared constant that
+ * quietly acquired a path would make every test here assert about that path.
+ */
+export const HOST_WIDE: TargetOptions = { settingsScope: '', projectRoot: '' };
+
 export interface HarnessTokens {
   /** Every verb, every tool. What the operator CLI holds. */
   readonly full: string;

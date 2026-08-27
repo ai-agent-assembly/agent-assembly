@@ -57,7 +57,7 @@ use aa_runtime::devint::lifecycle::{
 };
 use aa_runtime::devint::{
     ApplyMutation, DevIntServer, DevIntServerConfig, DevIntServices, DiVerb, IntegrationLifecycle, LifecycleError,
-    TokenScope, ToolScope,
+    LifecycleTarget, TokenScope, ToolScope,
 };
 
 /// The secret a poisoned fixture carries. Its absence from everything the
@@ -222,7 +222,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         Ok(poisoned_plan(&request.tool))
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        _target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError> {
         Self::known(tool)?;
         let plan = poisoned_plan(tool);
         let receipt = IntegrationReceipt {
@@ -264,12 +269,16 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         Self::known(tool)?;
         Ok(fake_status(tool))
     }
 
-    async fn verify(&self, tool: &DevToolKind) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<VerificationResult, LifecycleError> {
         Self::known(tool)?;
         Ok(VerificationResult {
             verified_at_unix_secs: 1_700_000_300,
@@ -285,7 +294,11 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         Self::known(tool)?;
         Ok((
             RepairReport {
@@ -296,7 +309,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         ))
     }
 
-    async fn remove(&self, tool: &DevToolKind, _plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError> {
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+        _plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError> {
         Self::known(tool)?;
         Ok(RemovalPlan::new("removal-1", tool.clone()))
     }

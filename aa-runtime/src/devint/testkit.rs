@@ -37,8 +37,8 @@ use super::apply_outcome::ApplyMutation;
 use super::audit::RecordingAuditSink;
 use super::codec::{self, DiFrame, DiResponseFrame};
 use super::lifecycle::{
-    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, RepairReport,
-    ScopedSecurityEvent, ToolDescriptor, VerdictKind,
+    AppliedIntegration, ApprovalInput, ApprovalRelayReceipt, IntegrationLifecycle, LifecycleError, LifecycleTarget,
+    RepairReport, ScopedSecurityEvent, ToolDescriptor, VerdictKind,
 };
 use super::projection::tool_id;
 use super::provenance::RuntimeProvenance;
@@ -224,7 +224,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         Ok(poisoned_plan(&request.tool))
     }
 
-    async fn apply(&self, tool: &DevToolKind, plan_id: &str) -> Result<AppliedIntegration, LifecycleError> {
+    async fn apply(
+        &self,
+        tool: &DevToolKind,
+        plan_id: &str,
+        _target: &LifecycleTarget,
+    ) -> Result<AppliedIntegration, LifecycleError> {
         self.enter()?;
         let plan = poisoned_plan(tool);
         let receipt = IntegrationReceipt {
@@ -262,12 +267,16 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         self.enter()?;
         Ok(fake_status(tool))
     }
 
-    async fn verify(&self, _tool: &DevToolKind) -> Result<VerificationResult, LifecycleError> {
+    async fn verify(
+        &self,
+        _tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<VerificationResult, LifecycleError> {
         self.enter()?;
         Ok(VerificationResult {
             verified_at_unix_secs: 1_700_000_000,
@@ -276,7 +285,11 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn repair(&self, tool: &DevToolKind) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
+    async fn repair(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+    ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         self.enter()?;
         Ok((
             RepairReport {
@@ -287,7 +300,12 @@ impl IntegrationLifecycle for FakeLifecycle {
         ))
     }
 
-    async fn remove(&self, tool: &DevToolKind, _plan_id: Option<&str>) -> Result<RemovalPlan, LifecycleError> {
+    async fn remove(
+        &self,
+        tool: &DevToolKind,
+        _target: &LifecycleTarget,
+        _plan_id: Option<&str>,
+    ) -> Result<RemovalPlan, LifecycleError> {
         self.enter()?;
         Ok(RemovalPlan::new("removal-1", tool.clone()))
     }
@@ -491,7 +509,7 @@ impl RawClient {
 
     /// Send a fully-specified request.
     pub async fn send_raw(&mut self, request: wire::Request) {
-        codec::write_client_frame(&mut self.writer, DiFrame::Request(request))
+        codec::write_client_frame(&mut self.writer, DiFrame::Request(Box::new(request)))
             .await
             .expect("write request");
     }
@@ -539,6 +557,9 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             settings_scope: "user".to_string(),
             allow_privileged_host_steps: false,
             policy_profile_id: "team-default".to_string(),
+            // User scope, so no project is named — the field is only mandatory
+            // at project scope (AAASM-5913).
+            project_root: String::new(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),
@@ -554,6 +575,9 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             approval_id: "approval-1".to_string(),
             user_input: "approve".to_string(),
         }),
+        // The fixture's receipts are user-scoped, so a plain request names no
+        // project and needs no target; a test about project scope builds one.
+        target: None,
     }
 }
 

@@ -46,7 +46,7 @@ use aa_devtool_codex::{BinaryLocator, CodexAdapter, CodexIntegration, CodexPaths
 use aa_devtool_contract::LaunchEnvStore;
 use aa_proxy::tls::CaStore;
 use aa_runtime::devint::adapters::codex_registration;
-use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
+use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle, LifecycleTarget};
 
 #[path = "evidence/mod.rs"]
 pub mod evidence;
@@ -205,7 +205,7 @@ async fn install(fixture: &Fixture, proxy_url: &str) -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
     service
-        .apply(&tool, &plan.plan_id)
+        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
     Ok(())

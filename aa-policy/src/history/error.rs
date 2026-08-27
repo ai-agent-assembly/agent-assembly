@@ -15,6 +15,16 @@ pub enum PolicyHistoryError {
     VersionNotFound(String),
     /// A metadata sidecar file exists but contains invalid or inconsistent data.
     CorruptedMetadata(String),
+    /// No history directory could be located on this host.
+    ///
+    /// Neither `AA_DATA_DIR` nor a home directory was resolvable, so there is no
+    /// correct place to keep the policy version history. Reported instead of
+    /// guessing a working-directory-relative path (AAASM-5959): policy history is
+    /// the record of what governance was in force when, and a record that
+    /// silently relocates — or that a later run resolving a different working
+    /// directory starts afresh instead of continuing — is a weaker artifact than
+    /// one that refuses to open.
+    UnresolvableHistoryDir,
 }
 
 impl fmt::Display for PolicyHistoryError {
@@ -25,6 +35,11 @@ impl fmt::Display for PolicyHistoryError {
             Self::SerdeYaml(e) => write!(f, "policy YAML error: {e}"),
             Self::VersionNotFound(id) => write!(f, "version not found: {id}"),
             Self::CorruptedMetadata(msg) => write!(f, "corrupted metadata: {msg}"),
+            Self::UnresolvableHistoryDir => write!(
+                f,
+                "no policy history directory is known on this host; set AA_DATA_DIR to the \
+                 directory the policy version history must be kept in"
+            ),
         }
     }
 }
@@ -35,7 +50,7 @@ impl std::error::Error for PolicyHistoryError {
             Self::Io(e) => Some(e),
             Self::SerdeJson(e) => Some(e),
             Self::SerdeYaml(e) => Some(e),
-            Self::VersionNotFound(_) | Self::CorruptedMetadata(_) => None,
+            Self::VersionNotFound(_) | Self::CorruptedMetadata(_) | Self::UnresolvableHistoryDir => None,
         }
     }
 }

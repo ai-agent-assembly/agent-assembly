@@ -76,7 +76,13 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         }
     };
 
-    let log_file = resolve_log_file(&args);
+    let log_file = match super::resolve_log_path(args.log_file.as_deref()) {
+        Some(p) => p,
+        None => {
+            eprintln!("{}", super::NO_LOG_PATH);
+            return ExitCode::FAILURE;
+        }
+    };
     if let Some(parent) = log_file.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("warning: could not create log directory {}: {e}", parent.display());
@@ -325,18 +331,6 @@ pub fn resolve_policy(args: &StartArgs) -> Option<PathBuf> {
         return Some(system_dir);
     }
     None
-}
-
-/// Resolve the log file path (--log-file flag or ~/.aasm/logs/gateway.log).
-fn resolve_log_file(args: &StartArgs) -> PathBuf {
-    if let Some(ref p) = args.log_file {
-        return p.clone();
-    }
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".aasm")
-        .join("logs")
-        .join("gateway.log")
 }
 
 /// Poll `addr` (TCP connect) until it accepts a connection or `timeout` elapses.

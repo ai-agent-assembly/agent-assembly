@@ -15,6 +15,7 @@ use crate::output::OutputFormat;
 use super::model::{Capability, RuntimeInfo, ToolListReport, ToolRow};
 use super::render::emit;
 use super::session::SessionOptions;
+use super::target::Target;
 use super::{exit::Outcome, open, run_blocking, verb_failure};
 
 /// `aasm integrations list` arguments.
@@ -29,6 +30,7 @@ pub struct ListArgs {
 pub fn run(args: ListArgs, options: SessionOptions, output: OutputFormat) -> ExitCode {
     run_blocking(async move {
         let mut session = open(options).await?;
+        let target = Target::here()?;
         let runtime = RuntimeInfo::from_session(&session);
         let tools = session.client.list_tools().await.map_err(verb_failure)?;
 
@@ -38,7 +40,7 @@ pub fn run(args: ListArgs, options: SessionOptions, output: OutputFormat) -> Exi
             // A status read can legitimately fail for a tool nothing has been
             // applied to, and that is not a reason to fail the whole listing —
             // the row simply carries no integration state.
-            let status = session.client.status(&summary.tool_id).await.ok();
+            let status = session.client.status(&summary.tool_id, target.as_request()).await.ok();
             let warnings = collect_tool_warnings(summary, status.as_ref(), &mut any_drift);
             rows.push(build_tool_row(summary, status.as_ref(), warnings, args.capabilities));
         }

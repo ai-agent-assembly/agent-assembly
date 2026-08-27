@@ -28,6 +28,7 @@ import type { CapabilityToken } from './credential.js';
 import {
   DeniedError,
   IncompatibleError,
+  ProjectRootUnsupportedError,
   RuntimeNotRunningError,
   TransportError,
   UnexpectedFrameError,
@@ -43,6 +44,7 @@ import {
   RemoveArgsSchema,
   RequestSchema,
   ScopedEventsArgsSchema,
+  TargetArgsSchema,
   Verb,
   type ApplyArgs,
   type ApplyView,
@@ -53,6 +55,7 @@ import {
   type RemoveArgs,
   type ScopedEventsArgs,
   type RemovalView,
+  type TargetArgs,
   type RepairView,
   type Response,
   type ScopedEventList,
@@ -63,8 +66,54 @@ import {
 
 /** The DI-API versions this build speaks, offered whole on every connection. */
 export const DI_API_MIN_SUPPORTED = 1;
-/** @see DI_API_MIN_SUPPORTED */
-export const DI_API_MAX_SUPPORTED = 2;
+/**
+ * @see DI_API_MIN_SUPPORTED
+ *
+ * Raised from 2 to 6 by AAASM-5913, and the reason is worth stating because it
+ * is not the usual one. This client stayed at 2 through v3, v4 and v5 quite
+ * deliberately: each of those added a field to a *reply*, and a client gains
+ * nothing by claiming to understand a field it does not read. v6 adds a field to
+ * a **request** — {@link PlanOptions.projectRoot} — and that inverts the
+ * calculation. Sending a v6 field while claiming v2 is not modesty, it is a
+ * silent failure: an older runtime discards the field and substitutes its own
+ * working directory.
+ *
+ * The honest consequence, recorded rather than glossed: at v6 this client is
+ * *sent* the v3–v5 reply fields (policy posture, runtime provenance, apply
+ * outcome) and consumes none of them. Receiving a field and ignoring it is safe
+ * — it is fabricating one that is not — but a reader should not mistake this
+ * constant for a claim that all four additions are handled.
+ */
+export const DI_API_MAX_SUPPORTED = 6;
+
+/**
+ * The first DI-API version whose `plan` honours a caller-chosen project root.
+ *
+ * Mirrors `DI_API_PROJECT_ROOT_SINCE` in `aa-runtime/src/devint/negotiate.rs`.
+ * Duplicated rather than derived because the two halves are separately
+ * deployable: the whole hazard being guarded is a client and a runtime built at
+ * different times, so a constant shared between them would assume the thing it
+ * is checking.
+ */
+export const DI_API_PROJECT_ROOT_SINCE = 6;
+
+/**
+ * Whether a `plan` at `settingsScope` needs a newer runtime than was negotiated.
+ *
+ * Exported and pure so the rule can be asserted without a socket — which is the
+ * only way to assert it at all from this side, since the failure it prevents is
+ * a request that must never be written. A test that needed a live pre-v6 runtime
+ * to check this would not run, and the check would rot.
+ *
+ * `settingsScope` is compared against the literal wire vocabulary, matching
+ * `projection::parse_scope` in the runtime. A token neither side recognises
+ * returns `false` on purpose: rejecting an unknown scope is the service's job,
+ * and guessing that `"Project"` *means* project scope would answer a typo with
+ * "upgrade your runtime" instead of "that is not a scope".
+ */
+export function projectRootRequiresNewerRuntime(negotiatedVersion: number, settingsScope: string): boolean {
+  return settingsScope === 'project' && negotiatedVersion < DI_API_PROJECT_ROOT_SINCE;
+}
 
 /** The AAASM-5277 lifecycle schema versions this build can read. */
 export const LIFECYCLE_SCHEMA_VERSIONS = [1];
@@ -125,14 +174,67 @@ export interface PlanOptions {
   readonly requestedLevel?: string;
   /** Whether the user consented to steps that change host state (§6.6). */
   readonly allowPrivilegedHostSteps?: boolean;
+  /**
+   * The absolute path of the project this plan is for, resolved by the caller —
+   * `src/project.ts`, or a plugin's workspace folder (AAASM-5913).
+   *
+   * Required, and not optional like the three fields above it, because the whole
+   * point of the field is that the *caller* states it. An optional project root
+   * is one a call site reaches by forgetting, and forgetting is what left the
+   * shared runtime with nothing to name but the directory it was spawned in.
+   * Pass `""` to say there is none: mandatory at `project` scope, where the
+   * service refuses rather than guesses, and optional context elsewhere.
+   *
+   * This client does not pre-empt that refusal. The rule is the service's, its
+   * message is the actionable one, and a second copy of it here would be a
+   * second thing to keep true.
+   *
+   * It *does* pre-empt a different one. A runtime below
+   * {@link DI_API_PROJECT_ROOT_SINCE} cannot refuse, because protobuf discards
+   * the field before any handler sees it — see
+   * {@link ProjectRootUnsupportedError}. That check has to be here; there is no
+   * round trip that produces it.
+   */
+  readonly projectRoot: string;
+}
+
+/**
+ * Which project a call is about, as the caller resolved it.
+ *
+ * Both fields are required for the reason {@link PlanOptions.projectRoot} is:
+ * an optional field is one a call site reaches by forgetting, and forgetting is
+ * the defect. `""` says "nothing to state" explicitly.
+ */
+export interface TargetOptions {
+  /**
+   * `user`, `project`, `managed`, or `""` to let the service act on whichever
+   * installation exists.
+   *
+   * Naming a scope tells the service something it can already see; naming it
+   * *wrongly* turns "here is your integration" into "nothing is installed". `""`
+   * is the right answer for a client that only knows where it is.
+   */
+  readonly settingsScope: string;
+  /**
+   * The absolute path of the project this invocation is in, or `""`.
+   *
+   * Compared by the service against what is on record — a receipt for a read or
+   * reverse verb, the authoring project for an apply — and never resolved into a
+   * destination.
+   */
+  readonly projectRoot: string;
 }
 
 /**
  * The typed per-verb arguments a request may carry.
  *
- * Exactly the five sub-messages `Request` declares, and nothing shaped like an
+ * Exactly the six sub-messages `Request` declares, and nothing shaped like an
  * opaque blob. There is no `extra`, no `metadata` and no string map here on
  * purpose: a passthrough field is how a closed verb space stops being closed.
+ *
+ * `target` is request-level rather than per-verb because it answers one question
+ * — *which project* — for the five verbs that ask it, and five copies of one
+ * question are five places for the answer to drift.
  */
 interface VerbArgs {
   plan?: PlanArgs;
@@ -140,6 +242,7 @@ interface VerbArgs {
   remove?: RemoveArgs;
   events?: ScopedEventsArgs;
   approval?: ApprovalRelayArgs;
+  target?: TargetArgs;
 }
 
 /** A connected, negotiated DI-API client. */
@@ -224,6 +327,15 @@ export class DevIntClient {
 
   /** Author a reviewable dry run. Mutates nothing. */
   async plan(toolId: string, options: PlanOptions): Promise<PlanView> {
+    // Before the write, not after the reply: an ignored root and an unsent one
+    // decode identically, so there is nothing in the response to check. The
+    // scope token is compared as the literal wire vocabulary, which is what the
+    // service parses (`projection::parse_scope`) — a token neither side
+    // recognises stays the service's to reject, so a typo is answered with "that
+    // is not a scope" rather than with "upgrade your runtime".
+    if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, options.settingsScope)) {
+      throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
+    }
     const response = await this.call(Verb.PLAN, toolId, {
       plan: create(PlanArgsSchema, {
         profile: options.profile,
@@ -231,14 +343,28 @@ export class DevIntClient {
         policyProfileId: options.policyProfileId ?? '',
         requestedLevel: options.requestedLevel ?? '',
         allowPrivilegedHostSteps: options.allowPrivilegedHostSteps ?? false,
+        // Sent verbatim, at every scope, with no default of this client's own:
+        // the caller resolved it against the directory the *user* is in, and any
+        // value substituted here would be about a different project.
+        projectRoot: options.projectRoot,
       }),
     });
     return required(response.plan, 'plan');
   }
 
-  /** Execute a plan the user reviewed. The runtime writes; this client does not. */
-  async apply(toolId: string, planId: string): Promise<ApplyView> {
-    const response = await this.call(Verb.APPLY, toolId, { apply: create(ApplyArgsSchema, { planId }) });
+  /**
+   * Execute a plan the user reviewed. The runtime writes; this client does not.
+   *
+   * `target` says which project this invocation is applying *from*. A plan id is
+   * handed out by the service and can be presented later, from anywhere, so it
+   * is not on its own an answer to "may this caller execute this here" — the
+   * service compares the two projects and refuses when they disagree.
+   */
+  async apply(toolId: string, planId: string, target: TargetOptions): Promise<ApplyView> {
+    const response = await this.call(Verb.APPLY, toolId, {
+      apply: create(ApplyArgsSchema, { planId }),
+      ...this.targeting(target),
+    });
     return required(response.apply, 'apply');
   }
 
@@ -249,26 +375,29 @@ export class DevIntClient {
    * upgrades or infers a level, because a locally derived state is a claim
    * wearing a measurement's clothes (ADR 0030 forbidden design 10).
    */
-  async status(toolId: string): Promise<StatusView> {
-    const response = await this.call(Verb.STATUS, toolId);
+  async status(toolId: string, target: TargetOptions): Promise<StatusView> {
+    const response = await this.call(Verb.STATUS, toolId, this.targeting(target));
     return required(response.status, 'status');
   }
 
   /** Run the protection test. The runtime adjudicates it; the client never self-certifies. */
-  async verify(toolId: string): Promise<VerificationView> {
-    const response = await this.call(Verb.VERIFY, toolId);
+  async verify(toolId: string, target: TargetOptions): Promise<VerificationView> {
+    const response = await this.call(Verb.VERIFY, toolId, this.targeting(target));
     return required(response.verification, 'verification');
   }
 
   /** Restore AASM-owned keys that drifted. */
-  async repair(toolId: string): Promise<RepairView> {
-    const response = await this.call(Verb.REPAIR, toolId);
+  async repair(toolId: string, target: TargetOptions): Promise<RepairView> {
+    const response = await this.call(Verb.REPAIR, toolId, this.targeting(target));
     return required(response.repair, 'repair');
   }
 
   /** Author and execute the reversal. */
-  async remove(toolId: string, planId = ''): Promise<RemovalView> {
-    const response = await this.call(Verb.REMOVE, toolId, { remove: create(RemoveArgsSchema, { planId }) });
+  async remove(toolId: string, planId: string, target: TargetOptions): Promise<RemovalView> {
+    const response = await this.call(Verb.REMOVE, toolId, {
+      remove: create(RemoveArgsSchema, { planId }),
+      ...this.targeting(target),
+    });
     return required(response.removal, 'removal');
   }
 
@@ -301,6 +430,31 @@ export class DevIntClient {
   /** Close the connection. */
   close(): void {
     this.socket.destroy();
+  }
+
+  /**
+   * `target` as the wire carries it, refusing first if this connection cannot.
+   *
+   * One helper for all five targeted verbs rather than five copies of the same
+   * two lines: the version refusal is the part that must not be forgotten, and a
+   * verb that forgot it would send a project root into a peer that discards it
+   * undetectably ({@link ProjectRootUnsupportedError}).
+   *
+   * The target is attached unconditionally, empty fields included. An absent
+   * `TargetArgs` and one saying "no scope, no project" decode identically on a
+   * v6 peer, so there is nothing to gain by omitting it and one fewer branch by
+   * not trying.
+   */
+  private targeting(target: TargetOptions): VerbArgs {
+    if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, target.settingsScope)) {
+      throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
+    }
+    return {
+      target: create(TargetArgsSchema, {
+        settingsScope: target.settingsScope,
+        projectRoot: target.projectRoot,
+      }),
+    };
   }
 
   private async call(

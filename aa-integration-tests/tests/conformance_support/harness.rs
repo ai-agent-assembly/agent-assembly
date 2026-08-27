@@ -40,7 +40,7 @@ use aa_proxy::audit_jsonl::ProxyAuditEntry;
 use aa_proxy::config::CredentialAction;
 use aa_proxy::tls::CaStore;
 use aa_runtime::devint::adapters::claude_code_registration;
-use aa_runtime::devint::lifecycle::{AppliedIntegration, RepairReport};
+use aa_runtime::devint::lifecycle::{AppliedIntegration, LifecycleTarget, RepairReport};
 use aa_runtime::devint::{EngineLifecycle, IntegrationLifecycle};
 use tokio::sync::mpsc;
 
@@ -222,7 +222,7 @@ impl ConformanceHarness {
     /// Verify through the shipped probe.
     pub async fn verify_as_shipped(&self) -> anyhow::Result<VerificationResult> {
         self.service_with_shipped_probe()
-            .verify(&self.tool())
+            .verify(&self.tool(), &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -245,6 +245,15 @@ impl ConformanceHarness {
         DevToolKind::ClaudeCode
     }
 
+    /// The installation every read-or-reverse operation here names.
+    ///
+    /// Unspecified, because this harness installs at user scope: there is one
+    /// installation and no project to name. A project-scope conformance case
+    /// builds its own target rather than widening this one (AAASM-5913).
+    pub fn target(&self) -> LifecycleTarget {
+        LifecycleTarget::unspecified()
+    }
+
     /// Turn condition C1 on or off without changing anything else.
     pub fn set_ca_trust(&self, trusted: bool) {
         self.ca_trust.store(trusted, Ordering::SeqCst);
@@ -262,7 +271,7 @@ impl ConformanceHarness {
     pub async fn install_reporting(&self, profile: ProtectionProfile) -> anyhow::Result<AppliedIntegration> {
         let plan = self.plan(profile).await?;
         self.service
-            .apply(&self.tool(), &plan.plan_id)
+            .apply(&self.tool(), &plan.plan_id, &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -275,7 +284,7 @@ impl ConformanceHarness {
     /// Re-derive the protection state.
     pub async fn status(&self) -> anyhow::Result<IntegrationStatus> {
         self.service
-            .status(&self.tool())
+            .status(&self.tool(), &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -283,7 +292,7 @@ impl ConformanceHarness {
     /// Run the protection test.
     pub async fn verify(&self) -> anyhow::Result<VerificationResult> {
         self.service
-            .verify(&self.tool())
+            .verify(&self.tool(), &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -291,7 +300,7 @@ impl ConformanceHarness {
     /// Restore Agent Assembly-owned state.
     pub async fn repair(&self) -> anyhow::Result<(RepairReport, IntegrationStatus)> {
         self.service
-            .repair(&self.tool())
+            .repair(&self.tool(), &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -299,7 +308,7 @@ impl ConformanceHarness {
     /// Author the reversal without performing it.
     pub async fn removal_preview(&self) -> anyhow::Result<RemovalPlan> {
         self.service
-            .remove(&self.tool(), None)
+            .remove(&self.tool(), &self.target(), None)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -307,7 +316,7 @@ impl ConformanceHarness {
     /// Perform the reversal `plan_id` describes.
     pub async fn remove(&self, plan_id: &str) -> anyhow::Result<RemovalPlan> {
         self.service
-            .remove(&self.tool(), Some(plan_id))
+            .remove(&self.tool(), &self.target(), Some(plan_id))
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }

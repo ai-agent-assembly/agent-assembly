@@ -228,6 +228,60 @@ message Request {
   RemoveArgs remove = 7;
   ScopedEventsArgs events = 8;
   ApprovalRelayArgs approval = 9;
+  // Which project the verb is about. Read by `VERB_STATUS`, `VERB_VERIFY`,
+  // `VERB_REPAIR`, `VERB_REMOVE` and `VERB_APPLY`. Ignored by every other verb.
+  //
+  // Shared by five verbs rather than repeated as five one-field messages: it
+  // answers one question — *which* project — and five copies of one question
+  // are five places for the answer to drift.
+  //
+  // `VERB_APPLY` reads it for a different reason than the other four, and the
+  // difference matters when reading the service. There the target names the
+  // installation to act on; for an apply nothing is installed yet, and the
+  // target names the project the caller is applying *from*, so a plan authored
+  // for another project is refused rather than executed (AAASM-5913). A plan id
+  // is handed out by the service and can be presented later, from anywhere, so
+  // it is not on its own an answer to "may this caller execute this here".
+  TargetArgs target = 10;
+}
+
+// Which already-installed integration a read-or-reverse verb acts on.
+//
+// `tool_id` names the tool. Until DI-API 6 nothing named the *installation*,
+// and the service recovered it by scanning its own store for whichever receipt
+// happened to exist — user scope first. That is a guess with two failure modes,
+// and both were reachable at once: on a host with a user-scope receipt and a
+// project-scope one, every status/verify/repair/remove reported the user
+// integration and the project one was unreachable; on a host with only a
+// project-scope receipt, a caller standing in an unrelated repository was told
+// that repository was protected, and `repair` and `remove` would then act on
+// the *other* project's files (AAASM-5913).
+//
+// The caller knows which installation it means. It says so here.
+message TargetArgs {
+  // "user" | "project" | "managed", or empty to let the service find the one
+  // installation that exists.
+  //
+  // Empty is a convenience, not an inference: it means "there should be
+  // exactly one, use it". If what it finds is project-scoped, `project_root`
+  // below still has to name that same project, so an empty scope can never
+  // widen what a caller reaches — only save them from naming it.
+  string settings_scope = 1;
+  // The absolute path of the project this request is about, on the same terms
+  // as `PlanArgs.project_root`: mandatory at "project" scope, optional context
+  // elsewhere, and never a destination the service derives a path from.
+  //
+  // It is checked *against* the receipt rather than used to find it. A
+  // project-scope receipt records the file it wrote, so the project it belongs
+  // to is already knowable; what was missing was any statement of the project
+  // the caller meant, to compare it with. A mismatch is refused, never
+  // resolved in either direction.
+  //
+  // Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). A pre-v6 runtime discards
+  // this field during decode, so it cannot compare anything and cannot report
+  // that it did not — the same undetectable substitution `PlanArgs.project_root`
+  // documents. Clients below v6 must refuse project scope rather than send it.
+  string project_root = 2;
 }
 
 // What the caller wants planned. Every field is something a caller may
@@ -247,6 +301,42 @@ message PlanArgs {
   // The policy profile *by name*. The document is resolved inside the trusted
   // layers and never crosses this boundary (matrix row 6).
   string policy_profile_id = 5;
+  // The absolute path of the project this request is about (AAASM-5913).
+  //
+  // `settings_scope` says which *kind* of surface to write; at "project" scope
+  // it does not say *whose*. The service is a long-lived daemon shared by every
+  // client on the host, so the only working directory it can read is its own —
+  // whichever directory it happened to be spawned in. Left to infer, it wrote
+  // one caller's managed keys into another repository's checked-in
+  // `.claude/settings.json`, and re-pointed itself on every daemon restart.
+  //
+  // Mandatory at "project" scope: empty there is refused, never defaulted. At
+  // "user" and "managed" scope it is optional context used only so the plan can
+  // disclose that a nearby project configuration exists and will be left alone
+  // — no destination is ever derived from it at those scopes.
+  //
+  // Matrix row 6 still holds, but not because the derivation is a suffix. A
+  // caller cannot name a settings *path* — the service appends its own relative
+  // path to this root — yet choosing the root chooses where that lands, so the
+  // suffix on its own buys nothing. Naming `$HOME` aims the derived path at the
+  // *user*-scope surface; naming `/` or a `..` traversal aims it wherever the
+  // components resolve to; and `IntegrationPlan::validate`'s containment check
+  // cannot catch either, because the destination is derived from the very root
+  // it is checked against, so containment holds trivially.
+  //
+  // What holds the row is the refusal at the boundary: the service requires this
+  // root to exist as a directory, canonicalises it, refuses a relative one, and
+  // refuses one that contains a configuration surface belonging to another
+  // scope. It does not create the directory — materialising a directory a caller
+  // named would be taking the destination from the caller after all.
+  //
+  // Requires DI-API 6 (`DI_API_PROJECT_ROOT_SINCE`). Adding it is additive on
+  // the wire but *not* additive in behaviour: a pre-v6 runtime discards this
+  // field during decode and falls back to its own working directory, producing
+  // the AAASM-5913 defect with no denial and no negotiation signal. Clients
+  // must therefore refuse "project" scope below v6 rather than send this and
+  // inspect the reply — an ignored root and an unsent one decode identically.
+  string project_root = 6;
 }
 
 message ApplyArgs {

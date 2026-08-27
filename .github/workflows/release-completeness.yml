@@ -73,6 +73,17 @@ jobs:
               - '.sqlx/**'
               - '.ci/**'
               - 'scripts/**'
+              # AAASM-5987: none of the globs above matched the PR that added
+              # aa-runtime/src/devint/server.rs's reference to a `publish =
+              # false` crate — only the strip regions' own files
+              # (aa-runtime/src/runtime.rs) were listed, not the crate's
+              # source tree at large. A held-back-crate reference can land in
+              # any file of any publishable crate, not just the ones strip-
+              # for-publish.sh already knows about, so the trigger has to be
+              # the crate's whole `src/`, matching what
+              # scripts/check-publish-surface.sh's new held-back-crate-
+              # reference assertion actually scans.
+              - 'aa-*/src/**'
 
   completeness:
     name: Release-artifact completeness gate

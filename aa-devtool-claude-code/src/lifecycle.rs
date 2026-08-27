@@ -63,7 +63,7 @@
 //! unmeasured — see `docs/src/devtools/limitations.md`.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_devtool_contract::{
@@ -470,11 +470,56 @@ impl ClaudeCodeIntegration {
             .classify(self.detected_version().as_ref())
     }
 
-    /// Every bypass condition currently observable on this host.
-    fn bypasses(&self, scope: SettingsScope) -> Vec<BypassFinding> {
+    /// The paths this call operates over.
+    ///
+    /// # Why this is per call and not the constructed `self.paths` (AAASM-5913)
+    ///
+    /// This integration is constructed once, at daemon boot. Every root it
+    /// resolves then is a property of the host and stays true — except the project
+    /// root, which is a property of *the caller of this particular request*. Two
+    /// clients in two repositories share one instance of this struct, so reading a
+    /// construction-time project root gave both of them whichever repository the
+    /// daemon was launched in.
+    ///
+    /// `project_root` is threaded from
+    /// [`IntegrationRequest::project_root`](aa_devtool_contract::IntegrationRequest::project_root)
+    /// for the authoring verbs and from
+    /// [`IntegrationReceipt::project_root`] for the receipt-driven ones. `None` at
+    /// [`Project`](SettingsScope::Project) scope is an error and not a fallback:
+    /// there is no working directory in this process that could honestly stand in
+    /// for the caller's.
+    fn effective_paths(
+        &self,
+        scope: SettingsScope,
+        project_root: Option<&Path>,
+    ) -> Result<ClaudeCodePaths, AdapterError> {
+        match project_root {
+            Some(root) => Ok(self.paths.clone().with_project(root)),
+            // At user and managed scope the project root is only used to disclose
+            // that a project configuration exists nearby; not knowing it costs one
+            // warning, not correctness.
+            None if scope != SettingsScope::Project => Ok(self.paths.clone()),
+            None => Err(AdapterError::SettingsGenerationFailed(
+                "this request writes the project settings scope but names no project. The \
+                 developer-integration service is shared by every client on this host, so the \
+                 project a change lands in is taken from the request and never from the service's \
+                 own working directory"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Every bypass condition observable in `settings_path`, plus the ambient ones.
+    ///
+    /// The settings file is passed in rather than re-resolved from a scope: during
+    /// `status` and `verify` the honest answer is the file the receipt records
+    /// having written, and re-resolving a `Project` scope against this process's
+    /// roots is how a bypass reading ended up describing a different repository's
+    /// file (AAASM-5913).
+    fn bypasses_at(&self, settings_path: Option<&Path>) -> Vec<BypassFinding> {
         let mut found = Vec::new();
-        if let Ok(path) = self.paths.settings_path(scope) {
-            if let Ok(raw) = std::fs::read_to_string(&path) {
+        if let Some(path) = settings_path {
+            if let Ok(raw) = std::fs::read_to_string(path) {
                 found.extend(bypass::settings_bypasses(&path.display().to_string(), &raw));
             }
         }
@@ -488,9 +533,9 @@ impl ClaudeCodeIntegration {
     /// configuration, it makes the configuration unable to prove anything. An
     /// `Absent` reading only ever lowers the reported state, which is the whole
     /// behaviour needed here.
-    fn limitation_evidence(&self, scope: SettingsScope, now: u64) -> Vec<ProtectionEvidence> {
+    fn limitation_evidence(&self, settings_path: Option<&Path>, now: u64) -> Vec<ProtectionEvidence> {
         let mut evidence: Vec<ProtectionEvidence> = self
-            .bypasses(scope)
+            .bypasses_at(settings_path)
             .into_iter()
             .map(|finding| {
                 ProtectionEvidence::new(
@@ -655,14 +700,22 @@ const PROBE_NOT_RUN_REASON: &str =
 ///
 /// Stated as a *reason it is not active here*, not as a blanket unavailability:
 /// since AAASM-5298 there is a path to it, and it is opt-in, privileged and
-/// verified. Kernel-level enforcement remains Linux-only and the proxy CA is
-/// still never added to the macOS system trust store — trust is established
-/// per-launch through `NODE_EXTRA_CA_CERTS`.
+/// verified. Kernel-level enforcement remains Linux-only. This integration
+/// does not rely on the macOS system trust store — trust is established
+/// per-launch through `NODE_EXTRA_CA_CERTS` — but that is a claim about this
+/// integration's own launch, not about the product: the `aa-proxy` binary
+/// itself does attempt a keychain install at startup on an unmanaged launch
+/// (AAASM-5978, `AA_PROXY_SYSTEM_TRUST_INSTALL=auto`, the default outside a
+/// governed launch like this one). AAASM-5639 corrected this string after it
+/// asserted the broader, false, product-scope claim; keep it in the same
+/// scope as the ADR 0033 §5.3 / AAASM-5528 documentation wording rather than
+/// letting the two drift apart again.
 const HOST_ENFORCEMENT_REASON: &str = "host enforcement is not active: no endpoint-managed settings file \
      installed by Agent Assembly was verified on this host. Install it with \
      `aasm integrations install claude-code --install-managed-settings`, which asks for administrator \
-     authorization for one file write. Kernel-level enforcement remains Linux-only, and Agent Assembly \
-     never adds its certificate authority to the macOS system trust store";
+     authorization for one file write. Kernel-level enforcement remains Linux-only. This integration does \
+     not rely on the macOS system trust store — trust is established per-launch via NODE_EXTRA_CA_CERTS \
+     — but the Agent Assembly proxy itself does attempt a keychain install on an unmanaged launch";
 
 /// What an endpoint-managed attestation does, and does not, claim.
 const HOST_ATTESTATION_CAVEAT: &str = "Agent Assembly verified that the managed policy is installed, owned \
@@ -828,10 +881,14 @@ impl DevToolIntegration for ClaudeCodeIntegration {
 
     async fn plan_integration(&self, request: &IntegrationRequest) -> Result<IntegrationPlan, AdapterError> {
         let scope = request.settings_scope;
-        let settings_path = self.paths.settings_path(scope).map_err(scope_error)?;
-        let launch_env = self.paths.launch_env_dir(scope).map_err(scope_error)?;
-        let ca_pem = self.paths.proxy_ca_pem(scope).map_err(scope_error)?;
-        let hosts_file = self.paths.mitm_hosts_file(scope).map_err(scope_error)?;
+        // Resolved from *this request*, not from the roots this adapter was
+        // constructed over: the project a project-scoped plan writes into belongs
+        // to the caller, and this adapter is shared (AAASM-5913).
+        let paths = self.effective_paths(scope, request.project_root.as_deref())?;
+        let settings_path = paths.settings_path(scope).map_err(scope_error)?;
+        let launch_env = paths.launch_env_dir(scope).map_err(scope_error)?;
+        let ca_pem = paths.proxy_ca_pem(scope).map_err(scope_error)?;
+        let hosts_file = paths.mitm_hosts_file(scope).map_err(scope_error)?;
         let capabilities = self.capabilities();
 
         let interception_available = capabilities.can_intercept_model_path();
@@ -849,7 +906,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         let planned_level = request.effective_target_level().min(ceiling);
 
         let mut plan = IntegrationPlan::new(
-            format!("claude-code-{scope}-{}", now_unix_secs()),
+            authored_plan_id(scope, request.project_root.as_deref()),
             request,
             planned_level,
             GovernanceLevel::L2Enforce,
@@ -1022,7 +1079,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             )
             .warn("restart any running Claude Code session for the managed settings to take effect".to_string());
 
-        for surface in self.paths.detected_surfaces() {
+        for surface in paths.detected_surfaces() {
             if surface.scope != scope {
                 plan = plan.warn(format!(
                     "a {} configuration also exists at {} and this plan does not touch it",
@@ -1032,7 +1089,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             }
         }
 
-        for finding in self.bypasses(scope) {
+        for finding in self.bypasses_at(Some(&settings_path)) {
             plan = plan.warn(format!(
                 "bypass detected — {}. {}",
                 finding.detail(),
@@ -1050,7 +1107,18 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         let now = now_unix_secs();
         let detected = self.detect();
         let compatibility = self.compatibility();
-        let scope = receipt.map_or(SettingsScope::User, |r| r.settings_scope);
+        // The file the receipt records having written, not the file a scope would
+        // resolve to in this process. `status` carries no request, so a
+        // project-scoped receipt's own record is the only thing here that names
+        // the right repository (AAASM-5913).
+        //
+        // With no receipt at all there is nothing installed to read bypasses out
+        // of beyond the user surface, which is what an uninstalled host looks
+        // like.
+        let settings_path = match receipt.and_then(IntegrationReceipt::settings_file_path) {
+            Some(path) => Some(path.to_path_buf()),
+            None => self.paths.settings_path(SettingsScope::User).ok(),
+        };
 
         let mut evidence: Vec<ProtectionEvidence> = Vec::new();
         if let Some(receipt) = receipt {
@@ -1085,7 +1153,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 ));
             }
         }
-        evidence.extend(self.limitation_evidence(scope, now));
+        evidence.extend(self.limitation_evidence(settings_path.as_deref(), now));
 
         let planned_level = receipt.map_or(ProtectionLevel::NotInstalled, |r| r.planned_level);
         let derivation = StateDerivation {
@@ -1176,11 +1244,15 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             ),
         }
 
-        let bypasses = self.bypasses(receipt.settings_scope);
+        // The file this integration recorded having written, so a project-scoped
+        // verify reads the caller's repository and not whichever one this shared
+        // process was started in (AAASM-5913).
+        let settings_path = receipt.settings_file_path();
+        let bypasses = self.bypasses_at(settings_path);
         for finding in &bypasses {
             missing.push(finding.detail());
         }
-        evidence.extend(self.limitation_evidence(receipt.settings_scope, now));
+        evidence.extend(self.limitation_evidence(settings_path, now));
 
         let outcome = if !mismatched.is_empty() {
             VerificationOutcome::Failed {
@@ -1353,6 +1425,52 @@ fn reversal_for(step: &StepReceipt) -> StepAction {
 /// review a removal and then execute the plan it reviewed.
 pub fn removal_plan_id(receipt: &IntegrationReceipt) -> String {
     format!("remove-{}", receipt.receipt_id)
+}
+
+/// The id of a newly authored plan: which installation it is about, and a nonce
+/// that makes it this authoring and no other.
+///
+/// # Why a clock was the wrong identity (AAASM-5913)
+///
+/// The id used to be `claude-code-{scope}-{unix_secs}`, and the service caches
+/// authored plans in a process-global map keyed by it. Two clients planning
+/// `--scope project` within the same second — one in project A, one in project B
+/// — produced the *same* id, so the second authoring silently replaced the
+/// first. The client in A would then apply the id it had been handed and write
+/// Agent Assembly's managed keys into B's checked-in `.claude/settings.json`:
+/// its own consent, another repository's tracked file, and no `prior_state`
+/// recorded against A to reverse.
+///
+/// A clock cannot distinguish two projects because it is not about them. So the
+/// id names the project, and carries 128 bits of OS entropy that no concurrent
+/// authoring can repeat.
+///
+/// # Why the project is a digest and not the path
+///
+/// A plan id is rendered to the terminal, carried in log lines, and embedded in
+/// the receipt id. None of those places need a developer's directory layout, and
+/// a path in an identifier is a path that leaks by being copied.
+///
+/// The digest is **identity, not the check**. It is truncated, and it is taken
+/// from a lossy rendering of the path — neither is safe to authorise on. What
+/// actually refuses another project's plan is the full canonical-path comparison
+/// at apply time; a fingerprint nobody compares would be decoration, and one
+/// that is compared does not need to be short.
+fn authored_plan_id(scope: SettingsScope, project_root: Option<&Path>) -> String {
+    // Only a project-scope plan *is about* a project. At user and managed scope a
+    // root is optional context for a disclosure, and digesting it would say this
+    // host-wide plan belongs to whichever directory the caller happened to be in.
+    let about = match (scope, project_root) {
+        (SettingsScope::Project, Some(root)) => {
+            let digest = sha256_hex(&root.to_string_lossy());
+            format!("p{}", &digest[..16])
+        }
+        // Refused by `IntegrationPlan::validate`, which is where the refusal
+        // belongs. The id still has to be constructible to get there.
+        (SettingsScope::Project, None) => "punnamed".to_string(),
+        _ => "hostwide".to_string(),
+    };
+    format!("claude-code-{scope}-{about}-{}", uuid::Uuid::new_v4().simple())
 }
 
 impl LaunchableTool for ClaudeCodeIntegration {

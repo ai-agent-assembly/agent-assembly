@@ -95,7 +95,7 @@ use aa_core::integration::{
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
-use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle};
+use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle, LifecycleTarget};
 use conformance_support::{ConformanceHarness, Measurement, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
 use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
@@ -153,7 +153,7 @@ async fn install_is_idempotent_and_records_a_receipt() -> anyhow::Result<()> {
     // ── install ────────────────────────────────────────────────────────────
     let applied = h
         .service()
-        .apply(&h.tool(), &plan.plan_id)
+        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let receipt = applied.receipt;
@@ -366,7 +366,7 @@ async fn removal_restores_the_pre_install_state_and_leaves_no_artifact() -> anyh
     // A second removal has nothing to act on and says so, rather than
     // half-performing a reversal against a receipt that no longer exists.
     assert!(
-        h.service().remove(&h.tool(), None).await.is_err(),
+        h.service().remove(&h.tool(), &h.target(), None).await.is_err(),
         "a repeated removal must be refused, not silently repeated"
     );
 
@@ -821,7 +821,7 @@ async fn an_unmanaged_launch_is_unprotected_and_reported_as_a_bypass() -> anyhow
     h.write_settings("{}");
     let plan = h.plan(ProtectionProfile::Recommended).await?;
     h.service()
-        .apply(&h.tool(), &plan.plan_id)
+        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -877,7 +877,10 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
 
     // ── migration ──────────────────────────────────────────────────────────
     let upgraded = h.service_reporting_version("3.4.5");
-    let status = upgraded.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let status = upgraded
+        .status(&h.tool(), &h.target())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         status.compatibility.is_compatible(),
         "a newer tool inside the supported range must stay compatible: {:?}",
@@ -902,7 +905,10 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
         refused.is_err(),
         "a version below the adapter's floor must not produce an appliable plan"
     );
-    let unsupported_status = too_old.status(&h.tool()).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let unsupported_status = too_old
+        .status(&h.tool(), &h.target())
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !unsupported_status.compatibility.is_compatible(),
         "an undetectable version must never resolve upward to compatible: {:?}",
@@ -1100,7 +1106,8 @@ async fn a_tampered_receipt_is_refused_rather_than_believed() -> anyhow::Result<
 #[tokio::test(flavor = "multi_thread")]
 async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     use aa_runtime::devint::{
-        DevIntClient, DevIntServer, DevIntServerConfig, DevIntServices, TokenScope, TokenStore, ToolScope,
+        DevIntClient, DevIntServer, DevIntServerConfig, DevIntServices, TargetRequest, TokenScope, TokenStore,
+        ToolScope,
     };
 
     let h = ConformanceHarness::start().await?;
@@ -1161,13 +1168,33 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
             (
                 "plan",
                 client
-                    .plan("claude-code", "recommended", "user", "", false, "")
+                    .plan(aa_runtime::devint::PlanRequest {
+                        tool_id: "claude-code",
+                        profile: "recommended",
+                        settings_scope: "user",
+                        ..Default::default()
+                    })
                     .await
                     .err(),
             ),
-            ("apply", client.apply("claude-code", "any-plan").await.err()),
-            ("repair", client.repair("claude-code").await.err()),
-            ("remove", client.remove("claude-code", "any-plan").await.err()),
+            (
+                "apply",
+                client
+                    .apply("claude-code", "any-plan", TargetRequest::default())
+                    .await
+                    .err(),
+            ),
+            (
+                "repair",
+                client.repair("claude-code", TargetRequest::default()).await.err(),
+            ),
+            (
+                "remove",
+                client
+                    .remove("claude-code", "any-plan", TargetRequest::default())
+                    .await
+                    .err(),
+            ),
         ] {
             assert!(outcome.is_some(), "the {label} token performed `{verb}` on claude-code");
         }
@@ -1183,7 +1210,7 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        reader.status("claude-code").await.is_ok(),
+        reader.status("claude-code", TargetRequest::default()).await.is_ok(),
         "a read-only token must still be able to read status"
     );
     let mut stranger = DevIntClient::connect(
@@ -1194,15 +1221,15 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        stranger.status("claude-code").await.is_err(),
+        stranger.status("claude-code", TargetRequest::default()).await.is_err(),
         "a token scoped to another tool must not read this one's status"
     );
 
     // A connection with no token at all is denied every verb, with no anonymous
     // tier to fall back to.
     let mut anonymous = DevIntClient::connect(&socket, "conformance", env!("CARGO_PKG_VERSION"), None).await?;
-    assert!(anonymous.status("claude-code").await.is_err());
-    assert!(anonymous.repair("claude-code").await.is_err());
+    assert!(anonymous.status("claude-code", TargetRequest::default()).await.is_err());
+    assert!(anonymous.repair("claude-code", TargetRequest::default()).await.is_err());
 
     shutdown.cancel();
     let _ = serving.await;

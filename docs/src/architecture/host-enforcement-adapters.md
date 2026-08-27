@@ -84,11 +84,14 @@ privileged, authorized managed-settings file write (the Claude Code integration'
   was written, not on observed enforcement.
 
 `aa-proxy` (E3, transport mediation) is separately available on macOS — a System
-Keychain trust install is attempted automatically at proxy start when the
-certificate is not already installed, and requires an admin authorization
-prompt; a refused prompt fails proxy startup. DTrace was considered and rejected
-during the original design as observability-only, not enforcement; no DTrace
-code exists in the tree.
+Keychain trust install is attempted at proxy start when the certificate is not
+already installed **and** the launch hasn't opted out (`AA_PROXY_SYSTEM_TRUST_INSTALL=never`,
+AAASM-5978 — set automatically for a managed launch whose adapter already
+provides process-scoped CA trust, e.g. Claude Code's `NODE_EXTRA_CA_CERTS`),
+and requires an admin authorization prompt on the unopted-out path; a refused
+prompt fails proxy startup there. DTrace was considered and rejected during
+the original design as observability-only, not enforcement; no DTrace code
+exists in the tree.
 
 ## Windows — unsupported, both E3 and E4
 

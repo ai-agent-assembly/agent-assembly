@@ -334,8 +334,11 @@ it is a name-shaped lower bound, not a barrier.
 * **`NODE_TLS_REJECT_UNAUTHORIZED`.** Never set. A TLS failure is a finding, not
   something to suppress — and if you have it set, `status` reports it as a
   bypass.
-* **The system keychain.** A privileged host change whose behaviour is
-  unmeasured.
+* **The system keychain.** A privileged host change this integration's managed
+  launches skip entirely (AAASM-5978: `aasm run claude` sets
+  `AA_PROXY_SYSTEM_TRUST_INSTALL=never`, since `NODE_EXTRA_CA_CERTS` above
+  already gives the launch process-scoped trust) — standalone `aasm proxy
+  start` outside a managed launch still attempts it.
 
   The endpoint managed-settings file **is** offered, but only through the
   explicit `--install-managed-settings` opt-in described above — never as part

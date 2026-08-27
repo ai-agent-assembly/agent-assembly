@@ -100,11 +100,29 @@ pub fn run_apply(args: ApplyArgs, ctx: &ResolvedContext) -> ExitCode {
     })
 }
 
+/// Open the local policy history store at its default location.
+///
+/// `Err` carries the exit code to return: the history directory could not be
+/// located, which is now a refusal rather than a working-directory-relative guess
+/// (AAASM-5959).
+fn default_store() -> Result<FsHistoryStore, ExitCode> {
+    match HistoryConfig::default_config() {
+        Ok(config) => Ok(FsHistoryStore::new(config)),
+        Err(e) => {
+            eprintln!("error: {e}");
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
 /// Execute the `aasm policy history` command.
 pub fn run_history(args: HistoryArgs) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let store = FsHistoryStore::new(HistoryConfig::default_config());
+        let store = match default_store() {
+            Ok(store) => store,
+            Err(code) => return code,
+        };
         match store.list(args.limit).await {
             Ok(versions) => {
                 if versions.is_empty() {
@@ -140,7 +158,10 @@ pub fn run_history(args: HistoryArgs) -> ExitCode {
 pub fn run_rollback(args: RollbackArgs) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let store = FsHistoryStore::new(HistoryConfig::default_config());
+        let store = match default_store() {
+            Ok(store) => store,
+            Err(code) => return code,
+        };
         match store.rollback(&args.version).await {
             Ok(meta) => {
                 println!("Rolled back successfully.");
@@ -164,7 +185,10 @@ pub fn run_rollback(args: RollbackArgs) -> ExitCode {
 pub fn run_diff(args: DiffArgs) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let store = FsHistoryStore::new(HistoryConfig::default_config());
+        let store = match default_store() {
+            Ok(store) => store,
+            Err(code) => return code,
+        };
         match store.diff(&args.version_a, &args.version_b).await {
             Ok(diff) => {
                 if diff.lines().count() <= 2 {

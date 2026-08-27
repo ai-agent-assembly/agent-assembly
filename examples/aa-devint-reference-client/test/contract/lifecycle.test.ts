@@ -12,11 +12,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { DevIntClient } from '../../src/client.js';
+import { DevIntClient, DI_API_MAX_SUPPORTED } from '../../src/client.js';
 import { CapabilityToken } from '../../src/credential.js';
 import { RuntimeNotRunningError } from '../../src/errors.js';
-import { Verb } from '../../src/generated/devint_pb.js';
+import { DenyCode, Verb } from '../../src/generated/devint_pb.js';
 import { discover } from '../../src/discovery.js';
+import { projectRoot } from '../../src/project.js';
 import {
   HOST_ENFORCED_UNAVAILABLE,
   levelLabel,
@@ -25,7 +26,7 @@ import {
   renderTools,
   splitEvidence,
 } from '../../src/render.js';
-import { startHarness, type Harness } from '../harness.js';
+import { HOST_WIDE, startHarness, type Harness } from '../harness.js';
 
 const CLAUDE = 'claude-code';
 const IDENTITY = { name: 'contract-test', version: '0.0.1' } as const;
@@ -61,7 +62,11 @@ describe('discovery and connection', () => {
   it('negotiates before any verb, and reports what was agreed', async () => {
     const client = await connect();
     try {
-      expect(client.negotiated.diApiVersion).toBe(2);
+      // The harness is built from this same tree, so agreement lands on this
+      // client's ceiling. Asserted against the constant rather than the literal
+      // it happens to hold: the number is not the property, and pinning it made
+      // this test read every ceiling change as a regression (AAASM-5913).
+      expect(client.negotiated.diApiVersion).toBe(DI_API_MAX_SUPPORTED);
       expect(client.negotiated.coreVersion).not.toBe('');
       expect(client.negotiated.lifecycleSchemaVersion).toBeGreaterThan(0);
       expect(client.negotiated.degraded).toBe(false);
@@ -97,6 +102,9 @@ describe('the lifecycle flows', () => {
         profile: 'recommended',
         settingsScope: 'user',
         policyProfileId: 'team-default',
+        // User scope: the project root is optional context, and this plan states
+        // it has none rather than borrowing the test runner's directory.
+        projectRoot: '',
       });
       expect(plan.planId).toBe('plan-1');
       // The policy profile arrives by reference: an id, a name and a digest,
@@ -104,16 +112,16 @@ describe('the lifecycle flows', () => {
       expect(plan.policyProfile?.id).toBe('team-default');
       expect(plan.policyProfile?.digest).toBe('sha256:abcd');
 
-      const applied = await client.apply(CLAUDE, plan.planId);
+      const applied = await client.apply(CLAUDE, plan.planId, HOST_WIDE);
       expect(applied.receiptId).toBe('receipt-1');
       // The service downgraded planned → achieved. The client reports that gap
       // rather than smoothing it over.
       expect(applied.plannedLevel).toBe('gateway_protected');
       expect(applied.achievedLevel).toBe('integrated');
 
-      expect((await client.verify(CLAUDE)).outcome).toBe('passed');
-      expect((await client.repair(CLAUDE)).repaired).toEqual(['settings']);
-      expect((await client.remove(CLAUDE, plan.planId)).planId).toBe('removal-1');
+      expect((await client.verify(CLAUDE, HOST_WIDE)).outcome).toBe('passed');
+      expect((await client.repair(CLAUDE, HOST_WIDE)).repaired).toEqual(['settings']);
+      expect((await client.remove(CLAUDE, plan.planId, HOST_WIDE)).planId).toBe('removal-1');
     } finally {
       client.close();
     }
@@ -135,11 +143,69 @@ describe('the lifecycle flows', () => {
   });
 });
 
+describe('the project a request is for', () => {
+  /**
+   * AAASM-5913, from the client's side of the socket.
+   *
+   * The service is the thing that refuses here, and these assertions run against
+   * it rather than against a re-statement of its rule in TypeScript — the client
+   * would still compile if it dropped the field, so what needs proving is that
+   * the value reaches the far side and that the far side is what adjudicates it.
+   */
+  it('plans at project scope when the caller names the project', async () => {
+    const client = await connect();
+    try {
+      const plan = await client.plan(CLAUDE, {
+        profile: 'recommended',
+        settingsScope: 'project',
+        projectRoot: projectRoot('project', {}, () => scratch),
+      });
+      expect(plan.planId).toBe('plan-1');
+    } finally {
+      client.close();
+    }
+  });
+
+  it('sends the project root it was given, and no value of its own', async () => {
+    const client = await connect();
+    try {
+      // The service quotes the root back when it refuses a relative one, which
+      // is the only place this harness echoes the field at all. A client that
+      // dropped it would be refused for naming *nothing*, with a different
+      // message; a client that substituted its own cwd would be refused with
+      // that path quoted instead.
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'user', projectRoot: 'not/absolute' }),
+      ).rejects.toThrow(/"not\/absolute" is not absolute/);
+    } finally {
+      client.close();
+    }
+  });
+
+  it('is refused at project scope when no project was named, rather than defaulted', async () => {
+    const client = await connect();
+    try {
+      // The refusal is the fix. A service that fell back to its own working
+      // directory wrote one caller's managed keys into an unrelated repository's
+      // checked-in settings, and this client must not talk it into doing that by
+      // sending an empty root at the one scope where the root is the answer.
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+      ).rejects.toMatchObject({ code: DenyCode.LIFECYCLE_ERROR });
+      await expect(
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+      ).rejects.toThrow(/will not guess/);
+    } finally {
+      client.close();
+    }
+  });
+});
+
 describe('protection-level display', () => {
   it('renders the level the service computed, never one derived from evidence', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       // The fixture is deliberately tempting: it carries protective *exercised*
       // evidence (a blocked probe) while the service's own answer is only
       // `integrated`. A client that ranked evidence would show
@@ -162,7 +228,7 @@ describe('protection-level display', () => {
   it('shows exercised evidence separately from read-back evidence', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       const split = splitEvidence(status.evidence);
       expect(split.exercised).toHaveLength(1);
       expect(split.readBack).toHaveLength(1);
@@ -182,7 +248,7 @@ describe('protection-level display', () => {
   it('names Host Enforced as unavailable rather than omitting it', async () => {
     const client = await connect();
     try {
-      const rendered = renderStatus(await client.status(CLAUDE)).join('\n');
+      const rendered = renderStatus(await client.status(CLAUDE, HOST_WIDE)).join('\n');
       // Silence here reads as "there is nothing above what I have", which is the
       // over-claim §7.3 exists to prevent.
       expect(rendered).toContain(HOST_ENFORCED_UNAVAILABLE);
@@ -194,7 +260,7 @@ describe('protection-level display', () => {
   it('carries the observation timestamp, so the claim is "verified at T"', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       expect(status.observedAtUnixSecs).toBeGreaterThan(0n);
       expect(renderStatus(status).join('\n')).toContain('Observed at:');
     } finally {
@@ -205,7 +271,7 @@ describe('protection-level display', () => {
   it('shows the next level up and why it is not active', async () => {
     const client = await connect();
     try {
-      const status = await client.status(CLAUDE);
+      const status = await client.status(CLAUDE, HOST_WIDE);
       expect(status.nextLevel?.level).toBe('gateway_protected');
       expect(renderStatus(status).join('\n')).toContain('no core-side probe observation');
     } finally {

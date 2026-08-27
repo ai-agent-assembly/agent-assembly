@@ -569,6 +569,9 @@ jobs:
               - '.sqlx/**'
               - '.ci/**'
               - 'scripts/**'
+              # AAASM-5987: glob-for-glob copy of the same addition in
+              # release-completeness.yml — see the comment there.
+              - 'aa-*/src/**'
             # AAASM-5677: glob-for-glob copy of docs.yml's own `changes`
             # router — the same selection that gates its governance-gate jobs
             # (`build`, `verify-commands`, `version-drift`, `metadata-drift`).

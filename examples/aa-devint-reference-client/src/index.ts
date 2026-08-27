@@ -12,8 +12,15 @@
  * uses no MCP at all is fully governed. Building a plugin on MCP instead of on
  * this API would make protection depend on the agent choosing to call a tool.
  */
-export { DevIntClient, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, VERB_NAMES } from './client.js';
-export type { ClientIdentity, Negotiated, PlanOptions } from './client.js';
+export {
+  DevIntClient,
+  DI_API_MAX_SUPPORTED,
+  DI_API_MIN_SUPPORTED,
+  DI_API_PROJECT_ROOT_SINCE,
+  projectRootRequiresNewerRuntime,
+  VERB_NAMES,
+} from './client.js';
+export type { ClientIdentity, Negotiated, PlanOptions, TargetOptions } from './client.js';
 export { CapabilityToken, TOKEN_ENV } from './credential.js';
 export { discover, socketPath, SOCKET_PATH_ENV } from './discovery.js';
 export type { Discovery } from './discovery.js';
@@ -22,11 +29,13 @@ export {
   DeniedError,
   DevIntError,
   IncompatibleError,
+  ProjectRootUnsupportedError,
   RuntimeNotRunningError,
   TransportError,
   UnexpectedFrameError,
   VerbUnavailableError,
 } from './errors.js';
+export { projectRoot, PROJECT_ROOT_ENV } from './project.js';
 export {
   HOST_ENFORCED_UNAVAILABLE,
   LEVEL_LABELS,

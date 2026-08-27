@@ -61,13 +61,19 @@ preconditions decide whether it sees anything at all:
   Codex and Windsurf). A tool started outside `aasm run` is therefore
   intercepted **if** an integration is installed for it, and not otherwise.
 - **CA trust.** The client must trust the local root CA. On macOS the install is
-  *attempted* automatically at proxy start, gated only on whether the certificate
-  is already installed (`aa-proxy/src/lib.rs:64-69`); it shells out to `security
-  add-trusted-cert` (`aa-proxy/src/tls/keychain.rs:16-42`), which requires admin
-  authorization — macOS prompts, and **a refusal fails proxy startup**, because
-  the call propagates with `?`. Plan for that on CI runners and non-admin
-  machines. On Linux it is a deliberate operator step, `sudo aasm proxy
-  install-ca` (`aa-cli/src/commands/proxy/ca.rs:150-188`, which copies to
+  *attempted* at proxy start, gated on whether the certificate is already
+  installed *and* on `AA_PROXY_SYSTEM_TRUST_INSTALL` (AAASM-5978,
+  `aa-proxy/src/lib.rs:80-91`): unset/`auto` reproduces the historical
+  unconditional behaviour, `never` skips the check entirely — set automatically
+  by a managed launch whose adapter reports it already gives the tool
+  process-scoped CA trust (Claude Code's `NODE_EXTRA_CA_CERTS`, below). On the
+  `auto` path it shells out to `security add-trusted-cert`
+  (`aa-proxy/src/tls/keychain.rs:16-42`), which requires admin authorization —
+  macOS prompts, and **a refusal fails proxy startup**, because the call
+  propagates with `?`. Plan for that on CI runners and non-admin machines
+  running a launch that hasn't opted into `never`. On Linux it is a deliberate
+  operator step, `sudo aasm proxy install-ca`
+  (`aa-cli/src/commands/proxy/ca.rs:150-188`, which copies to
   `/usr/local/share/ca-certificates/` and runs `update-ca-certificates`).
   Windows is unsupported. Node-based tools additionally need
   `NODE_EXTRA_CA_CERTS`. Note the failure mode differs from the routing case
