@@ -539,8 +539,22 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4596 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5883
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::limit_per_hour_allows_within_limit_then_denies_when_exceeded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_denies_a_call_outside_the_window
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_allows_a_call_inside_the_window
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: aa-gateway/tests/rate_limit_active_hours_test.rs (AAASM-5883; falsified by temporarily removing the Stage 1 active_hours check and the rate-limit consume call from PolicyEngine::evaluate())
 - id: J29
   jira: AAASM-4597
   name: Verify enforcement modes (Enforce / Observe / Disabled)
