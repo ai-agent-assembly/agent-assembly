@@ -182,10 +182,19 @@ journeys:
   # dated, real manual/live verification — a live aa-gateway + aa-api-server
   # stood up locally, a real published Python SDK registering a live agent
   # against the gateway (ctx.registered == True, confirmed in aasm agent
-  # list) — which is exactly this journey's AC's second alternative
-  # (executable evidence OR a recorded manual/live verification).
+  # list). Note this covers the registration flow this journey's own name
+  # names ("govern your first agent... end-to-end"), not the full 16-
+  # framework compatibility matrix AAASM-4530's `outcome` field points at
+  # as "the full acceptance contract" — those are a broader, separate claim.
   release_blocking: true
   lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
