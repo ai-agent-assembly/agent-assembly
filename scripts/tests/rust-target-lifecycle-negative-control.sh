@@ -255,6 +255,7 @@ check "T7 status exits zero when well under a generous budget" \
 # lane) actually depends on.
 # ---------------------------------------------------------------------------
 # shellcheck disable=SC1090
+source <(sed -n '/^extract_target_dir_from_build_section()/,/^}/p' "$TOOL")
 source <(sed -n '/^resolve_effective_target_dir()/,/^}/p' "$TOOL")
 
 T8_WT="$WORKDIR/t8-wt"
@@ -420,6 +421,72 @@ RC16=$?
 check "T16 scenario8: missing --worktree is a clear, non-zero usage error" "$RC16" "2"
 check "T16 scenario8: usage error message names the missing flag" \
   "$(echo "$OUT16" | grep -c -- "--worktree DIR is required")" "1"
+
+# ---------------------------------------------------------------------------
+# T17-T19: regressions for the adversarial-review findings fixed in this
+# revision — relative/"."/".." target-dir values, target-dir keys outside
+# [build], and pgrep regex-metacharacter paths.
+# ---------------------------------------------------------------------------
+
+# T17: a worktree-local config with a RELATIVE target-dir must be refused
+# outright, never resolved against some assumed CWD and handed to rm -rf.
+ROOT17="$WORKDIR/t17-root"
+mkdir -p "$ROOT17"
+MAIN17="$ROOT17/main-repo"
+init_repo "$MAIN17"
+WT17="$ROOT17/wt-relative-target-dir"
+git -C "$MAIN17" worktree add -q "$WT17" -b t17-branch >/dev/null 2>&1
+git -C "$MAIN17" worktree remove --force "$WT17" >/dev/null 2>&1 || true
+mkdir -p "$WT17/.cargo"
+cat >"$WT17/.cargo/config.toml" <<EOF
+[build]
+target-dir = "."
+EOF
+# No target/ subdir needed — resolve_effective_target_dir should return the
+# dangerous relative value "." itself, which is_safe_to_reclaim must refuse
+# before ever checking -d/CACHEDIR.TAG on it.
+OUT17="$(run_tool reclaim-one --worktree "$WT17" --yes 2>&1)"
+check "T17 relative target-dir ('.') is refused, not resolved/deleted" \
+  "$(echo "$OUT17" | grep -c "not an absolute path")" "1"
+check "T17 the worktree directory itself still exists (nothing was rm -rf'd out from under it)" \
+  "$([ -d "$WT17" ] && echo present)" "present"
+
+# T18: a target-dir-looking line OUTSIDE [build] must be ignored, not
+# picked up as if it were the real setting.
+ROOT18="$WORKDIR/t18-root"
+mkdir -p "$ROOT18"
+MAIN18="$ROOT18/main-repo"
+init_repo "$MAIN18"
+WT18="$ROOT18/wt-wrong-section"
+git -C "$MAIN18" worktree add -q "$WT18" -b t18-branch >/dev/null 2>&1
+make_target_dir "$WT18/target" 1
+git -C "$MAIN18" worktree remove --force "$WT18" >/dev/null 2>&1 || true
+mkdir -p "$WT18/.cargo"
+cat >"$WT18/.cargo/config.toml" <<EOF
+[some-other-table]
+target-dir = "$WORKDIR/t18-should-be-ignored"
+EOF
+check "T18 target-dir outside [build] is ignored -> falls through to default <wt>/target" \
+  "$(resolve_effective_target_dir "$WT18" "" "")" "$WT18/target"
+
+# T19: a worktree path containing ERE metacharacters must not defeat the
+# live-process check via pgrep's regex interpretation of the path.
+ROOT19="$WORKDIR/t19-root"
+mkdir -p "$ROOT19"
+MAIN19="$ROOT19/main-repo"
+init_repo "$MAIN19"
+WT19="$ROOT19/wt-fix(bug)+test.branch"
+git -C "$MAIN19" worktree add -q "$WT19" -b t19-branch >/dev/null 2>&1
+make_target_dir "$WT19/target" 1
+git -C "$MAIN19" worktree remove --force "$WT19" >/dev/null 2>&1 || true
+mkdir -p "$WT19"; make_target_dir "$WT19/target" 1
+exec 9<"$WT19/target/CACHEDIR.TAG"
+OUT19="$(run_tool reclaim-one --worktree "$WT19" --yes 2>&1)"
+exec 9<&-
+check "T19 regex-metacharacter path still detects a live process reference" \
+  "$([ -d "$WT19/target" ] && echo present)" "present"
+check "T19 reported as refused (live process reference), not silently reclaimed" \
+  "$(echo "$OUT19" | grep -c "live process")" "1"
 
 echo
 if [ "$FAILED" -eq 0 ]; then

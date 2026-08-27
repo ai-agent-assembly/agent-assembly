@@ -66,13 +66,34 @@
 #          something to let block or unwind the merge itself.
 #
 # Safety gates (ALL must hold before any deletion, in is_safe_to_reclaim):
-#   1. Path is not, and is not inside, the resolved GLOBAL shared target-dir.
-#   2. Directory contains a Cargo-written CACHEDIR.TAG (ownership proof —
-#      refuses to delete a directory Cargo didn't create).
-#   3. No live process has the path open or in its command line (lsof +
-#      pgrep -f, best-effort — see KNOWN LIMITATIONS in the test harness).
+#   0. The resolved target-dir is an absolute path (a relative value —
+#      including a bare "." or ".." from a malformed/stray config line —
+#      is refused outright, never resolved against some assumed CWD).
+#   1. After canonicalizing (resolving symlinks/".."), the path is not, and
+#      is not inside, the resolved GLOBAL shared target-dir. Every
+#      subsequent gate and the eventual deletion act on this SAME
+#      canonical path — is_safe_to_reclaim returns it to the caller on
+#      success specifically so nothing downstream re-resolves (and
+#      potentially diverges from) what was actually checked.
+#   2. Directory contains a Cargo-written CACHEDIR.TAG. KNOWN LIMITATION:
+#      the tag's signature is the generic Cache Directory Tagging
+#      Specification marker, not something unique to Cargo — this proves
+#      "some tool tagged this per that convention," not definitively
+#      "Cargo made this." It is one layer among several (path must also be
+#      the resolved effective target-dir for an orphaned worktree AND pass
+#      every other gate), not a standalone ownership guarantee.
+#   3. No live process has the path open or in its command line (lsof, by
+#      output content not exit code — see the comment on
+#      has_live_process_reference for why; plus pgrep -f with the path
+#      regex-escaped so path characters can't change what pattern is
+#      actually matched).
 #   4. The owning worktree path no longer appears in `git worktree list`
 #      (i.e. actually orphaned, not just idle).
+#   5. Gates 3-4 are re-checked immediately before deletion (in the same
+#      function, right before returning success) to shrink — not
+#      eliminate; there is no cross-process locking — the window in which
+#      a worktree could be recreated at this exact path between the
+#      safety check and the caller's `rm -rf`.
 #
 # Never deletes: the global shared target-dir itself, the Cargo registry/git
 # cache, any sccache cache directory, or a target-dir whose worktree is still
@@ -94,12 +115,35 @@ usage() {
 
 # --- helpers ----------------------------------------------------------------
 
+# Extract `target-dir = "..."` from a Cargo config.toml, but ONLY when it
+# appears inside a `[build]` table — Cargo itself only honors target-dir
+# there, and a naive whole-file grep would also match a line that merely
+# LOOKS like the key (wrong section, example text, a stray copy-pasted
+# snippet) sitting in an orphaned worktree's leftover config, redirecting
+# resolution to an arbitrary, unvalidated path. This is a small
+# hand-rolled section tracker, not a full TOML parser — it is deliberately
+# strict (reject anything short of "target-dir" as a lone key inside
+# [build], double-quoted, no embedded quote) rather than permissive.
+extract_target_dir_from_build_section() {
+  local cfg="$1"
+  awk '
+    /^[[:space:]]*\[/ { in_build = ($0 ~ /^[[:space:]]*\[build\][[:space:]]*$/) }
+    in_build && /^[[:space:]]*target-dir[[:space:]]*=[[:space:]]*"[^"]*"[[:space:]]*$/ {
+      line = $0
+      sub(/^[^"]*"/, "", line)
+      sub(/"[[:space:]]*$/, "", line)
+      print line
+      exit
+    }
+  ' "$cfg"
+}
+
 # Resolve the global shared target-dir from ~/.cargo/config.toml, if set.
 # Prints nothing if unset (no global override in play).
 resolve_global_target_dir() {
   local cfg="$HOME/.cargo/config.toml"
   [ -f "$cfg" ] || return 0
-  awk -F'"' '/^[[:space:]]*target-dir[[:space:]]*=/ { print $2; exit }' "$cfg"
+  extract_target_dir_from_build_section "$cfg"
 }
 
 # Resolve the effective target-dir for a worktree at $1, given optional
@@ -123,7 +167,7 @@ resolve_effective_target_dir() {
   local local_cfg="$worktree/.cargo/config.toml"
   if [ -f "$local_cfg" ]; then
     local v
-    v="$(awk -F'"' '/^[[:space:]]*target-dir[[:space:]]*=/ { print $2; exit }' "$local_cfg")"
+    v="$(extract_target_dir_from_build_section "$local_cfg")"
     if [ -n "$v" ]; then
       echo "$v"
       return 0
@@ -174,7 +218,15 @@ has_live_process_reference() {
       return 0
     fi
   fi
-  if pgrep -f "$dir" >/dev/null 2>&1; then
+  # pgrep -f matches its pattern as a regex, not a literal string. A
+  # worktree path built from a ticket/branch summary can contain regex
+  # metacharacters ((, ), [, +, ., etc.) — passed raw, those change what
+  # the pattern actually matches (or make it invalid, causing pgrep to
+  # silently find nothing). Escape every ERE metacharacter so the path is
+  # matched literally.
+  local escaped
+  escaped="$(printf '%s' "$dir" | sed 's/[.[\*^$()+?{|]/\\&/g')"
+  if pgrep -f "$escaped" >/dev/null 2>&1; then
     return 0
   fi
   return 1
@@ -218,30 +270,76 @@ looks_like_candidate_dir() {
 
 # All-gates check. Prints a reason to stdout and returns 1 if unsafe;
 # prints nothing and returns 0 if every gate passes.
+# Canonicalize an existing directory (resolve symlinks and `..` segments)
+# so every safety comparison and the eventual deletion operate on the same,
+# unambiguous location. Prints nothing and fails if the path doesn't exist
+# or isn't a directory — callers must check for that separately for
+# CORRECT-message reporting, but canonicalization itself never guesses.
+canonicalize_dir() {
+  ( cd -P "$1" 2>/dev/null && pwd -P )
+}
+
+# All-gates check. On success: prints the CANONICAL target-dir path to
+# stdout (callers MUST delete exactly this path, not their own raw
+# resolution of it — canonicalizing once, here, and reusing the result is
+# what keeps the safety check and the deletion looking at the identical
+# location) and returns 0. On failure: prints "refused: <reason>" and
+# returns 1.
 is_safe_to_reclaim() {
   local target_dir="$1" global_dir="$2" worktree_path="$3"
 
-  if [ -z "$target_dir" ] || [ "$target_dir" = "/" ] || [ "$target_dir" = "$HOME" ]; then
-    echo "refused: empty or dangerous path"
+  if [ -z "$target_dir" ]; then
+    echo "refused: empty path"
     return 1
   fi
-  if [ -n "$global_dir" ]; then
-    case "$target_dir" in
-      "$global_dir"|"$global_dir"/*)
+  # Reject anything not already an absolute path outright, before ever
+  # touching the filesystem. Cargo itself resolves a relative target-dir
+  # against the current working directory — this tool has no business
+  # guessing what that CWD would be for a leftover worktree's config, and a
+  # relative value (or a bare "." / "..") reaching `rm -rf` unchecked is
+  # exactly how a stray config line turns into deleting the caller's own
+  # working directory instead of one lane's target/.
+  case "$target_dir" in
+    /*) : ;;
+    *)
+      echo "refused: target-dir is not an absolute path ($target_dir) — refusing to guess a base directory"
+      return 1
+      ;;
+  esac
+  if [ ! -d "$target_dir" ]; then
+    echo "refused: not a directory"
+    return 1
+  fi
+
+  # From here on, compare and act on the CANONICAL form — resolves
+  # symlinks and any ".."/".": the global-shared-dir prefix check below is
+  # a literal string comparison, and a symlinked or `..`-laden path could
+  # otherwise reach the same real location without matching it.
+  local canon
+  canon="$(canonicalize_dir "$target_dir")"
+  if [ -z "$canon" ] || [ "$canon" = "/" ] || [ "$canon" = "$HOME" ]; then
+    echo "refused: empty or dangerous canonical path"
+    return 1
+  fi
+
+  local canon_global=""
+  if [ -n "$global_dir" ] && [ -d "$global_dir" ]; then
+    canon_global="$(canonicalize_dir "$global_dir")"
+  fi
+  if [ -n "$canon_global" ]; then
+    case "$canon" in
+      "$canon_global"|"$canon_global"/*)
         echo "refused: is (or is inside) the global shared target-dir — never reclaimed by this tool"
         return 1
         ;;
     esac
   fi
-  if [ ! -d "$target_dir" ]; then
-    echo "refused: not a directory"
-    return 1
-  fi
-  if ! has_cachedir_tag "$target_dir"; then
+
+  if ! has_cachedir_tag "$canon"; then
     echo "refused: no Cargo CACHEDIR.TAG found — not proven to be a Cargo target-dir"
     return 1
   fi
-  if has_live_process_reference "$target_dir"; then
+  if has_live_process_reference "$canon"; then
     echo "refused: live process reference found (lsof/pgrep)"
     return 1
   fi
@@ -249,6 +347,19 @@ is_safe_to_reclaim() {
     echo "refused: worktree is still registered (git worktree list) — not orphaned, requires a verified-merged check this tool does not perform"
     return 1
   fi
+
+  # Last-moment re-check, immediately before the caller deletes: shrinks
+  # (does not eliminate — no locking exists between this and the caller's
+  # `rm -rf`) the window in which a worktree could be recreated at this
+  # exact path between the checks above and the actual deletion. On a
+  # machine running many concurrent Claude Code sessions this is a real,
+  # if narrow, race — documented here rather than silently assumed away.
+  if ! is_orphaned_worktree "$worktree_path" || has_live_process_reference "$canon"; then
+    echo "refused: state changed during the safety check itself (re-check failed) — treating as unsafe"
+    return 1
+  fi
+
+  echo "$canon"
   return 0
 }
 
@@ -366,18 +477,21 @@ cmd_reclaim() {
     target_dir="$(resolve_effective_target_dir "$wt" "" "$global_dir")"
     [ -d "$target_dir" ] || continue
 
-    local reason
-    reason="$(is_safe_to_reclaim "$target_dir" "$global_dir" "$wt" 2>&1)"
+    local canon_target_dir
+    canon_target_dir="$(is_safe_to_reclaim "$target_dir" "$global_dir" "$wt" 2>&1)"
     if [ $? -ne 0 ]; then
       continue
     fi
 
     any_action=1
     if [ "$do_delete" -eq 1 ]; then
-      echo "reclaiming: $target_dir (worktree: $wt)"
-      rm -rf "$target_dir"
+      echo "reclaiming: $canon_target_dir (worktree: $wt)"
+      # Delete exactly the path is_safe_to_reclaim validated (its
+      # canonicalized form), not a fresh, possibly-different resolution of
+      # $target_dir — see canonicalize_dir's comment for why.
+      rm -rf "$canon_target_dir"
     else
-      echo "would reclaim (dry-run, pass --yes to delete): $target_dir (worktree: $wt)"
+      echo "would reclaim (dry-run, pass --yes to delete): $canon_target_dir (worktree: $wt)"
     fi
   done
 
@@ -429,18 +543,19 @@ cmd_reclaim_one() {
     return 0
   fi
 
-  local reason
-  reason="$(is_safe_to_reclaim "$target_dir" "$global_dir" "$worktree" 2>&1)"
+  local canon_target_dir
+  canon_target_dir="$(is_safe_to_reclaim "$target_dir" "$global_dir" "$worktree" 2>&1)"
   if [ $? -ne 0 ]; then
-    echo "reclaim-one: refused — $reason ($target_dir)"
+    echo "reclaim-one: $canon_target_dir ($target_dir)"
     return 0  # an expected refusal is not a failure — see contract above
   fi
 
   if [ "$do_delete" -eq 1 ]; then
-    echo "reclaim-one: reclaiming $target_dir (worktree: $worktree)"
-    rm -rf "$target_dir"
+    echo "reclaim-one: reclaiming $canon_target_dir (worktree: $worktree)"
+    # Delete exactly the canonical path is_safe_to_reclaim validated.
+    rm -rf "$canon_target_dir"
   else
-    echo "reclaim-one: would reclaim (dry-run, pass --yes to delete): $target_dir (worktree: $worktree)"
+    echo "reclaim-one: would reclaim (dry-run, pass --yes to delete): $canon_target_dir (worktree: $worktree)"
   fi
   return 0
 }
