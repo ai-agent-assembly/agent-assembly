@@ -68,12 +68,12 @@ use std::sync::Arc;
 
 use aa_devtool_contract::{
     now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CapabilitySupport,
-    DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind, GovernanceLevel,
-    IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep,
-    LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, NextLevel, PolicyPosture,
-    ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan,
-    SettingsMerge, SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions,
-    ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
+    DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EnvValue, EvidenceKind,
+    GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus,
+    IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, NextLevel,
+    PolicyPosture, ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState,
+    RemovalPlan, SettingsMerge, SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt,
+    SupportedToolVersions, ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
     DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
 };
 use async_trait::async_trait;
@@ -260,6 +260,7 @@ impl ClaudeCodeIntegration {
                         managed_keys: MANAGED_ONLY_KEYS.iter().map(|k| (*k).to_string()).collect(),
                         content_sha256: sha256_hex(&document),
                         merge: SettingsMerge::Replace,
+                        format: DocumentFormat::Json,
                     },
                     format!(
                         "install Agent Assembly's managed policy at {} — the only settings surface Claude \
@@ -921,6 +922,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                     managed_keys: MANAGED_KEYS.iter().map(|k| (*k).to_string()).collect(),
                     content_sha256: sha256_hex(&settings),
                     merge: SettingsMerge::MergeManagedKeys,
+                    format: DocumentFormat::Json,
                 },
                 format!(
                     "merge Agent Assembly's four managed keys into {} and leave every other key alone",
@@ -1386,6 +1388,7 @@ fn reversal_for(step: &StepReceipt) -> StepAction {
             path,
             managed_keys,
             merge,
+            format,
             ..
         } => StepAction::WriteManagedSettings {
             scope: *scope,
@@ -1397,6 +1400,7 @@ fn reversal_for(step: &StepReceipt) -> StepAction {
                 .map(|prior| prior.document_fingerprint.trim_start_matches("sha256:").to_string())
                 .unwrap_or_default(),
             merge: *merge,
+            format: *format,
         },
         other => StepAction::ManageArtifact {
             operation: ArtifactOperation::Remove,
@@ -1530,6 +1534,7 @@ impl McpGovernedTool for ClaudeCodeIntegration {
                 managed_keys: MCP_KEYS.iter().map(|k| (*k).to_string()).collect(),
                 content_sha256: sha256_hex(&content),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Json,
             },
             "apply the MCP allow/deny list to Claude Code's settings",
         ))

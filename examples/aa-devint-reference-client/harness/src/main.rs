@@ -44,7 +44,7 @@ use tokio_util::task::TaskTracker;
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
 use aa_core::integration::policy_posture::{PolicyPosture, PolicyState};
 use aa_core::integration::{
-    now_unix_secs, DevToolCapabilities, EnvValue, EvidenceKind, ExerciseOutcome, IntegrationCapability,
+    now_unix_secs, DevToolCapabilities, DocumentFormat, EnvValue, EvidenceKind, ExerciseOutcome, IntegrationCapability,
     IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep, LifecyclePhase,
     NextLevel, PolicyProfileRef, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan,
     SettingsMerge, SettingsScope, StepAction, StepReceipt, SupportedToolVersions, ToolVersion, VerificationOutcome,
@@ -106,6 +106,7 @@ fn poisoned_plan(tool: &DevToolKind) -> IntegrationPlan {
                 managed_keys: vec!["permissions".to_string(), "enabledMcpjsonServers".to_string()],
                 content_sha256: "abc123".to_string(),
                 merge: SettingsMerge::MergeManagedKeys,
+                format: DocumentFormat::Json,
             },
             "Write the managed settings block",
         ),

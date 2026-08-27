@@ -22,6 +22,7 @@ use crate::commands::run_registration::{self, GovernedRegistration};
 use crate::commands::status::models::redact_database_url;
 use crate::config::ResolvedContext;
 use crate::output::OutputFormat;
+use crate::sanitize::sanitize_terminal;
 use aa_policy::resolve as run_policy;
 
 /// Arguments for the `aasm run <tool> [args...]` subcommand.
@@ -1842,7 +1843,19 @@ fn dev_tool_kind_str(kind: &DevToolKind) -> String {
 ///   plainly is the point: a value the gateway never saw must not be presented
 ///   as one it issued.
 struct RegistrationHandle {
-    /// The operator-facing identifier the session's keypair is derived from.
+    /// The operator-facing identifier that *selects* the session's identity key.
+    ///
+    /// It is not key material and nothing is derived from it. Until AAASM-5332 the
+    /// private key was `SHA-256(agent_id)`, which is exactly why that changed: the
+    /// agent id is published in audit records and on the dashboard, so anyone who
+    /// had read one could reconstruct the key. The key is now generated randomly
+    /// and stored owner-only by `aa-sdk-client`'s `identity_store`, and this id
+    /// only names which stored identity to register under.
+    ///
+    /// Both halves of that matter here. Nothing may reintroduce derivation from
+    /// this field; and because the id is public by design and bears no authority,
+    /// it is sound for `VALUE_VISIBLE_ENV_VARS` to preview `AA_AGENT_ID`'s value —
+    /// a reader of the stale wording would have concluded the opposite.
     agent_id: String,
     /// The `did:key` the gateway registered this session under — the identity
     /// audit attributes the session's actions to.
@@ -2033,13 +2046,54 @@ fn ambient_proxy_is_set() -> bool {
 /// default (`Enforce`) so tools that branch on the env var see the operator's
 /// explicit choice; the variable is omitted in plain enforce-mode launches to
 /// avoid surprising any tool that does best-effort env sniffing.
+/// The ambient environment, as the UTF-8 pairs a child env can actually hold.
+///
+/// [`std::env::vars`] **panics** on a variable whose name or value is not valid
+/// Unicode, and its panic message `Debug`-prints the offending string — so a
+/// single non-UTF-8 *value* in the operator's environment printed that value to
+/// stderr, before the allowlist in [`render_env_value`] was ever consulted. That
+/// is the AAASM-5935 shape exactly (an unrecognised variable emitting its own
+/// bytes) reached by a route that bypasses the fix entirely, and it applied to a
+/// real launch as well as to `--dry-run`.
+///
+/// [`std::env::vars_os`] does not panic, so the decision moves to this function:
+/// a pair that is not valid UTF-8 is **dropped**, because the child environment
+/// is `HashMap<String, String>` and there is no representation for it to be
+/// carried in. The drop is reported by name and never by value — and only when
+/// the name itself is valid UTF-8, since a name that is not is exactly as
+/// unprintable as a value and gets a count instead.
+///
+/// Dropping is a behaviour change, and the better one: the previous behaviour
+/// was to abort the launch with the value in the panic message.
+fn inheritable_ambient_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    let mut unnameable = 0usize;
+    for (name, value) in std::env::vars_os() {
+        match (name.into_string(), value.into_string()) {
+            (Ok(name), Ok(value)) => {
+                env.insert(name, value);
+            }
+            (Ok(name), Err(_)) => {
+                eprintln!("warning: {name} is not valid UTF-8 and was not passed to the child; its value is not shown");
+            }
+            (Err(_), _) => unnameable += 1,
+        }
+    }
+    if unnameable > 0 {
+        eprintln!(
+            "warning: {unnameable} environment variable(s) have names that are not valid UTF-8 and were not passed to the child"
+        );
+    }
+    env
+}
+
 fn build_child_env(
     handle: &RegistrationHandle,
     proxy: Option<&str>,
     no_proxy: bool,
     mode: aa_core::EnforcementMode,
 ) -> HashMap<String, String> {
-    let mut env: HashMap<String, String> = std::env::vars().collect();
+    let mut env: HashMap<String, String> = inheritable_ambient_env();
     env.insert("AA_AGENT_ID".into(), handle.agent_id.clone());
     // The identity the gateway actually registered and audit attributes actions
     // to. Exported so anything downstream — an SDK inside the launched tool, a
@@ -2167,10 +2221,345 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
     resolution
 }
 
-/// Mask a credential-bearing env value before it is printed in the dry-run
-/// preview. `build_child_env` seeds the child environment from the operator's
-/// whole shell environment, so the preview would otherwise echo secrets
-/// (`AA_JWT_SECRET`, `DB_PASSWORD`, connection URLs, …) in cleartext.
+/// The presence marker for a variable whose value the preview withholds.
+const PRESENCE_SET: &str = "<set>";
+
+/// The presence marker for a variable that is present but carries the empty
+/// string. Distinct from [`PRESENCE_SET`] because "set to empty" and "set to
+/// something" are different launch states — `ambient_proxy_is_set` treats an
+/// empty `HTTPS_PROXY` as no proxy at all — and collapsing them would make the
+/// preview unable to explain a behaviour the operator is looking at.
+const PRESENCE_EMPTY: &str = "<set:empty>";
+
+/// The marker for a variable whose *name* says it carries credential material.
+///
+/// Deliberately distinct from [`PRESENCE_SET`]: both withhold the value, but
+/// this one additionally tells the operator that AASM recognised the variable as
+/// secret-bearing, which is the receipt AAASM-4894 introduced and which a bare
+/// presence marker would silently retire.
+const MASKED: &str = "***MASKED***";
+
+/// The **explicit, reviewed allowlist** of environment variables whose value the
+/// dry-run preview prints verbatim (AAASM-5935 AC 1).
+///
+/// Every name here was chosen because the preview's whole purpose is to let an
+/// operator confirm *this* value before a real launch: the governance identity
+/// the session registers under, the route the traffic takes, the CA that makes
+/// interception work, and which model the tool will talk to. Nothing else needs
+/// a value to be verifiable — that is answerable with the name plus presence,
+/// which is what every other variable now gets.
+///
+/// # Why exact names and not a prefix rule
+///
+/// An `AA_*` (or any) prefix rule would be name-shaped reasoning again, and
+/// name-shaped reasoning is exactly the defect AAASM-5935 records: `AA_JWT_SECRET`
+/// and `AA_API_KEY` are `AA_`-prefixed *secrets*, so a prefix rule would hand the
+/// allowlist a class it was never reviewed for, and it would keep doing so for
+/// every future `AA_`-prefixed variable nobody looked at. Exact names mean the
+/// allowlist can only grow through a diff a human reads — but only if the
+/// comparison is exact, which is why [`value_may_be_previewed`] folds ASCII-only:
+/// under full Unicode folding this list grew silently, by Unicode table.
+///
+/// # Adding to this list
+///
+/// A name belongs here only if an operator genuinely cannot verify the governed
+/// launch without seeing the value, and the value is *structurally* not a
+/// credential (an identifier, a route, a filesystem path, a model name). If the
+/// answer is "it would be convenient", the answer is no.
+const VALUE_VISIBLE_ENV_VARS: [&str; 17] = [
+    // Governance identity — the whole point of the receipt: the operator is
+    // checking that the session registers as who they expect.
+    "AA_AGENT_ID",
+    "AA_AGENT_DID",
+    "AA_TRACE_ID",
+    "AA_SESSION_ID",
+    "AA_REGISTRATION_ID",
+    "AA_TEAM_ID",
+    "AA_ENFORCEMENT_MODE",
+    // Routing and interception — whether the launch is actually protected. A
+    // preview that hid these could not answer the question it exists to answer
+    // (AAASM-5329 AC 2, `the_preview_shows_the_ca_and_the_normalised_proxy_url`).
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "ANTHROPIC_BASE_URL",
+    // Model selection — a redirected or downgraded model is a governance fact,
+    // and these carry model *names*, never credentials.
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+];
+
+/// Whether the dry-run preview may print this variable's value at all.
+///
+/// Case-insensitive on the name only. It does not look at the value, so it
+/// cannot be steered by one — see [`render_env_value`].
+///
+/// # Why the comparison is ASCII-only
+///
+/// [`str::to_uppercase`] performs *full Unicode* case conversion, and several
+/// non-ASCII characters uppercase **into** ASCII: U+0131 (dotless i) becomes
+/// `I`, U+017F (long s) becomes `S`. Folding the name that way and then matching
+/// it against this list is fail-**open** — it admits names nobody put on the
+/// allowlist. `anthropıc_model`, `httpſ_proxy` and `aa_ſession_id` all fold onto
+/// real entries, and a payload planted under one of them would have been printed
+/// verbatim: the allowlist would have grown silently, by Unicode table, rather
+/// than through a diff a human reads.
+///
+/// [`str::eq_ignore_ascii_case`] folds `A`–`Z` only, so a name is on the
+/// allowlist only if it is that name.
+fn value_may_be_previewed(key: &str) -> bool {
+    VALUE_VISIBLE_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
+}
+
+/// How one environment variable is rendered in the `--dry-run` preview.
+///
+/// **Deny-by-default** (AAASM-5935): a value is emitted only for a name on
+/// [`VALUE_VISIBLE_ENV_VARS`]. Every other variable is rendered presence-only —
+/// its name, and whether it is set — which is what the preview's job actually
+/// requires: confirming *which* variables the child inherits and that the
+/// governed ones are right.
+///
+/// # Why the previous name-based masking was not enough
+///
+/// `mask_value` classified by variable *name* and, failing to recognise one,
+/// fell through to printing the value. That is structurally fail-**open**: a
+/// variable with a bland name whose value is an encoded or serialized snapshot
+/// of the environment — `direnv` publishes exactly this shape, and it is not
+/// unique to `direnv` — matched no credential pattern and was printed verbatim,
+/// so secrets the *same output* had masked by name became recoverable from it.
+/// The mask was defeated inside its own output.
+///
+/// # What this deliberately does not do
+///
+/// It does not decode, unwrap, or otherwise inspect the value to decide
+/// (AAASM-5935 AC 4). A detector built that way is unbounded — it has to know
+/// every container format that exists — and it fails open on the next encoding
+/// anyone invents. Deciding on the name against a closed allowlist has no such
+/// frontier: an unrecognised name withholds the value, whatever is in it.
+///
+/// A credential-named variable keeps its [`MASKED`] marker rather than becoming
+/// an anonymous `<set>`, so the AAASM-4894 receipt survives; and an allowlisted
+/// value is still routed through [`mask_value`], so an allowlisted connection
+/// string has its userinfo stripped even though a reviewer judged the name safe.
+/// That second pass is defence in depth, not the decision.
+///
+/// A **URL-valued** allowlist entry is projected to its origin first — see
+/// [`URL_VALUED_ENV_VARS`] — because a name being safe says nothing about the
+/// positions a URL has for carrying a credential.
+fn render_env_value(key: &str, value: &str) -> String {
+    if value_may_be_previewed(key) {
+        if value.is_empty() {
+            // A present-but-empty allowlisted variable is a launch state in its
+            // own right (`ambient_proxy_is_set` treats an empty `HTTPS_PROXY` as
+            // no proxy), and rendering it as a bare `KEY=` said nothing at all.
+            return PRESENCE_EMPTY.into();
+        }
+        // Projected on the *value's* shape, not on the variable's name. Gating
+        // this on `is_url_valued_name` reintroduced name-based trust one layer
+        // down: 14 of the 17 allowlisted names fell through to `mask_value`,
+        // which has no URL awareness, so a credential in a query parameter or a
+        // path segment printed in full under any of them. Two of those 14 are
+        // not even operator-set — `AA_ENFORCEMENT_MODE` is injected in Enforce
+        // mode and `NO_PROXY` survives ambiently under `--no-proxy` — and the
+        // reason `project_url_origin` exists at all is that a credential can sit
+        // in any URL position. Whether it can is a property of the value.
+        if let Some(origin) = project_url_origin(value) {
+            return origin;
+        }
+        if is_url_valued_name(key) {
+            // Fail closed: this name is *expected* to hold a URL, so a value
+            // that does not parse as one is withheld rather than printed raw.
+            // The other allowlisted names have non-URL values legitimately
+            // (`ANTHROPIC_MODEL`, `AA_ENFORCEMENT_MODE`), so the same rule
+            // cannot apply to them without withholding everything they exist to
+            // show.
+            return PRESENCE_SET.into();
+        }
+        // Allowlisted and not a URL. The name-based masking still runs on top:
+        // it is now a backstop over a reviewed set of names rather than the
+        // whole rule.
+        return mask_value(key, value);
+    }
+    if looks_like_credential_name(key) {
+        return MASKED.into();
+    }
+    if value.is_empty() {
+        return PRESENCE_EMPTY.into();
+    }
+    PRESENCE_SET.into()
+}
+
+/// The [`VALUE_VISIBLE_ENV_VARS`] entries whose value is a URL.
+///
+/// Separated out because a reviewed *name* says nothing about the positions its
+/// *value* has. A URL can carry a credential in userinfo, in a path segment, in
+/// a query parameter or in a fragment, and an operator's proxy URL is a place
+/// credentials genuinely live — the warning this module already prints about a
+/// proxy that "performs authentication for your environment" says so, and
+/// `build_child_env` deliberately leaves an ambient `HTTPS_PROXY` in place under
+/// `--no-proxy`.
+const URL_VALUED_ENV_VARS: [&str; 3] = ["HTTPS_PROXY", "HTTP_PROXY", "ANTHROPIC_BASE_URL"];
+
+/// Whether an allowlisted name carries a URL, and so needs [`project_url_origin`].
+fn is_url_valued_name(key: &str) -> bool {
+    URL_VALUED_ENV_VARS.iter().any(|name| key.eq_ignore_ascii_case(name))
+}
+
+/// The URL schemes [`project_url_origin`] will echo into a receipt.
+///
+/// A **closed vocabulary**, not a charset or a length cap. The previous charset
+/// rule accepted any run of ASCII alphanumerics, so an arbitrarily long attacker
+/// chosen scheme printed verbatim. A cap would only bound how much of it printed,
+/// and picking the bound means picking an arbitrary threshold; a fixed list is a
+/// bounded reviewed decision that fails closed on everything absent from it —
+/// the same discipline as [`VALUE_VISIBLE_ENV_VARS`] itself.
+///
+/// The socks entries are here because proxy variables legitimately carry them.
+/// Matched ASCII-case-insensitively, so a Unicode lookalike scheme cannot fold
+/// into a member (AAASM-5935, the same bypass as the name allowlist).
+const PREVIEWABLE_URL_SCHEMES: [&str; 4] = ["http", "https", "socks5", "socks5h"];
+
+/// Whether an optional trailing `:port` is a port and nothing else.
+///
+/// An empty string is fine — the port is optional. A `:` must be followed by at
+/// least one digit and only digits.
+fn is_port_suffix(suffix: &str) -> bool {
+    match suffix.strip_prefix(':') {
+        Some(port) => !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()),
+        None => suffix.is_empty(),
+    }
+}
+
+/// Whether the host position of an authority is actually shaped like a host.
+///
+/// This is a **shape** gate, not a resolution or validity check: it answers "can
+/// this text be a host at all", so that [`project_url_origin`] never prints an
+/// authority position on the assumption that a host is what landed there.
+///
+/// Accepts exactly two forms, both ASCII-only:
+///
+/// - a bracketed IPv6 literal — `[`, then hex digits, `:` and `.`, then `]`,
+///   optionally followed by `:port`;
+/// - a reg-name or dotted-quad IPv4 — ASCII alphanumerics, `-`, `.` and `_`,
+///   optionally followed by `:port`.
+///
+/// Everything else is rejected and the caller withholds the value. That includes
+/// shapes which are arguably legal URLs, notably an IPv6 zone id
+/// (`[fe80::1%25eth0]`) and any internationalised host that has not been
+/// punycoded. Rejecting them costs a `<set>` in place of an origin; accepting
+/// anything unrecognised costs a credential printed into a security artifact, so
+/// the trade only runs one way.
+fn is_host_shaped(host_port: &str) -> bool {
+    if let Some(rest) = host_port.strip_prefix('[') {
+        let Some((inner, after)) = rest.split_once(']') else {
+            return false;
+        };
+        return !inner.is_empty()
+            && inner.bytes().all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.'))
+            && is_port_suffix(after);
+    }
+
+    // A reg-name cannot contain `:`, so the first one begins the port and any
+    // second one is disqualifying — `is_port_suffix` rejects it as a non-digit.
+    let (host, port_suffix) = match host_port.find(':') {
+        Some(colon) => (&host_port[..colon], &host_port[colon..]),
+        None => (host_port, ""),
+    };
+    !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'))
+        && is_port_suffix(port_suffix)
+}
+
+/// Project a URL onto the part of it that answers "where does this traffic go",
+/// discarding every part that can carry a credential.
+///
+/// Keeps **scheme, host and port**. Discards userinfo, query and fragment
+/// outright, and replaces the path with a segment *count*.
+///
+/// ```text
+/// https://gw.example.invalid/v1?api_key=…    -> https://gw.example.invalid<path:1 segment>
+/// https://gw.example.invalid/v1/…/chat       -> https://gw.example.invalid<path:3 segments>
+/// https://…@gw.example.invalid/v1            -> https://gw.example.invalid<path:1 segment>
+/// http://…@corp-proxy.invalid:3128           -> http://corp-proxy.invalid:3128
+/// ```
+///
+/// # Why a projection and not more redaction
+///
+/// [`redact_database_url`] rewrites only the authority, and only when the
+/// userinfo contains a `:` — so a credential in a query parameter, a path
+/// segment, a fragment, or a colon-less user position survived it verbatim. The
+/// `user:pass@` case was worse than a miss: the mask landed on the *password*
+/// position while the credential sat in the *user* position and printed, which is
+/// the ordinary shape of a personal access token over basic auth.
+///
+/// The fix is not to teach `redact_database_url` more shapes. That is unbounded
+/// pattern-guessing over untrusted data — the same fail-open reasoning that
+/// produced AAASM-5935, one layer down — and it would silently change `aasm
+/// status`, which shares that function. This projection instead keeps a
+/// **structurally** credential-free subset: it never inspects the discarded
+/// parts, so there is no next shape for it to fail open on.
+///
+/// # Why a segment count rather than dropping the path silently
+///
+/// "Is there a path prefix on this route, and roughly how deep" is a real
+/// diagnostic fact — gateways routinely differ by path prefix — and a receipt
+/// that silently rendered a truncated URL as though it were complete would
+/// mislead in the same way a mask over a printed value does. A count is
+/// metadata: producing it requires no inspection of what the segments contain.
+///
+/// Returns [`None`] unless the scheme is one this preview recognises *and* the
+/// host position is [`is_host_shaped`], so the caller withholds rather than
+/// printing an unrecognised value raw.
+fn project_url_origin(value: &str) -> Option<String> {
+    let scheme_end = value.find("://")?;
+    let scheme = &value[..scheme_end];
+    if !PREVIEWABLE_URL_SCHEMES.iter().any(|s| scheme.eq_ignore_ascii_case(s)) {
+        return None;
+    }
+
+    let rest = &value[scheme_end + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+
+    // The whole userinfo goes, user position included — not just the password.
+    // Rightmost `@`, matching `redact_database_url`'s split point.
+    let host_port = match authority.rfind('@') {
+        Some(at) => &authority[at + 1..],
+        None => authority,
+    };
+    // Finding the host *position* is not the same as knowing a host is in it, and
+    // printing the position on faith is what made this projection leak. `/`, `?`
+    // and `#` end the authority, so any one of them appearing inside the userinfo
+    // moves the boundary into the middle of the credential: `rfind('@')` then
+    // finds nothing and the userinfo *becomes* the host position. Requiring the
+    // position to be host-shaped is what makes the userinfo's removal a fact
+    // rather than an assumption.
+    if !is_host_shaped(host_port) {
+        return None;
+    }
+
+    // Path only. Query and fragment are discarded without a marker: unlike a
+    // path prefix, neither is a routing fact an operator verifies here.
+    let after_authority = &rest[authority_end..];
+    let path_end = after_authority.find(['?', '#']).unwrap_or(after_authority.len());
+    let segments = after_authority[..path_end].split('/').filter(|s| !s.is_empty()).count();
+
+    let path_marker = match segments {
+        0 => String::new(),
+        1 => "<path:1 segment>".to_string(),
+        n => format!("<path:{n} segments>"),
+    };
+    Some(format!("{scheme}://{host_port}{path_marker}"))
+}
+
+/// Mask a credential-bearing env value, for the names
+/// [`VALUE_VISIBLE_ENV_VARS`] allows a value for.
 ///
 /// Two masking strategies, by key name (case-insensitive):
 /// * keys naming a connection string (`*_URL` / `*_DSN` / `*_URI`) keep their
@@ -2182,22 +2571,31 @@ fn resolve_policy(args: &RunArgs) -> run_policy::PolicyResolution {
 ///   credential, auth) have the entire value replaced — the value has no
 ///   structure worth preserving.
 ///
-/// As a final fail-closed backstop, any value not caught by the rules above is
-/// still routed through [`redact_database_url`]: a value in an unrecognised key
-/// may itself be a `scheme://user:pass@host` connection string, and the
-/// redactor returns the value unchanged unless it finds userinfo credentials to
-/// strip — so ordinary values are untouched while an embedded credential is not
-/// printed verbatim.
+/// Anything else is returned via [`redact_database_url`], which strips userinfo
+/// if it finds any and otherwise returns the value unchanged.
 ///
-/// The denylist is intentionally broad and errs toward over-masking: a masked
-/// non-secret in a diagnostic preview is harmless, a leaked secret is not.
+/// # Not a detector, and no longer load-bearing on its own (AAASM-5935)
+///
+/// That last branch is fail-**open** for any value that is not a
+/// `scheme://user:pass@host` URL, which is how an encoded environment snapshot
+/// in a blandly-named variable used to be printed verbatim. It is safe here only
+/// because [`render_env_value`] no longer reaches this function except for names
+/// on the reviewed allowlist. Do not call it directly on an arbitrary variable.
 fn mask_value(key: &str, value: &str) -> String {
-    let upper = key.to_uppercase();
+    // ASCII-only folding, as in `value_may_be_previewed` and
+    // `looks_like_credential_name`. Here the fail-open direction is the mirror of
+    // the allowlist's: full Unicode folding *adds* matches (`PAſſWORD` folds onto
+    // `PASSWORD`), so it over-masks rather than under-masks. The reason to fold
+    // ASCII-only anyway is that one function on this path must not disagree with
+    // another about what a name is — a name that is `KEY`-shaped to
+    // `looks_like_credential_name` and not to `mask_value` is how a value slips
+    // between two correct-looking checks.
+    let upper = key.to_ascii_uppercase();
     if is_connection_string_name(&upper) {
         return redact_database_url(value);
     }
     if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
-        return "***MASKED***".into();
+        return MASKED.into();
     }
     redact_database_url(value)
 }
@@ -2207,6 +2605,10 @@ const SECRET_SUBSTRINGS: [&str; 7] = ["TOKEN", "KEY", "SECRET", "PASSWORD", "PAS
 
 /// Whether an already-uppercased name is a connection string — the shapes that
 /// carry `user:pass@host` userinfo (AAASM-4936).
+///
+/// Expects a name folded with [`str::to_ascii_uppercase`], not
+/// [`str::to_uppercase`]: every caller on this path folds ASCII-only so that all
+/// of them agree on what a name is. See [`looks_like_credential_name`].
 fn is_connection_string_name(upper: &str) -> bool {
     upper.ends_with("_URL") || upper.ends_with("_DSN") || upper.ends_with("_URI")
 }
@@ -2223,8 +2625,21 @@ fn is_connection_string_name(upper: &str) -> bool {
 /// value before printing it in the `--dry-run` preview, the other records which
 /// inherited authority reaches the launched child unvetted. Over-masking a
 /// non-secret is harmless; under-recording ambient authority is not.
+///
+/// # Why the comparison is ASCII-only
+///
+/// The fail-open direction here is the opposite of the allowlist's. This function
+/// answers "must this be withheld harder", so the dangerous answer is a false
+/// **negative** — a credential-named variable that evades the mask. Full Unicode
+/// folding does not cause that: it only ever adds matches, because the ASCII
+/// needles can only be reached, never left. So ASCII-only folding is not closing
+/// a leak at this site; it is keeping every name-classifying function on this
+/// path folding identically, so that no value can fall through a disagreement
+/// between two of them. A variable whose name stops matching under ASCII folding
+/// is still withheld — [`render_env_value`] renders it presence-only, because
+/// deny-by-default does not depend on this predicate to withhold.
 fn looks_like_credential_name(key: &str) -> bool {
-    let upper = key.to_uppercase();
+    let upper = key.to_ascii_uppercase();
     is_connection_string_name(&upper) || SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle))
 }
 
@@ -2328,12 +2743,32 @@ fn format_dry_run_output(
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
     let (effective, removed) = effective_child_env(cmd, env, no_proxy);
-    let mut env_lines: String = effective
-        .iter()
-        .map(|(k, v)| format!("{}={}\n", k, mask_value(k, v)))
-        .collect();
+    // Deny-by-default on values (AAASM-5935). The legend is part of the output
+    // rather than documentation, because an operator reading `FOO=<set>` for the
+    // first time needs to know it is a withheld value and not a literal one.
+    let mut env_lines = String::from(
+        "# values are withheld unless the variable is on the preview allowlist: \
+         <set> = present, value withheld; <set:empty> = present and empty; \
+         ***MASKED*** = present, name says credential\n",
+    );
+    // One variable per line, so anything carrying a newline could otherwise forge
+    // a line in a security artifact — `ANTHROPIC_MODEL` set to
+    // `a-model\nHTTPS_PROXY=http://127.0.0.1:1` would forge a routing fact. Not
+    // hypothetical for an allowlisted name: in Enforce mode `build_child_env`
+    // does not set `AA_ENFORCEMENT_MODE`, so an arbitrary ambient string under
+    // that name reaches this renderer. `sanitize_terminal` is the crate's
+    // existing rule for untrusted operator-facing text; it strips newlines and
+    // C0/C1 controls, and also the ANSI/OSC sequences that could repaint the
+    // receipt to say something other than what it computed.
+    env_lines.extend(effective.iter().map(|(k, v)| {
+        format!(
+            "{}={}\n",
+            sanitize_terminal(k),
+            sanitize_terminal(&render_env_value(k, v))
+        )
+    }));
     for name in &removed {
-        env_lines.push_str(&format!("{name}=<removed by adapter>\n"));
+        env_lines.push_str(&format!("{}=<removed by adapter>\n", sanitize_terminal(name)));
     }
 
     let fidelity_line = match fidelity {
@@ -2344,12 +2779,36 @@ fn format_dry_run_output(
         PreviewFidelity::Degraded(why) => format!("DEGRADED — {why}"),
     };
 
+    // `truncated_settings`, `working_dir` and `cmd_line` are sanitized for the
+    // same reason the environment block is: this receipt is line-oriented, and all
+    // three carry operator- or adapter-supplied text. They are *earlier* in the
+    // output than `--- environment ---`, which makes them the stronger position to
+    // forge from — a newline in an argv element can synthesise a whole
+    // `--- environment ---` header with attacker-chosen records below it, and a
+    // consumer that reads the first occurrence of that header would take them for
+    // the real block. Sanitizing only the real block left that open.
+    //
+    // The four identity fields are sanitized for that same reason, and they are
+    // the *strongest* forging position in the whole receipt because they are its
+    // first four lines — everything a consumer might anchor on comes after them.
+    // "they come from registration" was true only of the launch path: on the
+    // preview path `agent_id` is `--agent-id` verbatim (`RunPlan::agent_id`
+    // returns the operator's string when they gave one, minting a UUID only when
+    // they did not), and `registration_did` is a derivation *of that string*.
+    // Sanitizing all four rather than the one that is provably reachable keeps
+    // the rule "every interpolation into this receipt is sanitized" checkable by
+    // reading the format call, instead of requiring the reader to re-derive
+    // which fields are operator-influenced on which path.
+    //
+    // The remaining interpolations are this crate's own literals or a `Display`
+    // over typed state (fidelity, protection, policy), and the isolation block
+    // renders through its own writer.
     format!(
         "--- aasm run dry-run ---\nagent_id:    {}\nagent_did:   {}\ntrace_id:    {}\nsession_id:  {}\n\n--- preview fidelity ---\n{}\n\n--- protection ---\nstate:  {}\ndetail: {}\n\n--- policy ---\nstate:  {}\nsource: {}\ndetail: {}\n\n{}\n{}\n--- managed settings ---\n{}\n\n--- launch command ---\nworking_dir: {}\n{}\n\n--- environment ---\n{}",
-        handle.agent_id,
-        handle.registration_did,
-        handle.trace_id,
-        handle.session_id,
+        sanitize_terminal(&handle.agent_id),
+        sanitize_terminal(&handle.registration_did),
+        sanitize_terminal(&handle.trace_id),
+        sanitize_terminal(&handle.session_id),
         fidelity_line,
         crate::commands::run_audit::protection_label(no_proxy),
         if no_proxy {
@@ -2364,9 +2823,9 @@ fn format_dry_run_output(
         policy.summary(),
         isolation.render(),
         isolation_machine_block(isolation),
-        truncated_settings,
-        working_dir,
-        cmd_line,
+        sanitize_terminal(&truncated_settings),
+        sanitize_terminal(&working_dir),
+        sanitize_terminal(&cmd_line),
         env_lines,
     )
 }
@@ -3807,6 +4266,47 @@ mod tests {
         assert_eq!(env.get("AA_REGISTRATION_ID").map(String::as_str), Some("test-reg"));
     }
 
+    /// A non-UTF-8 environment *value* must not reach any output, and must not
+    /// take the launch down (AAASM-5935).
+    ///
+    /// `std::env::vars()` panics on such a variable and `Debug`-prints the
+    /// offending string in the panic message, so the value was disclosed to
+    /// stderr before `render_env_value`'s allowlist was consulted — the same
+    /// defect class as the one this module was hardened against, reached by a
+    /// route that bypassed the hardening completely.
+    ///
+    /// Unix-only because this is where a non-UTF-8 environment value is
+    /// constructible: `OsStr::from_bytes` has no portable equivalent, and on
+    /// Windows the environment block is UTF-16 with a different failure mode.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_environment_value_is_dropped_rather_than_panicked_over() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let _guard = crate::test_support::env_guard();
+        let name = "AA_TEST_NON_UTF8_VALUE";
+        // A lone 0x80 continuation byte: not valid UTF-8 in any position, and
+        // not a credential or a fragment of one.
+        std::env::set_var(name, std::ffi::OsStr::from_bytes(&[0x80]));
+        std::env::set_var("AA_TEST_UTF8_NEIGHBOUR", "plain");
+
+        // Would panic before the fix, which is the disclosure.
+        let env = inheritable_ambient_env();
+
+        std::env::remove_var(name);
+        std::env::remove_var("AA_TEST_UTF8_NEIGHBOUR");
+
+        assert!(
+            !env.contains_key(name),
+            "a value with no `String` representation cannot be carried, so it must be dropped"
+        );
+        assert_eq!(
+            env.get("AA_TEST_UTF8_NEIGHBOUR").map(String::as_str),
+            Some("plain"),
+            "dropping one unrepresentable variable must not drop the rest of the environment"
+        );
+    }
+
     /// `--no-proxy` is an opt-out of *our* injection, not a scrub of the
     /// operator's own configuration: a developer behind a corporate proxy who
     /// asks for an unproxied launch still needs their own proxy to reach the
@@ -4134,6 +4634,7 @@ mod tests {
                         managed_keys: vec!["permissions".to_string()],
                         content_sha256: "test-fixture-sha".to_string(),
                         merge: aa_core::integration::step::SettingsMerge::MergeManagedKeys,
+                        format: aa_core::integration::step::DocumentFormat::Json,
                     },
                     "write the managed settings block",
                 );
@@ -4911,12 +5412,24 @@ mod tests {
             "missing environment header: {output}"
         );
         assert!(
-            output.contains("***MASKED***"),
+            output.contains("MY_API_KEY=***MASKED***"),
             "MY_API_KEY value should be masked: {output}"
         );
+        // AAASM-5935: a variable off the preview allowlist is rendered
+        // presence-only. Its name is still there — which is what the preview is
+        // for — but `hello` is not, because deciding by name whether a value is
+        // safe to print is the defect this closes.
         assert!(
-            output.contains("NORMAL_VAR=hello"),
-            "NORMAL_VAR should be unmasked: {output}"
+            output.contains("NORMAL_VAR=<set>"),
+            "NORMAL_VAR should be presence-only: {output}"
+        );
+        assert!(
+            !output.contains("hello"),
+            "NORMAL_VAR's value must be withheld: {output}"
+        );
+        assert!(
+            output.contains("AA_AGENT_ID=agent-xyz"),
+            "an allowlisted governance identifier must still show its value: {output}"
         );
     }
 
@@ -5051,9 +5564,17 @@ mod tests {
             !output.contains("hunter2"),
             "DATABASE_URL password must not appear in cleartext: {output}"
         );
+        // AAASM-4936 redacted the userinfo and kept the rest of the URL. Since
+        // AAASM-5935 the preview withholds the whole value for any name off the
+        // allowlist — strictly more than 4936 asked for, and asserted as such so
+        // a later change cannot quietly loosen it back to a structural render.
         assert!(
-            output.contains("DATABASE_URL=postgresql://aasm:***@db:5432/aasm"),
-            "DATABASE_URL password should be redacted while preserving structure: {output}"
+            output.contains("DATABASE_URL=***MASKED***"),
+            "DATABASE_URL is off the preview allowlist and must be withheld entirely: {output}"
+        );
+        assert!(
+            !output.contains("db:5432"),
+            "not even the surviving URL structure may be emitted: {output}"
         );
     }
 
@@ -5061,7 +5582,14 @@ mod tests {
     /// `MONGODB_URI` / `REDIS_URI` / `AMQP_URI` / `DATABASE_URI` — carry
     /// `user:pass@host` userinfo just like `*_URL`, but the previous denylist
     /// only matched `_URL` / `_DSN`, so a `MONGODB_URI` password printed in the
-    /// clear in the dry-run preview. It must be redacted like a `_URL`.
+    /// clear in the dry-run preview.
+    ///
+    /// Since AAASM-5935 it is withheld outright rather than structurally
+    /// redacted, because `MONGODB_URI` is off the preview allowlist. The
+    /// userinfo-stripping behaviour 4936 introduced is still asserted directly
+    /// against [`mask_value`] in
+    /// `mask_value_strips_userinfo_for_an_allowlisted_connection_string`, which is
+    /// where it is still reachable.
     #[test]
     fn dry_run_redacts_uri_connection_strings() {
         let handle = RegistrationHandle {
@@ -5092,33 +5620,1047 @@ mod tests {
             "MONGODB_URI password must not appear in cleartext: {output}"
         );
         assert!(
-            output.contains("MONGODB_URI=mongodb://user:***@host:27017/db"),
-            "MONGODB_URI password should be redacted while preserving structure: {output}"
+            output.contains("MONGODB_URI=***MASKED***"),
+            "MONGODB_URI is off the preview allowlist and must be withheld entirely: {output}"
+        );
+        assert!(
+            !output.contains("host:27017"),
+            "not even the surviving URI structure may be emitted: {output}"
         );
     }
 
-    /// The fail-closed backstop: a value carrying `user:pass@` userinfo must be
-    /// redacted even when its key name matches none of the connection-string
-    /// suffixes or secret substrings, since the value is itself a credential.
+    /// AAASM-4936, at the layer where it is still reachable: [`mask_value`] runs
+    /// as defence in depth over an allowlisted name, so a value carrying
+    /// `user:pass@` userinfo has the password stripped even though a reviewer
+    /// judged the name safe to show.
     #[test]
-    fn mask_value_redacts_connection_string_in_unrecognised_key() {
-        let masked = mask_value("PRIMARY_BROKER", "amqp://svc:s3cr3t@rabbit:5672/vhost");
+    fn mask_value_strips_userinfo_for_an_allowlisted_connection_string() {
+        let masked = mask_value("ANTHROPIC_BASE_URL", "https://svc:s3cr3t@proxy.internal:8443/v1");
         assert!(
             !masked.contains("s3cr3t"),
             "userinfo password must be redacted: {masked}"
         );
-        assert_eq!(masked, "amqp://svc:***@rabbit:5672/vhost");
+        assert_eq!(masked, "https://svc:***@proxy.internal:8443/v1");
     }
 
     /// The backstop must not mangle an ordinary non-credential value: a plain
-    /// value with no `scheme://user:pass@` shape passes through untouched.
+    /// value with no `scheme://user:pass@` shape passes through untouched, so an
+    /// allowlisted model name or CA path is shown as it is.
     #[test]
     fn mask_value_leaves_plain_value_unchanged() {
-        assert_eq!(mask_value("LOG_LEVEL", "debug"), "debug");
         assert_eq!(
-            mask_value("ENDPOINT", "https://api.example.com/v1"),
+            mask_value("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem"),
+            "/tmp/aasm-ca.pem"
+        );
+        assert_eq!(
+            mask_value("ANTHROPIC_BASE_URL", "https://api.example.com/v1"),
             "https://api.example.com/v1"
         );
+    }
+
+    // --- AAASM-5935: deny-by-default env value emission ---------------------
+    //
+    // Every value in this block is synthetic and non-functional. No real
+    // credential, and no fragment, length or fingerprint of one, is stored here,
+    // decoded here, or read from the host environment — which is regression F,
+    // and is a property of the fix rather than a discipline the tests impose on
+    // themselves: the classifier is a pure function of the variable *name*.
+
+    /// A synthetic, non-functional stand-in for a token. Not a credential, and
+    /// not derived from one.
+    const SYNTH_TOKEN: &str = "synthetic-not-a-real-token-AAAA";
+
+    /// A second synthetic stand-in, so a container can hold more than one and the
+    /// test can prove *each* is withheld rather than one of them incidentally.
+    const SYNTH_TOKEN_2: &str = "synthetic-not-a-real-token-BBBB";
+
+    /// Minimal RFC 4648 base64 encoder, test-only.
+    ///
+    /// Present so regression C can build its own encoded container from synthetic
+    /// input rather than embedding an opaque literal — the test then knows
+    /// exactly what the blob would yield if anyone decoded it, which is what
+    /// makes "the blob itself must not be emitted" a meaningful assertion.
+    ///
+    /// Note the direction: the *test* encodes. Nothing in the production path
+    /// decodes, which is AAASM-5935 AC 4.
+    fn base64_encode(input: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in input.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    /// The **pre-fix** renderer, retained in tests only, as the negative control.
+    ///
+    /// This is the exact branch structure `format_dry_run_output` used to apply to
+    /// every variable: classify by name, and — when no name pattern matches — fall
+    /// through to a redactor that returns the value unchanged unless it finds URL
+    /// userinfo. The final branch was documented as a "fail-closed backstop" and
+    /// is structurally fail-*open*.
+    ///
+    /// It is kept because a suite that only exercised the new code could keep
+    /// passing if the allowlist were widened back to "everything": the negative
+    /// controls below assert that this function *does* leak what
+    /// [`render_env_value`] withholds, which pins the difference rather than the
+    /// implementation.
+    fn legacy_name_based_render(key: &str, value: &str) -> String {
+        let upper = key.to_uppercase();
+        if is_connection_string_name(&upper) {
+            return redact_database_url(value);
+        }
+        if SECRET_SUBSTRINGS.iter().any(|needle| upper.contains(needle)) {
+            return "***MASKED***".into();
+        }
+        // The defect: an unrecognised name reaches here and the value is returned
+        // verbatim, because there is no `user:pass@host` userinfo to strip.
+        redact_database_url(value)
+    }
+
+    /// A synthetic serialized environment snapshot: the shape a tool that
+    /// publishes the environment into a single variable produces. Built from the
+    /// synthetic tokens above, never from the real environment.
+    fn synthetic_env_snapshot() -> String {
+        format!("export FORGE_TOKEN={SYNTH_TOKEN};export COVERAGE_TOKEN={SYNTH_TOKEN_2};")
+    }
+
+    /// The dry-run environment section for one synthetic `name=value` pair.
+    ///
+    /// Goes through the real `format_dry_run_output`, so the assertion is about
+    /// the artefact an operator reads, not about a helper in isolation.
+    fn preview_for(name: &str, value: &str) -> String {
+        let handle = stub_handle(None);
+        let cmd = std::process::Command::new("mock-tool");
+        let mut env = HashMap::new();
+        env.insert(name.to_string(), value.to_string());
+        format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        )
+    }
+
+    /// **Regression A** — a conventionally-named secret-bearing variable is not
+    /// emitted. The AAASM-4894 case, still held.
+    #[test]
+    fn a_conventionally_named_secret_bearing_variable_is_never_emitted() {
+        for name in ["FORGE_TOKEN", "AA_JWT_SECRET", "DB_PASSWORD", "SONAR_CREDENTIAL"] {
+            let output = preview_for(name, SYNTH_TOKEN);
+            assert!(
+                !output.contains(SYNTH_TOKEN),
+                "{name}: the synthetic token value reached the preview: {output}"
+            );
+            assert!(
+                output.contains(&format!("{name}=***MASKED***")),
+                "{name}: must be reported as a masked credential, not omitted: {output}"
+            );
+        }
+    }
+
+    /// **Regression B** — a container variable holding token values is not
+    /// emitted in a form the tokens are recoverable from.
+    ///
+    /// The container's name matches no credential pattern, which is precisely why
+    /// the old logic printed it. Both synthetic tokens are asserted absent
+    /// individually, and so is the container payload as a whole: emitting the
+    /// payload *is* the exposure, whether or not a reader bothers to parse it.
+    #[test]
+    fn a_container_variable_holding_token_values_is_not_emitted_in_recoverable_form() {
+        let snapshot = synthetic_env_snapshot();
+        let output = preview_for("AA_5935_ENV_SNAPSHOT", &snapshot);
+
+        for token in [SYNTH_TOKEN, SYNTH_TOKEN_2] {
+            assert!(
+                !output.contains(token),
+                "a token inside the container reached the preview: {output}"
+            );
+        }
+        assert!(
+            !output.contains(&snapshot),
+            "the container payload must not be emitted at all: {output}"
+        );
+        assert!(
+            output.contains("AA_5935_ENV_SNAPSHOT=<set>"),
+            "the container must still be reported as present — the operator needs to \
+             know the child inherits it: {output}"
+        );
+    }
+
+    /// **Regression C** — encoded container metadata cannot bypass masking through
+    /// an unrecognised variable name.
+    ///
+    /// The exposure this ticket records: an encoded environment snapshot in a
+    /// blandly-named variable. The test asserts the encoded blob is absent, not
+    /// just its plaintext — a blob in the output is recoverable content, and the
+    /// fix must hold *without* the product having decoded anything to find out.
+    ///
+    /// Each payload form is paired with the sentinels whose presence would mean
+    /// recovery **of that form**. Searching a base64 payload's output for the
+    /// plaintext token cannot fail — the plaintext is not in the blob — so that
+    /// pairing is what keeps every assertion here discriminating rather than
+    /// decorative. The exact-line assertion is the strongest of the three: the
+    /// rendered value is `<set>` and nothing else, so no transform of the payload
+    /// is present in any form.
+    #[test]
+    fn an_encoded_container_cannot_bypass_masking_through_an_unrecognised_name() {
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        // (payload, the strings whose presence would mean the payload was recovered)
+        let forms: [(&str, Vec<&str>); 2] = [
+            ("plaintext", vec![snapshot.as_str(), SYNTH_TOKEN, SYNTH_TOKEN_2]),
+            ("base64", vec![encoded.as_str()]),
+        ];
+
+        // Names carrying no credential signal whatsoever — the class, not one
+        // vendor's spelling. `_WATCHES` and `_STATE` are included because fixing
+        // only the one variable that happened to leak would leave the class open.
+        for name in ["AA_5935_DIFF", "TOOLING_WATCHES", "SHELL_HOOK_STATE", "XYZZY"] {
+            for (form, sentinels) in &forms {
+                let payload = if *form == "base64" { &encoded } else { &snapshot };
+                let output = preview_for(name, payload);
+
+                for sentinel in sentinels {
+                    assert!(
+                        !output.contains(sentinel),
+                        "{name} ({form}): the container is recoverable from the preview: {output}"
+                    );
+                }
+                // Nothing derived from the payload is present, in any encoding:
+                // the whole rendered value is the presence marker.
+                assert!(
+                    output.contains(&format!("\n{name}={PRESENCE_SET}\n")),
+                    "{name} ({form}): the rendered value must be exactly the presence marker: \
+                     {output}"
+                );
+            }
+        }
+    }
+
+    /// **Regression D** — presence-only diagnostics remain usable.
+    ///
+    /// AC 3. Withholding values is only acceptable if the preview still answers
+    /// the question it exists for: which variables the child inherits. Every name
+    /// must be listed, the removals must still read as removals, and the legend
+    /// must explain the markers — an operator seeing `FOO=<set>` for the first
+    /// time must not have to guess whether that is a literal value.
+    #[test]
+    fn presence_only_diagnostics_still_name_every_inherited_variable() {
+        let handle = stub_handle(None);
+        let mut cmd = std::process::Command::new("mock-tool");
+        cmd.env_remove("ANTHROPIC_API_KEY");
+        let mut env = HashMap::new();
+        env.insert("AA_5935_ENV_SNAPSHOT".into(), synthetic_env_snapshot());
+        env.insert("EDITOR".into(), "vi".into());
+        env.insert("EMPTY_BUT_PRESENT".into(), String::new());
+        env.insert("AA_AGENT_ID".into(), "test-agent".into());
+
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &cmd,
+            &env,
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        for name in ["AA_5935_ENV_SNAPSHOT", "EDITOR", "EMPTY_BUT_PRESENT", "AA_AGENT_ID"] {
+            assert!(output.contains(name), "{name} must be listed by name: {output}");
+        }
+        assert!(output.contains("EDITOR=<set>"), "{output}");
+        assert!(
+            output.contains("EMPTY_BUT_PRESENT=<set:empty>"),
+            "present-but-empty is a distinct launch state and must be distinguishable \
+             from present-with-a-value: {output}"
+        );
+        assert!(
+            output.contains("ANTHROPIC_API_KEY=<removed by adapter>"),
+            "a removal must still read as a removal, not as a withheld value: {output}"
+        );
+        assert!(
+            output.contains("<set> = present, value withheld"),
+            "the markers must be explained in the output itself: {output}"
+        );
+    }
+
+    /// **Regression E** — non-secret diagnostic metadata still works.
+    ///
+    /// The allowlist is not decoration: the governance identity, the CA, the model
+    /// and the route still answer the operator's question, because a preview that
+    /// hid them could not verify a governed launch at all.
+    ///
+    /// `NODE_EXTRA_CA_CERTS` keeps its **full** path deliberately. The directory
+    /// is the load-bearing fact, not incidental: `aasm-ca.pem` under a project
+    /// state root versus the same basename elsewhere is exactly the distinction
+    /// behind "is the project-scope CA wired?". It is also a path to a *public*
+    /// certificate, so there is nothing credential-capable to project away.
+    #[test]
+    fn non_secret_governance_metadata_is_still_shown_verbatim() {
+        let verbatim = [
+            ("AA_AGENT_ID", "agent-5935"),
+            ("AA_SESSION_ID", "session-5935"),
+            ("AA_ENFORCEMENT_MODE", "observe"),
+            ("NODE_EXTRA_CA_CERTS", "/tmp/aasm-ca.pem"),
+            ("ANTHROPIC_MODEL", "a-model-name"),
+        ];
+        for (name, value) in verbatim {
+            let output = preview_for(name, value);
+            assert!(
+                output.contains(&format!("{name}={value}")),
+                "{name} is on the reviewed allowlist and must show its value: {output}"
+            );
+        }
+
+        // A URL-valued entry shows its origin. The route is still legible — which
+        // is the diagnostic the entry exists for — while every position a URL has
+        // for carrying a credential is gone. An origin with no path is unchanged,
+        // so a normalised proxy URL still reads exactly as it did.
+        let projected = [
+            ("HTTPS_PROXY", "http://127.0.0.1:8899", "http://127.0.0.1:8899"),
+            (
+                "ANTHROPIC_BASE_URL",
+                "https://api.example.com/v1",
+                "https://api.example.com<path:1 segment>",
+            ),
+        ];
+        for (name, value, expected) in projected {
+            let output = preview_for(name, value);
+            assert!(
+                output.contains(&format!("{name}={expected}")),
+                "{name}={value} must render as its origin ({expected}): {output}"
+            );
+        }
+    }
+
+    /// **Regression F** — the protection needs neither to store nor to decode a
+    /// credential.
+    ///
+    /// Asserted as the property that makes it true rather than by inspection: the
+    /// render of a non-allowlisted variable is a pure function of its *name*, so
+    /// three structurally unrelated values render identically. A classifier that
+    /// carried any information out of the value could not satisfy this, and one
+    /// that decoded the value to decide would have to.
+    ///
+    /// This is also why the fix has no frontier: there is no encoding it has to
+    /// recognise, so there is no next encoding it can fail open on (AC 4).
+    #[test]
+    fn the_protection_neither_stores_nor_decodes_any_credential() {
+        let values = [
+            SYNTH_TOKEN.to_string(),
+            synthetic_env_snapshot(),
+            base64_encode(synthetic_env_snapshot().as_bytes()),
+            "plain".to_string(),
+            "postgresql://user:synthetic-not-a-real-pw@host:5432/db".to_string(),
+        ];
+
+        let rendered: Vec<String> = values
+            .iter()
+            .map(|v| render_env_value("AA_5935_OPAQUE_CONTAINER", v))
+            .collect();
+        assert!(
+            rendered.iter().all(|r| r == PRESENCE_SET),
+            "the render must depend only on the name, so it can carry nothing out of \
+             the value: {rendered:?}"
+        );
+
+        // And the closed marker set: whatever the value, a withheld render is one
+        // of three fixed strings, none of which is derived from the input.
+        for value in &values {
+            let r = render_env_value("SOME_OPAQUE_NAME", value);
+            assert!(
+                [PRESENCE_SET, PRESENCE_EMPTY, MASKED].contains(&r.as_str()),
+                "unexpected marker {r:?} — a withheld value must render as a constant"
+            );
+        }
+    }
+
+    /// **Negative control**, B and C: the pre-fix name-based logic leaks exactly
+    /// what the allowlist withholds.
+    ///
+    /// Without this, nothing in the suite would show that the regression tests
+    /// above are testing a real change rather than a tautology.
+    #[test]
+    fn the_old_name_based_logic_leaks_what_the_allowlist_withholds() {
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        // B, under the old logic: the container's plaintext was returned verbatim.
+        let old_b = legacy_name_based_render("AA_5935_ENV_SNAPSHOT", &snapshot);
+        assert_eq!(
+            old_b, snapshot,
+            "negative control is not reproducing the defect: the old renderer is \
+             expected to return the container unchanged"
+        );
+        assert!(
+            old_b.contains(SYNTH_TOKEN),
+            "the old renderer leaked the contained token — that is the defect"
+        );
+
+        // C, under the old logic: so was the encoded container.
+        let old_c = legacy_name_based_render("AA_5935_DIFF", &encoded);
+        assert_eq!(old_c, encoded, "the old renderer emitted the encoded blob verbatim");
+
+        // The new renderer withholds both, and emits neither payload.
+        for (name, payload) in [("AA_5935_ENV_SNAPSHOT", &snapshot), ("AA_5935_DIFF", &encoded)] {
+            let new = render_env_value(name, payload);
+            assert_eq!(new, PRESENCE_SET, "{name} must render presence-only");
+            assert!(!new.contains(SYNTH_TOKEN), "{name}: {new}");
+        }
+    }
+
+    /// **Negative control**, table-driven: for every input the old logic printed,
+    /// the new classifier withholds — and the two agree only where the old logic
+    /// was already correct.
+    ///
+    /// Table-driven so the *class* is pinned rather than a handful of names: any
+    /// future change that reintroduces value emission for an off-allowlist name
+    /// fails here regardless of which name it picks.
+    #[test]
+    fn the_classifier_rejects_every_input_the_old_name_based_logic_accepted() {
+        struct Case {
+            name: &'static str,
+            value: String,
+            /// Whether the old, name-based-only logic emitted the value verbatim.
+            old_emitted_verbatim: bool,
+        }
+
+        let snapshot = synthetic_env_snapshot();
+        let encoded = base64_encode(snapshot.as_bytes());
+
+        let cases = vec![
+            // The defect class: bland names, secret-bearing values.
+            Case {
+                name: "AA_5935_ENV_SNAPSHOT",
+                value: snapshot.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "AA_5935_DIFF",
+                value: encoded.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "TOOLING_WATCHES",
+                value: encoded.clone(),
+                old_emitted_verbatim: true,
+            },
+            Case {
+                name: "SHELL_SNAPSHOT",
+                value: snapshot.clone(),
+                old_emitted_verbatim: true,
+            },
+            // Bland name, ordinary value — leaked too, and no longer emitted.
+            // Harmless in itself, but it is the same branch, so it is the same bug.
+            Case {
+                name: "EDITOR",
+                value: "vi".to_string(),
+                old_emitted_verbatim: true,
+            },
+            // Where the old logic was already right: the name says credential.
+            Case {
+                name: "FORGE_TOKEN",
+                value: SYNTH_TOKEN.to_string(),
+                old_emitted_verbatim: false,
+            },
+            Case {
+                name: "AA_JWT_SECRET",
+                value: SYNTH_TOKEN.to_string(),
+                old_emitted_verbatim: false,
+            },
+        ];
+
+        for case in &cases {
+            let old = legacy_name_based_render(case.name, &case.value);
+            assert_eq!(
+                old == case.value,
+                case.old_emitted_verbatim,
+                "{}: the negative control no longer reproduces the old behaviour it \
+                 is here to contrast with",
+                case.name
+            );
+
+            let new = render_env_value(case.name, &case.value);
+            assert_ne!(
+                new, case.value,
+                "{}: the new classifier must not emit an off-allowlist value verbatim",
+                case.name
+            );
+            assert!(
+                [PRESENCE_SET, PRESENCE_EMPTY, MASKED].contains(&new.as_str()),
+                "{}: expected a constant withholding marker, got {new:?}",
+                case.name
+            );
+        }
+    }
+
+    /// The allowlist is the reviewed surface, so its contents are asserted rather
+    /// than left to whoever edits the array next.
+    ///
+    /// Nothing on it may carry a credential-shaped name — which would mean a
+    /// reviewer allowlisted a value the masker then has to catch — and it stays
+    /// **exactly** its reviewed size, because "small and reviewed" is the whole
+    /// security argument and a `<=` bound lets entries accumulate under it.
+    ///
+    /// `ANTHROPIC_BASE_URL` is the one entry that is `looks_like_credential_name`-
+    /// positive, and only by the `_URL` connection-string suffix rather than by any
+    /// secret substring. The suffix is not waved away: an entry allowed to be
+    /// credential-named that way must also be [`URL_VALUED_ENV_VARS`], so the very
+    /// shape that flags it is what gets its value projected to an origin — every
+    /// credential-capable position discarded rather than trusted.
+    #[test]
+    fn the_preview_value_allowlist_stays_small_and_carries_no_credential_names() {
+        // Exact, not a ceiling: adding an entry must be a deliberate edit to this
+        // number, in the same diff, rather than something that slips in under a
+        // bound nobody is watching.
+        assert_eq!(
+            VALUE_VISIBLE_ENV_VARS.len(),
+            17,
+            "the allowlist changed size — widening the value-visible set is a trust \
+             decision and has to be reviewed as one: {VALUE_VISIBLE_ENV_VARS:?}"
+        );
+        for name in VALUE_VISIBLE_ENV_VARS {
+            assert!(
+                !SECRET_SUBSTRINGS.iter().any(|needle| name.contains(needle)),
+                "{name} has a credential-shaped name and must not be value-visible"
+            );
+            assert_eq!(name, name.to_uppercase(), "{name} must be stored uppercased");
+            assert!(
+                value_may_be_previewed(name) && value_may_be_previewed(&name.to_lowercase()),
+                "{name} must match case-insensitively"
+            );
+            // An entry may be `looks_like_credential_name`-positive only by the
+            // connection-string *suffix*, never by a secret substring — and if it
+            // is, its value must be origin-projected rather than trusted, so the
+            // suffix that flagged it is also what strips its credential positions.
+            if looks_like_credential_name(name) {
+                assert!(
+                    is_connection_string_name(name),
+                    "{name} is credential-named by something other than a URL/DSN/URI suffix"
+                );
+                assert!(
+                    is_url_valued_name(name),
+                    "{name} is connection-string-shaped, so its value must be projected to an \
+                     origin rather than previewed as-is"
+                );
+            }
+        }
+        assert!(
+            !value_may_be_previewed("ANTHROPIC_API_KEY"),
+            "a credential must never be on the allowlist"
+        );
+        // Every URL-valued entry is on the allowlist it qualifies: a name here
+        // that nothing previews would be a projection with no subject.
+        for name in URL_VALUED_ENV_VARS {
+            assert!(
+                VALUE_VISIBLE_ENV_VARS.contains(&name),
+                "{name} is URL-valued but not value-visible"
+            );
+        }
+    }
+
+    /// **Regression G** — a name that merely *folds* onto an allowlist entry is
+    /// not on the allowlist.
+    ///
+    /// `str::to_uppercase` performs full Unicode case conversion, and some
+    /// non-ASCII characters uppercase into ASCII — so classifying a name that way
+    /// let the allowlist grow by Unicode table rather than by review. Asserted on
+    /// **recoverability** end to end, not on the presence of a mask token: the
+    /// pre-fix code emitted the value verbatim, so an assertion that merely
+    /// searched for `***MASKED***` would have passed on it.
+    #[test]
+    fn a_unicode_lookalike_of_an_allowlisted_name_is_not_value_visible() {
+        // U+0131 LATIN SMALL LETTER DOTLESS I uppercases to ASCII `I`.
+        // U+017F LATIN SMALL LETTER LONG S uppercases to ASCII `S`.
+        let lookalikes = [
+            ("anthrop\u{0131}c_base_url", "ANTHROPIC_BASE_URL"),
+            ("anthropic_ba\u{017F}e_url", "ANTHROPIC_BASE_URL"),
+            ("anthrop\u{0131}c_model", "ANTHROPIC_MODEL"),
+            ("http\u{017F}_proxy", "HTTPS_PROXY"),
+            ("node_extra_ca_cert\u{017F}", "NODE_EXTRA_CA_CERTS"),
+            ("aa_\u{017F}ession_id", "AA_SESSION_ID"),
+        ];
+
+        for (lookalike, entry) in lookalikes {
+            // The premise of the test, asserted so that a change to Rust's case
+            // tables makes this fail loudly rather than pass vacuously.
+            assert_eq!(
+                lookalike.to_uppercase(),
+                entry,
+                "{lookalike} no longer folds onto {entry}; this test's premise is stale"
+            );
+            assert!(
+                !value_may_be_previewed(lookalike),
+                "{lookalike} folds onto the allowlisted {entry} and was treated as value-visible"
+            );
+            // And the value is withheld in the real receipt, not merely
+            // classified as withheld.
+            let output = preview_for(lookalike, SYNTH_TOKEN);
+            assert!(
+                !output.contains(SYNTH_TOKEN),
+                "{lookalike}: a value planted under a Unicode lookalike of {entry} reached the \
+                 preview: {output}"
+            );
+            // Presence is still reported. Either withholding marker is correct:
+            // a lookalike ending `_URL` is additionally credential-named by
+            // suffix, so it earns the stronger `MASKED` receipt rather than a
+            // bare `PRESENCE_SET`.
+            assert!(
+                output.contains(&format!("{lookalike}={PRESENCE_SET}"))
+                    || output.contains(&format!("{lookalike}={MASKED}")),
+                "{lookalike}: presence must still be reported: {output}"
+            );
+        }
+    }
+
+    /// **Regression H** — a credential in *any* position of an allowlisted URL is
+    /// not recoverable from the receipt.
+    ///
+    /// A reviewed variable *name* says nothing about the positions its *value*
+    /// has. `redact_database_url` rewrote only the authority, and only when the
+    /// userinfo carried a `:`, so every other position survived verbatim — and the
+    /// `user:pass@` case put the mask on the password while printing the user,
+    /// which is where a personal access token actually sits.
+    ///
+    /// Asserted on **recoverability**: the synthetic sentinel must be absent from
+    /// the whole receipt. A test that only looked for `***` would have passed
+    /// against the vulnerable rendering, which printed `user:***@host` with the
+    /// credential intact beside it.
+    ///
+    /// Asserted over the **whole allowlist**, not over the URL-*named* subset.
+    /// This test first covered only [`URL_VALUED_ENV_VARS`], because projection
+    /// was gated on the name — which left the same reasoning unapplied to the
+    /// other 14 entries, whose values reached `mask_value` and printed a URL
+    /// credential in full. Two of those 14 are not operator-set at all
+    /// (`AA_ENFORCEMENT_MODE` is injected in Enforce mode; `NO_PROXY` survives
+    /// ambiently under `--no-proxy`), so "that variable would never hold a URL"
+    /// was not a property anyone controlled. Projection is now decided by the
+    /// value's shape, and the loop below is what holds it to that.
+    #[test]
+    fn a_credential_in_any_url_position_is_not_recoverable_from_the_receipt() {
+        const SENTINEL: &str = "synthetic-not-a-real-credential-CCCC";
+
+        // Every position a URL offers, over every allowlist entry.
+        let shapes = [
+            format!("https://gw.example.invalid/v1?api_key={SENTINEL}"),
+            format!("https://gw.example.invalid/v1/{SENTINEL}/chat"),
+            format!("https://{SENTINEL}@gw.example.invalid/v1"),
+            format!("https://gw.example.invalid/v1#token={SENTINEL}"),
+            format!("http://{SENTINEL}@corp-proxy.invalid:3128"),
+            format!("https://{SENTINEL}:x-oauth-basic@gw.example.invalid/v1"),
+        ];
+
+        for name in VALUE_VISIBLE_ENV_VARS {
+            for shape in &shapes {
+                let output = preview_for(name, shape);
+                assert!(
+                    !output.contains(SENTINEL),
+                    "{name}: a credential in this URL position is recoverable from the receipt \
+                     ({shape} rendered into): {output}"
+                );
+                // Some allowlisted names never reach the rendered block at all:
+                // `effective_child_env` *removes* every routing variable unless
+                // `--no-proxy` was given, and `preview_for` previews the governed
+                // path. Absence is a stronger outcome than projection, so it is
+                // accepted — but only for a name that is on the removal list, so
+                // a variable that vanishes for some other reason still fails
+                // rather than quietly skipping its own assertion.
+                if !output.contains(&format!("{name}=")) {
+                    assert!(
+                        run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS.contains(&name),
+                        "{name}: absent from the preview for a reason this test does not account \
+                         for: {output}"
+                    );
+                    continue;
+                }
+
+                // The host survives, so the receipt still answers "where does this
+                // traffic go" — withholding must not have degenerated into hiding
+                // the route.
+                let host = if shape.contains("corp-proxy") {
+                    "corp-proxy.invalid:3128"
+                } else {
+                    "gw.example.invalid"
+                };
+                assert!(
+                    output.contains(host),
+                    "{name}: the route must stay legible ({host} expected): {output}"
+                );
+            }
+        }
+
+        // Authority-boundary shapes: a `/`, `?` or `#` *inside the userinfo* ends
+        // the authority early, so the rightmost `@` is no longer in it and the
+        // userinfo lands in the host position. These must be withheld, not
+        // printed as though the userinfo were a host — printing one both leaks the
+        // credential prefix and states a false routing fact, asserting a host that
+        // is not where the traffic goes.
+        let malformed = [
+            // `?` ends the authority mid-userinfo.
+            format!("https://user:{SENTINEL}?tail@gw.example.invalid/v1"),
+            // `/` does the same, and is ordinary in a base64-shaped password.
+            format!("http://user:{SENTINEL}/tail@corp-proxy.invalid:3128"),
+            // `#` likewise.
+            format!("http://user:{SENTINEL}#tail@corp-proxy.invalid:3128"),
+            // A NUL is not `char::is_whitespace`, so the old whitespace-only guard
+            // admitted it; `sanitize_terminal` then strips it and splices the tail
+            // onto the host.
+            format!("https://gw.example.invalid\0{SENTINEL}"),
+            // An `@` inside an IPv6 literal leaves a `]` with no opening bracket.
+            format!("https://[::1@{SENTINEL}]/x"),
+            // An unrecognised scheme is attacker-chosen text of any length, and
+            // the old charset rule echoed it verbatim.
+            format!("{SENTINEL}://gw.example.invalid/v1"),
+        ];
+
+        for name in URL_VALUED_ENV_VARS {
+            for shape in &malformed {
+                let output = preview_for(name, shape);
+                assert!(
+                    !output.contains(SENTINEL),
+                    "{name}: a credential in a malformed authority is recoverable from the \
+                     receipt ({shape} rendered into): {output}"
+                );
+                // Fail closed: presence only. Anything unparseable is withheld,
+                // never printed raw and never guessed at.
+                assert!(
+                    output.contains(&format!("{name}={PRESENCE_SET}")),
+                    "{name}: an unparseable URL must fall back to presence-only: {output}"
+                );
+            }
+        }
+    }
+
+    /// The projection keeps the origin and reports path depth as metadata.
+    ///
+    /// Pinned separately from the leak test so that a change to the rendering is
+    /// a deliberate edit here rather than an incidental side effect.
+    #[test]
+    fn a_url_value_renders_as_scheme_host_port_and_a_path_segment_count() {
+        let cases = [
+            (
+                "https://gw.example.invalid/v1?api_key=x",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            (
+                "https://gw.example.invalid/v1/x/chat",
+                "https://gw.example.invalid<path:3 segments>",
+            ),
+            (
+                "https://u@gw.example.invalid/v1",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            (
+                "https://gw.example.invalid/v1#token=x",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            ("http://u@corp-proxy.invalid:3128", "http://corp-proxy.invalid:3128"),
+            (
+                "https://u:p@gw.example.invalid/v1",
+                "https://gw.example.invalid<path:1 segment>",
+            ),
+            // No path, no marker — a normalised proxy URL is unchanged.
+            ("http://127.0.0.1:8899", "http://127.0.0.1:8899"),
+            // A bare `/` is zero segments, not one empty one.
+            ("http://127.0.0.1:8899/", "http://127.0.0.1:8899"),
+            // B2's core case. The host-shape gate added for the authority-boundary
+            // leak must not cost the ordinary `user:pass@host:port/path` form.
+            (
+                "https://svc:s3cr3t@proxy.internal:8443/v1",
+                "https://proxy.internal:8443<path:1 segment>",
+            ),
+            // Host forms the shape gate has to keep accepting.
+            ("https://api.example.com", "https://api.example.com"),
+            (
+                "http://proxy_internal-1.example.com:8080",
+                "http://proxy_internal-1.example.com:8080",
+            ),
+            // A bracketed IPv6 literal, with and without a port.
+            ("http://[::1]:8080/v1", "http://[::1]:8080<path:1 segment>"),
+            ("http://[2001:db8::1]", "http://[2001:db8::1]"),
+            // Proxy variables legitimately carry socks schemes.
+            ("socks5://127.0.0.1:1080", "socks5://127.0.0.1:1080"),
+            ("socks5h://corp-proxy.invalid:1080", "socks5h://corp-proxy.invalid:1080"),
+            // The scheme allowlist matches case-insensitively, and the receipt
+            // echoes the spelling that was actually set rather than normalising
+            // it — the value is now drawn from a closed four-entry vocabulary, so
+            // reporting it faithfully costs nothing.
+            ("HTTPS://gw.example.invalid", "HTTPS://gw.example.invalid"),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(
+                project_url_origin(value).as_deref(),
+                Some(expected),
+                "projecting {value}"
+            );
+        }
+
+        // Fail closed: no parseable scheme and host means withhold, never print
+        // the value raw.
+        for value in [
+            "127.0.0.1:8080",
+            "not-a-url",
+            "://host/v1",
+            "https:///v1",
+            "https://@/v1",
+            // Host position that is not host-shaped: a non-numeric port is the
+            // signature of a `user:password` pair sitting where a host belongs.
+            "https://user:secret",
+            "https://host:80:80",
+            "https://host:",
+            // Characters no reg-name admits.
+            "https://ho st",
+            "https://host\0tail",
+            "https://ho%73t",
+            // A closing bracket with no opening one — what an `@` inside an IPv6
+            // literal leaves behind after the userinfo split.
+            "https://2]",
+            "https://[::1",
+            "https://[]",
+            "https://[::1]:80x",
+            // Not a hex/colon/dot IPv6 body.
+            "https://[gw.example.invalid]",
+            // Off the closed scheme vocabulary. An unbounded run of alphanumerics
+            // used to satisfy the old charset rule and print verbatim.
+            "synthetic-not-a-real-scheme-0123456789abcdef://gw.example.invalid",
+            "file://gw.example.invalid",
+            "javascript://gw.example.invalid",
+            "ftp://gw.example.invalid",
+            // A Unicode lookalike must not fold into an allowlisted scheme.
+            "httpſ://gw.example.invalid",
+        ] {
+            assert_eq!(
+                project_url_origin(value),
+                None,
+                "{value} must not project to a printable origin"
+            );
+            assert_eq!(
+                render_env_value("HTTPS_PROXY", value),
+                PRESENCE_SET,
+                "{value} is unparseable and must be withheld, not printed"
+            );
+        }
+    }
+
+    /// An empty allowlisted value reports emptiness, not a bare `KEY=`.
+    ///
+    /// "Set to empty" and "set to something" are different launch states —
+    /// `ambient_proxy_is_set` treats an empty `HTTPS_PROXY` as no proxy at all —
+    /// and the entries most likely to be empty are precisely the allowlisted
+    /// routing ones. Rendering `HTTPS_PROXY=` left the operator unable to tell an
+    /// empty value from a rendering bug.
+    ///
+    /// Not a disclosure oracle: a credential-named variable returns `MASKED`
+    /// before emptiness is ever consulted, which the last case pins.
+    #[test]
+    fn an_empty_value_reports_emptiness_whether_allowlisted_or_not() {
+        for name in [
+            "HTTPS_PROXY",
+            "ANTHROPIC_BASE_URL",
+            "AA_AGENT_ID",
+            "NODE_EXTRA_CA_CERTS",
+        ] {
+            assert_eq!(
+                render_env_value(name, ""),
+                PRESENCE_EMPTY,
+                "{name} is allowlisted and empty, which is a launch state worth naming"
+            );
+        }
+        // Unchanged for the non-allowlisted case.
+        assert_eq!(render_env_value("SOME_OTHER_VAR", ""), PRESENCE_EMPTY);
+        // A credential-named variable says nothing about its emptiness.
+        for name in ["GITHUB_TOKEN", "DB_PASSWORD"] {
+            assert_eq!(
+                render_env_value(name, ""),
+                MASKED,
+                "{name} must not reveal emptiness — that would be an oracle"
+            );
+        }
+    }
+
+    /// An env value cannot forge a line in the receipt.
+    ///
+    /// The environment section is one variable per line, so a value carrying a
+    /// newline could otherwise invent a *second* record — and a forged
+    /// `HTTPS_PROXY=` line inside a security artifact asserts a routing fact the
+    /// launch does not have. Reachable through an allowlisted name: in Enforce
+    /// mode `build_child_env` does not set `AA_ENFORCEMENT_MODE`, so an arbitrary
+    /// ambient string under that name reaches the renderer.
+    #[test]
+    fn an_env_value_cannot_forge_a_line_in_the_receipt() {
+        let forged = "observe\nHTTPS_PROXY=http://127.0.0.1:8899";
+        let output = preview_for("AA_ENFORCEMENT_MODE", forged);
+
+        assert!(
+            !output.contains("\nHTTPS_PROXY=http://127.0.0.1:8899"),
+            "a newline in an allowlisted value forged a routing line: {output}"
+        );
+        // The value is still reported, collapsed onto one line. `sanitize_terminal`
+        // strips the control character rather than substituting a space, so the
+        // two fragments abut — safe, and legible enough that the operator can see
+        // the variable carried something unexpected.
+        assert!(
+            output.contains("AA_ENFORCEMENT_MODE=observeHTTPS_PROXY=http://127.0.0.1:8899\n"),
+            "the value must survive on a single line: {output}"
+        );
+
+        // Carriage returns and ANSI sequences cannot repaint the receipt either.
+        let repainted = preview_for("AA_AGENT_ID", "real-agent\r\u{1b}[2Kdifferent-agent");
+        assert!(
+            !repainted.contains('\r') && !repainted.contains('\u{1b}'),
+            "control characters reached the receipt: {repainted}"
+        );
+
+        // A forged line cannot arrive through the variable *name* either.
+        let named = preview_for("AA_AGENT_ID\nHTTPS_PROXY", "agent-5935");
+        assert!(
+            !named.contains("\nHTTPS_PROXY="),
+            "a newline in a variable name forged a line: {named}"
+        );
+    }
+
+    /// The argv, working directory and managed settings cannot forge a line either.
+    ///
+    /// These three sit *earlier* in the receipt than `--- environment ---`, which
+    /// makes them the stronger position to forge from: a newline in an argv element
+    /// can synthesise a complete `--- environment ---` header followed by
+    /// attacker-chosen records, and a consumer reading the first occurrence of that
+    /// header would accept them as the real block. Sanitizing only the real
+    /// environment block left that open.
+    #[test]
+    fn the_argv_working_dir_and_settings_cannot_forge_a_receipt_section() {
+        const FORGED_SECTION: &str = "\n--- environment ---\nHTTPS_PROXY=http://127.0.0.1:8899";
+
+        let handle = stub_handle(None);
+        let mut cmd = std::process::Command::new("mock-tool");
+        cmd.arg(format!("--flag={FORGED_SECTION}"));
+        cmd.current_dir(format!("/tmp/wd{FORGED_SECTION}"));
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            &format!("{{}}{FORGED_SECTION}"),
+            &cmd,
+            &HashMap::new(),
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        // Asserted per *line*, which is the unit this receipt is read in and the
+        // unit the guarantee is about. `sanitize_terminal` strips the newlines
+        // rather than substituting anything, so the forged text survives *inside*
+        // the `working_dir` line — abutted, exactly as the environment-value case
+        // leaves `observeHTTPS_PROXY=…`. That is the intended outcome: the payload
+        // is visible to the operator as something unexpected the field carried,
+        // while no parser scanning for a section header or a record can be
+        // convinced it found one.
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim() == "--- environment ---")
+                .count(),
+            1,
+            "a forged environment header reached the receipt as a line: {output}"
+        );
+        assert!(
+            !output.lines().any(|line| line.starts_with("HTTPS_PROXY=")),
+            "a forged routing record reached the receipt as a line: {output}"
+        );
+        assert!(
+            !output.contains('\u{1b}') && !output.contains('\r'),
+            "control characters reached the receipt: {output}"
+        );
+
+        // Withholding must not have degenerated into dropping the fields: an
+        // operator still has to be able to read what the launch was given.
+        assert!(
+            output.contains("mock-tool") && output.contains("/tmp/wd"),
+            "the launch command and working dir must still be reported: {output}"
+        );
+    }
+
+    /// Nor can the identity block, which is the receipt's first four lines.
+    ///
+    /// `agent_id` is the operator's `--agent-id` verbatim on the preview path —
+    /// `RunPlan::agent_id` mints a UUID only when the flag was absent — and
+    /// `registration_did` is a derivation of that same string. Being the first
+    /// lines of the receipt makes them the strongest forging position in it: a
+    /// consumer anchoring on any later header can be shown a forged one first.
+    /// The comment above the format call used to assert these fields "come from
+    /// registration", which held for the launch path only.
+    #[test]
+    fn the_identity_block_cannot_forge_a_receipt_section() {
+        const FORGED_SECTION: &str = "\n--- environment ---\nHTTPS_PROXY=http://127.0.0.1:8899";
+
+        let handle = RegistrationHandle {
+            agent_id: format!("agent{FORGED_SECTION}"),
+            registration_did: format!("did:key:zz{FORGED_SECTION}"),
+            registration_id: "test-reg".into(),
+            trace_id: format!("trace\u{1b}[2J{FORGED_SECTION}"),
+            session_id: format!("session{FORGED_SECTION}"),
+            team_id: None,
+        };
+        let output = format_dry_run_output(
+            &handle,
+            &stub_resolution(),
+            false,
+            "{}",
+            &std::process::Command::new("mock-tool"),
+            &HashMap::new(),
+            &PreviewFidelity::FromAdapter,
+            &stub_isolation(Default::default()),
+        );
+
+        assert_eq!(
+            output
+                .lines()
+                .filter(|line| line.trim() == "--- environment ---")
+                .count(),
+            1,
+            "the identity block forged an environment header: {output}"
+        );
+        assert!(
+            !output.lines().any(|line| line.starts_with("HTTPS_PROXY=")),
+            "the identity block forged a routing record: {output}"
+        );
+        assert!(
+            !output.contains('\u{1b}') && !output.contains('\r'),
+            "control characters reached the receipt: {output}"
+        );
+
+        // Still reported, collapsed onto their own lines — the operator has to be
+        // able to see what identity the preview was built against, including an
+        // unexpected payload it carried.
+        for (field, carried) in [
+            ("agent_id:", "agent"),
+            ("agent_did:", "did:key:zz"),
+            ("trace_id:", "trace"),
+            ("session_id:", "session"),
+        ] {
+            let line = output
+                .lines()
+                .find(|line| line.starts_with(field))
+                .unwrap_or_else(|| panic!("{field} is missing from the receipt: {output}"));
+            assert!(
+                line.contains(carried),
+                "{field} dropped what it carried instead of collapsing it: {line}"
+            );
+        }
     }
 
     /// AAASM-5350 AC 2, receipt surface: a preview of an unprotected launch has

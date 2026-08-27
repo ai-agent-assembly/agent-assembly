@@ -179,7 +179,7 @@ impl CodexAdapter {
         }
     }
 
-    /// Override the home directory used to locate `~/.codex/config.json`.
+    /// Override the home directory used to locate `~/.codex/config.toml`.
     /// Intended for integration tests; production code uses `$HOME`.
     #[doc(hidden)]
     pub fn with_home_dir(mut self, path: PathBuf) -> Self {
@@ -194,12 +194,6 @@ impl CodexAdapter {
     pub fn with_state_dir(mut self, path: PathBuf) -> Self {
         self.state_dir_override = Some(path);
         self
-    }
-
-    fn home_dir(&self) -> Option<PathBuf> {
-        self.home_dir_override
-            .clone()
-            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
     }
 
     /// The paths this adapter's own launch environment is resolved from.
@@ -264,48 +258,66 @@ impl DevToolAdapter for CodexAdapter {
         let blocked_domains = network_block_list(policy);
         let approval_policy = map_policy_to_approval(policy);
 
-        let settings = serde_json::json!({
-            "sandbox_mode": sandbox_mode,
-            "allowed_domains": allowed_domains,
-            "blocked_domains": blocked_domains,
-            "approval_policy": approval_policy,
-        });
-        serde_json::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
+        let mut settings = toml::value::Table::new();
+        settings.insert(
+            "sandbox_mode".to_string(),
+            toml::Value::try_from(sandbox_mode).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        );
+        settings.insert(
+            "allowed_domains".to_string(),
+            toml::Value::try_from(allowed_domains).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        );
+        settings.insert(
+            "blocked_domains".to_string(),
+            toml::Value::try_from(blocked_domains).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        );
+        settings.insert(
+            "approval_policy".to_string(),
+            toml::Value::try_from(approval_policy).map_err(|e| AdapterError::Serde(e.to_string()))?,
+        );
+        toml::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
 
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
-        let home = self.home_dir().ok_or_else(|| {
-            AdapterError::SettingsApplyFailed(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "HOME directory not found",
-            ))
+        // AAASM-5336: the real `codex` CLI reads/writes `config.toml`, not
+        // `config.json` — confirmed empirically against a real, isolated
+        // `codex` binary (`codex mcp add` writes here; `-c key=value`'s own
+        // `--help` documents its value as TOML-parsed). Reuse
+        // `CodexPaths::settings_path` rather than re-deriving `.codex/...`
+        // here, so this path and the one Codex's launch-env store resolves
+        // from can't drift apart again.
+        // The scope is named rather than implied. Codex's only configuration
+        // surface is the user's, and `settings_path` now refuses every other
+        // scope instead of quietly returning this file for it (AAASM-5913), so
+        // the one scope this adapter-level call can mean is stated here.
+        let scope = aa_devtool_contract::SettingsScope::User;
+        let config_path = self.launch_paths().settings_path(scope).map_err(|e| {
+            AdapterError::SettingsApplyFailed(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()))
         })?;
-        let config_path = home.join(".codex").join("config.json");
 
         // Parse incoming AA-managed settings.
-        let new_val: serde_json::Value =
-            serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        let new_val: toml::Value = toml::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
 
         // Load existing config (if any) so user-managed keys are preserved.
-        let mut merged: serde_json::Map<String, serde_json::Value> = if config_path.exists() {
+        let mut merged: toml::value::Table = if config_path.exists() {
             let raw = std::fs::read_to_string(&config_path).map_err(AdapterError::SettingsApplyFailed)?;
-            serde_json::from_str::<serde_json::Value>(&raw)
+            toml::from_str::<toml::Value>(&raw)
                 .ok()
                 .and_then(|v| match v {
-                    serde_json::Value::Object(m) => Some(m),
+                    toml::Value::Table(t) => Some(t),
                     _ => None,
                 })
                 .unwrap_or_default()
         } else {
-            serde_json::Map::new()
+            toml::value::Table::new()
         };
 
         // AA-managed keys win; user-managed keys not present in `settings` survive.
-        if let serde_json::Value::Object(new_map) = new_val {
-            merged.extend(new_map);
+        if let toml::Value::Table(new_table) = new_val {
+            merged.extend(new_table);
         }
 
-        let content = serde_json::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        let content = toml::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
 
         // Ensure ~/.codex/ exists.
         if let Some(parent) = config_path.parent() {

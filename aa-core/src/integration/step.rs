@@ -79,6 +79,23 @@ pub enum SettingsMerge {
     MergeManagedKeys,
 }
 
+/// How a [`StepAction::WriteManagedSettings`] target is encoded.
+///
+/// Fingerprints, projections and the credential screen are all taken over
+/// this format's canonical form (`aa_core::integration::fingerprint`). Not
+/// `#[non_exhaustive]`: every format this module can fingerprint has to be
+/// enumerated here, matched exhaustively by `fingerprint.rs`'s `Doc` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum DocumentFormat {
+    /// JSON. The format every managed-settings file used before TOML support
+    /// was added, and therefore the correct default for `#[serde(default)]`.
+    #[default]
+    Json,
+    /// TOML.
+    Toml,
+}
+
 /// What kind of trust material a step puts on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -168,6 +185,10 @@ pub enum StepAction {
         content_sha256: String,
         /// How to combine with existing content.
         merge: SettingsMerge,
+        /// How the target file is encoded. Fingerprints, projections and the
+        /// credential screen are all taken over this format's canonical form.
+        #[cfg_attr(feature = "serde", serde(default))]
+        format: DocumentFormat,
     },
     /// Apply managed settings through a pre-lifecycle
     /// [`DevToolAdapter`](crate::DevToolAdapter).
@@ -510,6 +531,7 @@ mod tests {
             managed_keys: vec!["permissions".to_string()],
             content_sha256: "deadbeef".to_string(),
             merge: SettingsMerge::MergeManagedKeys,
+            format: DocumentFormat::Json,
         };
         assert_eq!(write.settings_scope(), Some(SettingsScope::Project));
 

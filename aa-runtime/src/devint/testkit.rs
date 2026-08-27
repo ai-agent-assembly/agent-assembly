@@ -158,6 +158,7 @@ pub fn poisoned_plan(tool: &DevToolKind) -> IntegrationPlan {
                 managed_keys: vec!["aasm.gatewayUrl".to_string()],
                 content_sha256: "abc123".to_string(),
                 merge: aa_core::integration::SettingsMerge::MergeManagedKeys,
+                format: aa_core::integration::DocumentFormat::Json,
             },
             "Write the managed settings block",
         ),

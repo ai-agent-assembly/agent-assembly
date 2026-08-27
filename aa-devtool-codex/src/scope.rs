@@ -7,7 +7,7 @@
 //! (user/project/managed), a `CLAUDE_CONFIG_DIR` redirection, an
 //! administrator-authorized managed-settings root, and a per-integration MitM
 //! hosts file. Codex has exactly one settings file the CLI itself reads
-//! (`$HOME/.codex/config.json` — Codex has no project-scoped or
+//! (`$HOME/.codex/config.toml` — Codex has no project-scoped or
 //! endpoint-managed config surface AASM can address), and this integration's
 //! plan deliberately carries no side-channel/MitM-hosts step (AAASM-5917), so
 //! there is no `mitm_hosts_file` to resolve either. What remains —
@@ -35,7 +35,7 @@ pub enum ScopeError {
     /// the request would mean writing somewhere else.
     #[error(
         "Codex has no {scope}-scoped configuration surface; its only settings file is the \
-         user-scoped $HOME/.codex/config.json, and writing {scope} settings there would change \
+         user-scoped $HOME/.codex/config.toml, and writing {scope} settings there would change \
          every project on this host"
     )]
     UnsupportedScope {
@@ -95,7 +95,14 @@ impl CodexPaths {
         self
     }
 
-    /// The Codex CLI's own configuration file — `$HOME/.codex/config.json`.
+    /// The Codex CLI's own configuration file — `$HOME/.codex/config.toml`.
+    ///
+    /// TOML, not JSON (AAASM-5336): the real `codex` CLI reads and writes
+    /// `config.toml` — confirmed empirically via `codex mcp add` and `codex
+    /// exec -c key=value` (`-c`'s own `--help` states its value is
+    /// TOML-parsed) against a real, isolated `CODEX_HOME`. A prior version of
+    /// this path pointed at `config.json`, a file the real CLI never opens —
+    /// every managed setting this adapter wrote was silently ungoverned.
     ///
     /// Codex has one configuration surface where Claude Code has three, and
     /// that one is **user-scoped**. So a `scope` this integration cannot address
@@ -125,7 +132,7 @@ impl CodexPaths {
             scope: SettingsScope::User,
             detail: "HOME is not set".to_string(),
         })?;
-        Ok(home.join(".codex").join("config.json"))
+        Ok(home.join(".codex").join("config.toml"))
     }
 
     /// Root for the artifacts Agent Assembly owns for this scope.
@@ -219,12 +226,12 @@ mod tests {
     }
 
     #[test]
-    fn settings_path_is_home_dot_codex_config_json() {
+    fn settings_path_is_home_dot_codex_config_toml() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
         assert_eq!(
             p.settings_path(SettingsScope::User).unwrap(),
-            dir.path().join("home").join(".codex").join("config.json")
+            dir.path().join("home").join(".codex").join("config.toml")
         );
     }
 
@@ -275,7 +282,12 @@ mod tests {
         // while having configured every project on the host (AAASM-5913).
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
-        assert!(p.settings_path(SettingsScope::User).is_ok());
+        let user = p.settings_path(SettingsScope::User).expect("user scope must resolve");
+        // Retained from main's version of this test: the one surface Codex does
+        // have is the `config.toml` the real CLI reads, and it is deterministic.
+        assert!(user.ends_with(".codex/config.toml"), "got {}", user.display());
+        assert_eq!(user, p.settings_path(SettingsScope::User).unwrap());
+
         for scope in [SettingsScope::Project, SettingsScope::Managed] {
             assert_eq!(
                 p.settings_path(scope),

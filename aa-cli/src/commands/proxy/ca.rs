@@ -9,7 +9,7 @@ use clap::Args;
 #[derive(Debug, Args)]
 pub struct CaArgs {
     /// Directory where the CA certificate and key are stored.
-    #[arg(long, env = "AA_CA_DIR")]
+    #[arg(long, env = "AA_CA_DIR", hide_env_values = true)]
     pub ca_dir: Option<PathBuf>,
     /// Skip the confirmation prompt.
     #[arg(long)]
