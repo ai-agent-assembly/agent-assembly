@@ -55,6 +55,9 @@ jobs:
               - 'scripts/propagate_versions.py'
               - '.ci/check-metadata-drift.sh'
               - 'scripts/check_absolutes_unwaivable.py'
+              # AAASM-5888: the doc-command coverage checker; a change to it
+              # must re-run verify-commands, or it is a dead trigger.
+              - 'scripts/qa/verify-documented-commands.py'
               - 'TRUTH-ADOPTION.md'
               - 'verification-reports/**/*.md'
               - 'design/**'
