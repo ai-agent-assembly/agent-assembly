@@ -173,9 +173,28 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4530 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5882: this row previously read gap/gap_owner as if no evidence
+  # existed. `aa-integration-tests/tests/e2e_sdk_python.rs` exists but runs
+  # in AA_SELFTEST=1 hermetic mode (no real gateway contact per its own
+  # module doc comment) — that doesn't satisfy "govern a real agent
+  # end-to-end", so it isn't cited as automated evidence here. What does
+  # satisfy it: docs/release/qa-signoff/v0.0.1-rc.7.md's J08 row records a
+  # dated, real manual/live verification — a live aa-gateway + aa-api-server
+  # stood up locally, a real published Python SDK registering a live agent
+  # against the gateway (ctx.registered == True, confirmed in aasm agent
+  # list). Note this covers the registration flow this journey's own name
+  # names ("govern your first agent... end-to-end"), not the full 16-
+  # framework compatibility matrix AAASM-4530's `outcome` field points at
+  # as "the full acceptance contract" — those are a broader, separate claim.
   release_blocking: true
-  lifecycle_state: gap
-  gap_owner: AAASM-5882
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
