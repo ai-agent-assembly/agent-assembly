@@ -185,6 +185,30 @@ fn unspecified_target() -> LifecycleTarget {
     }
 }
 
+/// A target whose `caller_env` states every one of
+/// [`KNOWN_LAUNCH_BYPASS_ENV_VARS`] examined and genuinely, deterministically
+/// unset — never read from this process's own ambient environment
+/// (AAASM-5965).
+///
+/// [`unspecified_target`] states the *real* presence of those variables in
+/// this test process, which is the right thing for a test about what the
+/// harness produces given whatever this process happens to run with. It is
+/// the wrong thing for a test whose subject is the Passed/PartiallyPassed
+/// boundary itself: on a machine with `ANTHROPIC_BASE_URL` or
+/// `CLAUDE_CODE_USE_BEDROCK` genuinely set (an enterprise Claude Code
+/// provider), `unspecified_target()` would correctly report those findings
+/// and the test's own hardcoded `Passed` expectation would be the thing that
+/// is wrong — silently, and only on that machine. This constructor removes
+/// the ambient dependency entirely: the boundary tests that use it produce
+/// the same result on every machine, because they state the environment they
+/// are testing rather than inheriting it from whoever runs them.
+fn clean_provider_routing_target() -> LifecycleTarget {
+    LifecycleTarget {
+        caller_env: Some(CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS)),
+        ..LifecycleTarget::unspecified()
+    }
+}
+
 // ── Harness ─────────────────────────────────────────────────────────────────
 
 struct Harness {
@@ -792,14 +816,14 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     h.install().await?;
     let verification = h
         .service
-        .verify(&tool, &unspecified_target())
+        .verify(&tool, &clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &unspecified_target())
+        .status(&tool, &clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -831,6 +855,49 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     Ok(())
 }
 
+/// AAASM-5965 AC2: the provider-routing contribution to a verification result
+/// is asserted, not assumed absent. A caller that states `ANTHROPIC_BASE_URL`
+/// and `CLAUDE_CODE_USE_BEDROCK` present — an enterprise Claude Code provider,
+/// exactly the condition [`clean_provider_routing_target`] exists to keep out
+/// of the boundary tests above — must see both named in the result, and the
+/// outcome must be `PartiallyPassed` rather than `Passed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_provider_route_is_named_in_the_verification_result() -> anyhow::Result<()> {
+    let h = Harness::start(true).await?;
+    let tool = DevToolKind::ClaudeCode;
+    h.install().await?;
+
+    let env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS)
+        .present("ANTHROPIC_BASE_URL")
+        .present("CLAUDE_CODE_USE_BEDROCK");
+    let target = LifecycleTarget {
+        caller_env: Some(env),
+        ..LifecycleTarget::unspecified()
+    };
+    let verification = h
+        .service
+        .verify(&tool, &target)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    match &verification.outcome {
+        VerificationOutcome::PartiallyPassed { missing } => {
+            let joined = missing.join(" | ");
+            assert!(
+                joined.contains("ANTHROPIC_BASE_URL"),
+                "ANTHROPIC_BASE_URL must be named in the missing findings: {missing:?}"
+            );
+            assert!(
+                joined.contains("CLAUDE_CODE_USE_BEDROCK"),
+                "CLAUDE_CODE_USE_BEDROCK must be named in the missing findings: {missing:?}"
+            );
+        }
+        other => panic!("a caller-stated configured provider route must not read as a clean pass: {other:?}"),
+    }
+
+    h.finish();
+    Ok(())
+}
+
 /// The authorized path: one privileged step, read back and verified, and only
 /// then `Host Enforced` — reversed symmetrically on removal.
 #[tokio::test(flavor = "multi_thread")]
@@ -846,21 +913,21 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
     // Configuration alone still does not raise the ladder past Integrated.
     let after_install = h
         .service
-        .status(&tool, &unspecified_target())
+        .status(&tool, &clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(after_install.achieved_level() <= ProtectionLevel::Integrated);
 
     let verification = h
         .service
-        .verify(&tool, &unspecified_target())
+        .verify(&tool, &clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &unspecified_target())
+        .status(&tool, &clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -885,7 +952,7 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
         .service
         .remove(
             &tool,
-            &unspecified_target(),
+            &clean_provider_routing_target(),
             Some(&format!("remove-{}", receipt.receipt_id)),
         )
         .await
