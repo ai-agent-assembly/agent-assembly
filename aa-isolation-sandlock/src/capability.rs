@@ -379,6 +379,19 @@ fn credential() -> CapabilityReport {
             "the supervisor process that establishes the boundary runs outside it and keeps the \
              launching process's own authority; this domain says nothing about that process"
                 .to_string(),
+            // AAASM-5940: this is a permanent limitation of the mechanism's own
+            // vocabulary (`--env=NAME=VALUE` on the confinement executable's
+            // own argv), not a gap this crate has a plan to close — see
+            // `crate::lower::CredentialArgvRefusal`'s documentation. State it
+            // here for as long as it remains true rather than only in the
+            // refusal a caller may never trigger.
+            "when a caller has not resolved an exact child environment itself (via \
+             `SandlockBackend::set_child_environment`), a delegated or ambient-unremoved credential's \
+             value cannot be delivered at all: the only channel this mechanism exposes for a name-value \
+             pair is an argument of the confinement executable's own command line, visible to anything \
+             that can read that process's argv, and this crate refuses such a launch rather than exposing \
+             the value there"
+                .to_string(),
         ],
     })
     .with_prerequisite(Prerequisite {
