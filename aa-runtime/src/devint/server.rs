@@ -759,6 +759,15 @@ fn owned_surface_within(root: &std::path::Path, surfaces: &[std::path::PathBuf])
 /// where they exist so the comparison is against the same form the project root
 /// was resolved to; a path that does not exist cannot be an alias for anything
 /// and is compared as written.
+///
+/// The managed-settings default comes from `aa_core::dev_tool`, not
+/// `aa-devtool-claude-code` — this module (`devint`) is unconditionally
+/// compiled into the published `aa-runtime` crate (ADR 0030 §6.3: adapters
+/// are out-of-tree-consumable, so this refusal boundary is reachable even
+/// when no `aa-devtool-*` crate is compiled in), and `aa-devtool-claude-code`
+/// is `publish = false` (AAASM-2340). A stripped-region default here would
+/// make the refusal set adapter-dependent, contradicting the "holds for
+/// *every* adapter" invariant above (AAASM-5987).
 fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
     use std::path::PathBuf;
 
@@ -769,8 +778,8 @@ fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
     let codex_config = home.as_ref().map(|h| h.join(".codex"));
     let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
     let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
-    let managed = var("AASM_CLAUDE_MANAGED_ROOT")
-        .unwrap_or_else(|| PathBuf::from(aa_devtool_claude_code::scope::MANAGED_SETTINGS_DIR));
+    let managed =
+        var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
 
     [claude_config, codex_config, state, ca, Some(managed)]
         .into_iter()
@@ -898,7 +907,7 @@ mod tests {
         let surfaces = vec![
             home.join(".claude"),
             home.join(".aasm"),
-            std::path::PathBuf::from("/Library/Application Support/ClaudeCode"),
+            std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR),
         ];
 
         // `$HOME` itself: `--scope project` from a dotfiles repository checked out
