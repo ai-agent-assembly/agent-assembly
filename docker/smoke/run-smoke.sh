@@ -7,12 +7,16 @@
 #   3. brings up the governance compose stack (base-image agent + aa-runtime
 #      sharing the UDS), waits for the runtime socket, runs the minimal agent;
 #   4. asserts: image builds, the agent runs with no manual config and exits
-#      clean (Tier A), entrypoint/default-env hygiene, and the policy fixture
-#      genuinely denies the restricted action (offline, real);
-#   5. records the governance-transport tier honestly (live vs offline) and the
-#      deny-enforcement gap (AAASM-3000 / AAASM-3021, pending AAASM-3172) — never
-#      faking a green for what cannot be proven from the base image today;
-#   6. tears the stack down.
+#      clean (Tier A), entrypoint/default-env hygiene;
+#   5. AAASM-5886 — drives one real ALLOW (TOOL_CALL) and one real DENY
+#      (PROCESS_EXEC) governed call through the containerized aa-runtime sidecar
+#      itself, over its UDS, via the standalone `governed_call_probe` (not the
+#      base image's own SDK — see docker/smoke/README.md "Governed-call
+#      enforcement"), and fails the leg if either lands on the wrong decision;
+#   6. records the base image's own governance-transport tier honestly (live vs
+#      offline — AAASM-1202, the published images don't yet ship the SDK native
+#      client) rather than faking a green for what that image cannot prove;
+#   7. tears the stack down.
 #
 # It is the local fallback for when GHCR pull / CI is unavailable, and the unit
 # the CI matrix (.github/workflows/docker-image-smoke.yml) runs one leg of.
@@ -38,6 +42,9 @@ IMAGE_MODE="${IMAGE_MODE:-build}"
 GHCR_TAG="${GHCR_TAG:-}"
 GHCR_NS="ghcr.io/ai-agent-assembly"
 RUNTIME_IMAGE_TAG="aa-runtime:smoke"
+# AAASM-5886 — governed_call_probe image tag, built once and reused across legs
+# exactly like RUNTIME_IMAGE_TAG.
+PROBE_IMAGE_TAG="aa-governed-probe:smoke"
 
 log()  { printf '\033[1;34m[smoke]\033[0m %s\n' "$*" >&2; }
 ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*" >&2; }
@@ -109,6 +116,24 @@ build_runtime() {
   ok "aa-runtime sidecar built"
 }
 
+# --- build the governed-call probe once (build mode) -------------------------
+# AAASM-5886. Mirrors build_runtime(): built once, reused across all matrix
+# legs. IMAGE_MODE=pull has no probe equivalent — the probe is smoke-only
+# infrastructure, never published — so it is always built locally regardless
+# of IMAGE_MODE.
+build_probe() {
+  if docker image inspect "${PROBE_IMAGE_TAG}" >/dev/null 2>&1; then
+    ok "governed-call probe already present (${PROBE_IMAGE_TAG}) — skipping build"
+    return
+  fi
+  log "building governed-call probe (${PROBE_IMAGE_TAG}) — one-time, reused across images"
+  DOCKER_BUILDKIT=1 docker build \
+    -f "${SCRIPT_DIR}/probe/Dockerfile.probe" \
+    -t "${PROBE_IMAGE_TAG}" \
+    "${REPO_ROOT}"
+  ok "governed-call probe built"
+}
+
 # --- resolve / build one base image ------------------------------------------
 # echoes the resolved base image tag on stdout; RETURNS NON-ZERO if the build or
 # pull failed, so the caller can record BUILD_FAIL instead of proceeding against
@@ -171,7 +196,7 @@ run_one() {
   local base_image
   if ! base_image="$(resolve_base_image "$lang" "$version" "$dockerfile")"; then
     fail "${lang}:${version} — base image build/pull failed"
-    RESULTS+=("${lang}:${version}|BUILD_FAIL|-")
+    RESULTS+=("${lang}:${version}|BUILD_FAIL|-|-|-")
     FAILED=$((FAILED + 1))
     return
   fi
@@ -179,7 +204,7 @@ run_one() {
 
   if ! check_image_hygiene "$lang" "$base_image"; then
     fail "${lang}:${version} — image hygiene failed"
-    RESULTS+=("${lang}:${version}|HYGIENE_FAIL|-")
+    RESULTS+=("${lang}:${version}|HYGIENE_FAIL|-|-|-")
     FAILED=$((FAILED + 1))
     return
   fi
@@ -192,6 +217,7 @@ run_one() {
   agent_df="${agent_dir}/Dockerfile.agent"
 
   export AA_RUNTIME_IMAGE="${RUNTIME_IMAGE_TAG}"
+  export AA_PROBE_IMAGE="${PROBE_IMAGE_TAG}"
   export SMOKE_BASE_IMAGE="${base_image}"
   export SMOKE_AGENT_DIR="${agent_dir}"
   export SMOKE_AGENT_DOCKERFILE="${agent_df}"
@@ -206,10 +232,9 @@ run_one() {
       down --volumes --remove-orphans >/dev/null 2>&1 || true
   }
 
-  # Start the aa-runtime sidecar. NOTE: a sidecar that cannot start does NOT fail
-  # the base-image smoke — Tier A ("the agent runs with no manual config") is
-  # independent of the sidecar. The sidecar's reachability only governs whether
-  # the live governance transport (Tier B) can be exercised; we record it.
+  # Start the aa-runtime sidecar. Since AAASM-3527 fixed the image's entrypoint,
+  # a healthy leg is expected to reach a bound socket below — see the
+  # SIDECAR_UNREACHABLE branch, which now fails the leg rather than tolerating it.
   log "${lang}:${version} — starting aa-runtime sidecar"
   docker compose -f "${COMPOSE_FILE}" -p "${project}" up -d aa-runtime >&2 || true
 
@@ -228,21 +253,46 @@ run_one() {
   if [ "$sock_ready" -eq 1 ]; then
     ok "${lang}:${version} — runtime socket is bound (live transport reachable)"
   else
-    # The aa-runtime image is currently unrunnable (AAASM-3527: /aa-runtime is a
-    # directory). The harness records this and proceeds; the agent runs its
-    # offline path. Flip to a live-transport assertion once AAASM-3527 + the SDK
-    # native-client gaps land.
+    # AAASM-3527 (the aa-runtime image's /aa-runtime entrypoint being a
+    # directory) is fixed — an unbound socket here is no longer an expected,
+    # tolerated state. Record it and fail this leg's governed-call assertion
+    # rather than silently degrading, like the pre-fix harness did.
     log "${lang}:${version} — runtime socket NOT bound; sidecar unreachable"
-    log "${lang}:${version}   (aa-runtime image is unrunnable — see AAASM-3527)"
     docker compose -f "${COMPOSE_FILE}" -p "${project}" logs aa-runtime 2>/dev/null \
-      | tail -3 >&2 || true
+      | tail -10 >&2 || true
+    fail "${lang}:${version} — aa-runtime sidecar did not bind its UDS in time"
+    cleanup
+    RESULTS+=("${lang}:${version}|SIDECAR_UNREACHABLE|-|down|-")
+    FAILED=$((FAILED + 1))
+    return
   fi
 
+  # AAASM-5886 — drive one real ALLOW and one real DENY governed call through
+  # the containerized sidecar over the socket just confirmed above, using the
+  # standalone probe (not the base image's own SDK — see governed_call_probe.rs
+  # for why). This is the actual enforcement assertion J52 was missing; a
+  # failure here means the containerized aa-runtime is not enforcing policy for
+  # real, independent of whether the language agent itself ran cleanly.
+  log "${lang}:${version} — driving governed call (allow + deny) through the sidecar"
+  local probe_out probe_rc=0
+  probe_out="$(docker compose -f "${COMPOSE_FILE}" -p "${project}" run --rm --no-deps probe 2>/dev/null)" || probe_rc=$?
+  local probe_json
+  probe_json="$(printf '%s\n' "$probe_out" | grep -E '^\{.*\}$' | tail -n1 || true)"
+  local probe_ok="false"
+  [ -n "$probe_json" ] && probe_ok="$(jq -r '.ok // false' <<<"$probe_json")"
+  if [ "$probe_rc" -ne 0 ] || [ "$probe_ok" != "true" ]; then
+    fail "${lang}:${version} — governed call was not enforced as expected (rc=${probe_rc})"
+    printf '%s\n' "${probe_json:-$probe_out}" >&2
+    cleanup
+    RESULTS+=("${lang}:${version}|GOVERNED_CALL_FAIL|-|up|FAIL")
+    FAILED=$((FAILED + 1))
+    return
+  fi
+  ok "${lang}:${version} — governed call enforced for real: allow=$(jq -r '.allow_decision' <<<"$probe_json") deny=$(jq -r '.deny_decision' <<<"$probe_json")"
+
   # Run the agent (build overlay + run, capturing its JSON result line).
-  # --no-deps: run ONLY the agent — do NOT let compose (re)start the aa-runtime
-  # dependency, which currently crashes (AAASM-3527) and would otherwise abort the
-  # whole `run`. The sidecar was already started best-effort above; the agent's
-  # Tier-A path does not require it.
+  # --no-deps: run ONLY the agent — the sidecar is already confirmed up above,
+  # and Tier A (the agent runs with no manual config) does not itself require it.
   log "${lang}:${version} — running minimal agent on the base image"
   local agent_out agent_rc=0
   agent_out="$(docker compose -f "${COMPOSE_FILE}" -p "${project}" run --rm --no-deps --build agent 2>/dev/null)" || agent_rc=$?
@@ -259,7 +309,7 @@ run_one() {
   if [ -z "$json" ]; then
     fail "${lang}:${version} — agent produced no JSON result (rc=${agent_rc})"
     printf '%s\n' "$agent_out" >&2
-    RESULTS+=("${lang}:${version}|AGENT_NO_RESULT|-|${sidecar}")
+    RESULTS+=("${lang}:${version}|AGENT_NO_RESULT|-|${sidecar}|PASS")
     FAILED=$((FAILED + 1))
     return
   fi
@@ -271,20 +321,22 @@ run_one() {
   if [ "$agent_rc" -ne 0 ] || [ "$tier_a" != "true" ]; then
     fail "${lang}:${version} — agent did not run cleanly on the base image (rc=${agent_rc})"
     printf '%s\n' "$json" >&2
-    RESULTS+=("${lang}:${version}|AGENT_FAIL|${transport}|${sidecar}")
+    RESULTS+=("${lang}:${version}|AGENT_FAIL|${transport}|${sidecar}|PASS")
     FAILED=$((FAILED + 1))
     return
   fi
 
   ok "${lang}:${version} — agent ran with no manual config (Tier A); transport=${transport} sidecar=${sidecar}"
-  RESULTS+=("${lang}:${version}|PASS|${transport}|${sidecar}")
+  RESULTS+=("${lang}:${version}|PASS|${transport}|${sidecar}|PASS")
   PASS=$((PASS + 1))
 }
 
-# --- offline, real: assert the policy fixture genuinely denies ---------------
-# This runs once (policy is language-agnostic). It proves the deny side of the
-# governance path is encoded for real, even though asserting the BLOCK end-to-end
-# from inside the base image is gated on AAASM-3000 / AAASM-3021 (see README).
+# --- fast pre-flight: the policy fixture text is not self-contradictory -----
+# This runs once (policy is language-agnostic), before any image build, purely
+# as a cheap fail-fast sanity check on the fixture file itself. The REAL
+# deny/allow assertion is `governed_call_probe` (AAASM-5886), run per-leg once
+# the sidecar's socket is up — this only guards against a broken fixture
+# wasting a multi-minute image build before that.
 check_policy_denies() {
   log "policy fixture: asserting PROCESS_EXEC is denied and TOOL_CALL is not"
   # Inspect ONLY the actual `blocked_actions = [...]` assignment lines (strip
@@ -305,6 +357,7 @@ check_policy_denies() {
 
 # --- main --------------------------------------------------------------------
 build_runtime
+build_probe
 check_policy_denies || { FAILED=$((FAILED + 1)); }
 
 for entry in "${ENTRIES[@]}"; do
@@ -313,17 +366,18 @@ done
 
 # --- summary -----------------------------------------------------------------
 log "================= summary ================="
-printf '%-22s %-14s %-10s %s\n' "IMAGE" "RESULT" "TRANSPORT" "SIDECAR" >&2
+printf '%-22s %-20s %-10s %-8s %s\n' "IMAGE" "RESULT" "TRANSPORT" "SIDECAR" "GOVERNED" >&2
 for r in "${RESULTS[@]}"; do
-  IFS='|' read -r img res tr sc <<<"$r"
-  printf '%-22s %-14s %-10s %s\n' "$img" "$res" "$tr" "${sc:-?}" >&2
+  IFS='|' read -r img res tr sc gv <<<"$r"
+  printf '%-22s %-20s %-10s %-8s %s\n' "$img" "$res" "$tr" "${sc:-?}" "${gv:-?}" >&2
 done
 log "passed=${PASS} failed=${FAILED}"
-log "NOTE: sidecar=down on every row reflects AAASM-3527 (the aa-runtime image"
-log "      entrypoint is a directory — the sidecar cannot start). Tier A (agent"
-log "      runs with no manual config) is independent and still asserted."
-log "NOTE: deny-enforcement-from-image is a separate known product gap (AAASM-3000"
-log "      / AAASM-3021); see docker/smoke/README.md. transport=offline reflects"
-log "      that the published base image ships no socket-dialing native client."
+log "NOTE: GOVERNED=PASS means governed_call_probe (AAASM-5886) drove a real ALLOW"
+log "      and a real DENY CheckAction through the containerized aa-runtime sidecar"
+log "      over its UDS and both landed on the expected decision — the assertion"
+log "      J52's smoke was previously missing. transport=offline still reflects a"
+log "      separate, honestly-reported gap: the published base image ships no SDK"
+log "      native client of its own (AAASM-1202), so the language agent's own Tier"
+log "      B is unavailable even though the sidecar itself is proven enforcing."
 
 [ "$FAILED" -eq 0 ]
