@@ -125,15 +125,20 @@ not a convenience wrapper around step 3, it is independent enforcement:
 - Re-runs `scripts/release-readiness.sh <X>` itself — step 3 above is not a
   cache the guard trusts; every invocation of this script re-verifies all
   14 checks fresh.
-- Enforces a **strict** `candidate_sha == HEAD` binding by reading
-  `docs/release/qa-signoff/v<X>.evidence.json` directly and comparing it to
-  `git rev-parse HEAD` byte-for-byte. This is *stricter* than readiness
-  check 14's own R1 rule inside `check-release-evidence.py`, which
-  deliberately tolerates mechanical-only drift (e.g. a version-bump commit
-  made after QA captured its candidate) between `candidate_sha` and the tag
-  target — correct for that checker's purpose, but not for the literal
-  commit this script is seconds from tagging. A `HEAD~1` candidate that R1
-  would still pass is still refused here.
+- Re-verifies candidate binding fresh, immediately before tagging, by
+  re-running `check-release-evidence.py --tag-target HEAD` — the same R1/R1b
+  rules readiness check 14 already ran, re-run here as TOCTOU defense-in-
+  depth for the narrow window between step 3 and the `git tag` below.
+  (AAASM-5998: an earlier version of this step instead required literal
+  `candidate_sha == HEAD` with zero drift tolerance. That was unreachable
+  for any real, committed evidence record — `build-release-evidence.py`
+  captures `candidate_sha` as HEAD *before* the evidence file is committed,
+  so committing it, as the schema requires, necessarily advances HEAD past
+  that SHA. R1 already correctly tolerates exactly this — it excludes the
+  evidence file's own creation commit from its diff classification — so
+  re-running R1/R1b is both correct and no weaker than the old intent: a
+  materially different HEAD, a tampered evidence file, or a non-ancestor
+  candidate all still refuse.)
 - Has **no skip flag of any kind** — an operator/agent that wants to bypass
   a check here has to edit this reviewable script, not flip an env var.
 - Only once every check above passes does it `git tag -a "v<X>"` and
