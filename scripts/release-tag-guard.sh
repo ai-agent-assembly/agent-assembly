@@ -17,13 +17,13 @@
 # <version> is the literal (no leading "v") that release-readiness.sh and
 # check-release-evidence.py already key on.
 #
-# --remote <name>: use <name> instead of the default push remote ("remote"),
-# and skip the org-identity check below. This exists ONLY for the negative-
-# control fixture harness (scripts/tests/release-relay-negative-control.sh)
-# to point this script at a throwaway local bare repo — passing it against
-# any real remote is an explicit, reviewable opt-out of the one guard that
-# keeps a fixture run off the real ai-agent-assembly/agent-assembly remote,
-# so no wrapper in this repo ever passes it against a real push target.
+# --remote <name>: use <name> instead of the default push remote ("remote").
+# This exists ONLY for the negative-control fixture harness
+# (scripts/tests/release-relay-negative-control.sh) to point this script at
+# a throwaway LOCAL bare repo — the resolved URL must be a local filesystem
+# path (checked below); any remote that looks like a real git host (org or
+# not) is refused outright, so no wrapper in this repo can ever point it at
+# a real push target, accidentally or otherwise.
 set -uo pipefail
 
 if [ $# -lt 1 ]; then
@@ -69,8 +69,12 @@ fail() {
 #     the real org repo (accidentally or otherwise) is refused outright,
 #     not silently allowed through the "explicit opt-out" branch.
 REMOTE_URL="$(git remote get-url "$REMOTE_NAME" 2>/dev/null || true)"
+# Anchored at the end (no trailing text after "agent-assembly"[.git]) so a
+# different, real repo whose name merely starts with "agent-assembly" —
+# e.g. ai-agent-assembly/agent-assembly-enterprise — cannot be
+# misclassified as the canonical org remote by a plain substring match.
 case "$REMOTE_URL" in
-  *ai-agent-assembly/agent-assembly*) REMOTE_IS_ORG=1 ;;
+  */ai-agent-assembly/agent-assembly|*/ai-agent-assembly/agent-assembly.git|*:ai-agent-assembly/agent-assembly|*:ai-agent-assembly/agent-assembly.git) REMOTE_IS_ORG=1 ;;
   *) REMOTE_IS_ORG=0 ;;
 esac
 if [ "$REMOTE_EXPLICIT" -eq 0 ] && [ "$REMOTE_IS_ORG" -eq 0 ]; then
@@ -78,6 +82,23 @@ if [ "$REMOTE_EXPLICIT" -eq 0 ] && [ "$REMOTE_IS_ORG" -eq 0 ]; then
 fi
 if [ "$REMOTE_EXPLICIT" -eq 1 ] && [ "$REMOTE_IS_ORG" -eq 1 ]; then
   fail "--remote '$REMOTE_NAME' was passed explicitly but resolves to the real ai-agent-assembly/agent-assembly remote — an explicit --remote override is only for a throwaway fixture repo; refusing rather than silently allowing it against the real org remote"
+fi
+# An explicit --remote is meant ONLY for the negative-control harness's
+# throwaway local bare repos — not merely "any remote other than the exact
+# canonical org URL". Without this, `--remote origin` (a real personal fork,
+# or any other real GitHub remote) would be silently admitted, defeating the
+# whole point of this being "the sole sanctioned path" with no bypass. Only
+# a local filesystem path (what every fixture in
+# scripts/tests/release-relay-negative-control.sh actually uses) is accepted
+# for an explicit override; anything that looks like a real git host is
+# refused outright, known-org or not.
+if [ "$REMOTE_EXPLICIT" -eq 1 ] && [ "$REMOTE_IS_ORG" -eq 0 ]; then
+  case "$REMOTE_URL" in
+    /*|file://*) : ;; # local filesystem path — the only legitimate fixture shape
+    *)
+      fail "--remote '$REMOTE_NAME' resolves to '${REMOTE_URL:-<missing>}', which is not a local filesystem path — an explicit --remote override is only for a throwaway local bare repo used by scripts/tests/release-relay-negative-control.sh, never for any real remote (org or otherwise)"
+      ;;
+  esac
 fi
 
 # --- 2. Clean tree + fetch. A dirty tree or a stale local main risks tagging

@@ -366,6 +366,53 @@ STUB
   fi
 )
 
+echo "== Case 8c: --remote is refused for any non-local remote, org-lookalike or not =="
+# AAASM-5879 review found two live bypasses of the org-identity check:
+#   (a) a substring match let a DIFFERENT real repo whose name merely starts
+#       with "agent-assembly" (e.g. ai-agent-assembly/agent-assembly-enterprise)
+#       be misclassified as the canonical org remote;
+#   (b) --remote pointed at ANY real, non-org GitHub remote (e.g. a personal
+#       fork under `origin`) was silently admitted through the "explicit
+#       opt-out" branch, since that branch only checked for the exact org
+#       URL, not "is this a real remote at all".
+# Both are refused now: an explicit --remote is only ever legitimate against
+# a local filesystem path (what every other fixture in this harness already
+# uses). Assert on the SPECIFIC refusal reason, not just a nonzero exit —
+# an unrelated downstream failure (e.g. missing evidence record) would also
+# exit nonzero and make this pass vacuously if the bypass were still open.
+FIX8C="$WORK/fx8c"
+mkdir -p "$FIX8C/repo"
+git init -q "$FIX8C/repo"
+(
+  cd "$FIX8C/repo"
+  git config user.email t@t.com
+  git config user.name t
+  # (a) an org-lookalike HTTPS URL that a plain substring match would accept
+  git remote add lookalike-https "https://github.com/ai-agent-assembly/agent-assembly-enterprise.git"
+  # (b) an ordinary real, non-org GitHub remote (what `origin` looks like on
+  # a personal fork checkout in this workspace)
+  git remote add real-nonorg "https://github.com/someone-else/agent-assembly.git"
+  mkdir -p scripts
+  cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
+  chmod +x scripts/release-tag-guard.sh
+
+  OUT_A="$(bash scripts/release-tag-guard.sh 0.0.1-fx8c --remote lookalike-https 2>&1)"
+  EXIT_A=$?
+  OUT_B="$(bash scripts/release-tag-guard.sh 0.0.1-fx8c --remote real-nonorg 2>&1)"
+  EXIT_B=$?
+
+  if [ "$EXIT_A" -ne 0 ] && printf '%s' "$OUT_A" | grep -qE 'not a local filesystem path'; then
+    pass "guard refuses an org-lookalike HTTPS remote (name-prefix substring match closed)"
+  else
+    fail "guard did not refuse the org-lookalike remote on the local-path check (exit=$EXIT_A): $OUT_A"
+  fi
+  if [ "$EXIT_B" -ne 0 ] && printf '%s' "$OUT_B" | grep -qE 'not a local filesystem path'; then
+    pass "guard refuses an explicit --remote pointing at a real, non-org GitHub remote"
+  else
+    fail "guard did not refuse the real non-org remote on the local-path check (exit=$EXIT_B): $OUT_B"
+  fi
+)
+
 # ---------------------------------------------------------------------------
 # Case 9 (self-check): this harness never touches the real remote. Grep this
 # file itself for a literal push to the real remote name outside the
