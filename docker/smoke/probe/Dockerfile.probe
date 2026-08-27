@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1.7
+
+# docker/smoke/probe/Dockerfile.probe — AAASM-5886.
+#
+# Builds `governed_call_probe` (aa-sdk-client/examples/governed_call_probe.rs)
+# into a minimal container the J52 sidecar smoke runs against the compose
+# stack's shared aa-runtime UDS volume. Mirrors aa-runtime/Dockerfile's
+# cargo-chef + BuildKit-cache pattern for a fast, cacheable build; recipe is
+# left workspace-wide (not scoped to a --bin/--example) since cargo-chef's
+# per-target scoping flags are not guaranteed to cover `--example`, and this
+# image is only ever built for the smoke lane, not the publish path.
+
+FROM rust:alpine AS chef
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install cargo-chef --locked
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+RUN apk add --no-cache \
+    musl-dev \
+    protobuf-dev \
+    openssl-dev \
+    pkgconfig
+
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64) TARGET=x86_64-unknown-linux-musl ;; \
+      arm64) TARGET=aarch64-unknown-linux-musl ;; \
+      *) echo "Unsupported arch: $TARGETARCH" && exit 1 ;; \
+    esac && \
+    rustup target add "$TARGET" && \
+    echo "$TARGET" > /tmp/rust_target
+
+COPY --from=planner /app/recipe.json recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=aa-probe-target-${TARGETARCH} \
+    TARGET=$(cat /tmp/rust_target) && \
+    cargo chef cook --release --target "$TARGET" --recipe-path recipe.json -p aa-sdk-client
+
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target,id=aa-probe-target-${TARGETARCH} \
+    TARGET=$(cat /tmp/rust_target) && \
+    cargo build --release --target "$TARGET" --example governed_call_probe -p aa-sdk-client && \
+    strip "target/$TARGET/release/examples/governed_call_probe" && \
+    cp "target/$TARGET/release/examples/governed_call_probe" /governed_call_probe-bin
+
+FROM gcr.io/distroless/static:nonroot AS runtime
+
+COPY --from=builder /governed_call_probe-bin /governed_call_probe
+
+LABEL org.opencontainers.image.description="AAASM-5886 — governed-call probe for the J52 sidecar smoke"
+
+ENTRYPOINT ["/governed_call_probe"]
