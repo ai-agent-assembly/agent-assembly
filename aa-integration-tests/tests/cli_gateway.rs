@@ -31,12 +31,27 @@ use tempfile::TempDir;
 
 // ── shared helpers ─────────────────────────────────────────────────────────
 
-const MINIMAL_POLICY: &str = "\
-apiVersion: agent-assembly.dev/v1alpha1\n\
-kind: Policy\n\
-spec:\n\
-  budget:\n\
-    daily_limit_usd: 1000.0\n";
+/// A policy the gateway accepts, in the raw-string form the other suites use.
+///
+/// # Why this is not a `\`-continued literal
+///
+/// It was one, and Rust's `\`-newline escape skips the newline *and the leading
+/// whitespace of the next line*, so `  budget:` and `    daily_limit_usd:` both
+/// arrived unindented. YAML then read them as top-level keys and the validator
+/// refused the document — `unknown top-level key 'daily_limit_usd'`, with
+/// `budget` absent from the complaint precisely because it is a valid key at the
+/// level it had been flattened to. Every gateway here died before binding.
+///
+/// A raw string has no escapes to strip, so the indentation cannot be lost
+/// again. The sibling suites that do use `\`-continuation write `\x20` for the
+/// leading spaces for the same reason.
+const MINIMAL_POLICY: &str = r#"
+apiVersion: agent-assembly.dev/v1alpha1
+kind: Policy
+spec:
+  budget:
+    daily_limit_usd: 1000.0
+"#;
 
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
