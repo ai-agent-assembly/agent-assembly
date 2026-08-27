@@ -27,9 +27,12 @@ use super::readiness::{wait_for_ready_file, ReadyFileOutcome};
 /// How long to wait for the dedicated proxy to report readiness before
 /// treating the launch as failed. Generous relative to a normal bind (which
 /// is near-instant): the same process may also be doing first-run CA
-/// creation and, on macOS, a Keychain trust prompt that requires operator
-/// interaction (`aa-proxy/src/lib.rs::run`) — a short timeout here would
-/// turn "waiting on the operator" into a spurious refusal.
+/// creation and, when `system_trust_install` is `Auto`, a macOS Keychain
+/// trust prompt that requires operator interaction (`aa-proxy/src/lib.rs::run`)
+/// — a short timeout here would turn "waiting on the operator" into a
+/// spurious refusal. Not reachable on a managed launch whose adapter reports
+/// process-scoped CA trust (AAASM-5978): that path sets `Never`, so no
+/// Keychain prompt exists to wait on.
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long to wait after `SIGTERM` before escalating to `SIGKILL` on drop.
@@ -65,6 +68,12 @@ pub struct ProxyGuardOptions {
     pub gateway_endpoint: Option<String>,
     /// Where to persist this launch's audit JSONL, if at all.
     pub audit_jsonl_path: Option<PathBuf>,
+    /// Whether the spawned proxy should attempt the macOS System Keychain CA
+    /// install (AAASM-5978). `Never` when the launched adapter reports it
+    /// already provides process-scoped CA trust for this launch
+    /// ([`aa_core::DevToolAdapter::process_scoped_ca_trust_var`]); `Auto`
+    /// (the default, unchanged historical behaviour) otherwise.
+    pub system_trust_install: aa_proxy::config::SystemTrustInstall,
 }
 
 /// Why [`ProxyGuard::spawn`] failed. Every variant is a *managed launch must
@@ -121,6 +130,20 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     cmd.env("AA_PROXY_READY_FILE", &opts.ready_file);
     cmd.env("AA_CA_DIR", &opts.ca_dir);
     cmd.env("AA_PROXY_PARENT_PID", std::process::id().to_string());
+    // AAASM-5978: always set, both values — deliberately not following this
+    // function's usual "omit when None, let the child's own default apply"
+    // shape. Unset isn't a distinct meaning here (there is a default), and
+    // AAASM-5924 found that "omit and let ambient env decide" turns a real
+    // product decision into one an attacker's pre-launch env can override
+    // (`AA_PROXY_TRUSTED_CONFIG_PATH`). Setting it explicitly here makes this
+    // launch's decision unforgeable by ambient environment.
+    cmd.env(
+        "AA_PROXY_SYSTEM_TRUST_INSTALL",
+        match opts.system_trust_install {
+            aa_proxy::config::SystemTrustInstall::Auto => "auto",
+            aa_proxy::config::SystemTrustInstall::Never => "never",
+        },
+    );
     if let Some(agent_id) = &opts.agent_id {
         cmd.env("AA_AGENT_ID", agent_id);
     }
@@ -420,6 +443,7 @@ mod tests {
             agent_id: Some("did:key:test".to_string()),
             gateway_endpoint: Some("http://127.0.0.1:50051".to_string()),
             audit_jsonl_path: Some(PathBuf::from("/tmp/audit.jsonl")),
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -463,6 +487,37 @@ mod tests {
                 .flatten(),
             Some(std::ffi::OsStr::new("/tmp/audit.jsonl"))
         );
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_SYSTEM_TRUST_INSTALL"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("auto"))
+        );
+    }
+
+    /// AAASM-5978: the `Never` half of `system_trust_install` — a managed
+    /// launch whose adapter reports process-scoped CA trust must still see
+    /// the variable set (never omitted), just with the other value, so a
+    /// spawned `aa-proxy` makes zero System Keychain calls for it.
+    #[test]
+    fn build_command_sets_never_when_system_trust_install_is_never() {
+        let opts = ProxyGuardOptions {
+            ready_file: PathBuf::from("/tmp/ready"),
+            ca_dir: PathBuf::from("/tmp/ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Never,
+        };
+        let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
+        let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("AA_PROXY_SYSTEM_TRUST_INSTALL"))
+                .copied()
+                .flatten(),
+            Some(std::ffi::OsStr::new("never"))
+        );
     }
 
     /// The `None` half of the optional fields: nothing gateway/agent/audit-
@@ -477,6 +532,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -514,6 +570,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -543,6 +600,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -592,6 +650,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -649,6 +708,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -698,6 +758,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -747,6 +808,7 @@ mod tests {
             agent_id: None,
             gateway_endpoint: None,
             audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
         };
 
         // Exercise the same spawn + wait_for_ready_file sequence spawn()
