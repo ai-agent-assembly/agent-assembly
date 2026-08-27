@@ -843,6 +843,12 @@ mod tests {
 
     use aa_core::integration::SettingsScope;
 
+    // AAASM-5987: `AASM_CLAUDE_MANAGED_ROOT` is process-global; this mutex
+    // serializes the two tests below that set/read it so they cannot race
+    // under a multi-threaded test runner, matching the established pattern in
+    // `aa-runtime/src/config.rs`'s own `ENV_LOCK`.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Every adversarial project root the AAASM-5913 review put through the
     /// production logic, and what each one is an attempt at.
     ///
@@ -928,15 +934,22 @@ mod tests {
         assert!(owned_surface_within(&home.join(".claude-notes"), &surfaces).is_none());
     }
 
-    /// AAASM-5987: the falsification control for the decision not to strip this
-    /// entry — `/` swallows every surface at once, so this is the one case that
-    /// proves the PRODUCTION surface list (`surfaces_not_owned_by_a_project()`,
-    /// not the synthetic table above) reaches the refusal. Before the fix this
-    /// still passed, because the bug was a stripped-build compile failure, not a
-    /// wrong runtime value — this test only guards the value.
+    /// AAASM-5987: proves `surfaces_not_owned_by_a_project()` — the PRODUCTION
+    /// list, not the synthetic table the tests above build by hand — actually
+    /// reaches `parse_project_root`'s refusal. `/` alone is not discriminating
+    /// (every absolute surface refuses it regardless of what
+    /// `MANAGED_SETTINGS_DIR` resolves to), so this points
+    /// `AASM_CLAUDE_MANAGED_ROOT` at a real temp directory and asserts that
+    /// *exact* directory — reachable only through the constant this PR moved —
+    /// is what parse_project_root refuses when named as a project root.
     #[test]
     fn the_root_directory_is_refused_by_the_real_surface_list() {
-        let refusal = parse_project_root(SettingsScope::Project, "/").expect_err("/ is not a project");
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let refusal = parse_project_root(SettingsScope::Project, dir.path().to_str().unwrap())
+            .expect_err("the managed-settings root is not a project");
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
         assert!(matches!(refusal, LifecycleError::Refused { .. }), "{refusal:?}");
     }
 
@@ -948,6 +961,7 @@ mod tests {
     /// possible; this test would not compile against the pre-fix import.
     #[test]
     fn the_managed_surface_is_in_the_refusal_set() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
         let raw = std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR);
         let expected = raw.canonicalize().unwrap_or_else(|_| raw.clone());
