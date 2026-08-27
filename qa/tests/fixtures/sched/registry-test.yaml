@@ -66,3 +66,11 @@ classes:
     hard_timeout_secs: 9999
     grace_secs: 1
     progress_signals: [cpu]
+  # AAASM-5952 case 6: a distinct, non-default breaker_open_threshold (5,
+  # vs. the defaults' 3) — review found the original case only proved a
+  # CLI override beats the global DEFAULT_FIELDS value, never that it beats
+  # a genuinely class-specific configured value. No pool-acquisition
+  # behavior exercised, so it's harmless to reuse test-single-3.
+  test-class-high-breaker-threshold:
+    pool: test-single-3
+    breaker_open_threshold: 5

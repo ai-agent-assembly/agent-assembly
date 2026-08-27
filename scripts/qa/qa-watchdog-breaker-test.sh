@@ -109,9 +109,19 @@ else
 fi
 
 echo "== Case 6: a CLI threshold override wins over the registry's breaker_open_threshold =="
-breaker record-failure case6-class 1 >/dev/null 2>&1
-code6="$?"
-assert_eq "a single failure with an override threshold of 1 trips immediately" "$code6" "6"
+# test-class-high-breaker-threshold sets breaker_open_threshold: 5 in
+# registry-test.yaml — a genuinely class-specific, non-default value.
+# Review found the original version of this case only proved a CLI
+# override beats the global DEFAULT_FIELDS (3), never that it beats a
+# real class-configured value; a mutation that applied the override only
+# when no class config existed would have passed undetected.
+breaker record-failure test-class-high-breaker-threshold >/dev/null 2>&1
+code6a="$?"
+assert_eq "1st failure with NO override, class threshold=5, exits 0 — still closed" "$code6a" "0"
+breaker record-failure test-class-high-breaker-threshold 1 >/dev/null 2>&1
+code6b="$?"
+assert_eq "2nd failure WITH override threshold=1 trips immediately (1>=1), even though the class's own configured threshold is 5" "$code6b" "6"
+breaker reset test-class-high-breaker-threshold >/dev/null 2>&1
 
 echo "== Case 7: breaker never raises when the registry is unloadable =="
 malformed="$(mktemp)"
