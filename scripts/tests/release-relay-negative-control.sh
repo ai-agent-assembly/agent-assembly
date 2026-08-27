@@ -352,7 +352,18 @@ STUB
   git commit -qm base
   OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx8b --remote lookalike 2>&1)"
   EXIT=$?
-  if [ "$EXIT" -ne 0 ]; then pass "guard refuses an explicit --remote whose URL resolves to the real org repo"; else fail "guard allowed --remote to point at a URL matching the real org repo: $OUT"; fi
+  # Asserting only EXIT -ne 0 here would be vacuous: this fixture has no
+  # v0.0.1-fx8b.evidence.json, so with the org-identity bypass wide open
+  # the guard would still refuse downstream (step 5, missing evidence
+  # record) for an unrelated reason, making the test pass whether or not
+  # the bypass is actually closed. Assert on the SPECIFIC refusal reason
+  # instead, and require it to fire before the evidence check would even
+  # be reached.
+  if [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'resolves to the real ai-agent-assembly/agent-assembly remote'; then
+    pass "guard refuses an explicit --remote whose URL resolves to the real org repo (org-identity check, not a downstream reason)"
+  else
+    fail "guard did not refuse on the org-identity check specifically (exit=$EXIT): $OUT"
+  fi
 )
 
 # ---------------------------------------------------------------------------
