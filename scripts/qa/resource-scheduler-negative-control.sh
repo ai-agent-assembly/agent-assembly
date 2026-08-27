@@ -5,11 +5,13 @@
 # present — against small, self-contained fixtures under
 # qa/tests/fixtures/sched/. This is Subtask 1 of AAASM-5891's
 # resource-aware QA-campaign scheduler; cases are numbered to match that
-# Story's item-7 acceptance list. Cases 3, 4, 5, 6, 7, 9, 13 (progress-aware
-# stall detection, retry, circuit breaker, unrelated-work continuation, the
-# watchdog's own stale-shell hygiene) are AAASM-5894's scope and are NOT
-# implemented here — this file is written to be extended, not duplicated,
-# by that later subtask.
+# Story's item-7 acceptance list. Cases 3, 4, 6, 9, 13 (progress-aware
+# stall detection, circuit breaker, the watchdog's own stale-shell
+# hygiene) are AAASM-5894's scope and live in
+# qa-watchdog-stall-termination-test.sh / qa-watchdog-breaker-test.sh
+# instead — this file is written to be extended, not duplicated, by
+# those. Cases 5 and 7 (retry after a transient stall, unrelated-class
+# continuation) are AAASM-5953's scope and ARE implemented here, below.
 #
 #   Case 1  6 concurrent `lightweight`-pool (limit 6) jobs genuinely overlap.
 #   Case 2  5 concurrent `cargo-shared-target`-pool (limit 1) jobs: exactly
@@ -56,6 +58,32 @@
 #           immediately"; passing a <=0 grace_secs straight into it would
 #           reproduce the AAASM-5948 orphan bug for any class explicitly
 #           configured with no grace period.
+#   Case 5  (AAASM-5953) Retry succeeds once a transient stall clears:
+#           picks up where qa-watchdog-stall-termination-test.sh's S1
+#           stops (that case proves the hung child is detected and
+#           killed) and proves the POOL SLOT it held actually comes back —
+#           a fresh acquisition attempt for the same class, issued after
+#           `enforce` terminates the stalled holder, must succeed rather
+#           than staying saturated forever.
+#   Case 7  (AAASM-5953) An unrelated class continues operating normally
+#           while another class's breaker is open — including the
+#           specific case where the two classes share the SAME
+#           underlying pool, which qa-watchdog-breaker-test.sh's own
+#           Case 3 does not exercise (its two class names are arbitrary
+#           strings that never touch a real pool at all). Proves the
+#           isolation is per-CLASS, not per-pool: breaker state is keyed
+#           by class name, and resource-lock.py's own `run` never reads
+#           breaker state at all (verified by inspection — cmd_run has no
+#           branch that consults it), so a class sharing a tripped
+#           class's pool must still be able to acquire a slot in it.
+#
+#   Not extended here: AAASM-5953's third named gap ("stale lease/process
+#   record recovery, extend `sweep` if qa-watchdog.py introduced new
+#   record fields it doesn't yet know about") turned out to need no
+#   change — qa-watchdog.py's breaker state lives entirely in its own
+#   breaker/<class>.json file (`breaker_state_path()`), never in
+#   resource-lock.py's jobs/*.json records that `sweep`/`verify_liveness()`
+#   operate on, so there are no new fields for sweep to learn.
 #
 # Usage: bash scripts/qa/resource-scheduler-negative-control.sh
 # Run from the repo root (fixtures reference real repo-relative paths).
@@ -63,6 +91,7 @@ set -uo pipefail
 
 FIXTURES_DIR="qa/tests/fixtures/sched"
 LOCK_PY="scripts/qa/resource-lock.py"
+WATCHDOG_PY="scripts/qa/qa-watchdog.py"
 QUICK="$FIXTURES_DIR/quick.sh"
 IGNORE_TERM="$FIXTURES_DIR/ignore_term.sh"
 REAL_REGISTRY="qa/resource-classes.yaml"
@@ -432,6 +461,56 @@ else
   wait "$wrapper_pid"
 fi
 rm -f "$marker17" "$AA_QA_LOCK_DIR/case17.out"
+
+breaker() {
+  python3 "$WATCHDOG_PY" breaker "$@"
+}
+
+echo "== Case 5 (AAASM-5953): retry succeeds once a transient stall clears =="
+marker5="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-stall -- python3 "$FIXTURES_DIR/watchdog_job.py" --marker "$marker5" --mode hang >"$AA_QA_LOCK_DIR/case5.out" 2>&1 &
+holder5_pid=$!
+if ! wait_for_start "$marker5"; then
+  echo "  ✗ holder never started — cannot exercise case 5"
+  FAILED=1
+else
+  # While the holder is stalled but not yet killed, the pool is genuinely
+  # saturated — the setup this case's retry claim depends on (same
+  # assertion shape as case 11, reused here rather than assumed).
+  marker5b="$(mktemp)"
+  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-stall --wait 0 -- bash "$QUICK" "$marker5b" 0 >"$AA_QA_LOCK_DIR/case5b.out" 2>&1
+  assert_eq "second acquire while the holder is stalled-but-alive exits 75" "$?" "75"
+  rm -f "$marker5b" "$AA_QA_LOCK_DIR/case5b.out"
+
+  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$WATCHDOG_PY" enforce --class test-class-stall >/dev/null 2>&1  # seed — never kills on first observation
+  sleep 2.5  # hard_timeout_secs=2 for test-class-stall
+  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$WATCHDOG_PY" enforce --class test-class-stall >/dev/null 2>&1
+  enforce_code=$?
+  assert_eq "enforce terminates the stalled holder (EXIT_HARD_STALL)" "$enforce_code" "4"
+  wait "$holder5_pid" 2>/dev/null
+
+  marker5c="$(mktemp)"
+  AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-stall --wait 0 -- bash "$QUICK" "$marker5c" 0 "case5-retry"
+  assert_eq "retry acquisition for the SAME class succeeds once the stalled holder is cleared" "$?" "0"
+  rm -f "$marker5c"
+fi
+rm -f "$marker5" "$AA_QA_LOCK_DIR/case5.out"
+
+echo "== Case 7 (AAASM-5953): an unrelated class continues (and can still acquire a SHARED pool) while another class's breaker is open =="
+# test-class-stall and test-class-soft-only both map to pool
+# test-single-3 (registry-test.yaml) — deliberately sharing a pool, not
+# just a registry, is the point: it proves the isolation below is
+# per-CLASS, not per-pool.
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker record-failure test-class-stall 1 >/dev/null 2>&1  # threshold override: trips on the first failure
+tripped_code=$?
+assert_eq "test-class-stall's breaker trips open" "$tripped_code" "6"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker check test-class-soft-only >/dev/null 2>&1
+assert_eq "test-class-soft-only (shares test-single-3 with the tripped class) still checks closed" "$?" "0"
+marker7="$(mktemp)"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" python3 "$LOCK_PY" run --class test-class-soft-only --wait 0 -- bash "$QUICK" "$marker7" 0 "case7"
+assert_eq "test-class-soft-only can still ACQUIRE the shared pool while test-class-stall's breaker is open" "$?" "0"
+rm -f "$marker7"
+AA_QA_RESOURCE_CLASSES="$TEST_REGISTRY" breaker reset test-class-stall >/dev/null 2>&1
 
 echo
 if [ "$FAILED" -eq 0 ]; then
