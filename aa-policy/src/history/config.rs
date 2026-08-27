@@ -1,5 +1,6 @@
 //! Configuration for the policy history store.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 use super::error::PolicyHistoryError;
@@ -41,8 +42,23 @@ impl HistoryConfig {
     }
 }
 
+/// Screen an override value, treating empty as absent.
+///
+/// # Why this is separate from [`non_empty_var`]
+///
+/// This screen is the *only* thing standing between an empty `AA_DATA_DIR` and a
+/// bare relative `policy-history`: [`history_base_from`] takes whatever override
+/// it is handed, so `Some("")` reaches `base.join(HISTORY_DIR_NAME)` and yields a
+/// cwd-relative path — AAASM-5959 by a second route. A screen that reads the
+/// variable itself cannot be asserted without a test mutating a process-global,
+/// which is the same reason the resolution rules below take their environment as
+/// arguments rather than reading it.
+fn non_empty(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
 fn non_empty_var(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
+    non_empty(std::env::var_os(name))
 }
 
 /// The resolution rule for the history root, with the environment passed in.
