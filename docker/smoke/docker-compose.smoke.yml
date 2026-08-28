@@ -51,5 +51,21 @@ services:
     volumes:
       - aa-runtime-socket:/tmp
 
+  # governed_call_probe (AAASM-5886) — drives one real ALLOW and one real DENY
+  # CheckAction through the containerized aa-runtime sidecar over the same
+  # shared UDS, independent of whether the base image's own SDK build ships a
+  # live transport. Pre-built once (like aa-runtime) via run-smoke.sh's
+  # build_probe(), tagged AA_PROBE_IMAGE — not built by compose so it is not
+  # rebuilt on every one of the 9 matrix legs. Not part of `depends_on` chains
+  # — the runner invokes it explicitly with `run --rm --no-deps` once the
+  # socket is confirmed bound.
+  probe:
+    image: ${AA_PROBE_IMAGE:?set AA_PROBE_IMAGE to the built governed_call_probe tag}
+    environment:
+      AA_AGENT_ID: "${AA_AGENT_ID}"
+      AA_RUNTIME_SOCKET: "/tmp/aa-runtime-${AA_AGENT_ID}.sock"
+    volumes:
+      - aa-runtime-socket:/tmp
+
 volumes:
   aa-runtime-socket:

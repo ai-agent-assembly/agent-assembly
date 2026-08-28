@@ -29,6 +29,8 @@ pub mod approval;
 pub mod attestation;
 #[cfg(feature = "alloc")]
 pub mod audit;
+#[cfg(feature = "std")]
+pub mod binary_resolve;
 #[cfg(feature = "alloc")]
 pub mod capability;
 #[cfg(feature = "std")]

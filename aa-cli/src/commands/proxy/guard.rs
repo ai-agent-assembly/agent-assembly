@@ -101,8 +101,8 @@ impl std::fmt::Display for ProxyGuardError {
         match self {
             Self::BinaryNotFound => write!(
                 f,
-                "aa-proxy binary not found; install with `cargo install aa-proxy` or ensure it is on PATH \
-                 or in ~/.cargo/bin"
+                "aa-proxy binary not found; install with `cargo install aa-proxy` or ensure it is beside \
+                 the `aasm` executable, on PATH, or in ~/.cargo/bin"
             ),
             Self::SpawnFailed(e) => write!(f, "failed to spawn aa-proxy: {e}"),
             Self::ReadinessTimeout => {

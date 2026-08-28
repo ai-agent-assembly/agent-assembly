@@ -102,6 +102,61 @@ def _run_git(repo_root: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+# ---------------------------------------------------------------------------
+# Append-only evidence-attempt identity (AAASM-6001). A version's first real
+# verification attempt keeps the legacy filename; every subsequent real
+# attempt (after remediation) mints a fresh, never-before-used path — a
+# BLOCK evidence file is never overwritten by a later re-verification. `N`
+# is a QA-evidence bookkeeping suffix only: never a product version, never a
+# git tag, never touches Cargo.toml/CHANGELOG.md (per the owner decision —
+# see ADR 0037). Matched with `[1-9][0-9]*`, start/end-anchored: a leading
+# zero (`attempt-01`) is a forged/malformed path, not attempt 1 — the same
+# pattern `check-release-evidence.py`'s `_tag_guard_allowed_paths()` uses,
+# so a forged filename is rejected consistently everywhere it's checked.
+_ATTEMPT_RE = re.compile(r"^v(?P<version>.+)\.attempt-(?P<n>[1-9][0-9]*)\.evidence\.json$")
+
+
+def _legacy_evidence_path(repo_root: str, version: str) -> str:
+    return os.path.join(repo_root, "docs", "release", "qa-signoff", f"v{version}.evidence.json")
+
+
+def _attempt_evidence_path(repo_root: str, version: str, n: int) -> str:
+    return os.path.join(
+        repo_root, "docs", "release", "qa-signoff", f"v{version}.attempt-{n}.evidence.json",
+    )
+
+
+def _existing_evidence_attempts(repo_root: str, version: str) -> list[tuple[int, str]]:
+    """Every existing evidence file for `version`, as (attempt_number, path),
+    attempt_number 1 meaning the legacy (non-suffixed) path. Sorted
+    ascending. Duplicated in check-release-evidence.py rather than shared —
+    these are two independent, separately invoked scripts (emitter vs.
+    verifier), and importing one from the other would blur that boundary
+    for no real benefit."""
+    out: list[tuple[int, str]] = []
+    legacy = _legacy_evidence_path(repo_root, version)
+    if os.path.isfile(legacy):
+        out.append((1, legacy))
+    qa_signoff_dir = os.path.join(repo_root, "docs", "release", "qa-signoff")
+    if os.path.isdir(qa_signoff_dir):
+        for name in os.listdir(qa_signoff_dir):
+            m = _ATTEMPT_RE.match(name)
+            if m and m.group("version") == version:
+                out.append((int(m.group("n")) + 1, os.path.join(qa_signoff_dir, name)))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def next_evidence_out_path(repo_root: str, version: str) -> str:
+    """The next unused evidence-attempt path for `version` — the legacy
+    path if none exists yet, else `attempt-<N>` for the smallest unused N."""
+    existing = _existing_evidence_attempts(repo_root, version)
+    if not existing:
+        return _legacy_evidence_path(repo_root, version)
+    next_n = existing[-1][0] + 1
+    return _attempt_evidence_path(repo_root, version, next_n - 1)
+
+
 def _load_catalog(catalog_path: str) -> list[dict[str, Any]]:
     with open(catalog_path) as f:
         doc = yaml.safe_load(f)
@@ -332,7 +387,12 @@ def main() -> int:
     parser.add_argument("--security-signoff", default=None,
                          help="default: <repo-root>/docs/release/security-signoff/v<version>.md")
     parser.add_argument("--out", default=None,
-                         help="default: <repo-root>/docs/release/qa-signoff/v<version>.evidence.json")
+                         help="default: next unused evidence-attempt path for <version> "
+                              "(AAASM-6001) — the legacy v<version>.evidence.json if none "
+                              "exists yet, else v<version>.attempt-<N>.evidence.json. Passing "
+                              "this explicitly bypasses that protection: pointing it at an "
+                              "existing file silently overwrites it, so never use it against "
+                              "a real evidence file — it exists only for tests/fixtures.")
     args = parser.parse_args()
 
     repo_root = os.path.abspath(args.repo_root)
@@ -342,9 +402,6 @@ def main() -> int:
     )
     security_signoff_path = args.security_signoff or os.path.join(
         repo_root, "docs", "release", "security-signoff", f"v{args.version}.md"
-    )
-    out_path = args.out or os.path.join(
-        repo_root, "docs", "release", "qa-signoff", f"v{args.version}.evidence.json"
     )
 
     try:
@@ -359,6 +416,40 @@ def main() -> int:
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
+
+    if args.out is None:
+        # A second attempt for a candidate that already has recorded
+        # evidence is bookkeeping noise, not a real re-verification —
+        # nothing changed since that attempt for this rule to newly assess.
+        # Only checked on the default path: an explicit --out is a
+        # test/fixture override and not subject to this protection.
+        for _n, prior_path in _existing_evidence_attempts(repo_root, args.version):
+            # Only a git-tracked prior attempt counts as a real recorded
+            # verification — an untracked file at the same path (planted,
+            # or left over from an aborted run) must not be able to either
+            # falsely block a legitimate re-verification or be silently
+            # trusted for its claimed candidate_sha (AAASM-6001 adversarial
+            # review; the mirrored issue in check-release-evidence.py's own
+            # evidence resolution, fixed the same way there).
+            tracked = subprocess.run(
+                ["git", "-C", repo_root, "ls-files", "--error-unmatch", prior_path],
+                capture_output=True, check=False,
+            )
+            if tracked.returncode != 0:
+                continue
+            with open(prior_path) as f:
+                prior = json.load(f)
+            if prior.get("candidate", {}).get("candidate_sha") == evidence["candidate"]["candidate_sha"]:
+                print(
+                    f"error: candidate {evidence['candidate']['candidate_sha']} already has "
+                    f"evidence at {prior_path} — nothing changed since that attempt; "
+                    "re-run the sign-off gate(s) on a new commit before finalizing again",
+                    file=sys.stderr,
+                )
+                return 1
+        out_path = next_evidence_out_path(repo_root, args.version)
+    else:
+        out_path = args.out
 
     with open(out_path, "w") as f:
         json.dump(evidence, f, indent=2, sort_keys=True)

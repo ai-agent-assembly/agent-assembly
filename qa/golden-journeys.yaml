@@ -173,9 +173,28 @@ journeys:
   - golden-journey
   browser_required: false
   outcome: See AAASM-4530 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5882: this row previously read gap/gap_owner as if no evidence
+  # existed. `aa-integration-tests/tests/e2e_sdk_python.rs` exists but runs
+  # in AA_SELFTEST=1 hermetic mode (no real gateway contact per its own
+  # module doc comment) — that doesn't satisfy "govern a real agent
+  # end-to-end", so it isn't cited as automated evidence here. What does
+  # satisfy it: docs/release/qa-signoff/v0.0.1-rc.7.md's J08 row records a
+  # dated, real manual/live verification — a live aa-gateway + aa-api-server
+  # stood up locally, a real published Python SDK registering a live agent
+  # against the gateway (ctx.registered == True, confirmed in aasm agent
+  # list). Note this covers the registration flow this journey's own name
+  # names ("govern your first agent... end-to-end"), not the full 16-
+  # framework compatibility matrix AAASM-4530's `outcome` field points at
+  # as "the full acceptance contract" — those are a broader, separate claim.
   release_blocking: true
-  lifecycle_state: gap
-  gap_owner: AAASM-5882
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: docs/release/qa-signoff/v0.0.1-rc.7.md
+  execution_lanes:
+  - release
+  fidelity: published_artifact
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
@@ -389,7 +408,20 @@ journeys:
   evidence:
   - repo: agent-assembly
     kind: ci_job
-    selector: 'doc-links.yml (link integrity only, not full command matrix)'
+    selector: 'doc-links.yml (link integrity only, not the command matrix)'
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'docs.yml/docs-governance.yml verify-commands: scripts/qa/verify-documented-commands.py
+      --run extracts and classifies every fenced sh/bash/console command in
+      docs/src/quick-start/ and README''s onboarding sections; each is either
+      executed with an assertion on its documented outcome, or allowlisted
+      with a stated reason (network installers, Homebrew, release-tarball +
+      cosign verification, `make dev-setup`/`dev-verify`, `docker compose
+      up`) — an unclassified command fails the job (AAASM-5888). Still
+      `partial`, not `automated`: the allowlisted commands genuinely do not
+      run, so the journey name (''every documented command'') is not yet
+      fully true — the gap is now a machine-enforced, documented boundary
+      instead of an unowned hole.'
   execution_lanes:
   - pr
   fidelity: real_local_process
@@ -539,8 +571,22 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4596 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5883
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::limit_per_hour_allows_within_limit_then_denies_when_exceeded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_denies_a_call_outside_the_window
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/rate_limit_active_hours_test.rs::active_hours_allows_a_call_inside_the_window
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: aa-gateway/tests/rate_limit_active_hours_test.rs (AAASM-5883; falsified by temporarily removing the Stage 1 active_hours check and the rate-limit consume call from PolicyEngine::evaluate())
 - id: J29
   jira: AAASM-4597
   name: Verify enforcement modes (Enforce / Observe / Disabled)
@@ -616,8 +662,7 @@ journeys:
   - docs
   browser_required: false
   outcome: See AAASM-4612 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: gap
-  gap_owner: AAASM-5884
+  lifecycle_state: automated
 - id: J34
   jira: AAASM-4617
   name: Understand "what is it / why / for whom / the goal" in 5 minutes (non-technical)
@@ -833,9 +878,18 @@ journeys:
   browser_required: false
   outcome: See AAASM-4610 for the full acceptance contract; this row is a selection index only.
   lifecycle_state: automated
+# AAASM-5885: this row previously claimed SCIM coverage no crate in this repo
+# implements (`grep -rli scim aa-api/src aa-gateway/src` returns nothing) —
+# per the product-north-star spec and the workspace-root repo map, SCIM is
+# tiered as a closed-source SaaS/Enterprise capability owned by the `cloud`
+# repo's own release-QA registry, not this monorepo's. Narrowed to the
+# multi-tenancy/RBAC claim this repo actually owns and has real coverage
+# for (aa-api/tests/{iam,policy_rbac_integration,capability}.rs,
+# aa-gateway/tests/{inter_team_fixture,tokenless_tenancy_neutralized}_test.rs
+# — all present, none `#[ignore]`d, run by the required workspace test job).
 - id: J47
   jira: AAASM-4614
-  name: Org / team admin — multi-tenancy, teams, RBAC, SCIM (SaaS control plane)
+  name: Org / team admin — multi-tenancy, teams, RBAC
   priority: P1
   persona_track: Function
   surfaces:
@@ -849,8 +903,7 @@ journeys:
   - security
   browser_required: false
   outcome: See AAASM-4614 for the full acceptance contract; this row is a selection index only.
-  lifecycle_state: partial
-  gap_owner: AAASM-5885
+  lifecycle_state: automated
 - id: J48
   jira: AAASM-4616
   name: Enterprise self-hosted governance onboarding
@@ -930,8 +983,16 @@ journeys:
   - reliability
   browser_required: false
   outcome: See AAASM-4750 for the full acceptance contract; this row is a selection index only.
+  # AAASM-5886 closed the sidecar-enforcement gap (governed_call_probe now
+  # proves the containerized aa-runtime sidecar itself enforces allow/deny for
+  # real). Still `partial`, not `automated`: J52 is "govern a containerized
+  # AGENT", and the agent's own path stays transport=offline until the
+  # published base images ship the SDK's native _core client — tracked by
+  # AAASM-4764 (open, filed at the journey level for exactly this class of
+  # gap), not AAASM-1202 (a different, already-Done, Python-only ticket that
+  # would leave this row silently orphaned).
   lifecycle_state: partial
-  gap_owner: AAASM-5886
+  gap_owner: AAASM-4764
 - id: J53
   jira: AAASM-4751
   name: Pull, configure & operate the aa-gateway container image
@@ -1405,3 +1466,596 @@ journeys:
     behind the trusted proxy), proving this row's redaction evidence is
     load-bearing rather than vacuously true regardless of what the proxy
     actually does with the body.
+- id: J67
+  jira: AAASM-5280
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5280
+  name: Discover which dev-tool integrations are answered by a real, identified DI-API runtime
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-devtool-contract
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: aasm integrations list names the real build/PID that answered it through a real
+    subprocess talking to the real DI-API socket, and does not hang when that socket never
+    answers. Per-tool surface/protection-state content is asserted by the status command (see
+    J71/J77), not by this row's own cited evidence.
+  # AAASM-5999: filed when the entire Developer Integration programme (Epic
+  # AAASM-5272, ~19 Jira items) was found to have zero golden-journeys.yaml
+  # representation, despite this being one of the more thoroughly tested
+  # surfaces in the repo. Added from a real-implementation/real-test
+  # inventory, not invented for coverage — see AAASM-5999 for the full audit.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_stalled_runtime.rs::integrations_list_does_not_hang_on_a_socket_that_never_answers
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_provenance.rs::the_list_banner_names_the_build_that_answered
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+
+- id: J68
+  jira: AAASM-5674
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5280
+  name: Preview a governed integration install as a real disclosed plan before anything changes
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-devtool-claude-code
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: aasm integrations plan discloses the real target path, the exact content that will
+    be written, and the consent/authorization requirements a subsequent managed install would
+    trigger, and creates no file, artifact, or store directory itself. The plan's own diff and
+    backup disclosure is real (aa-devtool-claude-code/src/lifecycle.rs) but is not yet asserted
+    by this row's cited automated test — see the test's own assertions before relying on this
+    row for that specific claim.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::plan_creates_no_file_no_artifact_and_no_store_directory
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::the_managed_install_plan_discloses_path_content_diff_backup_and_rollback
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+
+- id: J69
+  jira: AAASM-5281
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5280
+  name: A project-scope integration reaches only the calling project and never another caller's, including across a service restart
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-runtime
+  - aa-devtool-contract
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: A project-scope install stays out of $HOME and managed scope, two project roots
+    against the same running service do not cross-contaminate, a restarted service answers the
+    caller's own project and refuses a stranger's, and interleaved concurrent callers each get
+    their own project with no stale bleed-through.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::project_scope_install_stays_out_of_home_and_managed_scope
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::a_project_scope_install_reaches_the_callers_project_and_not_the_services
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::two_project_roots_against_one_service_do_not_cross_contaminate
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::a_restarted_service_answers_the_callers_project_and_refuses_a_strangers
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::interleaved_callers_each_get_their_own_project_and_no_stale_one
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-cli/tests/integrations_claude_code.rs::a_restarted_service_answers_the_callers_project_and_refuses_a_strangers
+    — the same harness proves the service actively REFUSES a stranger's project, not merely
+    that it happens to answer the right one; a service that trivially returned every caller's
+    project would fail this half of the assertion.
+
+- id: J70
+  jira: AAASM-5278
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5280
+  - AAASM-5278
+  name: Install, reinstall, tamper/repair, and remove a real dev-tool integration end to end, idempotently, without touching unrelated user config
+  priority: P0
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-devtool-claude-code
+  - aa-core
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: The full list->plan->install->reinstall->status->verify->tamper->repair->remove
+    lifecycle runs against the real Claude Code adapter; installing twice is idempotent and
+    preserves unrelated user configuration; a tampered managed key drifts and repair restores
+    only what aasm owns; remove previews then restores the user's own prior configuration and
+    removing twice is idempotent; an empty settings file left behind is removed rather than
+    kept as an artifact.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::the_command_family_drives_the_native_claude_code_integration
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::installing_twice_is_idempotent_and_preserves_unrelated_user_configuration
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::tampering_with_a_managed_key_drifts_and_repair_restores_only_what_aasm_owns
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::remove_previews_then_restores_the_users_own_configuration
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::removing_twice_is_idempotent
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::install_is_idempotent_and_records_a_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::drift_in_two_mechanisms_is_detected_and_repair_restores_only_owned_state
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::a_tampered_receipt_is_refused_rather_than_believed
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::removal_restores_the_pre_install_state_and_leaves_no_artifact
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+
+- id: J71
+  jira: AAASM-5277
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5277
+  name: Protection verification never passes without real exercised traffic being adjudicated
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-cli
+  - aa-devtool-claude-code
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: aasm integrations verify fails when the protected path was never exercised, succeeds
+    only when real traffic was produced and adjudicated, and an unverifiable integration fails
+    rather than passing quietly — established_protection() requires exercised evidence plus a
+    real pass token, never configuration read-back alone.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::verify_fails_when_the_protected_path_was_not_exercised
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::verify_succeeds_only_when_traffic_was_produced_and_adjudicated
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::an_unverifiable_integration_fails_rather_than_passing_quietly
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-cli/tests/integrations_command.rs::verify_fails_when_the_protected_path_was_not_exercised
+    — directly proves verify cannot pass on configuration presence alone; without exercised
+    traffic, the same setup that would otherwise pass instead fails.
+
+- id: J72
+  jira: AAASM-5300
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5300
+  name: A real MitM'd probe request is cryptographically bound to its own correlation and only an adjudicated one ever passes
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-devtool-claude-code
+  - aa-proxy
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: A real probe sent through a real MitM proxy with a real CA and a real mock upstream
+    passes verification only when the proxy actually adjudicated it via the shared
+    x-agent-assembly-probe correlation header; an unadjudicated probe still cannot pass and the
+    CLI still exits 6; the probe stays inconclusive (never a false pass) without a trusted CA or
+    with the core stopped; an unwatched path never even receives the secret; a verdict is bound
+    to the specific request that produced it.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::the_shipped_probe_passes_verification_on_an_adjudicated_model_path
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::an_unadjudicated_probe_still_cannot_pass_and_the_cli_still_exits_six
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::without_a_trusted_certificate_authority_the_shipped_probe_is_inconclusive
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::with_the_core_stopped_the_shipped_probe_is_inconclusive
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::an_unwatched_path_is_inconclusive_and_never_receives_the_secret
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::a_verdict_is_bound_to_the_request_that_produced_it
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::the_probe_and_the_proxy_agree_on_the_correlation_contract
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-integration-tests/tests/conformance_claude_code.rs::an_unadjudicated_probe_still_cannot_pass_and_the_cli_still_exits_six
+    — a probe request that bypasses proxy adjudication still fails verification (exit 6), proving
+    a probe cannot self-certify without the proxy's real adjudication.
+
+- id: J73
+  jira: AAASM-5276
+  feature_refs:
+  - AAASM-5272
+  name: A synthetic secret in governed dev-tool traffic never reaches the provider or leaks into any CLI output
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-devtool-claude-code
+  - aa-proxy
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: A synthetic (never-real) secret injected into governed traffic never reaches the
+    provider and stays absent from every artifact while the redaction finding itself survives;
+    no aasm integrations command's output, across every verb and every --output format, carries
+    a secret from a poisoned fixture.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::the_synthetic_secret_never_reaches_the_provider_and_the_payload_stays_usable
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::the_raw_secret_is_absent_from_every_artifact_while_the_finding_survives
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::no_command_output_carries_a_secret_from_a_poisoned_fixture
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-cli/tests/integrations_command.rs::no_command_output_carries_a_secret_from_a_poisoned_fixture
+    — a genuine fault-injection control, a poisoned fixture carrying a real-shaped secret fed
+    through every command verb and output format, asserting none of them echo it.
+
+- id: J74
+  jira: AAASM-5283
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5278
+  name: Uninstalling a governed dev-tool integration is receipt-driven, idempotent, and safe with nothing installed
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-cli
+  - aa-core
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: aasm integrations remove restores the pre-install state and leaves no artifact,
+    driven by the receipt rather than re-derived host-state guessing; the service itself (not
+    just the CLI) refuses a remove with no receipt, and a removal with nothing to remove
+    reports no plan at all rather than fabricating one.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::removal_restores_the_pre_install_state_and_leaves_no_artifact
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_remove_no_install.rs::the_service_refuses_the_remove_verb_without_a_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_remove_no_install.rs::a_removal_with_nothing_to_remove_reports_no_plan_at_all
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+
+- id: J75
+  jira: AAASM-5499
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5276
+  name: A stale/wrong-build runtime, a missing receipt, or a tampered receipt is refused with a distinct exit code rather than silently accepted
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-cli
+  - aa-runtime
+  - aa-core
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: A non-interactive install without --yes aborts and changes nothing; repair/remove
+    without a prior receipt is refused by the service itself, not just the CLI; a stale or
+    wrong-build runtime is reported via its own dedicated exit code (10/11) rather than a
+    generic failure; a tampered receipt is refused rather than believed. This is the negative-
+    path complement to J70/J74's happy-path lifecycle coverage.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::a_non_interactive_install_without_yes_aborts_and_changes_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::a_managed_install_without_confirmation_changes_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_repair_no_install.rs::the_service_refuses_the_repair_verb_without_a_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_remove_no_install.rs::the_service_refuses_the_remove_verb_without_a_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_provenance.rs::a_runtime_from_another_build_refuses_instead_of_answering
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/conformance_claude_code.rs::a_tampered_receipt_is_refused_rather_than_believed
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-integration-tests/tests/conformance_claude_code.rs::a_tampered_receipt_is_refused_rather_than_believed
+    — a receipt is directly tampered with and the system is proven to refuse it rather than
+    trust the tampered state.
+
+- id: J76
+  jira: AAASM-5279
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5279
+  name: The DI-API's formal threat-model catalog holds under real adversarial and protocol-abuse conditions
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  browser_required: false
+  outcome: A formal, ADR-0030-cross-referenced threat-model catalog (V1-V15) is exercised
+    against the real DI-API socket, including absent/malformed/unknown/expired token handling,
+    per-tool token scoping, version-downgrade refusal, secret/token boundary containment, wire
+    discriminant closure, socket ownership, and mid-session revocation/replay refusal. Known gap,
+    tracked not hidden — V1 (a trybuild compile-fail test proving a boundary at compile time)
+    has no fixture in the repo yet; V14/V15 are not independently re-verified by this journey.
+  # V1's absence is a real, acknowledged limitation of this journey's own PASS
+  # bar, not something this row should paper over — see gap_owner AAASM-5999
+  # follow-up if V1 coverage is added later; not filed as a separate ticket
+  # here since it was already visible in threat_model.rs's own catalog before
+  # this journey existed.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/src/devint/threat_model.rs::a_stolen_token_is_bounded_by_the_scope_it_was_stolen_from
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-runtime/src/devint/threat_model.rs::a_replayed_request_reaches_nothing_new
+    — a captured real request is replayed and proven to reach nothing new, one of the suite's
+    own adversarial-replay assertions rather than a happy-path check restated as a control.
+
+- id: J77
+  jira: AAASM-5274
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5274
+  name: A dev-tool adapter that declares a capability without implementing its surface is caught as a conformance violation, not silently accepted
+  priority: P1
+  persona_track: Function
+  surfaces:
+  - aa-core
+  - aa-devtool-contract
+  - aa-devtool-claude-code
+  - aa-devtool-codex
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: aasm integrations status reports an unsupported host-enforcement mechanism with the
+    adapter's own stated reason (never silently "unavailable"), and every real adapter's happy-
+    path capability declaration is conformant — but the actual violation case (a capability
+    declared without its surface implemented, or a surface implemented that nobody declared) is
+    caught by the shared conformance check, proven at its own source rather than duplicated per
+    adapter.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::status_reports_an_unsupported_host_enforcement_with_the_adapters_own_reason
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::status_reports_a_supported_host_enforcement_as_reachable_never_as_unavailable
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_command.rs::each_outcome_produces_its_own_exit_code
+  - repo: agent-assembly
+    kind: test
+    selector: aa-devtool-contract/tests/lifecycle_contract.rs::all_three_categories_are_expressible_without_a_single_no_op
+  - repo: agent-assembly
+    kind: test
+    selector: aa-core/src/integration/contract.rs::declaring_mcp_without_the_surface_is_a_conformance_violation
+  - repo: agent-assembly
+    kind: test
+    selector: aa-core/src/integration/contract.rs::implementing_a_surface_nobody_declared_is_also_reported
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+  negative_control: aa-core/src/integration/contract.rs::declaring_mcp_without_the_surface_is_a_conformance_violation
+    — the actual violation case (declared without implemented) is proven to be caught, not just
+    the happy path where declaration and implementation agree.
+
+- id: J78
+  jira: AAASM-5298
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5298
+  name: A privileged macOS admin-authority write to a managed-settings file is refused without consent and rolled back on any read-back mismatch
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-devtool-claude-code
+  - aa-cli
+  entry_point: cli
+  lanes:
+  - functional
+  - security
+  browser_required: false
+  outcome: managed scope is refused unless the explicit --install-managed-settings opt-in is
+    given, naming the flag; the plan discloses path/content/diff/backup/rollback before any
+    privileged write; a non-interactive or unconfirmed managed install fails safely and changes
+    nothing; a real MDM-style file agent-assembly did not write is refused and left alone; a
+    read-back mismatch after a privileged write prevents the success receipt and restores the
+    prior state; rollback restores a file agent-assembly replaced or deletes one it created.
+    Covers the refusal/disclosure/rollback LOGIC only — the literal privileged OS write itself
+    (a real osascript admin-authority invocation) is a separate row, J79, since it genuinely
+    cannot run unattended in CI.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::a_managed_scope_install_is_refused_and_names_the_flag_that_opts_in
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::the_managed_install_plan_discloses_path_content_diff_backup_and_rollback
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/integrations_claude_code.rs::a_non_interactive_managed_install_fails_safely_instead_of_waiting
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::the_privileged_step_is_refused_without_consent
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::denied_authorization_fails_the_install_rather_than_downgrading_it
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::an_authorized_managed_install_reaches_host_enforced_and_is_reversible
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::a_third_party_managed_file_is_refused_and_left_alone
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::a_read_back_mismatch_prevents_the_success_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-devtool-claude-code/src/managed_settings.rs::rollback_restores_a_file_agent_assembly_replaced
+  - repo: agent-assembly
+    kind: test
+    selector: aa-devtool-claude-code/src/managed_settings.rs::rollback_deletes_when_there_was_no_prior_file
+  execution_lanes:
+  - pr
+  - main
+  - release
+  fidelity: real_local_process
+  negative_control: aa-integration-tests/tests/claude_code_integration_lifecycle.rs::a_third_party_managed_file_is_refused_and_left_alone
+    — a real MDM-style pre-existing file agent-assembly did not write is proven to be refused
+    and left untouched, not silently adopted or overwritten.
+
+- id: J79
+  jira: AAASM-5308
+  feature_refs:
+  - AAASM-5272
+  - AAASM-5298
+  name: The real privileged macOS admin-authority write itself (not the surrounding refusal/rollback logic) has been exercised against a real host
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-devtool-claude-code
+  entry_point: cli
+  lanes:
+  - security
+  browser_required: false
+  outcome: The real MacOsAdminAuthority path (a genuine osascript ... with administrator
+    privileges invocation running /usr/bin/install / /bin/rm against a managed-settings file) is
+    proven to actually write/remove the target file on a real macOS host, not merely that the
+    surrounding refusal/disclosure/rollback logic is correct against FakeAuthority.
+  # This is the literal gap AAASM-5999's audit found: every existing managed-
+  # settings test (see J78) substitutes FakeAuthority for the real admin-
+  # authority write — deliberately, since it needs a real interactive OS
+  # authorization prompt that cannot run in CI. The CHANGELOG already
+  # discloses this as unmeasured (AAASM-5276 condition C6). AAASM-5308 owns
+  # closing this gap; not fixed here — see AAASM-5308 for scope/plan.
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-5308
+

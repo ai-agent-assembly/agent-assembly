@@ -72,16 +72,20 @@ def per_journey_digest(entry: dict[str, Any]) -> str:
     return _sha256_of(_canonical_json(per_journey_projection(entry)))
 
 
-def catalog_requirements_digest(entries: list[dict[str, Any]]) -> str:
-    """`sha256:<hex>` binding the exact set of release-blocking requirements.
+def required_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The authoritative release-required subset of a golden-journeys catalog.
 
     Scope is entries with `release_blocking: true` and
     `lifecycle_state != "retired"` — a retired entry stays in the catalog
     for stable-ID history (per the catalog's own documented convention) but
-    is excluded from active selection, so it must not perturb this digest
-    either way. Entries are sorted by `id` before projecting so insertion
-    order in the YAML file (which carries no meaning) never affects the
-    digest.
+    is excluded from active selection. This is the single predicate both
+    `check-release-evidence.py` (R2/R3 admissibility) and `map-risk.py`
+    (`--mode release` journey selection, AAASM-5879) must use — computing it
+    independently in either place risks the two silently drifting apart, the
+    exact failure mode `catalog_requirements_digest` below already guards
+    against for the digest half of this contract. Sorted by `id` so
+    insertion order in the YAML file (which carries no meaning) never
+    affects downstream consumers that assume a stable order.
     """
     required = [
         e
@@ -89,5 +93,13 @@ def catalog_requirements_digest(entries: list[dict[str, Any]]) -> str:
         if e.get("release_blocking", False) and e.get("lifecycle_state") != "retired"
     ]
     required.sort(key=lambda e: e["id"])
-    projections = [per_journey_projection(e) for e in required]
+    return required
+
+
+def catalog_requirements_digest(entries: list[dict[str, Any]]) -> str:
+    """`sha256:<hex>` binding the exact set of release-blocking requirements.
+
+    See `required_entries` for the scoping predicate.
+    """
+    projections = [per_journey_projection(e) for e in required_entries(entries)]
     return _sha256_of(_canonical_json(projections))

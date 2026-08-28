@@ -98,7 +98,6 @@ pub struct CompletedRun {
 
 /// A Linux process-isolation backend built on an external confinement
 /// supervisor.
-#[derive(Debug)]
 pub struct SandlockBackend {
     identity: BackendIdentity,
     capabilities: BackendCapabilities,
@@ -123,6 +122,29 @@ pub struct SandlockBackend {
     pids: Mutex<HashMap<String, u32>>,
     completed: Mutex<HashMap<String, CompletedRun>>,
     next_token: AtomicU64,
+}
+
+/// Hand-written because [`SandlockBackend::child_environment`] holds
+/// credential values by design (AAASM-5711's exact-environment override): a
+/// derived `Debug` would print every `NAME=VALUE` pair the caller resolved
+/// into any log line or panic message that formats this backend. AAASM-5942
+/// — mirrors `aa-isolation-macos-vm::MacosVmBackend`'s own hand-written impl.
+impl core::fmt::Debug for SandlockBackend {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SandlockBackend")
+            .field("identity", &self.identity)
+            .field("available", &self.facts.is_some())
+            .field("degraded", &self.degraded)
+            .field("capture_output", &self.capture_output)
+            .field(
+                "child_environment",
+                &self
+                    .child_environment
+                    .as_ref()
+                    .map(|env| format!("<{} var(s)>", env.len())),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl SandlockBackend {
@@ -291,8 +313,24 @@ impl SandlockBackend {
         self.facts.as_ref()
     }
 
-    /// The command line a prepared execution will run, for `--dry-run` output
-    /// and for tests that assert argv is passed as argv.
+    /// The command line a prepared execution will run.
+    ///
+    /// # Not for operator-visible diagnostics
+    ///
+    /// AAASM-5941: this returns the raw confinement-executable argv, and
+    /// nothing about this method distinguishes a launch that has no
+    /// credential in play from one that does. AAASM-5940 makes `prepare`
+    /// refuse rather than place a credential *value* here, but a launch that
+    /// carries no credential posture at all has ordinary argv that is
+    /// perfectly safe to show — this method cannot tell the two situations
+    /// apart, so any `--dry-run`/preview surface must not build its
+    /// operator-facing output from this raw vector. This crate has no such
+    /// caller today (only its own tests use it, asserting *how* argv is
+    /// built rather than displaying it) — see
+    /// [`tests::no_operator_visible_output_path_consumes_this_raw_argv`].
+    /// Kept as `pub` because the tests that pin "argv is passed as argv"
+    /// (this module's whole reason to exist, per its own top-level doc) are
+    /// a real safety property this method is what makes assertable.
     pub fn command_line(&self, prepared: &PreparedExecution) -> Option<Vec<String>> {
         let held = self.prepared.lock().expect("backend state poisoned");
         held.get(prepared.token()).map(|p| p.argv.args().to_vec())
@@ -444,7 +482,23 @@ impl IsolationBackend for SandlockBackend {
                 true
             }
             None => {
-                let flags = credential_flags(plan.spec());
+                // AAASM-5940: refuse rather than place a delegated or
+                // ambient-unremoved credential's value on the confinement
+                // executable's own command line — see
+                // `CredentialArgvRefusal`'s documentation for why this is a
+                // refusal and not a redaction. A caller that has resolved an
+                // exact environment for the child avoids this path entirely
+                // by calling `set_child_environment` first, which is what
+                // every caller in this workspace (`aa-cli`'s governed launch
+                // path) already does.
+                let flags = credential_flags(plan.spec()).map_err(|refusal| SpawnError::Prepare {
+                    detail: format!(
+                        "refusing to prepare this launch: {refusal}. There is no fallback here — call \
+                         `SandlockBackend::set_child_environment` with the exact environment the confined \
+                         program is to receive, or select a backend that delivers it through process \
+                         environment inheritance rather than the confinement executable's argv."
+                    ),
+                })?;
                 let replaced = !flags.is_empty();
                 confinement.extend(flags);
                 replaced
@@ -1053,6 +1107,31 @@ mod tests {
 
     /// The command line must put the caller's program after the separator and
     /// the confinement executable outside the argument vector entirely.
+    /// AAASM-5941: `command_line`'s raw argv must never become an
+    /// operator-visible diagnostic — it cannot tell a credential-bearing
+    /// launch from an ordinary one, and AAASM-5940 only refuses the former
+    /// rather than redacting it, so printing it unconditionally would still
+    /// print a real value whenever `prepare` did not refuse. This crate's
+    /// own source is the whole surface `command_line` is reachable from
+    /// outside a test (`aa-cli`, this workspace's only consumer, renders
+    /// `--dry-run` output from `IsolationReport`, never from this backend
+    /// directly) — pinned here by asserting no non-test line in this crate
+    /// formats its result, so a future caller added inside this crate cannot
+    /// wire it into a printed diagnostic without this test failing first.
+    #[test]
+    fn no_operator_visible_output_path_consumes_this_raw_argv() {
+        let source = include_str!("backend.rs");
+        let printer_call = |line: &str| {
+            (line.contains("println!") || line.contains("eprintln!") || line.contains("print!"))
+                && (line.contains("command_line") || line.contains(".args()"))
+        };
+        let offending: Vec<&str> = source.lines().filter(|line| printer_call(line)).collect();
+        assert!(
+            offending.is_empty(),
+            "a line in this crate prints raw argv, which may include a credential value: {offending:?}"
+        );
+    }
+
     #[test]
     fn the_prepared_command_line_confines_rather_than_executes_the_program() {
         let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
@@ -1121,14 +1200,26 @@ mod tests {
     fn unremoved_ambient_authority_is_named_in_evidence_and_marks_the_run_degraded() {
         let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
 
+        // AAASM-5940: an ambient-unremoved name whose value is actually set
+        // (e.g. `PATH`) now makes `prepare` refuse rather than reach this
+        // evidence code at all — see `lower::tests::
+        // a_compatibility_exception_refuses_rather_than_exposing_its_value`
+        // for that property. This test is about the evidence surface for
+        // residue that is *reported* but never resolves to a value here, so
+        // it uses a name this process does not set.
+        const UNSET_AMBIENT_NAME: &str = "AA_ISOLATION_SANDLOCK_TEST_UNSET_AMBIENT_NAME";
+        assert!(
+            std::env::var_os(UNSET_AMBIENT_NAME).is_none(),
+            "the fixture name must not resolve to a real value"
+        );
         let kept = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
             removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
             delegated: Vec::new(),
-            ambient_unremoved: vec!["PATH".to_string()],
+            ambient_unremoved: vec![UNSET_AMBIENT_NAME.to_string()],
         });
         let record = credential_record(&backend, &kept);
         assert!(
-            record.detail.contains("PATH") && record.detail.contains("NOT least-authority"),
+            record.detail.contains(UNSET_AMBIENT_NAME) && record.detail.contains("NOT least-authority"),
             "{}",
             record.detail
         );
@@ -1261,10 +1352,13 @@ mod tests {
     #[test]
     fn the_ambient_authority_records_support_no_prevention_claim() {
         let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+        // AAASM-5940: a name resolving to a real value (e.g. `PATH`) now makes
+        // `prepare` refuse — see `unremoved_ambient_authority_is_named_in_evidence_and_marks_the_run_degraded`'s
+        // comment for why an unset name is used here instead.
         let spec = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
             removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
             delegated: Vec::new(),
-            ambient_unremoved: vec!["PATH".to_string()],
+            ambient_unremoved: vec!["AA_ISOLATION_SANDLOCK_TEST_UNSET_AMBIENT_NAME".to_string()],
         });
         let plan = backend.plan(&spec).expect("planned");
         let prepared = backend.prepare(plan).expect("prepared");
@@ -1274,6 +1368,81 @@ mod tests {
             assert!(!evidence.supports_prevention_claim(*domain), "{domain}");
         }
         assert!(!evidence.records().iter().any(|r| r.kind == EvidenceKind::Decision));
+    }
+
+    /// **AAASM-5940, at the layer that actually builds a command line.** A
+    /// spec whose credential posture would put a real value into argv must
+    /// make `prepare` produce no [`PreparedExecution`] and no `Prepared`
+    /// entry at all — not a `Prepared` whose argv happens to omit the value.
+    /// The negative control is the identical spec with `AWS_SECRET_ACCESS_KEY`
+    /// left out of the posture entirely, which prepares normally, so the
+    /// refusal above is about the credential posture and not about
+    /// `writing_spec` itself becoming unpreparable.
+    #[test]
+    fn a_credential_posture_that_would_expose_a_value_refuses_to_prepare() {
+        let backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+        assert!(std::env::var_os("PATH").is_some(), "this host sets no PATH");
+        let exposing = writing_spec("/tmp/never").with_credentials(aa_isolation::CredentialPosture {
+            removed: vec!["AWS_SECRET_ACCESS_KEY".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["PATH".to_string()],
+        });
+        let plan = backend
+            .plan(&exposing)
+            .expect("planning does not read credential values");
+        let error = backend
+            .prepare(plan)
+            .expect_err("a value-exposing posture must refuse to prepare");
+        assert!(matches!(error, SpawnError::Prepare { .. }), "{error:?}");
+        let detail = error.to_string();
+        assert!(
+            detail.contains("PATH"),
+            "the refusal must name the exposed variable so an operator can act on it: {detail}"
+        );
+        assert!(
+            !detail.contains(
+                &std::env::var_os("PATH")
+                    .and_then(|v| v.into_string().ok())
+                    .expect("PATH is set")
+            ),
+            "the refusal message itself must not carry the value it refused to expose: {detail}"
+        );
+
+        // Negative control: the same spec with no credential posture at all
+        // prepares normally — the refusal above is about the posture, not
+        // about this program/args combination.
+        let non_exposing = writing_spec("/tmp/never");
+        let plan = backend.plan(&non_exposing).expect("planned");
+        assert!(
+            backend.prepare(plan).is_ok(),
+            "a spec with no credential posture must still prepare"
+        );
+    }
+
+    /// **AAASM-5942, falsifiability-critical.** `{:?}` on a backend holding a
+    /// resolved child environment must not recover the sentinel value —
+    /// absence, not a mask token, per this ticket's own warning that a test
+    /// grepping for a mask string "passes against the vulnerable code and
+    /// proves nothing".
+    ///
+    /// The negative control is documented rather than left committed: with
+    /// `#[derive(Debug)]` restored on `SandlockBackend` in place of its
+    /// hand-written impl, this exact assertion reddened with the sentinel
+    /// visible in the formatted output, confirming the test can fail. See
+    /// this ticket's implementation report for the before/after transcript.
+    #[test]
+    fn debug_formatting_of_a_resolved_child_environment_never_recovers_its_value() {
+        const SENTINEL: &str = "aaasm-5942-sentinel-not-a-real-secret-9f3c9e2b";
+        let mut backend = SandlockBackend::from_measured(broken_host(), denied_everything());
+        backend.set_child_environment(BTreeMap::from([(
+            "AASM_TEST_CREDENTIAL".to_string(),
+            SENTINEL.to_string(),
+        )]));
+        let rendered = format!("{backend:?}");
+        assert!(
+            !rendered.contains(SENTINEL),
+            "Debug output recovered the sentinel value: {rendered}"
+        );
     }
 
     /// A waived protection removes the domain it covered, rather than leaving

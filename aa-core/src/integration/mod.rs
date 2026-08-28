@@ -38,6 +38,7 @@
 //! the public sample — satisfy the new contract on day one, declaring honestly
 //! that it cannot substantiate the mechanisms it was never designed to expose.
 
+pub mod caller_env;
 pub mod capability;
 pub mod contract;
 pub mod drift;
@@ -61,6 +62,7 @@ pub mod step;
 pub mod store;
 pub mod version;
 
+pub use caller_env::{CallerEnvironment, EnvVarState, KNOWN_LAUNCH_BYPASS_ENV_VARS};
 pub use capability::{CapabilityResolution, CapabilitySupport, DevToolCapabilities, IntegrationCapability};
 pub use contract::{
     capability_conformance, ConformanceViolation, DevToolIntegration, HookableTool, LaunchSpec, LaunchableTool,

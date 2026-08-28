@@ -25,13 +25,14 @@ use std::path::PathBuf;
 
 use aa_devtool_contract::PolicyPosture;
 use aa_devtool_contract::{
-    capability_conformance, AdapterError, ArtifactOperation, DevToolCapabilities, DevToolInfo, DevToolIntegration,
-    DevToolKind, DocumentFormat, EnvValue, EvidenceKind, ExerciseOutcome, GovernanceLevel, HookableTool,
-    IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep,
-    LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, PlanError, ProbeDescriptor,
-    ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsMerge, SettingsScope,
-    StateDerivation, StepAction, SupportedToolVersions, ToolVersion, TrustMaterialKind, VerificationOutcome,
-    VerificationResult, VersionCompatibility, VersionSupport, DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
+    capability_conformance, AdapterError, ArtifactOperation, CallerEnvironment, DevToolCapabilities, DevToolInfo,
+    DevToolIntegration, DevToolKind, DocumentFormat, EnvValue, EvidenceKind, ExerciseOutcome, GovernanceLevel,
+    HookableTool, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus,
+    IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, PlanError,
+    ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan,
+    SettingsMerge, SettingsScope, StateDerivation, StepAction, SupportedToolVersions, ToolVersion, TrustMaterialKind,
+    VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport, DEFAULT_FRESHNESS_WINDOW_SECS,
+    LIFECYCLE_SCHEMA_VERSION,
 };
 
 const NOW: u64 = 1_700_000_000;
@@ -195,6 +196,7 @@ impl DevToolIntegration for CliTool {
     async fn integration_status(
         &self,
         receipt: Option<&IntegrationReceipt>,
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         let compatibility = self
             .version_support()
@@ -252,7 +254,11 @@ impl DevToolIntegration for CliTool {
         })
     }
 
-    async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        _receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         Ok(VerificationResult {
             verified_at_unix_secs: NOW,
             outcome: VerificationOutcome::Passed,
@@ -429,6 +435,7 @@ impl DevToolIntegration for IdeHostedTool {
     async fn integration_status(
         &self,
         _receipt: Option<&IntegrationReceipt>,
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         Ok(empty_status(
             DevToolKind::GitHubCopilot,
@@ -437,7 +444,11 @@ impl DevToolIntegration for IdeHostedTool {
         ))
     }
 
-    async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        _receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         Ok(VerificationResult {
             verified_at_unix_secs: NOW,
             outcome: VerificationOutcome::PartiallyPassed {
@@ -520,6 +531,7 @@ impl DevToolIntegration for SaasTool {
     async fn integration_status(
         &self,
         _receipt: Option<&IntegrationReceipt>,
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         Ok(empty_status(
             DevToolKind::Custom("saas-agent".to_string()),
@@ -528,7 +540,11 @@ impl DevToolIntegration for SaasTool {
         ))
     }
 
-    async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        _receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         Ok(VerificationResult::unverifiable(
             NOW,
             "there is nothing on this host to read back",
@@ -715,7 +731,7 @@ async fn plans_serialize_and_render_for_review() {
 
 #[tokio::test]
 async fn status_reports_a_level_with_its_evidence_not_a_boolean() {
-    let status = CliTool.integration_status(None).await.unwrap();
+    let status = CliTool.integration_status(None, None).await.unwrap();
     // No receipt: a fully configured-looking host is still not integrated.
     assert_eq!(status.achieved_level(), ProtectionLevel::DetectedNotIntegrated);
     assert_eq!(status.phase, LifecyclePhase::DetectedNotIntegrated);
@@ -728,14 +744,14 @@ async fn status_reports_a_level_with_its_evidence_not_a_boolean() {
 async fn verification_distinguishes_exercised_from_read_back_and_from_not_looking() {
     let receipt = sample_receipt();
 
-    let cli = CliTool.verify_integration(&receipt).await.unwrap();
+    let cli = CliTool.verify_integration(&receipt, None).await.unwrap();
     assert!(cli.has_exercised_evidence());
     assert_eq!(
         cli.highest_justified_level(NOW, DEFAULT_FRESHNESS_WINDOW_SECS),
         ProtectionLevel::GatewayProtected
     );
 
-    let ide = IdeHostedTool.verify_integration(&receipt).await.unwrap();
+    let ide = IdeHostedTool.verify_integration(&receipt, None).await.unwrap();
     assert!(!ide.has_exercised_evidence());
     assert_eq!(
         ide.highest_justified_level(NOW, DEFAULT_FRESHNESS_WINDOW_SECS),
@@ -743,7 +759,7 @@ async fn verification_distinguishes_exercised_from_read_back_and_from_not_lookin
         "read-back evidence alone can never justify a traffic claim"
     );
 
-    let saas = SaasTool.verify_integration(&receipt).await.unwrap();
+    let saas = SaasTool.verify_integration(&receipt, None).await.unwrap();
     assert!(matches!(saas.outcome, VerificationOutcome::Unverifiable { .. }));
     assert_eq!(
         saas.highest_justified_level(NOW, DEFAULT_FRESHNESS_WINDOW_SECS),

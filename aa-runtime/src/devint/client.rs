@@ -35,7 +35,9 @@ use aa_proto::assembly::devint::v1 as wire;
 
 use super::apply_outcome::ApplyMutation;
 use super::codec::{self, DiCodecError, DiFrame, DiResponseFrame};
-use super::negotiate::{DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE};
+use super::negotiate::{
+    DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_PROJECT_ROOT_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
+};
 use super::projection::parse_scope;
 use super::provenance::{self, BuildIdentity, PeerProvenance, ProvenanceVerdict};
 use super::socket::{self, SocketDiscovery};
@@ -126,6 +128,52 @@ fn refuse_project_scope_below_v6(negotiated_version: u32, settings_scope: &str) 
         remediation: format!(
             "upgrade the running AASM runtime to one speaking DI-API \
              {DI_API_PROJECT_ROOT_SINCE} or later, then retry; user and managed scope are \
+             unaffected and work against this runtime as-is"
+        ),
+        min_supported: DI_API_MIN_SUPPORTED,
+        max_supported: DI_API_MAX_SUPPORTED,
+    }))
+}
+
+/// Refuse `user` scope — and an unspecified scope, since that means "the one
+/// installation that exists" and may turn out to be user-scoped — on a
+/// connection whose peer cannot carry a user configuration home (AAASM-5957).
+///
+/// Mirrors [`refuse_project_scope_below_v6`] exactly, one scope over: same
+/// discard-on-decode hazard, same reasoning for checking before the send
+/// rather than after the reply, same locally-built [`ClientError::Incompatible`]
+/// rather than a new enum variant (AAASM-5669).
+///
+/// The wider match than `refuse_project_scope_below_v6`'s (`Project` only) is
+/// deliberate, not an oversight: `TargetArgs.settings_scope == ""` cannot be
+/// distinguished from `"user"` at this layer, and treating empty as "not user"
+/// would let an ambiguous target through to a peer that would substitute its
+/// own configuration home the moment it turned out to resolve to one.
+fn refuse_user_scope_below_v7(negotiated_version: u32, settings_scope: &str) -> Result<(), ClientError> {
+    if negotiated_version >= DI_API_USER_CONFIG_HOME_SINCE {
+        return Ok(());
+    }
+    match parse_scope(settings_scope) {
+        Some(SettingsScope::Project) | Some(SettingsScope::Managed) => return Ok(()),
+        Some(SettingsScope::User) => {}
+        None => {
+            // Unrecognised scope tokens are the server's to reject; an empty
+            // token specifically means "let the service find it", which this
+            // gate treats as "may be user scope" rather than "is not".
+            if !settings_scope.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+    Err(ClientError::Incompatible(wire::Incompatible {
+        reason: format!(
+            "this connection negotiated DI-API {negotiated_version}; a caller-chosen user \
+             configuration home arrived in DI-API {DI_API_USER_CONFIG_HOME_SINCE}, so a user-scope \
+             request made over it would be resolved against the runtime's own $HOME rather than yours"
+        ),
+        remediation: format!(
+            "upgrade the running AASM runtime to one speaking DI-API \
+             {DI_API_USER_CONFIG_HOME_SINCE} or later, then retry; project and managed scope are \
              unaffected and work against this runtime as-is"
         ),
         min_supported: DI_API_MIN_SUPPORTED,
@@ -306,6 +354,16 @@ pub struct PlanRequest<'a> {
     /// defect in AAASM-5913, not a fallback. Pass `""` when there is none to
     /// state and expect a refusal, not a default, if the scope needed one.
     pub project_root: &'a str,
+    /// The caller's Claude Code configuration home — `$CLAUDE_CONFIG_DIR`, or
+    /// `$HOME/.claude` — resolved by the caller at invocation time, on the same
+    /// terms as `project_root` but for `user` scope (AAASM-5957).
+    ///
+    /// Mandatory at `user` scope: the service is shared and long-lived, so a
+    /// caller that does not say which configuration home it means leaves the
+    /// service with nothing to name but whichever `$HOME` it was spawned under —
+    /// the defect in AAASM-5957, not a fallback. Pass `""` when there is none to
+    /// state and expect a refusal, not a default, if the scope needed one.
+    pub user_config_home: &'a str,
 }
 
 /// Which installed integration a read-or-reverse invocation is about.
@@ -336,6 +394,22 @@ pub struct TargetRequest<'a> {
     /// apply, where nothing is installed yet. Either way a project-scope
     /// operation the caller cannot name is refused.
     pub project_root: &'a str,
+    /// The caller's Claude Code configuration home, or `""` when it has none
+    /// to state, on the same terms as `project_root` but for `user` scope
+    /// (AAASM-5957). Compared against the receipt, never resolved into a
+    /// destination — a user-scope operation the caller cannot name is refused.
+    pub user_config_home: &'a str,
+    /// What this caller stated about its own launch environment (AAASM-5993),
+    /// or `None` to state nothing.
+    ///
+    /// Names and presence only — see
+    /// [`CallerEnvironment`](aa_core::integration::CallerEnvironment)'s own
+    /// documentation for why a value can never reach this field. Needs no
+    /// DI-API version gate: unlike `project_root`, a peer that predates it
+    /// discards it on decode and falls back to the same "nothing stated"
+    /// reading a `None` here already produces — there is no false-claim-of-
+    /// safety direction for this field to be silently dropped into.
+    pub caller_env: Option<&'a aa_core::integration::CallerEnvironment>,
 }
 
 /// A connected, negotiated DI-API client.
@@ -512,6 +586,7 @@ impl DevIntClient {
     /// [`refuse_project_scope_below_v6`].
     pub async fn plan(&mut self, args: PlanRequest<'_>) -> Result<wire::PlanView, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, args.settings_scope)?;
+        refuse_user_scope_below_v7(self.negotiated.di_api_version, args.settings_scope)?;
         let mut request = self.request(DiVerb::Plan, args.tool_id);
         request.plan = Some(wire::PlanArgs {
             profile: args.profile.to_string(),
@@ -520,6 +595,7 @@ impl DevIntClient {
             allow_privileged_host_steps: args.allow_privileged_host_steps,
             policy_profile_id: args.policy_profile_id.to_string(),
             project_root: args.project_root.to_string(),
+            user_config_home: args.user_config_home.to_string(),
         });
         let response = self.call(request).await?;
         response.plan.ok_or(ClientError::UnexpectedFrame)
@@ -640,10 +716,21 @@ impl DevIntClient {
     /// branch by not trying.
     fn targeted(&self, verb: DiVerb, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::Request, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, target.settings_scope)?;
+        refuse_user_scope_below_v7(self.negotiated.di_api_version, target.settings_scope)?;
         let mut request = self.request(verb, tool_id);
+        let (caller_env_examined, caller_env_present) = match target.caller_env {
+            Some(env) => (
+                env.examined_names().map(str::to_string).collect(),
+                env.present_names().map(str::to_string).collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         request.target = Some(wire::TargetArgs {
             settings_scope: target.settings_scope.to_string(),
             project_root: target.project_root.to_string(),
+            user_config_home: target.user_config_home.to_string(),
+            caller_env_examined,
+            caller_env_present,
         });
         Ok(request)
     }
@@ -768,12 +855,21 @@ mod tests {
 
         let tool = claude_code_id();
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
+        // Mandatory at user scope, and an unspecified TargetRequest scope is
+        // treated as possibly-user (AAASM-5957) — a real path with an existing
+        // parent, since the server canonicalizes it for real.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
+        let target = || TargetRequest {
+            user_config_home: &home,
+            ..TargetRequest::default()
+        };
         let plan = client
             .plan(PlanRequest {
                 tool_id: &tool,
                 profile: "recommended",
                 settings_scope: "user",
                 policy_profile_id: "team-default",
+                user_config_home: &home,
                 ..PlanRequest::default()
             })
             .await
@@ -781,42 +877,23 @@ mod tests {
         assert_eq!(plan.plan_id, "plan-1");
         assert_eq!(
             client
-                .apply(&tool, &plan.plan_id, TargetRequest::default())
+                .apply(&tool, &plan.plan_id, target())
                 .await
                 .expect("apply")
                 .receipt_id,
             "receipt-1"
         );
         assert_eq!(
-            client
-                .status(&tool, TargetRequest::default())
-                .await
-                .expect("status")
-                .achieved_level,
+            client.status(&tool, target()).await.expect("status").achieved_level,
             "integrated"
         );
+        assert_eq!(client.verify(&tool, target()).await.expect("verify").outcome, "passed");
         assert_eq!(
-            client
-                .verify(&tool, TargetRequest::default())
-                .await
-                .expect("verify")
-                .outcome,
-            "passed"
-        );
-        assert_eq!(
-            client
-                .repair(&tool, TargetRequest::default())
-                .await
-                .expect("repair")
-                .repaired,
+            client.repair(&tool, target()).await.expect("repair").repaired,
             vec!["settings"]
         );
         assert_eq!(
-            client
-                .remove(&tool, "plan-1", TargetRequest::default())
-                .await
-                .expect("remove")
-                .plan_id,
+            client.remove(&tool, "plan-1", target()).await.expect("remove").plan_id,
             "removal-1"
         );
         assert_eq!(
@@ -839,12 +916,15 @@ mod tests {
         let server = TestServer::start(FakeLifecycle::default()).await;
         let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
         let mut client = connected(&server, Some(token.expose().to_string())).await;
+        // Mandatory at user scope (AAASM-5957); see the sibling test above.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
         let plan = client
             .plan(PlanRequest {
                 tool_id: &claude_code_id(),
                 profile: "recommended",
                 settings_scope: "user",
                 policy_profile_id: "team-default",
+                user_config_home: &home,
                 ..PlanRequest::default()
             })
             .await
@@ -855,6 +935,154 @@ mod tests {
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[1].managed_keys, vec!["ANTHROPIC_AUTH_TOKEN"]);
         server.shutdown().await;
+    }
+
+    /// AAASM-5993, over a real socket: a caller-stated environment sent by the
+    /// client is the same one the service receives, name for name.
+    ///
+    /// Goes through `targeted()`'s encode, the real codec, and
+    /// `server::build_target`'s decode — not a direct construction of
+    /// `LifecycleTarget` — so this is a statement about the wire, which
+    /// `FakeLifecycle::last_target` observes after decode.
+    #[tokio::test]
+    async fn a_caller_stated_environment_crosses_the_wire_intact() {
+        let server = TestServer::start(FakeLifecycle::default()).await;
+        let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
+        let mut client = connected(&server, Some(token.expose().to_string())).await;
+
+        let mut caller_env =
+            aa_core::integration::CallerEnvironment::stating(["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"]);
+        caller_env = caller_env.present("ANTHROPIC_BASE_URL");
+        // Mandatory at user scope, and an unspecified TargetRequest scope is
+        // treated as possibly-user (AAASM-5957) — a real path with an existing
+        // parent, since the server canonicalizes it for real.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
+
+        client
+            .status(
+                &claude_code_id(),
+                TargetRequest {
+                    user_config_home: &home,
+                    caller_env: Some(&caller_env),
+                    ..TargetRequest::default()
+                },
+            )
+            .await
+            .expect("status");
+
+        let received = server
+            .lifecycle()
+            .last_target()
+            .expect("status must have reached the service")
+            .caller_env
+            .expect("a caller-stated environment must decode to Some, never None");
+        assert_eq!(
+            received.state_of("ANTHROPIC_BASE_URL"),
+            aa_core::integration::EnvVarState::Set,
+            "examined-and-present must survive the round trip"
+        );
+        assert_eq!(
+            received.state_of("CLAUDE_CODE_USE_BEDROCK"),
+            aa_core::integration::EnvVarState::Unset,
+            "examined-and-absent must survive the round trip, not collapse into NotStated"
+        );
+        assert_eq!(
+            received.state_of("CLAUDE_CODE_USE_VERTEX"),
+            aa_core::integration::EnvVarState::NotStated,
+            "a name the caller never mentioned must stay NotStated, not default to Unset"
+        );
+        server.shutdown().await;
+    }
+
+    /// A `TargetRequest` with `caller_env: None` — the state of every client
+    /// that predates AAASM-5993, and of one that has nothing to state — decodes
+    /// to a `CallerEnvironment` where every name reads `NotStated`. This is
+    /// [`build_caller_env`](super::server::build_caller_env)'s empty-input case,
+    /// exercised over the real wire rather than by calling the function
+    /// directly, so a future change to the codec that stopped sending an empty
+    /// `TargetArgs` at all would still be caught here.
+    #[tokio::test]
+    async fn no_caller_statement_decodes_to_every_name_unstated() {
+        let server = TestServer::start(FakeLifecycle::default()).await;
+        let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
+        let mut client = connected(&server, Some(token.expose().to_string())).await;
+        // Mandatory at user scope, and an unspecified TargetRequest scope is
+        // treated as possibly-user (AAASM-5957) — a real path with an existing
+        // parent, since the server canonicalizes it for real.
+        let home = std::env::temp_dir().join(".claude").to_string_lossy().into_owned();
+
+        client
+            .status(
+                &claude_code_id(),
+                TargetRequest {
+                    user_config_home: &home,
+                    ..TargetRequest::default()
+                },
+            )
+            .await
+            .expect("status");
+
+        let received = server
+            .lifecycle()
+            .last_target()
+            .expect("status must have reached the service")
+            .caller_env
+            .expect("even a client stating nothing decodes to Some(empty), never None");
+        assert_eq!(
+            received.state_of("ANTHROPIC_BASE_URL"),
+            aa_core::integration::EnvVarState::NotStated
+        );
+        server.shutdown().await;
+    }
+
+    /// A real value behind a watched name — set in this process's actual
+    /// environment, the same source `aa-cli`'s `caller_launch_environment`
+    /// reads — never reaches the bytes `targeted()` builds, even though the
+    /// name it is set under does.
+    ///
+    /// `#[serial]`-free because nextest runs each test in its own process; a
+    /// libtest binary run without nextest would race this against any other
+    /// test touching `ANTHROPIC_BASE_URL`, which is why every other test in
+    /// this workspace that needs a real env mutation documents the same
+    /// reliance on process-per-test isolation rather than adding its own lock.
+    #[tokio::test]
+    async fn targeted_never_encodes_the_value_behind_a_watched_name() {
+        // SAFETY (in the "this is a deliberate, test-scoped mutation" sense,
+        // not unsafe code): nextest gives this test its own process, so no
+        // other test observes this.
+        std::env::set_var("ANTHROPIC_BASE_URL", LEAK_SENTINEL);
+        let mut caller_env = aa_core::integration::CallerEnvironment::stating(["ANTHROPIC_BASE_URL"]);
+        if std::env::var_os("ANTHROPIC_BASE_URL").is_some() {
+            caller_env = caller_env.present("ANTHROPIC_BASE_URL");
+        }
+        let request = wire::Request {
+            request_id: 1,
+            verb: DiVerb::Status as i32,
+            capability_token: String::new(),
+            tool_id: "claude-code".to_string(),
+            plan: None,
+            apply: None,
+            remove: None,
+            events: None,
+            approval: None,
+            target: Some(wire::TargetArgs {
+                settings_scope: String::new(),
+                project_root: String::new(),
+                user_config_home: String::new(),
+                caller_env_examined: caller_env.examined_names().map(str::to_string).collect(),
+                caller_env_present: caller_env.present_names().map(str::to_string).collect(),
+            }),
+        };
+        let encoded = format!("{request:?}");
+        assert!(
+            encoded.contains("ANTHROPIC_BASE_URL"),
+            "the name must cross — otherwise this test proves nothing"
+        );
+        assert!(
+            !encoded.contains(LEAK_SENTINEL),
+            "the real value behind the name must never appear in the encoded request: {encoded}"
+        );
+        std::env::remove_var("ANTHROPIC_BASE_URL");
     }
 
     #[tokio::test]

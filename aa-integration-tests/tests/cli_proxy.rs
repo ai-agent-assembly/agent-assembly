@@ -331,16 +331,16 @@ fn proxy_status_stale_pid_cleans_up() {
 
 // ─────────────────────────────────────── start (needs aa-proxy binary) ───────
 
-/// Returns `true` when the `aa-proxy` binary can be located on the ambient
-/// `PATH`/`HOME` (i.e. `resolve_binary()` in `start.rs` would succeed here).
+/// Returns `true` when the `aa-proxy` binary can be located via `which` or
+/// `~/.cargo/bin` — the two `PATH`/`HOME`-scrubbable legs of
+/// `resolve_binary()` in `start.rs` (see `gateway_binary_available` in
+/// `cli_gateway.rs`, the AAASM-5937 precedent for this pattern).
 ///
-/// Mirrors `aa_cli::commands::proxy::start::resolve_binary`'s search order —
-/// `which aa-proxy` then `~/.cargo/bin/aa-proxy` — so this guard cannot drift
-/// from what the CLI under test actually does (see `gateway_binary_available`
-/// in `cli_gateway.rs`, the AAASM-5937 precedent for this pattern). AAASM-4020
-/// dropped the `./target/release/aa-proxy` cwd-relative fallback from
-/// `resolve_binary()`; a workspace `target/` build no longer affects
-/// resolution at all, so this guard must not consult any `target/` path.
+/// Deliberately not the whole of `resolve_binary()`: since AAASM-5982 (ADR
+/// 0030 §6.4) it also checks beside the running `aasm` executable first, and
+/// that leg is not `PATH`/`HOME`-scrubbable — it depends on which profile has
+/// been built under `target/`, which `proxy_start_exits_failure_when_binary_not_found`
+/// checks separately, honoring `CARGO_TARGET_DIR`.
 fn proxy_binary_available() -> bool {
     #[cfg(unix)]
     {
@@ -365,12 +365,41 @@ fn proxy_binary_available() -> bool {
 
 #[test]
 fn proxy_start_exits_failure_when_binary_not_found() {
+    // `resolve_binary()` in start.rs also checks `which`/`~/.cargo/bin`
+    // (AAASM-5974) and, since AAASM-5982 (ADR 0030 section 6.4), prefers the
+    // `aa-proxy` sitting beside the running `aasm` executable before either.
+    // `cmd()` without `AASM_BIN_PATH` runs `aasm` via
+    // `cargo run -p aa-cli --bin aasm --`, so the executable actually spawned
+    // is `target/{debug,release}/aasm`, and if a same-profile `aa-proxy` was
+    // already built it sits right beside it — no `$PATH`/`HOME` scrubbing can
+    // hide that. Skip gracefully rather than false-fail on a machine where
+    // any of these is already satisfied.
     if proxy_binary_available() {
         eprintln!(
             "proxy_start_exits_failure_when_binary_not_found: skipping — \
              aa-proxy resolvable via `which`/~/.cargo/bin on this host"
         );
         return;
+    }
+    // Honor CARGO_TARGET_DIR (this repo's shared-target convention) — a
+    // profile check against `<workspace>/target` would silently miss a
+    // sibling that actually landed under a redirected target dir.
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("workspace parent")
+                .join("target")
+        });
+    for profile in ["debug", "release"] {
+        if target_root.join(profile).join("aa-proxy").exists() {
+            eprintln!(
+                "proxy_start_exits_failure_when_binary_not_found: skipping — \
+                 {profile} build exists beside the aasm executable this test spawns"
+            );
+            return;
+        }
     }
 
     let fixture = ProxyFixture::new();
@@ -379,7 +408,7 @@ fn proxy_start_exits_failure_when_binary_not_found() {
     let out = fixture
         .cmd()
         .args(["proxy", "start", "--listen", &format!("127.0.0.1:{port}")])
-        // Strip only the aa-proxy dir so `which aa-proxy` fails; keep
+        // Strip only the aa-proxy dir so the `$PATH` walk fails; keep
         // cargo/rustc accessible so `cargo run` can still compile aa-cli.
         // Override HOME so ~/.cargo/bin/aa-proxy is also absent.
         .env("PATH", path_without_proxy_dir())

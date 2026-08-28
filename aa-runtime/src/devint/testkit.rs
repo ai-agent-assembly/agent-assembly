@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tokio::io::{BufReader, BufWriter};
@@ -76,6 +76,11 @@ pub struct FakeLifecycle {
     behaviour: Behaviour,
     mutation: ApplyMutation,
     calls: AtomicUsize,
+    /// The `LifecycleTarget` the most recent `status`/`verify` call arrived
+    /// with — AAASM-5993's wire-round-trip proof needs to see what actually
+    /// reached the service after `Request` → `build_target` decode, not just
+    /// what the client sent.
+    last_target: Mutex<Option<LifecycleTarget>>,
 }
 
 /// `Changed` rather than a derived default.
@@ -89,6 +94,7 @@ impl Default for FakeLifecycle {
             behaviour: Behaviour::default(),
             mutation: ApplyMutation::Changed,
             calls: AtomicUsize::new(0),
+            last_target: Mutex::new(None),
         }
     }
 }
@@ -120,6 +126,12 @@ impl FakeLifecycle {
     /// refused request never reached the port at all.
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
+    }
+
+    /// The `LifecycleTarget` the most recent `status` or `verify` call
+    /// received, after `Request` → `TargetArgs` → `build_target` decode.
+    pub fn last_target(&self) -> Option<LifecycleTarget> {
+        self.last_target.lock().expect("lock poisoned").clone()
     }
 
     fn enter(&self) -> Result<(), LifecycleError> {
@@ -267,17 +279,19 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         self.enter()?;
+        *self.last_target.lock().expect("lock poisoned") = Some(target.clone());
         Ok(fake_status(tool))
     }
 
     async fn verify(
         &self,
         _tool: &DevToolKind,
-        _target: &LifecycleTarget,
+        target: &LifecycleTarget,
     ) -> Result<VerificationResult, LifecycleError> {
         self.enter()?;
+        *self.last_target.lock().expect("lock poisoned") = Some(target.clone());
         Ok(VerificationResult {
             verified_at_unix_secs: 1_700_000_000,
             outcome: VerificationOutcome::Passed,
@@ -560,6 +574,12 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             // User scope, so no project is named — the field is only mandatory
             // at project scope (AAASM-5913).
             project_root: String::new(),
+            // Mandatory at user scope (AAASM-5957). `parse_user_config_home`
+            // requires the *parent* of this path to exist for real (so a
+            // first install can create the leaf) — `/tmp` is guaranteed to,
+            // unlike an arbitrary synthetic path this generic builder has no
+            // real caller environment to derive one from.
+            user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),
@@ -576,8 +596,19 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             user_input: "approve".to_string(),
         }),
         // The fixture's receipts are user-scoped, so a plain request names no
-        // project and needs no target; a test about project scope builds one.
-        target: None,
+        // project — but a user configuration home is mandatory the moment the
+        // effective scope is user, and an absent target defaults to that
+        // scope (AAASM-5957), so this can no longer stay `None`. `FakeLifecycle`
+        // ignores a target's content once parsed, so only the request-parsing
+        // boundary (a real, existing parent directory) has to be satisfied
+        // here, not a value matching any particular fixture.
+        target: Some(wire::TargetArgs {
+            settings_scope: "user".to_string(),
+            project_root: String::new(),
+            user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
+            caller_env_examined: Vec::new(),
+            caller_env_present: Vec::new(),
+        }),
     }
 }
 

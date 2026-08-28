@@ -28,9 +28,10 @@ import {
   DevIntClient,
   DI_API_MIN_SUPPORTED,
   DI_API_PROJECT_ROOT_SINCE,
+  DI_API_USER_CONFIG_HOME_SINCE,
 } from '../src/client.js';
 import { CapabilityToken } from '../src/credential.js';
-import { DeniedError, ProjectRootUnsupportedError } from '../src/errors.js';
+import { DeniedError, ProjectRootUnsupportedError, UserConfigHomeUnsupportedError } from '../src/errors.js';
 import { TAG_DENIED, TAG_HELLO, TAG_HELLO_ACK, TAG_REQUEST } from '../src/framing.js';
 import {
   DeniedSchema,
@@ -183,7 +184,12 @@ describe('a runtime older than the project root field', () => {
       try {
         expect(client.negotiated.diApiVersion).toBe(version);
         const refused = await client
-          .plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '/workspace/repo' })
+          .plan(CLAUDE, {
+            profile: 'recommended',
+            settingsScope: 'project',
+            projectRoot: '/workspace/repo',
+            userConfigHome: '',
+          })
           .then(
             () => null,
             (error: unknown) => error,
@@ -200,17 +206,81 @@ describe('a runtime older than the project root field', () => {
     }
   });
 
-  it('still writes the request at user and managed scope, which name no destination', async () => {
-    for (const settingsScope of ['user', 'managed']) {
-      const version = DI_API_PROJECT_ROOT_SINCE - 1;
-      const runtime = await startOlderRuntime(join(scratch, `${settingsScope}.sock`), version);
+  it('still writes the request at managed scope, which names no destination', async () => {
+    // 'user' dropped from this sweep (AAASM-5957): user scope now has its own
+    // gate at DI_API_USER_CONFIG_HOME_SINCE, tested separately below —
+    // asserting it "still writes" here would just be asserting the older
+    // ticket's premise, not this one's.
+    const version = DI_API_PROJECT_ROOT_SINCE - 1;
+    const runtime = await startOlderRuntime(join(scratch, 'managed.sock'), version);
+    const client = await DevIntClient.connect(runtime.socket, IDENTITY, TOKEN);
+    try {
+      await expect(
+        client.plan(CLAUDE, {
+          profile: 'recommended',
+          settingsScope: 'managed',
+          projectRoot: '',
+          userConfigHome: '',
+        }),
+      ).rejects.toBeInstanceOf(DeniedError);
+      // Reached the socket. The refusal came from the peer, so the gate did
+      // not quietly widen into "no plan below v6".
+      expect(runtime.received).toEqual([TAG_REQUEST]);
+    } finally {
+      client.close();
+      await runtime.stop();
+    }
+  });
+});
+
+describe('a runtime older than the configuration-home field (AAASM-5957)', () => {
+  it('is refused at user scope before a single byte of the plan is written', async () => {
+    // Every version below the gate, mirroring the project-root sweep above —
+    // including the versions at and above DI_API_PROJECT_ROOT_SINCE, since
+    // this gate is strictly newer and a peer that speaks project_root may
+    // still predate user_config_home.
+    for (let version = DI_API_MIN_SUPPORTED; version < DI_API_USER_CONFIG_HOME_SINCE; version += 1) {
+      const runtime = await startOlderRuntime(join(scratch, `uch-v${version}.sock`), version);
+      const client = await DevIntClient.connect(runtime.socket, IDENTITY, TOKEN);
+      try {
+        expect(client.negotiated.diApiVersion).toBe(version);
+        const refused = await client
+          .plan(CLAUDE, {
+            profile: 'recommended',
+            settingsScope: 'user',
+            projectRoot: '',
+            userConfigHome: '/home/example/.claude',
+          })
+          .then(
+            () => null,
+            (error: unknown) => error,
+          );
+        expect(refused).toBeInstanceOf(UserConfigHomeUnsupportedError);
+        // As above: an ignored home and an unsent one decode identically, so
+        // "no request arrived" is the only observation that separates the fix
+        // from the defect.
+        expect(runtime.received).toEqual([]);
+      } finally {
+        client.close();
+        await runtime.stop();
+      }
+    }
+  });
+
+  it('still writes the request at project and managed scope, which name no destination', async () => {
+    for (const settingsScope of ['project', 'managed']) {
+      const version = DI_API_USER_CONFIG_HOME_SINCE - 1;
+      const runtime = await startOlderRuntime(join(scratch, `uch-${settingsScope}.sock`), version);
       const client = await DevIntClient.connect(runtime.socket, IDENTITY, TOKEN);
       try {
         await expect(
-          client.plan(CLAUDE, { profile: 'recommended', settingsScope, projectRoot: '' }),
+          client.plan(CLAUDE, {
+            profile: 'recommended',
+            settingsScope,
+            projectRoot: settingsScope === 'project' ? '/workspace/repo' : '',
+            userConfigHome: '',
+          }),
         ).rejects.toBeInstanceOf(DeniedError);
-        // Reached the socket. The refusal came from the peer, so the gate did
-        // not quietly widen into "no plan below v6".
         expect(runtime.received).toEqual([TAG_REQUEST]);
       } finally {
         client.close();

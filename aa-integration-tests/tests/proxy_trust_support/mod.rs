@@ -131,6 +131,30 @@ pub fn codex_tls_client_binary() -> PathBuf {
     build_example("aa-integration-tests", "codex_tls_client")
 }
 
+/// A copy of [`aasm_binary`] in `dir`, alone — nothing else beside it.
+///
+/// `resolve_binary` (`aa-cli/src/commands/proxy/start.rs`) checks beside the
+/// running `aasm` executable's own directory *before* `PATH`, and
+/// [`aasm_binary`] is the real, pre-built `target/debug/aasm` — which sits
+/// next to a real, pre-built `target/debug/aa-proxy` the moment any other
+/// test in the same binary calls [`aa_proxy_binary`]. A caller that wants to
+/// prove a launch refuses when it genuinely cannot resolve a proxy has to run
+/// a copy with no real sibling to find, or the refusal it means to measure
+/// never happens (AAASM-5982).
+pub fn aasm_without_proxy_sibling(dir: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let alone = dir.join("aasm");
+    std::fs::copy(aasm_binary(), &alone)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&alone)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&alone, perms)?;
+    }
+    Ok(alone)
+}
+
 fn explicit_binary(var: &str) -> Option<PathBuf> {
     let explicit = std::env::var_os(var)?;
     Some(std::fs::canonicalize(&explicit).unwrap_or_else(|e| panic!("{var}={explicit:?} could not be resolved: {e}")))
@@ -224,10 +248,21 @@ impl TrustedProxy {
     /// module docs for what is and is not production code in it.
     ///
     /// It is copied to a file named `aa-proxy` because `aasm proxy start`
-    /// resolves the binary with `which aa-proxy` and the trust check requires
-    /// the recorded executable to carry that name. **That check is therefore not
-    /// under test through this constructor** — `cli_run_trusted_proxy.rs`
-    /// measures it against the genuine binary, and nothing here relaxes it.
+    /// resolves the binary with [`aa_core::binary_resolve::resolve_binary`]
+    /// (AAASM-5982), which the trust check requires to carry that name.
+    /// **That check is therefore not under test through this constructor** —
+    /// `cli_run_trusted_proxy.rs` measures it against the genuine binary, and
+    /// nothing here relaxes it.
+    ///
+    /// Since AAASM-5982 that resolver prefers a binary sitting next to the
+    /// running executable over anything on `$PATH` (ADR 0030 §6.4), so this
+    /// spawns a **copy of `aasm` placed in the same directory as the copied
+    /// `aa-proxy` stand-in**, not the genuine `aasm` from `target/debug`. A
+    /// genuine `aa-proxy` built by an earlier test in the same run also lives
+    /// in `target/debug`, next to the genuine `aasm`; spawning the real
+    /// `aasm` would let sibling resolution find that real `aa-proxy` before
+    /// `$PATH` is even consulted, so the mock upstream would never see the
+    /// traffic under test (AAASM-5982 CI failure).
     ///
     /// `ca_dir` is the caller's so the certificate authority the mock's leaf is
     /// signed by, the one the proxy issues MitM leaves from, and the one the
@@ -247,7 +282,6 @@ impl TrustedProxy {
     ) -> anyhow::Result<Self> {
         use std::os::unix::fs::PermissionsExt;
 
-        let aasm = aasm_binary();
         let built = proxy_with_mock_upstream_binary();
 
         let tmp = tempfile::tempdir()?;
@@ -260,6 +294,17 @@ impl TrustedProxy {
         let proxy_bin = proxy_bin_dir.join("aa-proxy");
         std::fs::copy(&built, &proxy_bin)?;
         std::fs::set_permissions(&proxy_bin, std::fs::Permissions::from_mode(0o755))?;
+
+        // Copied into the same directory as the mock `aa-proxy` above so
+        // `aa_core::binary_resolve::resolve_binary`'s exe-sibling search (the
+        // first thing it tries, ahead of `$PATH`) finds *this* `aa-proxy`
+        // rather than a genuine one another test in the run may have built
+        // next to the real `aasm` in `target/debug` — see the doc comment on
+        // this function.
+        let aasm_src = aasm_binary();
+        let aasm = proxy_bin_dir.join("aasm");
+        std::fs::copy(&aasm_src, &aasm)?;
+        std::fs::set_permissions(&aasm, std::fs::Permissions::from_mode(0o755))?;
 
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -322,6 +367,27 @@ impl TrustedProxy {
     /// The `AA_DATA_DIR` to hand to any `aasm` process that must see this proxy.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The `aasm` binary a caller should spawn for a **second, dedicated**
+    /// launch (`aasm run <tool>`) that must resolve its own per-launch
+    /// `aa-proxy` (AAASM-5863) to the same mock stand-in this instance
+    /// started with, rather than the genuine `aa-proxy` next to
+    /// [`aasm_binary`] in `target/debug`.
+    ///
+    /// For a [`start_intercepting`](Self::start_intercepting) instance this
+    /// is a copy of `aasm` placed beside the mock `aa-proxy` in
+    /// [`proxy_bin_dir`](Self::proxy_bin_dir), so
+    /// `aa_core::binary_resolve::resolve_binary`'s exe-sibling search — which
+    /// wins over `$PATH` (AAASM-5982, ADR 0030 §6.4) — finds the mock there
+    /// too. Putting `proxy_bin_dir()` on that second launch's `$PATH` alone
+    /// is not sufficient post-AAASM-5982: sibling resolution is consulted
+    /// first, so a real `aa-proxy` built by another test earlier in the same
+    /// run and sitting next to the real `aasm` would still win the race. For
+    /// a [`start`](Self::start) instance (no mock involved) this is simply
+    /// the real `aasm` binary.
+    pub fn aasm(&self) -> &Path {
+        &self.aasm
     }
 
     /// `host:port` the proxy is listening on.

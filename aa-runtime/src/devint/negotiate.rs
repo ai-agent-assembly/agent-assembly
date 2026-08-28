@@ -79,7 +79,12 @@ pub const DI_API_MIN_SUPPORTED: u32 = 1;
 /// absent on the side that would have to notice. So v6 is gated by comparing
 /// versions before the request is sent, not by testing a field after it
 /// arrives.
-pub const DI_API_MAX_SUPPORTED: u32 = 6;
+/// v7 adds `PlanRequest.user_config_home` / `TargetRequest.user_config_home`
+/// ([`DI_API_USER_CONFIG_HOME_SINCE`]) — the same shape of addition as v6, one
+/// version later, for the User-scope destination rather than the Project one
+/// (AAASM-5957). The reasoning above for why the gate lives at the call site
+/// applies unchanged.
+pub const DI_API_MAX_SUPPORTED: u32 = 7;
 
 /// The first DI-API version whose `status` and `verify` carry a policy posture.
 ///
@@ -128,6 +133,25 @@ pub const DI_API_APPLY_OUTCOME_SINCE: u32 = 5;
 /// than send a root and hope; the other two scopes are unaffected, because
 /// their destinations were never the caller's to name.
 pub const DI_API_PROJECT_ROOT_SINCE: u32 = 6;
+
+/// The first DI-API version whose requests honour a caller-chosen User-scope
+/// configuration home.
+///
+/// The same promise as [`DI_API_PROJECT_ROOT_SINCE`], one scope over: it
+/// covers `PlanArgs.user_config_home` and `TargetArgs.user_config_home`
+/// together, `plan` uses it to *choose* the configuration home it writes,
+/// the read/reverse verbs use it to *confirm* the home they were asked about
+/// is the one the receipt records.
+///
+/// Below this, the absence of `PlanRequest.user_config_home` on the wire means
+/// the peer **will substitute its own `$CLAUDE_CONFIG_DIR`/`$HOME`** — not
+/// that it will ask, and not that it will refuse. Same undetectable-discard
+/// reasoning as [`DI_API_PROJECT_ROOT_SINCE`]: proto3 drops the unknown field
+/// before any handler sees it, so a client below this version must refuse
+/// User scope (and an unspecified `settings_scope`, since that means "the one
+/// installation that exists" and may turn out to be User-scoped) rather than
+/// send the field and hope (AAASM-5957).
+pub const DI_API_USER_CONFIG_HOME_SINCE: u32 = 7;
 
 /// Verbs that did not exist at DI-API v1.
 ///
@@ -456,11 +480,13 @@ mod tests {
 
     #[test]
     fn a_client_newer_than_the_runtime_is_told_to_update_the_runtime() {
-        let outcome = negotiate(&hello(&[7, 8]));
+        // AAASM-5957 raised DI_API_MAX_SUPPORTED to 7; [7, 8] would now
+        // straddle the window rather than sit entirely above it.
+        let outcome = negotiate(&hello(&[8, 9]));
         let Negotiation::Incompatible(error) = &outcome else {
             panic!("expected Incompatible, got {outcome:?}");
         };
-        assert_eq!(*error, NegotiationError::AboveCeiling { client_lowest: 7 });
+        assert_eq!(*error, NegotiationError::AboveCeiling { client_lowest: 8 });
         let incompatible = to_wire(&outcome, &RuntimeProvenance::detect()).expect_err("incompatible");
         assert!(incompatible.remediation.contains("runtime"));
     }

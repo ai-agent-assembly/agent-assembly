@@ -26,5 +26,7 @@ pub mod policy;
 pub mod privilege;
 pub mod redaction_telemetry_client;
 pub mod runtime;
+#[cfg(test)]
+mod test_env;
 
 pub use runtime::run;

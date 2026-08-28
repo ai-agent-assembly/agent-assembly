@@ -324,6 +324,24 @@ impl IntegrationReceipt {
         self.settings_file_path()?.parent()?.parent()
     }
 
+    /// The configuration home a [`User`](SettingsScope::User)-scoped install
+    /// wrote into, derived from the settings file it recorded (AAASM-5957).
+    ///
+    /// Same reasoning as [`project_root`](Self::project_root): derived rather
+    /// than stored, so a receipt cannot claim a configuration home its own
+    /// step disagrees with, and so its serialized form and integrity hash stay
+    /// unchanged. `<home>/settings.json` ⇒ `<home>` — one `parent()` rather
+    /// than project's two, because a User-scope settings path has no `.claude`
+    /// component to skip past: `user_config_home` already names that
+    /// directory directly. `None` when this is not a user-scoped receipt, or
+    /// when its settings step never applied.
+    pub fn user_config_home(&self) -> Option<&Path> {
+        if self.settings_scope != SettingsScope::User {
+            return None;
+        }
+        self.settings_file_path()?.parent()
+    }
+
     /// The runtime or gateway endpoint the applied steps pointed the tool at,
     /// when one was.
     ///

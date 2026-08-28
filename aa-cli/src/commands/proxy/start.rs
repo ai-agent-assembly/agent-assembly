@@ -89,36 +89,27 @@ fn default_log_path() -> PathBuf {
         .join("proxy.log")
 }
 
-/// Resolve the aa-proxy binary by trying, in order:
-/// 1. `which aa-proxy` (checks PATH)
-/// 2. `~/.cargo/bin/aa-proxy`
+/// Resolve the `aa-proxy` binary.
 ///
-/// The former `./target/release/aa-proxy` cwd-relative fallback was dropped
-/// (AAASM-4020): resolving a binary relative to the current working directory
-/// lets whoever controls where `aasm` is invoked substitute an attacker-planted
-/// `aa-proxy`. Only trusted, absolute locations (PATH, the cargo bin dir) are
-/// honored.
+/// Search order: directory of the running `aasm` executable → directories in
+/// `$PATH` (absolute entries only) → `~/.cargo/bin/aa-proxy`. Every candidate
+/// is an absolute location derived from the *installation*, never from the
+/// current working directory.
+///
+/// Delegates to [`aa_core::binary_resolve::resolve_binary`] — the same
+/// resolver `aa-runtime`'s proxy spawn and platform probe use (AAASM-5982),
+/// so `aasm proxy start`, an auto-started proxy, and a probe can never
+/// disagree about which `aa-proxy` is present. The exe-dir lookup is first so
+/// a release / Homebrew install — where `aa-proxy` ships alongside `aasm` in
+/// the same directory — works even when that directory is not on `$PATH`, and
+/// so a `$PATH` hit from some other installation never shadows the sibling
+/// shipped with this `aasm` (ADR 0030 §6.4).
+///
+/// There is no `./target/...` cwd-relative fallback: resolving a binary
+/// relative to the current working directory lets whoever controls where
+/// `aasm` is invoked substitute an attacker-planted `aa-proxy` (AAASM-4020).
 pub fn resolve_binary() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        if let Ok(out) = std::process::Command::new("which").arg("aa-proxy").output() {
-            if out.status.success() {
-                let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        let cargo_bin = home.join(".cargo").join("bin").join("aa-proxy");
-        if cargo_bin.exists() {
-            return Some(cargo_bin);
-        }
-    }
-
-    None
+    aa_core::binary_resolve::resolve_binary("aa-proxy")
 }
 
 /// Build the environment overrides applied to the spawned `aa-proxy` child.
@@ -203,8 +194,8 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let Some(binary) = resolve_binary() else {
         eprintln!(
             "error: aa-proxy binary not found.\n\
-             Install with `cargo install aa-proxy` or ensure it is on PATH \
-             or in ~/.cargo/bin."
+             Install with `cargo install aa-proxy` or ensure it is beside the \
+             `aasm` executable, on PATH, or in ~/.cargo/bin."
         );
         return ExitCode::FAILURE;
     };

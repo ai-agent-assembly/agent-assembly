@@ -95,7 +95,7 @@ use aa_core::integration::{
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
-use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle, LifecycleTarget};
+use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle};
 use conformance_support::{ConformanceHarness, Measurement, SYNTHETIC_SECRET};
 use spike_support::proxy_harness::{drive_direct, drive_emulated_client};
 use spike_support::{assert_recorded_and_secret_absent, assert_recorded_and_secret_present, AnthropicMock};
@@ -153,7 +153,7 @@ async fn install_is_idempotent_and_records_a_receipt() -> anyhow::Result<()> {
     // ── install ────────────────────────────────────────────────────────────
     let applied = h
         .service()
-        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(&h.tool(), &plan.plan_id, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let receipt = applied.receipt;
@@ -821,7 +821,7 @@ async fn an_unmanaged_launch_is_unprotected_and_reported_as_a_bypass() -> anyhow
     h.write_settings("{}");
     let plan = h.plan(ProtectionProfile::Recommended).await?;
     h.service()
-        .apply(&h.tool(), &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(&h.tool(), &plan.plan_id, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -895,11 +895,14 @@ async fn a_tool_upgrade_is_a_migration_and_an_unsupported_version_is_refused() -
     // ── incompatibility ────────────────────────────────────────────────────
     let too_old = h.service_reporting_version("0.9.9");
     let refused = too_old
-        .plan(aa_core::integration::IntegrationRequest::new(
-            h.tool(),
-            ProtectionProfile::Recommended,
-            SettingsScope::User,
-        ))
+        .plan(
+            aa_core::integration::IntegrationRequest::new(
+                h.tool(),
+                ProtectionProfile::Recommended,
+                SettingsScope::User,
+            )
+            .with_user_config_home(h.user_config_home()),
+        )
         .await;
     assert!(
         refused.is_err(),
@@ -1113,6 +1116,11 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     let h = ConformanceHarness::start().await?;
     h.write_settings("{}");
     h.install(ProtectionProfile::Recommended).await?;
+    // Mandatory at user scope now that the service no longer infers it from
+    // its own environment (AAASM-5957) — including for an unspecified scope,
+    // which may turn out to be the user-scope installation this harness set
+    // up above.
+    let home = h.user_config_home().to_str().expect("utf-8 tempdir").to_string();
 
     let dir = tempfile::tempdir()?;
     let socket = dir.path().join("devint.sock");
@@ -1172,6 +1180,7 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
                         tool_id: "claude-code",
                         profile: "recommended",
                         settings_scope: "user",
+                        user_config_home: &home,
                         ..Default::default()
                     })
                     .await
@@ -1180,18 +1189,41 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
             (
                 "apply",
                 client
-                    .apply("claude-code", "any-plan", TargetRequest::default())
+                    .apply(
+                        "claude-code",
+                        "any-plan",
+                        TargetRequest {
+                            user_config_home: &home,
+                            ..TargetRequest::default()
+                        },
+                    )
                     .await
                     .err(),
             ),
             (
                 "repair",
-                client.repair("claude-code", TargetRequest::default()).await.err(),
+                client
+                    .repair(
+                        "claude-code",
+                        TargetRequest {
+                            user_config_home: &home,
+                            ..TargetRequest::default()
+                        },
+                    )
+                    .await
+                    .err(),
             ),
             (
                 "remove",
                 client
-                    .remove("claude-code", "any-plan", TargetRequest::default())
+                    .remove(
+                        "claude-code",
+                        "any-plan",
+                        TargetRequest {
+                            user_config_home: &home,
+                            ..TargetRequest::default()
+                        },
+                    )
                     .await
                     .err(),
             ),
@@ -1210,7 +1242,16 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        reader.status("claude-code", TargetRequest::default()).await.is_ok(),
+        reader
+            .status(
+                "claude-code",
+                TargetRequest {
+                    user_config_home: &home,
+                    ..TargetRequest::default()
+                },
+            )
+            .await
+            .is_ok(),
         "a read-only token must still be able to read status"
     );
     let mut stranger = DevIntClient::connect(
@@ -1221,15 +1262,42 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert!(
-        stranger.status("claude-code", TargetRequest::default()).await.is_err(),
+        stranger
+            .status(
+                "claude-code",
+                TargetRequest {
+                    user_config_home: &home,
+                    ..TargetRequest::default()
+                },
+            )
+            .await
+            .is_err(),
         "a token scoped to another tool must not read this one's status"
     );
 
     // A connection with no token at all is denied every verb, with no anonymous
     // tier to fall back to.
     let mut anonymous = DevIntClient::connect(&socket, "conformance", env!("CARGO_PKG_VERSION"), None).await?;
-    assert!(anonymous.status("claude-code", TargetRequest::default()).await.is_err());
-    assert!(anonymous.repair("claude-code", TargetRequest::default()).await.is_err());
+    assert!(anonymous
+        .status(
+            "claude-code",
+            TargetRequest {
+                user_config_home: &home,
+                ..TargetRequest::default()
+            },
+        )
+        .await
+        .is_err());
+    assert!(anonymous
+        .repair(
+            "claude-code",
+            TargetRequest {
+                user_config_home: &home,
+                ..TargetRequest::default()
+            },
+        )
+        .await
+        .is_err());
 
     shutdown.cancel();
     let _ = serving.await;
