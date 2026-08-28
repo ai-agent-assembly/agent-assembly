@@ -336,6 +336,17 @@ pub struct TargetRequest<'a> {
     /// apply, where nothing is installed yet. Either way a project-scope
     /// operation the caller cannot name is refused.
     pub project_root: &'a str,
+    /// What this caller stated about its own launch environment (AAASM-5993),
+    /// or `None` to state nothing.
+    ///
+    /// Names and presence only — see
+    /// [`CallerEnvironment`](aa_core::integration::CallerEnvironment)'s own
+    /// documentation for why a value can never reach this field. Needs no
+    /// DI-API version gate: unlike `project_root`, a peer that predates it
+    /// discards it on decode and falls back to the same "nothing stated"
+    /// reading a `None` here already produces — there is no false-claim-of-
+    /// safety direction for this field to be silently dropped into.
+    pub caller_env: Option<&'a aa_core::integration::CallerEnvironment>,
 }
 
 /// A connected, negotiated DI-API client.
@@ -641,9 +652,18 @@ impl DevIntClient {
     fn targeted(&self, verb: DiVerb, tool_id: &str, target: TargetRequest<'_>) -> Result<wire::Request, ClientError> {
         refuse_project_scope_below_v6(self.negotiated.di_api_version, target.settings_scope)?;
         let mut request = self.request(verb, tool_id);
+        let (caller_env_examined, caller_env_present) = match target.caller_env {
+            Some(env) => (
+                env.examined_names().map(str::to_string).collect(),
+                env.present_names().map(str::to_string).collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
         request.target = Some(wire::TargetArgs {
             settings_scope: target.settings_scope.to_string(),
             project_root: target.project_root.to_string(),
+            caller_env_examined,
+            caller_env_present,
         });
         Ok(request)
     }
@@ -855,6 +875,138 @@ mod tests {
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[1].managed_keys, vec!["ANTHROPIC_AUTH_TOKEN"]);
         server.shutdown().await;
+    }
+
+    /// AAASM-5993, over a real socket: a caller-stated environment sent by the
+    /// client is the same one the service receives, name for name.
+    ///
+    /// Goes through `targeted()`'s encode, the real codec, and
+    /// `server::build_target`'s decode — not a direct construction of
+    /// `LifecycleTarget` — so this is a statement about the wire, which
+    /// `FakeLifecycle::last_target` observes after decode.
+    #[tokio::test]
+    async fn a_caller_stated_environment_crosses_the_wire_intact() {
+        let server = TestServer::start(FakeLifecycle::default()).await;
+        let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
+        let mut client = connected(&server, Some(token.expose().to_string())).await;
+
+        let mut caller_env =
+            aa_core::integration::CallerEnvironment::stating(["ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK"]);
+        caller_env = caller_env.present("ANTHROPIC_BASE_URL");
+
+        client
+            .status(
+                &claude_code_id(),
+                TargetRequest {
+                    caller_env: Some(&caller_env),
+                    ..TargetRequest::default()
+                },
+            )
+            .await
+            .expect("status");
+
+        let received = server
+            .lifecycle()
+            .last_target()
+            .expect("status must have reached the service")
+            .caller_env
+            .expect("a caller-stated environment must decode to Some, never None");
+        assert_eq!(
+            received.state_of("ANTHROPIC_BASE_URL"),
+            aa_core::integration::EnvVarState::Set,
+            "examined-and-present must survive the round trip"
+        );
+        assert_eq!(
+            received.state_of("CLAUDE_CODE_USE_BEDROCK"),
+            aa_core::integration::EnvVarState::Unset,
+            "examined-and-absent must survive the round trip, not collapse into NotStated"
+        );
+        assert_eq!(
+            received.state_of("CLAUDE_CODE_USE_VERTEX"),
+            aa_core::integration::EnvVarState::NotStated,
+            "a name the caller never mentioned must stay NotStated, not default to Unset"
+        );
+        server.shutdown().await;
+    }
+
+    /// A `TargetRequest` with `caller_env: None` — the state of every client
+    /// that predates AAASM-5993, and of one that has nothing to state — decodes
+    /// to a `CallerEnvironment` where every name reads `NotStated`. This is
+    /// [`build_caller_env`](super::server::build_caller_env)'s empty-input case,
+    /// exercised over the real wire rather than by calling the function
+    /// directly, so a future change to the codec that stopped sending an empty
+    /// `TargetArgs` at all would still be caught here.
+    #[tokio::test]
+    async fn no_caller_statement_decodes_to_every_name_unstated() {
+        let server = TestServer::start(FakeLifecycle::default()).await;
+        let (token, _) = server.enrol("reference-client", TokenScope::full_lifecycle(ToolScope::AllTools));
+        let mut client = connected(&server, Some(token.expose().to_string())).await;
+
+        client
+            .status(&claude_code_id(), TargetRequest::default())
+            .await
+            .expect("status");
+
+        let received = server
+            .lifecycle()
+            .last_target()
+            .expect("status must have reached the service")
+            .caller_env
+            .expect("even a client stating nothing decodes to Some(empty), never None");
+        assert_eq!(
+            received.state_of("ANTHROPIC_BASE_URL"),
+            aa_core::integration::EnvVarState::NotStated
+        );
+        server.shutdown().await;
+    }
+
+    /// A real value behind a watched name — set in this process's actual
+    /// environment, the same source `aa-cli`'s `caller_launch_environment`
+    /// reads — never reaches the bytes `targeted()` builds, even though the
+    /// name it is set under does.
+    ///
+    /// `#[serial]`-free because nextest runs each test in its own process; a
+    /// libtest binary run without nextest would race this against any other
+    /// test touching `ANTHROPIC_BASE_URL`, which is why every other test in
+    /// this workspace that needs a real env mutation documents the same
+    /// reliance on process-per-test isolation rather than adding its own lock.
+    #[tokio::test]
+    async fn targeted_never_encodes_the_value_behind_a_watched_name() {
+        // SAFETY (in the "this is a deliberate, test-scoped mutation" sense,
+        // not unsafe code): nextest gives this test its own process, so no
+        // other test observes this.
+        std::env::set_var("ANTHROPIC_BASE_URL", LEAK_SENTINEL);
+        let mut caller_env = aa_core::integration::CallerEnvironment::stating(["ANTHROPIC_BASE_URL"]);
+        if std::env::var_os("ANTHROPIC_BASE_URL").is_some() {
+            caller_env = caller_env.present("ANTHROPIC_BASE_URL");
+        }
+        let request = wire::Request {
+            request_id: 1,
+            verb: DiVerb::Status as i32,
+            capability_token: String::new(),
+            tool_id: "claude-code".to_string(),
+            plan: None,
+            apply: None,
+            remove: None,
+            events: None,
+            approval: None,
+            target: Some(wire::TargetArgs {
+                settings_scope: String::new(),
+                project_root: String::new(),
+                caller_env_examined: caller_env.examined_names().map(str::to_string).collect(),
+                caller_env_present: caller_env.present_names().map(str::to_string).collect(),
+            }),
+        };
+        let encoded = format!("{request:?}");
+        assert!(
+            encoded.contains("ANTHROPIC_BASE_URL"),
+            "the name must cross — otherwise this test proves nothing"
+        );
+        assert!(
+            !encoded.contains(LEAK_SENTINEL),
+            "the real value behind the name must never appear in the encoded request: {encoded}"
+        );
+        std::env::remove_var("ANTHROPIC_BASE_URL");
     }
 
     #[tokio::test]

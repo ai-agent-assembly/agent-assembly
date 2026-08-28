@@ -19,8 +19,22 @@
 //! permission rules are still written and still read back — but nothing can be
 //! concluded from them about what the tool will actually do. Absent readings
 //! only ever lower a state, which is the behaviour this needs.
+//!
+//! # Environment bypasses are caller-stated, never daemon-read (AAASM-5993)
+//!
+//! [`environment_bypasses`] takes a
+//! [`CallerEnvironment`](aa_devtool_contract::CallerEnvironment) rather than
+//! reading the process environment itself. The lifecycle service this runs inside is a
+//! long-lived daemon shared by every client on the host; its own process
+//! environment describes the daemon, not whichever caller's launch is being
+//! asked about. Reading it directly produced both directions of wrong answer —
+//! a bypassed caller with a clean daemon read as fully protected, and a clean
+//! caller with a daemon carrying one of the watched variables read as
+//! bypassed. A caller that states nothing produces
+//! [`EnvironmentBypassReport::unexamined`], never a clean bill of health: an
+//! absence of findings must never be confused with an absence of bypasses.
 
-use std::collections::BTreeMap;
+use aa_devtool_contract::{CallerEnvironment, EnvVarState};
 
 /// One known bypass, either observed on this host or documented as
 /// undemonstrable.
@@ -43,51 +57,15 @@ impl BypassFinding {
     }
 }
 
-/// The environment a launch would inherit, captured so detection is a pure
-/// function of its inputs rather than of the ambient process.
-#[derive(Debug, Clone, Default)]
-pub struct LaunchEnvironment {
-    vars: BTreeMap<String, String>,
-}
-
-impl LaunchEnvironment {
-    /// Capture the current process environment.
-    pub fn from_process() -> Self {
-        Self {
-            vars: BYPASS_ENV_VARS
-                .iter()
-                .filter_map(|name| {
-                    std::env::var(name)
-                        .ok()
-                        .filter(|v| !v.is_empty())
-                        .map(|v| ((*name).to_string(), v))
-                })
-                .collect(),
-        }
-    }
-
-    /// An environment with one variable set, for tests and for callers that
-    /// know what a child will inherit.
-    #[must_use]
-    pub fn with(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars.insert(name.into(), value.into());
-        self
-    }
-
-    fn get(&self, name: &str) -> Option<&str> {
-        self.vars.get(name).map(String::as_str)
-    }
-}
-
 /// Environment variables whose presence changes whether Claude Code is
 /// governed. Only names are read; a value is never echoed into a report.
-const BYPASS_ENV_VARS: [&str; 5] = [
-    "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_API_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "NODE_TLS_REJECT_UNAUTHORIZED",
-];
+///
+/// Re-exports `aa_core`'s copy (via `aa_devtool_contract`, this crate's usual
+/// path to `aa-core` types) rather than declaring its own — see that
+/// constant's doc comment for why the canonical list lives in `aa-core`
+/// (AAASM-5993: the DI-API client that states a caller's environment links
+/// `aa-core`, not this adapter crate).
+pub use aa_devtool_contract::KNOWN_LAUNCH_BYPASS_ENV_VARS as BYPASS_ENV_VARS;
 
 /// Command-line flags that switch Claude Code's own permission enforcement off.
 ///
@@ -152,31 +130,63 @@ pub fn settings_bypasses(label: &str, raw: &str) -> Vec<BypassFinding> {
 /// The permission mode that switches Claude Code's own rule evaluation off.
 const BYPASS_MODE: &str = "bypassPermissions";
 
-/// Inspect a launch environment for bypass conditions.
-pub fn environment_bypasses(env: &LaunchEnvironment) -> Vec<BypassFinding> {
-    let mut found = Vec::new();
-    for name in ["ANTHROPIC_BASE_URL", "CLAUDE_CODE_API_BASE_URL"] {
-        if env.get(name).is_some() {
-            found.push(base_url_finding("the shell environment".to_string(), name));
+/// What inspecting a caller-stated launch environment produced.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnvironmentBypassReport {
+    /// Bypasses the caller's statement showed to be true.
+    pub findings: Vec<BypassFinding>,
+    /// Names from [`BYPASS_ENV_VARS`] the caller said nothing about, so no
+    /// conclusion — clean or bypassed — is available for them.
+    pub unexamined: Vec<&'static str>,
+}
+
+/// Inspect what the caller stated about its launch environment for bypass
+/// conditions.
+///
+/// `None` means the caller stated nothing at all: every watched variable is
+/// [`unexamined`](EnvironmentBypassReport::unexamined) and `findings` is
+/// empty — never read as "clean", because nothing was actually looked at.
+pub fn environment_bypasses(env: Option<&CallerEnvironment>) -> EnvironmentBypassReport {
+    let Some(env) = env else {
+        return EnvironmentBypassReport {
+            findings: Vec::new(),
+            unexamined: BYPASS_ENV_VARS.to_vec(),
+        };
+    };
+
+    let mut findings = Vec::new();
+    let mut unexamined = Vec::new();
+
+    for &name in &BYPASS_ENV_VARS {
+        match env.state_of(name) {
+            EnvVarState::Set => findings.push(finding_for(name)),
+            EnvVarState::Unset => {}
+            EnvVarState::NotStated => unexamined.push(name),
         }
     }
-    for name in ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"] {
-        if env.get(name).is_some() {
-            found.push(BypassFinding {
-                id: "environment.alternate-provider",
-                source: "the shell environment".to_string(),
-                summary: format!(
-                    "{name} is set, so Claude Code talks to an alternate provider endpoint that \
-                     this integration does not intercept, and skips its server-managed settings fetch"
-                ),
-                remediation: format!("unset {name} before launching through `aasm run claude`"),
-            });
+
+    EnvironmentBypassReport { findings, unexamined }
+}
+
+/// The finding for one [`BYPASS_ENV_VARS`] name known to be set.
+fn finding_for(name: &str) -> BypassFinding {
+    match name {
+        "ANTHROPIC_BASE_URL" | "CLAUDE_CODE_API_BASE_URL" => {
+            base_url_finding("the launching client's environment".to_string(), name)
         }
+        "NODE_TLS_REJECT_UNAUTHORIZED" => tls_finding("the launching client's environment".to_string()),
+        // "CLAUDE_CODE_USE_BEDROCK" | "CLAUDE_CODE_USE_VERTEX", and anything
+        // else added to BYPASS_ENV_VARS later.
+        _ => BypassFinding {
+            id: "environment.alternate-provider",
+            source: "the launching client's environment".to_string(),
+            summary: format!(
+                "{name} is set, so Claude Code talks to an alternate provider endpoint that \
+                 this integration does not intercept, and skips its server-managed settings fetch"
+            ),
+            remediation: format!("unset {name} before launching through `aasm run claude`"),
+        },
     }
-    if env.get("NODE_TLS_REJECT_UNAUTHORIZED").is_some() {
-        found.push(tls_finding("the shell environment".to_string()));
-    }
-    found
 }
 
 /// Bypass flags present in the arguments a launch would pass through.
@@ -264,22 +274,39 @@ mod tests {
 
     #[test]
     fn environment_bypasses_are_detected_without_reading_values() {
-        let env = LaunchEnvironment::default()
-            .with("ANTHROPIC_BASE_URL", "http://secret.example")
-            .with("CLAUDE_CODE_USE_BEDROCK", "1")
-            .with("NODE_TLS_REJECT_UNAUTHORIZED", "0");
-        let found = environment_bypasses(&env);
-        let ids: Vec<&str> = found.iter().map(|f| f.id).collect();
+        let env = CallerEnvironment::stating(BYPASS_ENV_VARS)
+            .present("ANTHROPIC_BASE_URL")
+            .present("CLAUDE_CODE_USE_BEDROCK")
+            .present("NODE_TLS_REJECT_UNAUTHORIZED");
+        let report = environment_bypasses(Some(&env));
+        assert!(report.unexamined.is_empty(), "{report:?}");
+        let ids: Vec<&str> = report.findings.iter().map(|f| f.id).collect();
         assert!(ids.contains(&"base-url-redirection"), "{ids:?}");
         assert!(ids.contains(&"environment.alternate-provider"), "{ids:?}");
         assert!(ids.contains(&"tls-verification-disabled"), "{ids:?}");
-        // The value is never echoed — only the variable's name.
-        for finding in &found {
+        // Only the variable's name is ever carried — `CallerEnvironment` has no
+        // way to carry a value in the first place.
+        for finding in &report.findings {
             assert!(
-                !finding.summary.contains("secret.example") && !finding.detail().contains("secret.example"),
-                "a bypass report echoed an environment value: {finding:?}"
+                !finding.summary.contains("http://") && !finding.detail().contains("http://"),
+                "a bypass report echoed something value-shaped: {finding:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_caller_that_states_nothing_gets_no_findings_and_every_name_unexamined() {
+        let report = environment_bypasses(None);
+        assert!(report.findings.is_empty(), "{report:?}");
+        assert_eq!(report.unexamined, BYPASS_ENV_VARS.to_vec());
+    }
+
+    #[test]
+    fn a_name_the_caller_examined_and_found_unset_produces_no_finding_and_is_not_unexamined() {
+        let env = CallerEnvironment::stating(BYPASS_ENV_VARS);
+        let report = environment_bypasses(Some(&env));
+        assert!(report.findings.is_empty(), "{report:?}");
+        assert!(report.unexamined.is_empty(), "{report:?}");
     }
 
     #[test]

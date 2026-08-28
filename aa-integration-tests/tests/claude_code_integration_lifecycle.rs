@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_core::integration::{
-    IntegrationRequest, ProtectionLevel, ProtectionProfile, ProtectionState, ReceiptStore, SettingsScope,
-    VerificationOutcome,
+    CallerEnvironment, IntegrationRequest, ProtectionLevel, ProtectionProfile, ProtectionState, ReceiptStore,
+    SettingsScope, VerificationOutcome, KNOWN_LAUNCH_BYPASS_ENV_VARS,
 };
 use aa_core::DevToolKind;
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
@@ -164,6 +164,27 @@ async fn client_trusting_pem(pem_path: &Path) -> anyhow::Result<ClientConfig> {
         .with_no_client_auth())
 }
 
+/// A target naming no scope/project, whose `caller_env` states this test
+/// process's real presence for `KNOWN_LAUNCH_BYPASS_ENV_VARS` (AAASM-5993) —
+/// exactly what `aa-cli`'s `Target::here()` builds and now genuinely carries
+/// over the DI-API wire. Every scenario here runs with those variables
+/// genuinely unset, so stating that honestly — rather than leaving
+/// `caller_env: None`, which reads as "the caller said nothing" and caps
+/// verification at `PartiallyPassed` — is what a real, non-bypassed launch
+/// now actually submits.
+fn unspecified_target() -> LifecycleTarget {
+    let mut env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS);
+    for name in KNOWN_LAUNCH_BYPASS_ENV_VARS {
+        if std::env::var_os(name).is_some() {
+            env = env.present(name);
+        }
+    }
+    LifecycleTarget {
+        caller_env: Some(env),
+        ..LifecycleTarget::unspecified()
+    }
+}
+
 // ── Harness ─────────────────────────────────────────────────────────────────
 
 struct Harness {
@@ -275,7 +296,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &unspecified_target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -295,7 +316,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &unspecified_target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -312,7 +333,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         match self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &unspecified_target())
             .await
         {
             Ok(_) => anyhow::bail!("an unconsented privileged step must not be applied"),
@@ -381,7 +402,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── status ─────────────────────────────────────────────────────────────
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     // The plan aimed at GatewayProtected and configuration alone cannot get
@@ -411,7 +432,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── verify ─────────────────────────────────────────────────────────────
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -427,7 +448,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let after_verify = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -446,7 +467,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let drifted = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -458,7 +479,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── repair ─────────────────────────────────────────────────────────────
     let (report, repaired) = h
         .service
-        .repair(&tool, &LifecycleTarget::unspecified())
+        .repair(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!report.repaired.is_empty(), "repair must name what it restored");
@@ -479,7 +500,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── remove ─────────────────────────────────────────────────────────────
     let preview = h
         .service
-        .remove(&tool, &LifecycleTarget::unspecified(), None)
+        .remove(&tool, &unspecified_target(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!preview.steps.is_empty(), "the preview must show what will be undone");
@@ -487,7 +508,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let removal = h
         .service
-        .remove(&tool, &LifecycleTarget::unspecified(), Some(&preview.plan_id))
+        .remove(&tool, &unspecified_target(), Some(&preview.plan_id))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -509,11 +530,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     );
 
     // Removing twice is idempotent from the client's point of view.
-    assert!(h
-        .service
-        .remove(&tool, &LifecycleTarget::unspecified(), None)
-        .await
-        .is_err());
+    assert!(h.service.remove(&tool, &unspecified_target(), None).await.is_err());
 
     h.finish();
     Ok(())
@@ -534,7 +551,7 @@ async fn without_the_injected_ca_the_protection_test_cannot_pass() -> anyhow::Re
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -544,7 +561,7 @@ async fn without_the_injected_ca_the_protection_test_cannot_pass() -> anyhow::Re
     );
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -597,12 +614,12 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     service
-        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(&tool, &plan.plan_id, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let verification = service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -611,7 +628,7 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
         verification.outcome
     );
     let status = service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -634,12 +651,12 @@ async fn the_raw_secret_is_absent_from_every_artifact_while_the_finding_survives
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -696,7 +713,7 @@ async fn a_bypass_condition_is_detected_and_surfaced_in_status() -> anyhow::Resu
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = serde_json::to_string(&status)?;
@@ -707,7 +724,7 @@ async fn a_bypass_condition_is_detected_and_surfaced_in_status() -> anyhow::Resu
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -747,7 +764,7 @@ async fn the_removal_preview_names_the_trust_material_and_the_variable() -> anyh
 
     let preview = h
         .service
-        .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+        .remove(&DevToolKind::ClaudeCode, &unspecified_target(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = preview.render_dry_run();
@@ -775,14 +792,14 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     h.install().await?;
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -829,21 +846,21 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
     // Configuration alone still does not raise the ladder past Integrated.
     let after_install = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(after_install.achieved_level() <= ProtectionLevel::Integrated);
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -868,7 +885,7 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
         .service
         .remove(
             &tool,
-            &LifecycleTarget::unspecified(),
+            &unspecified_target(),
             Some(&format!("remove-{}", receipt.receipt_id)),
         )
         .await
@@ -916,7 +933,7 @@ async fn denied_authorization_fails_the_install_rather_than_downgrading_it() -> 
     // And nothing claims host enforcement afterwards.
     let status = h
         .service
-        .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+        .status(&DevToolKind::ClaudeCode, &unspecified_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(

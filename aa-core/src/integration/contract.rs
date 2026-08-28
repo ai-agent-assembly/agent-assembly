@@ -33,6 +33,7 @@ use std::collections::BTreeMap;
 
 use crate::dev_tool::{AdapterError, DevToolInfo, McpServerInfo};
 
+use super::caller_env::CallerEnvironment;
 use super::capability::{DevToolCapabilities, IntegrationCapability};
 use super::plan::{IntegrationPlan, IntegrationRequest, RemovalPlan};
 use super::receipt::IntegrationReceipt;
@@ -168,8 +169,17 @@ pub trait DevToolIntegration: Send + Sync {
     ///   [`DetectedNotIntegrated`](super::ProtectionLevel::DetectedNotIntegrated),
     ///   however complete the tool's configuration happens to look.
     /// * Missing evidence lowers the reported state; it never raises it.
-    async fn integration_status(&self, receipt: Option<&IntegrationReceipt>)
-        -> Result<IntegrationStatus, AdapterError>;
+    /// * `caller_env` is what the caller stated about its own launch
+    ///   environment (AAASM-5993) — `None` when the caller stated nothing, a
+    ///   valid state that must never be read as "clean". An adapter with an
+    ///   environment-based bypass check reads it from here and **never** from
+    ///   its own process environment: this is a long-lived, shared service, and
+    ///   its own environment describes itself, not the caller asking about it.
+    async fn integration_status(
+        &self,
+        receipt: Option<&IntegrationReceipt>,
+        caller_env: Option<&CallerEnvironment>,
+    ) -> Result<IntegrationStatus, AdapterError>;
 
     /// Check that what the receipt claims is still true.
     ///
@@ -180,7 +190,13 @@ pub trait DevToolIntegration: Send + Sync {
     /// * An adapter with no verification mechanism returns
     ///   [`VerificationOutcome::Unverifiable`](super::VerificationOutcome::Unverifiable)
     ///   — not [`Passed`](super::VerificationOutcome::Passed), and not an error.
-    async fn verify_integration(&self, receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError>;
+    /// * `caller_env` carries the same contract as in
+    ///   [`integration_status`](Self::integration_status).
+    async fn verify_integration(
+        &self,
+        receipt: &IntegrationReceipt,
+        caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError>;
 
     /// Author the steps that undo what the receipt records.
     ///
@@ -435,6 +451,7 @@ mod tests {
         async fn integration_status(
             &self,
             _receipt: Option<&IntegrationReceipt>,
+            _caller_env: Option<&CallerEnvironment>,
         ) -> Result<IntegrationStatus, AdapterError> {
             Ok(IntegrationStatus {
                 tool: DevToolKind::Custom("stub".to_string()),
@@ -454,7 +471,11 @@ mod tests {
             })
         }
 
-        async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+        async fn verify_integration(
+            &self,
+            _receipt: &IntegrationReceipt,
+            _caller_env: Option<&CallerEnvironment>,
+        ) -> Result<VerificationResult, AdapterError> {
             Ok(VerificationResult::unverifiable(0, "stub"))
         }
 
