@@ -2,12 +2,19 @@
 #
 # Faster-linker selection (OPT-IN, intentionally left commented out).
 #
-# A faster linker — mold on Linux, lld on macOS — significantly cuts
-# incremental link time, which dominates the warm rebuild after a one-line
-# change. It is NOT enabled by default because an active linker override would
-# break every build (local or CI) on a machine that does not have the linker
-# installed. Keeping it opt-in satisfies the "contributors without mold/lld
-# still build" requirement.
+# A faster linker — mold on Linux — significantly cuts incremental link time,
+# which dominates the warm rebuild after a one-line change. It is NOT enabled
+# by default because an active linker override would break every build (local
+# or CI) on a machine that does not have the linker installed. Keeping it
+# opt-in satisfies the "contributors without mold still build" requirement.
+#
+# macOS has no matching block: AAASM-5992's benchmark spike (2026-08) found
+# current upstream Rust does not properly support `lld` as a macOS linker
+# (rust-lld's macOS-target support is not reliable per rustc's own docs), and
+# Apple's own default linker (the one Xcode has shipped since Xcode 15,
+# superseding `ld_prime`/`ld_classic`) already fills the fast-linker role
+# there at zero config — there is nothing to opt into. Do not re-add an lld
+# block for macOS without new measured evidence.
 #
 # To enable locally, install the linker for your platform (see CONTRIBUTING.md →
 # "Faster builds") and uncomment the matching block below:
@@ -21,14 +28,6 @@
 # [target.aarch64-unknown-linux-gnu]
 # linker = "clang"
 # rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-#
-# macOS Apple Silicon  (install: `brew install llvm`)
-# [target.aarch64-apple-darwin]
-# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
-#
-# macOS Intel  (install: `brew install llvm`)
-# [target.x86_64-apple-darwin]
-# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 #
 # Activating mold on the Linux CI runners (install + uncomment) is tracked
 # separately under the build-pipeline Story of Epic AAASM-2551.
