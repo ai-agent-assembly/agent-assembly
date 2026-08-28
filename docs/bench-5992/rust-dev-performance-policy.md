@@ -375,14 +375,62 @@ Do not re-attempt sccache on `test` without new evidence that changes this
 ratio (e.g. a materially different Test-job shape, or workspace-wide
 compile-time growth that shifts more of the job into cacheable rustc work).
 
+## Coverage sccache experiment — REJECTED (AAASM-6006)
+
+AAASM-5994 deliberately excluded `coverage` from its initial sccache
+rollout — `llvm-cov` compiles with different rustflags/codegen than the
+plain-compile jobs, so its object cache must never share a namespace with
+`build`/`clippy`/`commit-range-build`/`test`. AAASM-6006 gave it a
+genuinely isolated `SCCACHE_GHA_VERSION=coverage-llvmcov-v1` namespace and
+ran a controlled two-run A/B (cold/warm, same methodology as AAASM-6004/6005):
+
+| Run | Wall time | Overall hit rate | Rust hit rate | Cache write errors | rust-cache restore |
+|---|---|---|---|---|---|
+| cold | 54m22s | 16.91% | 19.62% | 126 | No cache found (expected, 1st push) |
+| warm | **56m06s** | 9.47% | **10.91%** | **188** | Cache hit, full match (registry/git only) |
+
+**Verdict: rejected.** Unlike every other job in this campaign, Coverage's
+warm run is not faster — it's slightly slower — and the sccache Rust hit
+rate *dropped* cold→warm (19.62%→10.91%) instead of climbing, with cache
+write errors growing (126→188). The isolated namespace worked correctly
+(no cross-contamination with the other jobs' caches), but the sccache
+object cache itself doesn't provide durable cross-run benefit here, likely
+because `llvm-cov`'s per-build coverage-instrumentation flags fragment the
+effective hit population differently than plain compiles do. Both runs
+completed successfully with no indication of a correctness regression
+(same compile-request count in both, upload steps succeeded in both).
+
+Do not re-attempt sccache on `coverage` without new evidence — e.g. a
+different sccache version, a different llvm-cov invocation shape, or GHA
+cache-write reliability improving generally.
+
+## rust-cache + sccache overlap on Build — ADOPT verdict recorded, merge pending (AAASM-6005)
+
+AAASM-6005 measured `Swatinem/rust-cache`'s `cache-targets: false` +
+sccache on `build` and found a clear win (config B warm run 4m14s vs.
+config A's 9m58s — see PR #2284 for the full evidence once merged). The
+code change is implemented and reviewed but **not yet merged**: canonical
+`main`'s required `CI Success` check is independently red due to
+AAASM-6009 (an unrelated `.ci/isolation-lane-scenarios.txt` drift that
+fails whenever a PR actually runs Rust-path jobs). Never bypass a real
+required-check failure via the admin-merge exception — waiting for
+AAASM-6009 to clear before merging PR #2284. This section will be replaced
+with the full evidence table once that lands.
+
 ## Open follow-ups (not yet implemented)
 
 - **AAASM-5995's own recommendation**, unimplemented: extend targeted nextest
   scoping to more of the *default* invocation surface (not just incident
   response) — needs its own measurement before scoping as a real ticket.
-- **sccache CI rollout to `coverage`**: separate cache-namespace concern
-  (llvm-cov changes compilation semantics) — see AAASM-6006, not yet run.
-  `test`'s case is now resolved (rejected, above) — do not conflate the two.
+- **AAASM-6009** (High, filed): `Isolation backend confinement (Linux)`
+  fails the required `CI Success` check due to a scenario-coverage-drift
+  bug, unrelated to this campaign but currently blocking PR #2284's merge
+  (AAASM-6005's adopted Build cache-config change). Not this campaign's
+  scope to fix.
+- **Extend `cache-targets: false` to `clippy`/`commit-range-build`**: AAASM-6005
+  measured this only on `build`; the same target-cache-save-unreliability
+  mechanism likely applies to the other sccache-enabled jobs but needs its
+  own measurement before changing them.
 - **A hard-enforced disk quota** (AAASM-5981 AC2): `rust-target-lifecycle.sh
   status --max-total-gib` currently only *signals* (non-zero exit) when a
   budget is exceeded — it does not evict anything to enforce it, since doing
