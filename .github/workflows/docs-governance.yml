@@ -55,6 +55,9 @@ jobs:
               - 'scripts/propagate_versions.py'
               - '.ci/check-metadata-drift.sh'
               - 'scripts/check_absolutes_unwaivable.py'
+              # AAASM-5888: the doc-command coverage checker; a change to it
+              # must re-run verify-commands, or it is a dead trigger.
+              - 'scripts/qa/verify-documented-commands.py'
               - 'TRUTH-ADOPTION.md'
               - 'verification-reports/**/*.md'
               - 'design/**'
@@ -129,6 +132,20 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # AAASM-5888: the checker uses `X | Y` union syntax as a runtime
+      # value (not just an annotation), which needs Python >= 3.10 — same
+      # "don't rely on the runner's default python3" reasoning as
+      # version-drift's setup-python step below.
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # AAASM-5888: cheap classify-only pass first — fails fast, before
+      # spending any build time, if a doc gained a command that is neither
+      # executed nor allowlisted below.
+      - name: Verify documented-command coverage (quick-start + README)
+        run: python3 scripts/qa/verify-documented-commands.py --check-coverage
+
       - name: Install system dependencies (protoc, pkg-config, libssl-dev)
         run: |
           sudo apt-get update
@@ -145,6 +162,16 @@ jobs:
 
       - name: Verify api-reference.md rustdoc command
         run: cargo doc --workspace --no-deps --exclude aa-ebpf
+
+      # AAASM-5888: J21 claimed the full documented command matrix worked,
+      # but only the two checks above ever ran — this builds/installs the
+      # CLI and actually executes every remaining EXECUTE-classified command
+      # from docs/src/quick-start/ and README's onboarding sections against
+      # it, asserting each one's documented outcome (success or the
+      # documented failure). See the script's module docstring for what is
+      # ALLOWLISTED instead of executed, and why.
+      - name: Verify documented CLI quick-start commands
+        run: python3 scripts/qa/verify-documented-commands.py --run
 
   version-drift:
     name: Version-drift gate (propagate_versions --check)

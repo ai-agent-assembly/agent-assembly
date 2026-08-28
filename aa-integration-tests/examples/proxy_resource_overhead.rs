@@ -156,8 +156,12 @@ fn main() -> anyhow::Result<()> {
     let target_dir = cargo_target_dir();
     eprintln!("[bench] using CARGO_TARGET_DIR = {}", target_dir.display());
 
-    let aasm = release_binary(&target_dir, "AASM_BIN_PATH", "aasm")?;
-    let proxy_bin_dir = build_and_stage_proxy(&target_dir)?;
+    let real_aasm = release_binary(&target_dir, "AASM_BIN_PATH", "aasm")?;
+    let proxy_bin_dir = build_and_stage_proxy(&target_dir, &real_aasm)?;
+    // Spawn the copy staged beside the fake `aa-proxy`, not `real_aasm` — see
+    // `build_and_stage_proxy`'s doc comment for why the real one is unsafe to
+    // spawn here now that resolution prefers an exe-sibling `aa-proxy`.
+    let aasm = proxy_bin_dir.join("aasm");
     eprintln!("[bench] aasm = {}", aasm.display());
     eprintln!(
         "[bench] dedicated-proxy stand-in staged at {}/aa-proxy",
@@ -241,13 +245,24 @@ fn release_binary(target_dir: &Path, env_var: &str, name: &str) -> anyhow::Resul
     Ok(std::fs::canonicalize(candidate)?)
 }
 
-/// Build `aa_proxy_no_keychain` (release) and copy it to a fresh temp
-/// directory under the name `aa-proxy` — `ProxyGuard`/`aa-cli`'s binary
-/// resolution looks for that literal name on `PATH`
-/// (`aa-cli/src/commands/proxy/start.rs::resolve_binary`), the same trick
-/// `proxy_trust_support::TrustedProxy::start_intercepting` already uses for
-/// the standalone-proxy path.
-fn build_and_stage_proxy(target_dir: &Path) -> anyhow::Result<PathBuf> {
+/// Build `aa_proxy_no_keychain` (release) and copy it, alongside a copy of
+/// `aasm` itself, to a fresh temp directory under the names `aa-proxy` and
+/// `aasm` — `ProxyGuard`/`aa-cli`'s binary resolution looks for that literal
+/// name (`aa-cli/src/commands/proxy/start.rs::resolve_binary`), the same
+/// trick `proxy_trust_support::TrustedProxy::start_intercepting` already
+/// uses for the standalone-proxy path.
+///
+/// `aasm` is copied here too, not just `aa-proxy`, because resolution now
+/// prefers the `aa-proxy` sitting beside the running `aasm` executable
+/// before it ever looks at `$PATH` (AAASM-5982, ADR 0030 §6.4) — and this
+/// benchmark's own setup instructions build a **real** release `aa-proxy`
+/// into `target_dir/release` right beside the real `aasm` there. Without
+/// this copy, the spawned `aasm`'s exe-sibling lookup would find that real
+/// binary and trigger its macOS Keychain prompt, which is exactly what
+/// `aa_proxy_no_keychain` exists to avoid. Spawning the copy instead makes
+/// the staged `aa-proxy` the sibling, matching what the `$PATH` staging
+/// already intended.
+fn build_and_stage_proxy(target_dir: &Path, aasm: &Path) -> anyhow::Result<PathBuf> {
     let status = Command::new(env!("CARGO"))
         .args([
             "build",
@@ -271,10 +286,14 @@ fn build_and_stage_proxy(target_dir: &Path) -> anyhow::Result<PathBuf> {
     std::fs::create_dir_all(&bin_dir)?;
     let dest = bin_dir.join("aa-proxy");
     std::fs::copy(&built, &dest)?;
+    // See this function's doc comment: `aasm` must be copied beside the
+    // staged `aa-proxy`, or the exe-sibling lookup finds the real one.
+    std::fs::copy(aasm, bin_dir.join("aasm"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+        std::fs::set_permissions(bin_dir.join("aasm"), std::fs::Permissions::from_mode(0o755))?;
     }
     Ok(bin_dir)
 }

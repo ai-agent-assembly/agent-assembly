@@ -90,12 +90,26 @@ names it, lowers the reported protection level, and puts it in `status`; where i
 is not, the plan states so explicitly rather than leaving you to infer it from
 silence (`aa-devtool-claude-code/src/bypass.rs`).
 
+**Environment-variable bypasses require the launching client to state its own
+environment (AAASM-5993).** The lifecycle service is a long-lived daemon shared
+by every client on the host, so it has no shell of its own to read — it can only
+report on the environment a caller tells it about. `aasm` states it on every
+`status`/`verify`/`repair`/`remove` invocation: `ANTHROPIC_BASE_URL`,
+`CLAUDE_CODE_API_BASE_URL`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`
+and `NODE_TLS_REJECT_UNAUTHORIZED` are read by name — presence only, no value
+ever leaves the process — and carried across the DI-API request to the
+service, which reports each as genuinely `Set`, `Unset`, or (from a caller
+that predates this, or a third-party DI-API client that states nothing)
+`NotStated`. The settings-document half of each of these checks (a matching
+key in a settings `env` block) is unaffected either way: that document is
+read directly, not caller-stated.
+
 | Bypass | Detected? | Where it is looked for |
 |---|---|---|
 | `permissionMode` / `permissions.defaultMode` = `bypassPermissions` | **Yes** | The managed settings document. Becomes **Absent** evidence: the rules are still written and still read back, but nothing can be concluded from them about what the tool will do. |
-| `ANTHROPIC_BASE_URL` / `CLAUDE_CODE_API_BASE_URL` | **Yes** | The shell environment *and* a settings `env` block. |
-| `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` | **Yes** | The shell environment. |
-| `NODE_TLS_REJECT_UNAUTHORIZED` | **Yes** | The shell environment and a settings `env` block. |
+| `ANTHROPIC_BASE_URL` / `CLAUDE_CODE_API_BASE_URL` | **Yes**, in the settings `env` block. **Yes**, in the launch environment, when the caller states it — `aasm` does. | A settings `env` block; the launch environment, as stated by the caller. |
+| `CLAUDE_CODE_USE_BEDROCK` / `_VERTEX` | **Yes**, when the caller states its launch environment — `aasm` does. | The launch environment, as stated by the caller. |
+| `NODE_TLS_REJECT_UNAUTHORIZED` | **Yes**, in the settings `env` block. **Yes**, in the launch environment, when the caller states it — `aasm` does. | A settings `env` block; the launch environment, as stated by the caller. |
 | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--bare` | **Yes** | The launch arguments. Reported and **passed through unchanged** — Agent Assembly's interception sits *below* Claude Code's own permission enforcement, so stripping the flag would change your session without changing what is protected. |
 | Launching `claude` outside `aasm run` | **No** | No proxy or CA is injected; there is nothing to observe. |
 | Repointing `CLAUDE_CONFIG_DIR` | **No** | — |

@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_core::integration::{
-    IntegrationRequest, ProtectionLevel, ProtectionProfile, ProtectionState, ReceiptStore, SettingsScope,
-    VerificationOutcome,
+    CallerEnvironment, IntegrationRequest, ProtectionLevel, ProtectionProfile, ProtectionState, ReceiptStore,
+    SettingsScope, VerificationOutcome, KNOWN_LAUNCH_BYPASS_ENV_VARS,
 };
 use aa_core::DevToolKind;
 use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
@@ -164,6 +164,27 @@ async fn client_trusting_pem(pem_path: &Path) -> anyhow::Result<ClientConfig> {
         .with_no_client_auth())
 }
 
+/// A target naming no scope/project, whose `caller_env` states this test
+/// process's real presence for `KNOWN_LAUNCH_BYPASS_ENV_VARS` (AAASM-5993) —
+/// exactly what `aa-cli`'s `Target::here()` builds and now genuinely carries
+/// over the DI-API wire. Every scenario here runs with those variables
+/// genuinely unset, so stating that honestly — rather than leaving
+/// `caller_env: None`, which reads as "the caller said nothing" and caps
+/// verification at `PartiallyPassed` — is what a real, non-bypassed launch
+/// now actually submits.
+fn unspecified_target() -> LifecycleTarget {
+    let mut env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS);
+    for name in KNOWN_LAUNCH_BYPASS_ENV_VARS {
+        if std::env::var_os(name).is_some() {
+            env = env.present(name);
+        }
+    }
+    LifecycleTarget {
+        caller_env: Some(env),
+        ..LifecycleTarget::unspecified()
+    }
+}
+
 // ── Harness ─────────────────────────────────────────────────────────────────
 
 struct Harness {
@@ -257,6 +278,58 @@ impl Harness {
         self.home.join(".claude").join("settings.json")
     }
 
+    /// The configuration home every user-scope operation here names
+    /// (AAASM-5957): this harness's own `home/.claude`, mandatory now that
+    /// the service no longer infers it from its own environment.
+    fn user_config_home(&self) -> PathBuf {
+        self.home.join(".claude")
+    }
+
+    /// The installation every read-or-reverse operation here names.
+    ///
+    /// `caller_env` states this process's real presence for
+    /// `KNOWN_LAUNCH_BYPASS_ENV_VARS` (AAASM-5993) — see [`unspecified_target`]
+    /// for why that, rather than `None`, is what a real launch now submits.
+    fn target(&self) -> LifecycleTarget {
+        let mut env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS);
+        for name in KNOWN_LAUNCH_BYPASS_ENV_VARS {
+            if std::env::var_os(name).is_some() {
+                env = env.present(name);
+            }
+        }
+        LifecycleTarget {
+            user_config_home: Some(self.user_config_home()),
+            caller_env: Some(env),
+            ..LifecycleTarget::unspecified()
+        }
+    }
+
+    /// The same target as [`Harness::target`], but with `caller_env` stating
+    /// every one of `KNOWN_LAUNCH_BYPASS_ENV_VARS` genuinely and
+    /// deterministically unset rather than this process's real, possibly
+    /// provider-set, environment (AAASM-5965).
+    ///
+    /// [`Harness::target`] states the *real* presence of those variables in
+    /// this test process, which is the right thing for a test about what the
+    /// harness produces given whatever this process happens to run with. It
+    /// is the wrong thing for a test whose subject is the Passed/PartiallyPassed
+    /// boundary itself: on a machine with `ANTHROPIC_BASE_URL` or
+    /// `CLAUDE_CODE_USE_BEDROCK` genuinely set (an enterprise Claude Code
+    /// provider), `Harness::target()` would correctly report those findings
+    /// and the test's own hardcoded `Passed` expectation would be the thing
+    /// that is wrong — silently, and only on that machine. This constructor
+    /// removes the ambient dependency entirely: the boundary tests that use it
+    /// produce the same result on every machine, because they state the
+    /// environment they are testing rather than inheriting it from whoever
+    /// runs them.
+    fn clean_provider_routing_target(&self) -> LifecycleTarget {
+        LifecycleTarget {
+            user_config_home: Some(self.user_config_home()),
+            caller_env: Some(CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS)),
+            ..LifecycleTarget::unspecified()
+        }
+    }
+
     fn write_user_settings(&self, body: &str) {
         std::fs::write(self.settings_path(), body).expect("write settings");
     }
@@ -271,11 +344,12 @@ impl Harness {
             DevToolKind::ClaudeCode,
             ProtectionProfile::Recommended,
             SettingsScope::User,
-        );
+        )
+        .with_user_config_home(self.user_config_home());
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -295,7 +369,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         Ok(self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &self.target())
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?
             .receipt)
@@ -312,7 +386,7 @@ impl Harness {
         let plan = self.service.plan(request).await.map_err(|e| anyhow::anyhow!("{e}"))?;
         match self
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &self.target())
             .await
         {
             Ok(_) => anyhow::bail!("an unconsented privileged step must not be applied"),
@@ -381,7 +455,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── status ─────────────────────────────────────────────────────────────
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     // The plan aimed at GatewayProtected and configuration alone cannot get
@@ -411,7 +485,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── verify ─────────────────────────────────────────────────────────────
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -427,7 +501,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let after_verify = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -446,7 +520,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let drifted = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -458,7 +532,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── repair ─────────────────────────────────────────────────────────────
     let (report, repaired) = h
         .service
-        .repair(&tool, &LifecycleTarget::unspecified())
+        .repair(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!report.repaired.is_empty(), "repair must name what it restored");
@@ -479,7 +553,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     // ── remove ─────────────────────────────────────────────────────────────
     let preview = h
         .service
-        .remove(&tool, &LifecycleTarget::unspecified(), None)
+        .remove(&tool, &h.target(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(!preview.steps.is_empty(), "the preview must show what will be undone");
@@ -487,7 +561,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
 
     let removal = h
         .service
-        .remove(&tool, &LifecycleTarget::unspecified(), Some(&preview.plan_id))
+        .remove(&tool, &h.target(), Some(&preview.plan_id))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -509,11 +583,7 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     );
 
     // Removing twice is idempotent from the client's point of view.
-    assert!(h
-        .service
-        .remove(&tool, &LifecycleTarget::unspecified(), None)
-        .await
-        .is_err());
+    assert!(h.service.remove(&tool, &h.target(), None).await.is_err());
 
     h.finish();
     Ok(())
@@ -534,7 +604,7 @@ async fn without_the_injected_ca_the_protection_test_cannot_pass() -> anyhow::Re
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -544,7 +614,7 @@ async fn without_the_injected_ca_the_protection_test_cannot_pass() -> anyhow::Re
     );
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -564,6 +634,13 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let guard = RealHomeGuard::capture();
     let home = dir.path().join("home");
+    // Captured before `home` moves into `with_overrides` below (AAASM-5957):
+    // mandatory on the wire now that the service no longer infers it.
+    let user_config_home = home.join(".claude");
+    let target = LifecycleTarget {
+        user_config_home: Some(user_config_home.clone()),
+        ..unspecified_target()
+    };
     let ca_dir = dir.path().join("aa-ca");
     std::fs::create_dir_all(home.join(".claude"))?;
     std::fs::create_dir_all(&ca_dir)?;
@@ -589,20 +666,19 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
 
     let tool = DevToolKind::ClaudeCode;
     let plan = service
-        .plan(IntegrationRequest::new(
-            tool.clone(),
-            ProtectionProfile::Recommended,
-            SettingsScope::User,
-        ))
+        .plan(
+            IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                .with_user_config_home(&user_config_home),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     service
-        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(&tool, &plan.plan_id, &target)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let verification = service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &target)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -611,7 +687,7 @@ async fn verify_cannot_pass_on_configuration_alone() -> anyhow::Result<()> {
         verification.outcome
     );
     let status = service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &target)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -634,12 +710,12 @@ async fn the_raw_secret_is_absent_from_every_artifact_while_the_finding_survives
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
@@ -696,7 +772,7 @@ async fn a_bypass_condition_is_detected_and_surfaced_in_status() -> anyhow::Resu
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = serde_json::to_string(&status)?;
@@ -707,7 +783,7 @@ async fn a_bypass_condition_is_detected_and_surfaced_in_status() -> anyhow::Resu
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
@@ -747,7 +823,7 @@ async fn the_removal_preview_names_the_trust_material_and_the_variable() -> anyh
 
     let preview = h
         .service
-        .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+        .remove(&DevToolKind::ClaudeCode, &h.target(), None)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let rendered = preview.render_dry_run();
@@ -775,14 +851,14 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     h.install().await?;
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -814,6 +890,49 @@ async fn a_successful_normal_install_cannot_reach_host_enforced() -> anyhow::Res
     Ok(())
 }
 
+/// AAASM-5965 AC2: the provider-routing contribution to a verification result
+/// is asserted, not assumed absent. A caller that states `ANTHROPIC_BASE_URL`
+/// and `CLAUDE_CODE_USE_BEDROCK` present — an enterprise Claude Code provider,
+/// exactly the condition [`clean_provider_routing_target`] exists to keep out
+/// of the boundary tests above — must see both named in the result, and the
+/// outcome must be `PartiallyPassed` rather than `Passed`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_configured_provider_route_is_named_in_the_verification_result() -> anyhow::Result<()> {
+    let h = Harness::start(true).await?;
+    let tool = DevToolKind::ClaudeCode;
+    h.install().await?;
+
+    let env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS)
+        .present("ANTHROPIC_BASE_URL")
+        .present("CLAUDE_CODE_USE_BEDROCK");
+    let target = LifecycleTarget {
+        caller_env: Some(env),
+        ..h.target()
+    };
+    let verification = h
+        .service
+        .verify(&tool, &target)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    match &verification.outcome {
+        VerificationOutcome::PartiallyPassed { missing } => {
+            let joined = missing.join(" | ");
+            assert!(
+                joined.contains("ANTHROPIC_BASE_URL"),
+                "ANTHROPIC_BASE_URL must be named in the missing findings: {missing:?}"
+            );
+            assert!(
+                joined.contains("CLAUDE_CODE_USE_BEDROCK"),
+                "CLAUDE_CODE_USE_BEDROCK must be named in the missing findings: {missing:?}"
+            );
+        }
+        other => panic!("a caller-stated configured provider route must not read as a clean pass: {other:?}"),
+    }
+
+    h.finish();
+    Ok(())
+}
+
 /// The authorized path: one privileged step, read back and verified, and only
 /// then `Host Enforced` — reversed symmetrically on removal.
 #[tokio::test(flavor = "multi_thread")]
@@ -829,21 +948,21 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
     // Configuration alone still does not raise the ladder past Integrated.
     let after_install = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(after_install.achieved_level() <= ProtectionLevel::Integrated);
 
     let verification = h
         .service
-        .verify(&tool, &LifecycleTarget::unspecified())
+        .verify(&tool, &h.clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(verification.outcome, VerificationOutcome::Passed);
 
     let status = h
         .service
-        .status(&tool, &LifecycleTarget::unspecified())
+        .status(&tool, &h.clean_provider_routing_target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert_eq!(
@@ -868,7 +987,7 @@ async fn an_authorized_managed_install_reaches_host_enforced_and_is_reversible()
         .service
         .remove(
             &tool,
-            &LifecycleTarget::unspecified(),
+            &h.clean_provider_routing_target(),
             Some(&format!("remove-{}", receipt.receipt_id)),
         )
         .await
@@ -916,7 +1035,7 @@ async fn denied_authorization_fails_the_install_rather_than_downgrading_it() -> 
     // And nothing claims host enforcement afterwards.
     let status = h
         .service
-        .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+        .status(&DevToolKind::ClaudeCode, &h.target())
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(

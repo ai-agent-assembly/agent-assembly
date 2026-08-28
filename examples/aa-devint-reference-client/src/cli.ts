@@ -20,6 +20,7 @@ import { discover } from './discovery.js';
 import { DeniedError, DevIntError, IncompatibleError, actionable } from './errors.js';
 import { Verb } from './generated/devint_pb.js';
 import { PROJECT_ROOT_ENV, projectRoot } from './project.js';
+import { userConfigHome } from './userConfigHome.js';
 import {
   HOST_ENFORCED_UNAVAILABLE,
   profileLabel,
@@ -240,12 +241,14 @@ async function run(client: DevIntClient, command: string, args: string[]): Promi
  * naming it *wrongly* would turn "here is your integration" into "nothing is
  * installed". The project, by contrast, only this process knows.
  *
- * `projectRoot` is called with the unstated scope, so an undeterminable
- * directory yields `""` rather than throwing: a user-scope integration is
- * answerable without one, and the service says precisely when it is not.
+ * `projectRoot` and `userConfigHome` are both called with the unstated scope,
+ * so an undeterminable directory or configuration home yields `""` rather
+ * than throwing: a user-scope integration is answerable without a project,
+ * and a project-scope one is answerable without a configuration home, and
+ * the service says precisely when it is not.
  */
 function targetOptions(): TargetOptions {
-  return { settingsScope: '', projectRoot: projectRoot('') };
+  return { settingsScope: '', projectRoot: projectRoot(''), userConfigHome: userConfigHome('') };
 }
 
 function planOptions(args: string[]): PlanOptions {
@@ -260,6 +263,8 @@ function planOptions(args: string[]): PlanOptions {
     // the only process that knows which project the user is in. See
     // `src/project.ts` for why the runtime cannot answer that question for us.
     projectRoot: projectRoot(settingsScope),
+    // Same reasoning, one scope over (AAASM-5957) — see `src/userConfigHome.ts`.
+    userConfigHome: userConfigHome(settingsScope),
   };
 }
 

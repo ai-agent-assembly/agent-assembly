@@ -160,6 +160,24 @@ budget.** If a run cannot complete P0 + changed-HIGH coverage, it must record
 those as `UNTESTED_OR_BLOCKED` and the sign-off must reflect that (see Gate
 policy) rather than silently shrinking scope.
 
+**The registry's release-required set is exempt from this reduction,
+independently of P0/priority** (AAASM-5879). Every
+[registry](../../../qa/golden-journeys.yaml) entry with `release_blocking:
+true` and `lifecycle_state != "retired"` — the same set
+`scripts/qa/check-release-evidence.py` gates the tag on, via the shared
+`scripts/qa/registry_digest.required_entries` predicate — must be covered
+before a release-mode run can reach `Verdict: PASS`, whether or not that
+entry also happens to be P0. A `release_blocking` entry is not guaranteed to
+be P0 (the registry escalates blocking status independently of priority so a
+P1/P2 finding can be made release-blocking without renumbering it), so
+without this carve-out a pressured run could legitimately drop a
+release-blocking P1/P2 journey as "just P1" while still reporting PASS on
+the reduced table above — and then fail closed later anyway when
+`check-release-evidence.py` refuses the tag over the very journey the QA
+run dropped. Naming the carve-out here keeps that failure at QA-gate time,
+where it can still be triaged and remediated, instead of at the
+irreversible tag step.
+
 ## Negative-control policy (AAASM-5877)
 
 A passing test is only useful assurance if it would reliably fail when the
@@ -205,6 +223,10 @@ cross-process-evidence, and registry/CI-execution-integrity classes.
 
 `docs/release/qa-signoff/v<version>.evidence.json` (see [the evidence
 record schema](../../release/qa-verification-manifest-schema.md#evidence-record-aaasm-58785898))
+— or, for a version's second and later real verification attempts,
+`v<version>.attempt-<N>.evidence.json` (AAASM-6001, Core ADR 0037: a prior
+`BLOCK` attempt's evidence is never overwritten; see
+[`/release-evidence-finalize`](../../../.claude/skills/release-evidence-finalize/SKILL.md)) —
 records each required journey's result in one fixed 8-token vocabulary:
 `PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE`. It
 exists because this repo already has two other, narrower result

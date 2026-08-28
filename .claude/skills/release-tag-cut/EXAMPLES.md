@@ -1,9 +1,23 @@
 # release-tag-cut — worked example
 
+> **Stale (AAASM-5879): does not match the current 4-step Executable plan.**
+> This walk-through predates the AAASM-5879 fix that replaced the inline
+> version-bump/lockfile/notes commits (this file's Steps 1-5) with a
+> verify-already-merged check — the inline-bump flow shown below cannot
+> reach a pushed tag under the current `scripts/release-readiness.sh` /
+> `scripts/release-tag-guard.sh` gates (see REFERENCE.md step 1's "Why this
+> replaced the old inline bump"). Treat the commands below as illustrating
+> the *separate*, still-current RUNBOOK section 1 bump-PR mechanics (Steps
+> 1-4 here map to what `scripts/release-tag-cut.sh` still does for that PR,
+> run in its own worktree/branch, not inside this skill) plus the general
+> shape of tag creation — not as this skill's own current step sequence.
+> [REFERENCE.md](REFERENCE.md) is the authoritative current plan; a fresh
+> alpha/beta-N+1 worked example against the 4-step plan is a follow-up.
+
 Concrete, end-to-end walk-through of cutting `0.0.1-alpha.10` from a baseline
 of `0.0.1-alpha.9`. Use this as the executable template; substitute your own
-`<X>` and current literal. The step numbers map 1:1 to the Executable plan in
-[REFERENCE.md](REFERENCE.md).
+`<X>` and current literal. The step numbers below refer to this file's own
+narrative, not the current REFERENCE.md numbering (see the notice above).
 
 ## Contents
 

@@ -61,7 +61,7 @@ mod proxy_trust_support;
 mod grpc_gateway_support;
 
 use grpc_gateway_support::GrpcGateway;
-use proxy_trust_support::{aasm_binary, codex_tls_client_binary, TrustedProxy};
+use proxy_trust_support::{codex_tls_client_binary, TrustedProxy};
 use spike_support::proxy_harness::install_crypto_provider;
 use spike_support::{assert_recorded_and_secret_absent, TlsCapturingUpstream, SYNTHETIC_SECRET};
 
@@ -196,16 +196,25 @@ async fn install(fixture: &Fixture, proxy_url: &str) -> anyhow::Result<()> {
         ReceiptStore::at(fixture.integrations_state().join("store")),
     );
     let tool = DevToolKind::Codex;
+    // Mandatory at user scope now that the service no longer infers a
+    // configuration home from its own environment (AAASM-5957) — Codex is
+    // governed by the same generic check as Claude Code.
     let plan = service
-        .plan(IntegrationRequest::new(
-            tool.clone(),
-            ProtectionProfile::Recommended,
-            SettingsScope::User,
-        ))
+        .plan(
+            IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                .with_user_config_home(&fixture.home),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
     service
-        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(
+            &tool,
+            &plan.plan_id,
+            &LifecycleTarget {
+                user_config_home: Some(fixture.home.clone()),
+                ..LifecycleTarget::unspecified()
+            },
+        )
         .await
         .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
     Ok(())
@@ -217,12 +226,16 @@ async fn install(fixture: &Fixture, proxy_url: &str) -> anyhow::Result<()> {
 ///
 /// AAASM-5863: `aasm run` does not reuse `proxy` (the standalone
 /// `start_intercepting` process) for traffic — it spawns its **own** dedicated
-/// `aa-proxy`. `proxy.proxy_bin_dir()` on `PATH` is what makes that dedicated
-/// process resolve to the same built binary; `AA_TEST_PROXY_UPSTREAM` /
-/// `AA_PROXY_LLM_ONLY` / `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` on this command
-/// are what make it redirect to the same mock upstream and skip its
-/// self-signed leaf's verification, mirroring
-/// `cli_run_claude_governed_launch.rs`'s `real_binary_governed_launch` module.
+/// `aa-proxy`. Spawning `proxy.aasm()` (AAASM-5982) rather than the genuine
+/// `aasm_binary()` is what makes that dedicated process resolve to the mock
+/// stand-in: sibling resolution wins over `$PATH`, so a genuine `aa-proxy`
+/// built earlier in the same run and sitting next to the genuine `aasm` in
+/// `target/debug` would otherwise win the race even with `proxy.proxy_bin_dir()`
+/// on `PATH`. `AA_TEST_PROXY_UPSTREAM` / `AA_PROXY_LLM_ONLY` /
+/// `AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY` on this command are what make it
+/// redirect to the same mock upstream and skip its self-signed leaf's
+/// verification, mirroring `cli_run_claude_governed_launch.rs`'s
+/// `real_binary_governed_launch` module.
 fn run_codex_stand_in(
     fixture: &Fixture,
     gateway: &GrpcGateway,
@@ -253,7 +266,7 @@ fn run_codex_stand_in(
 
     let stdout_path = fixture.root.join("aasm-stdout.txt");
     let stderr_path = fixture.root.join("aasm-stderr.txt");
-    let mut cmd = std::process::Command::new(aasm_binary());
+    let mut cmd = std::process::Command::new(proxy.aasm());
     cmd.current_dir(&fixture.root)
         .env("HOME", &fixture.home)
         .env("PATH", &path_var)

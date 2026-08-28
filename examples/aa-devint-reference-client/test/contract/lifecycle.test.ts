@@ -105,6 +105,7 @@ describe('the lifecycle flows', () => {
         // User scope: the project root is optional context, and this plan states
         // it has none rather than borrowing the test runner's directory.
         projectRoot: '',
+        userConfigHome: join(scratch, '.claude'),
       });
       expect(plan.planId).toBe('plan-1');
       // The policy profile arrives by reference: an id, a name and a digest,
@@ -159,6 +160,7 @@ describe('the project a request is for', () => {
         profile: 'recommended',
         settingsScope: 'project',
         projectRoot: projectRoot('project', {}, () => scratch),
+        userConfigHome: '',
       });
       expect(plan.planId).toBe('plan-1');
     } finally {
@@ -175,7 +177,12 @@ describe('the project a request is for', () => {
       // message; a client that substituted its own cwd would be refused with
       // that path quoted instead.
       await expect(
-        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'user', projectRoot: 'not/absolute' }),
+        client.plan(CLAUDE, {
+          profile: 'recommended',
+          settingsScope: 'user',
+          projectRoot: 'not/absolute',
+          userConfigHome: '',
+        }),
       ).rejects.toThrow(/"not\/absolute" is not absolute/);
     } finally {
       client.close();
@@ -190,10 +197,10 @@ describe('the project a request is for', () => {
       // checked-in settings, and this client must not talk it into doing that by
       // sending an empty root at the one scope where the root is the answer.
       await expect(
-        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '', userConfigHome: '' }),
       ).rejects.toMatchObject({ code: DenyCode.LIFECYCLE_ERROR });
       await expect(
-        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '' }),
+        client.plan(CLAUDE, { profile: 'recommended', settingsScope: 'project', projectRoot: '', userConfigHome: '' }),
       ).rejects.toThrow(/will not guess/);
     } finally {
       client.close();

@@ -432,6 +432,13 @@ fi
         let policy = write_test_policy(tmp.path())?;
         let dump = tmp.path().join("child-env.txt");
 
+        // `resolve_binary` (`aa-cli/src/commands/proxy/start.rs`) also checks
+        // beside the running `aasm` executable's own directory, before PATH —
+        // so this needs a copy with no real `aa-proxy` sibling
+        // (AAASM-5982), or the refusal this test exists to prove never
+        // happens regardless of what PATH excludes.
+        let aasm_alone = super::proxy_trust_support::aasm_without_proxy_sibling(&tmp.path().join("aasm-alone"))?;
+
         // Deliberately no `aa-proxy` anywhere on this PATH — only the stub's
         // own directory, so `which claude` still resolves but `which
         // aa-proxy` (inside `ProxyGuard::spawn`) cannot.
@@ -449,7 +456,7 @@ fi
         // would trivially pass the weaker check.
         let before = all_aa_proxy_pids();
 
-        let out = std::process::Command::new(aasm_binary())
+        let out = std::process::Command::new(&aasm_alone)
             .current_dir(&project)
             .env("HOME", &home)
             .env("PATH", &path_var)

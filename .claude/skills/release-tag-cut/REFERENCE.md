@@ -9,12 +9,10 @@ edge-cases, and the no-op guard rationale. For a concrete end-to-end run, see
 
 - [Pre-conditions](#pre-conditions)
 - [Executable plan](#executable-plan)
-  - [1. Resolve the current version literal](#1-resolve-the-current-version-literal)
-  - [2. Bump every Cargo.toml version literal + regenerate Cargo.lock](#2-bump-every-cargotoml-version-literal--regenerate-cargolock)
-  - [3. Commit the version bump — Cargo.toml diff only](#3-commit-the-version-bump--cargotoml-diff-only)
-  - [4. Commit `Cargo.lock` separately — reviewable in isolation](#4-commit-cargolock-separately--reviewable-in-isolation)
-  - [5. Create the annotated tag](#5-create-the-annotated-tag)
-  - [6. Push the tag — triggers `release.yml`](#6-push-the-tag--triggers-releaseyml)
+  - [1. Verify the bump PR already landed on `remote/main`](#1-verify-the-bump-pr-already-landed-on-remotemain)
+  - [2. Confirm security + QA sign-offs are for this exact `<X>`](#2-confirm-security--qa-sign-offs-are-for-this-exact-x)
+  - [3. Run the release gate — `scripts/release-readiness.sh`](#3-run-the-release-gate--scriptsrelease-readinesssh)
+  - [4. Create and push the annotated tag — `scripts/release-tag-guard.sh`](#4-create-and-push-the-annotated-tag--scriptsrelease-tag-guardsh)
 - [Post-conditions](#post-conditions)
 - [What's expected when done](#whats-expected-when-done)
 - [What's auto-handled (do NOT manually run)](#whats-auto-handled-do-not-manually-run)
@@ -35,6 +33,14 @@ stop and report — do not attempt to remediate from inside this skill.
    and confirm `status=completed` and `conclusion=success`.
 4. **Target version provided** — the operator supplies `<X>` (e.g.
    `0.0.1-alpha.10`). The skill does not invent or bump version numbers.
+5. **Security sign-off PASS for `<X>`** — `docs/release/security-signoff/v<X>.md`
+   exists and its verdict line is `Verdict: PASS` (stage 0,
+   `/release-security-gate <X>`). Mirrored by `scripts/release-readiness.sh`
+   check 11, re-verified in step 3 below.
+6. **QA sign-off PASS for `<X>`** — `docs/release/qa-signoff/v<X>.md` exists
+   and its verdict line is `Verdict: PASS` (stage 0, `/release-qa-gate <X>` in
+   `release` depth). Mirrored by `scripts/release-readiness.sh` check 12,
+   independently of check 5/11 above — re-verified in step 3 below.
 
 ## Executable plan
 
@@ -42,97 +48,132 @@ The whole sequence runs inside the main `agent-assembly/` repository checkout
 (not a worktree). Substitute the operator-supplied `<X>` for the target
 version throughout.
 
-### 1. Resolve the current version literal
-
-Extract the current workspace version from `Cargo.toml`:
+### 1. Verify the bump PR already landed on `remote/main`
 
 ```bash
-CURRENT="$(grep -E '^version = ' Cargo.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
-echo "current=$CURRENT target=<X>"
-```
-
-`$CURRENT` is the literal that must be replaced everywhere. Refuse to proceed
-if `$CURRENT` equals `<X>` (no-op release) or if the value cannot be parsed.
-
-### 2. Bump every Cargo.toml version literal + regenerate Cargo.lock
-
-Run the helper script — it enumerates `**/Cargo.toml` declaring `$CURRENT`,
-sed-replaces each, bumps `sonar.projectVersion`, regenerates `Cargo.lock`, and
-refuses no-op invocations:
-
-```bash
-./scripts/release-tag-cut.sh "$CURRENT" "<X>"
-```
-
-The script prints the file list before mutating (sanity check it), then
-runs `cargo update --workspace`. For reference, the AAASM-2849 alpha-9 cut
-touched **~16 crates with ~43 literal occurrences**.
-
-It also bumps `sonar.projectVersion` in `sonar-project.properties` from
-`$CURRENT` to `<X>` so SonarCloud's reported project version tracks the release
-instead of going stale (AAASM-3819). The static value is the source of truth /
-local-scan fallback; `ci.yml` additionally overrides it dynamically from the
-Cargo version at scan time, so the line only needs to match `$CURRENT` for the
-helper to rewrite it — if it has drifted, the helper warns and leaves it
-untouched rather than failing the release.
-
-### 3. Commit the version bump — manifests + sonar
-
-```bash
-git add '**/Cargo.toml' Cargo.toml sonar-project.properties
-git commit -m "🔧 (release): Bump workspace to v<X>"
-```
-
-Verify with `git grep -l "^version = \"$CURRENT\""` returning empty.
-
-### 4. Commit `Cargo.lock` separately — reviewable in isolation
-
-```bash
-git add Cargo.lock
-git commit -m "🔧 (release): Regenerate Cargo.lock for v<X>"
-```
-
-If the helper's `cargo update --workspace` failed (network sandbox, etc.),
-fall back to `cargo generate-lockfile` and re-resolve before committing.
-
-### 5. Create the annotated tag
-
-The tag is annotated and references the release-notes file. Create the
-notes file first if missing — copy from the previous release and edit
-to reflect the new version's changeset.
-
-```bash
-NOTES="docs/release/v<X>.md"
-if [ ! -f "$NOTES" ]; then
-  PREV="docs/release/v$CURRENT.md"
-  cp "$PREV" "$NOTES"
-  $EDITOR "$NOTES"   # update title + changeset
-  git add "$NOTES"
-  git commit -m "📝 (release): Add release notes for v<X>"
+CURRENT="$(awk -F'"' '/^\[workspace\.package\]/{p=1; next} /^\[/{p=0} p && /^version[[:space:]]*=/{print $2; exit}' Cargo.toml)"
+if [ "$CURRENT" != "<X>" ]; then
+  echo "refuse: Cargo.toml workspace version is $CURRENT, expected <X> — open/merge the bump PR (RUNBOOK section 1) first"
+  exit 1
 fi
-
-git tag -a "v<X>" -m "Release v<X>
-
-See docs/release/v<X>.md for details."
+grep -qE '^## \[<X>\]' CHANGELOG.md || { echo "refuse: CHANGELOG.md has no ## [<X>] section"; exit 1; }  # substitute <X> literally, same convention as elsewhere in this doc
+[ -f "docs/release/v<X>.md" ] || { echo "refuse: docs/release/v<X>.md missing"; exit 1; }
 ```
 
-Do not push intermediate commits to main from inside this skill — the
-bump PR (RUNBOOK section 1) should already be merged before invocation.
-This skill's only push is the tag itself.
+**Why this replaced the old inline bump.** A prior version of this step
+bumped every `Cargo.toml` version literal, regenerated `Cargo.lock`,
+committed both, and committed the release notes — all as *local* commits
+made by this skill, never pushed anywhere before the tag (REFERENCE.md said
+so explicitly: "This skill's only push is the tag itself"). That is
+self-defeating for two reasons this Story's own checks would have caught
+immediately: step 3's readiness check 3 (`local main` == `remote/main`)
+fails the moment those local-only commits exist, and step 4's guard
+requires the release-evidence's `candidate_sha` to equal `HEAD` — but the
+QA/security gates (pre-conditions 5/6) necessarily captured their evidence
+*before* this skill ran, i.e. against whatever commit was HEAD before these
+local bump commits were added, not after. Between "gates captured evidence"
+and "tag is pushed," nothing may change locally — the only way to satisfy
+that is for the bump to already be on `remote/main` before this skill (and
+before the gates) run, exactly as RUNBOOK section 1 already prescribes. This
+skill verifies that happened; it does not do the bumping itself.
+`scripts/release-tag-cut.sh` (the old bundled helper) is still available for
+whoever drives the *separate* bump-PR step, but this skill no longer invokes
+it.
 
-### 6. Push the tag — triggers `release.yml`
+### 2. Confirm security + QA sign-offs are for this exact `<X>`
+
+Pre-conditions 5 and 6 above must already hold at this point — this step is
+just naming that the commit verified in step 1 is the one those sign-offs
+(and the evidence record step 4 will bind to) actually cover. If either
+sign-off predates the bump-PR commit verified in step 1, stop and re-run
+`/release-security-gate <X>` / `/release-qa-gate <X>` on the current
+`remote/main` tip before continuing — do not proceed on stale evidence.
+
+### 3. Run the release gate — `scripts/release-readiness.sh`
 
 ```bash
-LEFTHOOK=0 git push remote "v<X>"
+bash scripts/release-readiness.sh "<X>"
 ```
 
-`LEFTHOOK=0` bypasses the local `cargo doc` pre-push hook which fails on
-macOS due to the eBPF target — this is the project convention, not a
-security bypass. The push is tag-only and does not touch a branch.
+Run this from the exact commit verified in step 1 (nothing has changed
+locally since — that is the point). All 14 checks must report ✓: working
+tree/branch/CI mechanical state, version/CHANGELOG/notes literals, required
+secrets, no stale Homebrew tap PR, the pinned-pip-install check, the
+security sign-off `Verdict: PASS` (check 11, pre-condition 5 above), the QA
+sign-off `Verdict: PASS` (check 12, pre-condition 6 above, independently of
+check 11), every published crate has a README, and release-evidence binding
+to HEAD via `check-release-evidence.py` (check 14). Any ✗ stops the run
+here — this step exists specifically because, before AAASM-5879, nothing in
+this skill ever invoked this script, so a tag could be created and pushed
+without any of these 14 checks having run at all. Resolve the failing
+check(s) and re-run before proceeding; do not skip a check to reach a green
+run.
+
+### 4. Create and push the annotated tag — `scripts/release-tag-guard.sh`
+
+```bash
+bash scripts/release-tag-guard.sh "<X>"
+```
+
+This is the only sanctioned way this skill creates/pushes the tag — it is
+not a convenience wrapper around step 3, it is independent enforcement:
+
+- Refuses if the configured push remote does not resolve to
+  `ai-agent-assembly/agent-assembly` (no `--remote` override in this call).
+- Refuses on a dirty working tree, or if `git fetch remote` fails.
+- Refuses if `v<X>` already exists locally or on the remote.
+- Re-runs `scripts/release-readiness.sh <X>` itself — step 3 above is not a
+  cache the guard trusts; every invocation of this script re-verifies all
+  14 checks fresh.
+- Re-verifies candidate binding fresh, immediately before tagging, by
+  re-running `check-release-evidence.py --tag-target HEAD` — the same R1/R1b
+  rules readiness check 14 already ran, re-run here as TOCTOU defense-in-
+  depth for the narrow window between step 3 and the `git tag` below.
+  (AAASM-5998: an earlier version of this step instead required literal
+  `candidate_sha == HEAD` with zero drift tolerance. That was unreachable
+  for any real, committed evidence record — `build-release-evidence.py`
+  captures `candidate_sha` as HEAD *before* the evidence file is committed,
+  so committing it, as the schema requires, necessarily advances HEAD past
+  that SHA. R1 already correctly tolerates exactly this — it excludes the
+  evidence file's own creation commit from its diff classification — so
+  re-running R1/R1b is both correct and no weaker than the old intent: a
+  materially different HEAD, a tampered evidence file, or a non-ancestor
+  candidate all still refuse.)
+- **Additionally runs a narrower, version-scoped check** (AAASM-6001 Option 4,
+  Core ADR 0037, `check-release-evidence.py --strict-tag-binding`): R1's own
+  `docs/release/` allowlist is deliberately broad (release notes, CHANGELOG,
+  a mechanical version bump) for its own admissibility purpose — correct for
+  R1, wrong for binding the *literal commit about to be tagged* to the
+  *literal commit verified*. This check refuses unless `candidate_sha` is an
+  ancestor of `HEAD` through commits that touch *only* the exact
+  `docs/release/qa-signoff/v<X>.md` / `v<X>.evidence.json` (or
+  `v<X>.attempt-<N>.evidence.json`) / `docs/release/security-signoff/v<X>.md`
+  paths for this version — no glob/prefix matching, no sibling version, no
+  extra file riding along in the same commit, explicit path-traversal
+  defenses. See `strict_candidate_binding_violations()` in
+  `check-release-evidence.py` and Core ADR 0037 for the full rationale.
+- Has **no skip flag of any kind** — an operator/agent that wants to bypass
+  a check here has to edit this reviewable script, not flip an env var.
+- Only once every check above passes does it `git tag -a "v<X>"` and
+  `git push remote "v<X>"`, which triggers `release.yml`.
+
+**No `LEFTHOOK=0`.** A prior version of this step used
+`LEFTHOOK=0 git push remote "v<X>"` to bypass the local `cargo doc`
+pre-push hook. Measured (AAASM-5879, throwaway local bare-repo push):
+`lefthook.toml`'s `pre-push.commands.doc` gates on `files = git diff
+--name-only HEAD @{push}` (with the AAASM-5838 merge-base fallback) — a
+tag-only push never moves the branch ref, so that diff is empty both before
+and after the push, which is exactly the "pushing a ref that is not HEAD ...
+computes an empty file set and skips" gap `lefthook.toml`'s own comment
+block already documents (AAASM-5726/5838). The doc hook is therefore
+already a no-op for a tag-only push without any bypass — `LEFTHOOK=0` was a
+governed-but-unnecessary hook bypass in a skill whose contract says it has
+no bypass authority, so it is removed rather than kept as a "governed
+exception."
 
 ## Post-conditions
 
-After step 6 completes, all of the following MUST hold:
+After step 4 completes, all of the following MUST hold:
 
 1. **Tag exists on remote** —
    `git ls-remote --tags remote "v<X>"` returns one line referencing the
@@ -172,7 +213,7 @@ gh run list --workflow release.yml --limit 1
 ```
 
 If either check returns empty / not-found, the skill did not complete the
-push — re-run step 6 or investigate the failure before declaring done.
+push — re-run step 4 (`scripts/release-tag-guard.sh <X>`) or investigate the failure before declaring done.
 
 Once `release.yml` has finished (watch with
 `gh run watch --workflow release.yml`), the operator's next move is:
