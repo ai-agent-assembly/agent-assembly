@@ -27,6 +27,7 @@
 use std::path::{Path, PathBuf};
 
 use aa_cli::commands::run::{execute_with_adapters, IsolationIntent, RunArgs};
+use aa_cli::commands::run_registration::{self, UNRESOLVED_IDENTITY};
 use aa_core::DevToolAdapter;
 
 // ---------------------------------------------------------------------------
@@ -735,4 +736,73 @@ fn the_auto_refusal_names_every_candidate_it_considered() {
         );
     }
     assert!(!target.exists(), "the program ran: {}", target.display());
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-5955: no durable identity key is minted in a test context.
+// ---------------------------------------------------------------------------
+
+/// **The regression test and its own negative control for AAASM-5955.**
+///
+/// This binary calls straight into `registration_did` the same way
+/// [`run`]'s `execute_with_adapters` does — no `main()` involved, which is
+/// exactly the shape that used to reach the real `${AASM_STATE_DIR:-$HOME}`
+/// fallback and mint a durable key here, in a suite, instead of in `aasm run`.
+///
+/// Both halves share one process-global `AASM_STATE_DIR` mutation, so they
+/// run as one test rather than two that could interleave with each other
+/// under parallel execution:
+///
+/// * With `AASM_STATE_DIR` unset, the DID must come back
+///   [`UNRESOLVED_IDENTITY`] — proving the guard refuses rather than falling
+///   back to `$HOME`. A guard that always returned this constant would pass
+///   a test that only checked this half.
+/// * With `AASM_STATE_DIR` pointed at a scratch dir this test owns, the same
+///   call must resolve a real `did:key` and the key file must exist exactly
+///   there — proving the guard is reading the condition it claims to, not
+///   permanently wedged refused. This is the control: delete the guard
+///   entirely and this half still passes (nothing here can tell "explicit
+///   dir" apart from "no guard at all"), but the first half goes red the
+///   moment the fallback is restored, which is the failure this ticket is
+///   about.
+#[test]
+fn identity_resolution_refuses_without_a_state_dir_and_resolves_with_one() {
+    // Serializes against every other test in this binary that touches
+    // `AASM_STATE_DIR` — currently none, but a future one sharing this
+    // process-global env var without this guard would otherwise race it.
+    let prior = std::env::var_os("AASM_STATE_DIR");
+    std::env::remove_var("AASM_STATE_DIR");
+
+    let refused = run_registration::registration_did("aaasm-5955-regression-refused");
+    assert_eq!(
+        refused, UNRESOLVED_IDENTITY,
+        "registration_did minted or read a real identity with no AASM_STATE_DIR set and no `aasm` \
+         main() having run — the AAASM-5955 fallback-to-$HOME leak is back"
+    );
+
+    let scratch = Scratch::new("identity-state-dir");
+    std::env::set_var("AASM_STATE_DIR", &scratch.root);
+    let resolved = run_registration::registration_did("aaasm-5955-regression-resolved");
+    assert_ne!(
+        resolved, UNRESOLVED_IDENTITY,
+        "registration_did refused even with an explicit AASM_STATE_DIR — the guard is not reading the \
+         condition it claims to"
+    );
+    assert!(
+        resolved.starts_with("did:key:"),
+        "resolved identity is not a did:key: {resolved}"
+    );
+    let identity_dir = scratch.root.join("identity");
+    let count = std::fs::read_dir(&identity_dir)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(
+        count, 1,
+        "expected exactly one key file under the explicit AASM_STATE_DIR, found {count}"
+    );
+
+    match prior {
+        Some(v) => std::env::set_var("AASM_STATE_DIR", v),
+        None => std::env::remove_var("AASM_STATE_DIR"),
+    }
 }
