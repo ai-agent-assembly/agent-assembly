@@ -141,11 +141,14 @@ setup_fixture_repo() {
     # Real guard script under test, unmodified.
     cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
     chmod +x scripts/release-tag-guard.sh
-    # Real checker + its two direct dependencies, unmodified — needed so
-    # Case 4/5's sanity check can run the REAL R1 rule standalone.
+    # Real checker + its dependencies, unmodified — needed both for Case
+    # 4/5's own checks AND because the guard's step 5 (AAASM-5998) now
+    # calls check-release-evidence.py directly, so every case that runs the
+    # real guard end-to-end needs it present, not just Case 4/5.
     cp "$REPO_ROOT/scripts/qa/check-release-evidence.py" scripts/qa/
     cp "$REPO_ROOT/scripts/qa/registry_digest.py" scripts/qa/
     cp "$REPO_ROOT/scripts/qa/render-signoff-journeys.py" scripts/qa/
+    cp "$REPO_ROOT/scripts/qa/build-release-evidence.py" scripts/qa/
     # Stub readiness — this harness's job is release-tag-guard.sh's OWN
     # remote-identity/clean-tree/tag-exists/candidate-binding logic, not
     # re-proving release-readiness.sh's 14 checks (already covered by
@@ -184,68 +187,114 @@ STUB
 # candidate A was captured". check-release-evidence.py's R1 tolerates this
 # (ancestor-mechanical); this guard must NOT.
 # ---------------------------------------------------------------------------
-echo "== Case 4/5: strict candidate_sha==HEAD binding (stricter than R1) =="
+echo "== Case 4/5: candidate binding through a REAL committed evidence file (AAASM-5998) =="
+# Prior to AAASM-5998, this case's happy path relied on setup_fixture_repo's
+# .gitignore for *.evidence.json (so a fixture could freely overwrite the
+# file in place with a precomputed SHA, never tripping the guard's
+# dirty-tree check) — which never exercised the real repo's actual shape,
+# where the evidence file is TRACKED and COMMITTED
+# (docs/release/qa-signoff/v0.0.1-rc.7.evidence.json). That let a guard
+# design ship that could never reach PASS on a real candidate. Every
+# sub-case below stops gitignoring the evidence file and commits it for
+# real, the same way qa-verification-manifest-schema.md's own documented
+# Generation step does.
+add_real_evidence() { # add_real_evidence <fixture-repo-dir> — commits the
+  # evidence-add sha into $WORK/B_SHA.
+  local dir="$1"
+  (
+    cd "$dir"
+    sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+    # setup_fixture_repo's own catalog (journeys: []) and signoff files (a
+    # bare "Verdict: PASS" line, no "Selected journeys" table) are enough
+    # for Case 4/5's narrow R1-only sanity check, but not enough for
+    # build-release-evidence.py to compute a real PASS verdict end-to-end —
+    # swap in the same known-good minimal fixture qa/tests/evidence-fixtures/
+    # already proves reaches verdict:PASS (mirrors
+    # scripts/tests/build-release-evidence-fixtures-check.sh's own usage).
+    cat > qa/golden-journeys.yaml <<'CATALOG'
+catalog_version: '1'
+journeys:
+- id: J90
+  jira: AAASM-0000
+  name: Synthetic single-journey fixture
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-minimal.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: mock
+CATALOG
+    cat > docs/release/qa-signoff/v0.0.1-fx.md <<'QASIGNOFF'
+# Synthetic QA sign-off fixture
+
+Test-only. Not a real release sign-off.
+
+## Selected journeys
+
+| Journey ID | Priority | Result | Evidence |
+|---|---|---|---|
+| J90 | P0 | **PASS** | synthetic fixture evidence |
+
+## Verdict
+
+Verdict: PASS
+QASIGNOFF
+    cat > docs/release/security-signoff/v0.0.1-fx.md <<'SECSIGNOFF'
+# Synthetic security sign-off fixture
+
+Test-only. Not a real release sign-off.
+
+## Verdict
+
+Verdict: PASS
+SECSIGNOFF
+    git add -A
+    git commit -qm "test: stop gitignoring the evidence file + use a catalog/signoffs that reach a real PASS verdict"
+    A_SHA="$(git rev-parse HEAD)"
+    python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+      --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+      --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+      --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+    git add -A
+    git commit -qm "test: add release evidence for v0.0.1-fx (real ADD commit)"
+    git rev-parse HEAD > "$WORK/B_SHA"
+  )
+}
+
 FIXDIR="$WORK/fx45"
 setup_fixture_repo "$FIXDIR"
-(
-  cd "$FIXDIR/repo"
-  A_SHA="$(git rev-parse HEAD)"
-  echo "release notes" > docs/release/v0.0.1-fx.md
-  git add -A
-  git commit -qm "docs(release): notes for v0.0.1-fx"
-  B_SHA="$(git rev-parse HEAD)"
+add_real_evidence "$FIXDIR/repo"
 
-  echo "$A_SHA" > "$WORK/A_SHA"
-  echo "$B_SHA" > "$WORK/B_SHA"
-
-  mkdir -p docs/release/qa-signoff
-  cat > docs/release/qa-signoff/v0.0.1-fx.evidence.json <<EOF
-{"candidate": {"candidate_sha": "$A_SHA"}}
-EOF
-)
-
-# Sub-case (a): prove R1 itself would tolerate this exact A->B range as
-# "ancestor-mechanical" (uses the REAL check-release-evidence.py copied into
-# the fixture repo by setup_fixture_repo, so it runs standalone against the
-# fixture repo's own git history rather than this repo's). Asserted on R1's
-# own printed classification line, not the script's overall exit code — the
-# minimal fixture evidence.json here deliberately omits fields R2+ need
-# (catalog/journeys), since only R1's verdict is under test in this
-# sub-case; a downstream KeyError from an unrelated, later-running rule is
-# not a failure of the thing being asserted here.
+# Sub-case (a): the real checker (uses the REAL check-release-evidence.py
+# copied into the fixture repo by setup_fixture_repo, running standalone
+# against the fixture's own git history) reaches OK for this literal
+# committed shape — the evidence file's own ADD commit is tolerated
+# (reuse_class: ancestor), not just a narrowly-scoped R1-only slice.
 R1_OUT="$(cd "$FIXDIR/repo" && python3 scripts/qa/check-release-evidence.py --version 0.0.1-fx --tag-target "$(cat "$WORK/B_SHA")" 2>&1)"
 assert_contains "$R1_OUT" 'reuse_class: ancestor' \
-  "sanity: R1 itself does NOT block candidate A -> tag_target B (release-notes-only diff is classified MECHANICAL, reuse_class ancestor) — confirms the guard's check below is genuinely stricter, not redundant"
-assert_not_contains "$R1_OUT" '^R1:' \
-  "sanity: R1 emits no blocking finding for this range"
+  "R1 tolerates the evidence file's own creation commit (reuse_class: ancestor)"
+assert_contains "$R1_OUT" '^OK ' \
+  "check-release-evidence.py reaches OK for a real committed evidence-add commit"
 
-# Sub-case (b): reverse ordering — evidence candidate is A, HEAD is B. The
-# guard must refuse, naming the SHA mismatch, even though R1 above passed.
+# Sub-case (b): the real guard — not just the checker — PASSES against this
+# same commit and actually pushes the tag. This is the exact scenario
+# AAASM-5998 proved was previously unreachable (the old guard's literal
+# candidate_sha==HEAD check refused every committed evidence file, always).
 (
   cd "$FIXDIR/repo"
   GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
   GUARD_EXIT=$?
-  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses (exit $GUARD_EXIT) when candidate_sha (A) != HEAD (B)"; else fail "guard should have refused but exited 0"; fi
-  echo "$GUARD_OUT" | grep -qE 'candidate SHA mismatch' && pass "guard names the SHA mismatch explicitly" || fail "guard did not name the SHA mismatch: $GUARD_OUT"
-  echo "$GUARD_OUT" | grep -qE "$(cat "$WORK/A_SHA")" && pass "guard's message cites the evidence candidate SHA" || fail "guard message missing candidate SHA"
-  echo "$GUARD_OUT" | grep -qE "$(cat "$WORK/B_SHA")" && pass "guard's message cites HEAD's SHA" || fail "guard message missing HEAD SHA"
-  # No tag should have been created.
-  if git rev-parse -q --verify refs/tags/v0.0.1-fx >/dev/null; then fail "guard must not create the tag on refusal"; else pass "no local tag created on refusal"; fi
-)
-
-# Sub-case (c): forward ordering — evidence candidate == HEAD (B). The guard
-# must pass the candidate-binding check and (with the stub readiness + a
-# throwaway --remote) actually push the tag to the local bare repo.
-(
-  cd "$FIXDIR/repo"
-  B_SHA="$(cat "$WORK/B_SHA")"
-  cat > docs/release/qa-signoff/v0.0.1-fx.evidence.json <<EOF
-{"candidate": {"candidate_sha": "$B_SHA"}}
-EOF
-  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
-  GUARD_EXIT=$?
-  if [ "$GUARD_EXIT" -eq 0 ]; then pass "guard succeeds (forward ordering: candidate_sha == HEAD)"; else fail "guard unexpectedly refused forward case: $GUARD_OUT"; fi
-  if git ls-remote --tags testremote v0.0.1-fx 2>/dev/null | grep -q .; then pass "tag v0.0.1-fx pushed to the throwaway local bare remote"; else fail "tag was not pushed on the forward-ordering case"; fi
+  if [ "$GUARD_EXIT" -eq 0 ]; then pass "guard succeeds for a real committed evidence-add commit (AAASM-5998)"; else fail "guard refused a legitimate committed-evidence candidate: $GUARD_OUT"; fi
+  if git ls-remote --tags testremote v0.0.1-fx 2>/dev/null | grep -q .; then pass "tag v0.0.1-fx pushed to the throwaway local bare remote"; else fail "tag was not pushed for the legitimate committed-evidence case"; fi
 )
 
 # Case: tag-exists refusal — re-running the guard for the same version must refuse.
@@ -254,6 +303,91 @@ EOF
   GUARD_OUT2="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
   GUARD_EXIT2=$?
   if [ "$GUARD_EXIT2" -ne 0 ]; then pass "guard refuses re-tagging a version whose tag already exists"; else fail "guard should refuse when the tag already exists"; fi
+)
+
+# Sub-case (c): tamper — modifying the evidence file AFTER it was committed
+# (not just adding it) must still refuse, proving the fix didn't also loosen
+# tamper detection (R1b's actual purpose).
+FIXDIR_TAMPER="$WORK/fx45-tamper"
+setup_fixture_repo "$FIXDIR_TAMPER"
+add_real_evidence "$FIXDIR_TAMPER/repo"
+(
+  cd "$FIXDIR_TAMPER/repo"
+  python3 -c "
+import json
+p = 'docs/release/qa-signoff/v0.0.1-fx.evidence.json'
+d = json.load(open(p))
+d['verdict'] = 'PASS'
+json.dump(d, open(p, 'w'), indent=2)
+"
+  git add -A
+  git commit -qm "test: tamper — rewrite evidence after the fact"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a tampered (post-add-modified) evidence file"; else fail "guard should have refused the tampered evidence file"; fi
+  echo "$GUARD_OUT" | grep -qE 'R1b' && pass "guard's refusal names R1b (authorization record modified after the fact)" || fail "guard refusal did not cite R1b: $GUARD_OUT"
+  if git rev-parse -q --verify refs/tags/v0.0.1-fx >/dev/null; then fail "guard must not create the tag on a tamper refusal"; else pass "no local tag created on the tamper refusal"; fi
+)
+
+# Sub-case (d): stale/mismatched — evidence names a candidate_sha that is
+# not even an ancestor of HEAD (a completely unrelated/bogus SHA). Must
+# refuse cleanly with no crash — AAASM-5998 also fixed an uncaught
+# CalledProcessError in check-release-evidence.py's R1b/R6 for exactly this
+# input (both resolve candidate_sha via git calls that assume R1 already
+# validated it as a real ancestor).
+FIXDIR_BOGUS="$WORK/fx45-notancestor"
+setup_fixture_repo "$FIXDIR_BOGUS"
+add_real_evidence "$FIXDIR_BOGUS/repo"
+(
+  cd "$FIXDIR_BOGUS/repo"
+  python3 -c "
+import json
+p = 'docs/release/qa-signoff/v0.0.1-fx.evidence.json'
+d = json.load(open(p))
+d['candidate']['candidate_sha'] = '0000000000000000000000000000000000dead'
+json.dump(d, open(p, 'w'), indent=2)
+"
+  git add -A
+  git commit -qm "test: point candidate_sha at a bogus/unrelated sha"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a non-ancestor candidate_sha"; else fail "guard should have refused a non-ancestor candidate_sha"; fi
+  echo "$GUARD_OUT" | grep -qE 'Traceback' && fail "guard crashed with a traceback instead of a clean refusal (AAASM-5998's R1b/R6 crash guard regressed): $GUARD_OUT" || pass "guard refused cleanly, no crash"
+  if git rev-parse -q --verify refs/tags/v0.0.1-fx >/dev/null; then fail "guard must not create the tag on a non-ancestor refusal"; else pass "no local tag created on the non-ancestor refusal"; fi
+)
+
+# Sub-case (e): non-ancestor candidate_sha COMBINED with a catalog digest
+# drift at tag_target — sub-case (d) alone never exercises R2/R3's
+# candidate_sha-dependent branch (it only runs when the digest actually
+# differs). Without R2/R3 also skipped for a non-ancestor candidate, this
+# input reaches _load_catalog_text(candidate_sha) with a bogus SHA and
+# bails via a bare "does not exist" SystemExit that (a) misleadingly claims
+# the catalog is missing when it exists at tag_target, and (b) skips the
+# normal "BLOCK — N rule violation(s)" report R4-R8 would otherwise
+# contribute to (found in this PR's own adversarial review).
+FIXDIR_BOGUS_DRIFT="$WORK/fx45-notancestor-drift"
+setup_fixture_repo "$FIXDIR_BOGUS_DRIFT"
+add_real_evidence "$FIXDIR_BOGUS_DRIFT/repo"
+(
+  cd "$FIXDIR_BOGUS_DRIFT/repo"
+  # Drift the catalog at tag_target (a digest-relevant field) so R2 sees a
+  # real mismatch and takes the candidate_sha-resolving branch.
+  sed -i.bak 's/fidelity: mock/fidelity: real_local_process/' qa/golden-journeys.yaml && rm -f qa/golden-journeys.yaml.bak
+  python3 -c "
+import json
+p = 'docs/release/qa-signoff/v0.0.1-fx.evidence.json'
+d = json.load(open(p))
+d['candidate']['candidate_sha'] = '0000000000000000000000000000000000dead'
+json.dump(d, open(p, 'w'), indent=2)
+"
+  git add -A
+  git commit -qm "test: drift the catalog digest AND point candidate_sha at a bogus sha"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a non-ancestor candidate_sha with a drifted catalog"; else fail "guard should have refused"; fi
+  echo "$GUARD_OUT" | grep -qE 'Traceback' && fail "guard crashed with a traceback (R2/R3 not-ancestor guard regressed): $GUARD_OUT" || pass "guard refused cleanly, no crash"
+  echo "$GUARD_OUT" | grep -qE 'does not exist at' && fail "guard fell through to the misleading 'does not exist' SystemExit instead of a normal BLOCK report: $GUARD_OUT" || pass "no misleading 'does not exist' message — normal BLOCK reporting used instead"
+  echo "$GUARD_OUT" | grep -qE 'BLOCK — [0-9]+ rule violation' && pass "guard's refusal uses the normal BLOCK — N rule violation(s) report" || fail "guard refusal did not use the normal report format: $GUARD_OUT"
 )
 
 # ---------------------------------------------------------------------------
@@ -344,8 +478,11 @@ git init -q "$FIX8B/repo"
   git remote add lookalike "$FIX8B/ai-agent-assembly/agent-assembly.git"
   git config user.email t@t.com
   git config user.name t
-  mkdir -p scripts
+  mkdir -p scripts/qa
   cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
+  cp "$REPO_ROOT/scripts/qa/check-release-evidence.py" scripts/qa/
+  cp "$REPO_ROOT/scripts/qa/registry_digest.py" scripts/qa/
+  cp "$REPO_ROOT/scripts/qa/render-signoff-journeys.py" scripts/qa/
   cat > scripts/release-readiness.sh <<'STUB'
 #!/usr/bin/env bash
 exit 0
@@ -358,10 +495,12 @@ STUB
   EXIT=$?
   # Must NOT refuse on the org-identity check (that would mean the local
   # path is still being misclassified as the real org repo). It correctly
-  # refuses downstream instead, on this fixture's missing evidence record.
+  # refuses downstream instead, on this fixture's missing evidence record
+  # (AAASM-5998: step 5 now delegates that check to check-release-evidence.py
+  # itself, whose message differs from the old ad-hoc bash check).
   if printf '%s' "$OUT" | grep -qE 'resolves to the real ai-agent-assembly/agent-assembly remote'; then
     fail "guard still misclassifies a local lookalike path as the real org remote (the bug Case 8c's fix addresses)"
-  elif [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'release-evidence record missing'; then
+  elif [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'evidence file not found'; then
     pass "guard treats a local org-lookalike path as an ordinary local fixture (correctly refuses on missing evidence, not on org-identity)"
   else
     fail "unexpected guard outcome for the local lookalike fixture (exit=$EXIT): $OUT"
