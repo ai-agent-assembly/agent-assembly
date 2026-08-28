@@ -128,9 +128,11 @@ bash scripts/release-tag-guard.sh <version>
 **Do not run `git tag` / `git push` directly for this step** (AAASM-5879).
 `scripts/release-tag-guard.sh` is the only sanctioned way to create/push
 the tag: it re-runs `scripts/release-readiness.sh` (all 14 checks,
-including sections 1.5/1.6's security/QA sign-off PASS), enforces a strict
-`candidate_sha == HEAD` binding against the committed release-evidence
-record, refuses if the tag already exists, and refuses on a remote that
+including sections 1.5/1.6's security/QA sign-off PASS), re-verifies
+candidate binding fresh against `HEAD` immediately before tagging
+(AAASM-5998 — TOCTOU defense-in-depth re-running the same R1/R1b rules
+check 14 already ran against the committed release-evidence record),
+refuses if the tag already exists, and refuses on a remote that
 doesn't resolve to `ai-agent-assembly/agent-assembly`. A raw `git tag -a`
 + `git push remote <tag>` bypasses every one of those checks — the exact
 kind of undocumented second path this project's release automation is
