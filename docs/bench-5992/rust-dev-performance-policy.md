@@ -26,6 +26,7 @@ primary evidence.
 | AAASM-5994 | sccache wired into 3 `CARGO_INCREMENTAL=0` CI jobs (build, commit-range-build, clippy) | Done — [PR #2262](https://github.com/ai-agent-assembly/agent-assembly/pull/2262) |
 | AAASM-5995 | Confirmed discovery-overhead cost scales with target count, not a fixed workspace tax | Done (investigation only, no code) |
 | AAASM-5981 | `scripts/rust-target-lifecycle.sh` — attribution + ownership-scoped automatic reclamation | Done — [PR #2263](https://github.com/ai-agent-assembly/agent-assembly/pull/2263) |
+| AAASM-6003 | Baseline measurement of Build/Clippy/Test/commit-range-build CI job wall-clock, cache restore/save, and sccache stats from existing runs | Done (this section) |
 
 ## Profile guide
 
@@ -217,6 +218,133 @@ developer's worktree layout convention) rather than a generically portable
 tool with demonstrated cross-repo reuse — AAASM-5991's own repo-decision
 framework requires that before considering a shared or standalone repo. Full
 reasoning: report §8.
+
+## CI job baseline measurement (AAASM-6003)
+
+Sibling of AAASM-6002 Phase 1: a real-evidence baseline for the `Build`, `Clippy lint`,
+`Test`, and `Every commit in the range builds` (`commit-range-build`) CI jobs on
+canonical `main`, before any tuning (Phases 2-4). Unlike the rest of this document,
+**this section is primary evidence** — pulled directly from existing completed
+GitHub Actions runs and their logs/API, not summarized from `report.md`. No new CI
+run was triggered to produce it.
+
+### Finding: the Swatinem/rust-cache restore misses on every sampled job — and the mechanism is known
+
+Across every job (`Build`, `Clippy lint`, `Test`, `commit-range-build`) in every one
+of the 5 runs sampled below, the `Swatinem/rust-cache` restore step logged `No cache
+found.` and took under 1s (a miss lookup, not a real restore). This is not "the
+cache is broken" — it's structural, and confirmed against the live GitHub Actions
+cache list (`gh api repos/ai-agent-assembly/agent-assembly/actions/caches`,
+2026-08-28):
+
+- GitHub Actions scopes a cache to the branch that saved it, plus that branch's
+  descendants; a cache saved on `main` is visible to every branch, but a cache saved
+  on a feature branch is visible only to that branch.
+- `Build`/`Clippy lint`/`Test` are gated by `needs.changes.outputs.rust == 'true'`
+  (`.github/workflows/ci.yml:657,801,867`) and are skipped whenever a push doesn't
+  touch a `rust`-filtered path. In the current run history, recent pushes to `main`
+  did not touch Rust paths, so these three jobs have not run — and therefore not
+  saved a cache — on `main` at all recently.
+- The live cache list confirms this directly: querying for `v0-rust-build-*`,
+  `v0-rust-test-*`, `v0-rust-clippy-*` keys returns **zero `refs/heads/main`
+  entries** (all entries are `refs/pull/*/merge`). With no `main`-scoped cache to
+  inherit, every feature-branch job is cold by construction, regardless of how
+  recently a near-identical branch ran.
+- `commit-range-build` has no `rust`-gate (deliberately, per the `AAASM-5675` comment
+  in `ci.yml:717-723`) so it always runs, but its own cache key still requires a
+  prior save on the exact branch/environment-hash combination, which a fresh
+  worktree branch never has.
+
+This is worth flagging as a real Phase 2+ candidate — restore is currently pure
+overhead (a fast no-op) rather than the time-saving mechanism it's configured to be
+— but no fix is proposed here; that's out of scope for a measurement-only ticket.
+
+### Wall-clock and cache timings — 4 runs, pre-sccache (before AAASM-5994/PR #2262 merged)
+
+All four are `main`-targeted PR branches that touched `.rs` files, sampled because
+recent `main`-push runs skip these jobs entirely (no Rust changes in that diff).
+Every "restore" row below is the "No cache found" miss described above; every "save"
+row is the `Swatinem/rust-cache` Post-step upload, which is fast (GHA cache write
+throughput, not compute) and not itself a bottleneck.
+
+| Job | Run / job link | Wall time | Cache restore | Cache save (bytes, time) | Rust-compile+link (inferred) |
+|---|---|---|---|---|---|
+| Build | [33102805691](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33102805691/job/98626190717) | 10m1s | miss, <1s | 730,384,895 B (~697 MiB), ~2s | "Build workspace" step: 9m28s |
+| Build | [33097734107](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33097734107/job/98612956967) | 10m4s | miss, <1s | 730,442,846 B, ~2s | 9m36s |
+| Build | [33089465405](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33089465405/job/98606629549) | 12m49s | miss, <1s | 730,371,062 B, ~2m3s (slow tail — throughput dropped to single-digit MB/s partway through, vs. the other three runs' 200-300 MB/s) | 10m15s |
+| Build | [33082085442](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33082085442/job/98602123721) | 10m23s | miss, <1s | 730,384,895 B, ~2s | 9m43s |
+| Clippy lint | [33102805691](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33102805691/job/98626190677) | 8m29s | miss, <1s | not captured (log not pulled for this run) | "Run Clippy" 7m6s + feature-gate variant 44s |
+| Clippy lint | [33097734107](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33097734107/job/98612956788) | 8m11s | miss, <1s | not captured | 7m0s + 43s |
+| Clippy lint | [33089465405](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33089465405/job/98606629474) | 7m19s | miss, <1s | not captured | 6m6s + 38s |
+| Clippy lint | [33082085442](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33082085442/job/98602123732) | 8m29s | miss, <1s | not captured | 7m13s + 44s |
+| Test | [33102805691](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33102805691/job/98626190688) | 40m13s | miss, <1s | two caches: ~93.7 MB (Node.js native binding) + ~1.56 GB (main) | "Run tests" (nextest) 21m24s + "Run aa-gateway doctests" 2m40s; ~15m of the wall time is pre-test setup (disk cleanup, pre-building `aasm`/`aa-api-server` binaries the tests spawn) |
+| Test | [33097734107](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33097734107/job/98612956780) | 34m25s | miss, <1s | same two-cache pattern | 17m47s + 1m59s |
+| Test | [33089465405](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33089465405/job/98606629641) | 40m12s | miss, <1s | same | 21m31s + 2m41s |
+| Test | [33082085442](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33082085442/job/98602123829) | 41m58s | miss, <1s | same | 22m52s + 2m46s |
+| commit-range-build | [33102805691](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33102805691/job/98624749452) | 4m46s | miss, <1s | not captured | "Build every commit the merge introduces" 4m17s |
+| commit-range-build | [33097734107](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33097734107/job/98610439240) | 12m26s | miss, <1s | not captured | 11m46s |
+| commit-range-build | [33089465405](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33089465405/job/98578052817) | 11m15s | miss, <1s | not captured | 8m44s |
+| commit-range-build | [33082085442](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33082085442/job/98558386277) | 11m40s | miss, <1s | 538,628,667 B, ~1s | 11m12s |
+
+Summary ranges (n=4 each): **Build** 10m1s-12m49s; **Clippy lint** 7m19s-8m29s;
+**Test** 34m25s-41m58s; **commit-range-build** 4m46s-12m26s (this job's wall time is
+driven by how many commits are in the merge range, not a fixed workload — the
+4m46s run had a short range; treat the spread as expected, not noise).
+
+### sccache stats (n=1 — cold cache-namespace, pre-merge PR run — not a steady-state measurement)
+
+The only sccache-instrumented run available in history is
+[33075630033](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33075630033),
+AAASM-5994/PR #2262's *own* CI run — i.e., the run that first turned sccache on, before
+that config merged to `main`. Its `Swatinem/rust-cache` restore also missed ("No cache
+found"), so these numbers reflect a cold GHA sccache namespace with zero cross-run
+warm-up, not the tool's steady-state hit rate. **Per the AC, a warm-cache sccache hit
+rate is not rerun — unavailable, needs a Phase 2/3 experiment run** once sccache has
+had multiple runs to accumulate a warm object cache.
+
+`sccache --show-stats` is emitted automatically by the `mozilla-actions/sccache-action`
+Post-step (not an explicit workflow step) at the end of `Build`, `Clippy lint`, and
+`commit-range-build` — the three jobs AAASM-5994 wired `RUSTC_WRAPPER=sccache` into.
+`Test` has no `RUSTC_WRAPPER` set (`ci.yml:867-` carries no sccache block) — that is
+by design (out of scope for AAASM-5994's first pass, per this doc's own Open
+follow-ups below), not a measurement gap.
+
+| Job | Run/job link | Wall time | Compile requests (executed) | Cache hits / misses | Cache hit rate | Cache write errors / writes |
+|---|---|---|---|---|---|---|
+| Build | [job 98702123359](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33075630033/job/98702123359) | 10m39s | 1263 (1084) | 33 / 1047 | 3.06% | 139 / 908 (~15.3%) |
+| Clippy lint | [job 98702123228](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33075630033/job/98702123228) | 8m40s | 2036 (1340) | 494 / 842 | 36.98% | 110 / 732 (~15.0%) |
+| commit-range-build | [job 98702150288](https://github.com/ai-agent-assembly/agent-assembly/actions/runs/33075630033/job/98702150288) | 10m27s | 1922 (1300) | 4 / 1292 | 0.31% | 37 / 1255 (~2.9%) |
+
+Two things not in the table above, because they'd be misread as wall-clock if placed
+next to the "Wall time" column: `sccache --show-stats` also reports
+`cache_write_duration` and `compiler_write_duration` (Build: 149s / 1315s; Clippy:
+359s / 489s; commit-range-build: 578s / 776s) — these are **cumulative across
+parallel compilation processes**, not wall-clock, and routinely exceed the job's
+actual wall time by design. They are not directly comparable to any column above.
+
+The **cache write error rate (~15% on Build/Clippy, ~3% on commit-range-build)** is a
+real, cited number independent of the cold-cache caveat and is worth carrying forward
+as a Phase 2+ input even though this ticket doesn't diagnose its cause.
+
+`Test`'s own cache save in this same run (job not sccache-instrumented, so no
+`--show-stats` output) followed the same two-cache pattern as the pre-sccache Test
+runs above — not re-tabulated since it adds no new information over the n=4 Test
+rows.
+
+### What is not directly measurable from existing logs
+
+- **Per-phase (restore/compile/link/save) breakdown within "Build workspace" /
+  "Run Clippy" / "Run tests" / "Build every commit the merge introduces"** — these
+  are single opaque `cargo`/`cargo nextest` invocations in the workflow; the logs
+  don't emit a restore-vs-compile-vs-link split inside that one step. `cargo build
+  --timings` HTML output (referenced in this doc's Open follow-ups below) would give
+  this, but isn't currently collected in CI.
+- **Warm-cache sccache hit rate** (steady-state, after the object cache has
+  accumulated more than one run's worth of history) — not rerun; needs a Phase 2/3
+  experiment run per the AC's explicit allowance for this case.
+- **sccache stats for `Test`/`commit-range-build` as they exist today** — `Test` has
+  no sccache instrumentation by design (noted above); `commit-range-build` *is*
+  instrumented (table above) so this gap applies to `Test` only.
 
 ## Open follow-ups (not yet implemented)
 
