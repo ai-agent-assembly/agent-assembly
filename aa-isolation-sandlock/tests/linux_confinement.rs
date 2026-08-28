@@ -1061,7 +1061,7 @@ fn a_removed_credential_and_a_kept_one_reach_the_child_differently() {
 #[test]
 fn supervisor_authority_is_not_delegated_to_the_child_by_possession() {
     let scenario = "supervisor credentials do not reach the child";
-    let Some(backend) = require_confining_backend(scenario) else {
+    let Some(mut backend) = require_confining_backend(scenario) else {
         return;
     };
     let Some(env_program) = ["/usr/bin/env", "/bin/env"].iter().find(|p| Path::new(p).exists()) else {
@@ -1095,6 +1095,15 @@ fn supervisor_authority_is_not_delegated_to_the_child_by_possession() {
                 .with_scope(RequirementScope::Selectors(system_reads())),
         )
         .with_credentials(plan.into_posture());
+    // `EnvironmentPlanner` only classifies *names* into a posture; a real
+    // caller (aa-cli's `build_child_env`) separately resolves the *values* and
+    // hands them to `set_child_environment` — mirrored here with the one name
+    // the plan actually delegated (`AA_GATEWAY_AUTH` was withheld as a
+    // supervisor credential, never delegated, so it has no value to carry).
+    backend.set_child_environment(BTreeMap::from([(
+        "AA_AGENT_ID".to_string(),
+        "agent-under-test".to_string(),
+    )]));
     let (completed, _) = run(&backend, &spec);
 
     assert!(
