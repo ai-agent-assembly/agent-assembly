@@ -333,14 +333,33 @@ fn proxy_status_stale_pid_cleans_up() {
 
 #[test]
 fn proxy_start_exits_failure_when_binary_not_found() {
-    // `resolve_binary()` in start.rs also checks `./target/release/aa-proxy`;
-    // skip gracefully on machines where a release build already exists there.
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("workspace parent");
-    if workspace.join("target").join("release").join("aa-proxy").exists() {
-        eprintln!("proxy_start_exits_failure_when_binary_not_found: skipping — release build exists");
-        return;
+    // `resolve_binary()` in start.rs now prefers the `aa-proxy` sitting beside
+    // the running `aasm` executable (AAASM-5982, ADR 0030 §6.4) before it ever
+    // consults `$PATH`. `cmd()` without `AASM_BIN_PATH` runs `aasm` via
+    // `cargo run -p aa-cli --bin aasm --`, so the executable actually spawned
+    // is `target/{debug,release}/aasm`, and if a same-profile `aa-proxy` was
+    // already built it sits right beside it — no `$PATH`/`HOME` scrubbing can
+    // hide that. Skip gracefully rather than false-fail on a machine where
+    // either profile has already been built.
+    // Honor CARGO_TARGET_DIR (this repo's shared-target convention) — a
+    // profile check against `<workspace>/target` would silently miss a
+    // sibling that actually landed under a redirected target dir.
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("workspace parent")
+                .join("target")
+        });
+    for profile in ["debug", "release"] {
+        if target_root.join(profile).join("aa-proxy").exists() {
+            eprintln!(
+                "proxy_start_exits_failure_when_binary_not_found: skipping — \
+                 {profile} build exists beside the aasm executable this test spawns"
+            );
+            return;
+        }
     }
 
     let fixture = ProxyFixture::new();
@@ -349,7 +368,7 @@ fn proxy_start_exits_failure_when_binary_not_found() {
     let out = fixture
         .cmd()
         .args(["proxy", "start", "--listen", &format!("127.0.0.1:{port}")])
-        // Strip only the aa-proxy dir so `which aa-proxy` fails; keep
+        // Strip only the aa-proxy dir so the `$PATH` walk fails; keep
         // cargo/rustc accessible so `cargo run` can still compile aa-cli.
         // Override HOME so ~/.cargo/bin/aa-proxy is also absent.
         .env("PATH", path_without_proxy_dir())

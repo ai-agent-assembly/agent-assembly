@@ -220,9 +220,12 @@ fn load_policy(policy_path: &Option<std::path::PathBuf>) -> std::sync::Arc<crate
 
 /// Attempt to spawn the proxy subsystem as a subprocess on the given [`TaskTracker`].
 ///
-/// Locates the `aa-proxy` binary via `which` and spawns it as a child process.
-/// If the binary is not found, the proxy layer is immediately degraded.
-/// If the subprocess exits unexpectedly at runtime, a
+/// Locates the `aa-proxy` binary via [`aa_core::binary_resolve::resolve_binary`]
+/// — the exe-sibling-first resolver `aa-cli`'s standalone `aasm proxy start`
+/// and this module's own [`probe_proxy`][crate::layer] use, so a spawn and a
+/// probe can never disagree about which `aa-proxy` is present (AAASM-5982,
+/// ADR 0030 §6.4). If the binary is not found, the proxy layer is immediately
+/// degraded. If the subprocess exits unexpectedly at runtime, a
 /// [`PipelineEvent::LayerDegradation`] is emitted on the broadcast channel.
 fn spawn_proxy(
     tracker: &TaskTracker,
@@ -231,14 +234,11 @@ fn spawn_proxy(
     gateway_endpoint: Option<&str>,
     degraded_layers: &mut Vec<String>,
 ) {
-    let proxy_bin = match which::which("aa-proxy") {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!(error = %e, "aa-proxy binary not found — degrading proxy layer");
-            emit_proxy_degradation(broadcast_tx, active_layers, format!("binary not found: {e}"));
-            degraded_layers.push("proxy".to_string());
-            return;
-        }
+    let Some(proxy_bin) = aa_core::binary_resolve::resolve_binary("aa-proxy") else {
+        tracing::warn!("aa-proxy binary not found — degrading proxy layer");
+        emit_proxy_degradation(broadcast_tx, active_layers, "binary not found".to_string());
+        degraded_layers.push("proxy".to_string());
+        return;
     };
 
     let proxy_broadcast_tx = broadcast_tx.clone();
@@ -1408,9 +1408,18 @@ mod tests {
 
     #[test]
     fn spawn_proxy_binary_not_found_emits_degradation() {
-        // Temporarily set PATH to empty so `which("aa-proxy")` fails.
+        // Temporarily set PATH to empty and HOME to a directory with no
+        // `.cargo/bin`, so every lookup `aa_core::binary_resolve::resolve_binary`
+        // performs — `$PATH` and `~/.cargo/bin` — misses. The exe-sibling
+        // lookup misses on its own: the test binary's directory never
+        // contains `aa-proxy`. Without overriding HOME too, this test would
+        // pass or fail depending on whether the machine running it happens to
+        // have `aa-proxy` installed under the real `~/.cargo/bin`.
         let orig_path = std::env::var("PATH").unwrap_or_default();
+        let orig_home = std::env::var("HOME").ok();
         std::env::set_var("PATH", "");
+        let empty_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", empty_home.path());
 
         let tracker = TaskTracker::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
@@ -1420,6 +1429,10 @@ mod tests {
         super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
 
         std::env::set_var("PATH", &orig_path);
+        match orig_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
 
         // Binary not found should immediately degrade.
         assert!(degraded.contains(&"proxy".to_string()));

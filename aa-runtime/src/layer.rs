@@ -183,10 +183,14 @@ fn probe_ebpf() -> bool {
 
 /// Returns `true` if the `aa-proxy` binary is available on a supported platform.
 ///
-/// Supported platforms: Linux and macOS. The binary must be discoverable via `$PATH`.
+/// Supported platforms: Linux and macOS. Resolved with
+/// [`aa_core::binary_resolve::resolve_binary`] — the same exe-sibling-first
+/// search [`crate::runtime`]'s `spawn_proxy` uses to actually launch the
+/// binary, so this probe and an autostarted proxy can never disagree about
+/// which `aa-proxy` is present (AAASM-5982, ADR 0030 §6.4).
 fn probe_proxy() -> bool {
     let supported_platform = cfg!(target_os = "linux") || cfg!(target_os = "macos");
-    supported_platform && which::which("aa-proxy").is_ok()
+    supported_platform && aa_core::binary_resolve::resolve_binary("aa-proxy").is_some()
 }
 
 // ── Layer detector ───────────────────────────────────────────────────────────
@@ -390,7 +394,7 @@ impl LayerDetector {
                 },
                 // ADR 0033 §7: finding the binary does not establish that any
                 // process routes traffic through it.
-                detail: "the aa-proxy binary was found on $PATH; no traffic was observed routed through it".to_string(),
+                detail: "the aa-proxy binary was found (exe-sibling, $PATH, or ~/.cargo/bin); no traffic was observed routed through it".to_string(),
             };
         }
         if !(cfg!(target_os = "linux") || cfg!(target_os = "macos")) {
@@ -407,9 +411,9 @@ impl LayerDetector {
             present: false,
             selected_mode: SelectedMode::Unset,
             basis: AttestationBasis::PrerequisiteUnmet {
-                requirement: "the aa-proxy binary on $PATH".to_string(),
+                requirement: "the aa-proxy binary (exe-sibling, $PATH, or ~/.cargo/bin)".to_string(),
             },
-            detail: "aa-proxy was not found on $PATH".to_string(),
+            detail: "aa-proxy was not found beside aasm, on $PATH, or in ~/.cargo/bin".to_string(),
         }
     }
     /// Detect available interception layers.
