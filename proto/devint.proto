@@ -282,6 +282,27 @@ message TargetArgs {
   // that it did not — the same undetectable substitution `PlanArgs.project_root`
   // documents. Clients below v6 must refuse project scope rather than send it.
   string project_root = 2;
+  // Names, never values, from the caller's own launch environment (AAASM-5993).
+  // `caller_env_examined` is every name the caller actually checked;
+  // `caller_env_present` is the subset that were set to a non-empty value. A
+  // name absent from `caller_env_examined` means the caller never asked about
+  // it — distinct from present-in-examined-but-absent-from-present, which
+  // means the caller checked and found it unset. No credential or endpoint
+  // value ever travels in either list; a value-bearing variable's *name*
+  // reaching this field is the type-level property that makes it impossible
+  // to also carry the value (`aa_core::integration::CallerEnvironment`).
+  //
+  // Unlike `project_root`, this needs no version gate: an adapter's bypass
+  // check already treats a name absent from both lists as "unexamined", the
+  // same fail-closed reading as if this request carried nothing at all
+  // (AAASM-5993's whole point). A peer that predates these fields discards
+  // them on decode and falls back to exactly that same safe default — the
+  // silent-drop failure mode `project_root` documents is a *false claim of
+  // correctness*; there is no equivalent false claim available here, because
+  // dropping this field can only ever produce the already-conservative
+  // "nothing stated" answer.
+  repeated string caller_env_examined = 3;
+  repeated string caller_env_present = 4;
   // The caller's Claude Code configuration home, on the same terms as
   // `PlanArgs.user_config_home`: mandatory at "user" scope (including empty
   // `settings_scope`, since that means "the one installation that exists" and
@@ -292,7 +313,7 @@ message TargetArgs {
   // refuse user scope *and* empty `settings_scope`, for the same
   // ignored-field-decodes-identically-to-unsent reason `project_root` above
   // documents.
-  string user_config_home = 3;
+  string user_config_home = 5;
 }
 
 // What the caller wants planned. Every field is something a caller may

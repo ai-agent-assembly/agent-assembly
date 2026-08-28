@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tokio::io::{BufReader, BufWriter};
@@ -76,6 +76,11 @@ pub struct FakeLifecycle {
     behaviour: Behaviour,
     mutation: ApplyMutation,
     calls: AtomicUsize,
+    /// The `LifecycleTarget` the most recent `status`/`verify` call arrived
+    /// with — AAASM-5993's wire-round-trip proof needs to see what actually
+    /// reached the service after `Request` → `build_target` decode, not just
+    /// what the client sent.
+    last_target: Mutex<Option<LifecycleTarget>>,
 }
 
 /// `Changed` rather than a derived default.
@@ -89,6 +94,7 @@ impl Default for FakeLifecycle {
             behaviour: Behaviour::default(),
             mutation: ApplyMutation::Changed,
             calls: AtomicUsize::new(0),
+            last_target: Mutex::new(None),
         }
     }
 }
@@ -120,6 +126,12 @@ impl FakeLifecycle {
     /// refused request never reached the port at all.
     pub fn calls(&self) -> usize {
         self.calls.load(Ordering::Relaxed)
+    }
+
+    /// The `LifecycleTarget` the most recent `status` or `verify` call
+    /// received, after `Request` → `TargetArgs` → `build_target` decode.
+    pub fn last_target(&self) -> Option<LifecycleTarget> {
+        self.last_target.lock().expect("lock poisoned").clone()
     }
 
     fn enter(&self) -> Result<(), LifecycleError> {
@@ -267,17 +279,19 @@ impl IntegrationLifecycle for FakeLifecycle {
         })
     }
 
-    async fn status(&self, tool: &DevToolKind, _target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
+    async fn status(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<IntegrationStatus, LifecycleError> {
         self.enter()?;
+        *self.last_target.lock().expect("lock poisoned") = Some(target.clone());
         Ok(fake_status(tool))
     }
 
     async fn verify(
         &self,
         _tool: &DevToolKind,
-        _target: &LifecycleTarget,
+        target: &LifecycleTarget,
     ) -> Result<VerificationResult, LifecycleError> {
         self.enter()?;
+        *self.last_target.lock().expect("lock poisoned") = Some(target.clone());
         Ok(VerificationResult {
             verified_at_unix_secs: 1_700_000_000,
             outcome: VerificationOutcome::Passed,
@@ -592,6 +606,8 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             settings_scope: "user".to_string(),
             project_root: String::new(),
             user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
+            caller_env_examined: Vec::new(),
+            caller_env_present: Vec::new(),
         }),
     }
 }

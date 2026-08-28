@@ -645,7 +645,33 @@ fn build_target(request: &wire::Request) -> Result<LifecycleTarget, LifecycleErr
         settings_scope: scope,
         project_root,
         user_config_home,
+        // AAASM-5993: reconstructed from the caller-stated name lists, never
+        // from this process's own environment. Both lists absent (a
+        // pre-caller-env client, or one that stated nothing) reconstructs to
+        // `CallerEnvironment::default()` — examined and present both empty —
+        // which `state_of` reads as `NotStated` for every name, the same
+        // fail-closed "unexamined" answer as `caller_env: None`. So this is
+        // always `Some`, never `None`: there is no wire shape left that this
+        // function cannot represent, and collapsing "stated nothing" into
+        // `None` here would just be the same case reached two ways.
+        caller_env: Some(build_caller_env(&args)),
     })
+}
+
+/// Reconstruct a [`CallerEnvironment`] from the two name lists on the wire.
+///
+/// `examined` is seeded from `caller_env_examined` first so a name present on
+/// the wire but, by a malformed or adversarial peer, absent from
+/// `caller_env_examined` is still recorded as examined — `present` on
+/// [`aa_core::integration::CallerEnvironment`] always implies examined by
+/// construction, and this reconstruction preserves that invariant rather than
+/// trusting the wire's two lists to already agree with each other.
+fn build_caller_env(args: &wire::TargetArgs) -> aa_core::integration::CallerEnvironment {
+    let mut env = aa_core::integration::CallerEnvironment::stating(args.caller_env_examined.iter().cloned());
+    for name in &args.caller_env_present {
+        env = env.present(name.clone());
+    }
+    env
 }
 
 /// Resolve `PlanArgs::project_root` for `scope`, refusing rather than defaulting.

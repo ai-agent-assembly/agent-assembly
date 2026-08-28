@@ -24,6 +24,7 @@
 //! so it is the service that says whether a project was needed. Neither shape
 //! lets the service supply the answer.
 
+use aa_core::integration::{CallerEnvironment, KNOWN_LAUNCH_BYPASS_ENV_VARS};
 use aa_runtime::devint::TargetRequest;
 
 use super::session::Failure;
@@ -39,6 +40,24 @@ use super::{exit::Outcome, ScopeArg};
 pub(crate) struct Target {
     project_root: String,
     user_config_home: String,
+    caller_env: CallerEnvironment,
+}
+
+/// This process's own presence-only reading of the names in
+/// [`KNOWN_LAUNCH_BYPASS_ENV_VARS`] (AAASM-5993).
+///
+/// Read once per invocation, the same as [`Target::here`] reads the working
+/// directory once — a value is never read, only whether the name resolves to
+/// one at all (`var_os`, never `var`, so this cannot even observe a value that
+/// happens to not be valid UTF-8).
+fn caller_launch_environment() -> CallerEnvironment {
+    let mut env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS);
+    for name in KNOWN_LAUNCH_BYPASS_ENV_VARS {
+        if std::env::var_os(name).is_some() {
+            env = env.present(name);
+        }
+    }
+    env
 }
 
 impl Target {
@@ -60,17 +79,22 @@ impl Target {
     /// not — where aborting locally would refuse `aasm integrations status` on
     /// a host with nothing user-scoped, or nothing project-scoped, on it.
     pub(crate) fn here() -> Result<Self, Failure> {
-        let project_root = match std::env::current_dir() {
-            Ok(dir) => nameable_on_the_wire(&dir)?,
-            Err(_) => String::new(),
-        };
+        let caller_env = caller_launch_environment();
         let user_config_home = match user_config_home_from_env() {
             Some(dir) => nameable_on_the_wire(&dir)?,
             None => String::new(),
         };
+        let Ok(dir) = std::env::current_dir() else {
+            return Ok(Self {
+                project_root: String::new(),
+                user_config_home,
+                caller_env,
+            });
+        };
         Ok(Self {
-            project_root,
+            project_root: nameable_on_the_wire(&dir)?,
             user_config_home,
+            caller_env,
         })
     }
 
@@ -80,6 +104,7 @@ impl Target {
             settings_scope: "",
             project_root: &self.project_root,
             user_config_home: &self.user_config_home,
+            caller_env: Some(&self.caller_env),
         }
     }
 }

@@ -276,6 +276,16 @@ pub struct LifecycleTarget {
     /// named one (AAASM-5957). `None` is not "the daemon's own `$HOME`" —
     /// substituting it is the AAASM-5957 defect this field exists to close.
     pub user_config_home: Option<std::path::PathBuf>,
+    /// What the caller stated about its own launch environment (AAASM-5993).
+    ///
+    /// `None` — the state of every client today, since nothing on the wire
+    /// carries this yet — means the caller stated nothing, which an adapter's
+    /// environment-based bypass check must read as "unknown", never as
+    /// "clean". This is *never* filled in from this daemon's own process
+    /// environment: the whole point of carrying it on the target is that a
+    /// long-lived, shared daemon has no environment of its own worth reading
+    /// for a bypass check about one particular caller's launch.
+    pub caller_env: Option<aa_core::integration::CallerEnvironment>,
 }
 
 impl LifecycleTarget {

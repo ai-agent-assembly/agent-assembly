@@ -99,6 +99,10 @@ pub use aa_core::integration::{
     UnsupportedMechanism,
 };
 
+// What a caller stated about its own launch environment (AAASM-5993) — a
+// bypass check reads this, never its own process environment.
+pub use aa_core::integration::{CallerEnvironment, EnvVarState, KNOWN_LAUNCH_BYPASS_ENV_VARS};
+
 // Step vocabulary. Every variant of `StepAction` is constructible only from
 // these, so an adapter cannot describe a mutation the plan model cannot render
 // for review or record for removal.

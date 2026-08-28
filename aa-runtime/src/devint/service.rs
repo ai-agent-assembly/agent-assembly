@@ -802,7 +802,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let mut status = registered
             .integration
-            .integration_status(receipt.as_ref())
+            .integration_status(receipt.as_ref(), target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the integration status could not be derived: {e}"),
@@ -825,7 +825,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let result = registered
             .integration
-            .verify_integration(&receipt)
+            .verify_integration(&receipt, target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the protection test could not be run: {e}"),
@@ -852,7 +852,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let status_before = registered
             .integration
-            .integration_status(Some(&receipt))
+            .integration_status(Some(&receipt), target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the integration status could not be derived: {e}"),
@@ -1006,6 +1006,7 @@ mod tests {
                 settings_scope: None,
                 project_root: None,
                 user_config_home: Some(self.settings.parent().expect("settings has a parent").to_path_buf()),
+                caller_env: None,
             }
         }
     }
@@ -1373,6 +1374,7 @@ mod tests {
             settings_scope: None,
             project_root: Some(project.to_path_buf()),
             user_config_home: None,
+            caller_env: None,
         }
     }
 
@@ -1649,6 +1651,7 @@ mod tests {
             settings_scope: None,
             project_root: None,
             user_config_home: Some(elsewhere.path().to_path_buf()),
+            caller_env: None,
         };
         let tool = DevToolKind::ClaudeCode;
 
@@ -1699,6 +1702,7 @@ mod tests {
             settings_scope: None,
             project_root: None,
             user_config_home: Some(elsewhere.path().to_path_buf()),
+            caller_env: None,
         };
 
         match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id, &other).await {
