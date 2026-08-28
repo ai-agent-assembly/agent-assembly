@@ -172,10 +172,14 @@ no-op guard rationale are in
    re-verification (AAASM-5998) would have nothing legitimate to bind
    against either. Removed for that reason: those checks require nothing
    to change locally between "bump merged" and "tag pushed.")
-2. **Confirm the security and QA sign-offs are for this exact `<X>`** —
-   pre-conditions 5/6 above; this is the RUNBOOK section 1.5/1.6 gate
-   already having produced fresh evidence bound to the commit verified in
-   step 1.
+2. **Confirm the security and QA sign-offs are for this exact `<X>`, and that
+   evidence has been finalized against that same commit** — pre-conditions
+   5/6 above are the RUNBOOK section 1.5/1.6 gate; `/release-evidence-finalize <X>`
+   (RUNBOOK section 1.7, AAASM-6001) is the separate step that generates and
+   commits `docs/release/qa-signoff/v<X>.evidence.json` from those two
+   sign-offs — this skill only ever reads that file, it never generates it.
+   If it doesn't exist yet, **stop and run `/release-evidence-finalize <X>`
+   first**, not inline here.
 3. **Run the release gate** — `bash scripts/release-readiness.sh <X>` from
    this exact commit. All 14 checks (mechanical version/CHANGELOG/notes
    state, secrets, stale tap PRs, security sign-off PASS, QA sign-off PASS,
@@ -185,11 +189,16 @@ no-op guard rationale are in
    `bash scripts/release-tag-guard.sh <X>`. This is the only sanctioned way
    this skill creates/pushes the tag: the guard re-verifies remote identity,
    clean tree, re-runs step 3's readiness gate, re-verifies candidate
-   binding fresh against `HEAD` immediately before tagging (AAASM-5998 —
-   the same R1/R1b rules the readiness gate's check 14 already ran, re-run
-   as TOCTOU defense-in-depth), refuses if the tag already exists, and has
-   no skip flag. See [`release-tag-guard.sh`](../../../scripts/release-tag-guard.sh).
-   This triggers `release.yml`.
+   binding fresh against `HEAD` immediately before tagging (AAASM-5998 — the
+   same R1/R1b rules the readiness gate's check 14 already ran, re-run as
+   TOCTOU defense-in-depth), **then additionally runs a narrower,
+   version-scoped candidate/tag binding check** (AAASM-6001 Option 4, ADR 0037
+   — `--strict-tag-binding`): `candidate_sha` may be an ancestor of `HEAD`
+   only through commits that touch exclusively this version's own
+   sign-off/evidence artifacts, nothing else. Refuses if the tag already
+   exists, and has no skip flag. See
+   [`release-tag-guard.sh`](../../../scripts/release-tag-guard.sh). This
+   triggers `release.yml`.
 
 ## Post-conditions
 

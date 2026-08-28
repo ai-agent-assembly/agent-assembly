@@ -139,6 +139,19 @@ not a convenience wrapper around step 3, it is independent enforcement:
   re-running R1/R1b is both correct and no weaker than the old intent: a
   materially different HEAD, a tampered evidence file, or a non-ancestor
   candidate all still refuse.)
+- **Additionally runs a narrower, version-scoped check** (AAASM-6001 Option 4,
+  ADR 0037, `check-release-evidence.py --strict-tag-binding`): R1's own
+  `docs/release/` allowlist is deliberately broad (release notes, CHANGELOG,
+  a mechanical version bump) for its own admissibility purpose — correct for
+  R1, wrong for binding the *literal commit about to be tagged* to the
+  *literal commit verified*. This check refuses unless `candidate_sha` is an
+  ancestor of `HEAD` through commits that touch *only* the exact
+  `docs/release/qa-signoff/v<X>.md` / `v<X>.evidence.json` (or
+  `v<X>.attempt-<N>.evidence.json`) / `docs/release/security-signoff/v<X>.md`
+  paths for this version — no glob/prefix matching, no sibling version, no
+  extra file riding along in the same commit, explicit path-traversal
+  defenses. See `strict_candidate_binding_violations()` in
+  `check-release-evidence.py` and ADR 0037 for the full rationale.
 - Has **no skip flag of any kind** — an operator/agent that wants to bypass
   a check here has to edit this reviewable script, not flip an env var.
 - Only once every check above passes does it `git tag -a "v<X>"` and

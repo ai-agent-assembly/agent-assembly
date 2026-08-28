@@ -247,7 +247,15 @@ AAASM-5878 design) is separate, later work.
 
 ### Generation
 
+The sanctioned operator entry point for this step is the
+[`/release-evidence-finalize`](../../.claude/skills/release-evidence-finalize/SKILL.md)
+skill (AAASM-6001) — run after both sign-offs above are final, before the
+tag cut. It wraps the same command:
+
 ```bash
 python3 scripts/qa/build-release-evidence.py --version 0.0.1-rc.7
-# writes docs/release/qa-signoff/v0.0.1-rc.7.evidence.json
+# first attempt for this version: writes docs/release/qa-signoff/v0.0.1-rc.7.evidence.json
+# second and later real attempts (after a BLOCK + remediation + re-sign-off):
+# writes docs/release/qa-signoff/v0.0.1-rc.7.attempt-<N>.evidence.json instead —
+# a prior BLOCK attempt's evidence file is never overwritten (ADR 0037).
 ```

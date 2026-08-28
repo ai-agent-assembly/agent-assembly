@@ -223,6 +223,10 @@ cross-process-evidence, and registry/CI-execution-integrity classes.
 
 `docs/release/qa-signoff/v<version>.evidence.json` (see [the evidence
 record schema](../../release/qa-verification-manifest-schema.md#evidence-record-aaasm-58785898))
+— or, for a version's second and later real verification attempts,
+`v<version>.attempt-<N>.evidence.json` (AAASM-6001, ADR 0037: a prior
+`BLOCK` attempt's evidence is never overwritten; see
+[`/release-evidence-finalize`](../../../.claude/skills/release-evidence-finalize/SKILL.md)) —
 records each required journey's result in one fixed 8-token vocabulary:
 `PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE`. It
 exists because this repo already has two other, narrower result
