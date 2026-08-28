@@ -29,10 +29,10 @@ use async_trait::async_trait;
 
 use aa_core::dev_tool::{AdapterError, DevToolInfo, DevToolKind, GovernanceLevel};
 use aa_core::integration::{
-    now_unix_secs, sha256_hex, CapabilitySupport, DevToolCapabilities, DevToolIntegration, EvidenceKind,
-    ExerciseOutcome, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus,
-    IntegrationStep, LifecyclePhase, NextLevel, ProtectionEvidence, ProtectionLevel, RemovalPlan, SettingsMerge,
-    StateDerivation, StepAction, ToolVersion, VerificationOutcome, VerificationResult, VersionSupport,
+    now_unix_secs, sha256_hex, CallerEnvironment, CapabilitySupport, DevToolCapabilities, DevToolIntegration,
+    EvidenceKind, ExerciseOutcome, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
+    IntegrationStatus, IntegrationStep, LifecyclePhase, NextLevel, ProtectionEvidence, ProtectionLevel, RemovalPlan,
+    SettingsMerge, StateDerivation, StepAction, ToolVersion, VerificationOutcome, VerificationResult, VersionSupport,
     DEFAULT_FRESHNESS_WINDOW_SECS,
 };
 
@@ -274,6 +274,7 @@ impl DevToolIntegration for FixtureIntegration {
     async fn integration_status(
         &self,
         receipt: Option<&IntegrationReceipt>,
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         let now = now_unix_secs();
         let compatibility = self
@@ -330,7 +331,11 @@ impl DevToolIntegration for FixtureIntegration {
         })
     }
 
-    async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        _receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         let now = now_unix_secs();
         let outcome = match self.verification {
             // Both claim a pass; only the first has traffic behind it.

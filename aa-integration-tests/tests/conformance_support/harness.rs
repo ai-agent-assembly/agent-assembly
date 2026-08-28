@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use aa_core::integration::{
-    IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, ProtectionProfile, ReceiptStore,
-    RemovalPlan, SettingsScope, VerificationResult,
+    CallerEnvironment, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, ProtectionProfile,
+    ReceiptStore, RemovalPlan, SettingsScope, VerificationResult, KNOWN_LAUNCH_BYPASS_ENV_VARS,
 };
 use aa_core::DevToolKind;
 use aa_devtool_claude_code::probe::{ProbeRequest, SYNTHETIC_SECRET};
@@ -247,11 +247,40 @@ impl ConformanceHarness {
 
     /// The installation every read-or-reverse operation here names.
     ///
-    /// Unspecified, because this harness installs at user scope: there is one
-    /// installation and no project to name. A project-scope conformance case
-    /// builds its own target rather than widening this one (AAASM-5913).
+    /// Unspecified scope/project, because this harness installs at user
+    /// scope: there is one installation and no project to name. A
+    /// project-scope conformance case builds its own target rather than
+    /// widening this one (AAASM-5913).
+    ///
+    /// `caller_env` states what this process actually observes about its own
+    /// environment for `KNOWN_LAUNCH_BYPASS_ENV_VARS` (AAASM-5993) — the same
+    /// value `aa-cli`'s `Target::here()` builds and now genuinely carries
+    /// across the DI-API wire (`TargetArgs.caller_env_examined`/
+    /// `caller_env_present`, decoded server-side in
+    /// `aa-runtime/src/devint/server.rs::build_caller_env`). This harness
+    /// calls `EngineLifecycle` in-process rather than through a socket, but
+    /// the value it injects here is exactly what that wire round-trip would
+    /// deliver for this same process, so `verify_as_shipped`'s claim to run
+    /// "exactly what `aasm integrations verify claude-code` runs on a real
+    /// host" remains true.
     pub fn target(&self) -> LifecycleTarget {
-        LifecycleTarget::unspecified()
+        LifecycleTarget {
+            caller_env: Some(self.caller_env()),
+            ..LifecycleTarget::unspecified()
+        }
+    }
+
+    /// This process's real presence-only reading of
+    /// `KNOWN_LAUNCH_BYPASS_ENV_VARS` — read, never mutated, and only names
+    /// cross into a [`CallerEnvironment`].
+    fn caller_env(&self) -> CallerEnvironment {
+        let mut env = CallerEnvironment::stating(KNOWN_LAUNCH_BYPASS_ENV_VARS);
+        for name in KNOWN_LAUNCH_BYPASS_ENV_VARS {
+            if std::env::var_os(name).is_some() {
+                env = env.present(name);
+            }
+        }
+        env
     }
 
     /// Turn condition C1 on or off without changing anything else.

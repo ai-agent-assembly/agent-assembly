@@ -178,7 +178,7 @@ async fn a_shimmed_plan_can_never_claim_gateway_protection() {
 #[tokio::test]
 async fn status_without_a_receipt_stops_at_detected_not_integrated() {
     let _detectable = DetectableSample::new();
-    let status = shim().integration_status(None).await.unwrap();
+    let status = shim().integration_status(None, None).await.unwrap();
 
     assert_eq!(
         status.state,
@@ -194,7 +194,7 @@ async fn status_without_a_receipt_stops_at_detected_not_integrated() {
 #[tokio::test]
 async fn an_absent_sample_reports_not_installed() {
     // No env var: the sample's probe fails, and the shim must not invent a state.
-    let status = shim().integration_status(None).await.unwrap();
+    let status = shim().integration_status(None, None).await.unwrap();
     assert_eq!(status.state, ProtectionState::Ladder(ProtectionLevel::NotInstalled));
 }
 
@@ -225,7 +225,7 @@ async fn verification_reports_unverifiable_rather_than_passed() {
     };
     assert_eq!(receipt.validate(), Ok(()));
 
-    let result = shim.verify_integration(&receipt).await.unwrap();
+    let result = shim.verify_integration(&receipt, None).await.unwrap();
     match &result.outcome {
         VerificationOutcome::Unverifiable { reason } => {
             assert!(reason.contains(LEGACY_UNSUPPORTED_REASON), "{reason}");
@@ -236,7 +236,7 @@ async fn verification_reports_unverifiable_rather_than_passed() {
 
     // With a receipt present but nothing verifiable, the ladder rests at
     // PartiallyIntegrated — never at Integrated.
-    let status = shim.integration_status(Some(&receipt)).await.unwrap();
+    let status = shim.integration_status(Some(&receipt), None).await.unwrap();
     assert_eq!(status.achieved_level(), ProtectionLevel::PartiallyIntegrated);
 
     // Removal is derived from the receipt, and admits what it cannot undo.

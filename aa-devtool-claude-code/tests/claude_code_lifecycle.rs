@@ -21,8 +21,9 @@ use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
 use aa_devtool_claude_code::managed_settings::{PrivilegedFileAuthority, MANAGED_ONLY_KEYS};
 use aa_devtool_claude_code::{ClaudeCodeAdapter, ClaudeCodeIntegration, ClaudeCodePaths};
 use aa_devtool_contract::{
-    capability_conformance, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind, IntegrationCapability,
-    IntegrationRequest, LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope, StepAction, StepPrivilege,
+    capability_conformance, CallerEnvironment, DevToolIntegration, DevToolKind, EnvValue, EvidenceKind,
+    IntegrationCapability, IntegrationRequest, LaunchSpec, ProtectionLevel, ProtectionProfile, SettingsScope,
+    StepAction, StepPrivilege,
 };
 
 /// A fabricated PEM. Nothing verifies it here; the tests assert it is *copied*,
@@ -763,6 +764,140 @@ async fn known_unobservable_bypasses_are_stated_rather_than_implied_absent() {
     );
 }
 
+// ── AAASM-5993: bypass detection reads the caller's environment, never the
+// daemon's own process environment ─────────────────────────────────────────
+
+/// The bypass-watched environment variable names, mirrored from
+/// `bypass::BYPASS_ENV_VARS` (private to that module) so this test can name
+/// them without widening that module's visibility for a test-only need.
+const WATCHED_ENV_VARS: [&str; 5] = [
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CODE_API_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+];
+
+/// Cell (caller: present, process: clean) — a caller-stated present variable
+/// is reported.
+#[tokio::test]
+async fn a_caller_stated_present_bypass_variable_is_reported() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let caller_env = CallerEnvironment::stating(WATCHED_ENV_VARS).present("ANTHROPIC_BASE_URL");
+
+    let status = integration
+        .integration_status(None, Some(&caller_env))
+        .await
+        .expect("status");
+
+    assert!(
+        status
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("bypass base-url-redirection")),
+        "a caller-stated present bypass variable must be reported: {:?}",
+        status.evidence
+    );
+}
+
+/// Cell (caller: examined and clean, process: bypassed) — the falsifying cell.
+///
+/// The caller states it examined every watched variable and found none set,
+/// while *this test process's own environment* genuinely has
+/// `ANTHROPIC_BASE_URL` set. If `bypasses_at`, `environment_bypasses`, or
+/// anything beneath them ever again reads the daemon's own process
+/// environment instead of the caller's statement, this is the row that
+/// reddens — it is exactly the AAASM-5993 false-negative shape: a bypassed
+/// caller reported as fully protected because the *daemon's* environment
+/// happens to be clean, restated here as a bypassed daemon that must not leak
+/// into a caller reported clean.
+///
+/// Run under `cargo nextest`, which isolates each test in its own process —
+/// this row's `set_var`/`remove_var` must not be assumed thread-isolated.
+#[tokio::test]
+async fn a_variable_set_only_in_the_daemons_own_process_never_leaks_into_a_caller_stated_report() {
+    std::env::set_var("ANTHROPIC_BASE_URL", "http://daemon-local-leak.invalid");
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let caller_env = CallerEnvironment::stating(WATCHED_ENV_VARS);
+
+    let status = integration.integration_status(None, Some(&caller_env)).await;
+
+    std::env::remove_var("ANTHROPIC_BASE_URL");
+    let status = status.expect("status");
+
+    assert!(
+        !status
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("bypass base-url-redirection")),
+        "a variable set only in this process's own environment must never leak into a caller-stated \
+         bypass report: {:?}",
+        status.evidence
+    );
+    assert!(
+        !status
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("not examined by the caller")),
+        "the caller examined every watched variable, so there must be no unexamined row: {:?}",
+        status.evidence
+    );
+}
+
+/// Cell (caller: `None`) — never a clean bill of health.
+#[tokio::test]
+async fn no_caller_statement_never_reads_as_a_clean_bill_of_health() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+
+    let status = integration.integration_status(None, None).await.expect("status");
+
+    assert!(
+        !status.evidence.iter().any(|e| e.detail.starts_with("bypass ")),
+        "an unstated environment must never itself produce a bypass finding: {:?}",
+        status.evidence
+    );
+    assert!(
+        status
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("not examined by the caller")
+                && WATCHED_ENV_VARS.iter().all(|name| e.detail.contains(name))),
+        "a `None` caller environment must produce an explicit unexamined row naming every watched \
+         variable, not silence: {:?}",
+        status.evidence
+    );
+}
+
+/// A name the caller stated outside the watched list is ignored, not a crash
+/// and not a finding.
+#[tokio::test]
+async fn a_caller_stated_name_outside_the_watched_list_is_ignored() {
+    let fixture = Fixture::new();
+    fixture.write_ca();
+    let integration = fixture.integration(Some("2.1.220"));
+    let caller_env = CallerEnvironment::stating(["SOME_OTHER_TOOLS_VARIABLE"]).present("SOME_OTHER_TOOLS_VARIABLE");
+
+    let status = integration
+        .integration_status(None, Some(&caller_env))
+        .await
+        .expect("status");
+
+    assert!(
+        !status
+            .evidence
+            .iter()
+            .any(|e| e.detail.contains("SOME_OTHER_TOOLS_VARIABLE")),
+        "a name outside the watched bypass list must never surface in a bypass report: {:?}",
+        status.evidence
+    );
+}
+
 // ── Status without a receipt ────────────────────────────────────────────────
 
 #[tokio::test]
@@ -779,7 +914,7 @@ async fn a_configured_host_with_no_receipt_is_not_integrated() {
 
     let status = fixture
         .integration(Some("2.1.220"))
-        .integration_status(None)
+        .integration_status(None, None)
         .await
         .expect("status");
     assert_eq!(status.achieved_level(), ProtectionLevel::DetectedNotIntegrated);
@@ -803,7 +938,7 @@ async fn an_absent_tool_is_not_installed() {
             Some(fixture.root().join("home")),
         ));
     assert!(integration.detect().is_none());
-    let status = integration.integration_status(None).await.expect("status");
+    let status = integration.integration_status(None, None).await.expect("status");
     assert_eq!(status.achieved_level(), ProtectionLevel::NotInstalled);
 }
 
@@ -818,7 +953,7 @@ async fn an_unsupported_version_is_reported_as_incompatible_not_guessed() {
 
     // An unreadable version is a missing comparison, never a pass.
     let unknown = fixture.integration(None);
-    let status = unknown.integration_status(None).await.expect("status");
+    let status = unknown.integration_status(None, None).await.expect("status");
     assert!(!status.compatibility.is_compatible());
 }
 
@@ -905,7 +1040,7 @@ async fn host_enforcement_reason_does_not_overclaim_product_scope() {
     fixture.write_ca();
     let integration = fixture.integration(Some("2.1.220"));
 
-    let status = integration.integration_status(None).await.expect("status");
+    let status = integration.integration_status(None, None).await.expect("status");
     let reason = status
         .evidence
         .iter()

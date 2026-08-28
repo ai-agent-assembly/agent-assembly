@@ -40,6 +40,7 @@ use sha2::{Digest, Sha256};
 use crate::dev_tool::{AdapterError, DevToolAdapter, DevToolInfo, DevToolKind};
 use crate::policy::PolicyDocument;
 
+use super::caller_env::CallerEnvironment;
 use super::capability::{DevToolCapabilities, IntegrationCapability};
 use super::plan::{IntegrationPlan, IntegrationRequest, RemovalPlan};
 use super::policy_posture::PolicyPosture;
@@ -204,6 +205,9 @@ impl<A: DevToolAdapter> DevToolIntegration for LegacyAdapterShim<A> {
     async fn integration_status(
         &self,
         receipt: Option<&IntegrationReceipt>,
+        // A legacy adapter has no environment-based bypass detection; accepted
+        // only to satisfy the trait.
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         let now = now_unix_secs();
         let detected = self.adapter.detect();
@@ -276,7 +280,11 @@ impl<A: DevToolAdapter> DevToolIntegration for LegacyAdapterShim<A> {
         })
     }
 
-    async fn verify_integration(&self, _receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        _receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         // Not `Failed` — nothing failed. Nothing was looked at.
         Ok(VerificationResult::unverifiable(
             now_unix_secs(),

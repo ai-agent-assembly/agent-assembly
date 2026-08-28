@@ -272,6 +272,16 @@ pub struct LifecycleTarget {
     pub settings_scope: Option<aa_core::integration::SettingsScope>,
     /// The canonical root of the project the caller means, when it named one.
     pub project_root: Option<std::path::PathBuf>,
+    /// What the caller stated about its own launch environment (AAASM-5993).
+    ///
+    /// `None` — the state of every client today, since nothing on the wire
+    /// carries this yet — means the caller stated nothing, which an adapter's
+    /// environment-based bypass check must read as "unknown", never as
+    /// "clean". This is *never* filled in from this daemon's own process
+    /// environment: the whole point of carrying it on the target is that a
+    /// long-lived, shared daemon has no environment of its own worth reading
+    /// for a bypass check about one particular caller's launch.
+    pub caller_env: Option<aa_core::integration::CallerEnvironment>,
 }
 
 impl LifecycleTarget {

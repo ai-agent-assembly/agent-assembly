@@ -722,7 +722,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let mut status = registered
             .integration
-            .integration_status(receipt.as_ref())
+            .integration_status(receipt.as_ref(), target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the integration status could not be derived: {e}"),
@@ -745,7 +745,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let result = registered
             .integration
-            .verify_integration(&receipt)
+            .verify_integration(&receipt, target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the protection test could not be run: {e}"),
@@ -772,7 +772,7 @@ impl IntegrationLifecycle for EngineLifecycle {
 
         let status_before = registered
             .integration
-            .integration_status(Some(&receipt))
+            .integration_status(Some(&receipt), target.caller_env.as_ref())
             .await
             .map_err(|e| LifecycleError::Failed {
                 detail: format!("the integration status could not be derived: {e}"),
@@ -1293,6 +1293,7 @@ mod tests {
         LifecycleTarget {
             settings_scope: None,
             project_root: Some(project.to_path_buf()),
+            caller_env: None,
         }
     }
 

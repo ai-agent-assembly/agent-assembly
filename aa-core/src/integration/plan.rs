@@ -19,6 +19,7 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::caller_env::CallerEnvironment;
 use super::capability::IntegrationCapability;
 use super::state::ProtectionLevel;
 use super::step::{IntegrationStep, SettingsScope, StepAction};
@@ -141,6 +142,19 @@ pub struct IntegrationRequest {
     pub allow_privileged_host_steps: bool,
     /// The policy profile the core resolved for this request, by reference.
     pub policy_profile: Option<PolicyProfileRef>,
+    /// What the caller stated about its own launch environment, when it stated
+    /// anything (AAASM-5993).
+    ///
+    /// `None` is a valid, honest state — "the caller said nothing" — not an
+    /// error: most callers of this request never state their environment, and
+    /// treating that as a failure would refuse every one of them. What it is
+    /// not valid for is a bypass check to read something else instead: the
+    /// long-lived lifecycle service's own process environment describes the
+    /// service, never the caller asking about it, and reading it there is the
+    /// bug this field exists to make unnecessary. See
+    /// [`CallerEnvironment`] for why this is presence-only and carries no
+    /// value.
+    pub caller_env: Option<CallerEnvironment>,
 }
 
 impl IntegrationRequest {
@@ -155,6 +169,7 @@ impl IntegrationRequest {
             project_root: None,
             allow_privileged_host_steps: false,
             policy_profile: None,
+            caller_env: None,
         }
     }
 
@@ -186,6 +201,13 @@ impl IntegrationRequest {
     #[must_use]
     pub fn with_policy_profile(mut self, policy_profile: PolicyProfileRef) -> Self {
         self.policy_profile = Some(policy_profile);
+        self
+    }
+
+    /// State what the caller found in its own launch environment.
+    #[must_use]
+    pub fn with_caller_environment(mut self, caller_env: CallerEnvironment) -> Self {
+        self.caller_env = Some(caller_env);
         self
     }
 
