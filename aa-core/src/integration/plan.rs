@@ -19,6 +19,7 @@ use std::path::PathBuf;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::caller_env::CallerEnvironment;
 use super::capability::IntegrationCapability;
 use super::state::ProtectionLevel;
 use super::step::{IntegrationStep, SettingsScope, StepAction};
@@ -135,12 +136,39 @@ pub struct IntegrationRequest {
     /// the caller and will be left alone. No step's path is ever derived from it
     /// at those scopes.
     pub project_root: Option<PathBuf>,
+    /// The Claude Code configuration home this request is about, as an
+    /// absolute path (AAASM-5957).
+    ///
+    /// The same argument as [`project_root`](Self::project_root), for
+    /// [`User`](SettingsScope::User) scope instead of Project: a lifecycle
+    /// service runs as a long-lived daemon shared by every client on the host,
+    /// so its own `$CLAUDE_CONFIG_DIR`/`$HOME` belong to whichever environment
+    /// launched it, not to this request's caller. `None` at User scope is an
+    /// error the service reports — never a fallback to its own environment.
+    ///
+    /// At Project and Managed scope this is optional context, never a
+    /// destination: it lets the plan disclose that a user configuration also
+    /// exists and will be left alone.
+    pub user_config_home: Option<PathBuf>,
     /// Whether the caller has consented to steps that change host state. A plan
     /// containing privileged steps that were not consented to is a plan the
     /// service must not execute.
     pub allow_privileged_host_steps: bool,
     /// The policy profile the core resolved for this request, by reference.
     pub policy_profile: Option<PolicyProfileRef>,
+    /// What the caller stated about its own launch environment, when it stated
+    /// anything (AAASM-5993).
+    ///
+    /// `None` is a valid, honest state — "the caller said nothing" — not an
+    /// error: most callers of this request never state their environment, and
+    /// treating that as a failure would refuse every one of them. What it is
+    /// not valid for is a bypass check to read something else instead: the
+    /// long-lived lifecycle service's own process environment describes the
+    /// service, never the caller asking about it, and reading it there is the
+    /// bug this field exists to make unnecessary. See
+    /// [`CallerEnvironment`] for why this is presence-only and carries no
+    /// value.
+    pub caller_env: Option<CallerEnvironment>,
 }
 
 impl IntegrationRequest {
@@ -153,8 +181,10 @@ impl IntegrationRequest {
             requested_level: ProtectionLevel::GatewayProtected,
             settings_scope,
             project_root: None,
+            user_config_home: None,
             allow_privileged_host_steps: false,
             policy_profile: None,
+            caller_env: None,
         }
     }
 
@@ -175,6 +205,16 @@ impl IntegrationRequest {
         self
     }
 
+    /// Name the Claude Code configuration home this request is about.
+    ///
+    /// Mandatory at [`SettingsScope::User`]; see
+    /// [`user_config_home`](Self::user_config_home).
+    #[must_use]
+    pub fn with_user_config_home(mut self, user_config_home: impl Into<PathBuf>) -> Self {
+        self.user_config_home = Some(user_config_home.into());
+        self
+    }
+
     /// Record the user's consent to host-state changes.
     #[must_use]
     pub fn allowing_privileged_host_steps(mut self) -> Self {
@@ -186,6 +226,13 @@ impl IntegrationRequest {
     #[must_use]
     pub fn with_policy_profile(mut self, policy_profile: PolicyProfileRef) -> Self {
         self.policy_profile = Some(policy_profile);
+        self
+    }
+
+    /// State what the caller found in its own launch environment.
+    #[must_use]
+    pub fn with_caller_environment(mut self, caller_env: CallerEnvironment) -> Self {
+        self.caller_env = Some(caller_env);
         self
     }
 
@@ -301,6 +348,10 @@ pub struct IntegrationPlan {
     /// checked against it and so a reviewer can read which repository they are
     /// about to change (AAASM-5913).
     pub project_root: Option<PathBuf>,
+    /// The configuration home a [`User`](SettingsScope::User)-scoped plan
+    /// writes into, carried from [`IntegrationRequest::user_config_home`] on
+    /// the same terms as [`project_root`](Self::project_root) (AAASM-5957).
+    pub user_config_home: Option<PathBuf>,
     /// The resolved policy profile, by reference.
     pub policy_profile: Option<PolicyProfileRef>,
     /// The level this plan intends to reach if every step succeeds and verifies.
@@ -331,6 +382,7 @@ impl IntegrationPlan {
             profile: request.profile,
             settings_scope: request.settings_scope,
             project_root: request.project_root.clone(),
+            user_config_home: request.user_config_home.clone(),
             policy_profile: request.policy_profile.clone(),
             planned_level,
             adapter_ceiling,

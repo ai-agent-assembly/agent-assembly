@@ -589,6 +589,7 @@ fn build_plan_request(
 
     let mut request = IntegrationRequest::new(tool.clone(), profile, scope).requesting_level(requested_level);
     request.project_root = parse_project_root(scope, &args.project_root)?;
+    request.user_config_home = parse_user_config_home(scope, &args.user_config_home)?;
     request.allow_privileged_host_steps = args.allow_privileged_host_steps;
     // The client names a profile; the *document* is resolved inside the trusted
     // layers (ADR 0030 matrix row 6). The reference here carries the name only,
@@ -633,10 +634,44 @@ fn build_target(request: &wire::Request) -> Result<LifecycleTarget, LifecycleErr
     // receipt that this target cannot name.
     let empty_is_allowed = scope.unwrap_or(aa_core::integration::SettingsScope::User);
     let project_root = parse_project_root(empty_is_allowed, &args.project_root)?;
+    // Unlike `project_root`, an unspecified scope here means `user_config_home`
+    // stays mandatory: `empty_is_allowed` already stands in as `User` for an
+    // unnamed scope, and `User` is exactly the scope this field is required at
+    // — so the target that most needs it (a caller naming no scope at all,
+    // which may resolve to a user-scope receipt) is not the one case where the
+    // check is skipped.
+    let user_config_home = parse_user_config_home(empty_is_allowed, &args.user_config_home)?;
     Ok(LifecycleTarget {
         settings_scope: scope,
         project_root,
+        user_config_home,
+        // AAASM-5993: reconstructed from the caller-stated name lists, never
+        // from this process's own environment. Both lists absent (a
+        // pre-caller-env client, or one that stated nothing) reconstructs to
+        // `CallerEnvironment::default()` — examined and present both empty —
+        // which `state_of` reads as `NotStated` for every name, the same
+        // fail-closed "unexamined" answer as `caller_env: None`. So this is
+        // always `Some`, never `None`: there is no wire shape left that this
+        // function cannot represent, and collapsing "stated nothing" into
+        // `None` here would just be the same case reached two ways.
+        caller_env: Some(build_caller_env(&args)),
     })
+}
+
+/// Reconstruct a [`CallerEnvironment`] from the two name lists on the wire.
+///
+/// `examined` is seeded from `caller_env_examined` first so a name present on
+/// the wire but, by a malformed or adversarial peer, absent from
+/// `caller_env_examined` is still recorded as examined — `present` on
+/// [`aa_core::integration::CallerEnvironment`] always implies examined by
+/// construction, and this reconstruction preserves that invariant rather than
+/// trusting the wire's two lists to already agree with each other.
+fn build_caller_env(args: &wire::TargetArgs) -> aa_core::integration::CallerEnvironment {
+    let mut env = aa_core::integration::CallerEnvironment::stating(args.caller_env_examined.iter().cloned());
+    for name in &args.caller_env_present {
+        env = env.present(name.clone());
+    }
+    env
 }
 
 /// Resolve `PlanArgs::project_root` for `scope`, refusing rather than defaulting.
@@ -737,6 +772,81 @@ fn parse_project_root(
     Ok(Some(canonical))
 }
 
+/// Resolve `PlanArgs::user_config_home` / `TargetArgs::user_config_home` for
+/// `scope`, refusing rather than defaulting to this process's own `$HOME`
+/// (AAASM-5957).
+///
+/// Mirrors [`parse_project_root`], with one deliberate divergence: only the
+/// *parent* of the resolved path must already exist, not the leaf itself.
+/// `~/.claude` legitimately does not exist before a first install — the
+/// install is what creates it — so requiring the leaf to exist would refuse
+/// every first-time `--scope user` install on a clean host. The parent
+/// (`$HOME`, or `$CLAUDE_CONFIG_DIR`'s parent) existing is still required: a
+/// caller-named path with no real filesystem root to canonicalise against is
+/// the same "materialise a directory tree of the caller's choosing" hazard
+/// `parse_project_root` refuses.
+fn parse_user_config_home(
+    scope: aa_core::integration::SettingsScope,
+    raw: &str,
+) -> Result<Option<std::path::PathBuf>, LifecycleError> {
+    use aa_core::integration::SettingsScope;
+
+    if raw.is_empty() {
+        if scope == SettingsScope::User {
+            return Err(LifecycleError::Refused {
+                detail: "a user-scoped operation must name the configuration home it is for. This \
+                         service is shared by every client on this host and cannot tell which \
+                         configuration home a caller means from its own $HOME, so it will not guess \
+                         one"
+                .to_string(),
+            });
+        }
+        return Ok(None);
+    }
+
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the configuration home {raw:?} is not absolute, and a relative path would be \
+                 resolved against this service's own working directory rather than the caller's"
+            ),
+        });
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| LifecycleError::Refused {
+            detail: format!("the configuration home {raw:?} has no parent directory to resolve it against"),
+        })?;
+    if !parent.is_dir() {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the configuration home {raw:?}'s parent directory does not exist on this host, so it \
+                 could not be resolved to a real location"
+            ),
+        });
+    }
+    let canonical_parent = parent.canonicalize().map_err(|e| LifecycleError::Refused {
+        detail: format!("the configuration home {raw:?} could not be resolved on this host: {e}"),
+    })?;
+    let canonical = match path.file_name() {
+        Some(leaf) => canonical_parent.join(leaf),
+        None => canonical_parent,
+    };
+    if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_user_config()) {
+        return Err(LifecycleError::Refused {
+            detail: format!(
+                "the configuration home {} contains {}, so a user-scoped write there would land on a \
+                 surface that belongs to another scope and be recorded as if it did not",
+                canonical.display(),
+                surface.display()
+            ),
+        });
+    }
+    Ok(Some(canonical))
+}
+
 /// A configuration surface `root` would swallow, if it swallows one.
 ///
 /// The test is containment rather than equality, and in this direction: `root` is
@@ -782,6 +892,35 @@ fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
         var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
 
     [claude_config, codex_config, state, ca, Some(managed)]
+        .into_iter()
+        .flatten()
+        .map(|p| p.canonicalize().unwrap_or(p))
+        .collect()
+}
+
+/// The surfaces a *user* configuration home may not swallow.
+///
+/// Deliberately not [`surfaces_not_owned_by_a_project`]'s list unmodified: that
+/// list includes the daemon's own ambient `CLAUDE_CONFIG_DIR`/`$HOME/.claude`,
+/// which is exactly what a caller-supplied `user_config_home` legitimately
+/// equals in the ordinary, unredirected case — `owned_surface_within` treats
+/// equality as containment, so reusing that list here would refuse every
+/// normal `--scope user` install. What a user configuration home must not
+/// swallow instead is Agent Assembly's own state root, the proxy CA source,
+/// and the managed-settings root — surfaces that have nothing to do with
+/// Claude Code's own configuration and should never collide with it.
+fn surfaces_not_owned_by_user_config() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let home = var("HOME");
+
+    let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
+    let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
+    let managed =
+        var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
+
+    [state, ca, Some(managed)]
         .into_iter()
         .flatten()
         .map(|p| p.canonicalize().unwrap_or(p))
@@ -973,6 +1112,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
         let surfaces = surfaces_not_owned_by_a_project();
+        assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
+        assert!(!surfaces.contains(&raw));
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+    }
+
+    /// The sibling `surfaces_not_owned_by_user_config` carried the same
+    /// pre-AAASM-5987 `aa_devtool_claude_code::scope` reference this module's
+    /// other managed-surface function was fixed to drop — copied in
+    /// separately, so the fix for one did not carry to the other, and this
+    /// module's own regression test above only ever exercised
+    /// `surfaces_not_owned_by_a_project`. Found and fixed alongside AAASM-5957
+    /// when it broke that PR's packaged-artifact gate; this test closes the
+    /// coverage gap that let it recur silently.
+    #[test]
+    fn the_managed_surface_is_in_the_user_config_refusal_set_too() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+        let raw = std::path::PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR);
+        let expected = raw.canonicalize().unwrap_or_else(|_| raw.clone());
+        assert!(surfaces_not_owned_by_user_config().contains(&expected));
+
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("AASM_CLAUDE_MANAGED_ROOT", dir.path());
+        let surfaces = surfaces_not_owned_by_user_config();
         assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
         assert!(!surfaces.contains(&raw));
         std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");

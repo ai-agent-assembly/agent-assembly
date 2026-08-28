@@ -9,6 +9,7 @@
  */
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,8 +27,21 @@ const BINARY = join(repoRoot, 'target', 'debug', 'aa-devint-harness');
  * caller's directory to disagree with. A test about *which* project is answered
  * builds its own target rather than widening this one — a shared constant that
  * quietly acquired a path would make every test here assert about that path.
+ *
+ * `userConfigHome` (AAASM-5957) is a fixed synthetic path rather than `''`:
+ * an unstated scope is treated as possibly user-scoped by the server's own
+ * mandatory-configuration-home check (the same reasoning that makes an
+ * unstated scope possibly project-scoped for `refuse_project_scope_below_v6`
+ * on the client side), so a real, existing-parent path is required here too.
+ * Only the *parent* of the path has to exist (mirroring `~/.claude` not
+ * existing before a first install), so this is `os.tmpdir()` itself joined
+ * with a leaf that need not — `os.tmpdir()` is always a real directory.
  */
-export const HOST_WIDE: TargetOptions = { settingsScope: '', projectRoot: '' };
+export const HOST_WIDE: TargetOptions = {
+  settingsScope: '',
+  projectRoot: '',
+  userConfigHome: join(tmpdir(), '.claude'),
+};
 
 export interface HarnessTokens {
   /** Every verb, every tool. What the operator CLI holds. */

@@ -77,12 +77,24 @@ pub enum ScopeError {
     },
 }
 
-/// Every path the Claude Code integration reads or writes, resolved from
-/// explicit roots.
+/// Every path the Claude Code integration reads or writes.
+///
+/// Not every root here is caller-supplied, and this doc says which is which
+/// rather than let a reader assume "explicit roots" means all of them
+/// (AAASM-5957 was exactly that assumption going unnoticed): the **project
+/// root** and the **user-scope configuration home** are per-request, supplied
+/// by the caller through [`with_project`](Self::with_project) and
+/// [`with_config_dir`](Self::with_config_dir) — [`from_env`](Self::from_env)
+/// never populates either. `$HOME` itself remains ambient: it still feeds
+/// [`home()`](Self::home) (detection markers) and, independently, the state
+/// root and CA source (`state_root`/`ca_source`, resolved from the daemon's
+/// own environment because those roots are never the caller's to name).
 ///
 /// Constructed with [`ClaudeCodePaths::from_env`] in production and with the
-/// `with_*` builders in tests, so no test ever depends on the ambient `$HOME`
-/// or working directory.
+/// `with_*` builders in tests, so no test ever depends on the ambient
+/// working directory, and no test that pins a destination ever depends on
+/// ambient `$HOME` either — only tests exercising the detection-marker or
+/// state/CA-source paths legitimately still do.
 #[derive(Debug, Clone, Default)]
 pub struct ClaudeCodePaths {
     /// `$CLAUDE_CONFIG_DIR`, when Claude Code's config home is redirected.
@@ -124,9 +136,21 @@ impl ClaudeCodePaths {
     /// under the state root, and only [`settings_path`](Self::settings_path) at
     /// [`Project`](SettingsScope::Project) scope and
     /// [`detected_surfaces`](Self::detected_surfaces) consult the project at all.
+    ///
+    /// # Why the user-scope configuration home is not among them either (AAASM-5957)
+    ///
+    /// The identical argument, one scope over: `config_dir` used to be read
+    /// from this process's own `CLAUDE_CONFIG_DIR` here, which for the daemon
+    /// is the daemon's environment, not the caller's — see
+    /// [`with_config_dir`](Self::with_config_dir) for the full rationale. It is
+    /// now supplied per request too. `$HOME` is *not* removed from this
+    /// constructor, unlike the working directory above: [`home()`](Self::home)
+    /// still feeds detection markers and [`state_root`]/[`ca_source`] still
+    /// read it independently, so nulling it here would not close anything and
+    /// would break both.
     pub fn from_env() -> Self {
         Self {
-            config_dir: non_empty_var("CLAUDE_CONFIG_DIR"),
+            config_dir: None,
             home: non_empty_var("HOME"),
             project: None,
             state: state_root(),
@@ -135,7 +159,26 @@ impl ClaudeCodePaths {
         }
     }
 
-    /// Pin the user-scope configuration home (`CLAUDE_CONFIG_DIR`).
+    /// Pin the user-scope configuration home.
+    ///
+    /// # Why `from_env` no longer reads `CLAUDE_CONFIG_DIR`/`$HOME` for this (AAASM-5957)
+    ///
+    /// It used to, the same way [`with_project`](Self::with_project)'s doc
+    /// explains `project` used to be read from `current_dir()`: right only when
+    /// the process resolving it is the process the user invoked. The production
+    /// caller of `from_env` is the developer-integration daemon, whose
+    /// `CLAUDE_CONFIG_DIR`/`$HOME` belong to whichever environment launched it —
+    /// not to whichever client's request is being served. It wrote one caller's
+    /// managed keys into a *different* user's real Claude Code configuration,
+    /// silently, because `user_config_dir()` had no `None` to report and no way
+    /// to notice the two identities had diverged.
+    ///
+    /// `$HOME` itself stays read here — [`home()`](Self::home) still feeds
+    /// detection markers, and [`state_root`]/[`ca_source`] still read it
+    /// independently — only the *user-scope configuration home* stops being
+    /// derived from the daemon's own environment. So this constructor no
+    /// longer resolves the whole of "where Claude Code's configuration lives"
+    /// from explicit roots; see the corrected module doc.
     #[must_use]
     pub fn with_config_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.config_dir = Some(dir.into());
@@ -232,15 +275,25 @@ impl ClaudeCodePaths {
     }
 
     /// Claude Code's user configuration directory.
+    ///
+    /// # Why there is no `$HOME` fallback here any more (AAASM-5957)
+    ///
+    /// There used to be one: `self.home.join(DOT_CLAUDE)` when `config_dir` was
+    /// unset. `home` is still populated by [`from_env`](Self::from_env), so
+    /// that fallback would still fire — silently resolving against whichever
+    /// process's `$HOME` called `from_env`, which for the daemon is not the
+    /// caller's. There is no correct answer to guess here, so this reports
+    /// [`ScopeError::Unresolvable`] instead of guessing one.
     fn user_config_dir(&self) -> Result<PathBuf, ScopeError> {
-        if let Some(dir) = &self.config_dir {
-            return Ok(dir.clone());
-        }
-        let home = self.home.as_ref().ok_or_else(|| ScopeError::Unresolvable {
+        self.config_dir.clone().ok_or_else(|| ScopeError::Unresolvable {
             scope: SettingsScope::User,
-            detail: "neither CLAUDE_CONFIG_DIR nor HOME is set".to_string(),
-        })?;
-        Ok(home.join(DOT_CLAUDE))
+            // Deliberately not "so we used $HOME": $HOME of whatever process is
+            // asking is not necessarily the caller's, and a message that
+            // admitted a fallback would be describing AAASM-5957.
+            detail: "no user configuration home was given, and the configuration home a change lands \
+                     in is never taken from the environment of the process resolving it"
+                .to_string(),
+        })
     }
 
     /// Which configuration surfaces this host actually has, whoever wrote them.
@@ -408,6 +461,25 @@ fn ca_source_from(override_dir: Option<PathBuf>, home: Option<PathBuf>) -> Optio
     Some(dir.join("ca-cert.pem"))
 }
 
+/// `$CLAUDE_CONFIG_DIR`, else `$HOME/.claude` — the precedence
+/// [`ClaudeCodePaths::user_config_dir`] used to apply internally, before
+/// AAASM-5957 removed the ability for it to read either variable itself.
+///
+/// `pub`, unlike [`state_root_from`]/[`ca_source_from`]: those are resolved
+/// once, by this crate, from the daemon's own environment, because the state
+/// root and CA source are never the caller's to name. This one is resolved by
+/// whichever process **is** the caller — the `aasm` CLI, reading its own
+/// environment — and carried into the request from there
+/// ([`ClaudeCodePaths::with_config_dir`]), so it has to be reachable outside
+/// this crate.
+///
+/// `None` when neither is known, which is what makes
+/// [`ClaudeCodePaths::user_config_dir`]'s [`ScopeError::Unresolvable`]
+/// reachable for a caller with nothing to state.
+pub fn user_config_home_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Option<PathBuf> {
+    config_dir.or_else(|| home.map(|home| home.join(DOT_CLAUDE)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +487,11 @@ mod tests {
     fn paths(dir: &Path) -> ClaudeCodePaths {
         ClaudeCodePaths::default()
             .with_home(dir.join("home"))
+            // AAASM-5957: `with_config_dir` no longer has a `$HOME`-derived
+            // fallback to fall back to, so every fixture that exercises User
+            // scope has to state this explicitly now — this is the caller
+            // stating what used to be inferred, not a change in destination.
+            .with_config_dir(dir.join("home").join(DOT_CLAUDE))
             .with_project(dir.join("repo"))
             .with_state(dir.join("state"))
             .with_ca_source(dir.join("ca").join("ca-cert.pem"))
@@ -445,6 +522,65 @@ mod tests {
         assert_eq!(
             paths.settings_path(SettingsScope::User).unwrap(),
             dir.path().join("elsewhere").join(SETTINGS_FILE)
+        );
+    }
+
+    /// AAASM-5957 AC3/AC4, at the layer the defect actually lived in: a
+    /// daemon whose own `home` is identity A must resolve a User-scope
+    /// destination from the caller-supplied `config_dir` — identity B —
+    /// only, and never fall back to A. Distinct from
+    /// [`claude_config_dir_wins_for_user_scope`], which only checks that an
+    /// *overridden* config_dir beats the default derived from the *same*
+    /// home; this fixture gives `home` and `config_dir` unrelated identities
+    /// so the two can never coincidentally agree.
+    ///
+    /// **Negative control (AC5):** against the pre-fix
+    /// `user_config_dir()` — which fell back to `self.home.join(".claude")`
+    /// when `config_dir` was unset — this assertion alone would not have
+    /// caught the defect, because a fixture always states `config_dir`. What
+    /// *would* have caught it is `from_env_derives_no_user_scope_destination_from_the_process_environment`
+    /// below, which uses `from_env()`'s own resolution rather than a
+    /// hand-built fixture; run that test against a checkout of
+    /// `user_config_dir()` before this ticket's fix and it fails, because
+    /// pre-fix `from_env()` populated `config_dir` from `$CLAUDE_CONFIG_DIR`
+    /// itself.
+    #[test]
+    fn a_daemon_s_own_home_never_determines_a_callers_user_scope_destination() {
+        let daemon_identity = tempfile::tempdir().unwrap();
+        let caller_identity = tempfile::tempdir().unwrap();
+        let paths = ClaudeCodePaths::default()
+            .with_home(daemon_identity.path().to_path_buf())
+            .with_config_dir(caller_identity.path().join(DOT_CLAUDE));
+
+        let resolved = paths.settings_path(SettingsScope::User).unwrap();
+        assert_eq!(resolved, caller_identity.path().join(DOT_CLAUDE).join(SETTINGS_FILE));
+        assert!(
+            !resolved.starts_with(daemon_identity.path()),
+            "the daemon's own home leaked into a User-scope write: {}",
+            resolved.display()
+        );
+    }
+
+    /// AAASM-5957 AC1/AC4: `from_env()` must not itself read
+    /// `$CLAUDE_CONFIG_DIR` (or derive from `$HOME`) into `config_dir` — that
+    /// field starts unset and is populated only by
+    /// [`ClaudeCodePaths::with_config_dir`], which the caller (the `aasm`
+    /// CLI, reading its own environment, not the daemon's) calls. Asserted
+    /// against the real process environment, whatever it happens to be,
+    /// rather than a fixture — this is the property that makes the AC3/AC4
+    /// scenario ("a daemon whose launching shell exported CLAUDE_CONFIG_DIR")
+    /// structurally unreachable rather than merely untested.
+    #[test]
+    fn from_env_derives_no_user_scope_destination_from_the_process_environment() {
+        assert_eq!(
+            ClaudeCodePaths::from_env().settings_path(SettingsScope::User),
+            Err(ScopeError::Unresolvable {
+                scope: SettingsScope::User,
+                detail: "no user configuration home was given, and the configuration home a change \
+                         lands in is never taken from the environment of the process resolving it"
+                    .to_string(),
+            }),
+            "from_env() must never resolve a User-scope destination from its own process environment"
         );
     }
 

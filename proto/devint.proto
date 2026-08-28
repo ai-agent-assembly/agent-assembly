@@ -282,6 +282,38 @@ message TargetArgs {
   // that it did not — the same undetectable substitution `PlanArgs.project_root`
   // documents. Clients below v6 must refuse project scope rather than send it.
   string project_root = 2;
+  // Names, never values, from the caller's own launch environment (AAASM-5993).
+  // `caller_env_examined` is every name the caller actually checked;
+  // `caller_env_present` is the subset that were set to a non-empty value. A
+  // name absent from `caller_env_examined` means the caller never asked about
+  // it — distinct from present-in-examined-but-absent-from-present, which
+  // means the caller checked and found it unset. No credential or endpoint
+  // value ever travels in either list; a value-bearing variable's *name*
+  // reaching this field is the type-level property that makes it impossible
+  // to also carry the value (`aa_core::integration::CallerEnvironment`).
+  //
+  // Unlike `project_root`, this needs no version gate: an adapter's bypass
+  // check already treats a name absent from both lists as "unexamined", the
+  // same fail-closed reading as if this request carried nothing at all
+  // (AAASM-5993's whole point). A peer that predates these fields discards
+  // them on decode and falls back to exactly that same safe default — the
+  // silent-drop failure mode `project_root` documents is a *false claim of
+  // correctness*; there is no equivalent false claim available here, because
+  // dropping this field can only ever produce the already-conservative
+  // "nothing stated" answer.
+  repeated string caller_env_examined = 3;
+  repeated string caller_env_present = 4;
+  // The caller's Claude Code configuration home, on the same terms as
+  // `PlanArgs.user_config_home`: mandatory at "user" scope (including empty
+  // `settings_scope`, since that means "the one installation that exists" and
+  // may turn out to be user-scoped), optional context elsewhere, checked
+  // against the receipt rather than used to find it (AAASM-5957).
+  //
+  // Requires DI-API 7 (`DI_API_USER_CONFIG_HOME_SINCE`). Clients below v7 must
+  // refuse user scope *and* empty `settings_scope`, for the same
+  // ignored-field-decodes-identically-to-unsent reason `project_root` above
+  // documents.
+  string user_config_home = 5;
 }
 
 // What the caller wants planned. Every field is something a caller may
@@ -337,6 +369,25 @@ message PlanArgs {
   // must therefore refuse "project" scope below v6 rather than send this and
   // inspect the reply — an ignored root and an unsent one decode identically.
   string project_root = 6;
+  // The caller's Claude Code configuration home — `$CLAUDE_CONFIG_DIR`, or
+  // `$HOME/.claude` — on the same terms as `project_root` above but for "user"
+  // scope: the service is a long-lived daemon shared by every client on the
+  // host, so its own `$CLAUDE_CONFIG_DIR`/`$HOME` belong to whichever
+  // environment launched it, not to this request's caller. Left to infer, it
+  // wrote one caller's managed keys into another user's real configuration
+  // (AAASM-5957).
+  //
+  // Mandatory at "user" scope: empty there is refused, never defaulted. At
+  // "project" and "managed" scope it is optional context, used only so the
+  // plan can disclose that a nearby user configuration exists and will be left
+  // alone.
+  //
+  // Requires DI-API 7 (`DI_API_USER_CONFIG_HOME_SINCE`). Same discard-on-decode
+  // hazard as `project_root`: a pre-v7 runtime silently falls back to its own
+  // `$HOME`, reproducing the AAASM-5957 defect with no denial and no
+  // negotiation signal. Clients must refuse "user" scope below v7 rather than
+  // send this and inspect the reply.
+  string user_config_home = 7;
 }
 
 message ApplyArgs {

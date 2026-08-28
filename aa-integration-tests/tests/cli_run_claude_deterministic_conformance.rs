@@ -300,17 +300,25 @@ mod deterministic_conformance {
             ReceiptStore::at(integrations.join("store")),
         );
         let tool = DevToolKind::ClaudeCode;
+        let user_config_home = home.join(".claude");
         let plan = service
-            .plan(IntegrationRequest::new(
-                tool.clone(),
-                ProtectionProfile::Recommended,
-                SettingsScope::User,
-            ))
+            .plan(
+                IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                    .with_user_config_home(&user_config_home),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
         service
-            // User scope: one installation, no project to name.
-            .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+            // User scope: one installation, no project to name — but a
+            // configuration home is mandatory now (AAASM-5957).
+            .apply(
+                &tool,
+                &plan.plan_id,
+                &LifecycleTarget {
+                    user_config_home: Some(user_config_home),
+                    ..LifecycleTarget::unspecified()
+                },
+            )
             .await
             .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
         // Must run after `apply` — see `enable_mcp_server`'s doc for why.

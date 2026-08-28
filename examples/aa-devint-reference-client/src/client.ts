@@ -32,6 +32,7 @@ import {
   RuntimeNotRunningError,
   TransportError,
   UnexpectedFrameError,
+  UserConfigHomeUnsupportedError,
   VerbUnavailableError,
 } from './errors.js';
 import { FrameReader, encodeHello, encodeRequest } from './framing.js';
@@ -83,8 +84,11 @@ export const DI_API_MIN_SUPPORTED = 1;
  * outcome) and consumes none of them. Receiving a field and ignoring it is safe
  * — it is fabricating one that is not — but a reader should not mistake this
  * constant for a claim that all four additions are handled.
+ *
+ * Raised again to 7 by AAASM-5957 for the identical reason, one scope over:
+ * {@link PlanOptions.userConfigHome} is a **request** field too.
  */
-export const DI_API_MAX_SUPPORTED = 6;
+export const DI_API_MAX_SUPPORTED = 7;
 
 /**
  * The first DI-API version whose `plan` honours a caller-chosen project root.
@@ -96,6 +100,16 @@ export const DI_API_MAX_SUPPORTED = 6;
  * is checking.
  */
 export const DI_API_PROJECT_ROOT_SINCE = 6;
+
+/**
+ * The first DI-API version whose `plan` honours a caller-chosen configuration
+ * home.
+ *
+ * Mirrors `DI_API_USER_CONFIG_HOME_SINCE` in `aa-runtime/src/devint/negotiate.rs`,
+ * one version and one scope over from {@link DI_API_PROJECT_ROOT_SINCE}
+ * (AAASM-5957). Duplicated for the same reason that constant is.
+ */
+export const DI_API_USER_CONFIG_HOME_SINCE = 7;
 
 /**
  * Whether a `plan` at `settingsScope` needs a newer runtime than was negotiated.
@@ -113,6 +127,19 @@ export const DI_API_PROJECT_ROOT_SINCE = 6;
  */
 export function projectRootRequiresNewerRuntime(negotiatedVersion: number, settingsScope: string): boolean {
   return settingsScope === 'project' && negotiatedVersion < DI_API_PROJECT_ROOT_SINCE;
+}
+
+/**
+ * Whether a call at `settingsScope` needs a newer runtime to carry a
+ * configuration home (AAASM-5957).
+ *
+ * Mirrors {@link projectRootRequiresNewerRuntime}, one scope over: an
+ * unstated scope (`""`) is treated as possibly user-scoped rather than as
+ * "not user scope", because `""` is what the service resolves to "whichever
+ * installation exists" — which may turn out to be the user-scope one.
+ */
+export function userConfigHomeRequiresNewerRuntime(negotiatedVersion: number, settingsScope: string): boolean {
+  return settingsScope !== 'project' && settingsScope !== 'managed' && negotiatedVersion < DI_API_USER_CONFIG_HOME_SINCE;
 }
 
 /** The AAASM-5277 lifecycle schema versions this build can read. */
@@ -196,6 +223,21 @@ export interface PlanOptions {
    * round trip that produces it.
    */
   readonly projectRoot: string;
+  /**
+   * The caller's Claude Code configuration home — `$CLAUDE_CONFIG_DIR`, or
+   * `$HOME/.claude` — resolved by the caller, on the same terms as
+   * {@link projectRoot} but for `user` scope (AAASM-5957).
+   *
+   * Required for the same reason {@link projectRoot} is. Pass `""` to say
+   * there is none: mandatory at `user` scope (and unstated scope, which may
+   * turn out to be user-scoped), optional context elsewhere.
+   *
+   * This client does not pre-empt the service's refusal of an empty value at
+   * `user` scope. It *does* pre-empt the one the service cannot make: a
+   * runtime below {@link DI_API_USER_CONFIG_HOME_SINCE} discards the field
+   * before any handler sees it — see {@link UserConfigHomeUnsupportedError}.
+   */
+  readonly userConfigHome: string;
 }
 
 /**
@@ -223,6 +265,14 @@ export interface TargetOptions {
    * destination.
    */
   readonly projectRoot: string;
+  /**
+   * The caller's Claude Code configuration home, or `""` (AAASM-5957).
+   *
+   * Compared by the service against what is on record — a receipt for a read
+   * or reverse verb, the authoring home for an apply — and never resolved
+   * into a destination.
+   */
+  readonly userConfigHome: string;
 }
 
 /**
@@ -336,6 +386,9 @@ export class DevIntClient {
     if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, options.settingsScope)) {
       throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
     }
+    if (userConfigHomeRequiresNewerRuntime(this.negotiated.diApiVersion, options.settingsScope)) {
+      throw new UserConfigHomeUnsupportedError(this.negotiated.diApiVersion, DI_API_USER_CONFIG_HOME_SINCE);
+    }
     const response = await this.call(Verb.PLAN, toolId, {
       plan: create(PlanArgsSchema, {
         profile: options.profile,
@@ -347,6 +400,9 @@ export class DevIntClient {
         // the caller resolved it against the directory the *user* is in, and any
         // value substituted here would be about a different project.
         projectRoot: options.projectRoot,
+        // Same terms, one scope over (AAASM-5957): the caller resolved this
+        // against its own CLAUDE_CONFIG_DIR/HOME, not the runtime's.
+        userConfigHome: options.userConfigHome,
       }),
     });
     return required(response.plan, 'plan');
@@ -449,10 +505,14 @@ export class DevIntClient {
     if (projectRootRequiresNewerRuntime(this.negotiated.diApiVersion, target.settingsScope)) {
       throw new ProjectRootUnsupportedError(this.negotiated.diApiVersion, DI_API_PROJECT_ROOT_SINCE);
     }
+    if (userConfigHomeRequiresNewerRuntime(this.negotiated.diApiVersion, target.settingsScope)) {
+      throw new UserConfigHomeUnsupportedError(this.negotiated.diApiVersion, DI_API_USER_CONFIG_HOME_SINCE);
+    }
     return {
       target: create(TargetArgsSchema, {
         settingsScope: target.settingsScope,
         projectRoot: target.projectRoot,
+        userConfigHome: target.userConfigHome,
       }),
     };
   }

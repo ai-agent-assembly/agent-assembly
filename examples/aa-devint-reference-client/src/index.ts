@@ -17,7 +17,9 @@ export {
   DI_API_MAX_SUPPORTED,
   DI_API_MIN_SUPPORTED,
   DI_API_PROJECT_ROOT_SINCE,
+  DI_API_USER_CONFIG_HOME_SINCE,
   projectRootRequiresNewerRuntime,
+  userConfigHomeRequiresNewerRuntime,
   VERB_NAMES,
 } from './client.js';
 export type { ClientIdentity, Negotiated, PlanOptions, TargetOptions } from './client.js';
@@ -33,9 +35,11 @@ export {
   RuntimeNotRunningError,
   TransportError,
   UnexpectedFrameError,
+  UserConfigHomeUnsupportedError,
   VerbUnavailableError,
 } from './errors.js';
 export { projectRoot, PROJECT_ROOT_ENV } from './project.js';
+export { userConfigHome, USER_CONFIG_HOME_ENV } from './userConfigHome.js';
 export {
   HOST_ENFORCED_UNAVAILABLE,
   LEVEL_LABELS,

@@ -99,7 +99,19 @@ async fn a_runtime_from_another_build_is_refused() {
     // The connection is entirely healthy — that is the trap.
     assert!(!client.negotiated().degraded);
     assert!(
-        client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
+        client
+            .status(
+                &claude_code_id(),
+                // Managed scope: user scope is mandatory-home-gated
+                // (AAASM-5957) and this test is about provenance, not target
+                // resolution.
+                TargetRequest {
+                    settings_scope: "managed",
+                    ..TargetRequest::default()
+                }
+            )
+            .await
+            .is_ok(),
         "the wrong runtime answers verbs perfectly well; that is why reachability proves nothing"
     );
 
@@ -183,7 +195,19 @@ async fn a_runtime_whose_executable_was_deleted_is_unidentifiable() {
 
     let mut client = connect(&server).await;
     assert!(
-        client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
+        client
+            .status(
+                &claude_code_id(),
+                // Managed scope: user scope is mandatory-home-gated
+                // (AAASM-5957) and this test is about provenance, not target
+                // resolution.
+                TargetRequest {
+                    settings_scope: "managed",
+                    ..TargetRequest::default()
+                }
+            )
+            .await
+            .is_ok(),
         "a runtime with no binary on disk still answers; that is the whole problem"
     );
 
