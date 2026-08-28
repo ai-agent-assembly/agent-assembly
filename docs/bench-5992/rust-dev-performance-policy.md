@@ -346,14 +346,43 @@ rows.
   no sccache instrumentation by design (noted above); `commit-range-build` *is*
   instrumented (table above) so this gap applies to `Test` only.
 
+## Test-job sccache experiment — REJECTED (AAASM-6004)
+
+AAASM-5994 deliberately excluded `test` from its initial sccache rollout,
+pending dedicated measurement. AAASM-6004 ran that measurement: a controlled
+two-run A/B on branch `v0.0.1/AAASM-6004/config/test_sccache_ab_experiment`
+(PR #2281, closed without merging).
+
+| Run | Cache state | Wall time | Compile reqs | Cache hits | Overall hit rate | Rust hit rate |
+|---|---|---|---|---|---|---|
+| 1 | cold | 39m22s | 2719 | 763 | 37.83% | 22.69% |
+| 2 | warm | 35m43s | 2719 | 967 | 47.94% | 35.87% |
+
+Baseline control (AAASM-6003, no sccache, n=4): **34m25s–41m58s**.
+
+**Verdict: rejected.** Both experiment-arm wall times fall inside the
+existing no-sccache baseline range — the warm run's 35m43s is not below what
+un-cached runs already achieve at their fast end (34m25s). A real and
+growing Rust cache-hit rate (22.69%→35.87%) did not translate into a
+wall-time reduction beyond the baseline's own run-to-run variance, per this
+doc's decision rule (total wall time is the primary metric, not hit-rate
+alone). Unlike Build/Clippy (AAASM-5994, adopted), Test's dominant cost
+includes non-rustc-cacheable work — nextest binary linking/archiving,
+dashboard/node build steps, DB-backed integration tests — that sccache
+cannot touch, so real object-cache reuse doesn't move the job's total time.
+
+Do not re-attempt sccache on `test` without new evidence that changes this
+ratio (e.g. a materially different Test-job shape, or workspace-wide
+compile-time growth that shifts more of the job into cacheable rustc work).
+
 ## Open follow-ups (not yet implemented)
 
 - **AAASM-5995's own recommendation**, unimplemented: extend targeted nextest
   scoping to more of the *default* invocation surface (not just incident
   response) — needs its own measurement before scoping as a real ticket.
-- **sccache CI rollout to `test`/`coverage`**: deliberately excluded from
-  AAASM-5994's first pass; disk-constrained jobs, deserve dedicated
-  measurement before adding a second cache.
+- **sccache CI rollout to `coverage`**: separate cache-namespace concern
+  (llvm-cov changes compilation semantics) — see AAASM-6006, not yet run.
+  `test`'s case is now resolved (rejected, above) — do not conflate the two.
 - **A hard-enforced disk quota** (AAASM-5981 AC2): `rust-target-lifecycle.sh
   status --max-total-gib` currently only *signals* (non-zero exit) when a
   budget is exceeded — it does not evict anything to enforce it, since doing
