@@ -363,3 +363,11 @@ rows.
 - **`docs/bench-5992/build-baseline.sh` harness gap**: its `--timings` HTML
   archival silently no-ops when `CARGO_TARGET_DIR` is overridden (hardcoded
   `target/cargo-timings/` glob) — cosmetic, not filed as a ticket.
+- **Affected-test selection for PR CI** (AAASM-6007 spike, unimplemented):
+  changed-crate → dependency-closure → required-test selection is the
+  largest remaining wall-clock lever, but it changes required-gate
+  semantics rather than just build caching, so it needed its own
+  viability/risk spike before any implementation ticket. See
+  [`docs/bench-5992/affected-test-selection-spike.md`](affected-test-selection-spike.md)
+  for the dependency-graph shape, the false-green risk catalog, and the
+  falsification-test plan a future ticket would need to clear.
