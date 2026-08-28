@@ -245,12 +245,22 @@ impl ConformanceHarness {
         DevToolKind::ClaudeCode
     }
 
+    /// The configuration home every user-scope operation here names
+    /// (AAASM-5957): this harness's own `home/.claude`, mandatory now that
+    /// the service no longer infers it from its own environment.
+    pub fn user_config_home(&self) -> PathBuf {
+        self.home.join(".claude")
+    }
+
     /// The installation every read-or-reverse operation here names.
     ///
     /// Unspecified scope/project, because this harness installs at user
     /// scope: there is one installation and no project to name. A
     /// project-scope conformance case builds its own target rather than
-    /// widening this one (AAASM-5913).
+    /// widening this one (AAASM-5913). The configuration home *is* named —
+    /// this harness's own `home/.claude` — because it is mandatory at user
+    /// scope now that the service no longer infers it from its own
+    /// environment (AAASM-5957).
     ///
     /// `caller_env` states what this process actually observes about its own
     /// environment for `KNOWN_LAUNCH_BYPASS_ENV_VARS` (AAASM-5993) — the same
@@ -265,6 +275,7 @@ impl ConformanceHarness {
     /// host" remains true.
     pub fn target(&self) -> LifecycleTarget {
         LifecycleTarget {
+            user_config_home: Some(self.user_config_home()),
             caller_env: Some(self.caller_env()),
             ..LifecycleTarget::unspecified()
         }
@@ -291,7 +302,10 @@ impl ConformanceHarness {
     /// Author a plan without applying it.
     pub async fn plan(&self, profile: ProtectionProfile) -> anyhow::Result<IntegrationPlan> {
         self.service
-            .plan(IntegrationRequest::new(self.tool(), profile, SettingsScope::User))
+            .plan(
+                IntegrationRequest::new(self.tool(), profile, SettingsScope::User)
+                    .with_user_config_home(self.user_config_home()),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }

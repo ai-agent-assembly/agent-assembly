@@ -502,18 +502,35 @@ impl ClaudeCodeIntegration {
         &self,
         scope: SettingsScope,
         project_root: Option<&Path>,
+        user_config_home: Option<&Path>,
     ) -> Result<ClaudeCodePaths, AdapterError> {
-        match project_root {
-            Some(root) => Ok(self.paths.clone().with_project(root)),
+        let paths = match project_root {
+            Some(root) => self.paths.clone().with_project(root),
             // At user and managed scope the project root is only used to disclose
             // that a project configuration exists nearby; not knowing it costs one
             // warning, not correctness.
-            None if scope != SettingsScope::Project => Ok(self.paths.clone()),
+            None if scope != SettingsScope::Project => self.paths.clone(),
+            None => {
+                return Err(AdapterError::SettingsGenerationFailed(
+                    "this request writes the project settings scope but names no project. The \
+                     developer-integration service is shared by every client on this host, so the \
+                     project a change lands in is taken from the request and never from the service's \
+                     own working directory"
+                        .to_string(),
+                ))
+            }
+        };
+        // The identical argument, one scope over (AAASM-5957): a user
+        // configuration home is the caller's to name, and this adapter is
+        // shared by every client on the host.
+        match user_config_home {
+            Some(home) => Ok(paths.with_config_dir(home)),
+            None if scope != SettingsScope::User => Ok(paths),
             None => Err(AdapterError::SettingsGenerationFailed(
-                "this request writes the project settings scope but names no project. The \
+                "this request writes the user settings scope but names no configuration home. The \
                  developer-integration service is shared by every client on this host, so the \
-                 project a change lands in is taken from the request and never from the service's \
-                 own working directory"
+                 configuration home a change lands in is taken from the request and never from the \
+                 service's own environment"
                     .to_string(),
             )),
         }
@@ -930,7 +947,11 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         // Resolved from *this request*, not from the roots this adapter was
         // constructed over: the project a project-scoped plan writes into belongs
         // to the caller, and this adapter is shared (AAASM-5913).
-        let paths = self.effective_paths(scope, request.project_root.as_deref())?;
+        let paths = self.effective_paths(
+            scope,
+            request.project_root.as_deref(),
+            request.user_config_home.as_deref(),
+        )?;
         let settings_path = paths.settings_path(scope).map_err(scope_error)?;
         let launch_env = paths.launch_env_dir(scope).map_err(scope_error)?;
         let ca_pem = paths.proxy_ca_pem(scope).map_err(scope_error)?;

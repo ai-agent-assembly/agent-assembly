@@ -574,6 +574,12 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             // User scope, so no project is named — the field is only mandatory
             // at project scope (AAASM-5913).
             project_root: String::new(),
+            // Mandatory at user scope (AAASM-5957). `parse_user_config_home`
+            // requires the *parent* of this path to exist for real (so a
+            // first install can create the leaf) — `/tmp` is guaranteed to,
+            // unlike an arbitrary synthetic path this generic builder has no
+            // real caller environment to derive one from.
+            user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
         }),
         apply: matches!(verb, DiVerb::Apply).then(|| wire::ApplyArgs {
             plan_id: "plan-1".to_string(),
@@ -590,8 +596,19 @@ pub fn build_request(verb: DiVerb, tool: &str, token: Option<&CapabilityToken>, 
             user_input: "approve".to_string(),
         }),
         // The fixture's receipts are user-scoped, so a plain request names no
-        // project and needs no target; a test about project scope builds one.
-        target: None,
+        // project — but a user configuration home is mandatory the moment the
+        // effective scope is user, and an absent target defaults to that
+        // scope (AAASM-5957), so this can no longer stay `None`. `FakeLifecycle`
+        // ignores a target's content once parsed, so only the request-parsing
+        // boundary (a real, existing parent directory) has to be satisfied
+        // here, not a value matching any particular fixture.
+        target: Some(wire::TargetArgs {
+            settings_scope: "user".to_string(),
+            project_root: String::new(),
+            user_config_home: std::env::temp_dir().join(".claude").to_string_lossy().into_owned(),
+            caller_env_examined: Vec::new(),
+            caller_env_present: Vec::new(),
+        }),
     }
 }
 

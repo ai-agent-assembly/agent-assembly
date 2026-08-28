@@ -196,16 +196,25 @@ async fn install(fixture: &Fixture, proxy_url: &str) -> anyhow::Result<()> {
         ReceiptStore::at(fixture.integrations_state().join("store")),
     );
     let tool = DevToolKind::Codex;
+    // Mandatory at user scope now that the service no longer infers a
+    // configuration home from its own environment (AAASM-5957) — Codex is
+    // governed by the same generic check as Claude Code.
     let plan = service
-        .plan(IntegrationRequest::new(
-            tool.clone(),
-            ProtectionProfile::Recommended,
-            SettingsScope::User,
-        ))
+        .plan(
+            IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                .with_user_config_home(&fixture.home),
+        )
         .await
         .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
     service
-        .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+        .apply(
+            &tool,
+            &plan.plan_id,
+            &LifecycleTarget {
+                user_config_home: Some(fixture.home.clone()),
+                ..LifecycleTarget::unspecified()
+            },
+        )
         .await
         .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
     Ok(())

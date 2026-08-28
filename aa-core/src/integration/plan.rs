@@ -136,6 +136,20 @@ pub struct IntegrationRequest {
     /// the caller and will be left alone. No step's path is ever derived from it
     /// at those scopes.
     pub project_root: Option<PathBuf>,
+    /// The Claude Code configuration home this request is about, as an
+    /// absolute path (AAASM-5957).
+    ///
+    /// The same argument as [`project_root`](Self::project_root), for
+    /// [`User`](SettingsScope::User) scope instead of Project: a lifecycle
+    /// service runs as a long-lived daemon shared by every client on the host,
+    /// so its own `$CLAUDE_CONFIG_DIR`/`$HOME` belong to whichever environment
+    /// launched it, not to this request's caller. `None` at User scope is an
+    /// error the service reports — never a fallback to its own environment.
+    ///
+    /// At Project and Managed scope this is optional context, never a
+    /// destination: it lets the plan disclose that a user configuration also
+    /// exists and will be left alone.
+    pub user_config_home: Option<PathBuf>,
     /// Whether the caller has consented to steps that change host state. A plan
     /// containing privileged steps that were not consented to is a plan the
     /// service must not execute.
@@ -167,6 +181,7 @@ impl IntegrationRequest {
             requested_level: ProtectionLevel::GatewayProtected,
             settings_scope,
             project_root: None,
+            user_config_home: None,
             allow_privileged_host_steps: false,
             policy_profile: None,
             caller_env: None,
@@ -187,6 +202,16 @@ impl IntegrationRequest {
     #[must_use]
     pub fn with_project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
         self.project_root = Some(project_root.into());
+        self
+    }
+
+    /// Name the Claude Code configuration home this request is about.
+    ///
+    /// Mandatory at [`SettingsScope::User`]; see
+    /// [`user_config_home`](Self::user_config_home).
+    #[must_use]
+    pub fn with_user_config_home(mut self, user_config_home: impl Into<PathBuf>) -> Self {
+        self.user_config_home = Some(user_config_home.into());
         self
     }
 
@@ -323,6 +348,10 @@ pub struct IntegrationPlan {
     /// checked against it and so a reviewer can read which repository they are
     /// about to change (AAASM-5913).
     pub project_root: Option<PathBuf>,
+    /// The configuration home a [`User`](SettingsScope::User)-scoped plan
+    /// writes into, carried from [`IntegrationRequest::user_config_home`] on
+    /// the same terms as [`project_root`](Self::project_root) (AAASM-5957).
+    pub user_config_home: Option<PathBuf>,
     /// The resolved policy profile, by reference.
     pub policy_profile: Option<PolicyProfileRef>,
     /// The level this plan intends to reach if every step succeeds and verifies.
@@ -353,6 +382,7 @@ impl IntegrationPlan {
             profile: request.profile,
             settings_scope: request.settings_scope,
             project_root: request.project_root.clone(),
+            user_config_home: request.user_config_home.clone(),
             policy_profile: request.policy_profile.clone(),
             planned_level,
             adapter_ceiling,

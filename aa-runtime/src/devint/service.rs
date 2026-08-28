@@ -266,6 +266,7 @@ impl EngineLifecycle {
             })?;
         if let Some(receipt) = &receipt {
             Self::confirm_project(tool, receipt, target)?;
+            Self::confirm_user_config_home(tool, receipt, target)?;
         }
         Ok((scope, receipt))
     }
@@ -280,6 +281,7 @@ impl EngineLifecycle {
         let scope = self.target_scope(tool, target);
         let receipt = self.receipt(tool, scope)?;
         Self::confirm_project(tool, &receipt, target)?;
+        Self::confirm_user_config_home(tool, &receipt, target)?;
         Ok((scope, receipt))
     }
 
@@ -347,7 +349,7 @@ impl EngineLifecycle {
                 ),
             });
         };
-        if same_project(recorded, requested) {
+        if same_path(recorded, requested) {
             return Ok(());
         }
         Err(LifecycleError::Refused {
@@ -398,13 +400,84 @@ impl EngineLifecycle {
                 ),
             });
         };
-        if same_project(authored_for, requested) {
+        if same_path(authored_for, requested) {
             return Ok(());
         }
         Err(LifecycleError::Refused {
             detail: "this plan was authored for another project, not this one; re-run the install from \
                      the project you mean to change"
                 .to_string(),
+        })
+    }
+
+    /// Refuse a stored receipt the caller cannot claim as this configuration
+    /// home's (AAASM-5957).
+    ///
+    /// Mirrors [`Self::confirm_project`] exactly, one scope over: same three
+    /// refusal cases (nothing named, a different home named, the receipt
+    /// cannot say), same reasoning for why User and Project/Managed scope
+    /// otherwise have nothing to disagree about, same refusal to name the
+    /// other home's path in the message a client receives.
+    fn confirm_user_config_home(
+        tool: &DevToolKind,
+        receipt: &IntegrationReceipt,
+        target: &LifecycleTarget,
+    ) -> Result<(), LifecycleError> {
+        if receipt.settings_scope != SettingsScope::User {
+            return Ok(());
+        }
+        let Some(requested) = target.user_config_home.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "{} is installed at user scope, and this request does not say which configuration \
+                     home it is about; retry with a client that speaks DI-API {}",
+                    tool_id(tool),
+                    crate::devint::negotiate::DI_API_USER_CONFIG_HOME_SINCE
+                ),
+            });
+        };
+        let Some(recorded) = receipt.user_config_home() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "the stored user-scope receipt for {} does not record which configuration home it \
+                     wrote, so it cannot be shown to be this one; remove and re-install the integration",
+                    tool_id(tool)
+                ),
+            });
+        };
+        if same_path(recorded, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: format!(
+                "the user-scope integration for {} belongs to another configuration home, not this one",
+                tool_id(tool)
+            ),
+        })
+    }
+
+    /// Refuse a cached plan the caller cannot claim as this configuration
+    /// home's (AAASM-5957).
+    ///
+    /// Mirrors [`Self::confirm_plan_project`] exactly, one scope over.
+    fn confirm_plan_user_config_home(plan: &IntegrationPlan, target: &LifecycleTarget) -> Result<(), LifecycleError> {
+        let Some(authored_for) = plan.user_config_home.as_deref() else {
+            return Ok(());
+        };
+        let Some(requested) = target.user_config_home.as_deref() else {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "this plan was authored for a configuration home, and this request does not say \
+                     which one it is being applied from; retry with a client that speaks DI-API {}",
+                    crate::devint::negotiate::DI_API_USER_CONFIG_HOME_SINCE
+                ),
+            });
+        };
+        if same_path(authored_for, requested) {
+            return Ok(());
+        }
+        Err(LifecycleError::Refused {
+            detail: "this plan was authored for another configuration home, not this one".to_string(),
         })
     }
 
@@ -458,6 +531,7 @@ impl EngineLifecycle {
         let mut request = IntegrationRequest::new(receipt.tool.clone(), receipt.profile, receipt.settings_scope)
             .requesting_level(receipt.planned_level);
         request.project_root = receipt.project_root().map(std::path::Path::to_path_buf);
+        request.user_config_home = receipt.user_config_home().map(std::path::Path::to_path_buf);
         registered
             .integration
             .plan_integration(&request)
@@ -556,7 +630,12 @@ fn finding_mechanism(kind: DriftKind) -> IntegrationCapability {
     }
 }
 
-/// Whether two paths name the same project directory.
+/// Whether two paths name the same directory.
+///
+/// Shared by [`Service::confirm_project`]/[`Service::confirm_plan_project`]
+/// and [`Service::confirm_user_config_home`]/
+/// [`Service::confirm_plan_user_config_home`] (AAASM-5957) — one comparison
+/// rule for "is this the same root", regardless of which scope's root it is.
 ///
 /// The caller's root arrives canonicalized, and a receipt written since
 /// AAASM-5913 recorded a canonical one — but a receipt written *before* it
@@ -571,7 +650,7 @@ fn finding_mechanism(kind: DriftKind) -> IntegrationCapability {
 /// hash — untouched. A directory that no longer exists cannot be canonicalized;
 /// the raw path is then all there is, and comparing it is still strictly better
 /// than not comparing.
-fn same_project(a: &std::path::Path, b: &std::path::Path) -> bool {
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
     let canonical = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
     a == b || canonical(a) == canonical(b)
 }
@@ -663,6 +742,7 @@ impl IntegrationLifecycle for EngineLifecycle {
         // Which project, before what it may do in it: a plan belonging to
         // somewhere else is not a consent question, so it is settled first.
         Self::confirm_plan_project(&plan, target)?;
+        Self::confirm_plan_user_config_home(&plan, target)?;
 
         // §6.6: a privileged host step is never implied by a profile. The
         // request that authored the plan is the record of what was consented
@@ -911,6 +991,26 @@ mod tests {
         }
     }
 
+    impl Harness {
+        /// The target every User-scope read/reverse verb in this suite means:
+        /// this harness's own settings file's directory.
+        ///
+        /// Mandatory since AAASM-5957 — `confirm_user_config_home` refuses a
+        /// User-scope receipt with no configuration home named, and every
+        /// fixture in this suite installs at User scope by default. Real,
+        /// not synthetic: it is exactly `receipt.user_config_home()` derives
+        /// from the same settings path, so the comparison is genuine rather
+        /// than trivially satisfied by both sides being absent.
+        fn target(&self) -> LifecycleTarget {
+            LifecycleTarget {
+                settings_scope: None,
+                project_root: None,
+                user_config_home: Some(self.settings.parent().expect("settings has a parent").to_path_buf()),
+                caller_env: None,
+            }
+        }
+    }
+
     fn request() -> IntegrationRequest {
         IntegrationRequest::new(
             DevToolKind::ClaudeCode,
@@ -939,7 +1039,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let first = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         let after_first = std::fs::read_to_string(&h.settings).expect("read");
@@ -949,7 +1049,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("re-plan");
         let second = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("re-apply");
         assert_eq!(
@@ -978,11 +1078,7 @@ mod tests {
         let h = harness(|f| f);
         match h
             .service
-            .apply(
-                &DevToolKind::ClaudeCode,
-                "plan-someone-else-made",
-                &LifecycleTarget::unspecified(),
-            )
+            .apply(&DevToolKind::ClaudeCode, "plan-someone-else-made", &h.target())
             .await
         {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "plan-someone-else-made"),
@@ -998,7 +1094,7 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         match h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
         {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("host state"), "{detail}"),
@@ -1023,13 +1119,13 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::ReadBackOnly));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
 
         let result = h
             .service
-            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .verify(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("verify");
         assert!(!exercised_the_protected_path(&result));
@@ -1041,7 +1137,7 @@ mod tests {
 
         let status = h
             .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .status(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
@@ -1052,12 +1148,12 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         let result = h
             .service
-            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .verify(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("verify");
         assert!(exercised_the_protected_path(&result));
@@ -1070,16 +1166,16 @@ mod tests {
         let h = harness(|f| f.verifying(FixtureVerification::Leaked));
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         h.service
-            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .verify(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("verify");
         let status = h
             .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .status(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("status");
         assert!(status.achieved_level() < ProtectionLevel::GatewayProtected);
@@ -1088,11 +1184,7 @@ mod tests {
     #[tokio::test]
     async fn verifying_without_an_installation_is_refused_rather_than_passing() {
         let h = harness(|f| f);
-        match h
-            .service
-            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
-            .await
-        {
+        match h.service.verify(&DevToolKind::ClaudeCode, &h.target()).await {
             Err(LifecycleError::Refused { detail }) => assert!(detail.contains("install"), "{detail}"),
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1104,21 +1196,21 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         let before = std::fs::read_to_string(&h.settings).expect("read");
 
         let removal = h
             .service
-            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .remove(&DevToolKind::ClaudeCode, &h.target(), None)
             .await
             .expect("preview");
         assert!(!removal.steps.is_empty());
         assert_eq!(std::fs::read_to_string(&h.settings).expect("read"), before);
         assert!(
             h.service
-                .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                .status(&DevToolKind::ClaudeCode, &h.target())
                 .await
                 .expect("status")
                 .phase
@@ -1133,21 +1225,17 @@ mod tests {
         std::fs::write(&h.settings, r#"{"theme":"solarized"}"#).expect("seed");
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
 
         let preview = h
             .service
-            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .remove(&DevToolKind::ClaudeCode, &h.target(), None)
             .await
             .expect("preview");
         h.service
-            .remove(
-                &DevToolKind::ClaudeCode,
-                &LifecycleTarget::unspecified(),
-                Some(&preview.plan_id),
-            )
+            .remove(&DevToolKind::ClaudeCode, &h.target(), Some(&preview.plan_id))
             .await
             .expect("remove");
 
@@ -1161,16 +1249,12 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         match h
             .service
-            .remove(
-                &DevToolKind::ClaudeCode,
-                &LifecycleTarget::unspecified(),
-                Some("removal-nope"),
-            )
+            .remove(&DevToolKind::ClaudeCode, &h.target(), Some("removal-nope"))
             .await
         {
             Err(LifecycleError::UnknownPlan { plan_id }) => assert_eq!(plan_id, "removal-nope"),
@@ -1183,14 +1267,14 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
 
         std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"solarized"}"#).expect("tamper");
         let drifted = h
             .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .status(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("status");
         assert!(
@@ -1201,7 +1285,7 @@ mod tests {
 
         let (report, _) = h
             .service
-            .repair(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .repair(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("repair");
         assert_eq!(report.repaired, vec!["settings".to_string()]);
@@ -1210,7 +1294,7 @@ mod tests {
         assert!(
             !matches!(
                 h.service
-                    .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+                    .status(&DevToolKind::ClaudeCode, &h.target())
                     .await
                     .expect("status")
                     .state,
@@ -1223,11 +1307,7 @@ mod tests {
     #[tokio::test]
     async fn a_tool_no_adapter_knows_is_an_unknown_tool_not_a_crash() {
         let h = harness(|f| f);
-        match h
-            .service
-            .status(&DevToolKind::Codex, &LifecycleTarget::unspecified())
-            .await
-        {
+        match h.service.status(&DevToolKind::Codex, &h.target()).await {
             Err(LifecycleError::UnknownTool { tool_id }) => assert_eq!(tool_id, "codex"),
             other => panic!("expected UnknownTool, got {other:?}"),
         }
@@ -1293,6 +1373,7 @@ mod tests {
         LifecycleTarget {
             settings_scope: None,
             project_root: Some(project.to_path_buf()),
+            user_config_home: None,
             caller_env: None,
         }
     }
@@ -1315,11 +1396,7 @@ mod tests {
     #[tokio::test]
     async fn a_project_scope_installation_is_not_reported_to_a_request_that_names_no_project() {
         let (h, _project) = installed_into_project().await;
-        match h
-            .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
-            .await
-        {
+        match h.service.status(&DevToolKind::ClaudeCode, &h.target()).await {
             Err(LifecycleError::Refused { detail }) => {
                 assert!(
                     detail.contains("does not say which project"),
@@ -1451,7 +1528,7 @@ mod tests {
 
         match h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
         {
             Err(LifecycleError::Refused { detail }) => {
@@ -1514,14 +1591,159 @@ mod tests {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         let status = h
             .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .status(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("a user-scope installation answers an unspecified target");
+        assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
+    }
+
+    /// A target naming no configuration home cannot be answered from a
+    /// User-scope receipt (AAASM-5957) — the daemon's own ambient
+    /// `CLAUDE_CONFIG_DIR`/`HOME` is not a substitute; it is the defect this
+    /// ticket fixes. Mirrors
+    /// [`a_project_scope_installation_is_not_reported_to_a_request_that_names_no_project`]
+    /// one scope over.
+    #[tokio::test]
+    async fn a_user_scope_installation_is_not_reported_to_a_request_that_names_no_config_home() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
+            .await
+            .expect("apply");
+        match h
+            .service
+            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .await
+        {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("does not say which configuration home"),
+                    "the refusal must say what is missing: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// The defect as a user met it, one scope over from AAASM-5913's: a daemon
+    /// launched (or whose environment was substituted) with a *different*
+    /// `CLAUDE_CONFIG_DIR` must not have that leak into an unrelated caller's
+    /// read of, or reversal against, this installation's own configuration
+    /// home. Every read-or-reverse verb refuses, for the same reason
+    /// `repair`/`remove` refuse a mismatched project: they would otherwise
+    /// write to and delete from a configuration home the caller never named.
+    #[tokio::test]
+    async fn every_read_or_reverse_verb_refuses_a_config_home_that_is_not_the_installed_one() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
+            .await
+            .expect("apply");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let other = LifecycleTarget {
+            settings_scope: None,
+            project_root: None,
+            user_config_home: Some(elsewhere.path().to_path_buf()),
+            caller_env: None,
+        };
+        let tool = DevToolKind::ClaudeCode;
+
+        let refusals = [
+            ("status", h.service.status(&tool, &other).await.err()),
+            ("verify", h.service.verify(&tool, &other).await.err()),
+            ("repair", h.service.repair(&tool, &other).await.err()),
+            ("remove", h.service.remove(&tool, &other, None).await.err()),
+        ];
+        for (verb, error) in refusals {
+            match error {
+                Some(LifecycleError::Refused { detail }) => {
+                    assert!(
+                        detail.contains("another"),
+                        "{verb} must say the installation belongs to a different configuration home: {detail}"
+                    );
+                }
+                other => panic!("{verb} must be refused, got {other:?}"),
+            }
+        }
+
+        // And nothing was written to or removed from the installed
+        // configuration on the way to those refusals.
+        assert!(
+            h.settings.exists(),
+            "a refused verb touched the installed configuration's files"
+        );
+    }
+
+    /// AAASM-5957, the write path: a plan authored for one configuration home
+    /// cannot be executed against another — mirroring
+    /// [`a_plan_authored_for_one_project_is_not_applyable_from_another`] one
+    /// scope over. The plan cache is process-global and keyed on the plan id
+    /// alone, so any client on the host that holds an id could otherwise
+    /// present it from a different `CLAUDE_CONFIG_DIR`/`HOME` and have it
+    /// applied there instead.
+    #[tokio::test]
+    async fn a_plan_authored_for_one_config_home_is_not_applyable_against_another() {
+        let h = harness(|f| f);
+        let home = h.settings.parent().expect("settings has a parent").to_path_buf();
+        let plan = h
+            .service
+            .plan(request().with_user_config_home(&home))
+            .await
+            .expect("plan");
+        let elsewhere = tempfile::tempdir().expect("tempdir");
+        let other = LifecycleTarget {
+            settings_scope: None,
+            project_root: None,
+            user_config_home: Some(elsewhere.path().to_path_buf()),
+            caller_env: None,
+        };
+
+        match h.service.apply(&DevToolKind::ClaudeCode, &plan.plan_id, &other).await {
+            Err(LifecycleError::Refused { detail }) => {
+                assert!(
+                    detail.contains("another configuration home"),
+                    "the refusal must say the plan belongs to a different configuration home: {detail}"
+                );
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        assert!(
+            !h.settings.exists(),
+            "the refused apply wrote the authoring home's settings anyway"
+        );
+
+        // Refused, not consumed: the caller who authored it can still apply
+        // it against the configuration home it is about.
+        let applied = h
+            .service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
+            .await
+            .expect("the authoring caller may still apply its own plan");
+        assert_eq!(
+            applied.receipt.user_config_home(),
+            Some(h.settings.parent().expect("settings has a parent"))
+        );
+    }
+
+    /// A project-scope installation is unaffected: its destination was never
+    /// the configuration-home field's to name, so there is nothing to
+    /// disagree about — the AAASM-5957 mirror of
+    /// [`a_user_scope_installation_still_needs_no_project_named`].
+    #[tokio::test]
+    async fn a_project_scope_installation_still_needs_no_config_home_named() {
+        let (h, project) = installed_into_project().await;
+        let status = h
+            .service
+            .status(&DevToolKind::ClaudeCode, &target_for(&project))
+            .await
+            .expect("a project-scope installation answers a target naming no configuration home");
         assert_eq!(status.phase, aa_core::integration::LifecyclePhase::Installed);
     }
 
@@ -1533,22 +1755,22 @@ mod tests {
         let plan = h.service.plan(request()).await.expect("plan");
         let receipt = h
             .service
-            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &LifecycleTarget::unspecified())
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
             .await
             .expect("apply");
         let status = h
             .service
-            .status(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .status(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("status");
         let verification = h
             .service
-            .verify(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified())
+            .verify(&DevToolKind::ClaudeCode, &h.target())
             .await
             .expect("verify");
         let removal = h
             .service
-            .remove(&DevToolKind::ClaudeCode, &LifecycleTarget::unspecified(), None)
+            .remove(&DevToolKind::ClaudeCode, &h.target(), None)
             .await
             .expect("preview");
 

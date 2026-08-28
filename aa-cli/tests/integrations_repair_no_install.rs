@@ -126,6 +126,11 @@ impl Harness {
             .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
             .env("AASM_STATE_DIR", self.dir.path().join("state"))
             .env("HOME", self.dir.path())
+            // AAASM-5957: the fixture's settings file lives at this harness's
+            // root directly, so the caller-supplied configuration home is
+            // pointed there rather than left to the `$HOME/.claude` default —
+            // otherwise it would name a home the receipt never recorded.
+            .env("CLAUDE_CONFIG_DIR", self.dir.path())
             .env("AASM_API_KEY", "");
         cmd.output().expect("run aasm")
     }
@@ -180,6 +185,7 @@ fn the_service_refuses_the_repair_verb_without_a_receipt() {
     let h = Harness::start();
     let token = std::fs::read_to_string(&h.token_file).expect("token file");
     let socket = h.socket.clone();
+    let home = h.dir.path().to_string_lossy().into_owned();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -191,8 +197,15 @@ fn the_service_refuses_the_repair_verb_without_a_receipt() {
                 .await
                 .expect("connect");
 
+        // Names the configuration home the fixture actually set `HOME` to, so
+        // this reaches the no-receipt refusal under test rather than the
+        // AAASM-5957 unstated-configuration-home refusal.
+        let target = TargetRequest {
+            user_config_home: &home,
+            ..TargetRequest::default()
+        };
         let refusal = client
-            .repair("claude-code", TargetRequest::default())
+            .repair("claude-code", target)
             .await
             .expect_err("the service accepted a repair for a tool it holds no receipt for");
         let rendered = format!("{refusal:?}");
@@ -203,10 +216,7 @@ fn the_service_refuses_the_repair_verb_without_a_receipt() {
 
         // …and the verb the CLI actually sends does *not* refuse, which is the
         // asymmetry that let the no-op pass as a success in the first place.
-        let status = client
-            .status("claude-code", TargetRequest::default())
-            .await
-            .expect("status");
+        let status = client.status("claude-code", target).await.expect("status");
         assert_eq!(status.phase, "detected_not_integrated", "{status:?}");
         assert!(
             status.drift_mismatched.is_empty(),
