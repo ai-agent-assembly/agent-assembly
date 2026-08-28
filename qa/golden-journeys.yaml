@@ -1471,7 +1471,7 @@ journeys:
   feature_refs:
   - AAASM-5272
   - AAASM-5280
-  name: Discover which dev-tool integrations are available and their real capability/protection state
+  name: Discover which dev-tool integrations are answered by a real, identified DI-API runtime
   priority: P1
   persona_track: Function
   surfaces:
@@ -1481,9 +1481,10 @@ journeys:
   lanes:
   - functional
   browser_required: false
-  outcome: aasm integrations list reports each supported dev tool's real detected surfaces and
-    protection state through a real subprocess talking to the real DI-API socket, and does not
-    hang when that socket never answers.
+  outcome: aasm integrations list names the real build/PID that answered it through a real
+    subprocess talking to the real DI-API socket, and does not hang when that socket never
+    answers. Per-tool surface/protection-state content is asserted by the status command (see
+    J71/J77), not by this row's own cited evidence.
   # AAASM-5999: filed when the entire Developer Integration programme (Epic
   # AAASM-5272, ~19 Jira items) was found to have zero golden-journeys.yaml
   # representation, despite this being one of the more thoroughly tested
@@ -1518,8 +1519,12 @@ journeys:
   lanes:
   - functional
   browser_required: false
-  outcome: aasm integrations plan discloses the real path/content/diff/backup/rollback a
-    subsequent install would perform, and creates no file, artifact, or store directory itself.
+  outcome: aasm integrations plan discloses the real target path, the exact content that will
+    be written, and the consent/authorization requirements a subsequent managed install would
+    trigger, and creates no file, artifact, or store directory itself. The plan's own diff and
+    backup disclosure is real (aa-devtool-claude-code/src/lifecycle.rs) but is not yet asserted
+    by this row's cited automated test — see the test's own assertions before relying on this
+    row for that specific claim.
   release_blocking: true
   lifecycle_state: automated
   evidence:
@@ -2039,7 +2044,7 @@ journeys:
   entry_point: cli
   lanes:
   - security
-  browser_required: true
+  browser_required: false
   outcome: The real MacOsAdminAuthority path (a genuine osascript ... with administrator
     privileges invocation running /usr/bin/install / /bin/rm against a managed-settings file) is
     proven to actually write/remove the target file on a real macOS host, not merely that the
