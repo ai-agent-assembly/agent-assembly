@@ -192,7 +192,7 @@ no-op guard rationale are in
    binding fresh against `HEAD` immediately before tagging (AAASM-5998 — the
    same R1/R1b rules the readiness gate's check 14 already ran, re-run as
    TOCTOU defense-in-depth), **then additionally runs a narrower,
-   version-scoped candidate/tag binding check** (AAASM-6001 Option 4, ADR 0037
+   version-scoped candidate/tag binding check** (AAASM-6001 Option 4, Core ADR 0037
    — `--strict-tag-binding`): `candidate_sha` may be an ancestor of `HEAD`
    only through commits that touch exclusively this version's own
    sign-off/evidence artifacts, nothing else. Refuses if the tag already

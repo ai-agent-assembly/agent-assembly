@@ -98,7 +98,7 @@ git commit -m "📝 (release): Evidence for v<X> (verdict: <PASS|BLOCK>)"
 > through commits that touch *only* this version's own sign-off/evidence
 > artifacts — exactly `docs/release/qa-signoff/v<X>.md`,
 > `docs/release/qa-signoff/v<X>.evidence.json` (or `.attempt-<N>.evidence.json`),
-> and `docs/release/security-signoff/v<X>.md` (ADR 0037, AAASM-6001 Option 4)
+> and `docs/release/security-signoff/v<X>.md` (Core ADR 0037, AAASM-6001 Option 4)
 > — the exact shape a normal `git add`+`git commit` of the evidence file
 > this skill just wrote produces. It does **not** accept any other change
 > riding along in that commit (a source/config/build/workflow file, another

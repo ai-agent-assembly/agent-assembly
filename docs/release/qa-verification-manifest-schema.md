@@ -257,5 +257,5 @@ python3 scripts/qa/build-release-evidence.py --version 0.0.1-rc.7
 # first attempt for this version: writes docs/release/qa-signoff/v0.0.1-rc.7.evidence.json
 # second and later real attempts (after a BLOCK + remediation + re-sign-off):
 # writes docs/release/qa-signoff/v0.0.1-rc.7.attempt-<N>.evidence.json instead —
-# a prior BLOCK attempt's evidence file is never overwritten (ADR 0037).
+# a prior BLOCK attempt's evidence file is never overwritten (Core ADR 0037).
 ```

@@ -145,7 +145,7 @@ newly assess.
 Committing the evidence file necessarily advances `HEAD` one commit past
 the `candidate_sha` it names — this is expected. `scripts/release-tag-guard.sh`
 accepts `HEAD` descending from `candidate_sha` **only** through commits that
-touch exclusively this version's own sign-off/evidence artifacts (ADR 0037,
+touch exclusively this version's own sign-off/evidence artifacts (Core ADR 0037,
 AAASM-6001 Option 4): keep the evidence commit to exactly the evidence
 file, nothing else. See
 [`.claude/skills/release-evidence-finalize/SKILL.md`](../../.claude/skills/release-evidence-finalize/SKILL.md)
@@ -168,7 +168,7 @@ finalized evidence), re-verifies candidate binding fresh against `HEAD`
 immediately before tagging (AAASM-5998 — TOCTOU defense-in-depth re-running
 the same R1/R1b rules check 14 already ran against the committed
 release-evidence record), then additionally runs a narrower,
-version-scoped candidate/tag binding check (AAASM-6001 Option 4, ADR 0037)
+version-scoped candidate/tag binding check (AAASM-6001 Option 4, Core ADR 0037)
 that refuses any change riding into the tagged commit besides this
 version's own sign-off/evidence artifacts, refuses if the tag already
 exists, and refuses on a remote that
