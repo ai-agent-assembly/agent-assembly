@@ -37,6 +37,7 @@
 //! keeps `cargo nextest run -p aa-isolation-sandlock` a complete answer to "does
 //! this backend still confine anything".
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -947,7 +948,7 @@ fn an_inherited_descriptor_does_not_reach_the_confined_program() {
 #[test]
 fn a_removed_credential_and_a_kept_one_reach_the_child_differently() {
     let scenario = "credential environment plan is explicit";
-    let Some(backend) = require_confining_backend(scenario) else {
+    let Some(mut backend) = require_confining_backend(scenario) else {
         return;
     };
     let Some(env_program) = ["/usr/bin/env", "/bin/env"].iter().find(|p| Path::new(p).exists()) else {
@@ -975,6 +976,14 @@ fn a_removed_credential_and_a_kept_one_reach_the_child_differently() {
             delegated: Vec::new(),
             ambient_unremoved: vec!["X_AA5709_KEPT_TOKEN".to_string()],
         });
+    // `with_credentials` still carries the posture the capability report and
+    // evidence read; `set_child_environment` is the separate, required step
+    // that actually resolves what the child receives (AAASM-5940 refuses to
+    // derive it from the posture alone — see AAASM-6009).
+    backend.set_child_environment(BTreeMap::from([(
+        "X_AA5709_KEPT_TOKEN".to_string(),
+        "kept-value".to_string(),
+    )]));
     let (completed, evidence) = run(&backend, &spec);
 
     assert!(
@@ -1019,6 +1028,9 @@ fn a_removed_credential_and_a_kept_one_reach_the_child_differently() {
             delegated: Vec::new(),
             ambient_unremoved: Vec::new(),
         });
+    // Negative control: nothing is delegated or ambient-unremoved, so the
+    // child's explicit environment carries neither name.
+    backend.set_child_environment(BTreeMap::new());
     let (completed, evidence) = run(&backend, &control);
     assert!(
         !completed.stdout.contains("X_AA5709_KEPT_TOKEN"),
