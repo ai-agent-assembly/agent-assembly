@@ -131,6 +131,30 @@ pub fn codex_tls_client_binary() -> PathBuf {
     build_example("aa-integration-tests", "codex_tls_client")
 }
 
+/// A copy of [`aasm_binary`] in `dir`, alone — nothing else beside it.
+///
+/// `resolve_binary` (`aa-cli/src/commands/proxy/start.rs`) checks beside the
+/// running `aasm` executable's own directory *before* `PATH`, and
+/// [`aasm_binary`] is the real, pre-built `target/debug/aasm` — which sits
+/// next to a real, pre-built `target/debug/aa-proxy` the moment any other
+/// test in the same binary calls [`aa_proxy_binary`]. A caller that wants to
+/// prove a launch refuses when it genuinely cannot resolve a proxy has to run
+/// a copy with no real sibling to find, or the refusal it means to measure
+/// never happens (AAASM-5982).
+pub fn aasm_without_proxy_sibling(dir: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let alone = dir.join("aasm");
+    std::fs::copy(aasm_binary(), &alone)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&alone)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&alone, perms)?;
+    }
+    Ok(alone)
+}
+
 fn explicit_binary(var: &str) -> Option<PathBuf> {
     let explicit = std::env::var_os(var)?;
     Some(std::fs::canonicalize(&explicit).unwrap_or_else(|e| panic!("{var}={explicit:?} could not be resolved: {e}")))

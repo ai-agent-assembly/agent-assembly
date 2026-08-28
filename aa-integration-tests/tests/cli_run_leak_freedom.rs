@@ -434,26 +434,10 @@ fi
 
         // `resolve_binary` (`aa-cli/src/commands/proxy/start.rs`) also checks
         // beside the running `aasm` executable's own directory, before PATH —
-        // and `aasm_binary()` here is the real, pre-built `target/debug/aasm`,
-        // which nextest's own build step leaves sitting next to a real,
-        // pre-built `aa-proxy` (any other test in this binary that calls
-        // `aa_proxy_binary()` builds it there). So this scenario copies the
-        // real `aasm` into a directory with nothing else beside it, the same
-        // technique `proxy_trust_support::TrustedProxy` uses for the mock
-        // proxy case — otherwise the sibling-binary resolution rule finds the
-        // real `aa-proxy` regardless of what PATH excludes, and the refusal
-        // this test exists to prove never happens.
-        let aasm_dir = tmp.path().join("aasm-alone");
-        std::fs::create_dir_all(&aasm_dir)?;
-        let aasm_alone = aasm_dir.join("aasm");
-        std::fs::copy(aasm_binary(), &aasm_alone)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&aasm_alone)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&aasm_alone, perms)?;
-        }
+        // so this needs a copy with no real `aa-proxy` sibling
+        // (AAASM-5982), or the refusal this test exists to prove never
+        // happens regardless of what PATH excludes.
+        let aasm_alone = super::proxy_trust_support::aasm_without_proxy_sibling(&tmp.path().join("aasm-alone"))?;
 
         // Deliberately no `aa-proxy` anywhere on this PATH — only the stub's
         // own directory, so `which claude` still resolves but `which

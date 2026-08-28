@@ -75,6 +75,13 @@ mod refusals {
         dump: PathBuf,
         stub_dir: PathBuf,
         policy: PathBuf,
+        // A copy of `aasm` with no real `aa-proxy` sibling (AAASM-5982) — the
+        // real, pre-built `aasm_binary()` sits beside a real, pre-built
+        // `aa-proxy` the moment any other test in this binary calls
+        // `aa_proxy_binary()`, and `resolve_binary` checks that sibling
+        // directory before `PATH`, so the refusal this file exists to
+        // exercise never happens against the unmodified binary.
+        aasm: PathBuf,
     }
 
     impl Host {
@@ -87,6 +94,7 @@ mod refusals {
             std::fs::create_dir_all(&project)?;
             let stub = write_stub_binary(&root)?;
             let policy = write_test_policy(&root)?;
+            let aasm = super::proxy_trust_support::aasm_without_proxy_sibling(&root.join("aasm-alone"))?;
             Ok(Self {
                 stub_dir: stub.parent().expect("the stub has a parent").to_path_buf(),
                 dump: root.join("child-env.txt"),
@@ -95,13 +103,14 @@ mod refusals {
                 home,
                 project,
                 policy,
+                aasm,
             })
         }
 
         /// Run `aasm run claude` against `gateway`, with a `PATH` that resolves
         /// the `claude` stub but never an `aa-proxy` binary.
         fn run(&self, gateway: &GrpcGateway) -> anyhow::Result<std::process::Output> {
-            Ok(std::process::Command::new(super::proxy_trust_support::aasm_binary())
+            Ok(std::process::Command::new(&self.aasm)
                 .current_dir(&self.project)
                 .env("HOME", &self.home)
                 .env("PATH", super::proxy_trust_support::prefixed_path(&self.stub_dir)?)
