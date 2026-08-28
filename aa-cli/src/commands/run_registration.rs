@@ -46,6 +46,8 @@
 //! verdict is the gateway's.
 
 use std::fmt;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 
 use aa_proto::assembly::agent::v1::{DeregisterRequest, RegisterRequest};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
@@ -215,12 +217,61 @@ fn sdk_config(agent_id: &str, team_id: Option<&str>, parent_agent_id: Option<&st
     }
 }
 
-/// Where the durable identity key lives. `None` in production, so the store
-/// resolves `${AASM_STATE_DIR:-~/.aasm}/identity` like every other piece of
-/// installation state.
+/// Where the durable identity key lives. `None` when [`identity_fallback_permitted`]
+/// allows it, so the store resolves `${AASM_STATE_DIR:-~/.aasm}/identity` like
+/// every other piece of installation state. Callers of `sdk_config` check
+/// `identity_fallback_permitted` themselves before this is even reached (see
+/// [`registration_did`] and [`register`]), so this stays `None` here rather
+/// than trying to encode refusal as some special path — refusal means the
+/// filesystem is never touched at all, not touched somewhere else.
 #[cfg(not(test))]
 fn identity_dir_override() -> Option<String> {
     None
+}
+
+/// Marks that the real `aasm` binary's `main()` has started. Call exactly
+/// once, before dispatching any command — see [`identity_fallback_permitted`].
+#[cfg(not(test))]
+pub fn mark_production_entrypoint() {
+    let _ = PRODUCTION_ENTRYPOINT.set(());
+}
+
+#[cfg(not(test))]
+static PRODUCTION_ENTRYPOINT: OnceLock<()> = OnceLock::new();
+
+/// Whether identity resolution may fall back to `${AASM_STATE_DIR:-$HOME/.aasm}`
+/// when no explicit state dir is named.
+///
+/// True once `main()` has run ([`mark_production_entrypoint`]) — the real
+/// operator invocation this fallback exists for — or whenever `AASM_STATE_DIR`
+/// names an explicit directory, which an operator or a test can always opt
+/// into. False otherwise.
+///
+/// AAASM-5955: false is exactly the case of a `tests/*.rs` integration-test
+/// binary reaching this crate's registration path. Those binaries link this
+/// crate as a *library* and call straight into
+/// `execute_with_adapters`/[`registration_did`], skipping `main()` entirely —
+/// `#[cfg(test)]` cannot see that, because it reflects whether *this crate*
+/// was compiled with `--cfg test`, and a `tests/*.rs` binary links the lib
+/// compiled without it, the same as the real `aasm` binary. A runtime flag set
+/// by `main()` is the one signal that actually distinguishes them. Checked at
+/// the call sites that would otherwise touch the filesystem
+/// ([`registration_did`], [`register`]) rather than folded into
+/// `identity_dir_override` above, precisely so a caller that isn't permitted
+/// never reaches the store at all — nothing here can be forgotten by a future
+/// integration test, because there is nothing to opt into.
+#[cfg(not(test))]
+fn identity_fallback_permitted() -> bool {
+    PRODUCTION_ENTRYPOINT.get().is_some() || matches!(std::env::var_os("AASM_STATE_DIR"), Some(v) if !v.is_empty())
+}
+
+/// Unit tests in this file and in `run.rs` compile with `--cfg test`, so the
+/// `#[cfg(test)]` `identity_dir_override` below already redirects them to a
+/// private temp directory — never the real `$HOME`. Always permitted here;
+/// the refusal above exists for the binaries that `#[cfg(test)]` cannot see.
+#[cfg(test)]
+fn identity_fallback_permitted() -> bool {
+    true
 }
 
 /// Under `cargo test`, redirect every unit test in this binary to one temporary
@@ -267,6 +318,9 @@ fn identity_dir_override() -> Option<String> {
 /// identity the launch runs under, and the identity audit attributes to, one
 /// principal.
 pub fn registration_did(agent_id: &str) -> String {
+    if !identity_fallback_permitted() {
+        return UNRESOLVED_IDENTITY.to_string();
+    }
     sdk_config(agent_id, None, None)
         .registration_did()
         .unwrap_or_else(|_| UNRESOLVED_IDENTITY.to_string())
@@ -338,6 +392,11 @@ fn identity_unavailable(e: SdkClientError) -> RegistrationError {
 /// replay — and the gateway burns it on consumption regardless, before it even
 /// checks the signature.
 pub async fn register(desc: SessionDescriptor<'_>) -> Result<GovernedRegistration, RegistrationError> {
+    if !identity_fallback_permitted() {
+        return Err(RegistrationError::IdentityUnavailable {
+            reason: "no explicit identity directory and no AASM_STATE_DIR in this context".to_string(),
+        });
+    }
     let endpoint = gateway_endpoint();
     let config = sdk_config(desc.agent_id, desc.team_id, desc.parent_agent_id);
 
