@@ -390,6 +390,260 @@ json.dump(d, open(p, 'w'), indent=2)
   echo "$GUARD_OUT" | grep -qE 'BLOCK — [0-9]+ rule violation' && pass "guard's refusal uses the normal BLOCK — N rule violation(s) report" || fail "guard refusal did not use the normal report format: $GUARD_OUT"
 )
 
+# Sub-case (f): a generic docs/release/ release-notes file — a path R1
+# itself tolerates as MECHANICAL — added in the same range as the evidence
+# commit must still BLOCK under the guard's own strict-tag-binding check
+# (AAASM-6001 Option 4, ADR 0037). This is the exact differentiation the ADR
+# argues for: R1's broad docs/release/ tolerance is correct for R1's own
+# admissibility question, wrong for binding the literal tagged commit to the
+# literal verified one.
+FIXDIR_DOCS="$WORK/fx45-docs"
+setup_fixture_repo "$FIXDIR_DOCS"
+add_real_evidence "$FIXDIR_DOCS/repo"
+(
+  cd "$FIXDIR_DOCS/repo"
+  echo "# Release notes for v0.0.1-fx" > docs/release/v0.0.1-fx.md
+  git add -A
+  git commit -qm "test: add release notes after the evidence commit"
+  R1_OUT="$(python3 scripts/qa/check-release-evidence.py --version 0.0.1-fx --tag-target HEAD 2>&1)"
+  assert_contains "$R1_OUT" '^OK ' \
+    "R1 alone still tolerates the release-notes addition (reuse_class: ancestor-mechanical) — proves the guard's refusal below is a NARROWER policy, not a broken R1"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses HEAD when a generic docs/release/ file changed after the candidate (Option 4 narrower than R1)"; else fail "guard should have refused a generic docs/release/ addition riding along with the evidence commit"; fi
+  echo "$GUARD_OUT" | grep -qE 'not on the version-scoped allowlist' && pass "guard names the offending path via the version-scoped allowlist message" || fail "guard refusal did not cite the allowlist: $GUARD_OUT"
+  echo "$GUARD_OUT" | grep -qE 'docs/release/v0\.0\.1-fx\.md' && pass "guard's refusal names the actual offending path" || fail "guard refusal did not name docs/release/v0.0.1-fx.md: $GUARD_OUT"
+)
+
+# Sub-case (g): mixed commit — the SAME commit both adds the evidence file
+# (allowlisted) and a source file (not allowlisted). Proves the allowlist
+# isn't fooled by an allowed path also being present in the same diff.
+FIXDIR_MIXED="$WORK/fx45-mixed"
+setup_fixture_repo "$FIXDIR_MIXED"
+(
+  cd "$FIXDIR_MIXED/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  git add -A
+  git commit -qm "test: stop gitignoring evidence"
+  A_SHA="$(git rev-parse HEAD)"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  echo "fn main() {}" > src_marker.rs
+  git add -A
+  git commit -qm "test: evidence + an unrelated source file in ONE commit"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a commit that mixes the allowlisted evidence file with a non-allowlisted source file"; else fail "guard should have refused the mixed commit"; fi
+  echo "$GUARD_OUT" | grep -qE 'src_marker\.rs' && pass "guard's refusal names the non-allowlisted file even though the evidence file is also present" || fail "guard refusal did not name src_marker.rs: $GUARD_OUT"
+)
+
+# Sub-case (h): sibling-version evidence — B commits evidence for a
+# DIFFERENT version than the one being tagged. Must not be treated as this
+# version's own sanctioned artifact.
+FIXDIR_SIBLING="$WORK/fx45-sibling"
+setup_fixture_repo "$FIXDIR_SIBLING"
+add_real_evidence "$FIXDIR_SIBLING/repo"
+(
+  cd "$FIXDIR_SIBLING/repo"
+  echo "Verdict: PASS" > docs/release/qa-signoff/v9.9.9-other.md
+  echo "Verdict: PASS" > docs/release/security-signoff/v9.9.9-other.md
+  python3 scripts/qa/build-release-evidence.py --version 9.9.9-other --repo-root . \
+    --qa-signoff docs/release/qa-signoff/v9.9.9-other.md \
+    --security-signoff docs/release/security-signoff/v9.9.9-other.md \
+    --out docs/release/qa-signoff/v9.9.9-other.evidence.json > /dev/null
+  git add -A
+  git commit -qm "test: add a sibling version's evidence in range"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses when a sibling version's evidence lands in range"; else fail "guard should have refused the sibling-version evidence"; fi
+  echo "$GUARD_OUT" | grep -qE 'v9\.9\.9-other' && pass "guard's refusal names the sibling-version path" || fail "guard refusal did not name the sibling path: $GUARD_OUT"
+)
+
+# Sub-case (i): malformed/forged attempt filename (leading zero) landing in
+# range must not be treated as a legitimate attempt path.
+FIXDIR_FORGED="$WORK/fx45-forged"
+setup_fixture_repo "$FIXDIR_FORGED"
+add_real_evidence "$FIXDIR_FORGED/repo"
+(
+  cd "$FIXDIR_FORGED/repo"
+  echo '{}' > docs/release/qa-signoff/v0.0.1-fx.attempt-01.evidence.json
+  git add -A
+  git commit -qm "test: add a forged attempt filename with a leading zero"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard refuses a forged attempt filename (leading zero)"; else fail "guard should have refused the forged attempt filename"; fi
+  echo "$GUARD_OUT" | grep -qE 'attempt-01' && pass "guard's refusal names the forged path" || fail "guard refusal did not name the forged path: $GUARD_OUT"
+)
+
+# Sub-case (j): missing QA sign-off — the emitter must not invent a PASS.
+# With no qa-signoff .md, every required journey records NOT_RUN, which is
+# non-admissible, so the emitted evidence is verdict BLOCK, never PASS.
+FIXDIR_NOQA="$WORK/fx45-noqa"
+setup_fixture_repo "$FIXDIR_NOQA"
+(
+  cd "$FIXDIR_NOQA/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  cat > qa/golden-journeys.yaml <<'CATALOG'
+catalog_version: '1'
+journeys:
+- id: J90
+  jira: AAASM-0000
+  name: Synthetic single-journey fixture
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-minimal.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: mock
+CATALOG
+  rm -f docs/release/qa-signoff/v0.0.1-fx.md
+  git add -A
+  git commit -qm "test: no qa sign-off exists"
+  A_SHA="$(git rev-parse HEAD)"
+  EMIT_OUT="$(python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md 2>&1)"
+  assert_contains "$EMIT_OUT" 'verdict: BLOCK' \
+    "missing QA sign-off produces an honest BLOCK verdict, never an invented PASS"
+)
+
+# Sub-case (k): missing security sign-off — R7 (sign-off consistency) must
+# flag it; the checker must not silently pass.
+FIXDIR_NOSEC="$WORK/fx45-nosec"
+setup_fixture_repo "$FIXDIR_NOSEC"
+add_real_evidence "$FIXDIR_NOSEC/repo"
+(
+  cd "$FIXDIR_NOSEC/repo"
+  rm -f docs/release/security-signoff/v0.0.1-fx.md
+  git add -A
+  git commit -qm "test: remove the security sign-off after evidence was finalized"
+  CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version 0.0.1-fx --tag-target HEAD 2>&1)"
+  assert_contains "$CHECK_OUT" 'security sign-off file does not exist' \
+    "checker refuses when the security sign-off is missing at tag_target (R7)"
+)
+
+# Sub-case (l): finalizer/verifier disagreement — the QA sign-off is amended
+# (PASS -> BLOCK) AFTER evidence was already finalized against the PASS
+# version, without re-finalizing. R7 must catch the resulting mismatch
+# between the committed evidence's recorded verdict and the sign-off file's
+# current Verdict line.
+FIXDIR_DISAGREE="$WORK/fx45-disagree"
+setup_fixture_repo "$FIXDIR_DISAGREE"
+add_real_evidence "$FIXDIR_DISAGREE/repo"
+(
+  cd "$FIXDIR_DISAGREE/repo"
+  sed -i.bak 's/Verdict: PASS/Verdict: BLOCK/' docs/release/qa-signoff/v0.0.1-fx.md && rm -f docs/release/qa-signoff/v0.0.1-fx.md.bak
+  git add -A
+  git commit -qm "test: amend qa sign-off to BLOCK without re-finalizing evidence"
+  CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version 0.0.1-fx --tag-target HEAD 2>&1)"
+  CHECK_EXIT=$?
+  if [ "$CHECK_EXIT" -ne 0 ]; then pass "checker refuses when the sign-off's verdict was amended after evidence was finalized (finalizer/verifier disagreement)"; else fail "checker should have refused a post-finalization sign-off amendment: $CHECK_OUT"; fi
+  echo "$CHECK_OUT" | grep -qE 'R7' && pass "the refusal cites R7 (sign-off consistency)" || fail "refusal did not cite R7: $CHECK_OUT"
+)
+
+# Sub-case (m): reuse the SAME candidate after a BLOCK — the emitter must
+# refuse a second attempt for an unchanged commit rather than mint
+# bookkeeping noise.
+FIXDIR_REUSE="$WORK/fx45-reuse"
+setup_fixture_repo "$FIXDIR_REUSE"
+(
+  cd "$FIXDIR_REUSE/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  git add -A
+  git commit -qm "test: stop gitignoring evidence"
+  A_SHA="$(git rev-parse HEAD)"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: first attempt evidence for v0.0.1-fx"
+  REUSE_OUT="$(python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md 2>&1)"
+  REUSE_EXIT=$?
+  if [ "$REUSE_EXIT" -ne 0 ]; then pass "emitter refuses a second attempt for the same unchanged candidate (no re-verification occurred)"; else fail "emitter should have refused reusing the same candidate: $REUSE_OUT"; fi
+  echo "$REUSE_OUT" | grep -qE 'already has evidence' && pass "refusal names the prior evidence path" || fail "refusal did not explain why: $REUSE_OUT"
+)
+
+# Sub-case (n): an UNTRACKED forged evidence file — never committed, never
+# git-added, just written to disk — must not be trusted by
+# --strict-tag-binding, even when candidate_sha names the current HEAD
+# (the trivially-satisfiable exact-match case). Regression test for a
+# critical finding from this diff's own adversarial review: an earlier
+# version resolved evidence via os.listdir()/open() on disk, so this
+# forged file alone was enough to make the guard report OK against a
+# completely unverified commit, with only filesystem write access — no
+# commit or push rights needed.
+FIXDIR_UNTRACKED="$WORK/fx45-untracked"
+setup_fixture_repo "$FIXDIR_UNTRACKED"
+(
+  cd "$FIXDIR_UNTRACKED/repo"
+  HEAD_SHA="$(git rev-parse HEAD)"
+  python3 -c "
+import json
+json.dump({'candidate': {'candidate_sha': '$HEAD_SHA'}}, open('docs/release/qa-signoff/v0.0.1-fx.evidence.json', 'w'))
+"
+  # Deliberately NOT git add/commit — this file is untracked.
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target HEAD --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses an untracked forged evidence file even when candidate_sha == HEAD"; else fail "CRITICAL: strict-tag-binding accepted an untracked, never-committed evidence file: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'no evidence generated yet' && pass "refusal correctly reports no COMMITTED evidence exists, not a forged OK" || fail "refusal did not report the expected 'no evidence generated yet': $STRICT_OUT"
+)
+
+# Sub-case (o): revert-then-reapply — a non-allowlisted file is changed in
+# an intermediate commit and then reverted back to its original content in
+# a later commit within the same A..B range, alongside the evidence commit.
+# A net two-tree diff (A vs B) would show no change to that file at all;
+# per-commit range scanning must still catch it.
+FIXDIR_REVERT="$WORK/fx45-revert"
+setup_fixture_repo "$FIXDIR_REVERT"
+(
+  cd "$FIXDIR_REVERT/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  echo "safe" > src_marker.txt
+  git add -A
+  git commit -qm "test: base with src_marker.txt = safe"
+  A_SHA="$(git rev-parse HEAD)"
+  echo "BACKDOOR" > src_marker.txt
+  git add -A
+  git commit -qm "test: intermediate tamper"
+  echo "safe" > src_marker.txt
+  git add -A
+  git commit -qm "test: revert the tamper back to original content"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add evidence"
+  # Sanity: confirm the net two-tree diff really does hide src_marker.txt
+  # (proving the case actually exercises the gap this sub-case regression-
+  # tests, not a no-op).
+  DIFF_CHECK="$(git diff --name-only "$A_SHA" HEAD)"
+  echo "$DIFF_CHECK" | grep -q 'src_marker.txt' && fail "test setup bug: net diff still shows src_marker.txt — this case no longer exercises the revert-then-reapply gap" || pass "sanity: the net two-tree diff (A vs HEAD) does NOT show src_marker.txt — confirms this case exercises the gap"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target HEAD --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses when an intermediate commit tampered a file that was later reverted (net diff would have missed it)"; else fail "strict-tag-binding should have refused a revert-then-reapply tamper: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'src_marker\.txt' && pass "refusal names the intermediately-tampered path" || fail "refusal did not name src_marker.txt: $STRICT_OUT"
+)
+
 # ---------------------------------------------------------------------------
 # Case 6: pre-tag defect -> remediation -> re-entry with the SAME
 # required-journey set. This Story does not reimplement AAASM-5845's
@@ -500,7 +754,7 @@ STUB
   # itself, whose message differs from the old ad-hoc bash check).
   if printf '%s' "$OUT" | grep -qE 'resolves to the real ai-agent-assembly/agent-assembly remote'; then
     fail "guard still misclassifies a local lookalike path as the real org remote (the bug Case 8c's fix addresses)"
-  elif [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'evidence file not found'; then
+  elif [ "$EXIT" -ne 0 ] && printf '%s' "$OUT" | grep -qE 'no evidence generated yet'; then
     pass "guard treats a local org-lookalike path as an ordinary local fixture (correctly refuses on missing evidence, not on org-identity)"
   else
     fail "unexpected guard outcome for the local lookalike fixture (exit=$EXIT): $OUT"
