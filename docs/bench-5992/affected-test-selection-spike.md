@@ -19,8 +19,10 @@ currently-unbuilt correctness harness underneath it.** The workspace's crate
 graph is exactly the kind of shape where naive closure computation looks
 sound and is not: real coupling exists that no `Cargo.toml` edge encodes,
 multi-hop reverse-dependency chains that must be walked correctly, and
-feature-flag-gated dev-dependency edges that a `--no-deps` or shallow
-`cargo metadata` reading would miss outright. None of this rules the idea
+feature-flag-gated dev-dependency edges whose *feature unification* (which
+features are actually active for a given build target) a crate-graph-only
+reading — even a correct `cargo metadata` one — cannot resolve on its own.
+None of this rules the idea
 out — it rules out shipping v1 as a required check. See the falsification
 plan below for what would change the verdict.
 
@@ -77,9 +79,11 @@ Three structural observations that shape the whole rest of this report:
 
 1. **`aa-core` and `aa-security` sit at the bottom of nearly everything.** A
    one-line change to either has a forward-reverse-dependency closure that is
-   effectively the entire workspace (`aa-core` alone is a normal or dev
-   dependency of 26 of the 37 members, including every crate `aa-cli` and
-   `aa-integration-tests` touch). For the highest-traffic crates, "affected
+   effectively the entire workspace (`aa-core` is a direct normal or dev
+   dependency of 24 members, and its full transitive-dependent closure is 31
+   members — so a change to `aa-core` touches 32 of the 37 crates, `aa-core`
+   itself included, among them every crate `aa-cli` and `aa-integration-tests`
+   depend on). For the highest-traffic crates, "affected
    test selection" degenerates to "run everything" — the win is concentrated
    in leaf/near-leaf crates (`aa-storage-redis`, `aa-wasm`, `aa-sandbox`,
    the `aa-devtool-*` adapters, `aa-isolation-*` backends), which is a
@@ -95,13 +99,18 @@ Three structural observations that shape the whole rest of this report:
    normal ones) and is a true reverse-dependency graph traversal, not a
    shallow "immediate dependents" lookup. See the multi-hop case below.
 3. **Dev-only edges are common and structurally different from normal
-   edges** — 12 of the 37 members declare at least one workspace dev-only
-   dependency, several of them (`aa-cache`, `aa-core`, `aa-isolation`,
+   edges** — 15 of the 37 members declare at least one workspace dev-only
+   dependency (`aa-api`, `aa-cache`, `aa-cli`, `aa-core`, `aa-devtool`,
+   `aa-gateway`, `aa-integration-tests`, `aa-isolation`,
    `aa-isolation-macos-vm`, `aa-isolation-native`, `aa-isolation-sandlock`,
-   `aa-security`) as a *self*-dependency (a crate depending on its own
-   `dev-dependencies` to exercise `#[cfg(test)]`-only feature combinations
-   against its own public API). A selection algorithm that reads
-   `[dependencies]` only — the common shortcut — would silently drop the
+   `aa-runtime`, `aa-security`, `aa-storage-redis`, `conformance`), seven of
+   them (`aa-cache`, `aa-core`, `aa-isolation`, `aa-isolation-macos-vm`,
+   `aa-isolation-native`, `aa-isolation-sandlock`, `aa-security`) as a
+   *self*-dependency — a crate depending on its own `dev-dependencies`,
+   typically to enable a test-only feature against its own public API (e.g.
+   `aa-core`'s own `test-utils` feature). A selection algorithm that reads
+   `[dependencies]` only — a plain `Cargo.toml` grep, not `cargo metadata`
+   itself, which reports dev edges fine — would silently drop the
    `aa-integration-tests` row above entirely, since it has no normal
    dependency to key off of.
 
@@ -125,16 +134,19 @@ and `aa-cli/Cargo.toml` pulls `aa-runtime` in **twice** — once as an ordinary
 exercise the same `DevToolIntegration` fixture `aa-runtime`'s own tests use
 rather than a second copy that would drift.
 
-A dependency-closure computation that reads only `[dependencies]` (the
-common shortcut, since `cargo metadata --no-deps` and most "what does this
-crate depend on" tooling defaults to the runtime graph) would correctly flag
-`aa-cli` as a reverse dependent of `aa-runtime` — but would not know that a
-change gated behind `test-fixtures` only manifests in `aa-cli`'s *test*
-build, not its release build, and would not know to distinguish "changed a
+A dependency-closure computation that reads only `[dependencies]` (a common
+shortcut for "what does this crate depend on" tooling, though not one
+`cargo metadata` itself forces — it reports the dev edge with `kind: "dev"`
+when asked) would correctly flag `aa-cli` as a reverse dependent of
+`aa-runtime` **even having missed the dev edge** — but neither reading would,
+on its own, know that a change gated behind `test-fixtures` only manifests in
+`aa-cli`'s *test* build, not its release build, or distinguish "changed a
 `test-fixtures`-gated path" (must re-run `aa-cli`'s command tests) from
 "changed a path outside that feature" (does not affect `aa-cli`'s tests via
 this edge). Getting this right requires resolving the feature-unification
-graph per build target (`--tests` vs. default), not just the crate graph.
+graph per build target (`--tests` vs. default) — a step *beyond* what even a
+correct, dep-kind-aware `cargo metadata` reading gives you for free — not
+just walking the crate graph.
 
 The same shape recurs at `aa-gateway`'s `redis-cache` feature (off by
 default, gates `dep:redis` and the `PolicyCache::Redis` variant) and
