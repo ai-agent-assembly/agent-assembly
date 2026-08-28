@@ -95,17 +95,30 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// The workspace's build output root, honoring `CARGO_TARGET_DIR` (this
+/// repo's shared-target convention) — a hardcoded `<workspace>/target` would
+/// silently miss a binary that actually landed under a redirected target dir
+/// (AAASM-5974).
+fn cargo_target_root() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .expect("CARGO_MANIFEST_DIR has parent")
+                .join("target")
+        })
+}
+
 /// Return the path of the compiled `aa-proxy` binary (debug > release).
 fn aa_proxy_bin() -> Option<PathBuf> {
-    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("CARGO_MANIFEST_DIR has parent");
+    let target_root = cargo_target_root();
 
-    let debug_bin = workspace.join("target").join("debug").join("aa-proxy");
+    let debug_bin = target_root.join("debug").join("aa-proxy");
     if debug_bin.exists() {
         return Some(debug_bin);
     }
-    let release_bin = workspace.join("target").join("release").join("aa-proxy");
+    let release_bin = target_root.join("release").join("aa-proxy");
     if release_bin.exists() {
         return Some(release_bin);
     }
@@ -381,17 +394,7 @@ fn proxy_start_exits_failure_when_binary_not_found() {
         );
         return;
     }
-    // Honor CARGO_TARGET_DIR (this repo's shared-target convention) — a
-    // profile check against `<workspace>/target` would silently miss a
-    // sibling that actually landed under a redirected target dir.
-    let target_root = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace parent")
-                .join("target")
-        });
+    let target_root = cargo_target_root();
     for profile in ["debug", "release"] {
         if target_root.join(profile).join("aa-proxy").exists() {
             eprintln!(
