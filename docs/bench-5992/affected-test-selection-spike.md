@@ -26,49 +26,59 @@ plan below for what would change the verdict.
 
 ## The real dependency graph
 
-Built from `cargo metadata`/`Cargo.toml` inspection of every workspace member
-(34 crates plus `conformance` and `examples/*`), not a hypothetical one.
-Intra-workspace edges only (external crates.io deps omitted):
+Built from `cargo metadata --no-deps --format-version 1` (not a `Cargo.toml`
+grep, and not a hypothetical graph). The workspace has **37 members**
+(confirmed via `cargo metadata ... | jq '.packages | length'`), two more than
+a naive listing of `aa-*`/`conformance` crates suggests:
+`examples/aa-devtool-sample-myeditor` (crate name `aa-devtool-sample-myeditor`)
+and `examples/aa-devint-reference-client/harness` (crate name
+`aa-devint-harness`) are real workspace members too. Intra-workspace edges
+only (external crates.io deps omitted), split by dependency **kind** — this
+distinction matters for risk item 1 below, so the table keeps `[dependencies]`
+("Normal") and `[dev-dependencies]` ("Dev-only") separate rather than
+collapsing them, the way a shallow `grep`-based extraction would:
 
-| Crate | Depends on (workspace) |
-|---|---|
-| `aa-core` | `aa-security` |
-| `aa-security` | — (leaf) |
-| `aa-storage` | `aa-core` |
-| `aa-storage-memory` | `aa-core`, `aa-storage` |
-| `aa-storage-redis` | `aa-core`, `aa-storage`, `aa-storage-memory` |
-| `aa-cache` | `aa-core` |
-| `aa-storage-postgres` | `aa-core`, `aa-storage` |
-| `aa-storage-sqlite-buffer` | `aa-core` |
-| `aa-proto` | — (leaf) |
-| `aa-ebpf-common` | — (leaf) |
-| `aa-ebpf` | `aa-core`, `aa-ebpf-common` |
-| `aa-runtime` | `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-ebpf`, `aa-ebpf-common`, `aa-policy`, `aa-proto`, `aa-security`, `aa-storage-sqlite-buffer` |
-| `aa-proxy` | `aa-core`, `aa-proto`, `aa-runtime`, `aa-security` |
-| `aa-sdk-client` | `aa-proto`, `aa-security` |
-| `aa-wasm` | `aa-core` |
-| `aa-sandbox` | `aa-core` |
-| `aa-isolation` | `aa-core`, `aa-security` |
-| `aa-isolation-sandlock` | `aa-core`, `aa-isolation` |
-| `aa-isolation-native` | `aa-core`, `aa-isolation`, `aa-security` |
-| `aa-isolation-vm-proto` | `aa-isolation-native` |
-| `aa-isolation-macos-vm` | `aa-core`, `aa-isolation`, `aa-isolation-native`, `aa-isolation-vm-proto` |
-| `aa-policy` | `aa-core`, `aa-security` |
-| `aa-gateway` | `aa-auth`, `aa-core`, `aa-policy`, `aa-proto`, `aa-runtime`, `aa-sdk-client`, `aa-security`, `aa-storage-postgres` |
-| `aa-api` | `aa-auth`, `aa-core`, `aa-devtool`, `aa-devtool-saas`, `aa-gateway`, `aa-proto`, `aa-runtime`, `aa-sandbox`, `aa-sdk-client`, `aa-security`, `aa-storage-postgres` |
-| `aa-cli` | `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-gateway`, `aa-isolation`, `aa-isolation-macos-vm`, `aa-isolation-native`, `aa-isolation-sandlock`, `aa-policy`, `aa-proto`, `aa-proxy`, `aa-runtime`, `aa-sandbox`, `aa-sdk-client`, `aa-security`, `aa-storage`, `aa-storage-memory`, `aa-storage-redis` |
-| `aa-devtool-contract` | `aa-core` |
-| `aa-devtool` | `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-devtool-contract`, `aa-devtool-copilot`, `aa-devtool-sample-myeditor`, `aa-devtool-windsurf` |
-| `aa-devtool-claude-code`, `-codex`, `-copilot`, `-saas`, `-windsurf` | `aa-devtool-contract` |
-| `conformance` | `aa-core`, `aa-proto`, `aa-security` |
-| `aa-integration-tests` | `aa-api`, `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-devtool-contract`, `aa-ebpf`, `aa-ebpf-common`, `aa-gateway`, `aa-isolation`, `aa-proto`, `aa-proxy`, `aa-runtime`, `aa-sandbox`, `aa-sdk-client`, `aa-security`, `aa-storage-postgres`, `aa-storage-sqlite-buffer` |
+| Crate | Normal deps (workspace) | Dev-only deps (workspace) |
+|---|---|---|
+| `aa-api` | `aa-auth`, `aa-core`, `aa-devtool`, `aa-devtool-saas`, `aa-gateway`, `aa-proto`, `aa-runtime`, `aa-sandbox`, `aa-security`, `aa-storage-postgres` | `aa-proto`, `aa-sdk-client` |
+| `aa-auth` | — (leaf) | — |
+| `aa-cache` | `aa-core` | `aa-cache` |
+| `aa-cli` | `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-gateway`, `aa-isolation`, `aa-isolation-macos-vm`, `aa-isolation-native`, `aa-isolation-sandlock`, `aa-policy`, `aa-proto`, `aa-proxy`, `aa-runtime`, `aa-sandbox`, `aa-sdk-client`, `aa-security`, `aa-storage`, `aa-storage-memory`, `aa-storage-redis` | `aa-runtime` |
+| `aa-core` | `aa-security` | `aa-core` |
+| `aa-devint-harness` | `aa-core`, `aa-runtime` | — |
+| `aa-devtool` | `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-devtool-contract`, `aa-devtool-copilot`, `aa-devtool-windsurf` | `aa-devtool-sample-myeditor` |
+| `aa-devtool-claude-code`, `-codex`, `-copilot`, `-saas`, `-sample-myeditor`, `-windsurf` | `aa-devtool-contract` | — |
+| `aa-devtool-contract` | `aa-core` | — |
+| `aa-ebpf` | `aa-core`, `aa-ebpf-common` | — |
+| `aa-ebpf-common` | — (leaf) | — |
+| `aa-gateway` | `aa-auth`, `aa-core`, `aa-policy`, `aa-proto`, `aa-runtime`, `aa-security`, `aa-storage-postgres` | `aa-sdk-client`, `aa-storage-postgres` |
+| `aa-integration-tests` | — | `aa-api`, `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-devtool-contract`, `aa-ebpf`, `aa-ebpf-common`, `aa-gateway`, `aa-isolation`, `aa-proto`, `aa-proxy`, `aa-runtime`, `aa-sandbox`, `aa-sdk-client`, `aa-security`, `aa-storage-postgres`, `aa-storage-sqlite-buffer` |
+| `aa-isolation` | `aa-core`, `aa-security` | `aa-isolation` |
+| `aa-isolation-macos-vm` | `aa-core`, `aa-isolation`, `aa-isolation-native`, `aa-isolation-vm-proto` | `aa-isolation`, `aa-isolation-macos-vm` |
+| `aa-isolation-native` | `aa-core`, `aa-isolation`, `aa-security` | `aa-isolation`, `aa-isolation-native` |
+| `aa-isolation-sandlock` | `aa-core`, `aa-isolation` | `aa-isolation`, `aa-isolation-sandlock` |
+| `aa-isolation-vm-proto` | `aa-isolation-native` | — |
+| `aa-policy` | `aa-core`, `aa-security` | — |
+| `aa-proto` | — (leaf) | — |
+| `aa-proxy` | `aa-core`, `aa-proto`, `aa-runtime`, `aa-security` | — |
+| `aa-runtime` | `aa-core`, `aa-devtool`, `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-ebpf`, `aa-policy`, `aa-proto`, `aa-security`, `aa-storage-sqlite-buffer` | `aa-ebpf-common` |
+| `aa-sandbox` | `aa-core` | — |
+| `aa-sdk-client` | `aa-proto`, `aa-security` | — |
+| `aa-security` | — (leaf) | `aa-security` |
+| `aa-storage` | `aa-core` | — |
+| `aa-storage-memory` | `aa-core`, `aa-storage` | — |
+| `aa-storage-postgres` | `aa-core`, `aa-storage` | — |
+| `aa-storage-redis` | `aa-core`, `aa-storage` | `aa-storage-memory` |
+| `aa-storage-sqlite-buffer` | `aa-core` | — |
+| `aa-wasm` | `aa-core` | — |
+| `conformance` | `aa-core`, `aa-proto` | `aa-core`, `aa-proto`, `aa-security` |
 
-Two structural observations that shape the whole rest of this report:
+Three structural observations that shape the whole rest of this report:
 
 1. **`aa-core` and `aa-security` sit at the bottom of nearly everything.** A
    one-line change to either has a forward-reverse-dependency closure that is
-   effectively the entire workspace (`aa-core` alone is a transitive
-   dependency of 25 of the 34 members, including every crate `aa-cli` and
+   effectively the entire workspace (`aa-core` alone is a normal or dev
+   dependency of 26 of the 37 members, including every crate `aa-cli` and
    `aa-integration-tests` touch). For the highest-traffic crates, "affected
    test selection" degenerates to "run everything" — the win is concentrated
    in leaf/near-leaf crates (`aa-storage-redis`, `aa-wasm`, `aa-sandbox`,
@@ -76,11 +86,24 @@ Two structural observations that shape the whole rest of this report:
    meaningfully smaller set of PRs than "most PRs."
 2. **`aa-integration-tests` and `conformance` are the crates whose *tests*
    actually assert the cross-crate contracts**, but they are themselves leaf
-   nodes with no reverse dependents. A naive "closure of crates reachable
-   from the changed crate" correctly includes `aa-integration-tests` whenever
-   any of its 18 workspace dependencies changes — but only if the closure
-   walk is a true reverse-dependency graph traversal, not a shallow
-   "immediate dependents" lookup. See the multi-hop case below.
+   nodes with no reverse dependents. Notably, `aa-integration-tests` names
+   *every one* of its 18 workspace dependencies as `[dev-dependencies]` — it
+   has no normal dependency at all, being a test-only crate. A naive "closure
+   of crates reachable from the changed crate" correctly includes
+   `aa-integration-tests` whenever any of those 18 dependencies changes — but
+   only if the closure walk actually traverses dev-dependency edges (not just
+   normal ones) and is a true reverse-dependency graph traversal, not a
+   shallow "immediate dependents" lookup. See the multi-hop case below.
+3. **Dev-only edges are common and structurally different from normal
+   edges** — 12 of the 37 members declare at least one workspace dev-only
+   dependency, several of them (`aa-cache`, `aa-core`, `aa-isolation`,
+   `aa-isolation-macos-vm`, `aa-isolation-native`, `aa-isolation-sandlock`,
+   `aa-security`) as a *self*-dependency (a crate depending on its own
+   `dev-dependencies` to exercise `#[cfg(test)]`-only feature combinations
+   against its own public API). A selection algorithm that reads
+   `[dependencies]` only — the common shortcut — would silently drop the
+   `aa-integration-tests` row above entirely, since it has no normal
+   dependency to key off of.
 
 ## False-green risk catalog (concrete, from this codebase)
 
@@ -128,19 +151,24 @@ integration-test-gated crates, defeating the purpose).
 
 `aa-integration-tests/tests/e2e_sdk_python.rs` drives fixture scripts under
 `tests/fixtures/agents/python/{single_agent,agent_team,root_sub_agents}/` by
-spawning a `python3` subprocess (`Command::new("python3")`) and asserting on
-its stdout JSON event stream (`AA_SELFTEST=1` mode). The coupling this test
-protects — that the Python SDK's selftest JSON event shape matches what
-`agent-assembly` expects — has **no Cargo dependency edge whatsoever**: the
-crate under test (the Python SDK's `agent_assembly` package) isn't a Rust
-crate, isn't in this workspace, and isn't reachable from any `cargo metadata`
-walk. A change to `aa-sdk-client`'s wire types or `aa-security`'s finding
-schema that also needs a corresponding Python-SDK-repo change would not
-select this test via crate-graph closure at all — it already doesn't today,
-and "affected test selection" computed purely from `Cargo.toml` edges cannot
-close this gap, only preserve or widen it depending on whether
-`aa-integration-tests` (which legitimately depends on `aa-sdk-client` in
-Cargo terms) is included by the closure for the *other* reason it changed.
+spawning a `python3` subprocess (`Command::new("python3")`) against a
+selftest mode (`AA_SELFTEST=1`) that, per the test file's own module doc,
+emits a JSON event stream on stdout **without importing the `agent_assembly`
+package or contacting a gateway** — this is a hermetic, repo-local fixture,
+not a live exercise of the Python SDK's real runtime path. The structural
+point stands regardless: this test protects a JSON-event-shape convention
+between `aa-integration-tests`' fixture scripts and whatever downstream code
+(in this repo or the separate `python-sdk` repo) parses that convention, and
+that coupling has **no Cargo dependency edge whatsoever** — the fixture is a
+Python script invoked via `Command::new`, not a workspace member, and is
+invisible to any `cargo metadata` walk. A change to `aa-sdk-client`'s wire
+types or `aa-security`'s finding schema that also needs a corresponding
+change to this JSON event convention (or to the real Python SDK, in the
+separate repo, if the convention is meant to mirror it) would not select
+this test via crate-graph closure — closure computed purely from `Cargo.toml`
+edges cannot see a subprocess boundary, only the fact that
+`aa-integration-tests` happens to also have a genuine Cargo edge to
+`aa-sdk-client` for unrelated reasons.
 
 ### 3. Protocol coupling documented only in test comments, not encoded anywhere machine-readable
 
@@ -168,25 +196,28 @@ checks).
 
 ### 4. Multi-hop reverse-dependency closure through a `Box<dyn Trait>` registry
 
-`aa-cli/Cargo.toml` names `aa-devtool-claude-code` and `aa-devtool-codex` as
-direct dependencies (not merely transitively via `aa-devtool`) specifically
-because the registry's `Box<dyn DevToolAdapter>` "cannot carry" the extra
-surfaces (lifecycle implementation, plan renderer, launch-environment
-executor) those two adapters need — see the `AAASM-5281`/`AAASM-5918`
-comments in that manifest. `aa-devtool-windsurf` and `aa-devtool-copilot`,
-by contrast, register *only* through `aa_devtool::registry`'s dynamic
-dispatch and are reached by `aa-cli` only transitively, via `aa-devtool`.
+`aa-runtime/Cargo.toml` names `aa-devtool-claude-code` and `aa-devtool-codex`
+as direct dependencies (not merely transitively via `aa-devtool`)
+specifically because the registry's `Box<dyn DevToolAdapter>` "cannot carry"
+the extra surfaces (lifecycle implementation, plan renderer,
+launch-environment executor) those two adapters need — see the
+`AAASM-5281`/`AAASM-5918` comments in that manifest. `aa-devtool-windsurf` and
+`aa-devtool-copilot`, by contrast, register *only* through
+`aa_devtool::registry`'s dynamic dispatch and are reached by `aa-runtime`
+(and, transitively, by `aa-cli`, `aa-api`, `aa-gateway`, and
+`aa-integration-tests`, all of which depend on `aa-runtime`) only through
+`aa-devtool`, never directly.
 
 A change to `aa-devtool-windsurf`'s adapter implementation is invisible to
-`aa-cli`'s own test suite by direct edge — the effect is real (the registry
-`aa-cli` consumes changes behavior) but only reachable by walking
-`aa-devtool-windsurf → aa-devtool → aa-cli`, a two-hop reverse-dependency
-traversal. This isn't a case the Cargo graph fails to encode (the edges are
-real and present) — it's a case that demonstrates the closure computation
-must be a correct full transitive reverse-dependency walk, not a
-one-hop "who directly depends on the changed crate" lookup, which is the
-kind of implementation shortcut a first-pass tool is likely to take under
-time pressure.
+`aa-runtime`'s (or `aa-cli`'s) own test suite by direct edge — the effect is
+real (the registry those crates consume changes behavior) but only reachable
+by walking `aa-devtool-windsurf → aa-devtool → aa-runtime → {aa-cli, aa-api,
+aa-gateway, aa-integration-tests}`, a multi-hop reverse-dependency traversal.
+This isn't a case the Cargo graph fails to encode (the edges are real and
+present) — it's a case that demonstrates the closure computation must be a
+correct full transitive reverse-dependency walk, not a one-hop "who directly
+depends on the changed crate" lookup, which is the kind of implementation
+shortcut a first-pass tool is likely to take under time pressure.
 
 ## Existing CI routing infrastructure (context for a future implementation, not touched by this ticket)
 
@@ -286,7 +317,7 @@ Reasoning:
   sandbox) — worth scoping precisely before committing engineering time.
 - The false-green risk is not hypothetical noise; this repo has four
   concrete, present-day constructs (feature-gated dev-dependency edges,
-  a cross-language subprocess boundary with zero Cargo coupling, a
+  a cross-process subprocess boundary with zero Cargo coupling, a
   protocol contract currently enforced only by one test's hand-written
   assertions, and a `Box<dyn Trait>` registry requiring correct multi-hop
   closure) that a naive implementation would get wrong in ways that
