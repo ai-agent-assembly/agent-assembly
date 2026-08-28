@@ -148,9 +148,19 @@ fn run(args: &RunArgs) -> anyhow::Result<i32> {
 /// Driven through the real binary rather than through `dry_run_preview`, because
 /// the claim is about what an operator reads and the receipt is printed rather
 /// than returned.
+///
+/// AAASM-5955: this spawns the real `aasm` binary, so its `main()` genuinely
+/// runs — unlike [`run`]'s in-process `execute_with_adapters` call, nothing in
+/// `aa-cli` can (or should) tell this apart from a real operator invocation,
+/// since a real operator relying on the `$HOME` fallback is exactly the
+/// behaviour `main()` is supposed to have. `AASM_STATE_DIR` is set explicitly
+/// so this child resolves its identity under a directory this test controls
+/// instead of falling back to whatever `$HOME` happens to be for the process
+/// running the suite.
 fn receipt(policy: &Path, extra: &[&str]) -> String {
     let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
-    cmd.arg("run")
+    cmd.env("AASM_STATE_DIR", receipt_state_dir())
+        .arg("run")
         .arg("exec")
         .arg("--dry-run")
         .arg("--no-proxy")
@@ -165,6 +175,19 @@ fn receipt(policy: &Path, extra: &[&str]) -> String {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     )
+}
+
+/// The `AASM_STATE_DIR` every [`receipt`] call spawns `aasm` under.
+///
+/// One directory for the whole process, not one per call: a real operator's
+/// `$AASM_STATE_DIR` is durable across launches, and a previewed DID that
+/// changed between two `receipt` calls in the same test would be indicating a
+/// key-persistence bug, not exercising one.
+fn receipt_state_dir() -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| std::env::temp_dir().join(format!("aasm-run-isolation-state-{}", std::process::id())))
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
