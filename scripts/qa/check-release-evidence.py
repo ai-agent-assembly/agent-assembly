@@ -136,6 +136,34 @@ class GitRepo:
         out = self.run("diff", "--name-only", f"{a}", f"{b}").stdout
         return [line for line in out.splitlines() if line]
 
+    def paths_touched_in_range(self, a: str, b: str) -> list[str]:
+        """Every path touched by ANY commit in `a..b` — the union across
+        all commits, not just the net a->b tree diff. `--no-renames` is
+        explicit: a two-tree diff with rename detection ON can pair an
+        unrelated deleted file with an added allowlisted one (same-content
+        move, single commit), making the deleted path vanish from the
+        result entirely. A net diff can also miss an intermediate commit
+        that changes then reverts a path within the range. Used by
+        strict_candidate_binding_violations() (AAASM-6001 Option 4), which
+        needs "did ANY commit in this range touch a non-allowlisted path,"
+        not just "does the final tree differ from the first" — found via
+        adversarial review of this diff itself."""
+        if a == b:
+            return []
+        out = self.run("log", "--name-only", "--no-renames", "--format=", f"{a}..{b}").stdout
+        return sorted({line for line in out.splitlines() if line})
+
+    def merge_commits_in_range(self, a: str, b: str) -> list[str]:
+        """Merge commits in `a..b` — `git log --name-only` shows no file
+        list for a merge commit by default, so a change that only arrives
+        via a merge's non-first-parent side would be invisible to
+        paths_touched_in_range() above. Rather than special-case merge
+        diffing, the guard simply refuses any merge commit in range."""
+        if a == b:
+            return []
+        out = self.run("rev-list", "--merges", f"{a}..{b}").stdout
+        return [line for line in out.splitlines() if line]
+
     def log_commits_touching(self, a: str, b: str, path: str) -> list[str]:
         """Every commit in `a..b` that touches `path` at all — added,
         modified, deleted, or renamed. NOT filtered to `--diff-filter=M`:
@@ -161,6 +189,20 @@ class GitRepo:
             return None
         return result.stdout.strip()
 
+    def mode_at(self, ref: str, path: str) -> str | None:
+        """Git tree-entry mode of `path` at `ref` (e.g. "100644" regular,
+        "120000" symlink, "160000" gitlink/submodule), or None if it
+        doesn't exist there. Used to refuse an allowlisted path that has
+        been swapped for a submodule reference — a gitlink at the same
+        path produces the same `git diff --name-only`/`git log
+        --name-only` entry as an ordinary content edit, with no second
+        path introduced the way a symlink swap would have (AAASM-6001
+        adversarial review)."""
+        out = self.run("ls-tree", ref, "--", path, check=False).stdout
+        line = out.splitlines()[0] if out.splitlines() else ""
+        parts = line.split()
+        return parts[0] if parts else None
+
     def first_add_commit(self, ref: str, path: str) -> str | None:
         """The earliest commit reachable from `ref` that ADDS `path` — its
         first-ever appearance in that history. None if `path` has no history
@@ -178,6 +220,206 @@ class GitRepo:
 
     def committer_date(self, ref: str) -> str:
         return self.run("show", "-s", "--format=%cI", ref).stdout.strip()
+
+
+# ---------------------------------------------------------------------------
+# Append-only evidence-attempt identity (AAASM-6001).
+#
+# Two resolution modes, deliberately different:
+#
+# - `latest_evidence_path()` — disk-based (`os.listdir`/`os.path.isfile`),
+#   used by the general R1-R10 flow (unchanged from this ADR's first cut).
+#   This flow's own rules (R1b's blob-history walk, R9's post-publish
+#   cross-check against the actually-published tree, etc.) are what
+#   establish trust in the file's content; disk resolution here also keeps
+#   this script usable against a fixture/test repo whose evidence file was
+#   deliberately never committed (scripts/tests/release-evidence-negative-control.sh's
+#   long-standing pattern).
+# - `latest_evidence_path_at_ref()` — git-tree-based (`git ls-tree`/
+#   `git show`), used ONLY by `--strict-tag-binding` (the check
+#   `release-tag-guard.sh` runs immediately before an irreversible tag
+#   push). That is the one call site where an untracked file sitting in the
+#   working tree — planted, left over from an aborted finalize run, or
+#   written by anything with mere filesystem access to the checkout, no
+#   commit/push rights needed — must never be treated as authoritative:
+#   with disk resolution, `candidate_sha == tag_target_sha` (trivially
+#   satisfiable by naming the current HEAD) would be enough to make the
+#   guard report OK against a completely unverified commit. Found via
+#   adversarial review of this diff itself, before it shipped. The guard's
+#   own step 2 (clean working tree) already rejects an untracked file in
+#   the real end-to-end flow, but this check does not get to assume it is
+#   only ever invoked downstream of that gate.
+# ---------------------------------------------------------------------------
+
+_ATTEMPT_RE = re.compile(r"^v(?P<version>.+)\.attempt-(?P<n>[1-9][0-9]*)\.evidence\.json$")
+_EVIDENCE_DIR = "docs/release/qa-signoff"
+
+
+def _legacy_evidence_path(repo_root: str, version: str) -> str:
+    return os.path.join(repo_root, "docs", "release", "qa-signoff", f"v{version}.evidence.json")
+
+
+def _existing_evidence_attempts(repo_root: str, version: str) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    legacy = _legacy_evidence_path(repo_root, version)
+    if os.path.isfile(legacy):
+        out.append((1, legacy))
+    qa_signoff_dir = os.path.join(repo_root, "docs", "release", "qa-signoff")
+    if os.path.isdir(qa_signoff_dir):
+        for name in os.listdir(qa_signoff_dir):
+            m = _ATTEMPT_RE.match(name)
+            if m and m.group("version") == version:
+                out.append((int(m.group("n")) + 1, os.path.join(qa_signoff_dir, name)))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def latest_evidence_path(repo_root: str, version: str) -> str | None:
+    """The highest-numbered existing evidence attempt for `version` on
+    disk, or None if none exists — "current authoritative verdict" is
+    always the latest attempt, never a written pointer file (ADR 0037).
+    Disk-based; see the module-level note above for why, and
+    latest_evidence_path_at_ref() for the git-tree-based alternative used
+    by --strict-tag-binding."""
+    existing = _existing_evidence_attempts(repo_root, version)
+    return existing[-1][1] if existing else None
+
+
+def _existing_evidence_attempts_at(git: GitRepo, ref: str, version: str) -> list[tuple[int, str]]:
+    """Tracked evidence-attempt paths for `version` reachable at `ref`, as
+    (attempt_number, repo-relative path) — attempt_number 1 meaning the
+    legacy (non-suffixed) path. Sorted ascending."""
+    out: list[tuple[int, str]] = []
+    legacy_rel = f"{_EVIDENCE_DIR}/v{version}.evidence.json"
+    if git.blob_at(ref, legacy_rel) is not None:
+        out.append((1, legacy_rel))
+    ls = git.run("ls-tree", "--name-only", "-r", ref, "--", f"{_EVIDENCE_DIR}/", check=False)
+    if ls.returncode == 0:
+        for name in ls.stdout.splitlines():
+            if not name or os.path.dirname(name) != _EVIDENCE_DIR:
+                continue
+            m = _ATTEMPT_RE.match(os.path.basename(name))
+            if m and m.group("version") == version:
+                out.append((int(m.group("n")) + 1, name))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def latest_evidence_path_at_ref(git: GitRepo, ref: str, version: str) -> str | None:
+    """The highest-numbered evidence attempt for `version` actually
+    committed and reachable at `ref`, or None if none exists there —
+    resolved and read entirely via the git tree, never whatever happens to
+    sit on disk. Used only by --strict-tag-binding; see the module-level
+    note above."""
+    existing = _existing_evidence_attempts_at(git, ref, version)
+    return existing[-1][1] if existing else None
+
+
+# ---------------------------------------------------------------------------
+# Strict candidate/tag binding (AAASM-6001 Option 4, ADR 0037) — a separate,
+# narrower check from R1 above, not a modification of it. R1's
+# `_MECHANICAL_PREFIXES = ("docs/release/",)` is deliberately broad, and
+# even after AAASM-5998's hardening still tolerates any file under
+# docs/release/ (release notes, CHANGELOG.md, etc.) plus a mechanical
+# Cargo.toml/Cargo.lock version bump — correct for R1's own admissibility
+# question (does stale-but-mechanical drift still let this evidence be
+# reused), wrong for this guard's question (is the literal commit about to
+# be tagged bound to the literal commit verified, with zero tolerance for
+# anything riding along besides the sign-off/evidence artifacts that
+# authorize it). This reuses R1's git-diff-enumeration mechanism
+# (GitRepo.diff_name_only/is_ancestor) but is given its own distinct policy,
+# deliberately not parameterized into a shared allowlist with R1's, so a
+# future "simplify these into one" edit cannot widen this guard's boundary
+# by accident.
+# ---------------------------------------------------------------------------
+
+
+def _tag_guard_allowed_paths(version: str) -> tuple[set[str], re.Pattern[str]]:
+    base = "docs/release"
+    exact = {
+        f"{base}/qa-signoff/v{version}.md",
+        f"{base}/qa-signoff/v{version}.evidence.json",
+        f"{base}/security-signoff/v{version}.md",
+    }
+    attempt_re = re.compile(
+        r"^" + re.escape(f"{base}/qa-signoff/v{version}.attempt-") + r"[1-9][0-9]*\.evidence\.json$"
+    )
+    return exact, attempt_re
+
+
+def _path_is_tag_guard_allowlisted(path: str, exact: set[str], attempt_re: re.Pattern[str]) -> bool:
+    # Traversal/canonicalization defense, independent of the allowlist match
+    # itself: refuse anything that isn't already equal to its own
+    # normalized form, or that starts with "/"/"~", or that contains a ".."
+    # segment — before even considering exact/regex match.
+    if path != os.path.normpath(path):
+        return False
+    if path.startswith("/") or path.startswith("~"):
+        return False
+    if ".." in path.split("/"):
+        return False
+    return path in exact or bool(attempt_re.match(path))
+
+
+def strict_candidate_binding_violations(
+    git: GitRepo, version: str, candidate_sha: str, tag_target_sha: str,
+) -> list[str]:
+    """Returns violation strings; empty means A->B is legal under Option 4.
+
+    A = candidate_sha (the exact commit QA/security actually verified)
+    B = tag_target_sha (current HEAD, the eventual tag target)
+
+    Accepts iff A is an ancestor of B (or A == B) AND every path that
+    differs between them is on `_tag_guard_allowed_paths(version)`'s narrow,
+    version-scoped allowlist — nothing broader, no other version's evidence,
+    no mixed allowed+forbidden change in one commit."""
+    violations: list[str] = []
+
+    if candidate_sha == tag_target_sha:
+        return violations
+
+    if not git.is_ancestor(candidate_sha, tag_target_sha):
+        violations.append(
+            f"candidate {candidate_sha} is not an ancestor of tag target {tag_target_sha} — "
+            "B must descend from A"
+        )
+        return violations
+
+    # A merge commit anywhere in range is refused outright rather than
+    # diffed: `git log --name-only` (used below) shows no file list for a
+    # merge commit by default, so a change arriving only via a merge's
+    # non-first-parent side would otherwise be invisible to this scan.
+    merges = git.merge_commits_in_range(candidate_sha, tag_target_sha)
+    if merges:
+        violations.append(
+            f"merge commit(s) in candidate..tag_target range ({', '.join(merges)}) — not "
+            "permitted; a merge can bring in changes this linear per-commit scan cannot see"
+        )
+        return violations
+
+    exact, attempt_re = _tag_guard_allowed_paths(version)
+    # paths_touched_in_range(), not diff_name_only(): the union of every
+    # commit's own changed paths in the range, not just the net A->B tree
+    # diff. A net diff can miss an intermediate commit that changes and
+    # then reverts a non-allowlisted path within the range, and (with
+    # rename detection on, which diff_name_only does not disable) can
+    # collapse a same-content move of a forbidden file into an allowlisted
+    # path down to a single line that never names the forbidden source.
+    # Found via adversarial review of this diff itself, before it shipped.
+    changed_paths = git.paths_touched_in_range(candidate_sha, tag_target_sha)
+    for path in changed_paths:
+        if not _path_is_tag_guard_allowlisted(path, exact, attempt_re):
+            violations.append(f"{path} is not on the version-scoped allowlist for v{version}")
+            continue
+        # An allowlisted path is only trusted as a regular file — a gitlink
+        # (mode 160000, a submodule reference to an arbitrary, potentially
+        # attacker-controlled external commit) at the exact same path
+        # would otherwise pass the string-only allowlist check unchanged.
+        mode = git.mode_at(tag_target_sha, path)
+        if mode is not None and mode != "100644":
+            violations.append(f"{path} is not a regular file at tag_target (mode {mode})")
+
+    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -993,7 +1235,15 @@ def main() -> int:
     parser.add_argument("--tag-target", default="HEAD", help="ref/SHA the tag will point at")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--evidence", default=None,
-                         help="default: <repo-root>/docs/release/qa-signoff/v<version>.evidence.json")
+                         help="default: the latest existing evidence-attempt path for "
+                              "<version> (AAASM-6001) — legacy v<version>.evidence.json if "
+                              "that's the only one, else the highest-numbered "
+                              "v<version>.attempt-<N>.evidence.json")
+    parser.add_argument("--strict-tag-binding", action="store_true",
+                         help="run ONLY the AAASM-6001 Option 4 candidate/tag binding check "
+                              "(strict_candidate_binding_violations) against the latest "
+                              "evidence attempt, skipping R1-R10 entirely — this is what "
+                              "release-tag-guard.sh's own step 5 calls; see ADR 0037")
     parser.add_argument("--catalog", default="qa/golden-journeys.yaml",
                          help="repo-relative path to the release-blocking catalog")
     parser.add_argument("--qa-signoff", default=None,
@@ -1025,17 +1275,76 @@ def main() -> int:
 
     repo_root = os.path.abspath(args.repo_root)
     git = GitRepo(repo_root)
+    tag_target_sha = git.rev_parse(args.tag_target)
 
-    evidence_path = args.evidence or os.path.join(
-        repo_root, "docs", "release", "qa-signoff", f"v{args.version}.evidence.json"
-    )
-    if not os.path.isfile(evidence_path):
-        print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
-        return 1
-    with open(evidence_path) as f:
-        evidence = json.load(f)
+    if args.evidence is not None:
+        # Explicit override: an operator/test-provided path, read from the
+        # working-tree filesystem — applies in every mode, including
+        # --strict-tag-binding, since an explicit override is by definition
+        # the caller taking responsibility for what it points at.
+        evidence_path = args.evidence
+        if not os.path.isfile(evidence_path):
+            print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
+            return 1
+        evidence_relpath = os.path.relpath(evidence_path, repo_root)
+        with open(evidence_path) as f:
+            evidence = json.load(f)
+    elif args.strict_tag_binding:
+        # --strict-tag-binding's default resolution is git-tree-based, not
+        # disk-based (latest_evidence_path_at_ref(), not
+        # latest_evidence_path()) — see the module-level note above
+        # _existing_evidence_attempts_at() for why this one call site can't
+        # trust the working-tree filesystem the way the general R1-R10 flow
+        # below does.
+        evidence_relpath = latest_evidence_path_at_ref(git, tag_target_sha, args.version)
+        if evidence_relpath is None:
+            print(
+                f"error: no evidence generated yet for version {args.version} — run "
+                f"/release-evidence-finalize {args.version} (build-release-evidence.py) after "
+                "both sign-off gates have produced a sign-off for the candidate",
+                file=sys.stderr,
+            )
+            return 1
+        evidence_text = git.show_file(tag_target_sha, evidence_relpath)
+        if evidence_text is None:
+            # Defensive only — latest_evidence_path_at_ref() just confirmed
+            # this blob exists at tag_target_sha via the same GitRepo
+            # instance.
+            print(f"error: could not read committed evidence at {evidence_relpath}", file=sys.stderr)
+            return 1
+        evidence = json.loads(evidence_text)
+    else:
+        evidence_path = latest_evidence_path(repo_root, args.version)
+        if evidence_path is None:
+            print(
+                f"error: no evidence generated yet for version {args.version} — run "
+                f"/release-evidence-finalize {args.version} (build-release-evidence.py) after "
+                "both sign-off gates have produced a sign-off for the candidate",
+                file=sys.stderr,
+            )
+            return 1
+        if not os.path.isfile(evidence_path):
+            print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
+            return 1
+        evidence_relpath = os.path.relpath(evidence_path, repo_root)
+        with open(evidence_path) as f:
+            evidence = json.load(f)
 
-    evidence_relpath = os.path.relpath(evidence_path, repo_root)
+    if args.strict_tag_binding:
+        candidate_sha = evidence["candidate"]["candidate_sha"]
+        violations = strict_candidate_binding_violations(git, args.version, candidate_sha, tag_target_sha)
+        if violations:
+            print(f"strict candidate/tag binding: BLOCK — {len(violations)} violation(s):")
+            for v in violations:
+                print(f"  - {v}")
+            return 1
+        print(
+            f"strict candidate/tag binding: OK — {candidate_sha} -> {tag_target_sha} is a "
+            f"legal Option-4 candidate/tag binding for v{args.version} "
+            f"(evidence: {evidence_relpath})"
+        )
+        return 0
+
     catalog_relpath = args.catalog
 
     qa_signoff_path = args.qa_signoff or os.path.join(
