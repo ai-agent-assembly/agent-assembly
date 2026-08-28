@@ -404,29 +404,42 @@ Do not re-attempt sccache on `coverage` without new evidence — e.g. a
 different sccache version, a different llvm-cov invocation shape, or GHA
 cache-write reliability improving generally.
 
-## rust-cache + sccache overlap on Build — ADOPT verdict recorded, merge pending (AAASM-6005)
+## rust-cache + sccache overlap on Build — ADOPTED `cache-targets: false` (AAASM-6005)
 
-AAASM-6005 measured `Swatinem/rust-cache`'s `cache-targets: false` +
-sccache on `build` and found a clear win (config B warm run 4m14s vs.
-config A's 9m58s — see PR #2284 for the full evidence once merged). The
-code change is implemented and reviewed but **not yet merged**: canonical
-`main`'s required `CI Success` check is independently red due to
-AAASM-6009 (an unrelated `.ci/isolation-lane-scenarios.txt` drift that
-fails whenever a PR actually runs Rust-path jobs). Never bypass a real
-required-check failure via the admin-merge exception — waiting for
-AAASM-6009 to clear before merging PR #2284. This section will be replaced
-with the full evidence table once that lands.
+`Swatinem/rust-cache`'s target-artifact caching (`cache-targets`, default
+`true`) and sccache both cache compiled-artifact-adjacent state. AAASM-6005
+tested whether the two overlap redundantly on `build`, comparing three
+configs (two pushes each for cold/warm, per the same methodology as
+AAASM-6004):
+
+| Config | Run | Wall time | rust-cache restore | sccache Rust hit rate |
+|---|---|---|---|---|
+| C — no sccache, default rust-cache | AAASM-6003 baseline, n=4 | 10m1s–12m49s | — | — |
+| A — rust-cache `cache-targets: true` (default) + sccache | cold | 11m01s | No cache found | — |
+| A (same) | warm | **9m58s** | **No cache found** (still — target-cache save didn't land/restore) | 28.46% |
+| B — rust-cache `cache-targets: false` + sccache | cold | 11m07s | No cache found (expected, 1st push) | 0.15% |
+| B (same) | warm | **4m14s** | **Cache hit for restore-key** (~141MB, registry/git only) | **98.15%** |
+
+**Verdict: adopt.** Disabling target-artifact caching produces a much
+smaller cache blob (registry + git index only, ~141MB) that reliably
+completes its save and gets restored on the next push. The full
+target-inclusive cache (config A) did not reliably save/restore even
+across two pushes to the same branch — "No cache found" both times. Config
+B isn't just faster when it hits, it's *more reliable* at hitting at all —
+this satisfies the decision rule's reliability criterion, not just wall
+time or hit-rate. Applied to `build` only (`.github/workflows/ci.yml`);
+Cargo registry/git cache reuse is preserved in all configs (`cache-targets`
+only controls `target/` artifacts).
+
+Not extended to `clippy`/`commit-range-build` in this ticket (scoped to 1-2
+representative jobs) — the same reliability mechanism likely applies there
+too but wasn't measured; see Open follow-ups.
 
 ## Open follow-ups (not yet implemented)
 
 - **AAASM-5995's own recommendation**, unimplemented: extend targeted nextest
   scoping to more of the *default* invocation surface (not just incident
   response) — needs its own measurement before scoping as a real ticket.
-- **AAASM-6009** (High, filed): `Isolation backend confinement (Linux)`
-  fails the required `CI Success` check due to a scenario-coverage-drift
-  bug, unrelated to this campaign but currently blocking PR #2284's merge
-  (AAASM-6005's adopted Build cache-config change). Not this campaign's
-  scope to fix.
 - **Extend `cache-targets: false` to `clippy`/`commit-range-build`**: AAASM-6005
   measured this only on `build`; the same target-cache-save-unreliability
   mechanism likely applies to the other sccache-enabled jobs but needs its
