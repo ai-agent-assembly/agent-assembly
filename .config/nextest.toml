@@ -16,6 +16,10 @@
 retries = 2
 
 # AAASM-5465: the profile the Claude Code conformance lanes run under.
+# AAASM-5977 additionally moved `integration-tests.yml`'s own `Run integration
+# tests` step onto this profile, for the same reason: AC5 needs the executed
+# test count so a future silent coverage drop is visible from CI output
+# without reasoning about individual test durations.
 #
 # Why a JUnit report at all
 # -------------------------
