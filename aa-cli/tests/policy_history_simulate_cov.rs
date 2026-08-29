@@ -12,7 +12,6 @@
 
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::{Mutex, MutexGuard};
 
 use aa_cli::commands::policy::history::{self, DiffArgs, HistoryArgs, RollbackArgs};
 use aa_cli::commands::policy::simulate::{self, SimulateArgs};
@@ -162,19 +161,22 @@ fn simulate_one_unparseable_among_allowed_returns_failure() {
 
 // ── policy history / rollback / diff against an isolated store ─────────
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
 /// Point `AA_DATA_DIR` at a fresh empty temp dir for the guard's lifetime so
 /// `FsHistoryStore::default_config()` resolves to an isolated, empty store.
+///
+/// Takes the crate-wide env lock (AAASM-5989) rather than a private one:
+/// `nextest` isolates this binary in its own process, but under plain `cargo
+/// test` every test in this file shares one, and a module-local `Mutex`
+/// would not serialize against it.
 struct DataDir {
-    _lock: MutexGuard<'static, ()>,
+    _lock: aa_cli::env_guard::EnvGuard,
     _tmp: tempfile::TempDir,
     prior: Option<String>,
 }
 
 impl DataDir {
     fn new() -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = aa_cli::env_guard::lock();
         let tmp = tempfile::tempdir().unwrap();
         let prior = std::env::var("AA_DATA_DIR").ok();
         std::env::set_var("AA_DATA_DIR", tmp.path());
