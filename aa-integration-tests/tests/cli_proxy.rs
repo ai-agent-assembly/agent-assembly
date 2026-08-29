@@ -378,6 +378,14 @@ fn proxy_binary_available() -> bool {
 
 #[test]
 fn proxy_start_exits_failure_when_binary_not_found() {
+    // AAASM-5977: left outside `common::precondition::require` deliberately.
+    // That mechanism exists for "no skip is legitimate once the lane
+    // provisions the binary" — this guard is the inverse: it skips when
+    // `aa-proxy` *is* resolvable, because provisioning `aa-proxy` (as
+    // AAASM-5977's other conversions provision `aa-gateway`/`aa-runtime`)
+    // would disable this test rather than let it run. Not one of the six
+    // files that ticket's AC6 lists for conversion.
+    //
     // `resolve_binary()` in start.rs also checks `which`/`~/.cargo/bin`
     // (AAASM-5974) and, since AAASM-5982 (ADR 0030 section 6.4), prefers the
     // `aa-proxy` sitting beside the running `aasm` executable before either.
