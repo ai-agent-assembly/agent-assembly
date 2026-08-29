@@ -260,6 +260,13 @@ static PRODUCTION_ENTRYPOINT: OnceLock<()> = OnceLock::new();
 /// `identity_dir_override` above, precisely so a caller that isn't permitted
 /// never reaches the store at all — nothing here can be forgotten by a future
 /// integration test, because there is nothing to opt into.
+///
+/// The `AASM_STATE_DIR` disjunct is a known, deliberate residual: a shell
+/// that happens to export it (a developer's own durable state dir, or a test
+/// harness that sets it explicitly, e.g. `gateway_support::TestGateway`) is
+/// still honoured, in or out of `main()`. That is consent by explicit
+/// configuration, not the ambient-`$HOME` fallback this guard exists to
+/// close.
 #[cfg(not(test))]
 fn identity_fallback_permitted() -> bool {
     PRODUCTION_ENTRYPOINT.get().is_some() || matches!(std::env::var_os("AASM_STATE_DIR"), Some(v) if !v.is_empty())

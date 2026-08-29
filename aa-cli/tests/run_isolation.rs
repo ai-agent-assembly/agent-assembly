@@ -767,9 +767,12 @@ fn the_auto_refusal_names_every_candidate_it_considered() {
 ///   about.
 #[test]
 fn identity_resolution_refuses_without_a_state_dir_and_resolves_with_one() {
-    // Serializes against every other test in this binary that touches
-    // `AASM_STATE_DIR` — currently none, but a future one sharing this
-    // process-global env var without this guard would otherwise race it.
+    // Does NOT serialize against another test in this binary mutating
+    // `AASM_STATE_DIR` concurrently — there is none today (grep confirms this
+    // is the only reference in the file), so it is safe under `nextest`'s
+    // default one-process-per-test-binary-but-shared-threads execution as
+    // long as that stays true. A future test sharing this process-global env
+    // var would need its own coordination; this one does not add any.
     let prior = std::env::var_os("AASM_STATE_DIR");
     std::env::remove_var("AASM_STATE_DIR");
 
