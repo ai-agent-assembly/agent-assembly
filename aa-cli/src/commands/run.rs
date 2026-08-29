@@ -3519,6 +3519,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         &audit_args,
         &resolved.policy().resolution().posture(),
         args.no_proxy,
+        proxy_guard.as_ref().map(ProxyGuard::build_evidence),
     )
     .await;
 
