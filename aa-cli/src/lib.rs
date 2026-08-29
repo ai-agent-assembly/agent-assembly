@@ -6,6 +6,7 @@ pub mod auth;
 pub mod client;
 pub mod commands;
 pub mod config;
+pub mod env_guard;
 pub mod error;
 pub mod output;
 pub mod sanitize;

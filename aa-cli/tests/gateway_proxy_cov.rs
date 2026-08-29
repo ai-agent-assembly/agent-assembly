@@ -14,24 +14,26 @@
 
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::{Mutex, MutexGuard};
 
 use aa_cli::commands::gateway;
 use aa_cli::commands::proxy;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
-
 /// RAII guard that points `AA_DATA_DIR` at an isolated tempdir for the lifetime
 /// of the guard, restoring the prior value (or unsetting) on drop.
+///
+/// Takes the crate-wide env lock (AAASM-5989) rather than a private one:
+/// `nextest` isolates this binary in its own process, but under plain `cargo
+/// test` every test in this file shares one, and a module-local `Mutex`
+/// would not serialize against it.
 struct DataDir {
-    _lock: MutexGuard<'static, ()>,
+    _lock: aa_cli::env_guard::EnvGuard,
     _tmp: tempfile::TempDir,
     prior: Option<String>,
 }
 
 impl DataDir {
     fn new() -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = aa_cli::env_guard::lock();
         let tmp = tempfile::tempdir().unwrap();
         let prior = std::env::var("AA_DATA_DIR").ok();
         std::env::set_var("AA_DATA_DIR", tmp.path());

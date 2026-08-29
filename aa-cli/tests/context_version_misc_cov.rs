@@ -6,24 +6,21 @@
 //! Two harness rules apply here:
 //!
 //! - `context`/`config` resolve paths from `dirs::home_dir()` → `~/.aa/`. Tests
-//!   redirect `$HOME` to a tempdir, serialized through `HOME_LOCK` so the
-//!   single-process `cargo test` harness (used by the coverage job) cannot race
-//!   on the shared process environment.
+//!   redirect `$HOME` to a tempdir, serialized through the crate-wide env lock
+//!   (`aa_cli::env_guard`, AAASM-5989) so the single-process `cargo test`
+//!   harness (used by the coverage job) cannot race on the shared process
+//!   environment.
 //! - `version::run` builds its own tokio runtime internally, so it is invoked on
 //!   a dedicated `std::thread` to avoid a nested-runtime panic — mirroring
 //!   `tests/topology.rs`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Mutex;
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use aa_cli::output::OutputFormat;
-
-/// Serializes every test that mutates the process `HOME` variable.
-static HOME_LOCK: Mutex<()> = Mutex::new(());
 
 fn make_context(api_url: &str) -> aa_cli::config::ResolvedContext {
     aa_cli::config::ResolvedContext {
@@ -34,9 +31,9 @@ fn make_context(api_url: &str) -> aa_cli::config::ResolvedContext {
 }
 
 /// Run `f` with `$HOME` pointed at a fresh tempdir, restoring the prior value
-/// afterwards. Serialized through `HOME_LOCK`.
+/// afterwards. Serialized through the crate-wide env lock.
 fn with_temp_home<R>(f: impl FnOnce(&std::path::Path) -> R) -> R {
-    let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _guard = aa_cli::env_guard::lock();
     let tmp = tempfile::tempdir().unwrap();
     let prev = std::env::var_os("HOME");
     std::env::set_var("HOME", tmp.path());

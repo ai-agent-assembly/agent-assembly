@@ -32,6 +32,13 @@ use tokio_util::task::TaskTracker;
 
 /// A running DI-API server plus every path the CLI under test will use.
 struct Harness {
+    // Held for the whole struct lifetime — see the `set_var` calls below
+    // (AAASM-5989). `cargo nextest` isolates each test in its own process, so
+    // this is uncontended there; under plain `cargo test`, where every test in
+    // this file shares one process, it serializes overlapping `Harness`
+    // construction instead of letting two race on `AA_DEVINT_TOKEN_FILE`/
+    // `AA_DEVINT_SOCKET`.
+    _env_guard: aa_cli::env_guard::EnvGuard,
     dir: tempfile::TempDir,
     socket: PathBuf,
     token_file: PathBuf,
@@ -44,6 +51,7 @@ struct Harness {
 impl Harness {
     /// Start a server whose single registered tool is `build`'s fixture.
     fn start(build: impl FnOnce(FixtureIntegration) -> FixtureIntegration) -> Self {
+        let _env_guard = aa_cli::env_guard::lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         std::fs::create_dir_all(&run).expect("run dir");
@@ -102,6 +110,7 @@ impl Harness {
         assert!(socket.exists(), "the test server never bound its socket");
 
         Self {
+            _env_guard,
             dir,
             socket,
             token_file,

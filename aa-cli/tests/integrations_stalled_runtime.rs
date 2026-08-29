@@ -48,11 +48,18 @@ impl StalledRuntime {
 
         // The CLI reads the enrolment token before it connects, so it has to be
         // a real one: a missing token would fail the command earlier and prove
-        // nothing about the handshake.
-        std::env::set_var("AA_DEVINT_TOKEN_FILE", &token_file);
-        aa_runtime::devint::enrol_local_client(&TokenStore::new(), "aasm", aa_core::integration::now_unix_secs())
-            .expect("enrol");
-        std::env::remove_var("AA_DEVINT_TOKEN_FILE");
+        // nothing about the handshake. `AA_DEVINT_TOKEN_FILE` is set and removed
+        // within one scope, but `cargo test` runs this file's tests on parallel
+        // threads in one process (`cargo nextest` isolates each into its own, so
+        // it never contends here) — the env guard keeps a second test's own
+        // set/remove pair from landing inside this window (AAASM-5989).
+        {
+            let _env_guard = aa_cli::env_guard::lock();
+            std::env::set_var("AA_DEVINT_TOKEN_FILE", &token_file);
+            aa_runtime::devint::enrol_local_client(&TokenStore::new(), "aasm", aa_core::integration::now_unix_secs())
+                .expect("enrol");
+            std::env::remove_var("AA_DEVINT_TOKEN_FILE");
+        }
 
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind stalled socket");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
