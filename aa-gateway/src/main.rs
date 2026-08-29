@@ -54,8 +54,20 @@ fn resolve_mode(cli_mode: Option<Mode>, env_lookup: impl Fn(&str) -> Option<Stri
 }
 
 /// Agent Assembly governance gateway — gRPC policy evaluation server.
+///
+/// `long_version` names the commit this binary was compiled from, not only
+/// its semver (AAASM-5984) — `aa-gateway` owns the governance audit sink, and
+/// an audit chain is worth less if the build that appended to it cannot be
+/// named. Read from `aa_runtime::devint::provenance` rather than derived
+/// here, for the same reason `aa-proxy` does: compiled in the same `cargo
+/// build` invocation as `aa-runtime`, so they cannot disagree by construction.
 #[derive(Parser)]
-#[command(name = "aa-gateway", version, about)]
+#[command(
+    name = "aa-gateway",
+    version,
+    long_version = aa_runtime::devint::provenance::LONG_VERSION,
+    about
+)]
 struct Cli {
     /// Deployment mode. Overrides the `AA_MODE` environment variable.
     /// Default — when neither flag nor env are set — is `legacy-grpc`.
@@ -92,6 +104,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+
+    // AAASM-5984: state which build is about to serve before any real work
+    // starts, matching aa-proxy's own startup identity line.
+    let identity = aa_runtime::devint::provenance::BuildIdentity::of_this_build();
+    tracing::info!(
+        build_sha = %identity.build_sha,
+        build_identity_source = %identity.sha_source.as_str(),
+        version = %identity.core_version,
+        "aa-gateway starting",
+    );
 
     // `--audit-dir` is a thin alias for the env var so the spawned
     // gateway picks it up through `default_audit_dir()` (AAASM-1601).
