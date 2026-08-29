@@ -28,69 +28,101 @@ fn driver_dir() -> PathBuf {
         .join("sdk_go_driver")
 }
 
-/// Compile the Go driver once; cache the binary path.
-/// Returns `None` when `go` is not available — callers soft-skip.
-static DRIVER_BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
+/// Why the driver binary isn't available — distinguished so the two causes
+/// get different treatment (AAASM-5977). `go` missing from `PATH` is a
+/// genuine environment precondition (honest on a dev machine without Go,
+/// worth being strict about in a lane that installs Go). `go mod edit` or
+/// `go build` failing is not a precondition at all — the tool is present and
+/// broken, which is a defect regardless of lane, so it is never a skip.
+enum DriverUnavailable {
+    ToolAbsent(String),
+    BuildBroken(String),
+}
 
-fn go_driver_binary() -> Option<&'static PathBuf> {
-    DRIVER_BINARY
-        .get_or_init(|| {
-            // Skip entirely when `go` is not on PATH.
-            if Command::new("go").arg("version").output().is_err() {
-                return None;
-            }
+/// Compile the Go driver once; cache the outcome.
+static DRIVER_BINARY: OnceLock<Result<PathBuf, DriverUnavailable>> = OnceLock::new();
 
-            let dir = driver_dir();
+fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
+    DRIVER_BINARY.get_or_init(|| {
+        // `go` not on PATH is the one legitimate precondition here.
+        if Command::new("go").arg("version").output().is_err() {
+            return Err(DriverUnavailable::ToolAbsent("`go` not found on PATH".to_string()));
+        }
 
-            // Point the replace directive at the correct go-sdk path.
-            // CI sets GO_SDK_PATH to ${{ github.workspace }}/go-sdk.
-            // Local dev: go-sdk is a true sibling of agent-assembly.
-            let go_sdk_path = std::env::var("GO_SDK_PATH").unwrap_or_else(|_| {
-                // 5 levels up from sdk_go_driver/ = agent-assembly root,
-                // then up one more = workspace parent, then go-sdk sibling.
-                dir.ancestors()
-                    .nth(5)
-                    .expect("driver dir has 5 ancestor levels")
-                    .parent()
-                    .expect("agent-assembly has a parent directory")
-                    .join("go-sdk")
-                    .to_string_lossy()
-                    .into_owned()
-            });
+        let dir = driver_dir();
 
-            let replace_arg = format!("-replace=github.com/agent-assembly/go-sdk={go_sdk_path}");
-            let edit_ok = Command::new("go")
-                .args(["mod", "edit", &replace_arg])
-                .current_dir(&dir)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !edit_ok {
-                eprintln!("e2e_sdk_go: go mod edit failed — skipping Go driver tests");
-                return None;
-            }
+        // Point the replace directive at the correct go-sdk path.
+        // CI sets GO_SDK_PATH to ${{ github.workspace }}/go-sdk.
+        // Local dev: go-sdk is a true sibling of agent-assembly.
+        let go_sdk_path = std::env::var("GO_SDK_PATH").unwrap_or_else(|_| {
+            // 5 levels up from sdk_go_driver/ = agent-assembly root,
+            // then up one more = workspace parent, then go-sdk sibling.
+            dir.ancestors()
+                .nth(5)
+                .expect("driver dir has 5 ancestor levels")
+                .parent()
+                .expect("agent-assembly has a parent directory")
+                .join("go-sdk")
+                .to_string_lossy()
+                .into_owned()
+        });
 
-            let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("target")
-                .join("go-e2e-driver");
-            let _ = std::fs::create_dir_all(&out_dir);
-            let binary = out_dir.join("sdk_go_driver");
+        let replace_arg = format!("-replace=github.com/agent-assembly/go-sdk={go_sdk_path}");
+        let edit_ok = Command::new("go")
+            .args(["mod", "edit", &replace_arg])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !edit_ok {
+            return Err(DriverUnavailable::BuildBroken(format!(
+                "`go mod edit -replace=...={go_sdk_path}` failed — `go` is present but the driver module is broken"
+            )));
+        }
 
-            let build_ok = Command::new("go")
-                .args(["build", "-o", binary.to_str().unwrap(), "."])
-                .current_dir(&dir)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+        let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("go-e2e-driver");
+        let _ = std::fs::create_dir_all(&out_dir);
+        let binary = out_dir.join("sdk_go_driver");
 
-            if build_ok {
-                Some(binary)
-            } else {
-                eprintln!("e2e_sdk_go: go build failed — skipping Go driver tests");
-                None
-            }
-        })
-        .as_ref()
+        let build_ok = Command::new("go")
+            .args(["build", "-o", binary.to_str().unwrap(), "."])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if build_ok {
+            Ok(binary)
+        } else {
+            Err(DriverUnavailable::BuildBroken(
+                "`go build` failed — `go` is present but the driver source does not compile".to_string(),
+            ))
+        }
+    })
+}
+
+/// Resolve the driver binary for one test scenario.
+///
+/// `go` genuinely absent routes through `common::precondition::require` (graceful
+/// skip locally, red under `AA_REQUIRE_PRECONDITIONS`). A broken `go mod
+/// edit`/`go build` is never a skip — `go` is present and the driver itself is
+/// broken, which is a defect in every lane — so that arm panics unconditionally
+/// rather than going through `require`.
+fn go_driver_binary(scenario: &str) -> Option<&'static Path> {
+    match go_driver_binary_result() {
+        Ok(bin) => Some(bin.as_path()),
+        Err(DriverUnavailable::ToolAbsent(reason)) => {
+            // `Err(..)` in, so `require` returns `false` here (or panics under
+            // strict mode) — the bool is not otherwise interesting.
+            common::precondition::require(scenario, Err(reason.clone()));
+            None
+        }
+        Err(DriverUnavailable::BuildBroken(reason)) => {
+            panic!("{scenario}: {reason}");
+        }
+    }
 }
 
 /// Run the driver with the given env vars (inherits PATH/HOME from test process).
@@ -117,8 +149,7 @@ fn parse_events(stdout: &[u8]) -> Vec<serde_json::Value> {
 /// Happy-path: driver emits started → tool_call → deregistered → done.
 #[test]
 fn e2e_go_sdk_registers_and_emits_events() {
-    let Some(bin) = go_driver_binary() else {
-        eprintln!("SKIP: go not available");
+    let Some(bin) = go_driver_binary("e2e_go_sdk_registers_and_emits_events") else {
         return;
     };
     let out =
@@ -144,8 +175,7 @@ fn e2e_go_sdk_registers_and_emits_events() {
 /// Fast-fail: Init against an unreachable gateway returns an error within the timeout.
 #[test]
 fn e2e_go_sdk_init_with_unreachable_gateway_fails_fast() {
-    let Some(bin) = go_driver_binary() else {
-        eprintln!("SKIP: go not available");
+    let Some(bin) = go_driver_binary("e2e_go_sdk_init_with_unreachable_gateway_fails_fast") else {
         return;
     };
     let start = Instant::now();
@@ -171,8 +201,7 @@ fn e2e_go_sdk_init_with_unreachable_gateway_fails_fast() {
 /// Validation: missing AA_TEAM_ID causes exit code 2 without network calls.
 #[test]
 fn e2e_go_sdk_init_with_invalid_team_fails_validation() {
-    let Some(bin) = go_driver_binary() else {
-        eprintln!("SKIP: go not available");
+    let Some(bin) = go_driver_binary("e2e_go_sdk_init_with_invalid_team_fails_validation") else {
         return;
     };
     let out = run_driver(bin, &[]).expect("driver invocation failed");
@@ -190,8 +219,7 @@ fn e2e_go_sdk_init_with_invalid_team_fails_validation() {
 /// Defer contract: a panic in agent code still triggers the deferred cleanup.
 #[test]
 fn e2e_go_sdk_panic_still_deregisters() {
-    let Some(bin) = go_driver_binary() else {
-        eprintln!("SKIP: go not available");
+    let Some(bin) = go_driver_binary("e2e_go_sdk_panic_still_deregisters") else {
         return;
     };
     let out = run_driver(bin, &[("AA_SELFTEST", "1"), ("AA_SCENARIO", "panic")]).expect("driver invocation failed");
@@ -215,8 +243,7 @@ fn e2e_go_sdk_panic_still_deregisters() {
 /// Concurrency: two goroutines each emit a 'started' event; done carries count=2.
 #[test]
 fn e2e_go_sdk_goroutine_concurrent_agents_register() {
-    let Some(bin) = go_driver_binary() else {
-        eprintln!("SKIP: go not available");
+    let Some(bin) = go_driver_binary("e2e_go_sdk_goroutine_concurrent_agents_register") else {
         return;
     };
     let out =
