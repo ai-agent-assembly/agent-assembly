@@ -102,10 +102,15 @@ mod tests {
     use super::*;
 
     /// `AASM_STATE_DIR` overrides `~/.aasm` so custom layouts (and tests) resolve
-    /// the engine deterministically. nextest runs each test in its own process,
-    /// so the env mutation is isolated.
+    /// the engine deterministically. `nextest` runs each test in its own
+    /// process, so the env mutation is isolated there; under plain `cargo
+    /// test`, this is one of several `aa-cli` lib tests mutating the same
+    /// process-global var (`run.rs`, `proxy/start.rs`, `proxy/guard.rs`,
+    /// `proxy/launch_state.rs`), so it takes the crate-wide guard those
+    /// already share (AAASM-5989 — this call was previously unguarded).
     #[test]
     fn uninstaller_path_honors_state_dir_override() {
+        let _guard = crate::test_support::env_guard();
         std::env::set_var("AASM_STATE_DIR", "/tmp/aa-state-xyz");
         let p = uninstaller_path().expect("path resolves when AASM_STATE_DIR is set");
         std::env::remove_var("AASM_STATE_DIR");
