@@ -791,9 +791,17 @@ fn identity_resolution_refuses_without_a_state_dir_and_resolves_with_one() {
         "registration_did refused even with an explicit AASM_STATE_DIR — the guard is not reading the \
          condition it claims to"
     );
+    // AAASM-5955 AC7: never interpolate the resolved identity into a message —
+    // a `did:key:` value is derived from the same keypair CodeQL's taint
+    // tracking follows back to the private seed, and flagged exactly that
+    // (`aa-cli/tests/run_isolation.rs:796`, "Cleartext logging of sensitive
+    // information") when this assertion printed it. A length/prefix check
+    // proves the same thing (a real DID resolved, not a refusal) without
+    // ever putting the value itself in a test log.
     assert!(
-        resolved.starts_with("did:key:"),
-        "resolved identity is not a did:key: {resolved}"
+        resolved.starts_with("did:key:") && resolved.len() > "did:key:".len(),
+        "resolved identity is not a did:key (len={})",
+        resolved.len()
     );
     let identity_dir = scratch.root.join("identity");
     let count = std::fs::read_dir(&identity_dir)
