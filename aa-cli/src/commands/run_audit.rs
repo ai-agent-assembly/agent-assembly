@@ -55,6 +55,43 @@ pub const LABEL_LAUNCH: &str = "aasm.launch";
 /// (AAASM-5350). Separate from [`LABEL_LAUNCH`], which classifies the *event*,
 /// and from the policy labels, which describe a different dimension entirely.
 pub const LABEL_PROTECTION: &str = "aasm.protection";
+/// Label carrying the resolved `aa-proxy` executable's path (AAASM-5984).
+pub const LABEL_PROXY_EXECUTABLE: &str = "aasm.proxy_executable";
+/// Label carrying the SHA that executable's `--version` output claimed.
+/// Full-length, not [`aa_runtime::build_identity::short_sha`] — this is a
+/// machine record, not a human-facing banner.
+pub const LABEL_PROXY_BUILD_SHA: &str = "aasm.proxy_build_sha";
+/// Label carrying how [`LABEL_PROXY_BUILD_SHA`] was obtained
+/// ([`aa_runtime::build_identity::IdentitySource::as_str`]) — a SHA
+/// without its source is a claim a reader cannot judge as authoritative.
+pub const LABEL_PROXY_BUILD_IDENTITY_SOURCE: &str = "aasm.proxy_build_identity_source";
+
+/// Build the labels naming which `aa-proxy` build performed this launch's
+/// interception, from the guard's own probe evidence (AAASM-5984 AC5).
+///
+/// `None` (a `--no-proxy` launch has no evidence to report) contributes no
+/// labels at all — following [`policy_labels`]'s own precedent of omission
+/// over invention: an absent proxy already reads as `aasm.protection =
+/// unprotected`, and an `"unknown"` build label would describe a build that
+/// does not exist.
+pub fn proxy_build_labels(
+    evidence: Option<&crate::commands::proxy::build_identity::ProxyBuildEvidence>,
+) -> HashMap<String, String> {
+    let mut labels = HashMap::new();
+    let Some(evidence) = evidence else {
+        return labels;
+    };
+    labels.insert(
+        LABEL_PROXY_EXECUTABLE.to_string(),
+        evidence.executable.display().to_string(),
+    );
+    labels.insert(LABEL_PROXY_BUILD_SHA.to_string(), evidence.identity.build_sha.clone());
+    labels.insert(
+        LABEL_PROXY_BUILD_IDENTITY_SOURCE.to_string(),
+        evidence.identity.sha_source.as_str().to_string(),
+    );
+    labels
+}
 
 /// Build the labels describing the policy a launch ran under.
 ///
@@ -144,6 +181,11 @@ pub struct GovernedLaunchRecord<'a> {
     /// rather than inferred, so the audit record cannot disagree with what the
     /// launch actually did.
     pub no_proxy: bool,
+    /// What build the spawned `aa-proxy` claimed to be (AAASM-5984 AC5),
+    /// `None` for a `--no-proxy` launch. Read from `ProxyGuard::build_evidence`
+    /// — see that module's doc for why this is a probe rather than the
+    /// child's own startup log.
+    pub proxy_build: Option<&'a crate::commands::proxy::build_identity::ProxyBuildEvidence>,
     /// When the launch happened.
     pub occurred_at_unix_secs: u64,
 }
@@ -166,6 +208,7 @@ pub async fn report_governed_launch(record: GovernedLaunchRecord<'_>) -> Result<
         args,
         posture,
         no_proxy,
+        proxy_build,
         occurred_at_unix_secs,
     } = record;
     let event = AuditEvent {
@@ -183,6 +226,7 @@ pub async fn report_governed_launch(record: GovernedLaunchRecord<'_>) -> Result<
         labels: {
             let mut labels = policy_labels(posture);
             labels.insert(LABEL_PROTECTION.to_string(), protection_label(no_proxy).to_string());
+            labels.extend(proxy_build_labels(proxy_build));
             labels
         },
         detail: Some(audit_event::Detail::Process(ProcessExecDetail {
@@ -309,5 +353,46 @@ mod tests {
     #[test]
     fn a_proxied_launch_claims_configuration_not_adjudication() {
         assert_eq!(protection_label(false), "proxy_configured");
+    }
+
+    fn evidence(
+        build_sha: &str,
+        source: aa_runtime::build_identity::IdentitySource,
+    ) -> crate::commands::proxy::build_identity::ProxyBuildEvidence {
+        crate::commands::proxy::build_identity::ProxyBuildEvidence {
+            executable: std::path::PathBuf::from("/opt/aa/bin/aa-proxy"),
+            identity: aa_runtime::build_identity::BuildIdentity {
+                core_version: "0.0.1-rc.6".to_string(),
+                build_sha: build_sha.to_string(),
+                sha_source: source,
+            },
+        }
+    }
+
+    /// AAASM-5984 AC5: a governed launch's evidence names both the resolved
+    /// executable and the build it claimed to be.
+    #[test]
+    fn proxy_build_evidence_names_the_executable_and_identity() {
+        let ev = evidence("deadbeef", aa_runtime::build_identity::IdentitySource::Checkout);
+        let labels = proxy_build_labels(Some(&ev));
+        assert_eq!(
+            labels.get(LABEL_PROXY_EXECUTABLE).map(String::as_str),
+            Some("/opt/aa/bin/aa-proxy")
+        );
+        assert_eq!(labels.get(LABEL_PROXY_BUILD_SHA).map(String::as_str), Some("deadbeef"));
+        assert_eq!(
+            labels.get(LABEL_PROXY_BUILD_IDENTITY_SOURCE).map(String::as_str),
+            Some("checkout")
+        );
+    }
+
+    /// AC5, the omission half: `--no-proxy` has no proxy evidence to report,
+    /// and must contribute no labels at all — following `policy_labels`'s own
+    /// precedent (`an_absent_source_contributes_no_label`) of omission over
+    /// inventing an "unknown" value for a build that does not exist.
+    #[test]
+    fn a_no_proxy_launch_contributes_no_proxy_build_labels() {
+        let labels = proxy_build_labels(None);
+        assert!(labels.is_empty());
     }
 }

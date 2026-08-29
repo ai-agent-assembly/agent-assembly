@@ -121,6 +121,98 @@ pub fn short_sha(sha: &str) -> String {
     sha[..SHORT_SHA_LEN].to_string()
 }
 
+/// Field labels on [`LONG_VERSION`]'s banner. One constant each, so the
+/// emitter and [`parse_version_banner`] cannot drift apart — a renamed field
+/// on one side would silently decode to [`UNKNOWN_SHA`]/[`IdentitySource::Absent`]
+/// on the other, which is the safe direction, but a build that could actually
+/// be identified reading as unidentifiable is itself worth naming rather than
+/// leaving to chance (AAASM-5984).
+pub const BANNER_SHA_FIELD: &str = "build-sha";
+pub const BANNER_SOURCE_FIELD: &str = "build-identity-source";
+pub const BANNER_SOURCE_PATH_FIELD: &str = "build-source-path";
+
+/// What a binary hands clap's `long_version`, so `--version` states the
+/// commit it was built from and not only a semver string — the "version-
+/// string proxy" this module's own doc rejects as insufficient identity
+/// (AAASM-5984).
+///
+/// `CARGO_PKG_VERSION` here is `aa-runtime`'s own, which is every workspace
+/// crate's (`version.workspace = true`) — a consumer that wants to confirm
+/// this isn't merely assumed should assert it against its own
+/// `env!("CARGO_PKG_VERSION")` (see `aa-proxy`/`aa-gateway`'s own tests).
+pub const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    "build-sha: ",
+    env!("AA_BUILD_SHA"),
+    "\n",
+    "build-identity-source: ",
+    env!("AA_BUILD_IDENTITY_SOURCE"),
+    "\n",
+    "build-source-path: ",
+    env!("AA_BUILD_SOURCE_PATH"),
+);
+
+/// Recover the identity a binary stated in its long `--version` output.
+///
+/// Deliberately beside [`LONG_VERSION`] rather than in a separate module:
+/// producer and consumer living together is what keeps a probed foreign
+/// binary's output comparable to this build's own identity at all — a field
+/// renamed on one side without the other would silently stop parsing rather
+/// than fail loudly.
+///
+/// A missing or malformed field yields [`UNKNOWN_SHA`] /
+/// [`IdentitySource::Absent`] — never a value inferred from context, which is
+/// exactly the substitution [`BuildIdentity::is_authoritative`] exists to
+/// reject. `core_version` comes from the first line (`"<name> <version>"`,
+/// clap's own `_render_version` shape); an unparseable first line yields an
+/// empty `core_version` rather than failing the whole parse, since the
+/// identity fields below it are independently recoverable.
+pub fn parse_version_banner(output: &str) -> BuildIdentity {
+    let mut lines = output.lines();
+    let core_version = lines
+        .next()
+        .and_then(|first| first.split_once(' '))
+        .map(|(_name, version)| version.trim().to_string())
+        .unwrap_or_default();
+
+    let mut build_sha = None;
+    let mut sha_source_token = None;
+    for line in lines {
+        let Some((key, value)) = line.split_once(": ") else {
+            continue;
+        };
+        match key {
+            BANNER_SHA_FIELD => build_sha = Some(value.trim().to_string()),
+            BANNER_SOURCE_FIELD => sha_source_token = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+
+    let sha_source = sha_source_token
+        .as_deref()
+        .map(IdentitySource::from_wire)
+        .unwrap_or(IdentitySource::Absent);
+    let build_sha = match (build_sha, sha_source.is_authoritative()) {
+        (Some(sha), true) if !sha.is_empty() => sha,
+        _ => UNKNOWN_SHA.to_string(),
+    };
+    // Never report an authoritative source alongside the sentinel SHA — that
+    // combination would let a comparison read a probed-but-absent identity as
+    // authoritative.
+    let sha_source = if build_sha == UNKNOWN_SHA {
+        IdentitySource::Absent
+    } else {
+        sha_source
+    };
+
+    BuildIdentity {
+        core_version,
+        build_sha,
+        sha_source,
+    }
+}
+
 /// How a [`BuildIdentity`]'s `build_sha` was obtained.
 ///
 /// Recorded rather than inferred from the shape of the SHA string, because the
@@ -1556,5 +1648,68 @@ mod tests {
         );
         assert_eq!(decoded.source_path, provenance.source_path);
         assert_eq!(decoded.started_at_unix_secs, provenance.started_at_unix_secs);
+    }
+
+    /// AAASM-5984 AC6: `parse_version_banner(LONG_VERSION)` must recover
+    /// exactly the compiled identity — the round trip a probed `aa-proxy`/
+    /// `aa-gateway --version` output is trusted to preserve.
+    #[test]
+    fn the_version_banner_round_trips_the_compiled_identity() {
+        // `LONG_VERSION` itself carries no binary name — clap's `_render_version`
+        // prepends `"{name} "` when it renders `--version`, so the real input
+        // `parse_version_banner` sees is clap's output, not the bare constant.
+        let rendered = format!("aa-proxy {LONG_VERSION}");
+        let recovered = parse_version_banner(&rendered);
+        let compiled = BuildIdentity::of_this_build();
+        assert_eq!(recovered.core_version, compiled.core_version);
+        assert_eq!(recovered.build_sha, compiled.build_sha);
+        assert_eq!(recovered.sha_source, compiled.sha_source);
+    }
+
+    /// AC4 / falsification 3: a banner missing the identity fields entirely
+    /// (what a version-string-only binary would print) must decode to the
+    /// [`UNKNOWN_SHA`] sentinel, never an empty-but-accepted string — a test
+    /// that merely checked "non-empty" would pass this input wrongly.
+    #[test]
+    fn a_banner_with_no_identity_fields_decodes_to_the_unknown_sentinel() {
+        let recovered = parse_version_banner("aa-proxy 0.0.1-rc.6\n");
+        assert_eq!(recovered.core_version, "0.0.1-rc.6");
+        assert_eq!(recovered.build_sha, UNKNOWN_SHA);
+        assert_eq!(recovered.sha_source, IdentitySource::Absent);
+        assert!(!recovered.is_authoritative());
+    }
+
+    /// AC4: a banner that states `build-identity-source: absent` explicitly
+    /// (rather than omitting the field) must decode the same way — an honest
+    /// peer that resolved nothing must never be read as having established an
+    /// identity merely because it filled in the field at all.
+    #[test]
+    fn a_banner_with_an_absent_identity_source_decodes_to_the_unknown_sentinel() {
+        let recovered =
+            parse_version_banner("aa-proxy 0.0.1-rc.6\nbuild-sha: deadbeef\nbuild-identity-source: absent\n");
+        assert_eq!(recovered.build_sha, UNKNOWN_SHA);
+        assert_eq!(recovered.sha_source, IdentitySource::Absent);
+    }
+
+    /// Falsification 2: a test that only checked the version line could not
+    /// tell two different builds apart. Holding `core_version` equal while
+    /// `build_sha` differs is what the identity assertion catches and the
+    /// version-only assertion cannot.
+    #[test]
+    fn a_foreign_build_at_the_same_version_is_distinguishable_only_by_identity() {
+        let real = "aa-proxy 0.0.1-rc.6\nbuild-sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbuild-identity-source: checkout\n";
+        let foreign = "aa-proxy 0.0.1-rc.6\nbuild-sha: ffffffffffffffffffffffffffffffffffffffff\nbuild-identity-source: checkout\n";
+        let real = parse_version_banner(real);
+        let foreign = parse_version_banner(foreign);
+
+        // The version-only assertion cannot tell these apart.
+        assert_eq!(real.core_version, foreign.core_version);
+        // The identity assertion can.
+        assert_ne!(real.build_sha, foreign.build_sha);
+        assert!(
+            matches!(real.compare(&foreign), IdentityComparison::Mismatch { .. }),
+            "{:?}",
+            real.compare(&foreign)
+        );
     }
 }

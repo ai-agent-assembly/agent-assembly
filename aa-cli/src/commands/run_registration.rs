@@ -464,6 +464,14 @@ pub async fn register(desc: SessionDescriptor<'_>) -> Result<GovernedRegistratio
 /// it — `enforced` or `permissive`. The two refusing states never get here; see
 /// [`crate::commands::run_audit`] for why that gap exists and what owns closing
 /// it.
+///
+/// `proxy_build` (AAASM-5984) pushed this past clippy's default 7-argument
+/// ceiling. Not grouped into an options struct like
+/// `GovernedLaunchRecord`/`ProxyGuardOptions` (which exist for exactly this
+/// reason) because every parameter here is a distinct, differently-typed
+/// fact already owned by the caller at the call site — grouping them would
+/// add a struct whose only user constructs and immediately destructures it.
+#[allow(clippy::too_many_arguments)]
 pub async fn report_launch(
     registration: &GovernedRegistration,
     trace_id: &str,
@@ -472,6 +480,7 @@ pub async fn report_launch(
     args: &[String],
     posture: &aa_core::integration::policy_posture::PolicyPosture,
     no_proxy: bool,
+    proxy_build: Option<&crate::commands::proxy::build_identity::ProxyBuildEvidence>,
 ) {
     let agent_id = ProtoAgentId {
         org_id: String::new(),
@@ -489,6 +498,7 @@ pub async fn report_launch(
         args,
         posture,
         no_proxy,
+        proxy_build,
         occurred_at_unix_secs: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

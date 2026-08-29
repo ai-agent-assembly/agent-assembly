@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
+use super::build_identity::{probe, ProxyBuildEvidence};
 use super::readiness::{wait_for_ready_file, ReadyFileOutcome};
 
 /// How long to wait for the dedicated proxy to report readiness before
@@ -205,6 +206,7 @@ pub struct ProxyGuard {
     child: Child,
     ready_file: PathBuf,
     bound_addr: SocketAddr,
+    build_evidence: ProxyBuildEvidence,
 }
 
 impl ProxyGuard {
@@ -223,8 +225,24 @@ impl ProxyGuard {
     pub fn spawn(opts: ProxyGuardOptions) -> Result<Self, ProxyGuardError> {
         let binary = super::start::resolve_binary().ok_or(ProxyGuardError::BinaryNotFound)?;
         let binary = super::start::canonical_binary(binary);
+        Self::spawn_with_binary(&binary, opts)
+    }
 
-        let mut cmd = build_command(&binary, &opts);
+    /// The spawn itself, over a caller-named binary. Split out from
+    /// [`Self::spawn`] so the identity probe and evidence plumbing
+    /// (AAASM-5984) can be driven against a fixture binary in tests without
+    /// mutating `$PATH`/`HOME` to fool `resolve_binary()`.
+    pub(crate) fn spawn_with_binary(
+        binary: &std::path::Path,
+        opts: ProxyGuardOptions,
+    ) -> Result<Self, ProxyGuardError> {
+        // AAASM-5984: ask the resolved binary what build it is before
+        // spawning it long-running — see `build_identity`'s module doc for
+        // why this is a separate bounded probe rather than capturing the
+        // child's own startup log.
+        let build_evidence = probe(binary);
+
+        let mut cmd = build_command(binary, &opts);
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;
 
         match wait_for_ready_file(&opts.ready_file, READINESS_TIMEOUT, &mut child) {
@@ -232,6 +250,7 @@ impl ProxyGuard {
                 child,
                 ready_file: opts.ready_file,
                 bound_addr,
+                build_evidence,
             }),
             ReadyFileOutcome::Timeout => {
                 // Not yet a ProxyGuard, so Drop will never run for this
@@ -260,6 +279,13 @@ impl ProxyGuard {
     /// `Drop` for that.
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// What build the spawned `aa-proxy` claims to be (AAASM-5984). Read by
+    /// `run_audit.rs` so a redaction-evidence claim can attribute itself to a
+    /// named commit rather than to whatever answered.
+    pub fn build_evidence(&self) -> &ProxyBuildEvidence {
+        &self.build_evidence
     }
 }
 
@@ -845,5 +871,65 @@ mod tests {
     #[cfg(unix)]
     fn pid_is_alive_for_test(pid: u32) -> bool {
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// AAASM-5984 AC5 + falsification 1: a foreign `aa-proxy` at the resolved
+    /// path — same version line, a different `build-sha` — must be named as
+    /// such in the guard's own evidence, not silently trusted because it
+    /// answered readiness correctly. Deleting the probe call in
+    /// `spawn_with_binary` reddens this.
+    #[cfg(unix)]
+    #[test]
+    fn a_foreign_proxy_build_is_named_in_the_guards_evidence() {
+        const FOREIGN_SHA: &str = "ffffffffffffffffffffffffffffffffffffffff";
+
+        let dir = tempfile::tempdir().unwrap();
+        let ready_file = dir.path().join("ready");
+        let stub = dir.path().join("aa-proxy");
+        // `--version` answers a foreign identity; any other invocation writes
+        // the ready file (atomically, matching `write_ready_file`'s own
+        // rename-into-place guarantee) and sleeps, exactly like the real
+        // `aa-proxy` binary's readiness protocol.
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--version\" ]; then\n\
+                 echo 'aa-proxy 0.0.1-rc.6'\n\
+                 echo 'build-sha: {FOREIGN_SHA}'\n\
+                 echo 'build-identity-source: checkout'\n\
+                 exit 0\n\
+                 fi\n\
+                 tmp=\"{ready}.tmp\"\n\
+                 printf '127.0.0.1:59999\\n' > \"$tmp\"\n\
+                 mv \"$tmp\" \"{ready}\"\n\
+                 while true; do sleep 0.05; done\n",
+                ready = ready_file.display(),
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let opts = ProxyGuardOptions {
+            ready_file,
+            ca_dir: dir.path().join("ca"),
+            agent_id: None,
+            gateway_endpoint: None,
+            audit_jsonl_path: None,
+            system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+        };
+        let guard = ProxyGuard::spawn_with_binary(&stub, opts).expect("stub must report ready");
+
+        assert_eq!(guard.build_evidence().identity.build_sha, FOREIGN_SHA);
+        assert_ne!(
+            guard.build_evidence().identity.build_sha,
+            aa_runtime::build_identity::BUILD_SHA,
+            "the fixture must actually differ from this build's own SHA"
+        );
+        assert_eq!(guard.build_evidence().executable, stub);
     }
 }
