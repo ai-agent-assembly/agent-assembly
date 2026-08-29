@@ -58,11 +58,11 @@ pub const LABEL_PROTECTION: &str = "aasm.protection";
 /// Label carrying the resolved `aa-proxy` executable's path (AAASM-5984).
 pub const LABEL_PROXY_EXECUTABLE: &str = "aasm.proxy_executable";
 /// Label carrying the SHA that executable's `--version` output claimed.
-/// Full-length, not [`aa_runtime::devint::provenance::short_sha`] — this is a
+/// Full-length, not [`aa_runtime::build_identity::short_sha`] — this is a
 /// machine record, not a human-facing banner.
 pub const LABEL_PROXY_BUILD_SHA: &str = "aasm.proxy_build_sha";
 /// Label carrying how [`LABEL_PROXY_BUILD_SHA`] was obtained
-/// ([`aa_runtime::devint::provenance::IdentitySource::as_str`]) — a SHA
+/// ([`aa_runtime::build_identity::IdentitySource::as_str`]) — a SHA
 /// without its source is a claim a reader cannot judge as authoritative.
 pub const LABEL_PROXY_BUILD_IDENTITY_SOURCE: &str = "aasm.proxy_build_identity_source";
 
@@ -357,11 +357,11 @@ mod tests {
 
     fn evidence(
         build_sha: &str,
-        source: aa_runtime::devint::provenance::IdentitySource,
+        source: aa_runtime::build_identity::IdentitySource,
     ) -> crate::commands::proxy::build_identity::ProxyBuildEvidence {
         crate::commands::proxy::build_identity::ProxyBuildEvidence {
             executable: std::path::PathBuf::from("/opt/aa/bin/aa-proxy"),
-            identity: aa_runtime::devint::provenance::BuildIdentity {
+            identity: aa_runtime::build_identity::BuildIdentity {
                 core_version: "0.0.1-rc.6".to_string(),
                 build_sha: build_sha.to_string(),
                 sha_source: source,
@@ -373,7 +373,7 @@ mod tests {
     /// executable and the build it claimed to be.
     #[test]
     fn proxy_build_evidence_names_the_executable_and_identity() {
-        let ev = evidence("deadbeef", aa_runtime::devint::provenance::IdentitySource::Checkout);
+        let ev = evidence("deadbeef", aa_runtime::build_identity::IdentitySource::Checkout);
         let labels = proxy_build_labels(Some(&ev));
         assert_eq!(
             labels.get(LABEL_PROXY_EXECUTABLE).map(String::as_str),

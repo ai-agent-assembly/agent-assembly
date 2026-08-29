@@ -34,13 +34,13 @@
 //! self-reported build identity at the same trust level AAASM-5628
 //! established for `aa-runtime`, not a supply-chain attestation.
 //!
-//! [`UNKNOWN_SHA`]: aa_runtime::devint::provenance::UNKNOWN_SHA
+//! [`UNKNOWN_SHA`]: aa_runtime::build_identity::UNKNOWN_SHA
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use aa_runtime::devint::provenance::{parse_version_banner, BuildIdentity};
+use aa_runtime::build_identity::{parse_version_banner, BuildIdentity};
 
 /// Bounded wait for the probed binary's `--version` to answer. A governed
 /// launch must never hang indefinitely on a foreign binary at the resolved
@@ -57,7 +57,7 @@ pub struct ProxyBuildEvidence {
     /// [`UNKNOWN_SHA`] when the probe could not establish one — see the
     /// module doc for why that is never a launch failure.
     ///
-    /// [`UNKNOWN_SHA`]: aa_runtime::devint::provenance::UNKNOWN_SHA
+    /// [`UNKNOWN_SHA`]: aa_runtime::build_identity::UNKNOWN_SHA
     pub identity: BuildIdentity,
 }
 

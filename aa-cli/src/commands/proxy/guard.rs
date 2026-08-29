@@ -927,7 +927,7 @@ mod tests {
         assert_eq!(guard.build_evidence().identity.build_sha, FOREIGN_SHA);
         assert_ne!(
             guard.build_evidence().identity.build_sha,
-            aa_runtime::devint::provenance::BUILD_SHA,
+            aa_runtime::build_identity::BUILD_SHA,
             "the fixture must actually differ from this build's own SHA"
         );
         assert_eq!(guard.build_evidence().executable, stub);

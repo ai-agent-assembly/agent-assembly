@@ -7,6 +7,7 @@
 pub mod approval;
 pub mod approval_sink;
 pub mod audit_publisher;
+pub mod build_identity;
 pub mod config;
 pub mod correlation;
 pub mod devint;

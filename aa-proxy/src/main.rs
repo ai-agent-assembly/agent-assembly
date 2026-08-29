@@ -37,7 +37,7 @@ use clap::Parser;
 /// redaction (ADR 0030 row 7), so a redaction-evidence claim is a claim about
 /// a specific build's interception logic, and a plain version string cannot
 /// distinguish two `aa-proxy` binaries built from different commits at the
-/// same version. Read from `aa_runtime::devint::provenance` rather than
+/// same version. Read from `aa_runtime::build_identity` rather than
 /// derived here, so this binary and `aa-runtime`/`aa-cli` cannot disagree
 /// about their own commit by construction — they're compiled in the same
 /// `cargo build` invocation and share the constant.
@@ -45,7 +45,7 @@ use clap::Parser;
 #[command(
     name = "aa-proxy",
     version,
-    long_version = aa_runtime::devint::provenance::LONG_VERSION,
+    long_version = aa_runtime::build_identity::LONG_VERSION,
     verbatim_doc_comment
 )]
 struct Cli {}
@@ -66,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
 
     // AAASM-5984: state which build is about to perform interception/redaction
     // before anything else happens — the earliest point the log carries it.
-    let identity = aa_runtime::devint::provenance::BuildIdentity::of_this_build();
+    let identity = aa_runtime::build_identity::BuildIdentity::of_this_build();
     tracing::info!(
         build_sha = %identity.build_sha,
         build_identity_source = %identity.sha_source.as_str(),

@@ -10,7 +10,7 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use aa_runtime::devint::provenance::{
+use aa_runtime::build_identity::{
     parse_version_banner, BuildIdentity, IdentitySource, BUILD_IDENTITY_SOURCE, BUILD_SHA,
 };
 
@@ -56,13 +56,13 @@ fn a_version_only_assertion_cannot_distinguish_a_foreign_build() {
 /// AC4: `--version` never prints a fabricated identity. Not reachable against
 /// the real binary in-tree (there is always a checkout on this machine, so
 /// `build.rs` resolves `checkout`) — see
-/// `aa_runtime::devint::provenance::tests` for the sentinel path exercised
+/// `aa_runtime::build_identity::tests` for the sentinel path exercised
 /// directly against fabricated banners.
 #[test]
 fn version_output_never_reports_an_empty_sha_as_authoritative() {
     let recovered = parse_version_banner(&version_output());
     assert!(!recovered.build_sha.is_empty());
-    if recovered.build_sha == aa_runtime::devint::provenance::UNKNOWN_SHA {
+    if recovered.build_sha == aa_runtime::build_identity::UNKNOWN_SHA {
         assert_eq!(recovered.sha_source, IdentitySource::Absent);
     }
 }
