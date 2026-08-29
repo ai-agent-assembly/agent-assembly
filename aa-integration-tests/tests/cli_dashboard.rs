@@ -290,6 +290,12 @@ async fn dashboard_start_serves_static_assets() {
         .await
         .expect("index body");
 
+    // AAASM-5977: not one of the six files converted to
+    // `common::precondition::require`, and not the pathology that ticket
+    // targets — there is no early `return` here. The test proceeds either
+    // way; the `if`/`else` below only chooses which assertions apply, so no
+    // coverage is silently lost on the stub-embedded branch.
+    //
     // Find the first `/assets/...js` reference if present. When the build.rs
     // stub is embedded, no such reference exists and we skip the asset
     // fetch — the stub case is exercised by the other two happy-path tests.

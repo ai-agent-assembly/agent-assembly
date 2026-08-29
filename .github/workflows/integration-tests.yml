@@ -261,15 +261,26 @@ jobs:
       # observed value. The job's healthy runs sat at 77-90% of budget (3-7 min
       # of slack) and that is precisely why it tipped over as soon as anything
       # was added, so these are deliberately looser than that.
-      - name: Pre-build aasm binary (AAASM-2340)
+      - name: Pre-build aasm, aa-gateway, aa-runtime binaries (AAASM-2340, AAASM-5977)
         # Worst measured 12.0 min (244458b7f, cold cache under the ratchet);
-        # 2.7 min warm. 18 = 1.5x worst.
+        # 2.7 min warm. 18 = 1.5x worst. aa-cli already depends on both
+        # aa-gateway and aa-runtime by path, so this step already compiled
+        # their libs — building the two extra bins here adds two main.rs
+        # compiles plus two links, not two fresh dependency trees.
         timeout-minutes: 18
         # Compiling aa-cli (which pulls wasmtime via aa-sandbox) once serially
         # before nextest skips per-test `cargo run -p aa-cli` overhead — under
         # --test-threads=1 every test paid that overhead in sequence, which is
         # what pushed this workflow past the 20-minute timeout-minutes ceiling.
-        run: cargo build --quiet -p aa-cli --bin aasm
+        #
+        # AAASM-5977: this lane never built `aa-gateway`/`aa-runtime`, so every
+        # test gated on their presence (cli_gateway.rs's 7 sites,
+        # e2e_runtime_gateway_deny.rs's 2) took the silent early-return skip
+        # path on every run and reported PASS — measured at 0.011-0.035s per
+        # test against an expected several-seconds-to-10s runtime. Building
+        # them here is what makes AC2's "no skip is legitimate in this lane"
+        # true rather than aspirational.
+        run: cargo build --quiet -p aa-cli --bin aasm -p aa-gateway --bin aa-gateway -p aa-runtime --bin aa-runtime
 
       - name: Pre-build aa-api-server binary (AAASM-5908)
         # Worst measured 5.4 min (244458b7f). 9 = 1.67x worst.
@@ -309,8 +320,40 @@ jobs:
           # AAASM-2340: spawn the binary pre-built in the previous step
           # instead of paying cargo-run overhead per test under --test-threads=1.
           AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
-        run: cargo nextest run -p aa-integration-tests --test-threads=1
+          # AAASM-5977: this lane provisions every binary its own skip guards
+          # check for (see the pre-build step above), so an unmet precondition
+          # here is a broken lane, not an honest opt-out. Arms
+          # `common::precondition::require` to panic — a distinct, non-green
+          # nextest FAILED — instead of degrading to a silent skip-as-pass.
+          AA_REQUIRE_PRECONDITIONS: "1"
+          # AAASM-5977 / AAASM-5465: the ledger `common::precondition::require`
+          # and the pre-existing conformance-scenario guards both write to, so
+          # the summary step below can report what this lane declined even
+          # when everything it declined was also a hard failure.
+          AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.integration-outcomes
+        # `--profile evidence` writes the JUnit report the summary step needs
+        # for its ran/passed count (AC5) — same profile the conformance and CI
+        # workspace lanes already use for the same reason.
+        run: cargo nextest run -p aa-integration-tests --profile evidence --test-threads=1
 
+      - name: Test evidence summary
+        # `always()`: a lane that failed on a strict-mode precondition panic
+        # still has a ran/passed count worth reading — that is the point of
+        # AC5, and it is most useful exactly when something went wrong.
+        #
+        # No `--require-evidence`: unlike the conformance lanes, most of this
+        # suite's tests aren't gated on an optional precondition at all, so an
+        # empty ledger here is the ordinary case, not a sign the lane stopped
+        # measuring. AC2 is enforced by the strict-mode panic itself (a red
+        # nextest result), not by this step.
+        if: always()
+        env:
+          AA_CONFORMANCE_OUTCOME_DIR: ${{ github.workspace }}/.integration-outcomes
+        run: |
+          .ci/test-evidence-summary.sh \
+            --lane integration-tests \
+            --junit target/nextest/evidence/junit.xml \
+            --evidence-dir "${AA_CONFORMANCE_OUTCOME_DIR}"
 
       - name: Upload gateway logs on failure
         if: failure()

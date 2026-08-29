@@ -68,8 +68,12 @@
 ///
 /// The support modules re-export it rather than declaring their own, because a
 /// binary including two of them would otherwise load the same file twice.
-#[path = "evidence/mod.rs"]
-pub mod evidence;
+///
+/// AAASM-5977: now re-exported from `common::precondition` (which loads this
+/// same file for its own reasons) for the identical reason — `common` is
+/// itself a "support module" here in that sense.
+#[allow(unused_imports)]
+pub use common::precondition::evidence;
 
 #[allow(unused_imports)]
 mod common;

@@ -172,6 +172,12 @@ fn the_opt_in_still_refuses_and_names_the_missing_protections() {
 /// address still starts a proxy, and it is one `aasm run` will trust.
 #[test]
 fn an_explicit_loopback_listen_address_still_starts() {
+    // AAASM-5977: this file is not one of the six converted to
+    // `common::precondition::require` — its skip is conditioned on a live
+    // macOS keychain-authorization outcome no CI lane can guarantee, and (see
+    // below) it already re-raises the one failure that would actually be a
+    // regression, so the property this ticket protects — a real defect never
+    // silently reads as a pass — already holds on the skip path.
     let proxy = match proxy_trust_support::TrustedProxy::start() {
         Ok(p) => p,
         Err(e) => {

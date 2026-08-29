@@ -69,16 +69,36 @@ const TAG_POLICY_RESPONSE: u8 = 1;
 const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
 /// Locate the `aa-runtime` binary the same way `live_gateway` finds the gateway.
-fn locate_runtime_binary() -> Option<PathBuf> {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").ok()?;
-    let workspace_root = Path::new(&manifest).parent()?;
+///
+/// Routes through `common::precondition::cargo_target_root()` (AAASM-5977)
+/// rather than the plain `<workspace>/target` this used before: the latter
+/// silently misses a binary built under this repo's shared
+/// `CARGO_TARGET_DIR` convention, which made this guard always skip on a
+/// dev machine and left the conversion below unverifiable locally.
+fn locate_runtime_binary() -> Result<PathBuf, String> {
+    let target_root = common::precondition::cargo_target_root();
     for profile in ["debug", "release"] {
-        let candidate = workspace_root.join("target").join(profile).join("aa-runtime");
+        let candidate = target_root.join(profile).join("aa-runtime");
         if candidate.is_file() {
-            return Some(candidate);
+            return Ok(candidate);
         }
     }
-    None
+    Err(format!(
+        "aa-runtime binary not found under {} (debug or release) — run `cargo build -p aa-runtime` first",
+        target_root.display()
+    ))
+}
+
+/// As `common::live_gateway::gateway_binary_locatable`, but `Result`-shaped
+/// for `common::precondition::require` — a thin local wrapper rather than
+/// changing that shared function's signature, which `e2e_sdk_node.rs` and
+/// `e2e_audit.rs` also call and which AAASM-5977 does not list.
+fn gateway_binary_locatable_result() -> Result<(), String> {
+    if gateway_binary_locatable() {
+        Ok(())
+    } else {
+        Err("aa-gateway binary not found (looked in target/{debug,release} and $PATH) — run `cargo build -p aa-gateway` first".to_string())
+    }
 }
 
 /// A spawned `aa-runtime` sidecar pointed at a gateway endpoint. Killed on drop.
@@ -252,12 +272,17 @@ async fn check_tool(socket_path: &Path, agent_id: &str, req: &CheckActionRequest
 
 #[tokio::test(flavor = "multi_thread")]
 async fn runtime_forwards_per_tool_deny_to_gateway() {
-    let Some(runtime_bin) = locate_runtime_binary() else {
-        eprintln!("skipping: aa-runtime binary not built — run `cargo build -p aa-runtime`");
-        return;
+    let runtime_bin = match locate_runtime_binary() {
+        Ok(p) => p,
+        Err(e) => {
+            common::precondition::require("runtime_forwards_per_tool_deny_to_gateway", Err(e));
+            return;
+        }
     };
-    if !gateway_binary_locatable() {
-        eprintln!("skipping: aa-gateway binary not built — run `cargo build -p aa-gateway`");
+    if !common::precondition::require(
+        "runtime_forwards_per_tool_deny_to_gateway",
+        gateway_binary_locatable_result(),
+    ) {
         return;
     }
 

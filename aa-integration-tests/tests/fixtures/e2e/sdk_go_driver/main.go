@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/agent-assembly/go-sdk/assembly"
+	"github.com/ai-agent-assembly/go-sdk/assembly"
 )
 
 // sdkEvent is the JSON-line event emitted to stdout.
