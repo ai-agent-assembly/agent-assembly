@@ -28,12 +28,17 @@ fn driver_dir() -> PathBuf {
         .join("sdk_go_driver")
 }
 
-/// Why the driver binary isn't available — distinguished so the two causes
-/// get different treatment (AAASM-5977). `go` missing from `PATH` is a
-/// genuine environment precondition (honest on a dev machine without Go,
-/// worth being strict about in a lane that installs Go). `go mod edit` or
-/// `go build` failing is not a precondition at all — the tool is present and
-/// broken, which is a defect regardless of lane, so it is never a skip.
+/// Why the driver binary isn't available — distinguished so the causes get
+/// different treatment (AAASM-5977). `go` missing from `PATH`, and the
+/// go-sdk sibling checkout being absent, are genuine environment
+/// preconditions: `ci.yml`'s ordinary `Test` job installs Go but never
+/// checks out a go-sdk sibling (only `integration-tests.yml` does, via
+/// `GO_SDK_PATH`), so "no go-sdk at the resolved path" is that lane's
+/// permanent, honest state, not a defect. Once a go-sdk checkout genuinely
+/// exists at the resolved path, `go mod edit`/`go build` failing against it
+/// is not a precondition at all — the tool and the dependency are both
+/// present and the driver itself is broken, which is a defect regardless of
+/// lane, so that case is never a skip.
 enum DriverUnavailable {
     ToolAbsent(String),
     BuildBroken(String),
@@ -67,7 +72,16 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
                 .into_owned()
         });
 
-        let replace_arg = format!("-replace=github.com/agent-assembly/go-sdk={go_sdk_path}");
+        // A missing sibling checkout is the ordinary state of `ci.yml`'s `Test`
+        // job (it never checks out go-sdk) — treat it the same as `go` being
+        // absent rather than as a broken driver.
+        if !Path::new(&go_sdk_path).is_dir() {
+            return Err(DriverUnavailable::ToolAbsent(format!(
+                "go-sdk sibling not found at {go_sdk_path}"
+            )));
+        }
+
+        let replace_arg = format!("-replace=github.com/ai-agent-assembly/go-sdk={go_sdk_path}");
         let edit_ok = Command::new("go")
             .args(["mod", "edit", &replace_arg])
             .current_dir(&dir)
@@ -105,11 +119,13 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
 
 /// Resolve the driver binary for one test scenario.
 ///
-/// `go` genuinely absent routes through `common::precondition::require` (graceful
-/// skip locally, red under `AA_REQUIRE_PRECONDITIONS`). A broken `go mod
-/// edit`/`go build` is never a skip — `go` is present and the driver itself is
-/// broken, which is a defect in every lane — so that arm panics unconditionally
-/// rather than going through `require`.
+/// `go` or the go-sdk sibling genuinely absent routes through
+/// `common::precondition::require` (graceful skip locally, red under
+/// `AA_REQUIRE_PRECONDITIONS`). A broken `go mod edit`/`go build` against a
+/// go-sdk that does exist is never a skip — both the tool and the dependency
+/// are present and the driver itself is broken, which is a defect in every
+/// lane — so that arm panics unconditionally rather than going through
+/// `require`.
 fn go_driver_binary(scenario: &str) -> Option<&'static Path> {
     match go_driver_binary_result() {
         Ok(bin) => Some(bin.as_path()),
