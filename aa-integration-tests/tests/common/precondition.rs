@@ -30,11 +30,28 @@
 //! behind it; `cli_dashboard.rs` has no early `return` at all — its
 //! conditional only picks which assertions apply, so it isn't the pathology
 //! this ticket targets.
-
-#![allow(dead_code)]
+//!
+//! No `#![allow(dead_code)]` here — the outer `#[allow(dead_code)]` on this
+//! module's `pub mod precondition;` declaration in `common/mod.rs` already
+//! covers it, matching every other module in this directory. A second one
+//! here duplicated that suppression on the same item (clippy's
+//! `duplicated_attributes`).
+//!
+//! `evidence` is loaded here (`#[path = "../evidence/mod.rs"] pub mod
+//! evidence;` below) rather than assuming every consumer already has it at
+//! its own crate root — most of `common`'s ~64 callers don't. Four binaries
+//! (`cli_run_claude_deterministic_conformance.rs` and others, via
+//! `conformance_support`) *do* already load the same file as `crate::evidence`
+//! for their own reasons; for those, loading it a second time here would trip
+//! clippy's `duplicate_mod` (the same file loaded via two `mod` paths within
+//! one binary). Their fix lives at their own call site: `pub use
+//! crate::common::precondition::evidence;` — a re-export, not a second `mod`,
+//! per clippy's own suggested fix ("replace all but one `mod` item with `use`
+//! items") and matching how `conformance_support/mod.rs` already re-exports
+//! `crate::evidence` rather than redeclaring it.
 
 #[path = "../evidence/mod.rs"]
-mod evidence;
+pub mod evidence;
 use evidence::Measurement;
 
 use std::path::{Path, PathBuf};

@@ -62,8 +62,11 @@ mod proxy_trust_support;
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 
-#[path = "evidence/mod.rs"]
-pub mod evidence;
+// AAASM-5977: re-exported from `common::precondition`, which already loads
+// this file — a second `#[path] mod evidence;` here would load it twice in
+// one binary (clippy's `duplicate_mod`). A `use`, not a `mod`.
+#[allow(unused_imports)]
+pub use common::precondition::evidence;
 
 #[cfg(unix)]
 mod concurrent_isolation {

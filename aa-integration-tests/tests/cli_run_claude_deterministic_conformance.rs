@@ -48,8 +48,13 @@
 //! release-QA pass on a machine with the real binary installed — not
 //! `CI_AUTOMATED` coverage, and it must not be represented as the latter.
 
-#[path = "evidence/mod.rs"]
-pub mod evidence;
+// AAASM-5977: re-exported from `common::precondition`, which already loads
+// this file (`#[path = "../evidence/mod.rs"] pub mod evidence;`), rather than
+// a second `#[path] mod evidence;` here — the same file loaded via two `mod`
+// paths in one binary is clippy's `duplicate_mod`. A `use`, not a `mod`, per
+// clippy's own suggested fix.
+#[allow(unused_imports)]
+pub use common::precondition::evidence;
 
 #[allow(unused_imports)]
 mod common;
