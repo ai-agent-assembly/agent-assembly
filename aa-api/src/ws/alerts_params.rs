@@ -261,6 +261,7 @@ mod tests {
             message: "test".to_string(),
             agent_id: agent_id.to_string(),
             team_id: None,
+            event_id: None,
             timestamp: "2026-05-20T00:00:00Z".to_string(),
             threshold_pct: 80,
             spent_usd: 8.0,

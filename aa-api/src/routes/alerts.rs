@@ -80,6 +80,7 @@ pub fn alert_response_from_stored(a: StoredAlert) -> AlertResponse {
         updated_at: a.updated_at,
         detected_pattern_type: a.detected_pattern_type,
         redacted_value: a.redacted_value,
+        event_id: a.event_id,
     }
 }
 
@@ -152,6 +153,12 @@ pub struct AlertDetailResponse {
     /// `[REDACTED:<Kind>]` label for `secret_detected` alerts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redacted_value: Option<String>,
+    /// The originating cross-process `RedactionEvent.event_id` for a
+    /// `secret_detected` alert reported via the proxy telemetry hop
+    /// (AAASM-5905). Omitted for every other alert and for secret alerts
+    /// raised directly by the gateway's own policy-evaluation path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
 }
 
 /// Convert a `StoredAlert` into the rich `AlertDetailResponse`.
@@ -203,6 +210,7 @@ fn alert_detail_from_stored(a: StoredAlert) -> AlertDetailResponse {
         updated_at: a.updated_at,
         detected_pattern_type: a.detected_pattern_type,
         redacted_value: a.redacted_value,
+        event_id: a.event_id,
     }
 }
 
@@ -404,6 +412,14 @@ pub struct AlertResponse {
     /// contains the raw secret. Omitted for budget alerts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redacted_value: Option<String>,
+    /// The originating cross-process `RedactionEvent.event_id` for a
+    /// `secret_detected` alert reported via the proxy telemetry hop
+    /// (AAASM-5905), so an operator can correlate this alert back to the
+    /// specific proxy-side redaction event that produced it. Omitted for
+    /// every other alert and for secret alerts raised directly by the
+    /// gateway's own policy-evaluation path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
 }
 
 /// Paginated `GET /api/v1/alerts` body (AAASM-4892) — a named wrapper so the

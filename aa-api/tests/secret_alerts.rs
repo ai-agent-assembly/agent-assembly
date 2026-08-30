@@ -26,6 +26,7 @@ fn aws_secret_alert() -> SecretAlert {
     SecretAlert {
         agent_id: AgentId::from_bytes([0xAB; 16]),
         team_id: Some("team-pioneer".to_string()),
+        event_id: None,
         kinds: vec![CredentialKind::AwsAccessKey],
         finding_count: 1,
     }

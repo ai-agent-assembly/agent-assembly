@@ -1465,6 +1465,10 @@ impl PolicyServiceImpl {
         let alert = SecretAlert {
             agent_id,
             team_id,
+            // No proxy-side RedactionEvent exists on this path — the
+            // gateway's own policy-evaluation scan produced this alert
+            // directly, so there is nothing to correlate against.
+            event_id: None,
             kinds,
             finding_count: eval.credential_findings.len(),
         };

@@ -67,6 +67,7 @@ mod tests {
             updated_at: None,
             detected_pattern_type: None,
             redacted_value: None,
+            event_id: None,
         }
     }
 

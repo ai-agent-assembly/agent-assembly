@@ -42,6 +42,15 @@ pub struct StoredAlert {
     /// alerts where no team was associated (e.g. legacy budget alerts
     /// emitted without a team).
     pub team_id: Option<String>,
+    /// The originating cross-process `RedactionEvent.event_id` for a
+    /// `secret_detected` alert that crossed the proxy -> aa-api telemetry
+    /// hop (AAASM-5905), so an operator can correlate this alert back to
+    /// the specific proxy-side redaction event that produced it. `None`
+    /// for every other alert kind and for secret alerts raised directly
+    /// by the gateway's own policy-evaluation path (no cross-process hop
+    /// to correlate against).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
     /// ISO 8601 timestamp when the alert was captured.
     pub timestamp: String,
     /// Budget threshold percentage that was crossed.
@@ -201,6 +210,7 @@ pub fn stored_secret_alert_from(alert: &SecretAlert, id: String, timestamp: Stri
         message: build_secret_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
         team_id: alert.team_id.clone(),
+        event_id: alert.event_id.clone(),
         timestamp: timestamp.clone(),
         threshold_pct: 0,
         spent_usd: 0.0,
@@ -256,6 +266,7 @@ pub fn stored_anomaly_alert_from(event: &AnomalyEvent, id: String, timestamp: St
         message: build_anomaly_alert_message(event),
         agent_id: format_agent_id(&event.agent_id),
         team_id: None,
+        event_id: None,
         timestamp: timestamp.clone(),
         threshold_pct: 0,
         spent_usd: 0.0,
@@ -281,6 +292,7 @@ pub fn stored_alert_from(alert: &BudgetAlert, id: String, timestamp: String) -> 
         message: build_alert_message(alert),
         agent_id: format_agent_id(&alert.agent_id),
         team_id: alert.team_id.clone(),
+        event_id: None,
         timestamp: timestamp.clone(),
         threshold_pct: alert.threshold_pct,
         spent_usd: alert.spent_usd,
@@ -384,6 +396,7 @@ pub fn stored_rule_alert_from(seed: &RuleAlertSeed, id: String, timestamp: Strin
         message: build_rule_alert_message(seed),
         agent_id: agent_id_str,
         team_id: seed.team_id.clone(),
+        event_id: None,
         timestamp: timestamp.clone(),
         threshold_pct: 0,
         spent_usd: 0.0,
