@@ -2059,3 +2059,51 @@ journeys:
   lifecycle_state: gap
   gap_owner: AAASM-5308
 
+
+- id: J80
+  jira: AAASM-6014
+  feature_refs:
+  - AAASM-5984
+  name: The CLI's probe of a real aa-proxy binary recovers this build's own compiled identity, and degrades to unresolved (never fabricated) against a binary that is not aa-proxy at all
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-cli
+  - aa-proxy
+  entry_point: cli
+  lanes:
+  - security
+  browser_required: false
+  outcome: aa_cli::commands::proxy::build_identity::probe(), run against the real compiled
+    aa-proxy binary, recovers a build_sha equal to BuildIdentity::of_this_build()'s compiled
+    constant. Run against a real binary that is not aa-proxy (or a nonexistent path), it reports
+    IdentitySource::Absent rather than fabricating or borrowing an identity.
+  # AAASM-6014: AAASM-5984 shipped real code (aa-proxy/aa-gateway self-report
+  # build identity; the CLI probes the resolved binary and records it on the
+  # governed-launch audit trail) with real unit/integration coverage, but had
+  # zero golden-journey representation — a regression here would not have
+  # been caught by any release-QA gate. aa-proxy/tests/build_identity.rs
+  # already proves aa-proxy's own --version states the compiled identity
+  # correctly (same-package, real binary); this row closes the adjacent gap
+  # this audit found — the CLI's own probe() function had no test at all,
+  # not even a synthetic one, until this ticket.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/proxy_build_identity_probe.rs::probe_of_the_real_binary_recovers_this_builds_identity
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/proxy_build_identity_probe.rs::probe_of_a_foreign_binary_reports_absent_not_a_fabricated_identity
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/proxy_build_identity_probe.rs::probe_of_a_nonexistent_path_reports_absent
+  negative_control: 'aa-cli/tests/proxy_build_identity_probe.rs::probe_of_a_foreign_binary_reports_absent_not_a_fabricated_identity
+    — probes a real binary (cargo itself) that is genuinely not aa-proxy, and asserts the probe
+    reports IdentitySource::Absent rather than a fabricated or coincidentally-matching identity;
+    falsifies the claim that probe() blindly trusts whatever --version prints'
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
