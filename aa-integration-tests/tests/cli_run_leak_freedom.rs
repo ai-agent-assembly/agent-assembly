@@ -321,6 +321,25 @@ fi
         !pid_is_alive(pid)
     }
 
+    /// Poll for a file becoming readable, rather than checking once.
+    ///
+    /// The proxy child pid becoming visible at the OS level (`wait_for_pid_alive`)
+    /// is an earlier, weaker signal than the tool having actually finished writing
+    /// its "started" report — under instrumented (`cargo llvm-cov`) execution the
+    /// gap between the two widens enough to flip a one-shot check to `Err`
+    /// (AAASM-6012). Bounded the same way as the other readiness waits in this
+    /// file, not a fixed sleep.
+    fn wait_for_file_readable(path: &std::path::Path, patience: Duration) -> bool {
+        let deadline = Instant::now() + patience;
+        while Instant::now() < deadline {
+            if std::fs::read_to_string(path).is_ok() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::fs::read_to_string(path).is_ok()
+    }
+
     /// Scenario A: a launch that runs to completion on its own must not
     /// leave its dedicated proxy running after it exits.
     #[tokio::test(flavor = "multi_thread")]
@@ -384,7 +403,7 @@ fi
             )
         });
         assert!(
-            std::fs::read_to_string(&host.dump).is_ok(),
+            wait_for_file_readable(&host.dump, PROXY_CHILD_PATIENCE),
             "the tool must have started (and reported) before this test signals the launcher, or \
              a SIGTERM sent too early would prove nothing about tearing down a live session",
         );
