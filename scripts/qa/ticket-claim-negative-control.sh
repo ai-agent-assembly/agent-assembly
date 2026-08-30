@@ -86,6 +86,31 @@ python3 "$CLAIM" status >/dev/null 2>&1  # status sweeps dead claims as a side e
 python3 "$CLAIM" claim AAASM-DIES --pid $$ >/dev/null 2>&1
 check "case5: a claim whose owner pid died is reclaimable, not stuck forever" 0 $?
 
+# --- Case 5b: a process SIGKILLed while HOLDING the check-then-write flock -
+# doesn't wedge the next claimer forever. Different from case 5, which covers
+# a dead claim *owner* (the record's pid) — this covers death inside the
+# flock-guarded critical section itself, the exact scenario AAASM-6013's own
+# falsification requirement 3 names ("a lane that crashes or is killed
+# mid-claim"). Relies on the POSIX guarantee that flock is tied to the open
+# file description and is released when the kernel closes every fd
+# referencing it, which SIGKILL does unconditionally — this case proves that
+# guarantee actually holds for this lock file, not just asserts it.
+export AA_QA_LOCK_DIR="$(mktemp -d)"
+LOCK_FILE="$AA_QA_LOCK_DIR/claims/.AAASM-MIDLOCK.lock"
+mkdir -p "$AA_QA_LOCK_DIR/claims"
+python3 -c "
+import fcntl, os, time
+fd = os.open('$LOCK_FILE', os.O_CREAT | os.O_RDWR, 0o644)
+fcntl.flock(fd, fcntl.LOCK_EX)
+time.sleep(60)  # holds the flock, simulating mid-critical-section death
+" &
+HOLDER_PID=$!
+sleep 1  # let the holder actually acquire the flock before killing it
+kill -9 "$HOLDER_PID"
+wait "$HOLDER_PID" 2>/dev/null
+timeout 5 python3 "$CLAIM" claim AAASM-MIDLOCK --pid $$ >/dev/null 2>&1
+check "case5b: a claimer SIGKILLed while holding the critical-section flock does not wedge the next claim" 0 $?
+
 # --- Case 6: release by a non-owner pid is refused without --force --------
 export AA_QA_LOCK_DIR="$(mktemp -d)"
 python3 "$CLAIM" claim AAASM-TEST6 --pid $$ >/dev/null 2>&1
