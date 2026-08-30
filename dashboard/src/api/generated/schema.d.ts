@@ -3309,6 +3309,13 @@ export interface components {
             /** @description Primary detected credential kind for `secret_detected` alerts. */
             detected_pattern_type?: string | null;
             /**
+             * @description The originating cross-process `RedactionEvent.event_id` for a
+             *     `secret_detected` alert reported via the proxy telemetry hop
+             *     (AAASM-5905). Omitted for every other alert and for secret alerts
+             *     raised directly by the gateway's own policy-evaluation path.
+             */
+            event_id?: string | null;
+            /**
              * @description Free-form payload of the triggering event. `null` for legacy
              *     alerts.
              */
@@ -3365,6 +3372,15 @@ export interface components {
              *     (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
              */
             detected_pattern_type?: string | null;
+            /**
+             * @description The originating cross-process `RedactionEvent.event_id` for a
+             *     `secret_detected` alert reported via the proxy telemetry hop
+             *     (AAASM-5905), so an operator can correlate this alert back to the
+             *     specific proxy-side redaction event that produced it. Omitted for
+             *     every other alert and for secret alerts raised directly by the
+             *     gateway's own policy-evaluation path.
+             */
+            event_id?: string | null;
             /** @description Unique alert identifier. */
             id: string;
             /** @description Human-readable alert message. */

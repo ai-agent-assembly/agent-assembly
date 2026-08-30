@@ -22,6 +22,13 @@ pub struct SecretAlert {
     pub agent_id: AgentId,
     /// Team attribution propagated from the request context, when present.
     pub team_id: Option<String>,
+    /// The originating `RedactionEvent.event_id` for an alert that crossed
+    /// the proxy -> aa-api telemetry hop (AAASM-5871), so an operator can
+    /// correlate a dashboard alert back to the specific cross-process
+    /// redaction event that produced it (AAASM-5905). `None` for alerts
+    /// raised directly by the gateway's own policy-evaluation path, which
+    /// has no separate proxy-side event to correlate against.
+    pub event_id: Option<String>,
     /// All distinct credential kinds detected in the payload, in the
     /// order returned by the scanner pass. Always non-empty when emitted.
     pub kinds: Vec<CredentialKind>,
@@ -60,6 +67,7 @@ mod tests {
         let alert = SecretAlert {
             agent_id: agent(),
             team_id: None,
+            event_id: None,
             kinds: vec![CredentialKind::AwsAccessKey, CredentialKind::OpenAiKey],
             finding_count: 2,
         };
@@ -71,6 +79,7 @@ mod tests {
         let alert = SecretAlert {
             agent_id: agent(),
             team_id: Some("team-x".to_string()),
+            event_id: None,
             kinds: vec![CredentialKind::GitHubPat],
             finding_count: 1,
         };
@@ -82,6 +91,7 @@ mod tests {
         let alert = SecretAlert {
             agent_id: agent(),
             team_id: None,
+            event_id: None,
             kinds: vec![],
             finding_count: 0,
         };
