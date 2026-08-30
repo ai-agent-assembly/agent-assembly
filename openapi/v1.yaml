@@ -6161,6 +6161,15 @@ components:
           - string
           - 'null'
           description: Primary detected credential kind for `secret_detected` alerts.
+        event_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The originating cross-process `RedactionEvent.event_id` for a
+            `secret_detected` alert reported via the proxy telemetry hop
+            (AAASM-5905). Omitted for every other alert and for secret alerts
+            raised directly by the gateway's own policy-evaluation path.
         event_payload:
           description: |-
             Free-form payload of the triggering event. `null` for legacy
@@ -6266,6 +6275,17 @@ components:
           description: |-
             Primary detected credential kind for `secret_detected` alerts
             (e.g. `"AwsAccessKey"`). Omitted for budget alerts.
+        event_id:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The originating cross-process `RedactionEvent.event_id` for a
+            `secret_detected` alert reported via the proxy telemetry hop
+            (AAASM-5905), so an operator can correlate this alert back to the
+            specific proxy-side redaction event that produced it. Omitted for
+            every other alert and for secret alerts raised directly by the
+            gateway's own policy-evaluation path.
         id:
           type: string
           description: Unique alert identifier.
