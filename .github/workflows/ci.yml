@@ -176,6 +176,11 @@ on:
       - "qa/resource-classes.yaml"
       - "scripts/qa/resource-lock.py"
       - "scripts/qa/resource-scheduler-negative-control.sh"
+      # AAASM-6013: per-ticket pickup claim, same qa_registry router — closes
+      # the TOCTOU gap resource-lock.py's build-job slots don't cover (a
+      # ticket claim outlives any single subprocess, unlike a build slot).
+      - "scripts/qa/ticket-claim.py"
+      - "scripts/qa/ticket-claim-negative-control.sh"
       # AAASM-5949: the watchdog's liveness/ownership tracking + CPU-time
       # parser (first slice of AAASM-5894, split by design review). Same
       # `qa_registry` router as the resource-lock mechanism above — it
@@ -497,6 +502,10 @@ jobs:
               - 'qa/resource-classes.yaml'
               - 'scripts/qa/resource-lock.py'
               - 'scripts/qa/resource-scheduler-negative-control.sh'
+              # AAASM-6013: per-ticket pickup claim. Same router flag, same
+              # qa/** + scripts/qa/** surface.
+              - 'scripts/qa/ticket-claim.py'
+              - 'scripts/qa/ticket-claim-negative-control.sh'
               # AAASM-5949: watchdog liveness/ownership + CPU-time parser.
               - 'scripts/qa/qa-watchdog.py'
               - 'scripts/qa/qa-watchdog-cpu-parser-test.sh'
@@ -1404,6 +1413,11 @@ jobs:
       # silently being dropped before `execvp`.
       - name: Self-test resource-lock.py (negative control)
         run: bash scripts/qa/resource-scheduler-negative-control.sh
+
+      # AAASM-6013: real-concurrent-process ticket-claim race + release/sweep
+      # cases — see the harness's own header comment.
+      - name: Self-test ticket-claim.py (negative control)
+        run: bash scripts/qa/ticket-claim-negative-control.sh
 
       # AAASM-5949: string-fixture tests for qa-watchdog.py's parse_ps_time()
       # — pure-function CPU-time-string parsing plus a live-process smoke
