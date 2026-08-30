@@ -4806,8 +4806,14 @@ mod tests {
         // looser bound because the Aho-Corasick automaton is not optimised in debug mode.
         use std::time::Instant;
 
+        // AAASM-6016: 50ms wasn't generous enough — `cargo nextest run --workspace`
+        // runs 8000+ tests concurrently on a shared, resource-constrained CI runner,
+        // and that contention alone pushed this well past 50ms with no change to the
+        // scan itself (confirmed: passes in 0.18s in isolation, both locally and on a
+        // clean main-branch CI run). Widened for contention headroom, not because the
+        // debug-mode scan got slower — this bound was never a perf gate.
         #[cfg(debug_assertions)]
-        let budget_ms: u128 = 50; // debug: correctness only, not a perf gate
+        let budget_ms: u128 = 500; // debug: correctness only, not a perf gate
         #[cfg(not(debug_assertions))]
         let budget_ms: u128 = 2; // release: enforces the AC
 
