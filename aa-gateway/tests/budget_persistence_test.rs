@@ -108,27 +108,79 @@ fn corrupt_file_returns_error() {
     assert!(load_from_disk(&path).is_err());
 }
 
-/// Simulate the graceful fallback: when load fails, start fresh and continue.
+/// AAASM-5647 — a corrupt file must degrade the tracker, not silently reset
+/// it to an enforceable zero-spend state. A seeded/empty balance is not an
+/// acceptable outcome for a spend control: it lets every agent spend freely
+/// until the file is repaired. Superseded `corrupt_file_fallback_produces_empty_tracker`,
+/// which asserted exactly the behaviour this ticket forbids.
 #[test]
-fn corrupt_file_fallback_produces_empty_tracker() {
+fn corrupt_file_degrades_tracker_and_denies_every_check() {
+    use aa_gateway::budget::persistence::load_or_degrade;
+    use aa_gateway::budget::types::BudgetStatus;
+
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("budget.json");
     std::fs::write(&path, b"NOT VALID JSON {{{").unwrap();
 
     let (alert_tx, _rx) = tokio::sync::broadcast::channel::<BudgetAlert>(16);
+    let (degradation_tx, mut degradation_rx) = tokio::sync::broadcast::channel(4);
 
-    // Mirror the fallback logic from server::setup_budget.
-    let persisted = load_from_disk(&path).unwrap_or_else(|_| PersistedBudget {
-        per_agent: vec![],
-        team_budgets: Default::default(),
-        global: aa_gateway::budget::types::BudgetState::new_today(),
-        timezone: chrono_tz::UTC,
-    });
+    let (persisted, degraded) = load_or_degrade(&path, &degradation_tx);
+    assert!(degraded);
+    match degradation_rx.try_recv().expect("a degradation event was broadcast") {
+        aa_runtime::pipeline::PipelineEvent::LayerDegradation(info) => {
+            assert_eq!(info.layer, "gateway/budget");
+            assert!(info.reason.starts_with("planned="), "reason: {}", info.reason);
+        }
+        other => panic!("expected LayerDegradation, got {other:?}"),
+    }
 
     let tracker =
-        BudgetTracker::with_state_and_alert_sender(PricingTable::default_table(), None, None, persisted, alert_tx);
+        BudgetTracker::with_state_and_alert_sender(PricingTable::default_table(), None, None, persisted, alert_tx)
+            .degraded(degraded);
+    assert!(tracker.is_degraded());
 
-    let snapshot = tracker.snapshot();
-    assert!(snapshot.per_agent.is_empty());
-    assert_eq!(snapshot.global.spent_usd, Decimal::ZERO);
+    // Assert through the artifact that decides, not a seeded balance: every
+    // deciding entry point must deny while degraded.
+    let agent = test_agent_id();
+    assert!(tracker.check_daily(&agent, Decimal::from(1000)));
+    assert_eq!(
+        tracker.record_raw_spend(agent, None, None, Decimal::from_str("1.00").unwrap()),
+        BudgetStatus::LimitExceeded
+    );
+}
+
+/// Negative control: a valid file must NOT degrade the tracker.
+#[test]
+fn valid_file_does_not_degrade_tracker() {
+    use aa_gateway::budget::persistence::load_or_degrade;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("budget.json");
+    let (alert_tx, _rx) = tokio::sync::broadcast::channel::<BudgetAlert>(16);
+    save_to_disk_atomic(
+        &path,
+        &PersistedBudget {
+            per_agent: vec![],
+            team_budgets: Default::default(),
+            global: aa_gateway::budget::types::BudgetState::new_today(),
+            timezone: chrono_tz::UTC,
+        },
+    )
+    .unwrap();
+
+    let (degradation_tx, mut degradation_rx) = tokio::sync::broadcast::channel(4);
+    let (persisted, degraded) = load_or_degrade(&path, &degradation_tx);
+    assert!(!degraded);
+    assert!(matches!(
+        degradation_rx.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    let tracker =
+        BudgetTracker::with_state_and_alert_sender(PricingTable::default_table(), None, None, persisted, alert_tx)
+            .degraded(degraded);
+    assert!(!tracker.is_degraded());
+    let agent = test_agent_id();
+    assert!(!tracker.check_daily(&agent, Decimal::from(1000)));
 }
