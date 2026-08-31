@@ -782,6 +782,20 @@ fn spawn_escalation_audit_task(
 
 /// Persist the current budget snapshot to disk. Best-effort — logs on failure.
 fn final_budget_save(tracker: &BudgetTracker, budget_path: &Path) {
+    // AAASM-5647 — mirrors the background writer's skip: a degraded tracker's
+    // in-memory state is the synthetic empty snapshot `load_or_degrade` built,
+    // not the corrupt file's real content. Saving it here on a graceful
+    // shutdown would overwrite the corrupt file with a fresh, parseable,
+    // empty budget — destroying the evidence an operator needs to repair it,
+    // and silently un-degrading the tracker on the next boot (the file would
+    // load cleanly, so `load_or_degrade` would report `degraded: false`).
+    if tracker.is_degraded() {
+        tracing::warn!(
+            path = %budget_path.display(),
+            "budget state degraded — shutdown save skipped to preserve the corrupt file for reconciliation"
+        );
+        return;
+    }
     let snapshot = tracker.snapshot();
     match save_to_disk_atomic(budget_path, &snapshot) {
         Ok(()) => tracing::info!(path = %budget_path.display(), "budget state saved on shutdown"),
@@ -1529,6 +1543,61 @@ mod tests {
         assert!(
             select_challenge_store(&redis).await.is_none(),
             "without the redis-cache feature the in-memory default is kept",
+        );
+    }
+
+    /// AAASM-5647 — `final_budget_save` must not overwrite a degraded
+    /// tracker's corrupt state file with a fresh empty snapshot on shutdown:
+    /// that would destroy the evidence an operator needs to repair it, and
+    /// silently un-degrade the tracker on the next boot (the file would then
+    /// load cleanly). Mirrors the background-writer skip's own reasoning.
+    #[test]
+    fn final_budget_save_does_not_overwrite_a_degraded_tracker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        let original = b"NOT VALID JSON {{{";
+        std::fs::write(&path, original).unwrap();
+
+        let (alert_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+            alert_tx,
+        )
+        .degraded(true);
+
+        final_budget_save(&tracker, &path);
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the corrupt file must survive a shutdown save while degraded"
+        );
+    }
+
+    /// Negative control: an un-degraded tracker's shutdown save still writes.
+    #[test]
+    fn final_budget_save_writes_when_not_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+
+        let (alert_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+            alert_tx,
+        );
+        assert!(!tracker.is_degraded());
+
+        final_budget_save(&tracker, &path);
+
+        assert!(
+            path.exists(),
+            "a non-degraded tracker's shutdown save must write the file"
         );
     }
 }
