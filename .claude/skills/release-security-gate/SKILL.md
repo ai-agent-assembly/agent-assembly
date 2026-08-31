@@ -121,6 +121,13 @@ and MUST contain, at minimum:
 
 - **Reviewer** and **Date**.
 - **Release type** (patch / minor / major) and **previous tag**.
+- **Candidate SHA** — the commit this review actually covers (usually
+  `git rev-parse HEAD` at review time). Must be an ancestor of, or equal to,
+  the QA evidence's `candidate.candidate_sha` — never a sibling/unrelated
+  commit, and never a commit QA hadn't reached yet. `check-release-evidence.py`'s
+  R11 rule BLOCKs release-tag-guard if this is missing or fails that check
+  (AAASM-6017) — the release-identity invariant is that QA and security
+  verified the same revision, not merely that both happened to say PASS.
 - The **findings table** (severity · finding · status).
 - The completed **trust-boundary review checklist** (minor+).
 - A single **`Verdict: PASS`** or **`Verdict: BLOCK`** line — the exact token
