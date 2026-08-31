@@ -66,7 +66,10 @@ CONFIGURATION:
     Common:
       AA_GATEWAY_ENDPOINT      Gateway URL for policy/event RPCs (e.g. http://gateway:50051)
       AA_POLICY_PATH           Path to policy.toml (default: /etc/aa/policy.toml)
-      AA_METRICS_ADDR          Prometheus metrics bind address (default: 0.0.0.0:8080)
+      AA_METRICS_ADDR          Prometheus metrics bind address (default: 0.0.0.0:8080; a
+                                non-loopback bind is refused unless AA_METRICS_ALLOW_REMOTE=1,
+                                AAASM-5985)
+      AA_METRICS_ALLOW_REMOTE  Opt in to a non-loopback AA_METRICS_ADDR bind (default: false)
       AA_GATEWAY_FAIL_CLOSED   Deny when the gateway is unreachable (default: true)
 
     See the aa-runtime documentation for the full list of AA_* variables."
