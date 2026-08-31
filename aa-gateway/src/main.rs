@@ -238,6 +238,27 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Optionally spawn the webhook delivery loop (reads AA_WEBHOOK_URL).
     let _webhook_handle = aa_gateway::events::startup::maybe_spawn_webhook(&approval_queue, budget_alert_rx);
 
+    // AAASM-5647 — layer-degradation channel: a broadcast::send with zero
+    // receivers silently drops the event, so a consumer must be spawned here
+    // for a degradation (e.g. a corrupt budget state file) to be observable
+    // rather than only "sent" in name. Mirrors aa-proxy's pipeline_log.rs.
+    let (degradation_tx, mut degradation_rx) =
+        tokio::sync::broadcast::channel::<aa_runtime::pipeline::PipelineEvent>(16);
+    let _degradation_log_handle = tokio::spawn(async move {
+        loop {
+            match degradation_rx.recv().await {
+                Ok(aa_runtime::pipeline::PipelineEvent::LayerDegradation(info)) => {
+                    tracing::error!(layer = %info.layer, reason = %info.reason, "gateway layer degraded");
+                }
+                Ok(aa_runtime::pipeline::PipelineEvent::Audit(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "degradation event log lagged, some events were not logged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     // strip-for-publish:begin audit-consumer
     // AAASM-2388: spawn the NATS->Postgres audit consumer when configured via
     // AA_AUDIT_NATS_URL + AA_AUDIT_POSTGRES_URL. Drained after serve returns.
@@ -252,6 +273,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             registry,
             approval_queue,
             budget_alert_tx,
+            degradation_tx,
             Some(storage),
         )
         .await
@@ -262,6 +284,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             registry,
             approval_queue,
             budget_alert_tx,
+            degradation_tx,
             Some(storage),
         )
         .await

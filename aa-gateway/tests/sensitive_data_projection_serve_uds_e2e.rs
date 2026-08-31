@@ -105,6 +105,7 @@ async fn serve_uds_persists_a_finding_through_the_real_grpc_surface() {
     let socket = dir.path().join("gw.sock");
 
     let (alert_tx, _alert_rx) = tokio::sync::broadcast::channel(64);
+    let (degradation_tx, _degradation_rx) = tokio::sync::broadcast::channel(16);
     let queue = aa_runtime::approval::ApprovalQueue::new();
     let policy_path = policy.path().to_path_buf();
     let socket_path = socket.clone();
@@ -113,9 +114,17 @@ async fn serve_uds_persists_a_finding_through_the_real_grpc_surface() {
         let _policy = policy;
         // `serve_uds`'s error is a bare `Box<dyn Error>`, which is not `Send`;
         // rendered here so the future this task returns is spawnable.
-        aa_gateway::server::serve_uds(&policy_path, &socket_path, registry, queue, alert_tx, None)
-            .await
-            .map_err(|e| e.to_string())
+        aa_gateway::server::serve_uds(
+            &policy_path,
+            &socket_path,
+            registry,
+            queue,
+            alert_tx,
+            degradation_tx,
+            None,
+        )
+        .await
+        .map_err(|e| e.to_string())
     });
 
     let mut client = connect(&socket).await;

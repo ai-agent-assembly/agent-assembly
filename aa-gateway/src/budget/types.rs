@@ -76,6 +76,14 @@ pub enum BudgetError {
         /// Which window (daily/monthly) was exhausted.
         kind: BudgetKind,
     },
+    /// AAASM-5647 — the tracker was built from a corrupt or unreadable
+    /// persisted state file and is degraded (see
+    /// [`super::tracker::BudgetTracker::is_degraded`]); nothing was committed.
+    /// Deliberately distinct from [`Self::SelfBudgetExhausted`], which would
+    /// tell an operator "agent budget exhausted" when the true cause is a
+    /// state file that needs repairing or removing.
+    #[error("budget state unavailable — degraded on a corrupt or unreadable state file")]
+    StateUnavailable,
 }
 
 /// Result returned by [`super::tracker::BudgetTracker::record_usage`].
