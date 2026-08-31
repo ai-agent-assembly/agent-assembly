@@ -27,9 +27,9 @@
 //!    re-sent verbatim and re-verified; the dedup rejects the replay with 409.
 //! 6. **Persist to audit pipeline** —
 //!    [`audit_mapping::to_audit_entry`] builds an [`aa_core::AuditEntry`] tagged
-//!    with `Lineage::spawned_by_tool = "saas:<provider>"`, then
-//!    `try_send`s it onto [`crate::state::AppState::audit_sender`]. The send
-//!    is non-blocking: 503 on `Full`, 503 on `Closed`, 503 if the sender is
+//!    with `Lineage::spawned_by_tool = "saas:<provider>"`, then emits it via
+//!    [`crate::state::AppState::audit_chain`]'s `try_send`-backed `emit`. The
+//!    send is non-blocking: 503 on `Full`, 503 on `Closed`, 503 if the chain is
 //!    `None` (pipeline unconnected). Success returns 202.
 //!
 //! # Status code summary
@@ -52,7 +52,6 @@ use axum::extract::Path;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Extension;
-use tokio::sync::mpsc::error::TrySendError;
 
 use aa_devtool_saas::parser;
 use aa_devtool_saas::provider::SaasProvider;
@@ -179,23 +178,25 @@ pub async fn saas_webhook(
     }
 
     // 5. Push to the audit pipeline. Non-blocking — backpressure is 503.
-    let Some(sender) = state.audit_sender.as_ref() else {
+    let Some(chain) = state.audit_chain.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE).with_detail("Audit pipeline is not connected"),
         )
             .into_response();
     };
-    let entry = audit_mapping::to_audit_entry(&event);
-    match sender.try_send(entry) {
-        Ok(()) => StatusCode::ACCEPTED.into_response(),
-        Err(TrySendError::Full(_)) => (
+    match chain
+        .emit(|seq, previous_hash| audit_mapping::to_audit_entry(&event, seq, previous_hash))
+        .await
+    {
+        aa_gateway::audit::EmitOutcome::Sent { .. } => StatusCode::ACCEPTED.into_response(),
+        aa_gateway::audit::EmitOutcome::Dropped { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE)
                 .with_detail("Audit pipeline at capacity; retry shortly"),
         )
             .into_response(),
-        Err(TrySendError::Closed(_)) => (
+        aa_gateway::audit::EmitOutcome::Closed { .. } => (
             StatusCode::SERVICE_UNAVAILABLE,
             ProblemDetail::from_status(StatusCode::SERVICE_UNAVAILABLE).with_detail("Audit pipeline is shutting down"),
         )
@@ -247,7 +248,7 @@ mod tests {
         // Wire an audit sender so the first (non-replayed) request reaches 202.
         let mut state = AppState::local_in_memory().expect("state builds");
         let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        state.audit_sender = Some(tx);
+        state.set_audit_chain_from_sender(tx);
 
         let first = saas_webhook(
             Path("claude-ai".to_string()),

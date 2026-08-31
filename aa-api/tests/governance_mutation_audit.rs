@@ -84,7 +84,7 @@ fn agent_with_tenant(id_byte: u8, team: &str, org: &str) -> AgentRecord {
 fn state_with_audit_channel(id_byte: u8) -> (AppState, mpsc::Receiver<AuditEntry>) {
     let mut state = common::test_state_with_auth(AuthMode::On, &[], 1000);
     let (tx, rx) = mpsc::channel::<AuditEntry>(16);
-    state.audit_sender = Some(tx);
+    state.set_audit_chain_from_sender(tx);
     state
         .agent_registry
         .register(agent_with_tenant(id_byte, VERIFIED_TEAM, VERIFIED_ORG))

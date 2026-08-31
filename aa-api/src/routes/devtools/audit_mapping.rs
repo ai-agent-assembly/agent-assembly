@@ -51,10 +51,16 @@ fn label_bytes(label: &str) -> [u8; 16] {
 /// - `payload` is the full serialized [`SaasAuditEvent`] — no fields
 ///   are dropped during normalization.
 /// - `Lineage::spawned_by_tool` carries the provider label for filtering.
-/// - `seq` is `0` and `previous_hash` is zeroed: SaaS webhook events are
-///   not part of any agent's intra-session hash chain. Downstream
-///   consumers must not treat seq as monotonic for these entries.
-pub fn to_audit_entry(event: &SaasAuditEvent) -> AuditEntry {
+/// - `seq`/`previous_hash` are supplied by the caller's shared
+///   `aa_gateway::audit::AuditChain::emit` (AAASM-6020). SaaS webhook
+///   entries chain into the same per-**file** chain as every other
+///   producer writing the local audit log — the chain is per-file, not
+///   per-agent (see `aa_gateway::audit::AuditChain`'s own doc), so `seq` IS
+///   meaningful and monotonic for these entries, same as any other. The
+///   previous doc here claiming otherwise was wrong (it predates
+///   `AuditChain` and reflects the same zero-everywhere bug AAASM-6020
+///   fixes at this call site).
+pub fn to_audit_entry(event: &SaasAuditEvent, seq: u64, previous_hash: [u8; 32]) -> AuditEntry {
     let timestamp_ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -70,13 +76,13 @@ pub fn to_audit_entry(event: &SaasAuditEvent) -> AuditEntry {
     };
 
     AuditEntry::new_with_lineage(
-        0,
+        seq,
         timestamp_ns,
         AuditEventType::ToolCallIntercepted,
         agent_id,
         session_id,
         payload,
-        [0u8; 32],
+        previous_hash,
         lineage,
     )
 }
@@ -100,7 +106,7 @@ mod tests {
     #[test]
     fn claude_ai_event_maps_to_tool_call_intercepted_with_provider_lineage() {
         let event = sample(SaasProvider::ClaudeAi, "evt_1");
-        let entry = to_audit_entry(&event);
+        let entry = to_audit_entry(&event, 0, [0u8; 32]);
         assert_eq!(entry.event_type(), AuditEventType::ToolCallIntercepted);
         assert_eq!(entry.spawned_by_tool(), Some("saas:claude-ai"));
         // agent_id is derived from the provider label — same label, same bytes.
@@ -110,16 +116,16 @@ mod tests {
     #[test]
     fn payload_preserves_full_serialized_event() {
         let event = sample(SaasProvider::ChatGpt, "evt_42");
-        let entry = to_audit_entry(&event);
+        let entry = to_audit_entry(&event, 0, [0u8; 32]);
         let round: SaasAuditEvent = serde_json::from_str(entry.payload()).expect("roundtrips");
         assert_eq!(round, event);
     }
 
     #[test]
     fn different_providers_get_different_agent_ids() {
-        let claude = to_audit_entry(&sample(SaasProvider::ClaudeAi, "e"));
-        let chatgpt = to_audit_entry(&sample(SaasProvider::ChatGpt, "e"));
-        let cursor = to_audit_entry(&sample(SaasProvider::CursorCloud, "e"));
+        let claude = to_audit_entry(&sample(SaasProvider::ClaudeAi, "e"), 0, [0u8; 32]);
+        let chatgpt = to_audit_entry(&sample(SaasProvider::ChatGpt, "e"), 0, [0u8; 32]);
+        let cursor = to_audit_entry(&sample(SaasProvider::CursorCloud, "e"), 0, [0u8; 32]);
         assert_ne!(claude.agent_id(), chatgpt.agent_id());
         assert_ne!(chatgpt.agent_id(), cursor.agent_id());
         assert_ne!(claude.agent_id(), cursor.agent_id());
@@ -127,8 +133,8 @@ mod tests {
 
     #[test]
     fn same_provider_same_event_id_produces_same_session_id() {
-        let a = to_audit_entry(&sample(SaasProvider::CursorCloud, "evt_stable"));
-        let b = to_audit_entry(&sample(SaasProvider::CursorCloud, "evt_stable"));
+        let a = to_audit_entry(&sample(SaasProvider::CursorCloud, "evt_stable"), 0, [0u8; 32]);
+        let b = to_audit_entry(&sample(SaasProvider::CursorCloud, "evt_stable"), 0, [0u8; 32]);
         assert_eq!(a.session_id(), b.session_id());
     }
 }

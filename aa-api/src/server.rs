@@ -402,7 +402,7 @@ pub async fn run_server_with_spa(
     // Enforce, emitting a system-attributed GovernanceMutation audit per revert.
     let _shadow_expiry_handle = crate::reconcile::shadow_expiry_watcher::spawn_shadow_expiry_watcher(
         state.agent_registry.clone(),
-        state.audit_sender.clone(),
+        state.audit_chain.clone(),
     );
 
     // Spawn the MVP alert-rule evaluator (AAASM-1386). AAASM-3369 wires the
