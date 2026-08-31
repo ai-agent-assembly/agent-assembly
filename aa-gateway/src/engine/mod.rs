@@ -2176,10 +2176,17 @@ impl PolicyEngine {
             Ok(()) => None,
             Err(err) => {
                 use crate::budget::types::{BudgetError, BudgetKind};
+                // AAASM-5647 — a degraded tracker has no meaningful daily/monthly
+                // kind to report; give the caller the real reason instead of
+                // coercing it into "daily/monthly budget exceeded".
+                if matches!(err, BudgetError::StateUnavailable) {
+                    return Some("budget state unavailable — degraded on a corrupt or unreadable state file");
+                }
                 let kind = match err {
                     BudgetError::SelfBudgetExhausted { kind } => kind,
                     BudgetError::AncestorBudgetExhausted { kind, .. } => kind,
                     BudgetError::TenantBudgetExhausted { kind, .. } => kind,
+                    BudgetError::StateUnavailable => unreachable!("handled above"),
                 };
                 Some(match kind {
                     BudgetKind::Monthly => "monthly budget exceeded",
