@@ -7,7 +7,7 @@ repository.workspace = true
 description = "HTTP authentication and authorization framework for Agent Assembly — API keys, JWTs, scopes, rate limiting, and the deny-by-default auth gate. Leaf crate with no aa-core/aa-gateway dependency."
 
 [dependencies]
-argon2 = "0.5"
+argon2 = "0.6"
 axum = { workspace = true }
 dashmap = { workspace = true }
 http = { workspace = true }
