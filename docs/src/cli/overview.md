@@ -115,7 +115,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm status`](status.md) | Gateway unreachable, any agent has violations, or storage health probe reports `unavailable`. |
 | [`aasm policy simulate`](policy.md) | The simulation detected policy violations. |
 | [`aasm policy validate`](policy.md), [`aasm config validate`](config.md) | The file is invalid (error printed to stderr). |
-| [`aasm audit verify-chain`](audit.md) | The audit hash chain failed verification. |
+| [`aasm audit verify-chain`](audit.md) | `1` — the audit hash chain failed verification (alteration or removal). `3` — the chain is intact but incomplete (entries lost to emission backpressure, not tamper evidence); see its [three-outcome table](audit.md#aasm-audit-verify-chain). |
 | [`aasm integrations`](integrations.md) | One of **eight** distinct failure outcomes — `1` and `3`–`9` each name a different next action (`2` is left to `clap`). They are the non-zero half of the nine-value `Outcome` vocabulary. See [its exit-code table](integrations.md#exit-codes). |
 
 ## Command groups

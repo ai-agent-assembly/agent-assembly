@@ -75,8 +75,15 @@ aasm audit export --format jsonl --compliance soc2 --since 1d \
 
 ## aasm audit verify-chain
 
-Verify the SHA-256 hash chain of a **local** JSONL audit log file. Exits
-non-zero if the chain is broken (tamper evidence).
+Verify the SHA-256 hash chain of a **local** JSONL audit log file. Reports one
+of three outcomes, each with its own exit code, so a caller never has to
+parse stderr wording to tell a capacity event from tamper evidence:
+
+| Outcome | Meaning | Exit code |
+|---|---|---|
+| `OK` | Every hash matches, every link matches, sequence numbers are contiguous. | `0` |
+| `INCOMPLETE` | Hashes and links are intact, but some sequence numbers never reached the file — entries were lost to emission backpressure or a crash before flush. Every entry present is unaltered; this is **not** tamper evidence. | `3` |
+| `FAIL` | An entry's hash doesn't match its own fields, or a link to the previous entry is broken — alteration or removal. | `1` |
 
 | Argument | Type | Description |
 |---|---|---|
@@ -89,6 +96,28 @@ aasm audit verify-chain ./audit/session-7f3a.jsonl
 ```text
 OK — 412 entries verified
 ```
+
+An `INCOMPLETE` result names the missing sequence range and points to the
+gateway log, where the audit writer logs an `"audit sequence gap"` warning
+the moment it observes one live:
+
+```text
+INCOMPLETE — 408 entries verified, chain intact; 4 entries never reached the
+file at seq 112-115. Every entry present is unaltered: this is emission loss
+(audit backpressure, or a crash before flush), not alteration. Check the
+gateway log for "audit sequence gap".
+```
+
+**Residual gaps this cannot resolve**, so a truthful reading of the output
+still needs them in mind: a *tail* deletion (the last entries in the file
+removed with nothing following to break its link against) reads identically
+to a tail drop — there is no entry after it to prove which happened. A
+*prefix* deletion is similarly invisible, since a chain that legitimately
+resumes mid-sequence after a restart is not itself evidence of loss. And the
+chain is unkeyed (SHA-256, not HMAC): an actor who can write the file can
+recompute it wholesale — `verify-chain` proves the file is internally
+consistent, not that nobody with write access altered it. Keyed signing is
+tracked separately.
 
 ---
 

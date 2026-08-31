@@ -87,9 +87,12 @@ async fn verify_chain_valid() {
     assert_eq!(
         result,
         VerifyResult {
+            outcome: aa_gateway::audit::VerifyOutcome::Verified,
             is_valid: true,
             entries_checked: 5,
             first_invalid: None,
+            missing_seq_ranges: Vec::new(),
+            missing_entries: 0,
         }
     );
 }

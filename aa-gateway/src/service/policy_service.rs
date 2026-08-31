@@ -1,13 +1,13 @@
 //! `PolicyService` tonic trait implementation wiring gRPC RPCs to `PolicyEngine`.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use tokio_stream::Stream;
 
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{broadcast, mpsc};
 use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
@@ -92,10 +92,11 @@ pub struct PolicyServiceImpl {
     db_escalation_scheduler: Option<Arc<DbEscalationScheduler>>,
     routing_store: Option<Arc<RoutingConfigStore>>,
     router: Option<Arc<ApprovalRouter>>,
-    audit_tx: mpsc::Sender<AuditEntry>,
-    audit_drops: Arc<AtomicU64>,
-    seq: AtomicU64,
-    last_hash: Mutex<[u8; 32]>,
+    /// AAASM-5626 — the shared hash-chain head + `seq` counter. Shared with
+    /// `AuditServiceImpl` and the escalation audit task via
+    /// [`Self::with_shared_chain`] so all three producers writing the same
+    /// JSONL file advance one chain instead of three private ones.
+    chain: Arc<crate::audit::AuditChain>,
     /// Optional broadcast sender for secret-detection alerts. When set,
     /// the service publishes a [`SecretAlert`] each time a CheckAction
     /// produces non-empty `credential_findings` (AAASM-1545). `None`
@@ -141,10 +142,7 @@ impl PolicyServiceImpl {
             db_escalation_scheduler: None,
             routing_store: None,
             router: None,
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
@@ -171,10 +169,7 @@ impl PolicyServiceImpl {
             db_escalation_scheduler: None,
             routing_store: None,
             router: None,
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
@@ -203,10 +198,7 @@ impl PolicyServiceImpl {
             db_escalation_scheduler: None,
             routing_store: None,
             router: None,
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
@@ -240,10 +232,7 @@ impl PolicyServiceImpl {
             db_escalation_scheduler: None,
             routing_store,
             router: None,
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
             ops_registry: None,
             ops_publisher: None,
@@ -280,7 +269,19 @@ impl PolicyServiceImpl {
     /// values after a restart, breaking the WORM log's per-entry uniqueness.
     /// Mirrors the `initial_hash` recovery already done for the hash chain.
     pub fn with_initial_seq(self, initial_seq: u64) -> Self {
-        self.seq.store(initial_seq, Ordering::Relaxed);
+        self.chain.set_initial_seq(initial_seq);
+        self
+    }
+
+    /// AAASM-5626 — replace this service's private [`crate::audit::AuditChain`]
+    /// with a shared one, so `PolicyServiceImpl`, `AuditServiceImpl`, and the
+    /// escalation audit task advance one chain head instead of three private
+    /// ones when they write the same JSONL file. Build the shared chain via
+    /// `AuditChain::new(tx, drops, initial_hash, initial_seq)` — seeding both
+    /// together at construction is what lets this replace `with_initial_seq`
+    /// on the production `serve_tcp`/`serve_uds` call sites.
+    pub fn with_shared_chain(mut self, chain: Arc<crate::audit::AuditChain>) -> Self {
+        self.chain = chain;
         self
     }
 
@@ -623,7 +624,6 @@ impl PolicyServiceImpl {
         agent_id_val: AgentId,
         session_id_val: SessionId,
     ) {
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -634,27 +634,27 @@ impl PolicyServiceImpl {
             "approval_id": approval_request_id.to_string(),
         })
         .to_string();
-        let mut last_hash = self.last_hash.lock().await;
-        let entry = AuditEntry::new(
-            seq,
-            now,
-            AuditEventType::ApprovalRouted,
-            agent_id_val,
-            session_id_val,
-            payload,
-            *last_hash,
-        );
-        *last_hash = *entry.entry_hash();
-        drop(last_hash);
-        if let Err(e) = self.audit_tx.try_send(entry) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
-                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::error!("audit channel closed — AuditWriter task has exited");
-                }
+        match self
+            .chain
+            .emit(|seq, previous_hash| {
+                AuditEntry::new(
+                    seq,
+                    now,
+                    AuditEventType::ApprovalRouted,
+                    agent_id_val,
+                    session_id_val,
+                    payload,
+                    previous_hash,
+                )
+            })
+            .await
+        {
+            crate::audit::EmitOutcome::Sent { .. } => {}
+            crate::audit::EmitOutcome::Dropped { seq } => {
+                tracing::warn!(seq, "audit channel full — ApprovalRouted entry dropped");
+            }
+            crate::audit::EmitOutcome::Closed { .. } => {
+                tracing::error!("audit channel closed — AuditWriter task has exited");
             }
         }
     }
@@ -989,7 +989,6 @@ impl PolicyServiceImpl {
         };
 
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
         // AAASM-2008 — resolve the agent's org_id from the registry so the
         // audit entry carries it in the Lineage. Lets `/api/v1/logs?org_id=…`
@@ -1119,8 +1118,6 @@ impl PolicyServiceImpl {
         }
         .to_string();
 
-        let mut last_hash = self.last_hash.lock().await;
-
         // When the credential scanner produced findings, attach them (and the
         // redacted payload) to the audit entry via the redaction-aware constructor.
         // Both fields carry the [REDACTED:<kind>] form only — the raw secret bytes
@@ -1143,34 +1140,37 @@ impl PolicyServiceImpl {
                 redacted_payload: eval.redacted_payload.clone(),
             }
         };
-        let entry = AuditEntry::new_with_lineage_redaction_and_attribution(
-            seq,
-            timestamp_ns,
-            event_type,
-            agent_id,
-            session_id,
-            payload,
-            *last_hash,
-            lineage,
-            redaction,
-            eval.policy_doc_id.clone(),
-        );
 
-        // Update the chain head before sending — even if try_send fails (the entry
-        // is dropped), we advance the chain so subsequent entries don't duplicate
-        // the previous_hash and produce a misleading "valid" chain with a gap.
-        *last_hash = *entry.entry_hash();
-        drop(last_hash);
-
-        if let Err(e) = self.audit_tx.try_send(entry) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(seq, "audit channel full — entry dropped");
-                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::error!("audit channel closed — AuditWriter task has exited");
-                }
+        // AAASM-5626 — `AuditChain::emit` only advances the chain head when
+        // the entry actually reaches the channel, so a dropped entry leaves a
+        // `seq` gap (reported as `Incomplete`, not tamper evidence) instead of
+        // the previous behaviour of advancing the head regardless and leaving
+        // the *next* entry's `previous_hash` pointing at an entry that was
+        // never written (indistinguishable from deletion).
+        match self
+            .chain
+            .emit(|seq, previous_hash| {
+                AuditEntry::new_with_lineage_redaction_and_attribution(
+                    seq,
+                    timestamp_ns,
+                    event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    previous_hash,
+                    lineage,
+                    redaction,
+                    eval.policy_doc_id.clone(),
+                )
+            })
+            .await
+        {
+            crate::audit::EmitOutcome::Sent { .. } => {}
+            crate::audit::EmitOutcome::Dropped { seq } => {
+                tracing::warn!(seq, "audit channel full — entry dropped");
+            }
+            crate::audit::EmitOutcome::Closed { .. } => {
+                tracing::error!("audit channel closed — AuditWriter task has exited");
             }
         }
     }
@@ -1347,7 +1347,6 @@ impl PolicyServiceImpl {
         });
         let session_id = SessionId::from_bytes(convert::hash_to_16(&req.trace_id));
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
         let payload = serde_json::json!({
             "action_type": req.action_type,
@@ -1391,29 +1390,28 @@ impl PolicyServiceImpl {
             }
         };
 
-        let mut last_hash = self.last_hash.lock().await;
-        let entry = AuditEntry::new_with_lineage(
-            seq,
-            timestamp_ns,
-            AuditEventType::A2AImpersonationAttempted,
-            agent_id,
-            session_id,
-            payload,
-            *last_hash,
-            claimed_org_lineage,
-        );
-        *last_hash = *entry.entry_hash();
-        drop(last_hash);
-
-        if let Err(e) = self.audit_tx.try_send(entry) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(seq, "audit channel full — impersonation entry dropped");
-                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::error!("audit channel closed — AuditWriter task has exited");
-                }
+        match self
+            .chain
+            .emit(|seq, previous_hash| {
+                AuditEntry::new_with_lineage(
+                    seq,
+                    timestamp_ns,
+                    AuditEventType::A2AImpersonationAttempted,
+                    agent_id,
+                    session_id,
+                    payload,
+                    previous_hash,
+                    claimed_org_lineage,
+                )
+            })
+            .await
+        {
+            crate::audit::EmitOutcome::Sent { .. } => {}
+            crate::audit::EmitOutcome::Dropped { seq } => {
+                tracing::warn!(seq, "audit channel full — impersonation entry dropped");
+            }
+            crate::audit::EmitOutcome::Closed { .. } => {
+                tracing::error!("audit channel closed — AuditWriter task has exited");
             }
         }
     }

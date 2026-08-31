@@ -714,18 +714,15 @@ async fn shutdown_signal() {
 /// and updates the routing status on the pending approval queue entry.
 fn spawn_escalation_audit_task(
     scheduler: &Option<Arc<EscalationScheduler>>,
-    audit_tx: tokio::sync::mpsc::Sender<AuditEntry>,
+    chain: Arc<crate::audit::AuditChain>,
     approval_queue: Arc<ApprovalQueue>,
 ) {
     let Some(sched) = scheduler else { return };
     let mut rx = sched.subscribe();
     tokio::spawn(async move {
-        let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
-        let mut prev_hash = [0u8; 32];
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -741,17 +738,31 @@ fn spawn_escalation_audit_task(
                     .to_string();
                     let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
                     let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
-                    let entry = AuditEntry::new(
-                        seq,
-                        now,
-                        AuditEventType::ApprovalEscalated,
-                        agent_id,
-                        session_id,
-                        payload,
-                        prev_hash,
-                    );
-                    prev_hash = *entry.entry_hash();
-                    let _ = audit_tx.try_send(entry);
+                    // AAASM-5626 — previously this task kept its own private
+                    // `seq_base`/`prev_hash` pair (seeded at `u64::MAX / 2`,
+                    // never persisted/recovered) and used `let _ =
+                    // audit_tx.try_send(entry)`, so a drop here was never even
+                    // counted. Sharing the same `AuditChain` the RPC services
+                    // use closes both gaps: one real chain per file, and a
+                    // drop here is now visible the same way any other
+                    // producer's drop is.
+                    if let crate::audit::EmitOutcome::Dropped { seq } | crate::audit::EmitOutcome::Closed { seq } =
+                        chain
+                            .emit(|seq, previous_hash| {
+                                AuditEntry::new(
+                                    seq,
+                                    now,
+                                    AuditEventType::ApprovalEscalated,
+                                    agent_id,
+                                    session_id,
+                                    payload,
+                                    previous_hash,
+                                )
+                            })
+                            .await
+                    {
+                        tracing::warn!(seq, "audit channel full or closed — escalation entry dropped");
+                    }
                     // Update the pending approval's routing status so dashboard/CLI
                     // consumers see the escalation reflected immediately.
                     let escalation_ts = now / 1_000_000_000; // ns → s
@@ -878,11 +889,28 @@ pub async fn serve_tcp(
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
+    // AAASM-5626 — one chain shared by every producer writing this file (the
+    // two RPC services below, plus the escalation task): a private head per
+    // producer forks the chain into interleaved, mutually-unverifiable runs.
+    // See `crate::audit::AuditChain`. The constructors below still take
+    // `audit_tx.clone()`/`audit_drops.clone()`/`initial_hash` to build their
+    // own throwaway private chain (keeping every constructor's existing
+    // signature); `.with_shared_chain` immediately replaces it with this one.
+    let audit_chain = Arc::new(crate::audit::AuditChain::new(
+        audit_tx.clone(),
+        Arc::clone(&audit_drops),
+        initial_hash,
+        initial_seq,
+    ));
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+    spawn_escalation_audit_task(
+        &escalation_scheduler,
+        Arc::clone(&audit_chain),
+        Arc::clone(&approval_queue),
+    );
 
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
@@ -905,13 +933,13 @@ pub async fn serve_tcp(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_initial_seq(initial_seq)
+    .with_shared_chain(Arc::clone(&audit_chain))
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
     .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
-        .with_initial_seq(initial_seq);
+        .with_shared_chain(Arc::clone(&audit_chain));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
     // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
@@ -1082,11 +1110,28 @@ pub async fn serve_uds(
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
+    // AAASM-5626 — one chain shared by every producer writing this file (the
+    // two RPC services below, plus the escalation task): a private head per
+    // producer forks the chain into interleaved, mutually-unverifiable runs.
+    // See `crate::audit::AuditChain`. The constructors below still take
+    // `audit_tx.clone()`/`audit_drops.clone()`/`initial_hash` to build their
+    // own throwaway private chain (keeping every constructor's existing
+    // signature); `.with_shared_chain` immediately replaces it with this one.
+    let audit_chain = Arc::new(crate::audit::AuditChain::new(
+        audit_tx.clone(),
+        Arc::clone(&audit_drops),
+        initial_hash,
+        initial_seq,
+    ));
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+    spawn_escalation_audit_task(
+        &escalation_scheduler,
+        Arc::clone(&audit_chain),
+        Arc::clone(&approval_queue),
+    );
 
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
@@ -1109,13 +1154,13 @@ pub async fn serve_uds(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_initial_seq(initial_seq)
+    .with_shared_chain(Arc::clone(&audit_chain))
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
     .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
-        .with_initial_seq(initial_seq);
+        .with_shared_chain(Arc::clone(&audit_chain));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
     // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
