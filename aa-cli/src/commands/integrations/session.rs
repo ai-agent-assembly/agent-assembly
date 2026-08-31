@@ -159,6 +159,14 @@ impl ProcessSpawner {
             // no gateway to talk to and no policy to enforce, and inheriting a
             // stale endpoint would make it log connection failures forever.
             .env("AA_GATEWAY_ENDPOINT", "")
+            // Without this, the health/metrics server inherits the code
+            // default (0.0.0.0:8080) and — before AAASM-5985's bind rule —
+            // served unauthenticated governance-degradation state to the
+            // network. Loopback keeps local diagnostics (`curl
+            // localhost:8080/health`) working without exposing anything
+            // off-host; this runtime has nothing to enforce, so there is no
+            // remote consumer that legitimately needs this address anyway.
+            .env("AA_METRICS_ADDR", "127.0.0.1:8080")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -663,6 +671,35 @@ mod tests {
             envs.iter()
                 .any(|(k, v)| k == "AA_AGENT_ID" && v.as_deref() == Some(AUTOSTART_AGENT_ID)),
             "{envs:?}"
+        );
+    }
+
+    /// AAASM-5985: this spawner's runtime has no gateway and no policy, so
+    /// it has nothing to report that legitimately needs a network-reachable
+    /// address — without this, it inherited the code default
+    /// (`0.0.0.0:8080`) and served unauthenticated governance-degradation
+    /// state to the network.
+    #[test]
+    fn the_autostart_command_binds_health_metrics_to_loopback() {
+        let cmd = ProcessSpawner.command();
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let metrics_addr = envs
+            .iter()
+            .find(|(k, _)| k == "AA_METRICS_ADDR")
+            .and_then(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("AA_METRICS_ADDR must be set explicitly: {envs:?}"));
+        let addr: std::net::SocketAddr = metrics_addr.parse().expect("must be a valid socket address");
+        assert!(
+            addr.ip().is_loopback(),
+            "AA_METRICS_ADDR={metrics_addr} is not loopback"
         );
     }
 }
