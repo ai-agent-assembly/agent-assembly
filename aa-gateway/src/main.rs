@@ -170,7 +170,13 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // is present) so legacy callers get persistence without changing
     // their CLI invocation.
     let cfg = aa_core::config::GatewayConfig::load()?;
-    let storage = aa_gateway::storage::open_sqlite_backend(&cfg.local.storage_path).await?;
+    // Opened as the concrete backend rather than through
+    // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
+    // `ApprovalStore` (AAASM-5657) is a *separate* trait `SqliteBackend`
+    // opts into, so the approval-store handle cannot be recovered from the
+    // erased one. One `Arc` is coerced twice below so both views share a pool.
+    let storage_concrete = aa_gateway::storage::open_sqlite_backend_shared(&cfg.local.storage_path).await?;
+    let storage: Arc<dyn aa_gateway::storage::StorageBackend> = storage_concrete.clone();
 
     let registry = Arc::new(aa_gateway::AgentRegistry::new().with_storage(storage.clone()));
     let restored = registry.rehydrate_from_storage().await?;
@@ -211,6 +217,19 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the approval queue — gateway-owned, shared with the runtime via gRPC.
     let approval_queue = aa_runtime::approval::ApprovalQueue::new();
+
+    // AAASM-5657: back the queue with the same durable file the registry
+    // uses, so a hold this process creates is visible to `aa-api`'s own
+    // queue (and vice versa) instead of only living in this process's
+    // memory. `spawn_storage_sync` reuses `retention_shutdown` — both are
+    // "gateway is shutting down" signals with the same lifetime, so one
+    // token is enough.
+    approval_queue.set_storage(storage_concrete.clone() as Arc<dyn aa_core::storage::ApprovalStore>);
+    let approval_restored = approval_queue.rehydrate_from_storage().await?;
+    if approval_restored > 0 {
+        tracing::info!(approval_restored, "rehydrated pending approvals from durable storage");
+    }
+    approval_queue.spawn_storage_sync(std::time::Duration::from_millis(750), retention_shutdown.clone());
 
     // Create a budget alert broadcast channel shared between the PolicyEngine
     // (sender, via BudgetTracker) and the webhook delivery loop (receiver).

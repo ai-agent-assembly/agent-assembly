@@ -83,6 +83,33 @@ const SCHEMA: &[&str] = &[
         value     REAL NOT NULL,
         labels    TEXT NOT NULL DEFAULT '{}'
     )",
+    // approval_requests — AAASM-5657: the shared queue `aa-gateway` and
+    // `aa-api` both read/write via `ApprovalStore` (see storage::approval)
+    // so a hold created by one is visible to the other. `status`
+    // discriminates pending from resolved, matching `ApprovalLookup`'s
+    // Pending/Resolved split; `fallback_json`/`routing_history_json` are
+    // opaque to this table by design (see aa_core::storage::approval_store).
+    "CREATE TABLE IF NOT EXISTS approval_requests (
+        request_id          TEXT NOT NULL PRIMARY KEY,
+        agent_id             TEXT NOT NULL,
+        action               TEXT NOT NULL,
+        condition_triggered  TEXT NOT NULL,
+        submitted_at         INTEGER NOT NULL,
+        timeout_secs         INTEGER NOT NULL,
+        team_id              TEXT,
+        fallback_json        TEXT NOT NULL,
+        status               TEXT NOT NULL,
+        decided_at           INTEGER,
+        decided_by           TEXT,
+        decision_reason      TEXT,
+        decision_conditions  TEXT NOT NULL DEFAULT '[]',
+        routing_status       TEXT,
+        target_role          TEXT,
+        routed_at            INTEGER,
+        escalate_at          INTEGER,
+        routing_history_json TEXT NOT NULL DEFAULT '[]'
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status)",
 ];
 
 /// Local SQLite backend configuration.
@@ -852,8 +879,10 @@ mod tests {
             ("table", "agent_registry"),
             ("table", "policy_versions"),
             ("table", "metrics"),
+            ("table", "approval_requests"),
             ("index", "idx_audit_agent"),
             ("index", "idx_audit_ts"),
+            ("index", "idx_approval_requests_status"),
         ]
         .into_iter()
         .map(|(t, n)| (t.to_owned(), n.to_owned()))
@@ -878,7 +907,7 @@ mod tests {
         .fetch_one(backend.pool())
         .await
         .expect("count probe");
-        assert_eq!(count, 6, "exactly 4 tables + 2 indexes expected");
+        assert_eq!(count, 8, "exactly 5 tables + 3 indexes expected");
     }
 
     /// Three audit events with distinct agent_ids, timestamps and flags.

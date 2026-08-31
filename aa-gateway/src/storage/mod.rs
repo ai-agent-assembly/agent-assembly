@@ -23,6 +23,7 @@
 //! storage schema from drifting whenever a runtime type grows new fields.
 
 pub mod agent;
+pub mod approval;
 pub mod audit;
 pub mod audit_bridge;
 pub mod backend;
@@ -48,7 +49,7 @@ pub use agent::{AgentFilter, AgentRecord, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
 pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;
-pub use boot::{open_postgres_backend, open_sqlite_backend};
+pub use boot::{open_postgres_backend, open_sqlite_backend, open_sqlite_backend_shared};
 pub use cache::{PolicyCache, PolicyCacheLike, RedisConfig};
 #[cfg(feature = "redis-cache")]
 pub use challenge::RedisChallengeStore;
