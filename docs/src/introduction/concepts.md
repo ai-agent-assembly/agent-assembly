@@ -51,8 +51,11 @@ it, so careless alteration is detectable. Read the guarantee precisely: the chai
 is **tamper-evident, not tamper-proof and not immutable** — it is unkeyed, so it
 is not a signature; it covers the JSONL sink only, and the database mirror stores
 no chain metadata; the log is append-only by convention rather than by
-constraint, since retention pruning deletes rows; and emission is best-effort, so
-a dropped entry is indistinguishable from tampering. Within those bounds it
+constraint, since retention pruning deletes rows; and emission is best-effort —
+`verify-chain` reports a lost entry as `INCOMPLETE`, distinct from `FAIL` for an
+altered or removed one, but a *tail* or *prefix* loss is still indistinguishable
+from a tail/prefix deletion, since there is no following entry to anchor against.
+Within those bounds it
 answers the accountability question for a governed agent: *what did it do, when,
 and was it permitted?* Audit
 records use a single wire format regardless of which enforcement mechanism observed
