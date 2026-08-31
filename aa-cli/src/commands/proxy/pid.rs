@@ -145,6 +145,118 @@ pub fn remove_pid() -> io::Result<()> {
     Ok(())
 }
 
+/// Result of [`kill_process`], distinguishing how the process ended (or
+/// didn't) so a caller can report it honestly rather than a bare bool.
+#[derive(Debug)]
+pub enum KillOutcome {
+    /// No process with this PID existed when we tried to signal it.
+    AlreadyGone,
+    /// Exited on its own after SIGTERM, within the poll window.
+    Terminated,
+    /// Did not exit after SIGTERM within the poll window; SIGKILL was sent
+    /// and accepted by the kernel.
+    Killed,
+    /// A signal send failed for a reason other than "no such process" —
+    /// e.g. `EPERM`. The process may still be running.
+    Failed(io::Error),
+}
+
+/// Terminate `pid` by PID alone (not a process this call owns as a child —
+/// see [`terminate_child`] for that case): SIGTERM, poll for up to 5s for a
+/// clean exit, escalate to SIGKILL if still alive.
+///
+/// Used by `proxy stop`, which only ever has a PID read back from the state
+/// file, not a live [`std::process::Child`] handle.
+#[cfg(unix)]
+pub fn kill_process(pid: u32) -> KillOutcome {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        // ESRCH means the process no longer exists — already gone.
+        return if err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(libc::ESRCH) {
+            KillOutcome::AlreadyGone
+        } else {
+            KillOutcome::Failed(err)
+        };
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let still_alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        if !still_alive {
+            return KillOutcome::Terminated;
+        }
+    }
+
+    // Still alive after 5s — escalate to SIGKILL, and check whether the
+    // kernel actually accepted it rather than assuming success.
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        return if err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(libc::ESRCH) {
+            // Exited between our last poll and this signal — a race, not a
+            // failure.
+            KillOutcome::Terminated
+        } else {
+            KillOutcome::Failed(err)
+        };
+    }
+    KillOutcome::Killed
+}
+
+#[cfg(not(unix))]
+pub fn kill_process(_pid: u32) -> KillOutcome {
+    KillOutcome::Failed(io::Error::other("process termination is only supported on Unix"))
+}
+
+/// Terminate a process this call owns a [`std::process::Child`] handle for:
+/// SIGTERM, poll for up to 5s, escalate to `Child::kill` (SIGKILL) if still
+/// alive, and reap it either way. Returns `true` if the child is confirmed
+/// exited (and reaped) by the time this returns.
+///
+/// Deliberately **not** [`kill_process`] plus a reap: liveness here is
+/// checked via `Child::try_wait`, which correctly observes death the
+/// instant it happens. [`kill_process`]'s signal-0 poll cannot — a signalled
+/// child that only this process could reap stays a zombie (still answers
+/// signal 0) until reaped, so a signal-0-based poll against our own child
+/// would spuriously wait out the entire window and escalate to SIGKILL on
+/// every call, even when SIGTERM alone succeeded (AAASM-5372 review).
+#[cfg(unix)]
+pub fn terminate_child(child: &mut std::process::Child) -> bool {
+    let pid = child.id();
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        if !(err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(libc::ESRCH)) {
+            return false;
+        }
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_status)) => return true,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => break,
+        }
+    }
+
+    // Still alive after 5s — escalate to SIGKILL and reap.
+    match child.kill() {
+        Ok(()) => {
+            let _ = child.wait();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn terminate_child(_child: &mut std::process::Child) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +397,132 @@ mod tests {
             read_state().is_none(),
             "the same record must not satisfy the trust reader"
         );
+    }
+
+    /// AAASM-5372 falsification: a process that is spawned but never reaches
+    /// a state the caller waits for must still be reapable, not left orphaned.
+    ///
+    /// `kill_process` polls liveness via signal 0, which cannot distinguish
+    /// "exited" from "exited but not yet reaped" (a zombie still answers
+    /// signal 0) — accurate for its real caller, `proxy stop`, because the
+    /// target there is never *this* process's own child. To test it
+    /// honestly a *test-owned* child needs a concurrent reaper standing in
+    /// for that real-world "someone else reaps it promptly" fact, or every
+    /// case here would spuriously read as Killed regardless of whether
+    /// SIGTERM was honoured (AAASM-5372 review).
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_terminates_a_live_process_via_sigterm() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        let pid = child.id();
+        let reaper = std::thread::spawn(move || child.wait());
+
+        assert!(
+            matches!(kill_process(pid), KillOutcome::Terminated),
+            "a process that honours SIGTERM should be reported as Terminated, not escalated to SIGKILL"
+        );
+
+        let status = reaper.join().unwrap().expect("killed child should be waitable");
+        assert!(!status.success(), "process should have exited via signal, not cleanly");
+    }
+
+    /// AAASM-5372 review: the SIGKILL escalation path was previously
+    /// untested — `sleep` dies on SIGTERM, so it never exercised it. See
+    /// the concurrent-reaper note on the Terminated-path test above for why
+    /// this needs one too: without it, this case reads as Killed for the
+    /// wrong reason (no one ever reaps it) rather than because SIGTERM was
+    /// actually ignored.
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_escalates_to_sigkill_when_sigterm_is_ignored() {
+        let mut child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ])
+            .spawn()
+            .expect("spawn a SIGTERM-ignoring fixture");
+        let pid = child.id();
+        // Give the interpreter time to actually install the SIG_IGN handler
+        // before signalling — SIGTERM's default disposition (terminate)
+        // still applies during Python's own startup, so a signal sent too
+        // early kills it before signal.signal() ever runs.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let reaper = std::thread::spawn(move || child.wait());
+
+        assert!(
+            matches!(kill_process(pid), KillOutcome::Killed),
+            "a process that ignores SIGTERM must be reported as Killed (SIGKILL escalation)"
+        );
+        let status = reaper.join().unwrap().expect("killed child should be waitable");
+        assert!(!status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_on_an_already_dead_pid_reports_already_gone() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        let _ = child.wait(); // reap it — pid is now free/dead
+
+        assert!(
+            matches!(kill_process(pid), KillOutcome::AlreadyGone),
+            "an already-gone process must be reported as AlreadyGone, not a kill failure"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_child_reaps_a_process_that_honours_sigterm() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        assert!(terminate_child(&mut child), "terminate_child should report success");
+        // Already reaped internally; a second wait must not hang.
+        assert!(child.try_wait().unwrap().is_some(), "child must already be reaped");
+    }
+
+    /// The scenario `terminate_child` exists for: an own-child whose death
+    /// via signal-0 polling (`kill_process`) would be invisible until
+    /// reaped, spuriously waiting out the whole window and escalating every
+    /// time even though SIGTERM alone succeeded.
+    #[cfg(unix)]
+    #[test]
+    fn terminate_child_observes_sigterm_death_without_waiting_out_the_full_window() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        let start = std::time::Instant::now();
+        assert!(terminate_child(&mut child));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "try_wait should observe death well before the 5s SIGKILL escalation deadline, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminate_child_escalates_to_sigkill_when_sigterm_is_ignored() {
+        let mut child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ])
+            .spawn()
+            .expect("spawn a SIGTERM-ignoring fixture");
+        // See the matching note on `kill_process_escalates_to_sigkill_when_sigterm_is_ignored`.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            terminate_child(&mut child),
+            "terminate_child should still succeed via SIGKILL"
+        );
+        assert!(child.try_wait().unwrap().is_some(), "child must be reaped");
     }
 
     #[test]
