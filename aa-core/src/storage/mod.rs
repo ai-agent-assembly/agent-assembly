@@ -31,6 +31,7 @@
 //! migrations; the trait path alone co-mingles every tenant under `SYSTEM_ORG`.
 //! Single-tenant/self-hosted use is unaffected.
 
+mod approval_store;
 mod audit_sink;
 pub mod conformance;
 mod credential_store;
@@ -40,6 +41,7 @@ mod policy_store;
 mod rate_limit_counter;
 mod session_store;
 
+pub use approval_store::{ApprovalDecisionRow, ApprovalRecord, ApprovalRoutingRow, ApprovalStore};
 pub use audit_sink::AuditSink;
 pub use credential_store::CredentialStore;
 pub use error::{Result, StorageError};
