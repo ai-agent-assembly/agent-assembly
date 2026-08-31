@@ -36,6 +36,12 @@ services:
       # SaaS gateway. Leaving AA_GATEWAY_ENDPOINT unset keeps it standalone.
       AA_POLICY_PATH: "/etc/aa/policy.toml"
       # AA_METRICS_ADDR: "0.0.0.0:8080"   # default shown for reference
+      # Health/metrics is unauthenticated and reports which enforcement
+      # layers are degraded — AAASM-5985's bind rule refuses a non-loopback
+      # bind unless the operator opts in explicitly, which this example does
+      # deliberately: the `ports: "8080:8080"` mapping below only works if
+      # the process inside the container binds a non-loopback address.
+      AA_METRICS_ALLOW_REMOTE: "1"
     volumes:
       - aa-runtime-socket:/tmp            # socket path hardcoded to /tmp/aa-runtime-<agent_id>.sock
       - ../policy.toml:/etc/aa/policy.toml:ro   # local enforcement policy (see ../policy.toml)

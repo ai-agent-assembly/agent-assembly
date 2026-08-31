@@ -79,7 +79,11 @@ pub struct RuntimeConfig {
 
     /// Bind address for the health/metrics HTTP server.
     ///
-    /// Read from `AA_METRICS_ADDR`. Defaults to `"0.0.0.0:8080"`.
+    /// Read from `AA_METRICS_ADDR`. Defaults to `"0.0.0.0:8080"`. A
+    /// non-loopback value is refused at bind time
+    /// (`runtime::check_metrics_bind_addr`) unless `AA_METRICS_ALLOW_REMOTE=1`
+    /// (AAASM-5985) — this field carries the configured value, not the
+    /// value actually bound.
     pub metrics_addr: String,
 
     /// Path to the policy file used for request enforcement.
@@ -195,7 +199,7 @@ impl RuntimeConfig {
     /// | `AA_PIPELINE_BATCH_SIZE` | `usize` | `100` |
     /// | `AA_PIPELINE_FLUSH_INTERVAL_MS` | `u64` | `100` |
     /// | `AA_PIPELINE_BROADCAST_CAPACITY` | `usize` | `1_024` |
-    /// | `AA_METRICS_ADDR` | `String` | `"0.0.0.0:8080"` |
+    /// | `AA_METRICS_ADDR` | `String` | `"0.0.0.0:8080"` (non-loopback refused without `AA_METRICS_ALLOW_REMOTE=1`, AAASM-5985) |
     /// | `AA_POLICY_PATH` | `Option<PathBuf>` | `Some("/etc/aa/policy.toml")` |
     /// | `AA_GATEWAY_ENDPOINT` | `Option<String>` | `None` |
     /// | `AA_CORRELATION_WINDOW_MS` | `u64` | `5_000` |

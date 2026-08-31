@@ -970,6 +970,41 @@ fn spawn_ipc_server(
 
 /// Spawn the health/metrics HTTP server task, binding to the configured
 /// `metrics_addr` and serving until the cancellation token fires.
+/// Refuses a non-loopback health/metrics bind unless the operator has
+/// explicitly opted in via `AA_METRICS_ALLOW_REMOTE=1` (AAASM-5985).
+///
+/// Mirrors the bind rule the product already applies to `aa-proxy`
+/// (`aa_proxy::config::check_bind_addr`, AAASM-5348) — a non-loopback bind
+/// must be a deliberate choice, not silently inherited from a default meant
+/// for a different deployment shape. This is a narrower version: the health
+/// server carries no live traffic and no TLS termination, so there is no
+/// "protections configured" check to reuse, only the opt-in itself. The
+/// `/health` and `/metrics` payload names which enforcement layers are
+/// degraded and why — governance posture, not a version string — which is
+/// exactly the kind of pre-attack reconnaissance AAASM-5348 already decided
+/// a bind rule should gate.
+///
+/// Loopback stays unconditionally allowed: it is reachable only by local
+/// processes on the same host, which already have far stronger access to
+/// this information (the environment, the binary, the config file) than
+/// this HTTP response provides.
+fn check_metrics_bind_addr(addr: std::net::SocketAddr) -> Result<(), String> {
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    let allow_remote = std::env::var("AA_METRICS_ALLOW_REMOTE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if allow_remote {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing non-loopback health/metrics bind {addr} — set AA_METRICS_ALLOW_REMOTE=1 \
+         to opt in (AAASM-5985); this endpoint has no authentication and discloses which \
+         enforcement layers are degraded"
+    ))
+}
+
 fn spawn_health_server(
     tracker: &TaskTracker,
     config: &RuntimeConfig,
@@ -980,6 +1015,10 @@ fn spawn_health_server(
         .metrics_addr
         .parse()
         .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
+    if let Err(refusal) = check_metrics_bind_addr(addr) {
+        tracing::error!(%refusal, "health server not started");
+        return;
+    }
     tracker.spawn(async move {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -1278,6 +1317,45 @@ mod tests {
         let policy = super::load_policy(&Some(tmp.path().to_path_buf()));
         assert_eq!(policy.rules.len(), 1);
         assert_eq!(policy.rules[0].name, "test-rule");
+    }
+
+    /// Loopback is unconditionally allowed regardless of the opt-in — it is
+    /// reachable only by local processes, which already have stronger access
+    /// than this endpoint provides.
+    #[test]
+    fn check_metrics_bind_addr_allows_loopback_without_opt_in() {
+        let mut env = EnvGuard::new();
+        env.unset("AA_METRICS_ALLOW_REMOTE");
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert!(super::check_metrics_bind_addr(addr).is_ok());
+    }
+
+    /// AAASM-5985: the exact reproduced finding — a non-loopback bind with
+    /// no opt-in must be refused. Falsification: deleting the `is_loopback`
+    /// short-circuit above would make this fail (loopback would also refuse,
+    /// contradicting the assertion above), and deleting the opt-in check
+    /// below would make the opt-in test below fail — this test alone cannot
+    /// be satisfied by a rule that refuses everything or allows everything.
+    #[test]
+    fn check_metrics_bind_addr_refuses_non_loopback_without_opt_in() {
+        let mut env = EnvGuard::new();
+        env.unset("AA_METRICS_ALLOW_REMOTE");
+        let addr: std::net::SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        let err = super::check_metrics_bind_addr(addr).expect_err("must refuse");
+        assert!(
+            err.contains("AA_METRICS_ALLOW_REMOTE"),
+            "refusal should name the opt-in: {err}"
+        );
+    }
+
+    /// An explicit opt-in permits the same bind the previous test refused.
+    #[test]
+    fn check_metrics_bind_addr_allows_non_loopback_with_explicit_opt_in() {
+        let mut env = EnvGuard::new();
+        env.set("AA_METRICS_ALLOW_REMOTE", "1");
+        let addr: std::net::SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(super::check_metrics_bind_addr(addr).is_ok());
+        env.unset("AA_METRICS_ALLOW_REMOTE");
     }
 
     /// Verifies the structured concurrency primitives drain cleanly under load.
