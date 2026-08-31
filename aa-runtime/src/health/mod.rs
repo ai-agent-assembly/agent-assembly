@@ -146,13 +146,30 @@ impl ProtectionReport {
             })
             .collect();
 
-        // This router carries no authentication layer and `AA_METRICS_ADDR`
-        // defaults to `0.0.0.0:8080`, which the reference compose file
-        // publishes to the host — so everything below is reachable by anyone
-        // who can reach the port. The exact build (e.g. `0.0.1-rc.7`) is a
-        // fingerprinting aid: it tells an unauthenticated caller precisely
-        // which advisories apply. The release *series* keeps the payload
-        // legible for the public trust surface without naming the build.
+        // This router carries no authentication layer of its own — anyone who
+        // can reach the bound address gets this response, no credential
+        // required. AAASM-5985's bind rule (`check_metrics_bind_addr` in
+        // `runtime.rs`) is what actually limits *who can reach it*: loopback
+        // is always allowed (local processes already have stronger access to
+        // this host than this endpoint provides), and a non-loopback bind is
+        // refused unless the deployment explicitly opts in via
+        // `AA_METRICS_ALLOW_REMOTE=1` — the published self-host example does,
+        // deliberately, because its `ports: 8080:8080` mapping requires it.
+        // A deployment that opts in is choosing to publish this to whatever
+        // network that bind reaches, with full knowledge of what it contains
+        // (this comment, and the field-level reasoning below).
+        //
+        // Given that bind-time gate, the content here is judged acceptable to
+        // disclose to anyone who reaches it: the exact build (e.g.
+        // `0.0.1-rc.7`) is still withheld — it is a fingerprinting aid that
+        // tells an unauthenticated caller precisely which advisories apply,
+        // narrower and more valuable than "some control is degraded" — but
+        // `degraded_layers`/`basis`/`detail` are not narrowed further
+        // (AAASM-4793's standard applies per-field, not as a blanket "narrow
+        // everything new"): the alternative to disclosing *why* a layer is
+        // degraded is an operator with no diagnostic signal at all, and the
+        // gate above already limits the audience to loopback or an explicit
+        // opt-in, not to the general network by default.
         //
         // The filesystem paths in `detail` deliberately stay: a well-known
         // default socket path is not a secret, and the path *is* the evidence
