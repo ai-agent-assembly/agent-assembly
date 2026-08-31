@@ -614,6 +614,15 @@ fi
             )
         });
 
+        // AAASM-6018: the proxy child pid becoming visible (`wait_for_pid_alive`
+        // above) is an earlier, weaker signal than the tool having actually
+        // finished writing its dump — a one-shot read here raced that gap and
+        // flaked under CI load exactly the way AAASM-6012 already documented
+        // for the other scenarios in this file that read `host.dump`.
+        assert!(
+            wait_for_file_readable(&host.dump, PROXY_CHILD_PATIENCE),
+            "the launched tool never wrote its environment dump within the patience window",
+        );
         let raw = std::fs::read_to_string(&host.dump)
             .unwrap_or_else(|e| panic!("the launched tool wrote no environment dump ({e})"));
         let seen = parse_dump(&raw);
