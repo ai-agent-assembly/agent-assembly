@@ -464,18 +464,31 @@ impl ApprovalQueue {
     /// its own storage should still be able to hold approvals for itself.
     pub async fn submit_persisted(self: &Arc<Self>, request: ApprovalRequest) -> (ApprovalRequestId, ApprovalFuture) {
         if let Some(store) = self.storage.get() {
-            let record = ApprovalRecord {
-                request_id: request.request_id.to_string(),
-                agent_id: request.agent_id.clone(),
-                action: request.action.clone(),
-                condition_triggered: request.condition_triggered.clone(),
-                submitted_at: request.submitted_at,
-                timeout_secs: request.timeout_secs,
-                team_id: request.team_id.clone(),
-                fallback_json: serde_json::to_string(&request.fallback).unwrap_or_default(),
-            };
-            if let Err(e) = store.insert_pending(&record).await {
-                tracing::warn!(error = %e, request_id = %request.request_id, "failed to persist approval request");
+            // Serialization failure here is distinct from — and logged
+            // separately from — a deserialization failure on the read side
+            // (`ingest_row`'s "corrupt persisted fallback"): an empty
+            // fallback_json written here would otherwise surface there as a
+            // misleading "corrupt" report when the actual cause was this
+            // write never producing valid JSON in the first place.
+            match serde_json::to_string(&request.fallback) {
+                Ok(fallback_json) => {
+                    let record = ApprovalRecord {
+                        request_id: request.request_id.to_string(),
+                        agent_id: request.agent_id.clone(),
+                        action: request.action.clone(),
+                        condition_triggered: request.condition_triggered.clone(),
+                        submitted_at: request.submitted_at,
+                        timeout_secs: request.timeout_secs,
+                        team_id: request.team_id.clone(),
+                        fallback_json,
+                    };
+                    if let Err(e) = store.insert_pending(&record).await {
+                        tracing::warn!(error = %e, request_id = %request.request_id, "failed to persist approval request");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, request_id = %request.request_id, "failed to serialize approval fallback — not persisted");
+                }
             }
         }
         self.submit(request)
