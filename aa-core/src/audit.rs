@@ -983,9 +983,13 @@ impl GovernanceMutationAudit {
     /// scoping applies to operator actions exactly as it does to agent events;
     /// the actor, reason, and before/after live in the JSON payload.
     ///
-    /// `seq` / `previous_hash` are supplied by the caller (or `0` / `[0u8; 32]`
-    /// when the entry is emitted onto a channel that re-sequences downstream,
-    /// matching the existing aa-api dispatch pattern).
+    /// `seq` / `previous_hash` must come from the caller's shared
+    /// `aa_gateway::audit::AuditChain::emit` — there is no downstream
+    /// re-sequencing. Passing `0` / `[0u8; 32]` from more than one call
+    /// produces entries that `AuditWriter::verify_chain` reports as
+    /// `Tampered` as soon as a second one is written (AAASM-6020; the prior
+    /// claim of downstream re-chaining, matching an "existing aa-api
+    /// dispatch pattern" that itself had the same bug, was false).
     pub fn to_audit_entry(
         &self,
         seq: u64,
