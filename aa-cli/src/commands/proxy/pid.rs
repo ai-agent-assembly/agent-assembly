@@ -145,6 +145,43 @@ pub fn remove_pid() -> io::Result<()> {
     Ok(())
 }
 
+/// Terminate `pid`: SIGTERM, poll for up to 5s for a clean exit, escalate to
+/// SIGKILL if it is still alive. Returns `true` if the process is confirmed
+/// gone (including "was already not running") by the time this returns.
+///
+/// Shared by `proxy stop` and `proxy start`'s port-wait-timeout path
+/// (AAASM-5372): a proxy that never bound its listen port but was
+/// nonetheless spawned still holds an installed CA trust-store leaf and any
+/// injected provider credentials — leaving it running because the caller
+/// only cared about the port is what orphans it.
+#[cfg(unix)]
+pub fn kill_process(pid: u32) -> bool {
+    let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    if ret != 0 {
+        let err = io::Error::last_os_error();
+        // ESRCH means the process no longer exists — already gone.
+        return err.kind() == io::ErrorKind::NotFound || err.raw_os_error() == Some(libc::ESRCH);
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let still_alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
+        if !still_alive {
+            return true;
+        }
+    }
+
+    // Still alive after 5s — escalate to SIGKILL.
+    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+    true
+}
+
+#[cfg(not(unix))]
+pub fn kill_process(_pid: u32) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +321,39 @@ mod tests {
         assert!(
             read_state().is_none(),
             "the same record must not satisfy the trust reader"
+        );
+    }
+
+    /// AAASM-5372 falsification: a process that is spawned but never reaches
+    /// a state the caller waits for must still be reapable, not left orphaned.
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_terminates_a_live_process() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep 30");
+        let pid = child.id();
+
+        assert!(kill_process(pid), "kill_process should report success");
+
+        // A killed-but-unreaped child is a zombie, which still answers
+        // `kill(pid, 0)` — `wait()` is the only reliable "is it really gone"
+        // check, and it also reaps the zombie so the test doesn't leak one.
+        let status = child.wait().expect("killed child should be waitable");
+        assert!(!status.success(), "process should have exited via signal, not cleanly");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_process_on_an_already_dead_pid_reports_success() {
+        let mut child = std::process::Command::new("true").spawn().expect("spawn true");
+        let pid = child.id();
+        let _ = child.wait(); // reap it — pid is now free/dead
+
+        assert!(
+            kill_process(pid),
+            "an already-gone process should not be reported as a kill failure"
         );
     }
 
