@@ -248,10 +248,24 @@ Test-only. Not a real release sign-off.
 
 Verdict: PASS
 QASIGNOFF
-    cat > docs/release/security-signoff/v0.0.1-fx.md <<'SECSIGNOFF'
+    # R1's classifier deliberately excludes docs/release/{qa,security}-signoff/
+    # from its "mechanical, tolerated post-candidate" allowance (AAASM-5998
+    # adversarial review) — a sign-off file must already be in its FINAL form
+    # AT candidate_sha, or R1 blocks it as an EXECUTABLE post-candidate change.
+    # That means a security sign-off cannot contain the literal hash of the
+    # very commit that introduces it (unknowable before that commit exists —
+    # the same quine ADR 0037 avoids for evidence.json by using ancestor
+    # tolerance instead of self-reference). The Candidate SHA field (AAASM-6017)
+    # therefore names an EARLIER, already-known real commit — the repo's own
+    # pre-existing base commit — and R11 checks ancestor-or-equal against the
+    # QA evidence's candidate_sha, not byte-equality.
+    BASE_SHA="$(git rev-parse HEAD)"
+    cat > docs/release/security-signoff/v0.0.1-fx.md <<SECSIGNOFF
 # Synthetic security sign-off fixture
 
 Test-only. Not a real release sign-off.
+
+- **Candidate SHA:** $BASE_SHA
 
 ## Verdict
 
@@ -552,6 +566,34 @@ add_real_evidence "$FIXDIR_DISAGREE/repo"
   CHECK_EXIT=$?
   if [ "$CHECK_EXIT" -ne 0 ]; then pass "checker refuses when the sign-off's verdict was amended after evidence was finalized (finalizer/verifier disagreement)"; else fail "checker should have refused a post-finalization sign-off amendment: $CHECK_OUT"; fi
   echo "$CHECK_OUT" | grep -qE 'R7' && pass "the refusal cites R7 (sign-off consistency)" || fail "refusal did not cite R7: $CHECK_OUT"
+)
+
+# Sub-case (l2): QA candidate != security candidate (AAASM-6017) — the
+# security sign-off's Candidate SHA is rewritten to name a real commit that
+# is NOT an ancestor of (nor equal to) QA's evidence.candidate_sha — here,
+# the evidence-add commit itself (a strict DESCENDANT of the real candidate,
+# i.e. security claims to have reviewed further than QA actually verified).
+# Both sign-offs still say Verdict: PASS, so R7 alone sees nothing wrong —
+# this is exactly the gap R11 exists to close: QA and security must have
+# reviewed the SAME (or an ancestor) revision, not merely both said PASS.
+FIXDIR_XCANDIDATE="$WORK/fx45-xcandidate"
+setup_fixture_repo "$FIXDIR_XCANDIDATE"
+add_real_evidence "$FIXDIR_XCANDIDATE/repo"
+(
+  cd "$FIXDIR_XCANDIDATE/repo"
+  DESCENDANT_SHA="$(cat "$WORK/B_SHA")"  # the evidence-add commit — a real descendant of the true candidate
+  sed -i.bak "s/^- \*\*Candidate SHA:\*\* .*/- **Candidate SHA:** $DESCENDANT_SHA/" \
+    docs/release/security-signoff/v0.0.1-fx.md && rm -f docs/release/security-signoff/v0.0.1-fx.md.bak
+  git add -A
+  git commit -qm "test: security sign-off claims a candidate QA's evidence never verified"
+  CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version 0.0.1-fx --tag-target HEAD 2>&1)"
+  CHECK_EXIT=$?
+  if [ "$CHECK_EXIT" -ne 0 ]; then pass "checker refuses when the security sign-off's Candidate SHA is not an ancestor of QA's candidate_sha (R11, AAASM-6017)"; else fail "checker should have refused a QA/security candidate mismatch: $CHECK_OUT"; fi
+  echo "$CHECK_OUT" | grep -qE 'R11' && pass "the refusal cites R11 (security sign-off candidate binding)" || fail "refusal did not cite R11: $CHECK_OUT"
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -ne 0 ]; then pass "guard also refuses a QA/security candidate mismatch (not just the standalone checker)"; else fail "guard should have refused a QA/security candidate mismatch: $GUARD_OUT"; fi
+  if git rev-parse -q --verify refs/tags/v0.0.1-fx >/dev/null; then fail "guard must not create the tag on a QA/security candidate mismatch"; else pass "no local tag created on the QA/security candidate mismatch"; fi
 )
 
 # Sub-case (m): reuse the SAME candidate after a BLOCK — the emitter must
