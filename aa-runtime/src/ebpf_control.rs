@@ -171,30 +171,59 @@ pub(crate) fn use_inprocess_load() -> bool {
 }
 
 /// Load + lower the eBPF policy document referenced by `AA_EBPF_POLICY_PATH`,
-/// or an empty rule set when unset/unreadable.
+/// or an empty rule set when unset.
 ///
-/// An empty rule set is safe: an empty path map imposes no in-kernel blocklist
-/// and an empty syscall allowlist keeps the guard unplanned (see
-/// [`plan_control_ops`]). Lowering reuses the single canonical
-/// [`lower_to_ebpf`] pipeline the gateway uses, so the kernel layer is generated
-/// from the same policy source — never hand-maintained.
-pub(crate) fn load_ebpf_ruleset() -> EbpfRuleSet {
+/// An empty rule set from an *unset* path is safe and not a degradation:
+/// nothing was planned, so nothing degraded. A *set* path that is unreadable
+/// or fails to parse is different — a policy was planned and could not be
+/// honoured — and is reported via `broadcast_tx`/`degraded_layers`
+/// (AAASM-5647); see [`load_ruleset_from_path`].
+pub(crate) fn load_ebpf_ruleset(
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    degraded_layers: &mut Vec<String>,
+) -> EbpfRuleSet {
     let Some(path) = std::env::var_os(POLICY_PATH_ENV)
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
     else {
         return EbpfRuleSet::default();
     };
-    match std::fs::read_to_string(&path) {
+    load_ruleset_from_path(&path, broadcast_tx, degraded_layers)
+}
+
+/// Load + lower the eBPF policy document at `path`, degrading `"ebpf/policy"`
+/// on read or parse failure instead of silently falling back to an empty
+/// rule set (AAASM-5647). Split out of [`load_ebpf_ruleset`] so tests can
+/// exercise a failure without mutating the process-global `AA_EBPF_POLICY_PATH`.
+///
+/// An empty rule set is safe on success: an empty path map imposes no
+/// in-kernel blocklist and an empty syscall allowlist keeps the guard
+/// unplanned (see [`plan_control_ops`]). Lowering reuses the single canonical
+/// [`lower_to_ebpf`] pipeline the gateway uses, so the kernel layer is
+/// generated from the same policy source — never hand-maintained.
+pub(crate) fn load_ruleset_from_path(
+    path: &std::path::Path,
+    broadcast_tx: &tokio::sync::broadcast::Sender<crate::pipeline::PipelineEvent>,
+    degraded_layers: &mut Vec<String>,
+) -> EbpfRuleSet {
+    match std::fs::read_to_string(path) {
         Ok(yaml) => match PolicyDocument::from_yaml(&yaml) {
             Ok(doc) => lower_to_ebpf(&doc),
             Err(e) => {
-                tracing::warn!(error = %e, path = %path.display(), "eBPF policy parse failed — using empty rule set");
+                let reason = format!(
+                    "planned=enforced achieved=degraded_empty: eBPF policy at {} failed to parse ({e})",
+                    path.display()
+                );
+                degrade(broadcast_tx, degraded_layers, "ebpf/policy", reason);
                 EbpfRuleSet::default()
             }
         },
         Err(e) => {
-            tracing::warn!(error = %e, path = %path.display(), "eBPF policy unreadable — using empty rule set");
+            let reason = format!(
+                "planned=enforced achieved=degraded_empty: eBPF policy at {} unreadable ({e})",
+                path.display()
+            );
+            degrade(broadcast_tx, degraded_layers, "ebpf/policy", reason);
             EbpfRuleSet::default()
         }
     }
@@ -368,7 +397,7 @@ pub(crate) async fn drive_ebpf_layer(
     use aa_ebpf::control::client::LoaderControlClient;
 
     let socket = resolve_loaderd_socket();
-    let ruleset = load_ebpf_ruleset();
+    let ruleset = load_ebpf_ruleset(broadcast_tx, degraded_layers);
     let confine_pid = confine_pid();
     // Observe-only probe sets are scoped to the runtime process (and, for exec,
     // its descendants) exactly as the former in-process path was.
@@ -512,5 +541,111 @@ mod tests {
             resolve_loaderd_socket(),
             std::path::PathBuf::from(DEFAULT_LOADERD_SOCKET)
         );
+    }
+
+    // AAASM-5647: a set-but-unusable eBPF policy path must degrade "ebpf/policy";
+    // an unset path (nothing planned) must stay silent. `load_ruleset_from_path`
+    // is exercised directly with a tempfile so these tests don't mutate the
+    // process-global AA_EBPF_POLICY_PATH env var.
+
+    /// Minimal on-disk YAML (see `aa-security/src/policy/parse.rs`'s `raw::Spec`
+    /// schema) that lowers to a non-empty ruleset: a syscall allowlist.
+    fn valid_policy_yaml() -> &'static str {
+        "syscalls:\n  allow: [read, write, close, exit]\n"
+    }
+
+    #[test]
+    fn unreadable_policy_path_degrades_ebpf_policy() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let mut degraded = Vec::new();
+        let missing = std::env::temp_dir().join("aaasm-5647-does-not-exist.yaml");
+
+        let ruleset = load_ruleset_from_path(&missing, &tx, &mut degraded);
+
+        assert_eq!(ruleset, EbpfRuleSet::default());
+        assert_eq!(degraded, vec!["ebpf/policy".to_string()]);
+        match rx.try_recv().expect("a degradation event was broadcast") {
+            crate::pipeline::PipelineEvent::LayerDegradation(info) => {
+                assert_eq!(info.layer, "ebpf/policy");
+                assert!(info.reason.starts_with("planned="), "reason: {}", info.reason);
+                assert!(info.reason.contains("achieved="), "reason: {}", info.reason);
+            }
+            other => panic!("expected LayerDegradation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparsable_policy_path_degrades_ebpf_policy() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let mut degraded = Vec::new();
+        let dir = std::env::temp_dir().join(format!("aaasm-5647-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let path = dir.join("bad-policy.yaml");
+        std::fs::write(&path, "not: [valid, policy: yaml").expect("write bad yaml");
+
+        let ruleset = load_ruleset_from_path(&path, &tx, &mut degraded);
+
+        assert_eq!(ruleset, EbpfRuleSet::default());
+        assert_eq!(degraded, vec!["ebpf/policy".to_string()]);
+        match rx.try_recv().expect("a degradation event was broadcast") {
+            crate::pipeline::PipelineEvent::LayerDegradation(info) => {
+                assert_eq!(info.layer, "ebpf/policy");
+                assert!(info.reason.starts_with("planned="), "reason: {}", info.reason);
+            }
+            other => panic!("expected LayerDegradation, got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Negative control: a *valid* policy at a *readable* path must lower to a
+    /// non-empty ruleset and must NOT degrade — proves the pair above is
+    /// testing failure handling, not a function that always emits.
+    #[test]
+    fn valid_policy_path_lowers_without_degrading() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let mut degraded = Vec::new();
+        let dir = std::env::temp_dir().join(format!("aaasm-5647-ok-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tempdir");
+        let path = dir.join("good-policy.yaml");
+        std::fs::write(&path, valid_policy_yaml()).expect("write valid yaml");
+
+        let ruleset = load_ruleset_from_path(&path, &tx, &mut degraded);
+
+        assert_ne!(
+            ruleset,
+            EbpfRuleSet::default(),
+            "a valid policy must lower to a non-empty ruleset"
+        );
+        assert!(degraded.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Negative control: an unset `AA_EBPF_POLICY_PATH` planned nothing, so
+    /// `load_ebpf_ruleset` must stay silent — the env-unset arm predates
+    /// AAASM-5647 and must not start emitting a degradation.
+    #[test]
+    fn unset_policy_env_var_does_not_degrade() {
+        // SAFETY: single test owns this var for its duration; no other test
+        // in this module reads/writes AA_EBPF_POLICY_PATH.
+        unsafe {
+            std::env::remove_var(POLICY_PATH_ENV);
+        }
+        let (tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let mut degraded = Vec::new();
+
+        let ruleset = load_ebpf_ruleset(&tx, &mut degraded);
+
+        assert_eq!(ruleset, EbpfRuleSet::default());
+        assert!(degraded.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
     }
 }
