@@ -2,10 +2,10 @@
 //!
 //! [`AuditWriter`]: crate::audit::AuditWriter
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
 use aa_core::identity::{AgentId, SessionId};
@@ -22,10 +22,9 @@ use crate::service::convert;
 /// gRPC service implementation wiring `ReportEvents` / `StreamEvents` to the
 /// audit writer channel.
 pub struct AuditServiceImpl {
-    audit_tx: mpsc::Sender<AuditEntry>,
-    audit_drops: Arc<AtomicU64>,
-    seq: AtomicU64,
-    last_hash: Mutex<[u8; 32]>,
+    /// AAASM-5626 — the shared hash-chain head + `seq` counter. See
+    /// `PolicyServiceImpl::chain` for why this is shared rather than private.
+    chain: Arc<crate::audit::AuditChain>,
     registry: Option<Arc<AgentRegistry>>,
 }
 
@@ -36,10 +35,7 @@ impl AuditServiceImpl {
     /// or the last persisted hash to continue an existing chain.
     pub fn new(audit_tx: mpsc::Sender<AuditEntry>, audit_drops: Arc<AtomicU64>, initial_hash: [u8; 32]) -> Self {
         Self {
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             registry: None,
         }
     }
@@ -53,12 +49,16 @@ impl AuditServiceImpl {
         registry: Arc<AgentRegistry>,
     ) -> Self {
         Self {
-            audit_tx,
-            audit_drops,
-            seq: AtomicU64::new(0),
-            last_hash: Mutex::new(initial_hash),
+            chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             registry: Some(registry),
         }
+    }
+
+    /// AAASM-5626 — see `PolicyServiceImpl::with_shared_chain`.
+    #[must_use]
+    pub fn with_shared_chain(mut self, chain: Arc<crate::audit::AuditChain>) -> Self {
+        self.chain = chain;
+        self
     }
 
     /// Seed the audit `seq` counter so sequence numbers continue monotonically
@@ -73,7 +73,7 @@ impl AuditServiceImpl {
     /// `initial_hash` recovery for the hash chain.
     #[must_use]
     pub fn with_initial_seq(self, initial_seq: u64) -> Self {
-        self.seq.store(initial_seq, Ordering::Relaxed);
+        self.chain.set_initial_seq(initial_seq);
         self
     }
 
@@ -83,7 +83,6 @@ impl AuditServiceImpl {
     /// Returns the event_id on success, or the event_id even if the entry was dropped.
     async fn ingest_event(&self, event: &AuditEvent) -> String {
         let event_id = event.event_id.clone();
-        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
 
         // agent_id_bytes: hash of just the agent_id string (existing AuditEntry convention).
         let agent_id_bytes = event
@@ -156,31 +155,28 @@ impl AuditServiceImpl {
             })
             .unwrap_or_default();
 
-        let mut last_hash = self.last_hash.lock().await;
-
-        let entry = AuditEntry::new_with_lineage(
-            seq,
-            timestamp_ns,
-            event_type,
-            agent_id,
-            session_id,
-            payload,
-            *last_hash,
-            lineage,
-        );
-
-        *last_hash = *entry.entry_hash();
-        drop(last_hash);
-
-        if let Err(e) = self.audit_tx.try_send(entry) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(seq, "audit channel full — event dropped");
-                    self.audit_drops.fetch_add(1, Ordering::Relaxed);
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::error!("audit channel closed — AuditWriter task has exited");
-                }
+        match self
+            .chain
+            .emit(|seq, previous_hash| {
+                AuditEntry::new_with_lineage(
+                    seq,
+                    timestamp_ns,
+                    event_type,
+                    agent_id,
+                    session_id,
+                    payload,
+                    previous_hash,
+                    lineage,
+                )
+            })
+            .await
+        {
+            crate::audit::EmitOutcome::Sent { .. } => {}
+            crate::audit::EmitOutcome::Dropped { seq } => {
+                tracing::warn!(seq, "audit channel full — event dropped");
+            }
+            crate::audit::EmitOutcome::Closed { .. } => {
+                tracing::error!("audit channel closed — AuditWriter task has exited");
             }
         }
 
