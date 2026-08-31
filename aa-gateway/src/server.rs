@@ -36,7 +36,7 @@ use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::NoopAuditSink;
 use crate::budget::persistence::{
-    default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer, start_window_flush_task,
+    default_budget_path, save_to_disk_atomic, start_background_writer, start_window_flush_task,
 };
 use crate::budget::{BudgetAlert, BudgetTracker, BudgetWindow};
 use tokio_util::sync::CancellationToken;
@@ -336,19 +336,20 @@ fn read_global_doc_yaml(dir: &Path) -> String {
 /// [`BudgetTracker`] pre-populated with the restored spend totals, and
 /// return it wrapped in `Arc` alongside the budget file path.
 ///
-/// Falls back to an empty tracker if the file is missing or corrupt.
-fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAlert>) -> (Arc<BudgetTracker>, PathBuf) {
+/// A missing file is a normal empty budget. A *corrupt or unreadable* file
+/// degrades the tracker instead (AAASM-5647, `load_or_degrade`) — every
+/// budget check fails closed until the file is repaired or removed, and a
+/// [`aa_runtime::pipeline::PipelineEvent::LayerDegradation`] is broadcast on
+/// `degradation_tx` so the failure is observable, not just a `tracing::warn!`
+/// line. A silent zero-spend reset is not acceptable for a spend control.
+fn setup_budget(
+    policy_path: &Path,
+    budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: &broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
+) -> (Arc<BudgetTracker>, PathBuf) {
     let budget_path = default_budget_path();
 
-    let persisted = load_from_disk(&budget_path).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load budget state, starting fresh");
-        crate::budget::persistence::PersistedBudget {
-            per_agent: vec![],
-            team_budgets: Default::default(),
-            global: crate::budget::types::BudgetState::new_today(),
-            timezone: chrono_tz::UTC,
-        }
-    });
+    let (persisted, degraded) = crate::budget::persistence::load_or_degrade(&budget_path, degradation_tx);
 
     // Extract limits and rollover window from the policy YAML so the tracker
     // enforces them. For a cascade directory (AAASM-3499) the limits live in
@@ -419,9 +420,13 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
             "budget sub-day rollover window configured"
         );
     }
-    let tracker = Arc::new(tracker);
+    let tracker = Arc::new(tracker.degraded(degraded));
 
-    tracing::info!(path = %budget_path.display(), "budget state loaded");
+    if degraded {
+        tracing::error!(path = %budget_path.display(), "budget state degraded — every check will deny until repaired");
+    } else {
+        tracing::info!(path = %budget_path.display(), "budget state loaded");
+    }
 
     (tracker, budget_path)
 }
@@ -832,10 +837,16 @@ pub async fn serve_tcp(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
-    let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx, &degradation_tx);
+    // AAASM-5647 — a degraded tracker's corrupt/unreadable file is left in
+    // place for an operator to inspect and repair; overwriting it with the
+    // background writer's synthetic (empty) snapshot would turn "degraded
+    // until reconciled" into "degraded forever, evidence destroyed".
+    let _budget_writer =
+        (!tracker.is_degraded()).then(|| start_background_writer(Arc::clone(&tracker), budget_path.clone()));
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     // AAASM-5440 — the projection is attached before the engine is shared, so
@@ -1032,10 +1043,14 @@ pub async fn serve_uds(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
-    let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx, &degradation_tx);
+    // AAASM-5647 — see `serve_tcp`: preserve a degraded state file for
+    // reconciliation instead of overwriting it with an empty snapshot.
+    let _budget_writer =
+        (!tracker.is_degraded()).then(|| start_background_writer(Arc::clone(&tracker), budget_path.clone()));
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     // AAASM-5440 — the same wiring `serve_tcp` performs; see
