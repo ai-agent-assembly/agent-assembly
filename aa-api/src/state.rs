@@ -564,9 +564,19 @@ impl AppState {
                 })?;
             }
         }
-        let registry_storage = aa_gateway::storage::open_sqlite_backend(&registry_db_path)
+        // Opened as the concrete backend rather than through
+        // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
+        // `ApprovalStore` (AAASM-5657) is a *separate* trait `SqliteBackend`
+        // opts into, the same way `SensitiveDataProjection` below is — the
+        // approval-store handle cannot be recovered from the erased one.
+        // One `Arc` is coerced twice so the registry and the approval queue
+        // share this same durable file, which is also the file
+        // `aa-gateway`'s own `main.rs` opens (AAASM-5657 PR2) — that shared
+        // file is the actual bridge between the two processes' queues.
+        let registry_storage_concrete = aa_gateway::storage::open_sqlite_backend_shared(&registry_db_path)
             .await
             .map_err(|e| LocalStateError::Storage(format!("{e}")))?;
+        let registry_storage: Arc<dyn aa_gateway::storage::StorageBackend> = registry_storage_concrete.clone();
         let registry = Arc::new(AgentRegistry::new().with_storage(registry_storage));
         let restored = registry
             .rehydrate_from_storage()
@@ -581,6 +591,38 @@ impl AppState {
         }
 
         let mut state = Self::local_in_memory_with_registry(registry)?;
+
+        // AAASM-5657: back the approval queue with the same durable file so
+        // a hold this process creates (or settles) is visible to
+        // `aa-gateway`'s own queue, and vice versa, instead of only living
+        // in this process's memory.
+        state
+            .approval_queue
+            .set_storage(registry_storage_concrete.clone() as Arc<dyn aa_core::storage::ApprovalStore>);
+        let approval_restored = state
+            .approval_queue
+            .rehydrate_from_storage()
+            .await
+            .map_err(|e| LocalStateError::Storage(format!("approval rehydrate failed: {e}")))?;
+        if approval_restored > 0 {
+            tracing::info!(approval_restored, "rehydrated pending approvals from durable storage");
+        }
+        // A fresh, unshared token — nothing outside this spawn can ever call
+        // `.cancel()` on it, unlike `aa-gateway`'s own equivalent wiring,
+        // which reuses a token another subsystem already holds. Accepted
+        // rather than threading a shutdown handle through `AppState` (which
+        // has no such handle today) for one background task: the shipped
+        // `serve_local` entrypoint builds exactly one `AppState` for the
+        // process's lifetime, so "runs until the process exits" is the
+        // intended behaviour, not a leak. In the test harness, each
+        // `#[tokio::test]` builds and tears down its own `tokio::Runtime`;
+        // tearing it down aborts every task spawned on it, including this
+        // one — so repeated `local_hardened_at` calls across tests do not
+        // accumulate live background tasks either.
+        state.approval_queue.spawn_storage_sync(
+            std::time::Duration::from_millis(750),
+            tokio_util::sync::CancellationToken::new(),
+        );
 
         // --- Rate limiting: honour AA_RATE_LIMIT_RPM in the live limiter. ---
         // `local_in_memory` hard-codes 1000; the shipped binary resolves the

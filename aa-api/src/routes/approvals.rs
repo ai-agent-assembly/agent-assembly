@@ -435,13 +435,18 @@ pub async fn approve_action(
         conditions,
     };
 
-    state.approval_queue.decide(uuid, decision).map_err(|e| match e {
-        ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
-            .with_detail(format!("Approval request has already been decided: {id}")),
-        ApprovalError::NotFound => {
-            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
-        }
-    })?;
+    // AAASM-5657: `_persisted` so this decision is visible to any other
+    // process (e.g. aa-gateway) sharing the durable approval store.
+    state
+        .approval_queue
+        .decide_persisted(uuid, decision)
+        .await
+        .map_err(|e| match e {
+            ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
+                .with_detail(format!("Approval request has already been decided: {id}")),
+            ApprovalError::NotFound => ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("Approval request not found: {id}")),
+        })?;
 
     Ok((
         StatusCode::OK,
@@ -491,13 +496,18 @@ pub async fn reject_action(
         reason,
     };
 
-    state.approval_queue.decide(uuid, decision).map_err(|e| match e {
-        ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
-            .with_detail(format!("Approval request has already been decided: {id}")),
-        ApprovalError::NotFound => {
-            ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Approval request not found: {id}"))
-        }
-    })?;
+    // AAASM-5657: `_persisted` so this decision is visible to any other
+    // process (e.g. aa-gateway) sharing the durable approval store.
+    state
+        .approval_queue
+        .decide_persisted(uuid, decision)
+        .await
+        .map_err(|e| match e {
+            ApprovalError::AlreadyDecided => ProblemDetail::from_status(StatusCode::CONFLICT)
+                .with_detail(format!("Approval request has already been decided: {id}")),
+            ApprovalError::NotFound => ProblemDetail::from_status(StatusCode::NOT_FOUND)
+                .with_detail(format!("Approval request not found: {id}")),
+        })?;
 
     Ok((
         StatusCode::OK,
