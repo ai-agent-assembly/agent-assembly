@@ -55,7 +55,7 @@ async fn the_rest_surface_sees_and_can_decide_a_row_it_never_saw_submitted() {
             .expect("seed insert should succeed");
     }
 
-    let state = AppState::local_hardened_at(LocalAuth::Off, registry_db_path)
+    let state = AppState::local_hardened_at(LocalAuth::Off, registry_db_path.clone())
         .await
         .expect("local_hardened_at should build");
     let app = aa_api::server::build_app(state);
@@ -85,5 +85,26 @@ async fn the_rest_surface_sees_and_can_decide_a_row_it_never_saw_submitted() {
         response.status(),
         StatusCode::OK,
         "approving a row this process never submitted must still succeed"
+    );
+
+    // The 200 alone proves the endpoint accepted the request, not that
+    // decide_persisted actually wrote anything — verify through a third,
+    // independent connection to the same file that the decision is really
+    // durable, not just applied to the in-process queue.
+    let verify = SqliteBackend::open(&SqliteConfig { path: registry_db_path })
+        .await
+        .expect("reopen the shared file");
+    let rows = verify
+        .list_resolved_for(&[seed_id.to_string()])
+        .await
+        .expect("list_resolved_for should succeed");
+    assert_eq!(rows.len(), 1, "the decision must be durable in the shared file");
+    assert_eq!(rows[0].status, "approved");
+    assert_eq!(rows[0].decided_by, "operator");
+
+    let still_pending = verify.list_pending().await.expect("list_pending should succeed");
+    assert!(
+        still_pending.is_empty(),
+        "the resolved row must no longer read back as pending"
     );
 }

@@ -607,6 +607,18 @@ impl AppState {
         if approval_restored > 0 {
             tracing::info!(approval_restored, "rehydrated pending approvals from durable storage");
         }
+        // A fresh, unshared token — nothing outside this spawn can ever call
+        // `.cancel()` on it, unlike `aa-gateway`'s own equivalent wiring,
+        // which reuses a token another subsystem already holds. Accepted
+        // rather than threading a shutdown handle through `AppState` (which
+        // has no such handle today) for one background task: the shipped
+        // `serve_local` entrypoint builds exactly one `AppState` for the
+        // process's lifetime, so "runs until the process exits" is the
+        // intended behaviour, not a leak. In the test harness, each
+        // `#[tokio::test]` builds and tears down its own `tokio::Runtime`;
+        // tearing it down aborts every task spawned on it, including this
+        // one — so repeated `local_hardened_at` calls across tests do not
+        // accumulate live background tasks either.
         state.approval_queue.spawn_storage_sync(
             std::time::Duration::from_millis(750),
             tokio_util::sync::CancellationToken::new(),
