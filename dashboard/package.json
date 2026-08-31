@@ -25,7 +25,7 @@
   "dependencies": {
     "@hookform/resolvers": "^5.5.7",
     "@monaco-editor/react": "^4.7.0",
-    "@tanstack/react-query": "^5.101.4",
+    "@tanstack/react-query": "^5.102.8",
     "@tanstack/react-table": "^9.1.1",
     "@types/d3-hierarchy": "^3.1.7",
     "d3-force": "^3.0.0",
