@@ -861,7 +861,10 @@ impl PolicyServiceImpl {
         )
         .await;
 
-        let (_id, future) = queue.submit(approval_req);
+        // AAASM-5657: `_persisted` so a hold this process creates is visible
+        // to aa-api's own queue (and vice versa) rather than only living in
+        // this process's memory.
+        let (_id, future) = queue.submit_persisted(approval_req).await;
 
         // AC2: persist structured routing metadata on the in-flight queue entry
         // so operators and the escalation event stream can observe the routing outcome.
