@@ -12,6 +12,7 @@
 - **Version:** v<version>
 - **Release type:** patch | minor | major
 - **Previous tag:** v<prev-version>
+- **Candidate SHA:** <commit-sha this review actually covers (usually `git rev-parse HEAD` at review time) — must be an ancestor of, or equal to, the QA evidence's `candidate.candidate_sha`; enforced by `check-release-evidence.py` R11 (AAASM-6017). Not necessarily this commit's own hash — a sign-off file must already be unchanged as of `candidate_sha` (R1), so it names the commit reviewed, not the commit that introduces this file.>
 - **Reviewer:** <name>
 - **Date:** <YYYY-MM-DD>
 

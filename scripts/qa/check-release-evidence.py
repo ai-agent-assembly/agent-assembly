@@ -984,6 +984,62 @@ def rule_r7_signoff_consistency(
 
 
 # ---------------------------------------------------------------------------
+# R11 — security sign-off candidate binding (AAASM-6017)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_SHA_LINE_RE = re.compile(r"^-\s*\*\*Candidate SHA:\*\*\s*(\S+)", re.M)
+
+
+def rule_r11_security_candidate_binding(
+    git: GitRepo, evidence: dict[str, Any], security_signoff_text: str, security_signoff_path: str,
+) -> list[str]:
+    """R7 only compares the two files' `Verdict:` lines — it never asks whether
+    the security reviewer looked at the SAME commit QA verified. Without this,
+    a security sign-off produced against an unrelated (or not-yet-verified)
+    commit still reaches PASS as long as both verdict lines happen to say
+    PASS, which is exactly the "QA candidate != Security candidate" gap the
+    release-identity invariant forbids (AAASM-6017, found during AAASM-5998
+    reconciliation).
+
+    Checks ancestor-or-equal, not byte-equality: R1's classifier deliberately
+    excludes sign-off files from "mechanical, tolerated post-candidate"
+    changes (they must already be final AT candidate_sha), so a sign-off
+    cannot contain the literal hash of the commit that first introduces it —
+    the same quine ADR 0037 avoids for evidence.json via ancestor tolerance
+    rather than self-reference. The security Candidate SHA therefore names
+    the (earlier, already-known) commit actually reviewed; it must be an
+    ancestor of, or equal to, the QA-verified candidate — never a sibling/
+    unrelated commit, and never a DESCENDANT (security claiming to have
+    reviewed further than QA actually verified).
+    """
+    if not security_signoff_text:
+        # R7 already blocks on a missing file; don't double-report.
+        return []
+
+    match = _CANDIDATE_SHA_LINE_RE.search(security_signoff_text)
+    if match is None:
+        return [
+            f"R11: {security_signoff_path} has no '**Candidate SHA:**' line — cannot "
+            "confirm the security review covered the same commit QA verified"
+        ]
+
+    security_candidate_sha = match.group(1)
+    qa_candidate_sha = evidence["candidate"]["candidate_sha"]
+    if security_candidate_sha == qa_candidate_sha:
+        return []
+    # is_ancestor uses `check=False`, so an invalid/unknown SHA (not just a
+    # real-but-wrong one) also cleanly returns False here rather than raising.
+    if not git.is_ancestor(security_candidate_sha, qa_candidate_sha):
+        return [
+            f"R11: {security_signoff_path}'s Candidate SHA ({security_candidate_sha}) is not "
+            f"an ancestor of (or equal to) the QA evidence's candidate_sha ({qa_candidate_sha}) "
+            "— QA and security did not verify the same revision"
+        ]
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # R8 — derived-table consistency (AAASM-5900)
 # ---------------------------------------------------------------------------
 
@@ -1438,6 +1494,16 @@ def main() -> int:
         evidence, qa_signoff_text, security_signoff_text, qa_signoff_path, security_signoff_path,
     )
     all_blocks += r7_blocks
+
+    r11_blocks = rule_r11_security_candidate_binding(
+        git, evidence, security_signoff_text, security_signoff_path,
+    )
+    all_blocks += r11_blocks
+    if r11_blocks:
+        print(f"R11 security candidate binding: BLOCK — {len(r11_blocks)} violation(s)")
+    elif security_signoff_text:
+        print("R11 security candidate binding: OK — security sign-off's Candidate SHA "
+              "matches the QA evidence's candidate_sha")
 
     r8_blocks = rule_r8_derived_table(evidence, qa_signoff_text, qa_signoff_path)
     all_blocks += r8_blocks

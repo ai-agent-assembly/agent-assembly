@@ -100,6 +100,16 @@ EOF
   cat > "$dir/sonar-project.properties" <<'EOF'
 sonar.projectKey=test-fixture
 EOF
+  # Committed here (not left for the case's own "baseline" commit) so
+  # write_signoffs below has an already-existing commit to name as the
+  # security sign-off's Candidate SHA (AAASM-6017, R11) — a sign-off cannot
+  # contain the hash of the commit that first introduces it (R1 requires it
+  # unchanged as of candidate_sha, so it can't self-reference a not-yet-
+  # computed hash), so it names this earlier root commit instead. R11 checks
+  # ancestor-or-equal, and this root commit is a real ancestor of every
+  # case's later "baseline" commit (which is what --candidate-sha is set to).
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m "fixture: common files"
 }
 
 # $1 dir, $2 catalog yaml body (written verbatim to qa/golden-journeys.yaml)
@@ -110,11 +120,27 @@ write_catalog() {
 }
 
 # $1 dir, $2 qa sign-off md body, $3 security sign-off md body
+#
+# Appends a Candidate SHA line naming the dir's current HEAD (the root
+# commit write_common_files already made) to every security sign-off body —
+# doing it here, once, means the many call sites below that share a single
+# literal $SECURITY_SIGNOFF_PASS-style string never need their own copy
+# (AAASM-6017, R11). A dir with no commit yet (a case that doesn't call
+# write_common_files first) gets no line appended, same as before this
+# change — such a case's security-signoff-consuming assertions, if any,
+# were not R11-shaped to begin with.
 write_signoffs() {
   local dir="$1" qa_body="$2" security_body="$3"
   mkdir -p "$dir/docs/release/qa-signoff" "$dir/docs/release/security-signoff"
   printf '%s\n' "$qa_body" > "$dir/docs/release/qa-signoff/v$VERSION.md"
-  printf '%s\n' "$security_body" > "$dir/docs/release/security-signoff/v$VERSION.md"
+  local root_sha
+  root_sha="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$root_sha" ]; then
+    printf '%s\n\n- **Candidate SHA:** %s\n' "$security_body" "$root_sha" \
+      > "$dir/docs/release/security-signoff/v$VERSION.md"
+  else
+    printf '%s\n' "$security_body" > "$dir/docs/release/security-signoff/v$VERSION.md"
+  fi
 }
 
 commit_all() {
@@ -934,7 +960,7 @@ T7_HEAD="$(git -C "$REAL_REPO_ROOT" rev-parse HEAD)"
 # Every required (release_blocking, non-retired) journey in the REAL catalog
 # gets a PASS row — this is a fixture sign-off, not a real verification —
 # so R2/R3 have a fully-admissible required set to reconcile against.
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" <<'PYEOF'
+python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -973,7 +999,13 @@ Verdict: PASS
 with open(f"{repo_root}/docs/release/qa-signoff/v{version}.md", "w") as f:
     f.write(qa_md)
 with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
-    f.write("## Verdict\n\nVerdict: PASS\n")
+    # AAASM-6017 (R11): must name the exact candidate the fresh evidence
+    # below is generated for. Safe to be this real checkout's own current
+    # HEAD verbatim (not merely an ancestor) — these T7/T7b fixture files
+    # are never committed (`rm -f` cleans them up below), so R1's "sign-off
+    # files must be unchanged since candidate_sha" classifier sees no diff
+    # at all between the (identical) candidate_sha and tag_target here.
+    f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
 python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \
@@ -1015,7 +1047,7 @@ rm -f "${T7_FIXTURES[@]}"
 echo "== T7b: check 14 on a marker-less sign-off — R8 SKIPPED must be visible in the pass line =="
 T7_FIXTURES=("$T7_QA_SIGNOFF" "$T7_SEC_SIGNOFF" "$T7_EVIDENCE")
 
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" <<'PYEOF'
+python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -1054,7 +1086,13 @@ Verdict: PASS
 with open(f"{repo_root}/docs/release/qa-signoff/v{version}.md", "w") as f:
     f.write(qa_md)
 with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
-    f.write("## Verdict\n\nVerdict: PASS\n")
+    # AAASM-6017 (R11): must name the exact candidate the fresh evidence
+    # below is generated for. Safe to be this real checkout's own current
+    # HEAD verbatim (not merely an ancestor) — these T7/T7b fixture files
+    # are never committed (`rm -f` cleans them up below), so R1's "sign-off
+    # files must be unchanged since candidate_sha" classifier sees no diff
+    # at all between the (identical) candidate_sha and tag_target here.
+    f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
 python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \
