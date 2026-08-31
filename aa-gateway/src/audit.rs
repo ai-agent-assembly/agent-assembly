@@ -84,6 +84,24 @@ impl AuditChain {
         }
     }
 
+    /// Lock `state`, recovering from poisoning instead of propagating the
+    /// panic.
+    ///
+    /// AAASM-5626 review: this `Mutex` is now shared across every producer
+    /// writing one file (previously each producer held its own private
+    /// lock), so a panic inside one producer's `build` closure — the only
+    /// code that runs while this lock is held — must not poison the shared
+    /// lock for every *other* producer's subsequent `emit` calls. `next_seq`/
+    /// `last_hash` are plain data with no invariant a panic mid-`build` could
+    /// leave inconsistent: `next_seq` is already advanced by the time `build`
+    /// runs (correct either way — a panicked entry is exactly as unsent as a
+    /// dropped one, and `seq` is consumed unconditionally for both), and
+    /// `last_hash` is only ever written *after* `build` returns, so it is
+    /// simply left unchanged. Recovering the guard is safe.
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, ChainState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Re-seed the `seq` counter, leaving the hash-chain head untouched.
     ///
     /// Test-compatibility seam for callers that construct a service with
@@ -93,7 +111,7 @@ impl AuditChain {
     /// pass both `initial_hash` and `initial_seq` to [`Self::new`] together
     /// instead.
     pub fn set_initial_seq(&self, initial_seq: u64) {
-        self.state.lock().expect("audit chain mutex poisoned").next_seq = initial_seq;
+        self.lock_state().next_seq = initial_seq;
     }
 
     /// Assign the next `seq`/`previous_hash`, build the entry via `build`,
@@ -104,7 +122,7 @@ impl AuditChain {
     where
         F: FnOnce(u64, [u8; 32]) -> AuditEntry,
     {
-        let mut state = self.state.lock().expect("audit chain mutex poisoned");
+        let mut state = self.lock_state();
         let seq = state.next_seq;
         // Consumed unconditionally: a lost entry must leave a visible seq
         // gap, not be silently reused by the next entry.
