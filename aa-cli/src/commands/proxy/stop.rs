@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use super::pid;
+use super::pid::{self, KillOutcome};
 
 pub fn dispatch() -> ExitCode {
     let Some((proxy_pid, addr)) = pid::read_pid() else {
@@ -12,14 +12,27 @@ pub fn dispatch() -> ExitCode {
 
     #[cfg(unix)]
     {
-        let killed = pid::kill_process(proxy_pid);
-        let _ = pid::remove_pid();
-        if killed {
-            println!("Proxy stopped (was listening on {addr}).");
-            ExitCode::SUCCESS
-        } else {
-            eprintln!("error: could not stop proxy (PID {proxy_pid})");
-            ExitCode::FAILURE
+        match pid::kill_process(proxy_pid) {
+            KillOutcome::AlreadyGone => {
+                let _ = pid::remove_pid();
+                println!("Proxy (PID {proxy_pid}) was already not running.");
+                ExitCode::SUCCESS
+            }
+            KillOutcome::Terminated => {
+                let _ = pid::remove_pid();
+                println!("Proxy stopped (was listening on {addr}).");
+                ExitCode::SUCCESS
+            }
+            KillOutcome::Killed => {
+                eprintln!("warning: proxy did not exit cleanly within 5s; sending SIGKILL");
+                let _ = pid::remove_pid();
+                println!("Proxy killed.");
+                ExitCode::SUCCESS
+            }
+            KillOutcome::Failed(err) => {
+                eprintln!("error: could not stop PID {proxy_pid}: {err}");
+                ExitCode::FAILURE
+            }
         }
     }
 

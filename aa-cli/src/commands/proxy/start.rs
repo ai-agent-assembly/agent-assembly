@@ -319,7 +319,7 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         cmd.process_group(0);
     }
 
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: failed to spawn aa-proxy from {}: {e}", binary.display());
@@ -340,8 +340,11 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         // The process was spawned (and may already have installed a CA
         // trust-store leaf / injected provider credentials) even though it
         // never bound its listen port — leaving it running here would orphan
-        // it with no PID file left to find it by (AAASM-5372).
-        let killed = pid::kill_process(child_pid);
+        // it with no PID file left to find it by (AAASM-5372). Terminated
+        // (not `pid::kill_process`) because this is our own child: it can
+        // observe death via `try_wait` instead of a signal-0 poll that stays
+        // blind to a zombie until reaped, and it leaves nothing to reap.
+        let killed = pid::terminate_child(&mut child);
         let _ = pid::remove_pid();
         eprintln!(
             "error: aa-proxy did not bind to {} within 5s.\nCheck logs: {}",
