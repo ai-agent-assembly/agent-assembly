@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Args;
 
-use aa_gateway::audit::AuditWriter;
+use aa_gateway::audit::{AuditWriter, VerifyOutcome};
 
 /// Arguments for `aasm audit verify-chain`.
 #[derive(Debug, Args)]
@@ -15,26 +15,56 @@ pub struct VerifyChainArgs {
 }
 
 /// Execute `aasm audit verify-chain`.
+///
+/// AAASM-5626 — three outcomes, three exit codes, so a caller (human or
+/// script) never has to parse stderr wording to tell a capacity event
+/// (`Incomplete`, exit 3) from tamper evidence (`Tampered`, exit 1). Exit 2
+/// is reserved for clap's own usage errors, per this repo's CLI exit-code
+/// convention (docs/src/cli/integrations.md).
 pub fn run(args: VerifyChainArgs) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     match rt.block_on(AuditWriter::verify_chain(&args.path)) {
-        Ok(result) if result.is_valid => {
-            println!("OK — {} entries verified", result.entries_checked);
-            ExitCode::SUCCESS
-        }
-        Ok(result) => {
-            eprintln!(
-                "FAIL — hash chain broken at entry {} ({} entries checked)",
-                result.first_invalid.unwrap_or(0),
-                result.entries_checked,
-            );
-            ExitCode::FAILURE
-        }
+        Ok(result) => match result.outcome {
+            VerifyOutcome::Verified => {
+                println!("OK — {} entries verified", result.entries_checked);
+                ExitCode::SUCCESS
+            }
+            VerifyOutcome::Incomplete => {
+                eprintln!(
+                    "INCOMPLETE — {} entries verified, chain intact; {} entries never reached \
+                     the file at seq {}. Every entry present is unaltered: this is emission loss \
+                     (audit backpressure, or a crash before flush), not alteration. Check the \
+                     gateway log for \"audit sequence gap\".",
+                    result.entries_checked,
+                    result.missing_entries,
+                    format_ranges(&result.missing_seq_ranges),
+                );
+                ExitCode::from(3)
+            }
+            VerifyOutcome::Tampered => {
+                eprintln!(
+                    "FAIL — hash chain broken at entry {} ({} entries checked)",
+                    result.first_invalid.unwrap_or(0),
+                    result.entries_checked,
+                );
+                ExitCode::FAILURE
+            }
+        },
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+/// Render inclusive `(start, end)` ranges as `"a-b, c-c"` for the CLI's
+/// human-readable INCOMPLETE message.
+fn format_ranges(ranges: &[(u64, u64)]) -> String {
+    ranges
+        .iter()
+        .map(|(start, end)| format!("{start}-{end}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
