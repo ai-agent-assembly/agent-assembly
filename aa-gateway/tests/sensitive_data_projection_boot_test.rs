@@ -148,3 +148,93 @@ async fn a_configured_but_unopenable_database_fails_the_boot() {
         "the boot error does not name the subsystem that failed: {error}"
     );
 }
+
+/// A database left over from a build that predates a column this build reads
+/// and writes is a boot failure too (AAASM-5788), not a silent no-op.
+///
+/// `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a stale
+/// `sensitive_data_events` table — created here by hand with one column
+/// missing — would otherwise pass `migrate` unchanged and fail later, on
+/// whichever read or write first touches the missing column, far from the
+/// boot that actually caused it.
+#[tokio::test]
+async fn a_database_with_a_stale_table_shape_fails_the_boot() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db = dir.path().join("projection.db");
+
+    // Pre-create a `sensitive_data_events` table missing only `reason_codes`
+    // — the last column `PROJECTION_TABLES` declares — simulating a table
+    // built before that column existed. Every other column is present, so a
+    // real "one release behind" table, not a wildly different shape: the
+    // point is that a *single* missing column is enough to fail the boot,
+    // and that the failure names that column rather than surfacing SQLite's
+    // raw "no such column" error from an index statement instead (the bug
+    // this fixture regression-tests — `PROJECTION_INDEXES` names a different
+    // column, `occurred_at_ns`, which this fixture keeps present). A direct
+    // pool, not `SqliteBackend`, since `SqliteBackend::pool()` is
+    // crate-internal to `aa-gateway`.
+    {
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rwc", db.display()))
+            .await
+            .expect("open a fresh database file");
+        sqlx::query(
+            "CREATE TABLE sensitive_data_events (
+                schema_version_major      INTEGER NOT NULL,
+                schema_version_minor      INTEGER NOT NULL,
+                event_id                  TEXT    NOT NULL,
+                occurred_at_ns            INTEGER NOT NULL,
+                ingested_at_ns            INTEGER NOT NULL,
+                org_id                    TEXT    NOT NULL,
+                tenant_id                 TEXT    NOT NULL,
+                team_id                   TEXT,
+                acting_agent_id           TEXT    NOT NULL,
+                root_agent_id             TEXT    NOT NULL,
+                parent_agent_id           TEXT,
+                delegation_depth          INTEGER NOT NULL,
+                session_id                TEXT,
+                trace_id                  TEXT,
+                request_id                TEXT,
+                correlation_id            TEXT,
+                operation                 TEXT    NOT NULL,
+                destination_kind          TEXT    NOT NULL,
+                destination_id            TEXT    NOT NULL,
+                trust_zone                TEXT    NOT NULL,
+                direction                 TEXT    NOT NULL,
+                policy_document_id        TEXT,
+                policy_version            INTEGER,
+                matched_rule_ids          TEXT    NOT NULL,
+                inspected_field_paths     TEXT    NOT NULL,
+                verdict                   TEXT    NOT NULL,
+                enforcement_point         TEXT    NOT NULL,
+                transmission_evidence     TEXT    NOT NULL,
+                enforcement_mode          TEXT    NOT NULL,
+                inspection_failure_path   TEXT    NOT NULL,
+                severity                  TEXT,
+                confidence                TEXT,
+                method                    TEXT,
+                status                    TEXT,
+                event_count               INTEGER NOT NULL,
+                blocked_event_count       INTEGER NOT NULL,
+                finding_count             INTEGER NOT NULL,
+                blocked_finding_count     INTEGER NOT NULL,
+                transformed_finding_count INTEGER NOT NULL,
+                finding_count_by_category TEXT    NOT NULL,
+                PRIMARY KEY (org_id, tenant_id, event_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create the stale-shape fixture table");
+        pool.close().await;
+    }
+
+    std::env::set_var(SENSITIVE_DATA_PROJECTION_DB_ENV, &db);
+
+    let Err(error) = attach_sensitive_data_projection(engine()).await else {
+        panic!("a stale table shape must not boot quietly");
+    };
+    assert!(
+        error.to_string().contains("reason_codes"),
+        "the boot error does not name the missing column: {error}"
+    );
+}
