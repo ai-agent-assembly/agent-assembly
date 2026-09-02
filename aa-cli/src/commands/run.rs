@@ -4671,6 +4671,37 @@ mod tests {
         );
     }
 
+    /// AAASM-5777: proves `spawn_and_wait` carries launch state that was
+    /// never on the old field-by-field copy list (program, args, cwd —
+    /// see AAASM-5327/5329/5706), by exercising a field outside that list:
+    /// stdio. Under the pre-fix code (`tokio::process::Command::new(program)`
+    /// + `.args()` + explicit `current_dir`), stdio was never carried across
+    /// either, so the child's stdout went to the test harness's own stdout
+    /// and the redirected file stayed empty — this test would have failed
+    /// against that code (confirmed by temporarily reverting the fix and
+    /// running it). With the whole command moved via `From`, there is no
+    /// copy list for a field like this to fall off of.
+    #[tokio::test]
+    async fn spawn_and_wait_carries_launch_state_no_field_list_would_have_copied() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("stdout.txt");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("printf aa-stdio-reached");
+        cmd.stdout(std::fs::File::create(&out).expect("create redirect target"));
+
+        let code = spawn_and_wait(cmd, &HashMap::new(), true)
+            .await
+            .expect("spawn_and_wait must succeed");
+        assert_eq!(code, 0);
+
+        let captured = std::fs::read_to_string(&out).expect("read redirected stdout");
+        assert_eq!(
+            captured, "aa-stdio-reached",
+            "stdout redirection set on the std::process::Command must reach the real child; \
+             an empty file means the command was rebuilt rather than moved"
+        );
+    }
+
     // --- ambient_proxy_is_set tests (AAASM-5892/5897) ---
 
     /// Vanilla launch, no ambient proxy: the AAASM-5897 warning must not fire.
