@@ -490,9 +490,44 @@ fn measure_abi() -> AbiFloor {
 /// so that a binary of the same name earlier on `PATH` cannot displace the one
 /// this build was released with.
 fn locate_launcher() -> Result<PathBuf, HostUnusable> {
+    locate_launcher_from(
+        std::env::var_os(LAUNCHER_PATH_ENV),
+        std::env::current_exe().ok(),
+        std::env::var_os("PATH"),
+    )
+}
+
+/// The search itself, over the three facts [`locate_launcher`] reads from the
+/// environment.
+///
+/// Split out so the search order — and, crucially, the `$PATH` filtering below —
+/// can be exercised without racing every other test in the binary over process
+/// environment variables: a test names the override, the exe path and the
+/// `$PATH` string it wants, and this function has no other input besides the
+/// process's current directory (still read implicitly via `is_file()`, since
+/// that is the exact thing under test — see the AAASM-5979 tests).
+///
+/// # Why `$PATH` entries are filtered to absolute paths
+///
+/// A zero-length or relative `$PATH` entry is not a directory to search —
+/// `std::env::split_paths` does not drop empty entries, and joining the
+/// launcher name onto one yields a bare relative path that `is_file()`
+/// resolves against the process cwd (POSIX treats a zero-length `$PATH`
+/// prefix as "."). That reinstates the attacker-substitution primitive
+/// AAASM-4020 and AAASM-5937 removed elsewhere: an attacker who controls the
+/// directory `aasm` is invoked from, on a host whose `$PATH` carries a stray
+/// colon, gets their binary executed as the isolation launcher — the program
+/// that establishes the execution-isolation boundary. Non-absolute entries
+/// are skipped, not rejected, so the rest of `$PATH` still resolves. See
+/// AAASM-5979.
+fn locate_launcher_from(
+    override_path: Option<std::ffi::OsString>,
+    current_exe: Option<PathBuf>,
+    path_var: Option<std::ffi::OsString>,
+) -> Result<PathBuf, HostUnusable> {
     let mut searched = Vec::new();
 
-    if let Some(explicit) = std::env::var_os(LAUNCHER_PATH_ENV) {
+    if let Some(explicit) = override_path {
         let path = PathBuf::from(explicit);
         return if path.is_file() {
             Ok(path)
@@ -502,7 +537,7 @@ fn locate_launcher() -> Result<PathBuf, HostUnusable> {
     }
     searched.push(format!("${LAUNCHER_PATH_ENV} (unset)"));
 
-    if let Ok(current) = std::env::current_exe() {
+    if let Some(current) = current_exe {
         if let Some(sibling) = current.parent().map(|dir| dir.join(LAUNCHER_PROGRAM)) {
             if sibling.is_file() {
                 return Ok(sibling);
@@ -511,14 +546,14 @@ fn locate_launcher() -> Result<PathBuf, HostUnusable> {
         }
     }
 
-    if let Some(path_var) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path_var) {
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(&path_var).filter(|d| d.is_absolute()) {
             let candidate = dir.join(LAUNCHER_PROGRAM);
             if candidate.is_file() {
                 return Ok(candidate);
             }
         }
-        searched.push(format!("each directory on $PATH ({LAUNCHER_PROGRAM})"));
+        searched.push(format!("each absolute directory on $PATH ({LAUNCHER_PROGRAM})"));
     }
 
     Err(HostUnusable::LauncherNotFound { searched })
@@ -593,5 +628,152 @@ mod tests {
             path: PathBuf::from("/nonexistent/aa-isolation-launch"),
         };
         assert!(error.to_string().contains(LAUNCHER_PATH_ENV));
+    }
+
+    /// Serializes every test below that calls `std::env::set_current_dir` — the
+    /// process cwd is global state, and `cargo nextest` runs each test in its
+    /// own process but this crate's `cargo test`-driven coverage lane (and any
+    /// future `--no-fail-fast` retry inside one binary) does not.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn cwd_guard() -> std::sync::MutexGuard<'static, ()> {
+        CWD_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn touch(path: &Path) {
+        std::fs::write(path, b"#!/bin/sh\n").unwrap();
+    }
+
+    /// AAASM-5979 AC 3 (regression) and AC 5 (falsified against the pre-fix
+    /// shape): with cwd set to a directory holding a planted
+    /// `aa-isolation-launch`, every one of `""`, `":"`, `"rel/bin"` and
+    /// `"./rel/bin"` on `$PATH` must resolve nothing — a relative or empty
+    /// `$PATH` entry is a cwd-relative lookup by another name, and the plant is
+    /// at the bare binary name because that is exactly the candidate those
+    /// entries produce (`PathBuf::from("").join(LAUNCHER_PROGRAM)` is the bare
+    /// relative path). A plant anywhere else cannot detect this defect — see
+    /// the ticket's "Provenance" section for how that blind spot let AAASM-5937
+    /// ship past review with exactly this gap.
+    ///
+    /// Falsified: reverting the `.filter(|d| d.is_absolute())` in
+    /// `locate_launcher_from` turns every case below into `Ok(..)`, reddening
+    /// this test (verified for AAASM-5979's PR evidence, not merely asserted
+    /// here).
+    #[test]
+    fn a_relative_or_empty_path_entry_contributes_no_candidate() {
+        let _cwd_lock = cwd_guard();
+
+        let cwd = tempfile::tempdir().unwrap();
+        // What an empty entry resolves to, and what a relative entry resolves to.
+        touch(&cwd.path().join(LAUNCHER_PROGRAM));
+        let rel_dir = cwd.path().join("rel").join("bin");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        touch(&rel_dir.join(LAUNCHER_PROGRAM));
+
+        let prior_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd.path()).unwrap();
+        let results: Vec<_> = ["", ":", "rel/bin", "./rel/bin"]
+            .into_iter()
+            .map(|path_var| {
+                let got = locate_launcher_from(None, None, Some(std::ffi::OsString::from(path_var)));
+                (path_var, got)
+            })
+            .collect();
+        // Restored before asserting, so a failure does not leave every later
+        // test in this binary running from a deleted temporary directory.
+        std::env::set_current_dir(&prior_cwd).unwrap();
+
+        for (path_var, got) in results {
+            assert!(
+                got.is_err(),
+                "PATH={path_var:?} resolved {got:?} — a non-absolute $PATH entry let a \
+                 cwd-planted binary stand in for the isolation launcher (AAASM-5979)"
+            );
+        }
+    }
+
+    /// AAASM-5979 AC 4 (no-behaviour-change control) and AC 5 (falsified
+    /// against an over-broad fix): the same unsafe entries from the test above,
+    /// each paired with a real absolute directory on the same `$PATH` string —
+    /// including with the unsafe entry listed first — must still resolve that
+    /// directory's launcher. Without this half, a filter that dropped every
+    /// `$PATH` entry would pass the negative-control test above while breaking
+    /// `$PATH` lookup outright.
+    ///
+    /// Falsified: replacing the `.filter(|d| d.is_absolute())` with a filter
+    /// that drops every entry (`|_| false`) turns every case below into
+    /// `Err(..)`, reddening this test.
+    #[test]
+    fn a_real_absolute_path_entry_still_resolves_beside_an_unsafe_one() {
+        let _cwd_lock = cwd_guard();
+
+        let cwd = tempfile::tempdir().unwrap();
+        touch(&cwd.path().join(LAUNCHER_PROGRAM));
+        let rel_dir = cwd.path().join("rel").join("bin");
+        std::fs::create_dir_all(&rel_dir).unwrap();
+        touch(&rel_dir.join(LAUNCHER_PROGRAM));
+
+        let real = tempfile::tempdir().unwrap();
+        let real_launcher = real.path().join(LAUNCHER_PROGRAM);
+        touch(&real_launcher);
+        let real_dir = real.path().to_str().unwrap();
+
+        let prior_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd.path()).unwrap();
+        let results: Vec<_> = [
+            format!(":{real_dir}"),
+            format!("{real_dir}:"),
+            format!("rel/bin:{real_dir}"),
+            format!("{real_dir}:rel/bin"),
+        ]
+        .into_iter()
+        .map(|path_var| {
+            let got = locate_launcher_from(None, None, Some(std::ffi::OsString::from(path_var.clone())));
+            (path_var, got)
+        })
+        .collect();
+        std::env::set_current_dir(&prior_cwd).unwrap();
+
+        for (path_var, got) in results {
+            assert_eq!(
+                got.ok(),
+                Some(real_launcher.clone()),
+                "PATH={path_var:?} failed to resolve the real launcher directory \
+                 alongside an unsafe entry"
+            );
+        }
+    }
+
+    /// The refactor that split `locate_launcher` into `locate_launcher_from`
+    /// must not have disturbed the *other* half of the search order: the exe
+    /// sibling still wins over an absolute `$PATH` directory. This is the
+    /// ordering ADR 0030 §6.4 makes a security property (`aasm` and its
+    /// children ship as one versioned unit, so a `$PATH` hit must never
+    /// shadow the sibling shipped with the running executable) — the same
+    /// property `aa-cli`'s `resolve_from_prefers_the_exe_sibling_over_path_and_cargo_bin`
+    /// pins for the gateway resolver. The `$PATH`-filtering tests above only
+    /// ever pass `current_exe: None`, so on their own they cannot show this
+    /// ordering survived the refactor.
+    #[test]
+    fn the_exe_sibling_still_wins_over_an_absolute_path_directory() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let exe = exe_dir.path().join("aasm");
+        touch(&exe);
+        let sibling = exe_dir.path().join(LAUNCHER_PROGRAM);
+        touch(&sibling);
+
+        let path_dir = tempfile::tempdir().unwrap();
+        touch(&path_dir.path().join(LAUNCHER_PROGRAM));
+
+        let got = locate_launcher_from(
+            None,
+            Some(exe.clone()),
+            Some(std::ffi::OsString::from(path_dir.path().to_str().unwrap())),
+        );
+        assert_eq!(
+            got.ok(),
+            Some(sibling),
+            "the $PATH directory's launcher won over the exe sibling"
+        );
     }
 }
