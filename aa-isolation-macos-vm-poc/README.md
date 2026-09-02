@@ -1606,3 +1606,109 @@ kernel that boots under this PoC's existing Virtualization.framework path
 now exists and is reproducible. It does **not** itself close any AAASM-5813
 acceptance criterion; wiring this substrate into `aasm run` as a real
 `IsolationBackend` is that ticket's own scope, not this prerequisite's.
+
+## Guest dev toolchain (AAASM-5849)
+
+**Status: toolchain extracted and verified as a real, working arm64 Linux
+userland; the rootfs build script is extended and its inputs are real, but
+the final image-assembly step and in-guest VZ boot were not run to
+completion this pass — see "What this pass did and did not verify"
+below.**
+
+### Finding this pass addresses
+
+Every prior pass's guest rootfs (`scripts/build-guest-rootfs.sh`) carried
+exactly `/sbin/init`, `/usr/local/bin/aa-isolation-launch`, and a static
+`busybox` — no python, no git, no shell beyond busybox's own applets. A real
+`aasm run git commit` or `aasm run python3 script.py` had nothing to exec
+inside the guest. `aa-isolation-macos-vm/src/paths.rs`'s
+`GUEST_RESIDENT_PROGRAMS` list — the host→guest program-path allowlist
+AAASM-5837 built — named this ticket explicitly as the reason it only
+listed two entries.
+
+### What was added
+
+`scripts/fetch-guest-toolchain.sh` (new): extracts a real, dynamically-linked
+aarch64 userland from a pinned `alpine:3.20` image (digest
+`sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc`)
+with `git=2.45.4-r0` and `python3=3.12.13-r0` installed, via `docker export`
+of the whole container filesystem — not a cherry-picked binary, because both
+programs are musl-dynamic and pull in real dependencies (`/lib/ld-musl-aarch64.so.1`,
+libcurl/pcre2/zlib for git, the full `/usr/lib/python3.12/` stdlib tree for
+python3). Same pin-by-digest-and-verify shape `fetch-busybox.sh` already
+uses.
+
+`scripts/build-guest-rootfs.sh` (extended): the docker `mke2fs -d` step now
+extracts the toolchain tar into `/build` first, then overlays the existing
+staging tree (`/sbin/init`, `/usr/local/bin/aa-isolation-launch`, `busybox`,
+the test-marker files) on top — no path collisions between them (toolchain
+lives under `/usr/bin`, `/bin`, `/lib`; the fixed set is `/sbin`,
+`/usr/local/bin`, `/etc/testfile`, `/root/outside-grant.txt`). Image size
+grew from `truncate -s 16M` to `192M` to fit the ~68 MB toolchain plus
+headroom.
+
+`aa-isolation-macos-vm/src/paths.rs`'s `GUEST_RESIDENT_PROGRAMS` now also
+lists `/usr/bin/git`, `/usr/bin/python3`, and `/bin/sh` — the real paths
+Alpine installed them at (confirmed by the same extraction used to build
+the image, not assumed). A launch naming one of these as its program now
+resolves instead of refusing with the AAASM-5849 message.
+
+### What this pass did and did not verify
+
+**Verified, real execution, arm64 Linux userland (not the VZ guest):**
+`docker import` of the exact tar `fetch-guest-toolchain.sh` produces, run
+under `--platform linux/arm64`: `git --version`, a real `git init` /
+`git commit` / `git clone` round trip (content read back matched what was
+committed), and a real `python3 -c "import hashlib; ..."` script producing
+a real digest — proof the extracted binaries are not just present but
+functional on this architecture.
+
+**Verified, real cross-compile:** `guest-init` and `aa-isolation-launch`
+both cross-compiled cleanly for `aarch64-unknown-linux-musl` this pass (the
+same rust-lld recipe every prior pass used) — real, freshly built ELF
+binaries, not reused from an earlier pass.
+
+**Not verified this pass:** the final `build-guest-rootfs.sh` assembly step
+itself (`docker run … mke2fs -d … e2fsck -fn`) — the extended script was
+run against the real toolchain tar and the real freshly cross-compiled
+binaries above, but Docker Desktop on this host hit a container-start fault
+during this pass (`docker run`/`docker start` hung indefinitely at
+"Created", reproduced even with a bare `docker run debian:12 echo`, and
+confirmed unrelated to this script's own mounts) that did not clear within
+this pass's time budget. This is an infrastructure fault on the host this
+pass ran on, not a defect surfaced in the script's own logic — but it means
+the combined ext4 image (toolchain layer + fixed staging tree) has **not**
+been produced or filesystem-checked end to end. Whoever runs this script
+next on a healthy Docker Desktop should treat that as the first thing to
+confirm, not assume clean from this pass's other evidence.
+
+**Not re-verified this pass:** an actual guest boot (`aa-isolation-macos-vm-poc`
+Swift helper under `VZVirtualMachine`) with this new image, and therefore no
+in-guest `git`/`python3` execution *through* the launch protocol or under
+Landlock enforcement. Doing so needs the Landlock-capable guest kernel
+(`scripts/build-landlock-kernel.sh`'s output) rebuilt/re-signed on real
+Virtualization.framework hardware — a multi-step, from-source kernel build
+this pass did not re-run, since neither that kernel nor any other build
+artifact was already cached on the host this pass ran on (`images/` is
+git-ignored and not shipped). This is a real, stated gap, not an implied
+"probably works": whoever next drives a real guest boot with this rootfs
+should treat `/usr/bin/git`/`/usr/bin/python3` reachability and Landlock
+`Execute` grants covering `/usr/bin`, `/lib`, `/usr/lib` (not just
+`/usr/local/bin`, the fixed set's own directory) as new, unverified
+surface — the "Landlock-capable guest kernel" section above's own finding
+that granting a program's own path is required for a successful confined
+exec applies here too, and a dynamically-linked program additionally needs
+its shared libraries reachable under whatever grant covers `/usr/bin`.
+
+### Deliberately deferred, not decided here
+
+* **Node** — the ticket's own open questions named a "curated toolchain
+  matching what `aa-devtool-*` adapters actually need" as one option; no
+  `aa-devtool-*` adapter in this workspace names a Node runtime requirement
+  today, and adding a second dynamically-linked runtime (~40+ MB more) with
+  no concrete consumer would widen this pass's scope past "smallest coherent
+  slice." Left for whoever's `aa-devtool-*` work actually needs it.
+* **Read-only host-filesystem sharing** (the ticket's other named option) —
+  not pursued: it is in direct tension with this Epic's own security
+  property (AAASM-5811 AC2) and needs its own explicit design, not an ad hoc
+  widening bundled into a toolchain-content ticket.
