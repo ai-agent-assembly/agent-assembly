@@ -5771,11 +5771,13 @@ export interface components {
          */
         RetentionPolicyDocument: {
             /**
-             * @description Archive destination (e.g. `s3://bucket/path`). Required when
-             *     `cold_action == "archive"`; `None` otherwise.
+             * @description Reserved for a future archive implementation — not implemented
+             *     on any backend today. `cold_action == "archive"` is rejected at
+             *     validation time (see [`ColdActionDto::Archive`]). Always `None`
+             *     in practice.
              */
             archive_url?: string | null;
-            /** @description Action applied to rows older than `warm_days`. */
+            /** @description Action applied to rows older than `hot_days + warm_days`. */
             cold_action: components["schemas"]["ColdActionDto"];
             /**
              * @description When true, the engine logs the work it *would* perform without
@@ -5795,8 +5797,10 @@ export interface components {
             schedule: string;
             /**
              * Format: int32
-             * @description Days a row stays in the warm tier (compressed where supported)
-             *     before the cold action runs.
+             * @description Days the warm tier spans *following* the hot window — not an
+             *     absolute age. Total row age when `cold_action` fires is
+             *     `hot_days + warm_days` (e.g. 30 + 90 = 120 days at the shipped
+             *     defaults).
              */
             warm_days: number;
         };
@@ -7171,16 +7175,21 @@ export interface components {
          * @description Body of `PUT /api/v1/admin/retention-policy` — partial update of the
          *     runtime retention configuration. Each field must be present; the
          *     server-side validation matches the dashboard's client-side rules
-         *     (hot_days &ge; 1, warm_days &gt; hot_days, archive_url required when
-         *     `cold_action == "archive"`).
+         *     (hot_days &ge; 1, warm_days &ge; 1 — a span following hot_days, not
+         *     an age relative to it — and `cold_action == "archive"` is rejected
+         *     outright since no backend implements it).
          */
         UpdateRetentionPolicyRequest: {
             /**
-             * @description Archive destination. Required when `cold_action == "archive"`;
-             *     must start with `s3://` or `gs://`.
+             * @description Reserved for a future archive implementation — not implemented
+             *     on any backend today; ignored since `cold_action == "archive"`
+             *     is rejected before this field is consulted.
              */
             archive_url?: string | null;
-            /** @description New cold-tier action. */
+            /**
+             * @description New cold-tier action. `cold_action == "archive"` is rejected —
+             *     not implemented on any backend.
+             */
             cold_action: components["schemas"]["ColdActionDto"];
             /**
              * Format: int32
@@ -7189,7 +7198,9 @@ export interface components {
             hot_days: number;
             /**
              * Format: int32
-             * @description New value for `warm_days`. Must be strictly greater than `hot_days`.
+             * @description New value for `warm_days`. Must be &ge; 1. This is the span of
+             *     the warm tier following `hot_days`, not an age — total row age
+             *     at which `cold_action` fires is `hot_days + warm_days`.
              */
             warm_days: number;
         };
