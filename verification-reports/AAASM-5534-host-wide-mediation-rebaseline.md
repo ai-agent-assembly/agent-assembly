@@ -335,6 +335,19 @@ than reporting a hollow pass. Given that descendant confinement is one of the
 isolation contract's load-bearing correctness properties, this is the highest-
 value remaining verification work.
 
+**One absent class was deferred for a different reason, and that reason is now
+discharged.** Attack class 6 — alternate executable resolution / `$PATH`
+tricks — was left out because
+[AAASM-5979](https://lightning-dust-mite.atlassian.net/browse/AAASM-5979) was
+an *active lane fixing a defect in the same launch path*, so a conformance
+test written then would have pinned pre-fix behaviour. At the revision this
+re-baseline was compiled against, that defect was open: a zero-length or
+relative `$PATH` entry made `locate_launcher()`'s lookup cwd-relative, so
+`aa-isolation-launch` — the program that *establishes* the isolation boundary
+— could be substituted from the working directory. See the
+[post-compile update](#post-compile-update) for its disposition. Either way,
+class 6 is still unmeasured, and it is now unblocked.
+
 ### G7 — The one reachable `HostEnforced` route rests on a file read-back
 
 The macOS managed-settings write is the only production producer of
@@ -346,7 +359,7 @@ read-back of a file, not observed enforcement.
 
 | Platform / deployment model | Verdict | Basis |
 |---|---|---|
-| **Linux (x86_64)** | **Go — already shipped** | Two backends, CI lanes, benchmark record. Remaining work is G1/G2/G6, not feasibility |
+| **Linux (x86_64)** | **Go — already shipped** | Two backends, CI lanes, benchmark record. Remaining work is G1/G2/G6, not feasibility. Not a claim that the boundary carries no open defect: at the compiled revision AAASM-5979 was an open High-severity launcher-substitution defect in `aa-isolation-native` — see the [post-compile update](#post-compile-update) |
 | **Linux (aarch64)** | **Conditional Go** | Filesystem confinement works; `Syscall` and eBPF file-I/O are absent (G4). Ship with the gap stated, as the docs already do |
 | **macOS (Apple Silicon)** | **Conditional Go — already shipped** | Real hardware-qualified guest confinement with named limits (G5). Manual qualification, not CI |
 | **macOS (Intel)** | **No-Go** | No build exists; not attempted; unclaimed |
@@ -434,3 +447,30 @@ ratified text and the code do not say the same thing.
 
 **Suggested disposition:** a small amendment correction to Core ADR 0035, or a Bug
 alongside F1. Not fixed here: a spike should not edit a ratified ADR.
+
+## Post-compile update
+
+Recorded rather than folded silently into the body above, because every
+classification in this artifact is anchored to `2bcccfc82` and must stay
+readable as of that revision.
+
+**AAASM-5979 merged twelve minutes after the compiled revision.** PR
+[#2335](https://github.com/ai-agent-assembly/agent-assembly/pull/2335) landed
+as `3b4b7c4ff` on `main` at 2026-09-02T07:04:30Z, rejecting cwd-relative
+`$PATH` entries in both `aa-isolation-native`'s `locate_launcher()` and
+`aa-devtool`'s `find_on_path()`. The ticket is Done.
+
+Two consequences, neither of which changes a classification:
+
+1. **G6's class-6 deferral reason is discharged.** The 5532 harness deferred
+   the alternate-executable-resolution scenario explicitly *until this lane
+   landed*. It has landed, so that conformance test can now be written without
+   pinning pre-fix behaviour or inverting the moment the fix merges.
+2. **The Linux x86_64 verdict's qualifier is now historical.** At `2bcccfc82`
+   the boundary carried an open High-severity substitution defect; at
+   `3b4b7c4ff` it does not. A reader citing the Verdicts table against a
+   revision at or after `3b4b7c4ff` should read that row without the caveat.
+
+This is also a correction to a premise this re-baseline was handed: AAASM-5979
+was described as already merged when this work started, and at `2bcccfc82` it
+was not. It is now.
