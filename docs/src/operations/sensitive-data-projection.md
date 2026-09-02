@@ -85,12 +85,19 @@ statements are a no-op, so a table left over from an earlier build is left as it
 stands — its columns and its uniqueness key are not altered to match the build
 now writing to it.
 
+Since AAASM-5788, `migrate_sensitive_data_projection` checks the live columns of
+each table against the ones the running build reads and writes, and **fails
+boot** if a stale table is missing one — the same fail-closed treatment this
+page already documents for an unopenable database, rather than deferring the
+failure to whichever read or write hits the missing column first. That check
+covers columns only, not the uniqueness key: a table whose key predates a key
+change (see below) still passes it, because every column the key check would
+need is still present.
+
 Rows already at that path therefore survive because nothing rewrites them, not
 because a migration ran. The code records the same position beside the
 statements (`aa-gateway/src/storage/sensitive_data/sqlite.rs`, *Migration
-position*), where it was excused on the grounds that the tier had no producer
-and so no deployed data to migrate. That excuse expired when the producer was
-wired: changing the key now needs a migration that recreates the tables, and
+position*): changing the key needs a migration that recreates the tables, and
 none is written.
 
 ## Reverting it
