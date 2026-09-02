@@ -481,6 +481,7 @@ dependencies = [
  "aa-isolation-macos-vm",
  "aa-isolation-native",
  "aa-isolation-vm-proto",
+ "libc",
 ]
 
 [[package]]
