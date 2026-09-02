@@ -45,19 +45,32 @@
 //!
 //! **Not covered by this pass**, and not stubbed to look otherwise:
 //!
-//! * Fork/exec, detached/re-parented descendants, and filesystem escape via
-//!   symlink/rename against a real confinement boundary (ticket scenarios 10
-//!   and part of the filesystem-escape ask) — both need a real confinement
-//!   backend to have something to escape *from*. `aa-isolation-native` is
-//!   Linux-only (its own crate doc: "The AASM-native **Linux**
-//!   process-isolation backend") and `aa-isolation-sandlock` requires an
-//!   external Linux supervisor; neither is exercisable on this host. A test
-//!   that ran these against no boundary at all would measure nothing and
-//!   report a hollow pass — worse than not writing it. These belong in the
+//! * Detached/re-parented descendants against a real confinement boundary
+//!   (ticket scenario 10) — needs a real confinement backend to have something
+//!   to escape *from*. `aa-isolation-native` is Linux-only (its own crate doc:
+//!   "The AASM-native **Linux** process-isolation backend") and
+//!   `aa-isolation-sandlock` requires an external Linux supervisor; neither is
+//!   exercisable on this host, and — per
+//!   `verification-reports/AAASM-5532-docker-desktop-confinement-backend-feasibility.md`
+//!   — this host's Docker Desktop Linux VM cannot substitute: Landlock is
+//!   compiled out of its kernel entirely (`CONFIG_SECURITY_LANDLOCK is not
+//!   set`, confirmed by a direct `ENOSYS` syscall probe) and
+//!   `aa-isolation-native`'s seccomp backend is gated to x86_64 in its own
+//!   source, which this VM's kernel is not, on any container architecture. A
+//!   test that ran this against no boundary at all would measure nothing and
+//!   report a hollow pass — worse than not writing it. This belongs in the
 //!   Linux-privileged/nightly lane the ticket's own AC calls for, against
 //!   `aa-isolation-native` directly (see `aa-integration-tests/tests/
 //!   adversarial/mod.rs`'s `Scratch`/`as_grandchild`/`shell_spec_using`
 //!   helpers, already shaped for exactly this).
+//! * Fork/exec and filesystem escape via symlink/rename were also named
+//!   deferred by this comment's first version — that overstated the gap.
+//!   Both are already covered, directly against `aa-isolation-native`, on the
+//!   real Linux CI lane that already runs it:
+//!   `aa-isolation-native/tests/linux_confinement_native.rs::descendant_confinement_at_three_depths`
+//!   (fork/exec) and `aa-isolation-native/tests/adversarial_boundary_native_linux.rs`'s
+//!   symlink/rename/hard-link scenarios (filesystem escape). See the same
+//!   verification report for how that was confirmed.
 //! * Alternate-executable-resolution / PATH tricks (ticket scenario 6) —
 //!   AAASM-5979 is an active, separate lane fixing a PATH/cwd-relative
 //!   resolution defect in this same launch path. Adding a conformance test
