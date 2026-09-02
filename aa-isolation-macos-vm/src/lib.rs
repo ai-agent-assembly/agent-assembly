@@ -45,14 +45,17 @@
 //! directly, which is what AAASM-5837's own verification proved before this
 //! probe existed.
 //!
-//! # The guest has no general toolchain (AAASM-5849)
+//! # The guest's toolchain is fixed and minimal (AAASM-5849)
 //!
 //! [`paths::to_guest_path`] refuses any program or grant path that is
 //! neither under the launch's shared project directory nor one of this
 //! guest image's fixed resident binaries — see that module's documentation.
-//! A real `aasm run python …`/`git …` on macOS refuses today for exactly
-//! that reason, honestly, rather than reaching a guest with nothing able to
-//! exec it.
+//! The guest image now carries `git`, `python3`, and `/bin/sh` alongside the
+//! launch protocol's own binaries, so `aasm run git …`/`python3 …` on macOS
+//! can resolve — but only when the caller names one of
+//! [`paths::GUEST_RESIDENT_PROGRAMS`] exactly; anything else outside the
+//! shared directory still refuses honestly, rather than reaching a guest
+//! with nothing able to exec it.
 
 pub mod capability;
 pub mod paths;
