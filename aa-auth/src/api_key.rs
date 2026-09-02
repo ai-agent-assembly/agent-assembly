@@ -3,11 +3,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use dashmap::DashMap;
 use rand::RngExt as _;
-use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -82,11 +80,15 @@ impl ApiKey {
     }
 
     /// Hash this key using argon2 for secure storage.
+    ///
+    /// The per-key random salt is minted by `hash_password` itself (argon2 0.6 /
+    /// password-hash 0.6), which draws it from the OS CSPRNG via getrandom — the
+    /// same entropy source the explicit `SaltString::generate(&mut OsRng)` used
+    /// before.
     pub fn hash(&self) -> Result<String, ApiKeyError> {
-        let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let hash = argon2
-            .hash_password(self.0.as_bytes(), &salt)
+            .hash_password(self.0.as_bytes())
             .map_err(|e| ApiKeyError::HashError(e.to_string()))?;
         Ok(hash.to_string())
     }
