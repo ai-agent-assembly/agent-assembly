@@ -1609,10 +1609,13 @@ acceptance criterion; wiring this substrate into `aasm run` as a real
 
 ## Guest dev toolchain (AAASM-5849)
 
-**Status: toolchain extracted and verified as a real, working arm64 Linux
-userland; the rootfs build script is extended and its inputs are real, but
-the final image-assembly step and in-guest VZ boot were not run to
-completion this pass — see "What this pass did and did not verify"
+**Status: ext4 assembly and guest image-content verification closed this
+pass — the image now builds successfully, and a real VZ boot ran `git
+--version`, a `python3` sha256 script, and `/bin/sh` for real inside the
+guest, all three `GUEST_RESIDENT_PROGRAMS` toolchain entries. Execution
+*through* the real `aa-isolation-launch` enforcement path remains
+blocked by the missing Landlock-capable kernel, unchanged from prior
+passes — see "Retry pass: closing the ext4-assembly and real-boot gap"
 below.**
 
 ### Finding this pass addresses
@@ -1712,3 +1715,77 @@ its shared libraries reachable under whatever grant covers `/usr/bin`.
   not pursued: it is in direct tension with this Epic's own security
   property (AAASM-5811 AC2) and needs its own explicit design, not an ad hoc
   widening bundled into a toolchain-content ticket.
+
+### Retry pass: closing the ext4-assembly and real-boot gap
+
+Picked up exactly where the prior pass left off — a fresh worktree off
+`main`, Docker Desktop confirmed working (`docker run --rm debian:12 echo
+ok` succeeded before anything else ran).
+
+**`build-guest-rootfs.sh`'s assembly step had a real, reproducible bug,
+not just an infra fault:** Alpine ships `/sbin/init` as an *absolute*
+symlink to `/bin/busybox`. The script's `mke2fs -d` step extracts the
+toolchain tar into a plain directory (`/build`, not a chroot), so that
+absolute symlink target resolves against the assembling `debian:12`
+container's own root instead of `/build` — pointing at a `/bin/busybox`
+that does not exist there, making the symlink dangling from `cp`'s
+perspective. Plain `cp -a` refused to overlay the real guest-init binary
+through it (`cp: not writing through dangling symlink '/build/./sbin/init'`).
+Fixed with `--remove-destination`.
+
+**Separately, a real host/VM-level flake was also present and reproduced
+repeatedly this pass**: the assembling container's own root overlay was
+intermittently read-only from the moment it started (`mkdir /build`
+failing immediately with "Read-only file system"), with the identical
+`docker run` invocation succeeding the very next attempt, no change to
+disk space or mounted content in between. This is consistent with — not
+necessarily identical to — the "Docker Desktop container-start fault"
+the prior pass hit at this same step; `docker system df`/`docker image
+prune` reclaiming ~19 GB of the Desktop VM's disk (97% → 62% used) did
+not eliminate it. `build-guest-rootfs.sh` now retries the `docker run`
+step up to 5 times before failing the pipeline.
+
+With both fixed, the full pipeline (`fetch-guest-toolchain.sh`,
+`build-guest-init.sh`, `build-isolation-launch.sh`, `fetch-busybox.sh`,
+`build-guest-rootfs.sh`) completed end to end: a 192 MB `guest-rootfs.img`,
+`mke2fs` clean, `e2fsck -fn` clean.
+
+**Real VZ boot, this pass, on the substitute (non-Landlock) kernel**
+(`swift build` + `codesign … --entitlements`, then the `.build/debug/
+aa-isolation-macos-vm-poc` PoC helper against `/Applications/Docker.app/
+Contents/Resources/linuxkit/kernel` and the new `guest-rootfs.img`,
+`--no-initrd --disk`): genuine kernel boot console output, `EXT4-fs
+(vda): mounted … r/w`, `VIRTIOFS-OK`, and the existing `busybox-direct`
+positive control passing (`exited status=0`). Confirms the new
+toolchain-plus-fixed-set image boots for real, structurally — same as
+every prior pass's rootfs.
+
+**New this pass**: `guest-init` gained three more direct-exec positive
+controls (`git-direct`, `python3-direct`, `sh-direct` — all three
+`GUEST_RESIDENT_PROGRAMS` toolchain entries), same pattern as the
+existing `busybox-direct` control — necessary because every
+`aa-isolation-launch` scenario still refuses pre-flight on this
+substitute kernel (unchanged; see "Landlock-capable guest kernel"
+below), so nothing else in the boot sequence would otherwise prove
+git/python3/sh are reachable and functional *inside a real VZ guest
+specifically*, as opposed to only under `docker import` on the host (the
+prior pass's evidence). `/bin/sh` is worth calling out specifically: it
+is a symlink to Alpine's own `/bin/busybox` (the real file the toolchain
+tar carries), distinct from the fixed set's `/usr/local/bin/busybox`,
+and in the same absolute-symlink family as the `/sbin/init` bug this
+pass fixed — not assumed to resolve the same way just because
+`busybox-direct` does. Real console output this pass: `git version
+2.45.4`; a `python3 -c "import hashlib; ..."` sha256 digest that matches
+the identical computation run locally on the host, confirmed
+byte-for-byte, not eyeballed; `sh -c "echo aaasm-5849-sh-ok"` printing
+`aaasm-5849-sh-ok`. All three exited status 0.
+
+**Still not achieved, honestly**: `git`/`python3`/`sh` executing
+*through* `aa-isolation-launch`'s real launch protocol, under actual
+Landlock enforcement. That needs the Landlock-capable guest kernel
+(`scripts/build-landlock-kernel.sh`'s output — a multi-step, from-source
+kernel build/re-sign on real Virtualization.framework hardware), which
+was not cached on this host (`images/` is git-ignored) and rebuilding it
+is its own large undertaking, out of this retry pass's scope. The direct-
+exec controls above are the closest honest substitute available without
+it — real execution, real guest, just not through the enforcement path.

@@ -365,6 +365,41 @@ fn main() {
         &["cat", "/etc/testfile"],
     );
 
+    // AAASM-5849 (ext4 assembly retry pass): the guest's Alpine-derived
+    // toolchain layer (git, python3, /bin/sh) has never been exec'd inside
+    // a real VZ guest before this pass — only under `docker import` on the
+    // host (see README "Guest dev toolchain (AAASM-5849)"). The four
+    // aa-isolation-launch scenarios below all refuse pre-flight on this
+    // substitute kernel (no Landlock), so — same reasoning as the
+    // busybox-direct control above — nothing else in this guest's boot
+    // sequence would otherwise prove git/python3 are present, the right
+    // architecture, or functional here specifically. Direct exec, bypassing
+    // aa-isolation-launch entirely, same as busybox-direct.
+    run_child(
+        console,
+        "git-direct (positive control)",
+        "/usr/bin/git",
+        &["--version"],
+    );
+    run_child(
+        console,
+        "python3-direct (positive control)",
+        "/usr/bin/python3",
+        &["-c", "import hashlib; print(hashlib.sha256(b'aaasm-5849').hexdigest())"],
+    );
+    // /bin/sh is a symlink to Alpine's own /bin/busybox (the real file the
+    // toolchain tar carries), distinct from the fixed set's own
+    // /usr/local/bin/busybox — same absolute-symlink family as the
+    // /sbin/init bug this pass fixed in build-guest-rootfs.sh, so it is
+    // worth exercising specifically rather than assuming it resolves the
+    // same way just because busybox-direct above does.
+    run_child(
+        console,
+        "sh-direct (positive control)",
+        "/bin/sh",
+        &["-c", "echo aaasm-5849-sh-ok"],
+    );
+
     // Now the real, unmodified aa-isolation-launch binary, against three
     // scenarios, to characterize what it can actually enforce on this
     // particular substitute guest kernel — see ../README.md
