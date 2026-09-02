@@ -81,9 +81,9 @@
 //!   trails. Filesystem-confinement concurrency has the same "no exercisable
 //!   backend on this host" gap as fork/exec and symlink escape above.
 
-#[allow(dead_code, unused_imports)]
+#[allow(unused_imports)]
 mod grpc_gateway_support;
-#[allow(dead_code, unused_imports)]
+#[allow(unused_imports)]
 mod proxy_trust_support;
 
 // First includer of `adversarial/mod.rs` (AAASM-5712) — every other file in
@@ -96,7 +96,7 @@ mod proxy_trust_support;
 // This file has no second declaration to collide, so it needs no re-export
 // either — call sites below use `adversarial::measured`/`assert_prevented`
 // directly, which already route through `adversarial::evidence` internally.
-#[allow(dead_code, unused_imports)]
+#[allow(unused_imports)]
 #[path = "adversarial/mod.rs"]
 mod adversarial;
 
