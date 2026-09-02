@@ -85,24 +85,57 @@ echo "aa-isolation-launch-guest-rootfs-test-marker" > "${STAGING_DIR}/etc/testfi
 # reading this file — a different failure signature than the refusals above.
 echo "aa-isolation-launch-guest-rootfs-test-marker-outside-grant" > "${STAGING_DIR}/root/outside-grant.txt"
 
-docker run --rm --platform linux/arm64 \
-  -v "${STAGING_DIR}:/staging:ro" \
-  -v "${TOOLCHAIN_TAR}:/toolchain.tar:ro" \
-  -v "${OUT_DIR}:/out" \
-  debian:12 bash -c '
-    set -e
-    apt-get update -qq >/dev/null
-    apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null
-    # Toolchain first (owns device nodes/symlinks tar itself needs root to
-    # write), then the fixed staging tree layered on top so init/launch/
-    # busybox/testfile always win on any path collision.
-    mkdir -p /build
-    tar -xf /toolchain.tar -C /build
-    cp -a /staging/. /build/
-    truncate -s 192M /out/rootfs.img
-    mke2fs -F -q -t ext4 -d /build -L rootfs /out/rootfs.img
-    e2fsck -fn /out/rootfs.img
-  '
+# AAASM-5849 retry (ext4 assembly pass): observed on this host, intermittent
+# and non-deterministic — the container's own root overlay is occasionally
+# read-only from the moment it starts (`mkdir /build` fails immediately with
+# "Read-only file system"), even though the identical `docker run` with the
+# identical bind mounts succeeds the very next attempt with no change to
+# disk space, the image, or the mounted content in between. This matches the
+# "Docker Desktop container-start fault" this same step hit in the prior
+# pass (see README "Guest dev toolchain (AAASM-5849)") — a host/VM-level
+# flake, not a defect in this script's own logic (every input it depends on
+# was re-verified present and correct across both failing and succeeding
+# attempts). Retry a bounded number of times rather than fail the whole
+# pipeline on one bad container start.
+ROOTFS_BUILD_ATTEMPTS=5
+attempt=1
+while true; do
+  if docker run --rm --platform linux/arm64 \
+    -v "${STAGING_DIR}:/staging:ro" \
+    -v "${TOOLCHAIN_TAR}:/toolchain.tar:ro" \
+    -v "${OUT_DIR}:/out" \
+    debian:12 bash -c '
+      set -e
+      apt-get update -qq >/dev/null
+      apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null
+      # Toolchain first (owns device nodes/symlinks tar itself needs root to
+      # write), then the fixed staging tree layered on top so init/launch/
+      # busybox/testfile always win on any path collision.
+      #
+      # --remove-destination: Alpine ships /sbin/init as an *absolute* symlink
+      # to /bin/busybox. Once flattened into /build (a plain directory, not a
+      # chroot), that absolute target resolves against this containers own
+      # root rather than /build — so it points at this debian:12 containers
+      # own /bin/busybox, which does not exist, making the symlink dangling
+      # from cp perspective. Plain `cp -a` refuses to write through a
+      # dangling symlink; --remove-destination deletes it first so the real
+      # guest-init binary lands at /build/sbin/init as intended.
+      mkdir -p /build
+      tar -xf /toolchain.tar -C /build
+      cp -a --remove-destination /staging/. /build/
+      truncate -s 192M /out/rootfs.img
+      mke2fs -F -q -t ext4 -d /build -L rootfs /out/rootfs.img
+      e2fsck -fn /out/rootfs.img
+    '; then
+    break
+  fi
+  if [ "${attempt}" -ge "${ROOTFS_BUILD_ATTEMPTS}" ]; then
+    echo "docker run failed ${ROOTFS_BUILD_ATTEMPTS} times — giving up" >&2
+    exit 1
+  fi
+  echo "docker run failed (attempt ${attempt}/${ROOTFS_BUILD_ATTEMPTS}) — retrying ..." >&2
+  attempt=$((attempt + 1))
+done
 
 mkdir -p "${IMAGES_DIR}"
 cp "${OUT_DIR}/rootfs.img" "${IMAGES_DIR}/guest-rootfs.img"
