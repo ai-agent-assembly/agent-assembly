@@ -501,6 +501,16 @@ impl IsolationBackend for MacosVmBackend {
         // not yet built this pass.
         EnforcementEvidence::new(self.identity(), handle.posture())
     }
+
+    /// AAASM-5869: the trait-level override that lets `aasm run` forward what
+    /// this backend already captures. Delegates to the pre-existing inherent
+    /// [`captured_output`](Self::captured_output) rather than duplicating its
+    /// lookup — that method predates this override (AAASM-5814, for the
+    /// adversarial test harness) and stays the one place session output is
+    /// read out of `self.sessions`.
+    fn confined_output(&self, handle: &ExecutionHandle) -> Option<(Vec<u8>, Vec<u8>)> {
+        Some(self.captured_output(handle))
+    }
 }
 
 #[cfg(test)]
