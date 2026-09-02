@@ -24,6 +24,11 @@ aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.6" 
 # in `aa-integration-tests/tests/adversarial/mod.rs` names `ClaimTerm` from
 # here. Mirrors the identical entry in `aa-isolation-native/Cargo.toml`.
 aa-core = { path = "../aa-core", version = "0.0.1-rc.6" }
+# AAASM-5870: `vmm::boot`'s cross-process `flock` serializes concurrent
+# `VZVirtualMachine.start()` calls against the confirmed
+# Virtualization.framework race documented there. Already a workspace
+# dependency used the same way by `aa-isolation-native`.
+libc = { workspace = true }
 
 [dev-dependencies]
 # Self-reference: `tests/adversarial/mod.rs` uses `aa_isolation_macos_vm::*`

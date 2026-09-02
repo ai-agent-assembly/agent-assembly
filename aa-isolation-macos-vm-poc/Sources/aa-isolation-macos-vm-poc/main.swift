@@ -247,7 +247,30 @@ if args.enableVirtiofs {
     let outsideMarkerURL = shareDirURL!.deletingLastPathComponent()
         .appendingPathComponent(outsideMarkerName)
     do {
-        try outsideMarkerContents.write(to: outsideMarkerURL, atomically: true, encoding: .utf8)
+        // AAASM-5870: `atomically: false`, deliberately. `shareDirURL`'s
+        // parent is not a directory this process created or owns — every
+        // concurrent boot on the host writes this same fixed-name marker
+        // into whatever directory its own share dir happens to sit under,
+        // which collides whenever two boots share a parent (e.g. two
+        // `aasm run`s under the same project root, or — as measured in
+        // this crate's own `probe`/`real_hardware.rs` — every boot's
+        // scratch dir sitting directly under the one shared
+        // `NSTemporaryDirectory()`/`std::env::temp_dir()`). `atomically:
+        // true` writes a temp file *in that same shared parent* and
+        // `rename()`s it into place; `atomically: false` opens and writes
+        // the target path directly, with no extra file created and removed
+        // in a directory this process does not control the concurrent use
+        // of. This does not fix the concurrent write to the marker path
+        // itself (harmless: the guest only checks `open()` success, never
+        // content — see `guest-init`'s `try_virtiofs_negative_control`),
+        // it only removes the create/rename churn in the shared parent.
+        // Not confirmed as AAASM-5870's actual mechanism (that would need
+        // a live concurrent-boot repro this pass's environment could not
+        // run — see `vmm::BootLock`'s docs) — kept regardless because it
+        // is a real defect in this process's own handling of a directory
+        // it does not own, independent of whether it explains the
+        // Virtualization.framework failure.
+        try outsideMarkerContents.write(to: outsideMarkerURL, atomically: false, encoding: .utf8)
         log("virtiofs: created OUTSIDE-share negative-control file \(outsideMarkerURL.path) (must stay unreachable from the guest at /mnt/share/\(outsideMarkerName))")
     } catch {
         // A parent dir we can't write to (e.g. a --share-dir whose parent

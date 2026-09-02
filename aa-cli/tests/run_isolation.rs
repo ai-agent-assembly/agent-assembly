@@ -553,6 +553,69 @@ fn the_aasm_macos_vm_backend_id_is_selectable_and_honestly_unavailable() {
     assert!(!target.exists(), "the program ran unconfined: {}", target.display());
 }
 
+/// AAASM-5869: a real guest command's stdout reaches the operator's own
+/// terminal through `aasm run exec --isolation-backend aasm-macos-vm`.
+///
+/// Spawns the real compiled `aasm` binary (`assert_cmd::Command::cargo_bin`,
+/// as [`receipt`] does) rather than calling `execute_with_adapters` in-process,
+/// because the claim under test is specifically what reaches the **operator's
+/// own stdout** — `run_confined`'s `backend.confined_output(&handle)` branch —
+/// and an in-process call captures nothing analogous to a real process's
+/// stdout. Before AAASM-5869's fix this backend's guest stdout/stderr were
+/// captured (`MacosVmBackend::captured_output`, AAASM-5814) but never read by
+/// `run_confined`, so this assertion is exactly the one the ticket's real-
+/// hardware repro found failing: exit code correct, file write real, "hi"
+/// never printed anywhere.
+///
+/// Skipped for the same reason and under the same env-var gate as
+/// [`the_aasm_macos_vm_backend_id_is_selectable_and_honestly_unavailable`]
+/// above — this backend is `Unavailable` without a real, entitled,
+/// provisioned macOS-VM host, and there is no fixture that can substitute for
+/// one.
+#[test]
+fn a_real_guest_commands_stdout_reaches_the_operators_terminal() {
+    for var in [
+        "AA_ISOLATION_MACOS_VM_HELPER",
+        "AA_ISOLATION_MACOS_VM_KERNEL",
+        "AA_ISOLATION_MACOS_VM_ROOTFS",
+    ] {
+        if std::env::var(var).is_err() {
+            return;
+        }
+    }
+
+    let scratch = Scratch::new("macos-vm-stdout");
+    let artifact = policy(&scratch, "p.yaml", TOOL_RULE_ONLY);
+    const MARKER: &str = "aa-macos-vm-stdout-forwarding-71cd";
+
+    let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
+    let output = cmd
+        .arg("run")
+        .arg("exec")
+        .arg("--no-proxy")
+        .arg("--policy")
+        .arg(&artifact)
+        .arg("--isolation")
+        .arg("process")
+        .arg("--isolation-backend")
+        .arg(aa_isolation_macos_vm::BACKEND_ID)
+        .arg("--")
+        .arg("/usr/local/bin/busybox")
+        .arg("sh")
+        .arg("-c")
+        .arg(format!("echo {MARKER}"))
+        .output()
+        .expect("aasm run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(MARKER),
+        "the guest program's stdout never reached the operator's terminal — \
+         stdout: {stdout:?}, stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// Naming the AASM-native backend for a launch that asked for no boundary is
 /// refused exactly as naming the other one is — the contradiction is about the
 /// pair of flags, not about which backend was named.

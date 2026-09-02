@@ -17,6 +17,15 @@
 # at /usr/local/bin, a static busybox (./fetch-busybox.sh) as the trivial
 # confined workload for it to exec, and /etc/testfile as the fs-read grant's
 # target — see ../README.md "aa-isolation-launch cross-compile".
+#
+# AAASM-5849: layers a real dev toolchain (./fetch-guest-toolchain.sh's
+# extracted git/python3/shell userland) underneath the files above, so the
+# guest carries something a real `aasm run <command>` can actually exec —
+# see ../README.md "Guest dev toolchain (AAASM-5849)". The toolchain's own
+# files never collide with the fixed set above (/usr/bin, /bin, /lib vs.
+# /sbin/init, /usr/local/bin/*, /etc/testfile), so it is safe to extract
+# first and overlay the existing staging tree on top, preserving the
+# existing files' priority.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +56,11 @@ if [ ! -f "${BUSYBOX_BIN}" ]; then
   echo "could not find ${BUSYBOX_BIN} — run ./fetch-busybox.sh first" >&2
   exit 1
 fi
+TOOLCHAIN_TAR="${IMAGES_DIR}/guest-toolchain-aarch64.tar"
+if [ ! -f "${TOOLCHAIN_TAR}" ]; then
+  echo "could not find ${TOOLCHAIN_TAR} — run ./fetch-guest-toolchain.sh first" >&2
+  exit 1
+fi
 
 STAGING_DIR="$(mktemp -d)"
 OUT_DIR="$(mktemp -d)"
@@ -73,13 +87,20 @@ echo "aa-isolation-launch-guest-rootfs-test-marker-outside-grant" > "${STAGING_D
 
 docker run --rm --platform linux/arm64 \
   -v "${STAGING_DIR}:/staging:ro" \
+  -v "${TOOLCHAIN_TAR}:/toolchain.tar:ro" \
   -v "${OUT_DIR}:/out" \
   debian:12 bash -c '
     set -e
     apt-get update -qq >/dev/null
     apt-get install -y -qq --no-install-recommends e2fsprogs >/dev/null
-    truncate -s 16M /out/rootfs.img
-    mke2fs -F -q -t ext4 -d /staging -L rootfs /out/rootfs.img
+    # Toolchain first (owns device nodes/symlinks tar itself needs root to
+    # write), then the fixed staging tree layered on top so init/launch/
+    # busybox/testfile always win on any path collision.
+    mkdir -p /build
+    tar -xf /toolchain.tar -C /build
+    cp -a /staging/. /build/
+    truncate -s 192M /out/rootfs.img
+    mke2fs -F -q -t ext4 -d /build -L rootfs /out/rootfs.img
     e2fsck -fn /out/rootfs.img
   '
 

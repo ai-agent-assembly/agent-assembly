@@ -16,6 +16,7 @@
 //! separate readiness poll is needed.
 
 use std::io::{BufReader, BufWriter};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -168,6 +169,125 @@ impl BootAttemptError {
     }
 }
 
+/// AAASM-5870: an advisory cross-process file lock (`flock`) serializing
+/// every [`boot`] call on this host against every other, working around a
+/// confirmed Virtualization.framework race in concurrent
+/// `VZVirtualMachine.start()` validation.
+///
+/// # The evidence, and what this lock does and does not prove
+///
+/// `real_hardware.rs`'s own three tests, each booting a guest at nearly the
+/// same instant under the default parallel test runner, intermittently hit
+/// `VZVirtualMachine.start failed: ... "A directory sharing device
+/// configuration is invalid." ... "No such file or directory"` — confirmed
+/// via un-suppressed helper stderr, and confirmed **not** a defect in this
+/// crate's own directory handling: the shared directory is created
+/// synchronously before the helper is spawned, nothing removes it early,
+/// and every boot's directory name is process/attempt-unique (see
+/// `probe::TempDir` and this module's own `control_socket_dir`). The
+/// failure is inside `VZVirtualMachine.start()`'s own internal validation
+/// (the explicit `config.validate()` call earlier in `main.swift` already
+/// succeeded whenever this is hit), in a closed-source framework this crate
+/// cannot instrument further. `--test-threads=1` — full serialization of
+/// every boot on the host — has already been verified (repeatedly, in this
+/// crate's own real-hardware verification history) to make the failure
+/// disappear entirely. This lock makes that same boundary the crate's own
+/// default behavior instead of a testing convention its callers have to
+/// remember: no two [`boot`] calls from this crate are ever concurrently
+/// inside a helper's `VZVirtualMachine.start()` window, whether they come
+/// from two tests, two `discover()` probes, or two real `aasm run`
+/// invocations on the same host.
+///
+/// This is deliberately **not** narrowed to just the `validate()`/`start()`
+/// window inside the Swift helper — doing that safely would mean either
+/// plumbing a second cross-process lock into `main.swift` itself or
+/// instrumenting the exact internal call graph, and confirming either is
+/// narrow enough requires booting real guests concurrently on real
+/// hardware, which this pass's environment could not do (no prebuilt
+/// `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` artifacts — see this
+/// crate's `tests/real_hardware.rs` module docs). Serializing the whole
+/// [`boot`] call is the wider, already-empirically-proven-safe boundary;
+/// the cost is that two genuinely independent boots now queue behind each
+/// other for the duration of one full boot attempt (bounded by
+/// [`GUEST_CONNECT_TIMEOUT`] and [`MAX_BOOT_ATTEMPTS`]) instead of running
+/// concurrently. **Not verified on live hardware this pass** — this crate's
+/// own advisory-lock mutual-exclusion mechanism has a regression test
+/// (`tests::boot_lock_serializes_concurrent_acquirers`), but whether it is
+/// sufficient to eliminate AAASM-5870's failure on a real host is unproven
+/// here.
+///
+/// `flock` is released automatically by the kernel when the holding
+/// process exits or the file descriptor closes for any reason (including a
+/// crash or [`Child::kill`]), so a wedged or killed boot cannot leave a
+/// stale lock behind for the next caller to hang on.
+struct BootLock {
+    // Held only to keep the fd (and therefore the flock) alive until this
+    // guard drops and `Drop` explicitly unlocks it; the file's own path and
+    // contents carry no information — see `lock_path`.
+    file: std::fs::File,
+}
+
+impl BootLock {
+    /// Block until the exclusive lock at [`lock_path`] is acquired.
+    ///
+    /// Blocking is safe here specifically because this runs *before*
+    /// [`boot_attempt`]'s own bounded timeouts start their clocks — a
+    /// caller queued behind another boot waits extra wall-clock time, but
+    /// never waits unboundedly, since whoever is holding the lock is itself
+    /// bounded by [`GUEST_CONNECT_TIMEOUT`] × [`MAX_BOOT_ATTEMPTS`] plus
+    /// backoff.
+    fn acquire() -> std::io::Result<Self> {
+        let path = lock_path();
+        // `truncate(false)`, deliberately: this file's only purpose is to be
+        // `flock`ed — its contents (there are none) are never read or
+        // meaningful — so truncating on every open is unnecessary churn on
+        // a path other processes may be contending to open concurrently.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
+        // SAFETY: `file`'s fd is valid for the duration of this call, and
+        // `flock` only ever inspects/locks it — no aliasing or lifetime
+        // hazard.
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { file })
+    }
+}
+
+impl Drop for BootLock {
+    fn drop(&mut self) {
+        // Explicit unlock rather than relying solely on the close-on-drop
+        // to release it: makes the release ordering (before the fd closes)
+        // legible rather than incidental. Best-effort — a failure here
+        // means the fd is about to close anyway, which releases the lock
+        // regardless.
+        unsafe {
+            let _ = libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+/// Path to the lock [`BootLock`] serializes on. Fixed and per-user (not
+/// per-process): every [`boot`] caller on this host, across every process
+/// owned by this user, must resolve to the *same* file for the lock to
+/// serialize anything at all. Under `std::env::temp_dir()` (respects
+/// `TMPDIR`) for consistency with every other scratch path this crate uses
+/// (`control_socket_dir`, `probe::TempDir`) — a caveat, not hidden: two
+/// processes with genuinely different `TMPDIR` values (uncommon for the
+/// same user's normal shell/product usage, but possible under some test
+/// harnesses) would not share this lock. The uid suffix only guards against
+/// a permissions conflict if a different user's process ever raced to
+/// create this same well-known path first.
+fn lock_path() -> PathBuf {
+    // SAFETY: `getuid` has no preconditions and never fails.
+    let uid = unsafe { libc::getuid() };
+    std::env::temp_dir().join(format!("aa-isolation-macos-vm-boot-{uid}.lock"))
+}
+
 /// Boot a guest via `config`, sharing `share_dir` (when given) at
 /// [`crate::paths::GUEST_SHARE_MOUNTPOINT`], and wait for it to connect and
 /// send `GuestReady`.
@@ -201,8 +321,14 @@ impl BootAttemptError {
 ///
 /// A `String` describing what failed — the caller ([`crate::MacosVmBackend`])
 /// maps this to [`aa_isolation::SpawnError::Prepare`], since nothing is
-/// running yet at any failure point this function can reach.
+/// running yet at any failure point this function can reach. This includes
+/// a failure to acquire [`BootLock`] itself (AAASM-5870): fail-closed, not
+/// silently unlocked — proceeding without the lock would reintroduce the
+/// exact race this function exists to prevent.
 pub fn boot(config: &VmConfig, share_dir: Option<&Path>) -> Result<VmSession, String> {
+    let _boot_lock = BootLock::acquire()
+        .map_err(|err| format!("could not acquire the boot serialization lock (AAASM-5870): {err}"))?;
+
     let mut last_error = None;
     for attempt in 1..=MAX_BOOT_ATTEMPTS {
         match boot_attempt(config, share_dir) {
@@ -366,4 +492,91 @@ fn unique_suffix() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AAASM-5870 regression coverage for the mechanism [`boot`]'s
+    /// serialization depends on. This cannot exercise the actual
+    /// Virtualization.framework race — that needs a real guest boot, which
+    /// needs hardware this pass did not have artifacts to build against
+    /// (see `tests/real_hardware.rs`'s module docs) — so it proves the one
+    /// thing verifiable without one: [`BootLock::acquire`] genuinely
+    /// provides mutual exclusion across concurrent callers *within one
+    /// process*, not merely that it compiles. `flock`'s cross-process
+    /// exclusion (the property [`boot`] actually depends on, since real
+    /// concurrent boots are separate `aasm`/test-binary processes, not
+    /// threads) is documented, standard OS behavior this test does not
+    /// itself measure — see the module docs above for why a genuine
+    /// multi-process repro needs the same unavailable hardware.
+    ///
+    /// A shared counter stands in for "a helper mid-`VZVirtualMachine.start()`":
+    /// every thread increments it on acquiring the lock, records the peak
+    /// concurrent holder count, then decrements before releasing. A
+    /// [`std::sync::Barrier`] forces all four threads to call
+    /// [`BootLock::acquire`] at effectively the same instant, so a broken
+    /// lock has every opportunity to let them overlap rather than
+    /// coincidentally interleaving one-at-a-time anyway.
+    #[test]
+    fn boot_lock_serializes_concurrent_acquirers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        const THREADS: usize = 4;
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let peak_concurrent = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(THREADS));
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let concurrent = Arc::clone(&concurrent);
+                let peak_concurrent = Arc::clone(&peak_concurrent);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let _lock = BootLock::acquire().expect("acquire the boot lock");
+                    let now_holding = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak_concurrent.fetch_max(now_holding, Ordering::SeqCst);
+                    // Long enough that two acquirers racing past a broken
+                    // lock would overlap and both observe `now_holding` > 1;
+                    // short enough this test stays fast.
+                    std::thread::sleep(Duration::from_millis(100));
+                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+
+        assert_eq!(
+            peak_concurrent.load(Ordering::SeqCst),
+            1,
+            "more than one thread held the boot lock at once — mutual exclusion is broken"
+        );
+    }
+
+    /// [`lock_path`] must depend only on host-stable facts (`TMPDIR`, uid),
+    /// never on anything per-process (pid, a counter, a timestamp) — the
+    /// latter would make every process resolve a *different* lock file and
+    /// silently turn [`BootLock`] into a no-op, exactly the failure mode
+    /// this crate's own `unique_suffix`/`control_socket_dir` convention
+    /// exists for everywhere *except* here. Checked by construction on the
+    /// formatted path itself, not by calling [`lock_path`] twice in one
+    /// process (which would trivially match regardless of what it computed
+    /// from — it can't observe two different processes disagreeing).
+    #[test]
+    fn lock_path_has_no_per_process_component() {
+        let uid = unsafe { libc::getuid() };
+        let path = lock_path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).expect("a file name");
+        assert_eq!(
+            file_name,
+            format!("aa-isolation-macos-vm-boot-{uid}.lock"),
+            "the lock file name must be exactly the uid-suffixed constant, with no pid/timestamp/counter \
+             component, or two processes on the same host would never contend for the same lock"
+        );
+    }
 }
