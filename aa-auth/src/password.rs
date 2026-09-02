@@ -15,9 +15,7 @@
 //! the library default cost. Human passwords are lower-entropy than a 128-bit
 //! random API key, so they are hashed at the deliberately higher OWASP floor.
 
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 
 /// OWASP-recommended argon2id memory cost, in KiB: 19456 KiB = 19 MiB
 /// (ADR 0031 §Q2). This is a floor; it may be raised, never lowered.
@@ -50,9 +48,12 @@ fn hasher() -> Argon2<'static> {
 /// hash is returned. Returns `Err` only if the underlying hasher fails, which
 /// for valid parameters does not happen for well-formed input.
 pub fn hash_password(password: &str) -> Result<String, PasswordHashError> {
-    let salt = SaltString::generate(&mut OsRng);
+    // `hash_password` mints the fresh random salt itself (argon2 0.6 /
+    // password-hash 0.6). It draws `RECOMMENDED_SALT_LEN` bytes from the OS CSPRNG
+    // via getrandom — the same entropy source the explicit `SaltString::generate(&mut OsRng)`
+    // used before, so the salt is no less random for being generated inside the call.
     let hash = hasher()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map_err(|_| PasswordHashError::Hash)?;
     Ok(hash.to_string())
 }
@@ -96,7 +97,7 @@ impl std::error::Error for PasswordHashError {}
 mod tests {
     use super::*;
 
-    use argon2::password_hash::rand_core::RngCore;
+    use rand_core::{OsRng, RngCore as _};
 
     /// Build a throwaway random password string at runtime for the tests.
     ///
@@ -105,6 +106,11 @@ mod tests {
     /// password argument — which is both the honest description of what they are
     /// and what keeps the credential-scanning lint from reading a fixture as a
     /// real hard-coded secret.
+    ///
+    /// `OsRng` now comes from `rand_core` directly: argon2 0.6 no longer re-exports
+    /// it, because `password_hash::rand_core` sits behind a non-default feature.
+    /// This crate already declares `rand_core` (with `getrandom`) as a direct
+    /// dependency, so nothing new is pulled in.
     fn throwaway_password() -> String {
         let mut bytes = [0u8; 16];
         OsRng.fill_bytes(&mut bytes);
