@@ -21,7 +21,7 @@ use super::health::{HealthStatus, RowCounts, StorageHealth};
 use super::metric::{Metric, MetricPoint, MetricQuery};
 use super::policy::{PolicyDocument, PolicyMeta, PolicyVersion};
 use super::postgres_config::PostgresConfig;
-use super::retention::{ColdAction, RetentionPolicy, RetentionStats};
+use super::retention::{RetentionPolicy, RetentionStats};
 use super::timescale::{has_timescaledb_extension, query_timescale_stats};
 use aa_core::config::TimescaleConfig;
 
@@ -828,31 +828,22 @@ impl StorageBackend for PostgresBackend {
     ///
     /// * `dry_run = true` projects `dropped_rows` via `SELECT count(*)`
     ///   without modifying any rows. `freed_bytes` is left at `0` since
-    ///   no chunks are compressed (E18 S-D will replace this path with
-    ///   TimescaleDB `drop_chunks` + byte accounting).
+    ///   no chunks are compressed.
     /// * `dry_run = false`, `cold_action = Drop` → `DELETE FROM
     ///   audit_events WHERE ts < $1`; the affected row count populates
     ///   `dropped_rows`.
-    /// * `cold_action = Archive` → returns
-    ///   `StorageError` until E18 S-D lands the
-    ///   TimescaleDB `drop_chunks()` path. The error surfaces the
-    ///   archive URL so operators see what they configured.
+    /// * `cold_action = Archive` is refused before any query runs — no
+    ///   backend implements archival. See AAASM-5774.
     ///
     /// `hot_rows` is always populated via a second `count(*)` filtered
     /// at the hot cutoff so the caller can report how much data is
     /// indexed-and-queryable after the run.
     async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
-        if matches!(policy.cold_action, ColdAction::Archive) {
-            return Err(StorageError::RetentionError(format!(
-                "archive cold_action not supported by PostgresBackend yet (S-D will add drop_chunks); \
-                 archive_url = {:?}",
-                policy.archive_url
-            )));
-        }
+        policy.ensure_cold_action_supported()?;
 
         let now = chrono::Utc::now();
-        let cold_threshold = now - chrono::Duration::days(i64::from(policy.hot_days + policy.warm_days));
-        let hot_threshold = now - chrono::Duration::days(i64::from(policy.hot_days));
+        let cold_threshold = policy.cold_cutoff(now);
+        let hot_threshold = policy.hot_cutoff(now);
 
         let dropped_rows: u64 = if policy.dry_run {
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE ts < $1")
@@ -944,6 +935,7 @@ impl StorageBackend for PostgresBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::super::retention::ColdAction;
     use super::*;
 
     /// Returns a connected backend when `AAASM_DATABASE_URL` is set, or `None`
@@ -1828,11 +1820,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_retention_archive_returns_error_until_s_d() {
+    async fn apply_retention_archive_is_refused_and_modifies_no_rows() {
         let Some(backend) = pg_backend_or_skip().await else {
             return;
         };
         backend.migrate().await.expect("migrate");
+
+        // Seed a row well past any cutoff this policy would compute, so a
+        // regression that silently deletes on Archive (the SQLite-side
+        // bug this ticket fixes) would be caught here too.
+        let agent_id = fresh_agent_id();
+        let y2k = chrono::DateTime::from_timestamp(946_684_800, 0).expect("Y2K fits in chrono range");
+        backend
+            .append_audit_event(&ancient_event(agent_id, y2k))
+            .await
+            .expect("seed Y2K event");
+
+        let count_before = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query before")
+            .len();
 
         let err = backend
             .apply_retention(&RetentionPolicy {
@@ -1843,12 +1854,12 @@ mod tests {
                 dry_run: false,
             })
             .await
-            .expect_err("Archive must error until E18 S-D wires drop_chunks");
+            .expect_err("Archive must be refused — no backend implements it");
 
         match err {
             StorageError::RetentionError(msg) => {
                 assert!(
-                    msg.contains("archive cold_action not supported"),
+                    msg.contains("cold_action=archive is not implemented"),
                     "RetentionError must explain the unsupported action; got: {msg}",
                 );
                 assert!(
@@ -1858,6 +1869,16 @@ mod tests {
             }
             other => panic!("expected RetentionError, got {other:?}"),
         }
+
+        let count_after = backend
+            .query_audit_events(AuditFilter {
+                agent_id: Some(agent_id),
+                ..AuditFilter::default()
+            })
+            .await
+            .expect("query after")
+            .len();
+        assert_eq!(count_after, count_before, "refused Archive must not modify any rows");
     }
 
     #[tokio::test]
