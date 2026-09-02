@@ -58,7 +58,7 @@
 
 use aa_isolation::{
     permit_only_selector, BackendIdentity, CapabilityDomain, ControlRequirement, DescendantCoverage, EnforcementPlan,
-    ExecutionSpec, FailurePosture, IdentityRef, IsolationBackend, LaunchPosture, RequirementScope,
+    EvidenceKind, ExecutionSpec, FailurePosture, IdentityRef, IsolationBackend, LaunchPosture, RequirementScope,
 };
 use aa_isolation_macos_vm::MacosVmBackend;
 
@@ -192,6 +192,67 @@ fn a_real_filesystem_write_requirement_now_plans_through_negotiate() {
     let handle = backend.spawn(prepared).expect("spawn");
     let disposition = backend.wait_for_exit(&handle).expect("wait_for_exit");
     assert_eq!(disposition.code(), Some(0), "expected exit 0, got {disposition}");
+
+    let _ = std::fs::remove_dir_all(&scratch);
+}
+
+/// **AAASM-6031.** Before this ticket, `evidence()` returned zero records for
+/// a completed run, regardless of what the plan asked for. This proves the
+/// fix against a real, booted guest: a `FilesystemWrite` requirement that
+/// actually ran must leave `Configured` and `Installed` records naming that
+/// domain — the tier every other shipped backend already produces when it has
+/// no per-decision channel (AAASM-6029's spike finding: this backend's is out
+/// of scope, deferred) — and must not claim `Decision`-tier prevention it
+/// cannot support.
+#[test]
+#[ignore]
+fn evidence_reports_configured_and_installed_for_a_real_run() {
+    let backend = MacosVmBackend::discover();
+    assert!(
+        backend.capabilities().availability().is_available(),
+        "backend is Unavailable — set AA_ISOLATION_MACOS_VM_{{HELPER,KERNEL,ROOTFS}}: {:?}",
+        backend.capabilities().availability()
+    );
+
+    let scratch = std::env::temp_dir().join(format!("aa-macos-vm-evidence-test-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).expect("create scratch dir");
+
+    let spec = ExecutionSpec::new(
+        "/usr/local/bin/busybox",
+        IdentityRef::root("real-hardware-evidence-test"),
+    )
+    .with_args(["true"])
+    .with_working_dir(scratch.clone())
+    .with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::FilesystemWrite).with_scope(RequirementScope::Selectors(vec![
+            permit_only_selector(&scratch.to_string_lossy()),
+        ])),
+    );
+
+    let plan = backend.plan(&spec).expect("plans against a measured capability row");
+    let prepared = backend.prepare(plan).expect("prepare");
+    let handle = backend.spawn(prepared).expect("spawn");
+    let disposition = backend.wait_for_exit(&handle).expect("wait_for_exit");
+    assert_eq!(disposition.code(), Some(0), "expected exit 0, got {disposition}");
+
+    let evidence = backend.evidence(&handle);
+    assert!(
+        !evidence.records().is_empty(),
+        "evidence() returned zero records for a completed run — the AAASM-6031 regression"
+    );
+    assert!(
+        evidence
+            .records_for(CapabilityDomain::FilesystemWrite)
+            .any(|r| r.kind == EvidenceKind::Installed),
+        "no Installed record for FilesystemWrite: {:?}",
+        evidence.records()
+    );
+    assert!(
+        !evidence.supports_prevention_claim(CapabilityDomain::FilesystemWrite),
+        "this backend has no per-decision channel out of the guest yet (AAASM-6029) — it must not claim \
+         prevention: {:?}",
+        evidence.records()
+    );
 
     let _ = std::fs::remove_dir_all(&scratch);
 }
