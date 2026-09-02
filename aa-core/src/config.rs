@@ -63,15 +63,12 @@ pub enum ConfigError {
     /// `archive_url` was supplied (in YAML or via env var).
     #[error("archive_url is required when cold_action is archive")]
     ArchiveUrlRequired,
-    /// `storage.retention.warm_days` was less than or equal to
-    /// `hot_days` — the warm tier must extend past the hot tier.
-    #[error("warm_days ({warm}) must be greater than hot_days ({hot})")]
-    WarmDaysNotGreaterThanHotDays {
-        /// The configured `hot_days` value (for the operator-facing message).
-        hot: u32,
-        /// The configured `warm_days` value.
-        warm: u32,
-    },
+    /// `storage.retention.warm_days` was `0` — `warm_days` is the span
+    /// of the warm tier *following* `hot_days`, not an age relative to
+    /// `hot_days`, so it must be a positive span, not merely non-zero
+    /// relative to `hot_days`.
+    #[error("warm_days must be >= 1 (it is the span of the warm tier following hot_days, not an age)")]
+    WarmDaysMustBePositive,
 }
 
 /// Which deployment topology the gateway should boot into.
@@ -218,6 +215,12 @@ pub enum ColdAction {
 /// compressed-but-queryable (warm), then `cold_action` decides. The
 /// `schedule` is a 6-field UTC cron expression — default `0 0 3 * * *`
 /// runs the retention sweep at 03:00 UTC daily.
+///
+/// **`warm_days` is a span, not an age.** It measures how long the warm
+/// tier lasts *after* the hot window ends — it is not an absolute row
+/// age and not measured relative to `hot_days`. A row's total age when
+/// `cold_action` fires is `hot_days + warm_days`: at the shipped
+/// defaults that is 30 + 90 = **120 days**, not 90.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[cfg_attr(feature = "serde", serde(default))]
@@ -671,19 +674,16 @@ impl GatewayConfig {
     /// * `storage.retention.cold_action = archive` requires
     ///   `storage.retention.archive_url` to be set (in YAML or by
     ///   env var) — returns [`ConfigError::ArchiveUrlRequired`].
-    /// * `storage.retention.warm_days` must be strictly greater than
-    ///   `storage.retention.hot_days` — returns
-    ///   [`ConfigError::WarmDaysNotGreaterThanHotDays`].
+    /// * `storage.retention.warm_days` must be `>= 1` — it is the span
+    ///   of the warm tier following `hot_days`, not an age — returns
+    ///   [`ConfigError::WarmDaysMustBePositive`].
     pub fn validate(&self) -> Result<(), ConfigError> {
         let r = &self.storage.retention;
         if r.cold_action == ColdAction::Archive && r.archive_url.is_none() {
             return Err(ConfigError::ArchiveUrlRequired);
         }
-        if r.warm_days <= r.hot_days {
-            return Err(ConfigError::WarmDaysNotGreaterThanHotDays {
-                hot: r.hot_days,
-                warm: r.warm_days,
-            });
+        if r.warm_days < 1 {
+            return Err(ConfigError::WarmDaysMustBePositive);
         }
         Ok(())
     }
@@ -1149,30 +1149,27 @@ agent:
     }
 
     #[test]
-    fn validate_warm_days_must_be_greater_than_hot_days() {
+    fn validate_warm_days_zero_fails() {
         let mut cfg = GatewayConfig::default();
         cfg.storage.retention.hot_days = 60;
-        cfg.storage.retention.warm_days = 30; // < hot_days
-        let err = cfg.validate().expect_err("warm_days <= hot_days must fail");
-        assert!(matches!(
-            err,
-            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 60, warm: 30 }
-        ));
-        assert_eq!(format!("{err}"), "warm_days (30) must be greater than hot_days (60)",);
+        cfg.storage.retention.warm_days = 0;
+        let err = cfg.validate().expect_err("warm_days == 0 must fail");
+        assert!(matches!(err, ConfigError::WarmDaysMustBePositive));
+        assert_eq!(
+            format!("{err}"),
+            "warm_days must be >= 1 (it is the span of the warm tier following hot_days, not an age)",
+        );
     }
 
     #[test]
-    fn validate_warm_days_equal_to_hot_days_also_fails() {
+    fn validate_warm_days_less_than_hot_days_now_passes_widened_rule() {
+        // AAASM-5774: warm_days is a span following hot_days, not an age
+        // relative to it — warm_days=5, hot_days=30 was previously
+        // rejected as "warm not > hot" and is now accepted.
         let mut cfg = GatewayConfig::default();
         cfg.storage.retention.hot_days = 30;
-        cfg.storage.retention.warm_days = 30; // == hot_days
-        let err = cfg
-            .validate()
-            .expect_err("warm_days == hot_days must fail (strict inequality)");
-        assert!(matches!(
-            err,
-            ConfigError::WarmDaysNotGreaterThanHotDays { hot: 30, warm: 30 }
-        ));
+        cfg.storage.retention.warm_days = 5;
+        cfg.validate().expect("warm_days < hot_days must now validate");
     }
 
     #[test]
