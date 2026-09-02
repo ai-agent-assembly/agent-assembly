@@ -119,11 +119,11 @@ async fn put_hot_reloads_config_and_returns_updated_document() {
 }
 
 #[tokio::test]
-async fn put_with_warm_days_le_hot_days_returns_400() {
+async fn put_with_warm_days_zero_returns_400() {
     let app = common::test_app();
     let req_body = serde_json::json!({
         "hot_days": 30,
-        "warm_days": 30,
+        "warm_days": 0,
         "cold_action": "drop",
     });
     let resp = app
@@ -143,13 +143,17 @@ async fn put_with_warm_days_le_hot_days_returns_400() {
     assert_eq!(body["error_code"].as_str(), Some("retention_policy_invalid_warm_days"));
 }
 
+/// AAASM-5774 — `warm_days` is a span following `hot_days`, not an age
+/// relative to it, so a value smaller than `hot_days` (previously
+/// rejected as "warm not > hot") is now accepted.
 #[tokio::test]
-async fn put_with_archive_action_missing_url_returns_400() {
-    let app = common::test_app();
+async fn put_with_warm_days_less_than_hot_days_now_returns_200() {
+    let (engine, _tmp) = build_engine().await;
+    let app = build_app(common::test_state_with_retention_engine(Arc::clone(&engine)));
     let req_body = serde_json::json!({
         "hot_days": 30,
-        "warm_days": 90,
-        "cold_action": "archive",
+        "warm_days": 5,
+        "cold_action": "drop",
     });
     let resp = app
         .oneshot(
@@ -163,22 +167,19 @@ async fn put_with_archive_action_missing_url_returns_400() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    assert_eq!(
-        body["error_code"].as_str(),
-        Some("retention_policy_missing_archive_url")
-    );
+    assert_eq!(body["hot_days"].as_u64(), Some(30));
+    assert_eq!(body["warm_days"].as_u64(), Some(5));
 }
 
 #[tokio::test]
-async fn put_with_archive_action_bad_url_scheme_returns_400() {
+async fn put_with_archive_action_returns_400() {
     let app = common::test_app();
     let req_body = serde_json::json!({
         "hot_days": 30,
         "warm_days": 90,
         "cold_action": "archive",
-        "archive_url": "https://example.com/bucket",
     });
     let resp = app
         .oneshot(
@@ -196,7 +197,7 @@ async fn put_with_archive_action_bad_url_scheme_returns_400() {
     let body = json_body(resp).await;
     assert_eq!(
         body["error_code"].as_str(),
-        Some("retention_policy_invalid_archive_url")
+        Some("retention_policy_archive_unsupported")
     );
 }
 
@@ -374,8 +375,10 @@ async fn put_with_hot_days_zero_returns_400() {
     assert_eq!(body["error_code"].as_str(), Some("retention_policy_invalid_hot_days"));
 }
 
+/// AAASM-5774 — Archive is rejected outright even with a well-formed
+/// `archive_url`; no backend implements it.
 #[tokio::test]
-async fn put_with_archive_action_and_valid_s3_url_returns_200() {
+async fn put_with_archive_action_and_valid_s3_url_returns_400() {
     let (engine, _tmp) = build_engine().await;
     let app = build_app(common::test_state_with_retention_engine(engine));
     let req_body = serde_json::json!({
@@ -395,10 +398,12 @@ async fn put_with_archive_action_and_valid_s3_url_returns_200() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = json_body(resp).await;
-    assert_eq!(body["cold_action"].as_str(), Some("archive"));
-    assert_eq!(body["archive_url"].as_str(), Some("s3://my-bucket/retention/"));
+    assert_eq!(
+        body["error_code"].as_str(),
+        Some("retention_policy_archive_unsupported")
+    );
 }
 
 #[tokio::test]

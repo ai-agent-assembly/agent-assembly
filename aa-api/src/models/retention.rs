@@ -19,7 +19,10 @@ use utoipa::ToSchema;
 pub enum ColdActionDto {
     /// Permanently drop rows older than the warm tier.
     Drop,
-    /// Archive rows to the configured object store URL.
+    /// Reserved for a future archive implementation — **not implemented**
+    /// on any backend. Selecting it is rejected at validation time
+    /// (`retention_policy_archive_unsupported`); kept in the dropdown
+    /// and the schema as inert/reserved rather than removed.
     Archive,
 }
 
@@ -29,13 +32,17 @@ pub enum ColdActionDto {
 pub struct RetentionPolicyDocument {
     /// Days a row stays indexed and queryable in the hot tier.
     pub hot_days: u32,
-    /// Days a row stays in the warm tier (compressed where supported)
-    /// before the cold action runs.
+    /// Days the warm tier spans *following* the hot window — not an
+    /// absolute age. Total row age when `cold_action` fires is
+    /// `hot_days + warm_days` (e.g. 30 + 90 = 120 days at the shipped
+    /// defaults).
     pub warm_days: u32,
-    /// Action applied to rows older than `warm_days`.
+    /// Action applied to rows older than `hot_days + warm_days`.
     pub cold_action: ColdActionDto,
-    /// Archive destination (e.g. `s3://bucket/path`). Required when
-    /// `cold_action == "archive"`; `None` otherwise.
+    /// Reserved for a future archive implementation — not implemented
+    /// on any backend today. `cold_action == "archive"` is rejected at
+    /// validation time (see [`ColdActionDto::Archive`]). Always `None`
+    /// in practice.
     pub archive_url: Option<String>,
     /// When true, the engine logs the work it *would* perform without
     /// taking action.
@@ -75,18 +82,23 @@ pub struct RetentionRunStatsDto {
 /// Body of `PUT /api/v1/admin/retention-policy` — partial update of the
 /// runtime retention configuration. Each field must be present; the
 /// server-side validation matches the dashboard's client-side rules
-/// (hot_days &ge; 1, warm_days &gt; hot_days, archive_url required when
-/// `cold_action == "archive"`).
+/// (hot_days &ge; 1, warm_days &ge; 1 — a span following hot_days, not
+/// an age relative to it — and `cold_action == "archive"` is rejected
+/// outright since no backend implements it).
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct UpdateRetentionPolicyRequest {
     /// New value for `hot_days`. Must be &ge; 1.
     pub hot_days: u32,
-    /// New value for `warm_days`. Must be strictly greater than `hot_days`.
+    /// New value for `warm_days`. Must be &ge; 1. This is the span of
+    /// the warm tier following `hot_days`, not an age — total row age
+    /// at which `cold_action` fires is `hot_days + warm_days`.
     pub warm_days: u32,
-    /// New cold-tier action.
+    /// New cold-tier action. `cold_action == "archive"` is rejected —
+    /// not implemented on any backend.
     pub cold_action: ColdActionDto,
-    /// Archive destination. Required when `cold_action == "archive"`;
-    /// must start with `s3://` or `gs://`.
+    /// Reserved for a future archive implementation — not implemented
+    /// on any backend today; ignored since `cold_action == "archive"`
+    /// is rejected before this field is consulted.
     #[serde(default)]
     pub archive_url: Option<String>,
 }
