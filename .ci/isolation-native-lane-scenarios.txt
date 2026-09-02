@@ -25,14 +25,16 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 16
+# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 17
 # from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
 # aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
 # 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
 # scenarios to the second file and the third file itself, covering
 # DirectEgressBypass, CloudMetadata, AddressRepresentation and
 # UnixSocketsAndDescriptors — the four `AttackFamily` variants this backend has
-# no protection for, only a capability report that says so).
+# no protection for, only a capability report that says so; AAASM-5532 added 1
+# more to the second file, the detached/re-parented-descendant class the
+# AAASM-5872 campaign found uncovered anywhere in this repo).
 #
 # AAASM-5805 also ported four of the Sandlock lane's eight negotiation
 # scenarios to `adversarial_negotiation_native.rs` — the four that generalize
@@ -46,6 +48,7 @@
 # `cargo nextest list`, matching its Sandlock-lane counterpart.
 
 native adversarial: a descendant cannot make a syscall the launch did not permit
+native adversarial: a detached and re-parented grandchild is confined alike
 native adversarial: a direct connection outside any egress grant arrives, and the launch states the domain is uncovered
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant
