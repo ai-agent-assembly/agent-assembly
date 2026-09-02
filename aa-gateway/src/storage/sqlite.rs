@@ -724,15 +724,15 @@ impl StorageBackend for SqliteBackend {
     }
 
     async fn apply_retention(&self, policy: &RetentionPolicy) -> StorageResult<RetentionStats> {
-        if matches!(policy.cold_action, crate::storage::ColdAction::Archive) {
-            tracing::warn!(
-                archive_url = ?policy.archive_url,
-                "archive cold_action not supported on SQLite backend — falling back to drop"
-            );
-        }
+        // Refuse before any query runs — an earlier version of this code
+        // warned then fell through to DELETE anyway, silently dropping
+        // exactly the rows an operator selected Archive to preserve. See
+        // AAASM-5774.
+        policy.ensure_cold_action_supported()?;
+
         let now = chrono::Utc::now();
-        let cold_threshold = now - chrono::Duration::days(i64::from(policy.hot_days + policy.warm_days));
-        let hot_threshold = now - chrono::Duration::days(i64::from(policy.hot_days));
+        let cold_threshold = policy.cold_cutoff(now);
+        let hot_threshold = policy.hot_cutoff(now);
 
         let cold_ts = cold_threshold.to_rfc3339();
         let dropped_rows: u64 = if policy.dry_run {
@@ -1474,14 +1474,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retention_archive_falls_back_to_drop_with_warn() {
+    async fn retention_archive_is_refused_and_modifies_no_rows() {
         let (_tmp, backend) = open_temp_backend().await;
         backend.migrate().await.expect("migrate");
         backend
             .append_audit_event(&seed_dated_event(7, 200))
             .await
             .expect("seed");
-        let stats = backend
+
+        let count_before = backend
+            .count_audit_events(AuditFilter::default())
+            .await
+            .expect("count before");
+
+        let err = backend
             .apply_retention(&RetentionPolicy {
                 hot_days: 30,
                 warm_days: 60,
@@ -1490,12 +1496,67 @@ mod tests {
                 dry_run: false,
             })
             .await
+            .expect_err("Archive must be refused — no backend implements it");
+        match err {
+            StorageError::RetentionError(msg) => {
+                assert!(msg.contains("cold_action=archive is not implemented"), "got: {msg}");
+            }
+            other => panic!("expected RetentionError, got {other:?}"),
+        }
+
+        // This is the actual bug this ticket fixes: the row must still be
+        // there. A test that only checked `expect_err` would have passed
+        // even against the old code, since it fell through to DELETE and
+        // then reported the *drop* as a success — the failure mode was
+        // "warns then deletes anyway", not "returns an Err after deleting".
+        let count_after = backend
+            .count_audit_events(AuditFilter::default())
+            .await
+            .expect("count after");
+        assert_eq!(count_after, count_before, "refused Archive must not modify any rows");
+    }
+
+    #[tokio::test]
+    async fn retention_default_policy_120_day_cutoff_spares_day_91_drops_day_121() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        // Shipped defaults: hot_days = 30, warm_days = 90 → cold cutoff =
+        // 120 days. Pin the boundary against real SQL execution, not
+        // hand-arithmetic: day 91 is well inside the warm tier (must
+        // survive), day 121 is one day past the cutoff (must be dropped).
+        backend
+            .append_audit_event(&seed_dated_event(1, 91))
+            .await
+            .expect("seed day-91");
+        backend
+            .append_audit_event(&seed_dated_event(2, 121))
+            .await
+            .expect("seed day-121");
+
+        backend
+            .apply_retention(&RetentionPolicy {
+                hot_days: 30,
+                warm_days: 90,
+                cold_action: crate::storage::ColdAction::Drop,
+                archive_url: None,
+                dry_run: false,
+            })
+            .await
             .expect("retention");
-        // Archive collapses to drop on SQLite — row must be gone.
-        assert_eq!(stats.dropped_rows, 1);
-        assert_eq!(stats.archived_rows, 0);
-        let remaining = backend.count_audit_events(AuditFilter::default()).await.expect("count");
-        assert_eq!(remaining, 0);
+
+        let remaining = backend
+            .query_audit_events(AuditFilter::default())
+            .await
+            .expect("query remaining");
+        let remaining_seeds: Vec<u8> = remaining.iter().map(|e| e.agent_id.as_bytes()[0]).collect();
+        assert!(
+            remaining_seeds.contains(&1),
+            "day-91 row must survive a 120-day cutoff, got remaining seeds: {remaining_seeds:?}"
+        );
+        assert!(
+            !remaining_seeds.contains(&2),
+            "day-121 row must be dropped by a 120-day cutoff, got remaining seeds: {remaining_seeds:?}"
+        );
     }
 
     #[tokio::test]
