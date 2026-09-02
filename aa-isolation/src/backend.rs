@@ -354,4 +354,28 @@ pub trait IsolationBackend: Send + Sync {
 
     /// What can be claimed about the run behind this handle.
     fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence;
+
+    /// The confined program's captured stdout/stderr, for a backend whose
+    /// confined process does not share the supervisor's own stdio.
+    ///
+    /// `None` by default. Most backends run the confined program as a real
+    /// host `Command` with inherited file descriptors (`aasm-native`,
+    /// sandlock), so the operator's terminal already carries its output for
+    /// free and this accessor has nothing to add. A backend whose confined
+    /// process runs somewhere the supervisor's stdio cannot reach — a guest
+    /// VM, where output arrives back over a control channel rather than a
+    /// shared descriptor — overrides this so a caller like `aasm run` can
+    /// still forward it to the operator (AAASM-5869: without an override
+    /// here, `aasm run exec --isolation-backend aasm-macos-vm` produced a
+    /// correct exit code and a real file-system side effect with no trace of
+    /// the guest program's stdout/stderr anywhere the operator could see).
+    ///
+    /// Only meaningful after [`wait_for_exit`](Self::wait_for_exit) has
+    /// returned for `handle`; a backend that overrides this returns
+    /// `Some((vec![], vec![]))` rather than `None` for a handle it recognises
+    /// but has not yet captured output for, so `None` unambiguously means
+    /// "this backend does not work this way" rather than "no output yet".
+    fn confined_output(&self, _handle: &ExecutionHandle) -> Option<(Vec<u8>, Vec<u8>)> {
+        None
+    }
 }
