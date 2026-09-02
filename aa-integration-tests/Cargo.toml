@@ -58,7 +58,11 @@ aa-gateway  = { path = "../aa-gateway" }
 # AST, aa-isolation lowers it — so only a test here can assert the whole chain.
 # Both this crate and `aa-isolation` are `publish = false`, so this edge never
 # reaches the crates.io dependency graph.
-aa-isolation = { path = "../aa-isolation" }
+# `mock-backend`: AAASM-5532's `adversarial/mod.rs` harness (AAASM-5712) drives
+# `aa_isolation::mock::MockBackend` for its backend-agnostic negotiation
+# assertions — gated behind this feature in `aa-isolation` itself so a
+# production build never links a mock isolation backend.
+aa-isolation = { path = "../aa-isolation", features = ["mock-backend"] }
 aa-storage-postgres = { path = "../aa-storage-postgres" }
 aa-storage-sqlite-buffer = { path = "../aa-storage-sqlite-buffer" }
 aa-proto    = { path = "../aa-proto" }
