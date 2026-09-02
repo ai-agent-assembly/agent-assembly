@@ -79,7 +79,12 @@ Every claim about AASM code below is grounded in a file read at `48d7b8bc3`.
 2. **Sandlock's internals are read from its published documentation at the
    pinned tag `v0.8.6`**, not from its source or from the installed binary. The
    AASM-side facts (which flags AASM emits, that it is driven as an executable)
-   *are* read from AASM's own code.
+   *are* read from AASM's own code. One observed discrepancy is worth carrying:
+  AASM emits `--fs-read`/`--max-memory`/`--cwd` while the published README
+  lists `-r`/`-m`/`--workdir`. The CI lane passes, so these are presumably
+  aliases — but it is direct evidence that the documentation is lossy about
+  the exact surface this survey depends on, which is why the two Sandlock CLI
+  findings are labelled documentation-derived rather than settled.
 
 ## What the gap actually is, precisely
 
@@ -407,8 +412,11 @@ build.
    work**: request a per-decision event stream on Sandlock's CLI
    (`--events-fd` / JSON lines), and — first, because it is nearly free — probe
    `sandlock inspect` on a real Linux host to confirm whether decision state is
-   already reachable without linking. Small; blocked on nobody; the only route
-   where the record already exists.
+   already reachable without linking. **That host already exists in CI**:
+   `ci.yml`'s `isolation-backend-linux` job (`:3100`) installs exactly this
+   digest-verified sandlock v0.8.6 and runs the confinement suite against it, so
+   the probe is a step in an existing green lane rather than a lane to stand up.
+   Small; blocked on nobody; the only route where the record already exists.
 3. **Do not open implementation tickets** for `SECCOMP_RET_USER_NOTIF`, a
    Landlock audit reader, or a macOS guest decision channel. Record them as
    deferred with the triggers below.
