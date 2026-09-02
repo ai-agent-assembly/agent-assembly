@@ -47,12 +47,15 @@ use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, Sensitive
 /// # Migration position
 ///
 /// These statements are `CREATE TABLE IF NOT EXISTS`, so they do **not** alter
-/// the key of a table that already exists. That is acceptable only because this
-/// tier is off by default and has no producer: nothing writes to it until
-/// AAASM-5440 lands, so there is no deployed data to migrate today. That is a
-/// statement about right now, not a property of the design — once a producer
-/// exists, changing this key needs a real migration that recreates the tables.
-const PROJECTION_SCHEMA: &[&str] = &[
+/// the key of a table that already exists — an existing table with a stale
+/// shape is silently left as it stands, key included, rather than widened.
+/// `check_table_columns` (AAASM-5788) makes that non-alteration loud instead
+/// of silent: `migrate_sensitive_data_projection` fails boot if a table that
+/// already existed is missing a column this crate reads or writes, rather
+/// than deferring the failure to whichever read or write hits it first.
+/// Changing the primary key itself still needs a real migration that
+/// recreates the tables — no code path does that today.
+const PROJECTION_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sensitive_data_events (
         schema_version_major      INTEGER NOT NULL,
         schema_version_minor      INTEGER NOT NULL,
@@ -97,11 +100,6 @@ const PROJECTION_SCHEMA: &[&str] = &[
         reason_codes              TEXT    NOT NULL,
         PRIMARY KEY (org_id, tenant_id, event_id)
     )",
-    // Every read is tenant-scoped, so every index leads with the tenant keys.
-    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
-        ON sensitive_data_events(org_id, tenant_id, occurred_at_ns)",
-    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_verdict
-        ON sensitive_data_events(org_id, tenant_id, verdict)",
     "CREATE TABLE IF NOT EXISTS sensitive_data_findings (
         schema_version_major INTEGER NOT NULL,
         schema_version_minor INTEGER NOT NULL,
@@ -123,13 +121,30 @@ const PROJECTION_SCHEMA: &[&str] = &[
         aggregate_key        TEXT    NOT NULL,
         PRIMARY KEY (org_id, tenant_id, event_id, finding_ordinal)
     )",
+];
+
+/// Indexes, applied only after [`check_table_columns`] has confirmed both
+/// tables actually have the columns these indexes name.
+///
+/// Split out from table creation (AAASM-5788): a stale table missing an
+/// indexed column would otherwise fail here with SQLite's raw "no such
+/// column" error, before the clearer `check_table_columns` diagnostic ever
+/// got a chance to run — `apply_statements` runs top to bottom and stops at
+/// the first error, and `CREATE TABLE IF NOT EXISTS` never widens a table
+/// that already existed under the old shape.
+const PROJECTION_INDEXES: &[&str] = &[
+    // Every read is tenant-scoped, so every index leads with the tenant keys.
+    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
+        ON sensitive_data_events(org_id, tenant_id, occurred_at_ns)",
+    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_verdict
+        ON sensitive_data_events(org_id, tenant_id, verdict)",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_category
         ON sensitive_data_findings(org_id, tenant_id, verdict, category)",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_ts
         ON sensitive_data_findings(org_id, tenant_id, occurred_at_ns)",
 ];
 
-/// The inverse of [`PROJECTION_SCHEMA`].
+/// The inverse of [`PROJECTION_TABLES`] + [`PROJECTION_INDEXES`].
 ///
 /// Dropping the table drops its indexes with it, so naming only the tables is
 /// the whole undo. Ordered children-first purely so the statements read in the
@@ -286,7 +301,22 @@ fn push_scope<'a>(qb: &mut sqlx::QueryBuilder<'a, sqlx::Sqlite>, filter: &'a Sen
 #[async_trait]
 impl SensitiveDataProjection for SqliteBackend {
     async fn migrate_sensitive_data_projection(&self) -> StorageResult<()> {
-        apply_statements(self.pool(), PROJECTION_SCHEMA).await
+        apply_statements(self.pool(), PROJECTION_TABLES).await?;
+        // `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already
+        // exists with an older shape — per the *Migration position* note on
+        // `PROJECTION_TABLES`, this tier does in-place evolution by never
+        // altering an existing table, so a stale shape from a build predating
+        // a column addition would otherwise boot silently and fail on the
+        // first read or write that touches the missing column, far from here.
+        // Check the shape actually applied, once, at boot, and fail loudly —
+        // matching the fail-closed behaviour `attach_sensitive_data_projection`
+        // already documents for an unopenable database. This has to run before
+        // `PROJECTION_INDEXES`: an index over a column a stale table doesn't
+        // have would otherwise fail with SQLite's raw "no such column" error
+        // instead of this diagnostic.
+        check_table_columns(self.pool(), "sensitive_data_events", EVENT_COLUMNS).await?;
+        check_table_columns(self.pool(), "sensitive_data_findings", FINDING_COLUMNS).await?;
+        apply_statements(self.pool(), PROJECTION_INDEXES).await
     }
 
     async fn rollback_sensitive_data_projection(&self) -> StorageResult<()> {
@@ -489,7 +519,7 @@ impl SensitiveDataProjection for SqliteBackend {
         let mut out = Vec::new();
         for table in ["sensitive_data_events", "sensitive_data_findings"] {
             // `PRAGMA table_info` reports what the file actually has, which is
-            // the point — a test reading PROJECTION_SCHEMA back would only
+            // the point — a test reading `PROJECTION_TABLES` back would only
             // prove the constant agrees with itself.
             let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
                 .fetch_all(self.pool())
@@ -537,6 +567,37 @@ impl SensitiveDataProjection for SqliteBackend {
             })
             .collect()
     }
+}
+
+/// Verify a table's live columns cover the ones this crate reads and writes.
+///
+/// `columns` is one of `EVENT_COLUMNS`/`FINDING_COLUMNS` — the exact,
+/// order-dependent list every `SELECT`/`INSERT` in this file binds against.
+/// A table created before a column was added to that list has passed its
+/// `CREATE TABLE IF NOT EXISTS` (which does not touch an existing table) but
+/// does not actually have the shape the rest of this module assumes.
+async fn check_table_columns(pool: &SqlitePool, table: &str, columns: &str) -> StorageResult<()> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::MigrationFailed(format!("inspect {table}: {e}")))?;
+    let present: std::collections::HashSet<String> = rows
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    let missing: Vec<&str> = columns
+        .split(',')
+        .map(str::trim)
+        .filter(|col| !present.contains(*col))
+        .collect();
+    if !missing.is_empty() {
+        return Err(StorageError::MigrationFailed(format!(
+            "{table} exists but is missing column(s) {}: it predates the current schema and was not \
+             altered in place — CREATE TABLE IF NOT EXISTS never widens an existing table",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Apply a DDL set atomically.
