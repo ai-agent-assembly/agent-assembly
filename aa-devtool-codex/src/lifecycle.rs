@@ -38,13 +38,14 @@
 use std::collections::BTreeMap;
 
 use aa_devtool_contract::{
-    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CapabilitySupport,
-    DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EnvValue, EvidenceKind,
-    GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus,
-    IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, NextLevel, PolicyPosture, ProbeDescriptor,
-    ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan, SettingsMerge, SettingsScope,
-    StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions, ToolVersion, VerificationOutcome,
-    VerificationResult, VersionCompatibility, VersionSupport, LIFECYCLE_SCHEMA_VERSION,
+    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CallerEnvironment,
+    CapabilitySupport, DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EnvValue,
+    EvidenceKind, GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
+    IntegrationStatus, IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, NextLevel, PolicyPosture,
+    ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState, RemovalPlan,
+    SettingsMerge, SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions,
+    ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
+    LIFECYCLE_SCHEMA_VERSION,
 };
 use async_trait::async_trait;
 
@@ -520,6 +521,9 @@ impl DevToolIntegration for CodexIntegration {
     async fn integration_status(
         &self,
         receipt: Option<&IntegrationReceipt>,
+        // Codex has no environment-based bypass detection to read this from
+        // (see module docs); accepted only to satisfy the trait.
+        _caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         let now = now_unix_secs();
         let detected = self.detect();
@@ -587,7 +591,11 @@ impl DevToolIntegration for CodexIntegration {
         })
     }
 
-    async fn verify_integration(&self, receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        receipt: &IntegrationReceipt,
+        _caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         let now = now_unix_secs();
         let evidence = self.read_back_evidence(receipt, now);
         let mismatched: Vec<String> = evidence

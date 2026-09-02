@@ -10,12 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::SystemTime;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use uuid::Uuid;
 
 use aa_core::identity::{AgentId, SessionId};
+use aa_core::storage::{ApprovalDecisionRow, ApprovalRecord, ApprovalStore};
 use aa_core::time::Timestamp;
 use aa_core::{AuditEntry, AuditEventType};
 
@@ -317,6 +318,15 @@ pub struct ApprovalQueue {
     /// not poll. `OnceLock` keeps the resolve hot path lock-free; the notifier
     /// is installed once at startup.
     resolved_notifier: OnceLock<Arc<dyn ApprovalResolvedNotifier>>,
+    /// Optional shared backing store (AAASM-5657). `OnceLock` for the same
+    /// reason as `resolved_notifier`: installed once at startup, read on
+    /// every hot-path call without taking a lock.
+    storage: OnceLock<Arc<dyn ApprovalStore>>,
+    /// Ids ingested from `storage` by another process's submission rather
+    /// than submitted locally. An ingested entry has no local timeout task
+    /// and no local oneshot waiter with a real receiver — see
+    /// [`rehydrate_from_storage`](Self::rehydrate_from_storage).
+    ingested: DashSet<ApprovalRequestId>,
 }
 
 /// Hash a string into a 16-byte identifier using SHA-256 truncation.
@@ -325,6 +335,40 @@ fn hash_to_16(s: &str) -> [u8; 16] {
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest[..16]);
     out
+}
+
+/// Counts from one [`ApprovalQueue::sync_with_storage`] tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SyncStats {
+    /// Rows discovered in storage and ingested as new local entries.
+    pub ingested: usize,
+    /// Locally-pending entries resolved by a decision recorded elsewhere.
+    pub applied: usize,
+    /// Expired pending rows swept to `timed_out`.
+    pub swept: usize,
+}
+
+/// Build the persisted-decision row for `id`/`decision` at the current time.
+fn decision_row(id: ApprovalRequestId, decision: &ApprovalDecision) -> ApprovalDecisionRow {
+    let decided_at = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (status, decided_by, decision_reason, decision_conditions) = match decision {
+        ApprovalDecision::Approved { by, reason, conditions } => {
+            ("approved", by.clone(), reason.clone(), conditions.clone())
+        }
+        ApprovalDecision::Rejected { by, reason } => ("rejected", by.clone(), Some(reason.clone()), Vec::new()),
+        ApprovalDecision::TimedOut { .. } => ("timed_out", "timeout".to_string(), None, Vec::new()),
+    };
+    ApprovalDecisionRow {
+        request_id: id.to_string(),
+        status: status.to_string(),
+        decided_at,
+        decided_by,
+        decision_reason,
+        decision_conditions,
+    }
 }
 
 impl ApprovalQueue {
@@ -343,6 +387,8 @@ impl ApprovalQueue {
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
+            storage: OnceLock::new(),
+            ingested: DashSet::new(),
         })
     }
 
@@ -364,6 +410,8 @@ impl ApprovalQueue {
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
+            storage: OnceLock::new(),
+            ingested: DashSet::new(),
         })
     }
 
@@ -385,6 +433,8 @@ impl ApprovalQueue {
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
+            storage: OnceLock::new(),
+            ingested: DashSet::new(),
         })
     }
 
@@ -396,6 +446,253 @@ impl ApprovalQueue {
     /// is installed once at startup). Returns `true` if this call installed it.
     pub fn set_resolved_notifier(&self, notifier: Arc<dyn ApprovalResolvedNotifier>) -> bool {
         self.resolved_notifier.set(notifier).is_ok()
+    }
+
+    /// Install the shared backing store (AAASM-5657). Idempotent per queue:
+    /// the first call wins. Returns `true` if this call installed it.
+    ///
+    /// A queue with no storage installed behaves exactly as before this
+    /// ticket — `submit`/`decide` are unaffected, and the `_persisted`
+    /// variants below degrade to their non-persisted equivalents.
+    pub fn set_storage(&self, storage: Arc<dyn ApprovalStore>) -> bool {
+        self.storage.set(storage).is_ok()
+    }
+
+    /// [`submit`](Self::submit), and also persist the request if a storage
+    /// backend is installed. A persistence failure is logged, not fatal —
+    /// the request still proceeds locally, since a process that cannot reach
+    /// its own storage should still be able to hold approvals for itself.
+    pub async fn submit_persisted(self: &Arc<Self>, request: ApprovalRequest) -> (ApprovalRequestId, ApprovalFuture) {
+        if let Some(store) = self.storage.get() {
+            // Serialization failure here is distinct from — and logged
+            // separately from — a deserialization failure on the read side
+            // (`ingest_row`'s "corrupt persisted fallback"): an empty
+            // fallback_json written here would otherwise surface there as a
+            // misleading "corrupt" report when the actual cause was this
+            // write never producing valid JSON in the first place.
+            match serde_json::to_string(&request.fallback) {
+                Ok(fallback_json) => {
+                    let record = ApprovalRecord {
+                        request_id: request.request_id.to_string(),
+                        agent_id: request.agent_id.clone(),
+                        action: request.action.clone(),
+                        condition_triggered: request.condition_triggered.clone(),
+                        submitted_at: request.submitted_at,
+                        timeout_secs: request.timeout_secs,
+                        team_id: request.team_id.clone(),
+                        fallback_json,
+                    };
+                    if let Err(e) = store.insert_pending(&record).await {
+                        tracing::warn!(error = %e, request_id = %request.request_id, "failed to persist approval request");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, request_id = %request.request_id, "failed to serialize approval fallback — not persisted");
+                }
+            }
+        }
+        self.submit(request)
+    }
+
+    /// [`decide`](Self::decide), and also persist the decision if a storage
+    /// backend is installed and the decision applied. Same fail-open-locally
+    /// posture as [`submit_persisted`](Self::submit_persisted).
+    pub async fn decide_persisted(
+        &self,
+        id: ApprovalRequestId,
+        decision: ApprovalDecision,
+    ) -> Result<(), ApprovalError> {
+        let result = self.decide(id, decision.clone());
+        if result.is_ok() {
+            if let Some(store) = self.storage.get() {
+                let row = decision_row(id, &decision);
+                if let Err(e) = store.record_decision(&id.to_string(), &row).await {
+                    tracing::warn!(error = %e, request_id = %id, "failed to persist approval decision");
+                }
+            }
+        }
+        result
+    }
+
+    /// Ingest `record` as a request this process did not submit.
+    ///
+    /// An ingested entry gets no local timeout task and no reachable local
+    /// waiter — the process that owns the actual blocked caller is whichever
+    /// one called [`submit_persisted`]. Its own oneshot receiver is dropped
+    /// immediately: `resolve`'s existing "ignore send errors" handling
+    /// already treats a dropped receiver as normal (the caller gave up
+    /// waiting), which is exactly this case from the ingesting process's
+    /// point of view. No-op if the id is already known locally.
+    fn ingest_row(&self, record: ApprovalRecord) {
+        let Ok(id) = Uuid::parse_str(&record.request_id) else {
+            tracing::warn!(request_id = %record.request_id, "ignoring persisted approval row with an unparseable id");
+            return;
+        };
+        if self.pending.contains_key(&id) {
+            return;
+        }
+        let fallback: aa_core::PolicyResult = serde_json::from_str(&record.fallback_json).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, request_id = %id, "corrupt persisted fallback — defaulting to Deny");
+            aa_core::PolicyResult::Deny {
+                reason: "corrupt persisted fallback".to_string(),
+            }
+        });
+        let request = ApprovalRequest {
+            request_id: id,
+            agent_id: record.agent_id,
+            action: record.action,
+            condition_triggered: record.condition_triggered,
+            submitted_at: record.submitted_at,
+            timeout_secs: record.timeout_secs,
+            fallback,
+            team_id: record.team_id,
+            timeout_override_secs: None,
+            escalation_role_override: None,
+        };
+        let (tx, rx) = oneshot::channel();
+        drop(rx);
+        let _ = self.event_tx.send(request.clone());
+        self.pending.insert(id, (request, tx));
+        self.ingested.insert(id);
+    }
+
+    /// Load every currently-pending row from storage and ingest the ones not
+    /// already held locally. Call once at process startup, after
+    /// [`set_storage`](Self::set_storage), before serving traffic.
+    ///
+    /// Returns the number of rows ingested.
+    pub async fn rehydrate_from_storage(self: &Arc<Self>) -> aa_core::storage::Result<usize> {
+        let Some(store) = self.storage.get() else {
+            return Ok(0);
+        };
+        let rows = store.list_pending().await?;
+        let mut ingested = 0;
+        for record in rows {
+            if let Ok(id) = Uuid::parse_str(&record.request_id) {
+                if !self.pending.contains_key(&id) {
+                    self.ingest_row(record);
+                    ingested += 1;
+                }
+            }
+        }
+        Ok(ingested)
+    }
+
+    /// One poll tick against the shared store: ingest new pending rows from
+    /// other processes, apply decisions other processes have recorded for
+    /// requests held locally, and lazily sweep expired pending rows.
+    ///
+    /// The sweep step also covers a gap that exists even for a *locally
+    /// owned* (submitted-here) request: `submit`'s spawned timeout task
+    /// calls `resolve` directly and does not persist the timeout, so without
+    /// this sweep a local timeout would never reach the shared table.
+    /// `resolve` is idempotent, so sweeping an entry this process already
+    /// resolved locally is a harmless no-op.
+    ///
+    /// No-op (returns the zero-valued stats) if no storage is installed.
+    pub async fn sync_with_storage(self: &Arc<Self>) -> aa_core::storage::Result<SyncStats> {
+        let Some(store) = self.storage.get() else {
+            return Ok(SyncStats::default());
+        };
+        let mut stats = SyncStats::default();
+
+        // 1. Ingest rows this process has not seen yet.
+        for record in store.list_pending().await? {
+            if let Ok(id) = Uuid::parse_str(&record.request_id) {
+                if !self.pending.contains_key(&id) {
+                    self.ingest_row(record);
+                    stats.ingested += 1;
+                }
+            }
+        }
+
+        // 2. Apply decisions recorded elsewhere for ids still pending here.
+        let local_ids: Vec<String> = self.pending.iter().map(|e| e.key().to_string()).collect();
+        if !local_ids.is_empty() {
+            for row in store.list_resolved_for(&local_ids).await? {
+                let Ok(id) = Uuid::parse_str(&row.request_id) else {
+                    continue;
+                };
+                let decision = match row.status.as_str() {
+                    "approved" => Some(ApprovalDecision::Approved {
+                        by: row.decided_by.clone(),
+                        reason: row.decision_reason.clone(),
+                        conditions: row.decision_conditions.clone(),
+                    }),
+                    "rejected" => Some(ApprovalDecision::Rejected {
+                        by: row.decided_by.clone(),
+                        reason: row.decision_reason.clone().unwrap_or_default(),
+                    }),
+                    // The row carries no fallback; recover it from the local
+                    // entry this decision is being applied to.
+                    "timed_out" => self.pending.get(&id).map(|e| ApprovalDecision::TimedOut {
+                        fallback: e.value().0.fallback.clone(),
+                    }),
+                    _ => None,
+                };
+                if let Some(decision) = decision {
+                    if self.resolve(id, decision) {
+                        stats.applied += 1;
+                    }
+                }
+            }
+        }
+
+        // 3. Lazily sweep expired pending rows.
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let expired: Vec<(ApprovalRequestId, ApprovalRequest)> = self
+            .pending
+            .iter()
+            .filter_map(|e| {
+                let req = &e.value().0;
+                if now >= req.submitted_at.saturating_add(req.timeout_secs) {
+                    Some((*e.key(), req.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, req) in expired {
+            let decision = ApprovalDecision::TimedOut {
+                fallback: req.fallback.clone(),
+            };
+            let row = decision_row(id, &decision);
+            if let Ok(true) = store.record_decision(&id.to_string(), &row).await {
+                stats.swept += 1;
+            }
+            self.resolve(id, decision);
+        }
+
+        Ok(stats)
+    }
+
+    /// Spawn a background task that calls [`sync_with_storage`](Self::sync_with_storage)
+    /// on `interval` until `cancel` fires. No-op (spawns nothing) if no
+    /// storage is installed at call time.
+    pub fn spawn_storage_sync(
+        self: &Arc<Self>,
+        interval: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
+    ) {
+        if self.storage.get().is_none() {
+            return;
+        }
+        let queue = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = tokio::time::sleep(interval) => {
+                        if let Err(e) = queue.sync_with_storage().await {
+                            tracing::warn!(error = %e, "approval storage sync tick failed");
+                        }
+                    }
+                }
+            }
+        });
     }
 
     /// Subscribe to approval request events.
@@ -1793,5 +2090,306 @@ mod tests {
         // remain in insertion order.
         let kept_ids: Vec<_> = history.iter().map(|r| r.request_id).collect();
         assert_eq!(kept_ids, ids[ids.len() - cap..].to_vec());
+    }
+
+    // -------------------------------------------------------------------
+    // AAASM-5657: shared storage seam
+    // -------------------------------------------------------------------
+
+    mod storage_seam {
+        use std::collections::HashMap;
+        use std::sync::Mutex as StdMutex;
+
+        use aa_core::storage::ApprovalRoutingRow;
+
+        use super::*;
+
+        /// In-memory `ApprovalStore` standing in for a real backend, so
+        /// these tests exercise the trait contract without a database.
+        #[derive(Default)]
+        struct FakeStore {
+            pending: StdMutex<HashMap<String, ApprovalRecord>>,
+            decisions: StdMutex<HashMap<String, ApprovalDecisionRow>>,
+        }
+
+        #[async_trait::async_trait]
+        impl ApprovalStore for FakeStore {
+            async fn insert_pending(&self, record: &ApprovalRecord) -> aa_core::storage::Result<()> {
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .insert(record.request_id.clone(), record.clone());
+                Ok(())
+            }
+
+            async fn record_decision(
+                &self,
+                request_id: &str,
+                decision: &ApprovalDecisionRow,
+            ) -> aa_core::storage::Result<bool> {
+                let mut decisions = self.decisions.lock().unwrap();
+                if decisions.contains_key(request_id) {
+                    return Ok(false); // already decided — conditional-on-pending semantics
+                }
+                decisions.insert(request_id.to_string(), decision.clone());
+                Ok(true)
+            }
+
+            async fn list_pending(&self) -> aa_core::storage::Result<Vec<ApprovalRecord>> {
+                let decisions = self.decisions.lock().unwrap();
+                Ok(self
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|r| !decisions.contains_key(&r.request_id))
+                    .cloned()
+                    .collect())
+            }
+
+            async fn list_resolved_for(
+                &self,
+                request_ids: &[String],
+            ) -> aa_core::storage::Result<Vec<ApprovalDecisionRow>> {
+                let decisions = self.decisions.lock().unwrap();
+                Ok(request_ids.iter().filter_map(|id| decisions.get(id).cloned()).collect())
+            }
+
+            async fn update_routing(
+                &self,
+                _request_id: &str,
+                _routing: &ApprovalRoutingRow,
+            ) -> aa_core::storage::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn now_secs() -> u64 {
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        }
+
+        fn fresh_request(timeout_secs: u64) -> ApprovalRequest {
+            let mut req = make_request(timeout_secs);
+            req.submitted_at = now_secs();
+            req
+        }
+
+        // --- backward compatibility: no storage installed ---
+
+        #[tokio::test]
+        async fn without_storage_installed_persisted_methods_are_pure_passthroughs() {
+            let q = ApprovalQueue::new();
+            let req = fresh_request(60);
+            let id = req.request_id;
+            let (rid, _fut) = q.submit_persisted(req).await;
+            assert_eq!(rid, id);
+            assert!(q.list().iter().any(|p| p.request_id == id));
+
+            q.decide_persisted(
+                id,
+                ApprovalDecision::Approved {
+                    by: "tester".to_string(),
+                    reason: None,
+                    conditions: vec![],
+                },
+            )
+            .await
+            .expect("decide should succeed with no storage installed");
+
+            let stats = q
+                .sync_with_storage()
+                .await
+                .expect("sync must not error with no storage");
+            assert_eq!(stats, SyncStats::default(), "sync with no storage installed is a no-op");
+
+            let rehydrated = q
+                .rehydrate_from_storage()
+                .await
+                .expect("rehydrate must not error with no storage");
+            assert_eq!(rehydrated, 0);
+        }
+
+        // --- submit -> persist, decide -> persist ---
+
+        #[tokio::test]
+        async fn submit_persisted_writes_a_pending_row() {
+            let q = ApprovalQueue::new();
+            let store = Arc::new(FakeStore::default());
+            assert!(q.set_storage(store.clone() as Arc<dyn ApprovalStore>));
+
+            let req = fresh_request(60);
+            let id = req.request_id;
+            q.submit_persisted(req).await;
+
+            let pending = store.list_pending().await.unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].request_id, id.to_string());
+        }
+
+        #[tokio::test]
+        async fn decide_persisted_writes_a_decision_row() {
+            let q = ApprovalQueue::new();
+            let store = Arc::new(FakeStore::default());
+            q.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+
+            let req = fresh_request(60);
+            let id = req.request_id;
+            q.submit_persisted(req).await;
+
+            q.decide_persisted(
+                id,
+                ApprovalDecision::Rejected {
+                    by: "bob".to_string(),
+                    reason: "no".to_string(),
+                },
+            )
+            .await
+            .expect("decide should succeed");
+
+            let rows = store.list_resolved_for(&[id.to_string()]).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].status, "rejected");
+            assert_eq!(rows[0].decided_by, "bob");
+        }
+
+        // --- ingest-pending: a second queue discovers the first queue's request ---
+
+        #[tokio::test]
+        async fn sync_ingests_a_request_submitted_by_another_queue() {
+            let store = Arc::new(FakeStore::default());
+
+            let submitter = ApprovalQueue::new();
+            submitter.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            let req = fresh_request(60);
+            let id = req.request_id;
+            submitter.submit_persisted(req).await;
+
+            let observer = ApprovalQueue::new();
+            observer.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            assert!(
+                observer.list().is_empty(),
+                "observer must start with nothing until it syncs"
+            );
+
+            let stats = observer.sync_with_storage().await.unwrap();
+            assert_eq!(stats.ingested, 1);
+            assert!(observer.list().iter().any(|p| p.request_id == id));
+            assert!(
+                observer.ingested.contains(&id),
+                "an ingested entry must be tracked as not locally owned"
+            );
+        }
+
+        // --- an ingested entry arms no local timer: decide() on it never races a spurious local timeout ---
+
+        #[tokio::test]
+        async fn an_ingested_entry_is_decidable_and_has_no_local_timer() {
+            let store = Arc::new(FakeStore::default());
+
+            let submitter = ApprovalQueue::new();
+            submitter.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            // A short timeout: if ingestion ever armed a local timer, this
+            // request would auto-resolve to TimedOut well before the
+            // assertion below runs.
+            let req = fresh_request(1);
+            let id = req.request_id;
+            submitter.submit_persisted(req).await;
+
+            let observer = ApprovalQueue::new();
+            observer.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            observer.rehydrate_from_storage().await.unwrap();
+
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+
+            // Still pending on the observer — no local timer fired.
+            assert!(observer.list().iter().any(|p| p.request_id == id));
+
+            observer
+                .decide(
+                    id,
+                    ApprovalDecision::Approved {
+                        by: "carol".to_string(),
+                        reason: None,
+                        conditions: vec![],
+                    },
+                )
+                .expect("an ingested entry must be decidable");
+        }
+
+        // --- apply-resolution: a decision recorded elsewhere resolves the local pending future ---
+
+        #[tokio::test]
+        async fn sync_applies_a_decision_recorded_by_another_queue() {
+            let store = Arc::new(FakeStore::default());
+
+            let submitter = ApprovalQueue::new();
+            submitter.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            let req = fresh_request(60);
+            let id = req.request_id;
+            let (_rid, fut) = submitter.submit_persisted(req).await;
+
+            let decider = ApprovalQueue::new();
+            decider.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+            decider.rehydrate_from_storage().await.unwrap();
+            decider
+                .decide_persisted(
+                    id,
+                    ApprovalDecision::Approved {
+                        by: "dave".to_string(),
+                        reason: None,
+                        conditions: vec![],
+                    },
+                )
+                .await
+                .expect("decide should succeed");
+
+            let stats = submitter.sync_with_storage().await.unwrap();
+            assert_eq!(stats.applied, 1);
+            let decision = fut.await.expect("submitter's future must resolve");
+            assert!(matches!(decision, ApprovalDecision::Approved { by, .. } if by == "dave"));
+        }
+
+        // --- expiry-sweep ---
+
+        #[tokio::test]
+        async fn sync_sweeps_an_expired_pending_row() {
+            let store = Arc::new(FakeStore::default());
+            let q = ApprovalQueue::new();
+            q.set_storage(store.clone() as Arc<dyn ApprovalStore>);
+
+            // make_request's fixed submitted_at (1_700_000_000) is far in the
+            // past relative to real "now", so any positive timeout is
+            // already expired.
+            let req = make_request(1);
+            let id = req.request_id;
+            // Bypass the local timer entirely: insert directly into storage,
+            // as if another (now-crashed) process had submitted it.
+            store
+                .insert_pending(&ApprovalRecord {
+                    request_id: id.to_string(),
+                    agent_id: req.agent_id.clone(),
+                    action: req.action.clone(),
+                    condition_triggered: req.condition_triggered.clone(),
+                    submitted_at: req.submitted_at,
+                    timeout_secs: req.timeout_secs,
+                    team_id: req.team_id.clone(),
+                    fallback_json: serde_json::to_string(&req.fallback).unwrap(),
+                })
+                .await
+                .unwrap();
+
+            let stats = q.sync_with_storage().await.unwrap();
+            assert_eq!(stats.ingested, 1, "the orphaned row must be ingested first");
+            assert_eq!(stats.swept, 1, "an expired row must be swept in the same tick");
+            assert!(
+                q.get_by_id(id).is_some(),
+                "the swept request must be observable as resolved"
+            );
+            let rows = store.list_resolved_for(&[id.to_string()]).await.unwrap();
+            assert_eq!(rows[0].status, "timed_out");
+        }
     }
 }

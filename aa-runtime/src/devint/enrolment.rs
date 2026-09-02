@@ -226,15 +226,19 @@ mod tests {
 
     /// Point the enrolment path at a temp file for the duration of a test.
     ///
-    /// `AA_DEVINT_TOKEN_FILE` is process-global, so these tests are serialized
-    /// by a mutex rather than by hope.
+    /// `AA_DEVINT_TOKEN_FILE` is process-global and this crate's tests run in
+    /// one process under plain `cargo test`, so this goes through
+    /// [`crate::test_env::EnvGuard`] — the one crate-wide, panic-safe lock
+    /// (AAASM-5970) — rather than a mutex scoped to this module, which would
+    /// only serialize this file's own tests and miss the collision with
+    /// `runtime.rs`'s DI-API wiring tests, which set this same var directly.
+    /// Restoring via the guard's `Drop` (rather than an unconditional
+    /// `remove_var` after `f()` returns) also means a panicking `f` still
+    /// leaves the var as it found it.
     fn with_path<T>(path: &Path, f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var(ENROLMENT_PATH_ENV, path);
-        let out = f();
-        std::env::remove_var(ENROLMENT_PATH_ENV);
-        out
+        let mut env = crate::test_env::EnvGuard::new();
+        env.set(ENROLMENT_PATH_ENV, path);
+        f()
     }
 
     #[test]

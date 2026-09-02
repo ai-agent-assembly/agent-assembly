@@ -116,6 +116,41 @@ gate** — it must never be converted into an inferred PASS to unblock a
 release; unresolved mandatory coverage requires either completing the
 verification or an explicit, recorded human waiver.
 
+## 1.7. Evidence finalization — bind sign-offs into an immutable record (AAASM-6001)
+
+Both sign-offs above (`docs/release/qa-signoff/v<version>.md` and
+`docs/release/security-signoff/v<version>.md`) exist as prose. Neither
+`section 2`'s tag push nor `scripts/release-readiness.sh` check 14 reads
+that prose directly — they bind to a separate, machine-readable, committed
+artifact: `docs/release/qa-signoff/v<version>.evidence.json` (schema:
+`docs/release/qa-verification-manifest-schema.md`). Nothing in sections 1.5/1.6
+generates that file; run `/release-evidence-finalize <version>` explicitly,
+after both sign-offs are final, before section 2:
+
+```bash
+python3 scripts/qa/build-release-evidence.py --repo-root . --version <version>
+git add docs/release/qa-signoff/v<version>.evidence.json  # or v<version>.attempt-<N>.evidence.json
+git commit -m "📝 (release): Evidence for v<version> (verdict: <PASS|BLOCK>)"
+```
+
+A version's **first** real verification attempt writes the legacy
+(non-suffixed) path; a **later** re-verification (BLOCK → remediate → fresh
+sign-off(s) → re-run) mints `v<version>.attempt-<N>.evidence.json` instead —
+a prior `BLOCK` attempt's evidence is never overwritten, amended, or
+converted to `PASS` (AAASM-6001 owner decision: append-only evidence
+attempts). Running this against a candidate that already has recorded
+evidence refuses — nothing changed since that attempt for this rule to
+newly assess.
+
+Committing the evidence file necessarily advances `HEAD` one commit past
+the `candidate_sha` it names — this is expected. `scripts/release-tag-guard.sh`
+accepts `HEAD` descending from `candidate_sha` **only** through commits that
+touch exclusively this version's own sign-off/evidence artifacts (Core ADR 0037,
+AAASM-6001 Option 4): keep the evidence commit to exactly the evidence
+file, nothing else. See
+[`.claude/skills/release-evidence-finalize/SKILL.md`](../../.claude/skills/release-evidence-finalize/SKILL.md)
+for the full procedure and post-conditions.
+
 ## 2. Tag push — IRREVERSIBLE
 
 This is the point of no return. Tag pushes can be deleted but the bytes
@@ -128,9 +163,15 @@ bash scripts/release-tag-guard.sh <version>
 **Do not run `git tag` / `git push` directly for this step** (AAASM-5879).
 `scripts/release-tag-guard.sh` is the only sanctioned way to create/push
 the tag: it re-runs `scripts/release-readiness.sh` (all 14 checks,
-including sections 1.5/1.6's security/QA sign-off PASS), enforces a strict
-`candidate_sha == HEAD` binding against the committed release-evidence
-record, refuses if the tag already exists, and refuses on a remote that
+including sections 1.5/1.6's security/QA sign-off PASS and section 1.7's
+finalized evidence), re-verifies candidate binding fresh against `HEAD`
+immediately before tagging (AAASM-5998 — TOCTOU defense-in-depth re-running
+the same R1/R1b rules check 14 already ran against the committed
+release-evidence record), then additionally runs a narrower,
+version-scoped candidate/tag binding check (AAASM-6001 Option 4, Core ADR 0037)
+that refuses any change riding into the tagged commit besides this
+version's own sign-off/evidence artifacts, refuses if the tag already
+exists, and refuses on a remote that
 doesn't resolve to `ai-agent-assembly/agent-assembly`. A raw `git tag -a`
 + `git push remote <tag>` bypasses every one of those checks — the exact
 kind of undocumented second path this project's release automation is

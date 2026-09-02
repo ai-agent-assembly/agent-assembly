@@ -54,8 +54,20 @@ fn resolve_mode(cli_mode: Option<Mode>, env_lookup: impl Fn(&str) -> Option<Stri
 }
 
 /// Agent Assembly governance gateway — gRPC policy evaluation server.
+///
+/// `long_version` names the commit this binary was compiled from, not only
+/// its semver (AAASM-5984) — `aa-gateway` owns the governance audit sink, and
+/// an audit chain is worth less if the build that appended to it cannot be
+/// named. Read from `aa_runtime::build_identity` rather than derived
+/// here, for the same reason `aa-proxy` does: compiled in the same `cargo
+/// build` invocation as `aa-runtime`, so they cannot disagree by construction.
 #[derive(Parser)]
-#[command(name = "aa-gateway", version, about)]
+#[command(
+    name = "aa-gateway",
+    version,
+    long_version = aa_runtime::build_identity::LONG_VERSION,
+    about
+)]
 struct Cli {
     /// Deployment mode. Overrides the `AA_MODE` environment variable.
     /// Default — when neither flag nor env are set — is `legacy-grpc`.
@@ -92,6 +104,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let cli = Cli::parse();
+
+    // AAASM-5984: state which build is about to serve before any real work
+    // starts, matching aa-proxy's own startup identity line.
+    let identity = aa_runtime::build_identity::BuildIdentity::of_this_build();
+    tracing::info!(
+        build_sha = %identity.build_sha,
+        build_identity_source = %identity.sha_source.as_str(),
+        version = %identity.core_version,
+        "aa-gateway starting",
+    );
 
     // `--audit-dir` is a thin alias for the env var so the spawned
     // gateway picks it up through `default_audit_dir()` (AAASM-1601).
@@ -148,7 +170,13 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // is present) so legacy callers get persistence without changing
     // their CLI invocation.
     let cfg = aa_core::config::GatewayConfig::load()?;
-    let storage = aa_gateway::storage::open_sqlite_backend(&cfg.local.storage_path).await?;
+    // Opened as the concrete backend rather than through
+    // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
+    // `ApprovalStore` (AAASM-5657) is a *separate* trait `SqliteBackend`
+    // opts into, so the approval-store handle cannot be recovered from the
+    // erased one. One `Arc` is coerced twice below so both views share a pool.
+    let storage_concrete = aa_gateway::storage::open_sqlite_backend_shared(&cfg.local.storage_path).await?;
+    let storage: Arc<dyn aa_gateway::storage::StorageBackend> = storage_concrete.clone();
 
     let registry = Arc::new(aa_gateway::AgentRegistry::new().with_storage(storage.clone()));
     let restored = registry.rehydrate_from_storage().await?;
@@ -190,12 +218,46 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Create the approval queue — gateway-owned, shared with the runtime via gRPC.
     let approval_queue = aa_runtime::approval::ApprovalQueue::new();
 
+    // AAASM-5657: back the queue with the same durable file the registry
+    // uses, so a hold this process creates is visible to `aa-api`'s own
+    // queue (and vice versa) instead of only living in this process's
+    // memory. `spawn_storage_sync` reuses `retention_shutdown` — both are
+    // "gateway is shutting down" signals with the same lifetime, so one
+    // token is enough.
+    approval_queue.set_storage(storage_concrete.clone() as Arc<dyn aa_core::storage::ApprovalStore>);
+    let approval_restored = approval_queue.rehydrate_from_storage().await?;
+    if approval_restored > 0 {
+        tracing::info!(approval_restored, "rehydrated pending approvals from durable storage");
+    }
+    approval_queue.spawn_storage_sync(std::time::Duration::from_millis(750), retention_shutdown.clone());
+
     // Create a budget alert broadcast channel shared between the PolicyEngine
     // (sender, via BudgetTracker) and the webhook delivery loop (receiver).
     let (budget_alert_tx, budget_alert_rx) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
 
     // Optionally spawn the webhook delivery loop (reads AA_WEBHOOK_URL).
     let _webhook_handle = aa_gateway::events::startup::maybe_spawn_webhook(&approval_queue, budget_alert_rx);
+
+    // AAASM-5647 — layer-degradation channel: a broadcast::send with zero
+    // receivers silently drops the event, so a consumer must be spawned here
+    // for a degradation (e.g. a corrupt budget state file) to be observable
+    // rather than only "sent" in name. Mirrors aa-proxy's pipeline_log.rs.
+    let (degradation_tx, mut degradation_rx) =
+        tokio::sync::broadcast::channel::<aa_runtime::pipeline::PipelineEvent>(16);
+    let _degradation_log_handle = tokio::spawn(async move {
+        loop {
+            match degradation_rx.recv().await {
+                Ok(aa_runtime::pipeline::PipelineEvent::LayerDegradation(info)) => {
+                    tracing::error!(layer = %info.layer, reason = %info.reason, "gateway layer degraded");
+                }
+                Ok(aa_runtime::pipeline::PipelineEvent::Audit(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "degradation event log lagged, some events were not logged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 
     // strip-for-publish:begin audit-consumer
     // AAASM-2388: spawn the NATS->Postgres audit consumer when configured via
@@ -211,6 +273,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             registry,
             approval_queue,
             budget_alert_tx,
+            degradation_tx,
             Some(storage),
         )
         .await
@@ -221,6 +284,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             registry,
             approval_queue,
             budget_alert_tx,
+            degradation_tx,
             Some(storage),
         )
         .await

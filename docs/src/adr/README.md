@@ -6,7 +6,7 @@ The format follows a lightweight variant of [Michael Nygard's template](https://
 
 An ADR records **only** durable product or system decisions — product and business semantics, user-visible behaviour, security and enforcement semantics, public API and data contracts, OSS-vs-SaaS boundaries, durable architecture and component boundaries, and long-term direction that constrains future implementations. Development-process instructions are **not** ADR material: CI, review, release and test-execution procedure, merge and branch policy, and contributor workflow conventions belong in [`CONTRIBUTING.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/CONTRIBUTING.md), `.claude/`, a runbook, a PR template, or a CI workflow. Being technical is not the test — the test is whether the primary subject is a *decision* or a *procedure*.
 
-**Numbers are permanent identifiers.** A number, once used, is never reassigned — so the gaps below are deliberate and must stay empty: **0005** was used and later retired (created in `90679f35`, reframed in `643700e5`, its number withdrawn thereafter), and **0028** is retired (its CI trigger-scoping rule moved to `CONTRIBUTING.md` as development process). There are **34** active ADRs.
+**Numbers are permanent identifiers.** A number, once used, is never reassigned — so the gaps below are deliberate and must stay empty: **0005** was used and later retired (created in `90679f35`, reframed in `643700e5`, its number withdrawn thereafter), and **0028** is retired (its CI trigger-scoping rule moved to `CONTRIBUTING.md` as development process). There are **35** active ADRs.
 
 ## Index
 
@@ -46,3 +46,4 @@ An ADR records **only** durable product or system decisions — product and busi
 | [0034](0034-one-product-truth-and-cross-repository-documentation-governance.md) | One Product Truth & Cross-Repository Documentation Governance | Accepted |
 | [0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md) | Agent Execution Isolation & Pluggable Enforcement Backends | Proposed |
 | [0036](0036-upstream-enterprise-proxy-chaining-and-endpoint-trust.md) | Trusted Upstream Proxy Endpoint & Declared Enterprise Destinations (v1: explicit-destination chaining only) | Accepted |
+| [0037](0037-release-candidate-tag-binding-and-evidence-attempt-identity.md) | Release Candidate/Tag Binding & Append-Only Evidence Attempts | Accepted |

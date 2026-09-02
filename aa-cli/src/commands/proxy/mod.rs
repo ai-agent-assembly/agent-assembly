@@ -1,5 +1,6 @@
 //! `aasm proxy` — manage the aa-proxy sidecar: lifecycle, CA, and log tailing.
 
+pub mod build_identity;
 pub mod ca;
 pub mod guard;
 pub mod identity;

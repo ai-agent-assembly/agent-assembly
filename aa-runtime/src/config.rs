@@ -79,7 +79,11 @@ pub struct RuntimeConfig {
 
     /// Bind address for the health/metrics HTTP server.
     ///
-    /// Read from `AA_METRICS_ADDR`. Defaults to `"0.0.0.0:8080"`.
+    /// Read from `AA_METRICS_ADDR`. Defaults to `"0.0.0.0:8080"`. A
+    /// non-loopback value is refused at bind time
+    /// (`runtime::check_metrics_bind_addr`) unless `AA_METRICS_ALLOW_REMOTE=1`
+    /// (AAASM-5985) — this field carries the configured value, not the
+    /// value actually bound.
     pub metrics_addr: String,
 
     /// Path to the policy file used for request enforcement.
@@ -195,7 +199,7 @@ impl RuntimeConfig {
     /// | `AA_PIPELINE_BATCH_SIZE` | `usize` | `100` |
     /// | `AA_PIPELINE_FLUSH_INTERVAL_MS` | `u64` | `100` |
     /// | `AA_PIPELINE_BROADCAST_CAPACITY` | `usize` | `1_024` |
-    /// | `AA_METRICS_ADDR` | `String` | `"0.0.0.0:8080"` |
+    /// | `AA_METRICS_ADDR` | `String` | `"0.0.0.0:8080"` (non-loopback refused without `AA_METRICS_ALLOW_REMOTE=1`, AAASM-5985) |
     /// | `AA_POLICY_PATH` | `Option<PathBuf>` | `Some("/etc/aa/policy.toml")` |
     /// | `AA_GATEWAY_ENDPOINT` | `Option<String>` | `None` |
     /// | `AA_CORRELATION_WINDOW_MS` | `u64` | `5_000` |
@@ -349,29 +353,26 @@ impl RuntimeConfig {
 
 #[cfg(test)]
 mod tests {
-    //! # Test isolation requirement
+    //! # Test isolation
     //!
-    //! These tests mutate process environment variables and must be run sequentially:
-    //! ```text
-    //! cargo test -p aa-runtime -- --test-threads=1
-    //! ```
-    //! Running with the default thread pool causes env var races between tests.
+    //! These tests mutate process environment variables. `AA_AGENT_ID` and
+    //! `AA_DEVINT_ENABLED` are also mutated by `runtime.rs`'s DI-API wiring
+    //! tests, so isolation cannot be a lock scoped to this module alone — it
+    //! goes through `crate::test_env::EnvGuard`, the one crate-wide,
+    //! panic-safe env lock (AAASM-5970), which serializes against every
+    //! env-mutating test in the crate and restores on drop even if a test
+    //! panics mid-body.
 
     use super::*;
-    use std::sync::Mutex;
-
-    // Env vars are process-global; this mutex serializes all tests that
-    // read or write them so they cannot race under multi-threaded test runners
-    // (e.g. `cargo llvm-cov` which uses `cargo test` with parallel threads).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_env::EnvGuard;
 
     #[test]
     fn reads_agent_id_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "test-agent-42");
-        std::env::remove_var("AA_RUNTIME_WORKER_THREADS");
-        std::env::remove_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "test-agent-42");
+        env.unset("AA_RUNTIME_WORKER_THREADS");
+        env.unset("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
 
         let config = RuntimeConfig::from_env().expect("should succeed with AA_AGENT_ID set");
 
@@ -380,21 +381,21 @@ mod tests {
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.ipc_max_connections, 64);
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     /// The DI-API is off unless it was asked for, and a value that is not a
     /// recognisable yes leaves it off — a typo must not open a local surface.
     #[test]
     fn the_developer_integration_api_is_opt_in_and_fails_closed() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "devint-config-test");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "devint-config-test");
 
-        std::env::remove_var("AA_DEVINT_ENABLED");
+        env.unset("AA_DEVINT_ENABLED");
         assert!(!RuntimeConfig::from_env().expect("config").devint_enabled);
 
         for on in ["1", "true", "TRUE", "yes", " Yes "] {
-            std::env::set_var("AA_DEVINT_ENABLED", on);
+            env.set("AA_DEVINT_ENABLED", on);
             assert!(
                 RuntimeConfig::from_env().expect("config").devint_enabled,
                 "{on:?} should enable the DI-API"
@@ -402,21 +403,21 @@ mod tests {
         }
 
         for off in ["0", "false", "no", "", "ture", "on"] {
-            std::env::set_var("AA_DEVINT_ENABLED", off);
+            env.set("AA_DEVINT_ENABLED", off);
             assert!(
                 !RuntimeConfig::from_env().expect("config").devint_enabled,
                 "{off:?} must not enable the DI-API"
             );
         }
 
-        std::env::remove_var("AA_DEVINT_ENABLED");
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_DEVINT_ENABLED");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn fails_fast_when_agent_id_missing() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("AA_AGENT_ID");
+        let mut env = EnvGuard::new();
+        env.unset("AA_AGENT_ID");
 
         let result = RuntimeConfig::from_env();
 
@@ -426,28 +427,28 @@ mod tests {
 
     #[test]
     fn fails_fast_when_agent_id_empty() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "   ");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "   ");
 
         let result = RuntimeConfig::from_env();
 
         assert!(result.is_err());
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn defaults_when_env_vars_absent() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "default-test-agent");
-        std::env::remove_var("AA_RUNTIME_WORKER_THREADS");
-        std::env::remove_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
-        std::env::remove_var("AA_PIPELINE_INPUT_BUFFER");
-        std::env::remove_var("AA_PIPELINE_BATCH_SIZE");
-        std::env::remove_var("AA_PIPELINE_FLUSH_INTERVAL_MS");
-        std::env::remove_var("AA_PIPELINE_BROADCAST_CAPACITY");
-        std::env::remove_var("AA_METRICS_ADDR");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "default-test-agent");
+        env.unset("AA_RUNTIME_WORKER_THREADS");
+        env.unset("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
+        env.unset("AA_PIPELINE_INPUT_BUFFER");
+        env.unset("AA_PIPELINE_BATCH_SIZE");
+        env.unset("AA_PIPELINE_FLUSH_INTERVAL_MS");
+        env.unset("AA_PIPELINE_BROADCAST_CAPACITY");
+        env.unset("AA_METRICS_ADDR");
 
         let config = RuntimeConfig::from_env().unwrap();
 
@@ -460,89 +461,89 @@ mod tests {
         assert_eq!(config.pipeline_broadcast_capacity, 1_024);
         assert_eq!(config.metrics_addr, "0.0.0.0:8080");
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn reads_worker_threads_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-wt");
-        std::env::set_var("AA_RUNTIME_WORKER_THREADS", "4");
-        std::env::remove_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-wt");
+        env.set("AA_RUNTIME_WORKER_THREADS", "4");
+        env.unset("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.worker_threads, 4);
         assert_eq!(config.shutdown_timeout_secs, 30);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_RUNTIME_WORKER_THREADS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_RUNTIME_WORKER_THREADS");
     }
 
     #[test]
     fn reads_shutdown_timeout_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-st");
-        std::env::remove_var("AA_RUNTIME_WORKER_THREADS");
-        std::env::set_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "60");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-st");
+        env.unset("AA_RUNTIME_WORKER_THREADS");
+        env.set("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "60");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.worker_threads, 0);
         assert_eq!(config.shutdown_timeout_secs, 60);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
     }
 
     #[test]
     fn reads_ipc_max_connections_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-mc");
-        std::env::set_var("AA_IPC_MAX_CONNECTIONS", "128");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-mc");
+        env.set("AA_IPC_MAX_CONNECTIONS", "128");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.ipc_max_connections, 128);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
     }
 
     #[test]
     fn rejects_zero_ipc_max_connections() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-zero");
-        std::env::set_var("AA_IPC_MAX_CONNECTIONS", "0");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-zero");
+        env.set("AA_IPC_MAX_CONNECTIONS", "0");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.ipc_max_connections, 64, "0 should fall back to default");
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
     }
 
     #[test]
     fn rejects_agent_id_with_path_separator() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "../../etc/passwd");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "../../etc/passwd");
 
         let result = RuntimeConfig::from_env();
 
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("path separator"));
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn falls_back_to_default_on_invalid_value() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-inv");
-        std::env::set_var("AA_RUNTIME_WORKER_THREADS", "not-a-number");
-        std::env::set_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "abc");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-inv");
+        env.set("AA_RUNTIME_WORKER_THREADS", "not-a-number");
+        env.set("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "abc");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
 
         let config = RuntimeConfig::from_env().unwrap();
 
@@ -550,76 +551,76 @@ mod tests {
         assert_eq!(config.shutdown_timeout_secs, 30);
         assert_eq!(config.ipc_max_connections, 64);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_RUNTIME_WORKER_THREADS");
-        std::env::remove_var("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
-        std::env::remove_var("AA_IPC_MAX_CONNECTIONS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_RUNTIME_WORKER_THREADS");
+        env.unset("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS");
+        env.unset("AA_IPC_MAX_CONNECTIONS");
     }
 
     #[test]
     fn reads_pipeline_input_buffer_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pib");
-        std::env::set_var("AA_PIPELINE_INPUT_BUFFER", "5000"); // arbitrary non-default, non-zero value
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pib");
+        env.set("AA_PIPELINE_INPUT_BUFFER", "5000"); // arbitrary non-default, non-zero value
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.pipeline_input_buffer, 5000);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_PIPELINE_INPUT_BUFFER");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_PIPELINE_INPUT_BUFFER");
     }
 
     #[test]
     fn reads_pipeline_batch_size_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pbs");
-        std::env::set_var("AA_PIPELINE_BATCH_SIZE", "50"); // arbitrary non-default, non-zero value
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pbs");
+        env.set("AA_PIPELINE_BATCH_SIZE", "50"); // arbitrary non-default, non-zero value
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.pipeline_batch_size, 50);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_PIPELINE_BATCH_SIZE");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_PIPELINE_BATCH_SIZE");
     }
 
     #[test]
     fn reads_pipeline_flush_interval_ms_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pfi");
-        std::env::set_var("AA_PIPELINE_FLUSH_INTERVAL_MS", "200"); // arbitrary non-default, non-zero value
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pfi");
+        env.set("AA_PIPELINE_FLUSH_INTERVAL_MS", "200"); // arbitrary non-default, non-zero value
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.pipeline_flush_interval_ms, 200);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_PIPELINE_FLUSH_INTERVAL_MS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_PIPELINE_FLUSH_INTERVAL_MS");
     }
 
     #[test]
     fn reads_pipeline_broadcast_capacity_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pbc");
-        std::env::set_var("AA_PIPELINE_BROADCAST_CAPACITY", "2048"); // arbitrary non-default, non-zero value
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pbc");
+        env.set("AA_PIPELINE_BROADCAST_CAPACITY", "2048"); // arbitrary non-default, non-zero value
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.pipeline_broadcast_capacity, 2048);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_PIPELINE_BROADCAST_CAPACITY");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_PIPELINE_BROADCAST_CAPACITY");
     }
 
     #[test]
     fn pipeline_defaults_when_env_vars_absent() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pipe-defaults");
-        std::env::remove_var("AA_PIPELINE_INPUT_BUFFER");
-        std::env::remove_var("AA_PIPELINE_BATCH_SIZE");
-        std::env::remove_var("AA_PIPELINE_FLUSH_INTERVAL_MS");
-        std::env::remove_var("AA_PIPELINE_BROADCAST_CAPACITY");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pipe-defaults");
+        env.unset("AA_PIPELINE_INPUT_BUFFER");
+        env.unset("AA_PIPELINE_BATCH_SIZE");
+        env.unset("AA_PIPELINE_FLUSH_INTERVAL_MS");
+        env.unset("AA_PIPELINE_BROADCAST_CAPACITY");
 
         let config = RuntimeConfig::from_env().unwrap();
 
@@ -628,17 +629,17 @@ mod tests {
         assert_eq!(config.pipeline_flush_interval_ms, 100);
         assert_eq!(config.pipeline_broadcast_capacity, 1_024);
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn pipeline_rejects_zero_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-pipe-zero");
-        std::env::set_var("AA_PIPELINE_INPUT_BUFFER", "0");
-        std::env::set_var("AA_PIPELINE_BATCH_SIZE", "0");
-        std::env::set_var("AA_PIPELINE_FLUSH_INTERVAL_MS", "0");
-        std::env::set_var("AA_PIPELINE_BROADCAST_CAPACITY", "0");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-pipe-zero");
+        env.set("AA_PIPELINE_INPUT_BUFFER", "0");
+        env.set("AA_PIPELINE_BATCH_SIZE", "0");
+        env.set("AA_PIPELINE_FLUSH_INTERVAL_MS", "0");
+        env.set("AA_PIPELINE_BROADCAST_CAPACITY", "0");
 
         let config = RuntimeConfig::from_env().unwrap();
 
@@ -650,188 +651,188 @@ mod tests {
             "0 should fall back to default"
         );
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_PIPELINE_INPUT_BUFFER");
-        std::env::remove_var("AA_PIPELINE_BATCH_SIZE");
-        std::env::remove_var("AA_PIPELINE_FLUSH_INTERVAL_MS");
-        std::env::remove_var("AA_PIPELINE_BROADCAST_CAPACITY");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_PIPELINE_INPUT_BUFFER");
+        env.unset("AA_PIPELINE_BATCH_SIZE");
+        env.unset("AA_PIPELINE_FLUSH_INTERVAL_MS");
+        env.unset("AA_PIPELINE_BROADCAST_CAPACITY");
     }
 
     #[test]
     fn metrics_addr_reads_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-metrics");
-        std::env::set_var("AA_METRICS_ADDR", "127.0.0.1:9090");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-metrics");
+        env.set("AA_METRICS_ADDR", "127.0.0.1:9090");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.metrics_addr, "127.0.0.1:9090");
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_METRICS_ADDR");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_METRICS_ADDR");
     }
 
     #[test]
     fn metrics_addr_defaults_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-metrics-default");
-        std::env::remove_var("AA_METRICS_ADDR");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-metrics-default");
+        env.unset("AA_METRICS_ADDR");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.metrics_addr, "0.0.0.0:8080");
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn policy_path_defaults_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-policy-default");
-        std::env::remove_var("AA_POLICY_PATH");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-policy-default");
+        env.unset("AA_POLICY_PATH");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.policy_path, Some(PathBuf::from("/etc/aa/policy.toml")));
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn policy_path_reads_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-policy-custom");
-        std::env::set_var("AA_POLICY_PATH", "/custom/policy.toml");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-policy-custom");
+        env.set("AA_POLICY_PATH", "/custom/policy.toml");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.policy_path, Some(PathBuf::from("/custom/policy.toml")));
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_POLICY_PATH");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_POLICY_PATH");
     }
 
     #[test]
     fn policy_path_none_when_empty_string() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-policy-disabled");
-        std::env::set_var("AA_POLICY_PATH", "");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-policy-disabled");
+        env.set("AA_POLICY_PATH", "");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.policy_path, None);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_POLICY_PATH");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_POLICY_PATH");
     }
 
     #[test]
     fn gateway_endpoint_none_when_unset() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-gw-default");
-        std::env::remove_var("AA_GATEWAY_ENDPOINT");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-gw-default");
+        env.unset("AA_GATEWAY_ENDPOINT");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.gateway_endpoint, None);
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn gateway_endpoint_none_when_empty() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-gw-empty");
-        std::env::set_var("AA_GATEWAY_ENDPOINT", "");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-gw-empty");
+        env.set("AA_GATEWAY_ENDPOINT", "");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.gateway_endpoint, None);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_GATEWAY_ENDPOINT");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_ENDPOINT");
     }
 
     #[test]
     fn gateway_endpoint_reads_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-gw-custom");
-        std::env::set_var("AA_GATEWAY_ENDPOINT", "http://127.0.0.1:50051");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-gw-custom");
+        env.set("AA_GATEWAY_ENDPOINT", "http://127.0.0.1:50051");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.gateway_endpoint, Some("http://127.0.0.1:50051".to_string()));
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_GATEWAY_ENDPOINT");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_ENDPOINT");
     }
 
     #[test]
     fn correlation_defaults_when_env_vars_absent() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-corr-defaults");
-        std::env::remove_var("AA_CORRELATION_WINDOW_MS");
-        std::env::remove_var("AA_CORRELATION_INTERVAL_MS");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-corr-defaults");
+        env.unset("AA_CORRELATION_WINDOW_MS");
+        env.unset("AA_CORRELATION_INTERVAL_MS");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.correlation_window_ms, 5_000);
         assert_eq!(config.correlation_interval_ms, 1_000);
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn reads_correlation_window_ms_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-corr-win");
-        std::env::set_var("AA_CORRELATION_WINDOW_MS", "10000");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-corr-win");
+        env.set("AA_CORRELATION_WINDOW_MS", "10000");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.correlation_window_ms, 10_000);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_CORRELATION_WINDOW_MS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_CORRELATION_WINDOW_MS");
     }
 
     #[test]
     fn reads_correlation_interval_ms_from_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-corr-int");
-        std::env::set_var("AA_CORRELATION_INTERVAL_MS", "2000");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-corr-int");
+        env.set("AA_CORRELATION_INTERVAL_MS", "2000");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.correlation_interval_ms, 2_000);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_CORRELATION_INTERVAL_MS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_CORRELATION_INTERVAL_MS");
     }
 
     #[test]
     fn correlation_rejects_zero_values() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-corr-zero");
-        std::env::set_var("AA_CORRELATION_WINDOW_MS", "0");
-        std::env::set_var("AA_CORRELATION_INTERVAL_MS", "0");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-corr-zero");
+        env.set("AA_CORRELATION_WINDOW_MS", "0");
+        env.set("AA_CORRELATION_INTERVAL_MS", "0");
 
         let config = RuntimeConfig::from_env().unwrap();
 
         assert_eq!(config.correlation_window_ms, 5_000, "0 should fall back to default");
         assert_eq!(config.correlation_interval_ms, 1_000, "0 should fall back to default");
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_CORRELATION_WINDOW_MS");
-        std::env::remove_var("AA_CORRELATION_INTERVAL_MS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_CORRELATION_WINDOW_MS");
+        env.unset("AA_CORRELATION_INTERVAL_MS");
     }
 
     #[test]
     fn nats_config_path_set_yields_some_unset_yields_none() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-nats");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-nats");
 
-        std::env::set_var("AA_NATS_CONFIG_PATH", "/etc/aa/agent-assembly.toml");
+        env.set("AA_NATS_CONFIG_PATH", "/etc/aa/agent-assembly.toml");
         let configured = RuntimeConfig::from_env().unwrap();
         assert_eq!(
             configured.nats_config_path,
@@ -839,20 +840,20 @@ mod tests {
         );
 
         // Empty value ⇒ publisher disabled.
-        std::env::set_var("AA_NATS_CONFIG_PATH", "");
+        env.set("AA_NATS_CONFIG_PATH", "");
         assert!(RuntimeConfig::from_env().unwrap().nats_config_path.is_none());
 
-        std::env::remove_var("AA_NATS_CONFIG_PATH");
+        env.unset("AA_NATS_CONFIG_PATH");
         assert!(RuntimeConfig::from_env().unwrap().nats_config_path.is_none());
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn audit_buffer_path_defaults_per_agent_and_honors_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-buf");
-        std::env::remove_var("AA_AUDIT_BUFFER_PATH");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-buf");
+        env.unset("AA_AUDIT_BUFFER_PATH");
 
         let default_cfg = RuntimeConfig::from_env().unwrap();
         assert_eq!(
@@ -860,27 +861,27 @@ mod tests {
             std::env::temp_dir().join("aa-audit-buffer-agent-buf.db")
         );
 
-        std::env::set_var("AA_AUDIT_BUFFER_PATH", "/var/lib/aa/buf.db");
+        env.set("AA_AUDIT_BUFFER_PATH", "/var/lib/aa/buf.db");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().audit_buffer_path,
             PathBuf::from("/var/lib/aa/buf.db")
         );
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_AUDIT_BUFFER_PATH");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_AUDIT_BUFFER_PATH");
     }
 
     #[test]
     fn enforcement_max_field_bytes_reads_defaults_and_rejects_zero() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-enf");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-enf");
 
         // Explicit non-default value is honoured.
-        std::env::set_var("AA_ENFORCEMENT_MAX_FIELD_BYTES", "4096");
+        env.set("AA_ENFORCEMENT_MAX_FIELD_BYTES", "4096");
         assert_eq!(RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes, 4096);
 
         // Zero falls back to the default (a 0-byte cap would redact everything).
-        std::env::set_var("AA_ENFORCEMENT_MAX_FIELD_BYTES", "0");
+        env.set("AA_ENFORCEMENT_MAX_FIELD_BYTES", "0");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes,
             DEFAULT_MAX_FIELD_BYTES,
@@ -888,27 +889,27 @@ mod tests {
         );
 
         // Unset falls back to the default.
-        std::env::remove_var("AA_ENFORCEMENT_MAX_FIELD_BYTES");
+        env.unset("AA_ENFORCEMENT_MAX_FIELD_BYTES");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().enforcement_max_field_bytes,
             DEFAULT_MAX_FIELD_BYTES
         );
 
-        std::env::remove_var("AA_AGENT_ID");
+        env.unset("AA_AGENT_ID");
     }
 
     #[test]
     fn gateway_fail_closed_defaults_true_and_honors_falsey_opt_out() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-fc");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-fc");
 
         // Unset → fail-closed (the safe enforce default, AAASM-3110).
-        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+        env.unset("AA_GATEWAY_FAIL_CLOSED");
         assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
 
         // Explicit falsey values opt out (observe/disabled posture).
         for falsey in ["false", "0", "no", "off", "OFF", "False"] {
-            std::env::set_var("AA_GATEWAY_FAIL_CLOSED", falsey);
+            env.set("AA_GATEWAY_FAIL_CLOSED", falsey);
             assert!(
                 !RuntimeConfig::from_env().unwrap().gateway_fail_closed,
                 "{falsey} should disable fail-closed"
@@ -916,38 +917,38 @@ mod tests {
         }
 
         // Any other value keeps fail-closed.
-        std::env::set_var("AA_GATEWAY_FAIL_CLOSED", "true");
+        env.set("AA_GATEWAY_FAIL_CLOSED", "true");
         assert!(RuntimeConfig::from_env().unwrap().gateway_fail_closed);
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_GATEWAY_FAIL_CLOSED");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_FAIL_CLOSED");
     }
 
     #[test]
     fn gateway_timeout_defaults_and_rejects_zero() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_AGENT_ID", "agent-to");
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-to");
 
         // Unset → the default deadline.
-        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
+        env.unset("AA_GATEWAY_TIMEOUT_MS");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
             DEFAULT_GATEWAY_TIMEOUT_MS
         );
 
         // A positive value is honoured verbatim.
-        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "1500");
+        env.set("AA_GATEWAY_TIMEOUT_MS", "1500");
         assert_eq!(RuntimeConfig::from_env().unwrap().gateway_timeout_ms, 1_500);
 
         // Zero must NOT disable the deadline — fall back to the default so the
         // head-of-line DoS guard (AAASM-3987) cannot be turned off.
-        std::env::set_var("AA_GATEWAY_TIMEOUT_MS", "0");
+        env.set("AA_GATEWAY_TIMEOUT_MS", "0");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().gateway_timeout_ms,
             DEFAULT_GATEWAY_TIMEOUT_MS
         );
 
-        std::env::remove_var("AA_AGENT_ID");
-        std::env::remove_var("AA_GATEWAY_TIMEOUT_MS");
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_TIMEOUT_MS");
     }
 }

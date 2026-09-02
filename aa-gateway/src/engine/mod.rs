@@ -2176,10 +2176,17 @@ impl PolicyEngine {
             Ok(()) => None,
             Err(err) => {
                 use crate::budget::types::{BudgetError, BudgetKind};
+                // AAASM-5647 — a degraded tracker has no meaningful daily/monthly
+                // kind to report; give the caller the real reason instead of
+                // coercing it into "daily/monthly budget exceeded".
+                if matches!(err, BudgetError::StateUnavailable) {
+                    return Some("budget state unavailable — degraded on a corrupt or unreadable state file");
+                }
                 let kind = match err {
                     BudgetError::SelfBudgetExhausted { kind } => kind,
                     BudgetError::AncestorBudgetExhausted { kind, .. } => kind,
                     BudgetError::TenantBudgetExhausted { kind, .. } => kind,
+                    BudgetError::StateUnavailable => unreachable!("handled above"),
                 };
                 Some(match kind {
                     BudgetKind::Monthly => "monthly budget exceeded",
@@ -4806,8 +4813,14 @@ mod tests {
         // looser bound because the Aho-Corasick automaton is not optimised in debug mode.
         use std::time::Instant;
 
+        // AAASM-6016: 50ms wasn't generous enough — `cargo nextest run --workspace`
+        // runs 8000+ tests concurrently on a shared, resource-constrained CI runner,
+        // and that contention alone pushed this well past 50ms with no change to the
+        // scan itself (confirmed: passes in 0.18s in isolation, both locally and on a
+        // clean main-branch CI run). Widened for contention headroom, not because the
+        // debug-mode scan got slower — this bound was never a perf gate.
         #[cfg(debug_assertions)]
-        let budget_ms: u128 = 50; // debug: correctness only, not a perf gate
+        let budget_ms: u128 = 500; // debug: correctness only, not a perf gate
         #[cfg(not(debug_assertions))]
         let budget_ms: u128 = 2; // release: enforces the AC
 

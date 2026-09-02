@@ -31,8 +31,23 @@ use clap::Parser;
 ///                                  unreachable (default: fail CLOSED — deny)
 ///
 /// RUST_LOG controls log verbosity via the standard `EnvFilter` syntax.
+///
+/// `long_version` names the commit this binary was compiled from, not only
+/// its semver (AAASM-5984) — `aa-proxy` performs pre-egress credential
+/// redaction (ADR 0030 row 7), so a redaction-evidence claim is a claim about
+/// a specific build's interception logic, and a plain version string cannot
+/// distinguish two `aa-proxy` binaries built from different commits at the
+/// same version. Read from `aa_runtime::build_identity` rather than
+/// derived here, so this binary and `aa-runtime`/`aa-cli` cannot disagree
+/// about their own commit by construction — they're compiled in the same
+/// `cargo build` invocation and share the constant.
 #[derive(Parser, Debug)]
-#[command(name = "aa-proxy", version, verbatim_doc_comment)]
+#[command(
+    name = "aa-proxy",
+    version,
+    long_version = aa_runtime::build_identity::LONG_VERSION,
+    verbatim_doc_comment
+)]
 struct Cli {}
 
 #[tokio::main]
@@ -48,6 +63,16 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // AAASM-5984: state which build is about to perform interception/redaction
+    // before anything else happens — the earliest point the log carries it.
+    let identity = aa_runtime::build_identity::BuildIdentity::of_this_build();
+    tracing::info!(
+        build_sha = %identity.build_sha,
+        build_identity_source = %identity.sha_source.as_str(),
+        version = %identity.core_version,
+        "aa-proxy starting",
+    );
 
     let config = aa_proxy::ProxyConfig::from_env()?;
 

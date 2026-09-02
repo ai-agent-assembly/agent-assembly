@@ -67,11 +67,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aa_devtool_contract::{
-    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CapabilitySupport,
-    DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EnvValue, EvidenceKind,
-    GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus,
-    IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo, NextLevel,
-    PolicyPosture, ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState,
+    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, ArtifactOperation, CallerEnvironment,
+    CapabilitySupport, DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EnvValue,
+    EvidenceKind, GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
+    IntegrationStatus, IntegrationStep, LaunchSpec, LaunchableTool, LifecyclePhase, McpGovernedTool, McpServerInfo,
+    NextLevel, PolicyPosture, ProbeDescriptor, ProtectionEvidence, ProtectionLevel, ProtectionProfile, ProtectionState,
     RemovalPlan, SettingsMerge, SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt,
     SupportedToolVersions, ToolVersion, VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport,
     DEFAULT_FRESHNESS_WINDOW_SECS, LIFECYCLE_SCHEMA_VERSION,
@@ -79,7 +79,7 @@ use aa_devtool_contract::{
 use async_trait::async_trait;
 
 use crate::adjudicating_probe::ProxyAdjudicatedProbe;
-use crate::bypass::{self, BypassFinding, LaunchEnvironment};
+use crate::bypass::{self, BypassFinding};
 use crate::executor::ClaudeCodeStepExecutor;
 use crate::managed_settings::{
     self, Authorization, MacOsAdminAuthority, ManagedSettingsInstaller, PrivilegedFileAuthority, MANAGED_ONLY_KEYS,
@@ -139,6 +139,16 @@ pub const MITM_HOSTS: [&str; 2] = ["api.anthropic.com", "*.anthropic.com"];
 
 /// The default address `aa-proxy` binds to.
 const DEFAULT_PROXY_ADDR: &str = "127.0.0.1:8899";
+
+/// What [`ClaudeCodeIntegration::bypasses_at`] found, combining the settings
+/// and environment checks with what the caller's environment statement left
+/// unexamined.
+struct BypassReport {
+    /// Bypasses actually detected.
+    findings: Vec<BypassFinding>,
+    /// Watched environment variable names the caller said nothing about.
+    unexamined: Vec<&'static str>,
+}
 
 /// The Developer Integration for Claude Code.
 pub struct ClaudeCodeIntegration {
@@ -492,39 +502,68 @@ impl ClaudeCodeIntegration {
         &self,
         scope: SettingsScope,
         project_root: Option<&Path>,
+        user_config_home: Option<&Path>,
     ) -> Result<ClaudeCodePaths, AdapterError> {
-        match project_root {
-            Some(root) => Ok(self.paths.clone().with_project(root)),
+        let paths = match project_root {
+            Some(root) => self.paths.clone().with_project(root),
             // At user and managed scope the project root is only used to disclose
             // that a project configuration exists nearby; not knowing it costs one
             // warning, not correctness.
-            None if scope != SettingsScope::Project => Ok(self.paths.clone()),
+            None if scope != SettingsScope::Project => self.paths.clone(),
+            None => {
+                return Err(AdapterError::SettingsGenerationFailed(
+                    "this request writes the project settings scope but names no project. The \
+                     developer-integration service is shared by every client on this host, so the \
+                     project a change lands in is taken from the request and never from the service's \
+                     own working directory"
+                        .to_string(),
+                ))
+            }
+        };
+        // The identical argument, one scope over (AAASM-5957): a user
+        // configuration home is the caller's to name, and this adapter is
+        // shared by every client on the host.
+        match user_config_home {
+            Some(home) => Ok(paths.with_config_dir(home)),
+            None if scope != SettingsScope::User => Ok(paths),
             None => Err(AdapterError::SettingsGenerationFailed(
-                "this request writes the project settings scope but names no project. The \
+                "this request writes the user settings scope but names no configuration home. The \
                  developer-integration service is shared by every client on this host, so the \
-                 project a change lands in is taken from the request and never from the service's \
-                 own working directory"
+                 configuration home a change lands in is taken from the request and never from the \
+                 service's own environment"
                     .to_string(),
             )),
         }
     }
 
-    /// Every bypass condition observable in `settings_path`, plus the ambient ones.
+    /// Every bypass condition observable in `settings_path`, plus what the
+    /// caller stated about its own launch environment.
     ///
     /// The settings file is passed in rather than re-resolved from a scope: during
     /// `status` and `verify` the honest answer is the file the receipt records
     /// having written, and re-resolving a `Project` scope against this process's
     /// roots is how a bypass reading ended up describing a different repository's
     /// file (AAASM-5913).
-    fn bypasses_at(&self, settings_path: Option<&Path>) -> Vec<BypassFinding> {
-        let mut found = Vec::new();
+    ///
+    /// `caller_env` is read from, never from this process's own environment
+    /// (AAASM-5993) — see `bypass`'s module docs for why. `None` produces no
+    /// findings and every watched variable unexamined, via
+    /// [`bypass::environment_bypasses`]; that report is folded into
+    /// `findings` here and its `unexamined` half is carried separately by
+    /// [`limitation_evidence`](Self::limitation_evidence).
+    fn bypasses_at(&self, settings_path: Option<&Path>, caller_env: Option<&CallerEnvironment>) -> BypassReport {
+        let mut findings = Vec::new();
         if let Some(path) = settings_path {
             if let Ok(raw) = std::fs::read_to_string(path) {
-                found.extend(bypass::settings_bypasses(&path.display().to_string(), &raw));
+                findings.extend(bypass::settings_bypasses(&path.display().to_string(), &raw));
             }
         }
-        found.extend(bypass::environment_bypasses(&LaunchEnvironment::from_process()));
-        found
+        let environment = bypass::environment_bypasses(caller_env);
+        findings.extend(environment.findings);
+        BypassReport {
+            findings,
+            unexamined: environment.unexamined,
+        }
     }
 
     /// Evidence rows for the bypasses, plus the one for host enforcement.
@@ -533,9 +572,15 @@ impl ClaudeCodeIntegration {
     /// configuration, it makes the configuration unable to prove anything. An
     /// `Absent` reading only ever lowers the reported state, which is the whole
     /// behaviour needed here.
-    fn limitation_evidence(&self, settings_path: Option<&Path>, now: u64) -> Vec<ProtectionEvidence> {
-        let mut evidence: Vec<ProtectionEvidence> = self
-            .bypasses_at(settings_path)
+    fn limitation_evidence(
+        &self,
+        settings_path: Option<&Path>,
+        caller_env: Option<&CallerEnvironment>,
+        now: u64,
+    ) -> Vec<ProtectionEvidence> {
+        let report = self.bypasses_at(settings_path, caller_env);
+        let mut evidence: Vec<ProtectionEvidence> = report
+            .findings
             .into_iter()
             .map(|finding| {
                 ProtectionEvidence::new(
@@ -548,6 +593,24 @@ impl ClaudeCodeIntegration {
                 )
             })
             .collect();
+
+        // One row naming every variable the caller said nothing about, rather
+        // than one per name — the point is disclosed once, not repeated per
+        // variable.
+        if !report.unexamined.is_empty() {
+            let names = report.unexamined.join(", ");
+            evidence.push(ProtectionEvidence::new(
+                IntegrationCapability::ToolActionApproval,
+                EvidenceKind::Absent {
+                    reason: format!(
+                        "the caller did not state whether {names} were set, so no conclusion about them \
+                         is available"
+                    ),
+                },
+                now,
+                format!("environment variables not examined by the caller: {names}"),
+            ));
+        }
 
         evidence.push(self.host_enforcement_evidence(now));
         evidence
@@ -884,7 +947,11 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         // Resolved from *this request*, not from the roots this adapter was
         // constructed over: the project a project-scoped plan writes into belongs
         // to the caller, and this adapter is shared (AAASM-5913).
-        let paths = self.effective_paths(scope, request.project_root.as_deref())?;
+        let paths = self.effective_paths(
+            scope,
+            request.project_root.as_deref(),
+            request.user_config_home.as_deref(),
+        )?;
         let settings_path = paths.settings_path(scope).map_err(scope_error)?;
         let launch_env = paths.launch_env_dir(scope).map_err(scope_error)?;
         let ca_pem = paths.proxy_ca_pem(scope).map_err(scope_error)?;
@@ -1089,7 +1156,10 @@ impl DevToolIntegration for ClaudeCodeIntegration {
             }
         }
 
-        for finding in self.bypasses_at(Some(&settings_path)) {
+        for finding in self
+            .bypasses_at(Some(&settings_path), request.caller_env.as_ref())
+            .findings
+        {
             plan = plan.warn(format!(
                 "bypass detected — {}. {}",
                 finding.detail(),
@@ -1103,6 +1173,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
     async fn integration_status(
         &self,
         receipt: Option<&IntegrationReceipt>,
+        caller_env: Option<&CallerEnvironment>,
     ) -> Result<IntegrationStatus, AdapterError> {
         let now = now_unix_secs();
         let detected = self.detect();
@@ -1153,7 +1224,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 ));
             }
         }
-        evidence.extend(self.limitation_evidence(settings_path.as_deref(), now));
+        evidence.extend(self.limitation_evidence(settings_path.as_deref(), caller_env, now));
 
         let planned_level = receipt.map_or(ProtectionLevel::NotInstalled, |r| r.planned_level);
         let derivation = StateDerivation {
@@ -1209,7 +1280,11 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         })
     }
 
-    async fn verify_integration(&self, receipt: &IntegrationReceipt) -> Result<VerificationResult, AdapterError> {
+    async fn verify_integration(
+        &self,
+        receipt: &IntegrationReceipt,
+        caller_env: Option<&CallerEnvironment>,
+    ) -> Result<VerificationResult, AdapterError> {
         let now = now_unix_secs();
         let mut evidence = self.read_back_evidence(receipt, now);
         let mismatched: Vec<String> = evidence
@@ -1248,11 +1323,17 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         // verify reads the caller's repository and not whichever one this shared
         // process was started in (AAASM-5913).
         let settings_path = receipt.settings_file_path();
-        let bypasses = self.bypasses_at(settings_path);
-        for finding in &bypasses {
+        let bypasses = self.bypasses_at(settings_path, caller_env);
+        for finding in &bypasses.findings {
             missing.push(finding.detail());
         }
-        evidence.extend(self.limitation_evidence(settings_path, now));
+        if !bypasses.unexamined.is_empty() {
+            missing.push(format!(
+                "the caller did not state whether {} were set, so no conclusion about them is available",
+                bypasses.unexamined.join(", ")
+            ));
+        }
+        evidence.extend(self.limitation_evidence(settings_path, caller_env, now));
 
         let outcome = if !mismatched.is_empty() {
             VerificationOutcome::Failed {
@@ -1261,7 +1342,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                     mismatched.join("; ")
                 ),
             }
-        } else if exercised_protectively && bypasses.is_empty() {
+        } else if exercised_protectively && bypasses.findings.is_empty() && bypasses.unexamined.is_empty() {
             VerificationOutcome::Passed
         } else {
             VerificationOutcome::PartiallyPassed { missing }

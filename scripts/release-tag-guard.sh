@@ -137,29 +137,53 @@ if ! bash scripts/release-readiness.sh "$VERSION"; then
   fail "scripts/release-readiness.sh reported failing check(s) — see output above"
 fi
 
-# --- 5. Strict candidate_sha == HEAD binding. release-readiness.sh check 14
-# already runs check-release-evidence.py's R1 range check, which
-# deliberately RELAXES for mechanical-only drift between the evidence's
-# candidate_sha and the tag_target (e.g. version-bump/CHANGELOG commits made
-# after QA captured its candidate) — that relaxation is correct for THAT
-# checker's purpose (it does not want mechanical churn to force a full QA
-# re-run). This guard is defense-in-depth on top of it, not a replacement:
-# the literal commit this script is about to tag must be the exact commit
-# the evidence record names, with zero drift of any kind, mechanical or not.
-# A HEAD~1 candidate that R1 would still pass (mechanical-only diff to HEAD)
-# must still be refused here.
-EVIDENCE_FILE="docs/release/qa-signoff/v${VERSION}.evidence.json"
-if [ ! -f "$EVIDENCE_FILE" ]; then
-  fail "release-evidence record missing ($EVIDENCE_FILE) — run /release-qa-gate $VERSION first"
+# --- 5a. Fresh full re-verification (R1-R10), immediately before tagging —
+# TOCTOU defense-in-depth for the narrow window between release-readiness.sh
+# (step 4 above, which already ran this once) and the `git tag` below.
+# AAASM-5998's original fix for this step; unchanged by AAASM-6001. This is
+# what actually re-runs R1b (tamper detection) this close to the tag — the
+# narrower step 5b below does not call R1b at all, so without this step a
+# release-readiness.sh that's stubbed/stale/skipped would let a
+# post-candidate tampered evidence file through undetected until here.
+if ! python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD; then
+  fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi
-CANDIDATE_SHA="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['candidate']['candidate_sha'])" "$EVIDENCE_FILE" 2>/dev/null || true)"
-if [ -z "$CANDIDATE_SHA" ]; then
-  fail "could not read candidate.candidate_sha from $EVIDENCE_FILE"
+
+# --- 5b. Strict candidate/tag binding (AAASM-6001 Option 4, ADR 0037),
+# ADDITIONAL to 5a above, immediately before tagging.
+#
+# release-readiness.sh check 14 (step 4) and step 5a above both already ran
+# check-release-evidence.py's R1/R1b against HEAD. R1's own allowlist
+# (_MECHANICAL_PREFIXES = "docs/release/") is deliberately broad — it
+# exists so mechanical release-prep churn (a version-bump commit,
+# CHANGELOG.md, any file under docs/release/) doesn't force a full
+# re-verification, which is the right tolerance for R1's own admissibility
+# question. It is the WRONG tolerance for this guard's question: binding
+# the literal commit about to be tagged to the literal commit verified.
+# Under R1 alone, an unrelated docs/release/ file change riding along in
+# the same range as the evidence commit would still pass — an obvious
+# post-verification-mutation surface once evidence generation is a real,
+# repeatable operator step (AAASM-6001) rather than a one-off manual commit.
+#
+# This step runs check-release-evidence.py in --strict-tag-binding mode as
+# an additional, narrower check: candidate A (the evidence's candidate_sha) may be an ancestor of
+# tag target B (HEAD) ONLY if every changed path between them is on a
+# narrow, version-scoped allowlist — exactly this version's own
+# sign-off/evidence artifacts, nothing else, checked path-by-path with no
+# glob/prefix matching and explicit traversal defenses. R1/R1b still run
+# (via release-readiness.sh check 14, step 4 above) and still gate the tag
+# as before this ADR — this is an ADDITIONAL, narrower, guard-owned check,
+# not a replacement of R1/R1b's own tamper/freshness semantics. See
+# check-release-evidence.py's strict_candidate_binding_violations() and
+# ADR 0037 (docs/src/adr/0037-release-candidate-tag-binding-and-evidence-attempt-identity.md)
+# for the full rationale, including why AAASM-5998's earlier fix here
+# (a bare re-run of the R1/R1b check with no extra restriction) is
+# insufficient on its own.
+if ! python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" \
+    --tag-target HEAD --strict-tag-binding; then
+  fail "strict candidate/tag binding refused HEAD as the tag target — see output above (run /release-evidence-finalize $VERSION again on the exact verified commit if remediation landed; it mints a fresh attempt rather than touching the evidence just read)"
 fi
 HEAD_SHA="$(git rev-parse HEAD)"
-if [ "$CANDIDATE_SHA" != "$HEAD_SHA" ]; then
-  fail "candidate SHA mismatch — evidence names $CANDIDATE_SHA, HEAD is $HEAD_SHA (release-readiness.sh check 14's R1 relaxation permits mechanical-only drift here; this guard does not — re-run /release-qa-gate $VERSION on the exact commit you intend to tag)"
-fi
 
 # --- 6. Create and push the annotated tag. This is the ONLY write this
 # script performs, and only after every check above passed.

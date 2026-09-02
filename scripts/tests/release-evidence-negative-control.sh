@@ -100,6 +100,16 @@ EOF
   cat > "$dir/sonar-project.properties" <<'EOF'
 sonar.projectKey=test-fixture
 EOF
+  # Committed here (not left for the case's own "baseline" commit) so
+  # write_signoffs below has an already-existing commit to name as the
+  # security sign-off's Candidate SHA (AAASM-6017, R11) — a sign-off cannot
+  # contain the hash of the commit that first introduces it (R1 requires it
+  # unchanged as of candidate_sha, so it can't self-reference a not-yet-
+  # computed hash), so it names this earlier root commit instead. R11 checks
+  # ancestor-or-equal, and this root commit is a real ancestor of every
+  # case's later "baseline" commit (which is what --candidate-sha is set to).
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m "fixture: common files"
 }
 
 # $1 dir, $2 catalog yaml body (written verbatim to qa/golden-journeys.yaml)
@@ -110,11 +120,27 @@ write_catalog() {
 }
 
 # $1 dir, $2 qa sign-off md body, $3 security sign-off md body
+#
+# Appends a Candidate SHA line naming the dir's current HEAD (the root
+# commit write_common_files already made) to every security sign-off body —
+# doing it here, once, means the many call sites below that share a single
+# literal $SECURITY_SIGNOFF_PASS-style string never need their own copy
+# (AAASM-6017, R11). A dir with no commit yet (a case that doesn't call
+# write_common_files first) gets no line appended, same as before this
+# change — such a case's security-signoff-consuming assertions, if any,
+# were not R11-shaped to begin with.
 write_signoffs() {
   local dir="$1" qa_body="$2" security_body="$3"
   mkdir -p "$dir/docs/release/qa-signoff" "$dir/docs/release/security-signoff"
   printf '%s\n' "$qa_body" > "$dir/docs/release/qa-signoff/v$VERSION.md"
-  printf '%s\n' "$security_body" > "$dir/docs/release/security-signoff/v$VERSION.md"
+  local root_sha
+  root_sha="$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$root_sha" ]; then
+    printf '%s\n\n- **Candidate SHA:** %s\n' "$security_body" "$root_sha" \
+      > "$dir/docs/release/security-signoff/v$VERSION.md"
+  else
+    printf '%s\n' "$security_body" > "$dir/docs/release/security-signoff/v$VERSION.md"
+  fi
 }
 
 commit_all() {
@@ -369,6 +395,140 @@ patch_evidence "$dir" "doc['journeys'][0]['status'] = 'FAIL'; doc['journeys'][0]
 D=$(commit_all "$dir" "tamper: rewrite evidence journeys after recording")
 assert_exit "T2d" 1 "$dir" "$D"
 assert_output_contains "T2d names R1b" "authorization record modified"
+
+# ---------------------------------------------------------------------------
+# T2e: a DEPENDENCY's own version pin edited in Cargo.toml, disguised as a
+# release-version bump -> BLOCK. AAASM-5998's adversarial review found the
+# old line-regex classifier (`^[+-]version = "..."$`) could not tell a
+# dependency's `version = "..."` line inside a `[dependencies.foo]` table
+# from the package's own `[package] version` field — both match the same
+# regex, so a pure dependency-pin edit was misclassified MECHANICAL.
+# ---------------------------------------------------------------------------
+echo "== T2e: a dependency's own version pin (not the package's) -> BLOCK =="
+dir=$(new_repo t2e)
+write_common_files "$dir"
+cat >> "$dir/Cargo.toml" <<'EOF'
+
+[dependencies.serde]
+version = "1.0.0"
+EOF
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+sed -i.bak 's/version = "1.0.0"/version = "99.9.9-malicious"/' "$dir/Cargo.toml"
+rm -f "$dir/Cargo.toml.bak"
+C=$(commit_all "$dir" "attack: swap a dependency pin, not the package version")
+assert_exit "T2e" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
+# T2f: Cargo.lock swaps an EXTERNALLY-sourced dependency's version/checksum
+# while riding along with a genuine, separate mechanical Cargo.toml version
+# bump -> BLOCK. AAASM-5998's adversarial review reproduced this end-to-end
+# against the real release-tag-guard.sh (a poisoned `serde` pin + checksum,
+# tag actually pushed) — Cargo.lock's old classification was "MECHANICAL if
+# ANY Cargo.toml bump exists anywhere in range", with no check that the
+# lockfile's own diff was actually confined to local workspace-member
+# versions matching that bump.
+# ---------------------------------------------------------------------------
+echo "== T2f: Cargo.lock swaps an external dependency alongside a real version bump -> BLOCK =="
+dir=$(new_repo t2f)
+write_common_files "$dir"
+cat >> "$dir/Cargo.lock" <<'EOF'
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "deadbeef"
+EOF
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+sed -i.bak 's/version = "0.0.0-test"/version = "0.0.1-test"/' "$dir/Cargo.toml"
+rm -f "$dir/Cargo.toml.bak"
+python3 - "$dir/Cargo.lock" <<'PYEOF'
+import sys
+p = sys.argv[1]
+text = open(p).read()
+text = text.replace('name = "test-pkg"\nversion = "0.0.0-test"', 'name = "test-pkg"\nversion = "0.0.1-test"')
+text = text.replace('version = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "deadbeef"',
+                     'version = "1.0.0-evil-supply-chain"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "EVILEVILEVIL"')
+open(p, "w").write(text)
+PYEOF
+C=$(commit_all "$dir" "attack: real version bump + poisoned external dependency swap")
+assert_exit "T2f" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
+# T2g: evidence file deleted then RE-ADDED with different content, instead
+# of directly modified -> BLOCK (R1b). git types this D then A, never M —
+# the old `--diff-filter=M` query returned no commits at all for this
+# sequence, silently missing the tamper (AAASM-5998 adversarial review).
+# ---------------------------------------------------------------------------
+echo "== T2g: evidence file removed then re-added with different content -> BLOCK (R1b) =="
+dir=$(new_repo t2g)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+rm "$dir/docs/release/qa-signoff/v$VERSION.evidence.json"
+commit_all "$dir" "delete evidence" >/dev/null
+gen_evidence "$dir" "$A"
+patch_evidence "$dir" "doc['journeys'][0]['status'] = 'FAIL'"
+D=$(commit_all "$dir" "attack: re-add evidence with a different (tampered) journeys status")
+assert_exit "T2g" 1 "$dir" "$D"
+assert_output_contains "T2g names R1b" "authorization record modified"
+
+# ---------------------------------------------------------------------------
+# T2h: a sign-off .md file edited after the candidate was captured -> BLOCK.
+# Sign-off files previously fell under R1's blanket docs/release/ MECHANICAL
+# prefix (they ARE under docs/release/), so a forged sign-off plus a
+# regenerated, internally-consistent evidence.json could pass both R1 and
+# R7 (which only cross-checks evidence.json against whatever the sign-off
+# CURRENTLY says) — AAASM-5998 adversarial review.
+# ---------------------------------------------------------------------------
+echo "== T2h: sign-off file edited after candidate was captured -> BLOCK =="
+dir=$(new_repo t2h)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+commit_all "$dir" "record evidence" >/dev/null
+echo "<!-- forged addendum -->" >> "$dir/docs/release/qa-signoff/v$VERSION.md"
+C=$(commit_all "$dir" "attack: edit the qa sign-off after candidate was captured")
+assert_exit "T2h" 1 "$dir" "$C"
+
+# ---------------------------------------------------------------------------
+# T2i: evidence tampered AND candidate_sha repointed at the tamper commit
+# itself, in the SAME commit -> BLOCK (R1b). This is the exact attack an
+# independent re-verification of AAASM-5998's first R1b rewrite found: that
+# rewrite anchored its search range on evidence["candidate"]["candidate_sha"]
+# — a field READ FROM the file R1b exists to protect, i.e. attacker-
+# controlled — so a single commit that both forges the verdict AND
+# repoints candidate_sha at that same commit shrank the search range to
+# zero and evaded detection entirely (a genuinely-FAILED journey got
+# tagged and pushed in the reproduction). Fixed by anchoring on the file's
+# own real first-add commit instead, which the attacker cannot choose.
+# ---------------------------------------------------------------------------
+echo "== T2i: forged evidence with candidate_sha repointed at the forgery itself -> BLOCK (R1b) =="
+dir=$(new_repo t2i)
+write_common_files "$dir"
+write_catalog "$dir" "$CATALOG_J01"
+write_signoffs "$dir" "$QA_SIGNOFF_PASS" "$SECURITY_SIGNOFF_PASS"
+A=$(commit_all "$dir" "baseline")
+gen_evidence "$dir" "$A"
+B=$(commit_all "$dir" "record evidence")
+# Sanity: the honest evidence, unmodified, passes.
+assert_exit "T2i sanity (honest evidence passes)" 0 "$dir" "$B"
+patch_evidence "$dir" "doc['journeys'][0]['status'] = 'PASS'; doc['verdict'] = 'PASS'; doc['candidate']['candidate_sha'] = '$B'"
+D=$(commit_all "$dir" "attack: forge PASS and repoint candidate_sha at this same commit")
+assert_exit "T2i" 1 "$dir" "$D"
+assert_output_contains "T2i names R1b" "authorization record modified"
 
 # ---------------------------------------------------------------------------
 # T3a: catalog gains a new release-blocking journey at target not in evidence -> BLOCK
@@ -800,7 +960,7 @@ T7_HEAD="$(git -C "$REAL_REPO_ROOT" rev-parse HEAD)"
 # Every required (release_blocking, non-retired) journey in the REAL catalog
 # gets a PASS row — this is a fixture sign-off, not a real verification —
 # so R2/R3 have a fully-admissible required set to reconcile against.
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" <<'PYEOF'
+python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -839,7 +999,13 @@ Verdict: PASS
 with open(f"{repo_root}/docs/release/qa-signoff/v{version}.md", "w") as f:
     f.write(qa_md)
 with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
-    f.write("## Verdict\n\nVerdict: PASS\n")
+    # AAASM-6017 (R11): must name the exact candidate the fresh evidence
+    # below is generated for. Safe to be this real checkout's own current
+    # HEAD verbatim (not merely an ancestor) — these T7/T7b fixture files
+    # are never committed (`rm -f` cleans them up below), so R1's "sign-off
+    # files must be unchanged since candidate_sha" classifier sees no diff
+    # at all between the (identical) candidate_sha and tag_target here.
+    f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
 python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \
@@ -881,7 +1047,7 @@ rm -f "${T7_FIXTURES[@]}"
 echo "== T7b: check 14 on a marker-less sign-off — R8 SKIPPED must be visible in the pass line =="
 T7_FIXTURES=("$T7_QA_SIGNOFF" "$T7_SEC_SIGNOFF" "$T7_EVIDENCE")
 
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" <<'PYEOF'
+python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -920,7 +1086,13 @@ Verdict: PASS
 with open(f"{repo_root}/docs/release/qa-signoff/v{version}.md", "w") as f:
     f.write(qa_md)
 with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
-    f.write("## Verdict\n\nVerdict: PASS\n")
+    # AAASM-6017 (R11): must name the exact candidate the fresh evidence
+    # below is generated for. Safe to be this real checkout's own current
+    # HEAD verbatim (not merely an ancestor) — these T7/T7b fixture files
+    # are never committed (`rm -f` cleans them up below), so R1's "sign-off
+    # files must be unchanged since candidate_sha" classifier sees no diff
+    # at all between the (identical) candidate_sha and tag_target here.
+    f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
 python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \

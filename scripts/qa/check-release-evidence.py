@@ -72,6 +72,7 @@ a silent trust decision.
 from __future__ import annotations
 
 import argparse
+import copy
 import datetime
 import importlib.util
 import json
@@ -80,6 +81,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from typing import Any
 
 import yaml
@@ -134,21 +136,81 @@ class GitRepo:
         out = self.run("diff", "--name-only", f"{a}", f"{b}").stdout
         return [line for line in out.splitlines() if line]
 
-    def log_commits_touching(self, a: str, b: str, path: str) -> list[str]:
-        """Commits in `a..b` that MODIFY `path` (`--diff-filter=M`) — not the
-        commit that first creates it. The evidence file is necessarily
-        committed some time after the candidate commit it describes (nobody
-        can know a commit's own hash before making it), so the commit that
-        first adds the file is not an "edit of the authorization record" —
-        there is no prior record yet for it to edit. R1b exists to catch a
-        record being rewritten after it already authorized something, which
-        `--diff-filter=M` captures precisely."""
+    def paths_touched_in_range(self, a: str, b: str) -> list[str]:
+        """Every path touched by ANY commit in `a..b` — the union across
+        all commits, not just the net a->b tree diff. `--no-renames` is
+        explicit: a two-tree diff with rename detection ON can pair an
+        unrelated deleted file with an added allowlisted one (same-content
+        move, single commit), making the deleted path vanish from the
+        result entirely. A net diff can also miss an intermediate commit
+        that changes then reverts a path within the range. Used by
+        strict_candidate_binding_violations() (AAASM-6001 Option 4), which
+        needs "did ANY commit in this range touch a non-allowlisted path,"
+        not just "does the final tree differ from the first" — found via
+        adversarial review of this diff itself."""
         if a == b:
             return []
-        out = self.run(
-            "log", "--format=%H", "--diff-filter=M", f"{a}..{b}", "--", path
-        ).stdout
+        out = self.run("log", "--name-only", "--no-renames", "--format=", f"{a}..{b}").stdout
+        return sorted({line for line in out.splitlines() if line})
+
+    def merge_commits_in_range(self, a: str, b: str) -> list[str]:
+        """Merge commits in `a..b` — `git log --name-only` shows no file
+        list for a merge commit by default, so a change that only arrives
+        via a merge's non-first-parent side would be invisible to
+        paths_touched_in_range() above. Rather than special-case merge
+        diffing, the guard simply refuses any merge commit in range."""
+        if a == b:
+            return []
+        out = self.run("rev-list", "--merges", f"{a}..{b}").stdout
         return [line for line in out.splitlines() if line]
+
+    def log_commits_touching(self, a: str, b: str, path: str) -> list[str]:
+        """Every commit in `a..b` that touches `path` at all — added,
+        modified, deleted, or renamed. NOT filtered to `--diff-filter=M`:
+        an earlier version of this filtered to modify-only, reasoning the
+        commit that first creates the evidence file isn't an "edit of the
+        authorization record" (there's no prior record yet to edit) — true,
+        but a delete-then-re-add with DIFFERENT content is typed D then A by
+        git, never M, so that filter silently missed exactly the tamper
+        case R1b exists to catch (found via this fix's own adversarial
+        review, AAASM-5998). Callers determine what actually changed by
+        comparing blob content via `blob_at()`, not by trusting git's
+        add/modify/delete status labels."""
+        if a == b:
+            return []
+        out = self.run("log", "--format=%H", f"{a}..{b}", "--", path).stdout
+        return [line for line in out.splitlines() if line]
+
+    def blob_at(self, ref: str, path: str) -> str | None:
+        """Git blob SHA of `path` as it exists at `ref`, or None if the
+        path doesn't exist there (deleted, or not yet created)."""
+        result = self.run("rev-parse", "-q", "--verify", f"{ref}:{path}", check=False)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    def mode_at(self, ref: str, path: str) -> str | None:
+        """Git tree-entry mode of `path` at `ref` (e.g. "100644" regular,
+        "120000" symlink, "160000" gitlink/submodule), or None if it
+        doesn't exist there. Used to refuse an allowlisted path that has
+        been swapped for a submodule reference — a gitlink at the same
+        path produces the same `git diff --name-only`/`git log
+        --name-only` entry as an ordinary content edit, with no second
+        path introduced the way a symlink swap would have (AAASM-6001
+        adversarial review)."""
+        out = self.run("ls-tree", ref, "--", path, check=False).stdout
+        line = out.splitlines()[0] if out.splitlines() else ""
+        parts = line.split()
+        return parts[0] if parts else None
+
+    def first_add_commit(self, ref: str, path: str) -> str | None:
+        """The earliest commit reachable from `ref` that ADDS `path` — its
+        first-ever appearance in that history. None if `path` has no history
+        reachable from `ref` at all."""
+        out = self.run(
+            "log", "--format=%H", "--diff-filter=A", "--reverse", ref, "--", path,
+        ).stdout.splitlines()
+        return out[0] if out else None
 
     def show_file(self, ref: str, path: str) -> str | None:
         result = self.run("show", f"{ref}:{path}", check=False)
@@ -161,14 +223,298 @@ class GitRepo:
 
 
 # ---------------------------------------------------------------------------
+# Append-only evidence-attempt identity (AAASM-6001).
+#
+# Two resolution modes, deliberately different:
+#
+# - `latest_evidence_path()` — disk-based (`os.listdir`/`os.path.isfile`),
+#   used by the general R1-R10 flow (unchanged from this ADR's first cut).
+#   This flow's own rules (R1b's blob-history walk, R9's post-publish
+#   cross-check against the actually-published tree, etc.) are what
+#   establish trust in the file's content; disk resolution here also keeps
+#   this script usable against a fixture/test repo whose evidence file was
+#   deliberately never committed (scripts/tests/release-evidence-negative-control.sh's
+#   long-standing pattern).
+# - `latest_evidence_path_at_ref()` — git-tree-based (`git ls-tree`/
+#   `git show`), used ONLY by `--strict-tag-binding` (the check
+#   `release-tag-guard.sh` runs immediately before an irreversible tag
+#   push). That is the one call site where an untracked file sitting in the
+#   working tree — planted, left over from an aborted finalize run, or
+#   written by anything with mere filesystem access to the checkout, no
+#   commit/push rights needed — must never be treated as authoritative:
+#   with disk resolution, `candidate_sha == tag_target_sha` (trivially
+#   satisfiable by naming the current HEAD) would be enough to make the
+#   guard report OK against a completely unverified commit. Found via
+#   adversarial review of this diff itself, before it shipped. The guard's
+#   own step 2 (clean working tree) already rejects an untracked file in
+#   the real end-to-end flow, but this check does not get to assume it is
+#   only ever invoked downstream of that gate.
+# ---------------------------------------------------------------------------
+
+_ATTEMPT_RE = re.compile(r"^v(?P<version>.+)\.attempt-(?P<n>[1-9][0-9]*)\.evidence\.json$")
+_EVIDENCE_DIR = "docs/release/qa-signoff"
+
+
+def _legacy_evidence_path(repo_root: str, version: str) -> str:
+    return os.path.join(repo_root, "docs", "release", "qa-signoff", f"v{version}.evidence.json")
+
+
+def _existing_evidence_attempts(repo_root: str, version: str) -> list[tuple[int, str]]:
+    out: list[tuple[int, str]] = []
+    legacy = _legacy_evidence_path(repo_root, version)
+    if os.path.isfile(legacy):
+        out.append((1, legacy))
+    qa_signoff_dir = os.path.join(repo_root, "docs", "release", "qa-signoff")
+    if os.path.isdir(qa_signoff_dir):
+        for name in os.listdir(qa_signoff_dir):
+            m = _ATTEMPT_RE.match(name)
+            if m and m.group("version") == version:
+                out.append((int(m.group("n")) + 1, os.path.join(qa_signoff_dir, name)))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def latest_evidence_path(repo_root: str, version: str) -> str | None:
+    """The highest-numbered existing evidence attempt for `version` on
+    disk, or None if none exists — "current authoritative verdict" is
+    always the latest attempt, never a written pointer file (ADR 0037).
+    Disk-based; see the module-level note above for why, and
+    latest_evidence_path_at_ref() for the git-tree-based alternative used
+    by --strict-tag-binding."""
+    existing = _existing_evidence_attempts(repo_root, version)
+    return existing[-1][1] if existing else None
+
+
+def _existing_evidence_attempts_at(git: GitRepo, ref: str, version: str) -> list[tuple[int, str]]:
+    """Tracked evidence-attempt paths for `version` reachable at `ref`, as
+    (attempt_number, repo-relative path) — attempt_number 1 meaning the
+    legacy (non-suffixed) path. Sorted ascending."""
+    out: list[tuple[int, str]] = []
+    legacy_rel = f"{_EVIDENCE_DIR}/v{version}.evidence.json"
+    if git.blob_at(ref, legacy_rel) is not None:
+        out.append((1, legacy_rel))
+    ls = git.run("ls-tree", "--name-only", "-r", ref, "--", f"{_EVIDENCE_DIR}/", check=False)
+    if ls.returncode == 0:
+        for name in ls.stdout.splitlines():
+            if not name or os.path.dirname(name) != _EVIDENCE_DIR:
+                continue
+            m = _ATTEMPT_RE.match(os.path.basename(name))
+            if m and m.group("version") == version:
+                out.append((int(m.group("n")) + 1, name))
+    out.sort(key=lambda pair: pair[0])
+    return out
+
+
+def latest_evidence_path_at_ref(git: GitRepo, ref: str, version: str) -> str | None:
+    """The highest-numbered evidence attempt for `version` actually
+    committed and reachable at `ref`, or None if none exists there —
+    resolved and read entirely via the git tree, never whatever happens to
+    sit on disk. Used only by --strict-tag-binding; see the module-level
+    note above."""
+    existing = _existing_evidence_attempts_at(git, ref, version)
+    return existing[-1][1] if existing else None
+
+
+# ---------------------------------------------------------------------------
+# Strict candidate/tag binding (AAASM-6001 Option 4, ADR 0037) — a separate,
+# narrower check from R1 above, not a modification of it. R1's
+# `_MECHANICAL_PREFIXES = ("docs/release/",)` is deliberately broad, and
+# even after AAASM-5998's hardening still tolerates any file under
+# docs/release/ (release notes, CHANGELOG.md, etc.) plus a mechanical
+# Cargo.toml/Cargo.lock version bump — correct for R1's own admissibility
+# question (does stale-but-mechanical drift still let this evidence be
+# reused), wrong for this guard's question (is the literal commit about to
+# be tagged bound to the literal commit verified, with zero tolerance for
+# anything riding along besides the sign-off/evidence artifacts that
+# authorize it). This reuses R1's git-diff-enumeration mechanism
+# (GitRepo.diff_name_only/is_ancestor) but is given its own distinct policy,
+# deliberately not parameterized into a shared allowlist with R1's, so a
+# future "simplify these into one" edit cannot widen this guard's boundary
+# by accident.
+# ---------------------------------------------------------------------------
+
+
+def _tag_guard_allowed_paths(version: str) -> tuple[set[str], re.Pattern[str]]:
+    base = "docs/release"
+    exact = {
+        f"{base}/qa-signoff/v{version}.md",
+        f"{base}/qa-signoff/v{version}.evidence.json",
+        f"{base}/security-signoff/v{version}.md",
+    }
+    attempt_re = re.compile(
+        r"^" + re.escape(f"{base}/qa-signoff/v{version}.attempt-") + r"[1-9][0-9]*\.evidence\.json$"
+    )
+    return exact, attempt_re
+
+
+def _path_is_tag_guard_allowlisted(path: str, exact: set[str], attempt_re: re.Pattern[str]) -> bool:
+    # Traversal/canonicalization defense, independent of the allowlist match
+    # itself: refuse anything that isn't already equal to its own
+    # normalized form, or that starts with "/"/"~", or that contains a ".."
+    # segment — before even considering exact/regex match.
+    if path != os.path.normpath(path):
+        return False
+    if path.startswith("/") or path.startswith("~"):
+        return False
+    if ".." in path.split("/"):
+        return False
+    return path in exact or bool(attempt_re.match(path))
+
+
+def strict_candidate_binding_violations(
+    git: GitRepo, version: str, candidate_sha: str, tag_target_sha: str,
+) -> list[str]:
+    """Returns violation strings; empty means A->B is legal under Option 4.
+
+    A = candidate_sha (the exact commit QA/security actually verified)
+    B = tag_target_sha (current HEAD, the eventual tag target)
+
+    Accepts iff A is an ancestor of B (or A == B) AND every path that
+    differs between them is on `_tag_guard_allowed_paths(version)`'s narrow,
+    version-scoped allowlist — nothing broader, no other version's evidence,
+    no mixed allowed+forbidden change in one commit."""
+    violations: list[str] = []
+
+    if candidate_sha == tag_target_sha:
+        return violations
+
+    if not git.is_ancestor(candidate_sha, tag_target_sha):
+        violations.append(
+            f"candidate {candidate_sha} is not an ancestor of tag target {tag_target_sha} — "
+            "B must descend from A"
+        )
+        return violations
+
+    # A merge commit anywhere in range is refused outright rather than
+    # diffed: `git log --name-only` (used below) shows no file list for a
+    # merge commit by default, so a change arriving only via a merge's
+    # non-first-parent side would otherwise be invisible to this scan.
+    merges = git.merge_commits_in_range(candidate_sha, tag_target_sha)
+    if merges:
+        violations.append(
+            f"merge commit(s) in candidate..tag_target range ({', '.join(merges)}) — not "
+            "permitted; a merge can bring in changes this linear per-commit scan cannot see"
+        )
+        return violations
+
+    exact, attempt_re = _tag_guard_allowed_paths(version)
+    # paths_touched_in_range(), not diff_name_only(): the union of every
+    # commit's own changed paths in the range, not just the net A->B tree
+    # diff. A net diff can miss an intermediate commit that changes and
+    # then reverts a non-allowlisted path within the range, and (with
+    # rename detection on, which diff_name_only does not disable) can
+    # collapse a same-content move of a forbidden file into an allowlisted
+    # path down to a single line that never names the forbidden source.
+    # Found via adversarial review of this diff itself, before it shipped.
+    changed_paths = git.paths_touched_in_range(candidate_sha, tag_target_sha)
+    for path in changed_paths:
+        if not _path_is_tag_guard_allowlisted(path, exact, attempt_re):
+            violations.append(f"{path} is not on the version-scoped allowlist for v{version}")
+            continue
+        # An allowlisted path is only trusted as a regular file — a gitlink
+        # (mode 160000, a submodule reference to an arbitrary, potentially
+        # attacker-controlled external commit) at the exact same path
+        # would otherwise pass the string-only allowlist check unchanged.
+        mode = git.mode_at(tag_target_sha, path)
+        if mode is not None and mode != "100644":
+            violations.append(f"{path} is not a regular file at tag_target (mode {mode})")
+
+    return violations
+
+
+# ---------------------------------------------------------------------------
 # R1 — candidate binding: path classification
 # ---------------------------------------------------------------------------
 
-_VERSION_LINE_RE = re.compile(r'^[+-]version = "[^"]+"$')
-
-# Paths that are release-mechanical no matter their diff content.
+# Paths that are release-mechanical no matter their diff content. Sign-off
+# files are deliberately carved OUT of the blanket docs/release/ prefix
+# (AAASM-5998 adversarial review): they are the authorization record's own
+# supporting evidence, not incidental docs — R7 only cross-checks
+# evidence.json's recorded verdict against whatever the sign-off .md
+# *currently* says, so if the sign-off text itself were freely editable
+# post-candidate (as "docs" would make it), a forged sign-off plus a
+# regenerated evidence.json would pass both R1 and R7 self-consistently.
+# Any post-candidate change to a sign-off file must block R1, the same way
+# a change to the evidence file itself is excluded and handled by R1b.
 _MECHANICAL_PREFIXES = ("docs/release/",)
+_MECHANICAL_EXCLUDED_PREFIXES = (
+    "docs/release/qa-signoff/",
+    "docs/release/security-signoff/",
+)
 _MECHANICAL_EXACT = {"CHANGELOG.md", "sonar-project.properties"}
+
+
+def _is_mechanical_cargo_toml_bump(old_text: str | None, new_text: str | None) -> tuple[bool, str | None]:
+    """True iff the only structural difference between old/new Cargo.toml is
+    the package's own release version (`package.version` or
+    `workspace.package.version`) — anything else, including a DEPENDENCY's
+    own version pin (`[dependencies.foo]` / `[dependencies.foo.version]`,
+    which a line-level `version = "..."` regex cannot distinguish from the
+    package's own version field — the exact gap AAASM-5998's adversarial
+    review found let a real dependency swap through as "mechanical"), makes
+    this EXECUTABLE. Structural (parsed-TOML) comparison rather than
+    line-diffing, so formatting/reordering differences that touch no real
+    field never falsely block. Returns (is_mechanical, new_version) —
+    new_version is the bumped value, used to cross-check Cargo.lock below.
+    """
+    if old_text is None or new_text is None:
+        return False, None
+    try:
+        old_doc = tomllib.loads(old_text)
+        new_doc = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError:
+        return False, None
+
+    def neutralize(doc: dict) -> dict:
+        doc = copy.deepcopy(doc)
+        if "package" in doc and "version" in doc["package"]:
+            doc["package"]["version"] = "__VERSION__"
+        if "version" in doc.get("workspace", {}).get("package", {}):
+            doc["workspace"]["package"]["version"] = "__VERSION__"
+        return doc
+
+    if neutralize(old_doc) != neutralize(new_doc):
+        return False, None
+    new_version = new_doc.get("package", {}).get("version") or \
+        new_doc.get("workspace", {}).get("package", {}).get("version")
+    return True, new_version
+
+
+def _is_mechanical_cargo_lock_change(
+    old_text: str | None, new_text: str | None, target_version: str | None,
+) -> bool:
+    """True iff Cargo.lock's only changes are workspace-local packages'
+    (no `source` field — i.e. not fetched from crates.io or any other
+    registry) own version field moving to `target_version` (the same
+    version the paired Cargo.toml bump targets). ANY change to an
+    externally-sourced package — version, checksum, or anything else — is
+    EXECUTABLE, closing the gap where a real dependency swap (e.g. a
+    poisoned `serde` pin + checksum) rode along as "coupled to a mechanical
+    version bump" merely because *some* Cargo.toml in range also bumped a
+    version (AAASM-5998 adversarial review, reproduced end-to-end against
+    the guard's own real tag-creation path)."""
+    if old_text is None or new_text is None or target_version is None:
+        return False
+    try:
+        old_doc = tomllib.loads(old_text)
+        new_doc = tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError:
+        return False
+    old_pkgs = {(p["name"], p.get("source")): p for p in old_doc.get("package", [])}
+    new_pkgs = {(p["name"], p.get("source")): p for p in new_doc.get("package", [])}
+    if set(old_pkgs) != set(new_pkgs):
+        return False  # a package was added/removed/re-sourced — not pure mechanical
+    for key, new_p in new_pkgs.items():
+        old_p = old_pkgs[key]
+        if old_p == new_p:
+            continue
+        if new_p.get("source") is not None:
+            return False  # any change to an externally-sourced package at all
+        if old_p.get("version") == new_p.get("version"):
+            return False  # something other than this local entry's version changed
+        if new_p.get("version") != target_version:
+            return False  # local entry bumped to a DIFFERENT version than the toml bump
+    return True
 
 
 def classify_paths(
@@ -192,20 +538,18 @@ def classify_paths(
 
     # First pass: which Cargo.toml paths in this range are themselves
     # MECHANICAL (pure version bumps)? Cargo.lock's classification below
-    # depends on this set, so it must be computed before Cargo.lock is
-    # classified — order of iteration over changed_paths is not guaranteed
-    # to put Cargo.toml files before Cargo.lock.
-    mechanical_toml_paths: set[str] = set()
+    # depends on this set (and the version each one bumps to), so it must
+    # be computed before Cargo.lock is classified — order of iteration over
+    # changed_paths is not guaranteed to put Cargo.toml files before
+    # Cargo.lock.
+    mechanical_toml_paths: dict[str, str] = {}  # path -> new_version
     for path in changed_paths:
         if os.path.basename(path) == "Cargo.toml":
-            diff_text = git.run("diff", "-U0", candidate_sha, tag_target_sha, "--", path).stdout
-            changed_lines = [
-                line for line in diff_text.splitlines()
-                if line.startswith("+") or line.startswith("-")
-                if not line.startswith("+++") and not line.startswith("---")
-            ]
-            if changed_lines and all(_VERSION_LINE_RE.match(line) for line in changed_lines):
-                mechanical_toml_paths.add(path)
+            old_text = git.show_file(candidate_sha, path)
+            new_text = git.show_file(tag_target_sha, path)
+            is_mechanical, new_version = _is_mechanical_cargo_toml_bump(old_text, new_text)
+            if is_mechanical and new_version is not None:
+                mechanical_toml_paths[path] = new_version
 
     for path in changed_paths:
         if path == evidence_path:
@@ -214,27 +558,35 @@ def classify_paths(
         if path == catalog_path:
             rows.append((path, "EXCLUDED", "release-blocking catalog — checked by R2, not R1"))
             continue
+        if path.startswith(_MECHANICAL_EXCLUDED_PREFIXES):
+            rows.append((path, "EXECUTABLE", "sign-off record — authorization evidence, not incidental docs"))
+            any_executable = True
+            continue
         if path.startswith(_MECHANICAL_PREFIXES) or path in _MECHANICAL_EXACT:
             rows.append((path, "MECHANICAL", "release-notes/docs/config allowlist"))
             continue
         if os.path.basename(path) == "Cargo.toml":
             if path in mechanical_toml_paths:
-                rows.append((path, "MECHANICAL", "every changed line is a bare version bump"))
+                rows.append((path, "MECHANICAL", "the package's own release version, structurally isolated"))
             else:
-                rows.append((path, "EXECUTABLE", "Cargo.toml changed beyond the version field"))
+                rows.append((path, "EXECUTABLE", "Cargo.toml changed beyond the package's own version field"))
                 any_executable = True
             continue
         if os.path.basename(path) == "Cargo.lock":
-            if mechanical_toml_paths:
+            target_version = next(iter(mechanical_toml_paths.values()), None)
+            old_text = git.show_file(candidate_sha, path)
+            new_text = git.show_file(tag_target_sha, path)
+            if mechanical_toml_paths and _is_mechanical_cargo_lock_change(old_text, new_text, target_version):
                 rows.append((
                     path, "MECHANICAL",
-                    f"coupled to mechanical version bump in {sorted(mechanical_toml_paths)}",
+                    f"only local workspace-member version(s) moved to {target_version}, "
+                    f"coupled to the bump in {sorted(mechanical_toml_paths)}",
                 ))
             else:
                 rows.append((
                     path, "EXECUTABLE",
-                    "Cargo.lock changed with no corresponding mechanical Cargo.toml bump "
-                    "in range — treated as a real dependency change",
+                    "Cargo.lock changed beyond local workspace-member versions matching a "
+                    "mechanical Cargo.toml bump — treated as a real dependency change",
                 ))
                 any_executable = True
             continue
@@ -318,18 +670,52 @@ def rule_r1_candidate_binding(
 def rule_r1b_self_protection(
     git: GitRepo, evidence: dict[str, Any], tag_target: str, evidence_relpath: str,
 ) -> list[str]:
-    candidate_sha = evidence["candidate"]["candidate_sha"]
+    """Refuses if the evidence file's content has ever changed since its own
+    first appearance in history — anchored on that first-add commit, NOT on
+    `evidence["candidate"]["candidate_sha"]`.
+
+    AAASM-5998 (fixed here, second iteration): the first version of this
+    content-comparison rewrite anchored the search range on candidate_sha —
+    a field READ FROM THE EVIDENCE FILE ITSELF, i.e. attacker-controlled
+    input, since forging that field is exactly what this rule exists to
+    catch. An independent re-verification found this made the rule
+    trivially defeatable: a single commit that both rewrites the evidence
+    content AND repoints candidate_sha at that same commit shrinks the
+    search range to zero, so no second content state is ever observed
+    (reproduced end-to-end against the real, unmodified guard — a forged
+    PASS verdict for a genuinely FAILED journey got tagged and pushed).
+    Anchoring on the file's own real first-add commit instead removes the
+    attacker's ability to choose the search boundary at all: the invariant
+    checked is "this specific v<X>.evidence.json's content has never
+    changed since it was first created," independent of what any field
+    inside it claims.
+    """
     tag_target_sha = git.rev_parse(tag_target)
-    commits = git.log_commits_touching(candidate_sha, tag_target_sha, evidence_relpath)
-    if not commits:
+    first_add = git.first_add_commit(tag_target_sha, evidence_relpath)
+    if first_add is None:
+        # No history for this path reachable from tag_target at all — main()
+        # already refused earlier if the file doesn't exist on disk at
+        # tag_target; this is here only as a defensive no-op, never expected
+        # to be hit in practice.
         return []
-    # The post-publish appender (Subtask C, AAASM-5900) does not exist yet —
-    # there is no way for a commit in this range to legitimately touch only
-    # `artifacts.published`, so every commit found here is a violation.
+    # Distinct content states the file held from its own first-add commit
+    # through tag_target, excluding states where it didn't exist (e.g. an
+    # intermediate delete) — content-based, not commit-status-based, so a
+    # delete-then-re-add with different content (typed D then A by git,
+    # never M) is caught exactly the same as a direct edit. The file is
+    # legitimately created once (its very first content state) and must
+    # never show a second, different one afterward — the post-publish
+    # appender (Subtask C, AAASM-5900) does not exist yet, so there is no
+    # legitimate reason for a second state to appear at all yet.
+    commits = git.log_commits_touching(first_add, tag_target_sha, evidence_relpath)
+    blobs = {b for c in [first_add, *commits] if (b := git.blob_at(c, evidence_relpath))}
+    if len(blobs) <= 1:
+        return []
     return [
-        "R1b: authorization record modified after the candidate it authorizes — "
-        f"{evidence_relpath} was touched by commit(s) {', '.join(commits)} in "
-        f"{candidate_sha}..{tag_target_sha}"
+        "R1b: authorization record modified after it was first created — "
+        f"{evidence_relpath} held {len(blobs)} distinct content states since its own "
+        f"first-add commit {first_add} through {tag_target_sha} (independent of what "
+        f"candidate_sha inside the file itself claims)"
     ]
 
 
@@ -598,6 +984,62 @@ def rule_r7_signoff_consistency(
 
 
 # ---------------------------------------------------------------------------
+# R11 — security sign-off candidate binding (AAASM-6017)
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_SHA_LINE_RE = re.compile(r"^-\s*\*\*Candidate SHA:\*\*\s*(\S+)", re.M)
+
+
+def rule_r11_security_candidate_binding(
+    git: GitRepo, evidence: dict[str, Any], security_signoff_text: str, security_signoff_path: str,
+) -> list[str]:
+    """R7 only compares the two files' `Verdict:` lines — it never asks whether
+    the security reviewer looked at the SAME commit QA verified. Without this,
+    a security sign-off produced against an unrelated (or not-yet-verified)
+    commit still reaches PASS as long as both verdict lines happen to say
+    PASS, which is exactly the "QA candidate != Security candidate" gap the
+    release-identity invariant forbids (AAASM-6017, found during AAASM-5998
+    reconciliation).
+
+    Checks ancestor-or-equal, not byte-equality: R1's classifier deliberately
+    excludes sign-off files from "mechanical, tolerated post-candidate"
+    changes (they must already be final AT candidate_sha), so a sign-off
+    cannot contain the literal hash of the commit that first introduces it —
+    the same quine ADR 0037 avoids for evidence.json via ancestor tolerance
+    rather than self-reference. The security Candidate SHA therefore names
+    the (earlier, already-known) commit actually reviewed; it must be an
+    ancestor of, or equal to, the QA-verified candidate — never a sibling/
+    unrelated commit, and never a DESCENDANT (security claiming to have
+    reviewed further than QA actually verified).
+    """
+    if not security_signoff_text:
+        # R7 already blocks on a missing file; don't double-report.
+        return []
+
+    match = _CANDIDATE_SHA_LINE_RE.search(security_signoff_text)
+    if match is None:
+        return [
+            f"R11: {security_signoff_path} has no '**Candidate SHA:**' line — cannot "
+            "confirm the security review covered the same commit QA verified"
+        ]
+
+    security_candidate_sha = match.group(1)
+    qa_candidate_sha = evidence["candidate"]["candidate_sha"]
+    if security_candidate_sha == qa_candidate_sha:
+        return []
+    # is_ancestor uses `check=False`, so an invalid/unknown SHA (not just a
+    # real-but-wrong one) also cleanly returns False here rather than raising.
+    if not git.is_ancestor(security_candidate_sha, qa_candidate_sha):
+        return [
+            f"R11: {security_signoff_path}'s Candidate SHA ({security_candidate_sha}) is not "
+            f"an ancestor of (or equal to) the QA evidence's candidate_sha ({qa_candidate_sha}) "
+            "— QA and security did not verify the same revision"
+        ]
+
+    return []
+
+
+# ---------------------------------------------------------------------------
 # R8 — derived-table consistency (AAASM-5900)
 # ---------------------------------------------------------------------------
 
@@ -849,7 +1291,15 @@ def main() -> int:
     parser.add_argument("--tag-target", default="HEAD", help="ref/SHA the tag will point at")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--evidence", default=None,
-                         help="default: <repo-root>/docs/release/qa-signoff/v<version>.evidence.json")
+                         help="default: the latest existing evidence-attempt path for "
+                              "<version> (AAASM-6001) — legacy v<version>.evidence.json if "
+                              "that's the only one, else the highest-numbered "
+                              "v<version>.attempt-<N>.evidence.json")
+    parser.add_argument("--strict-tag-binding", action="store_true",
+                         help="run ONLY the AAASM-6001 Option 4 candidate/tag binding check "
+                              "(strict_candidate_binding_violations) against the latest "
+                              "evidence attempt, skipping R1-R10 entirely — this is what "
+                              "release-tag-guard.sh's own step 5 calls; see ADR 0037")
     parser.add_argument("--catalog", default="qa/golden-journeys.yaml",
                          help="repo-relative path to the release-blocking catalog")
     parser.add_argument("--qa-signoff", default=None,
@@ -881,17 +1331,76 @@ def main() -> int:
 
     repo_root = os.path.abspath(args.repo_root)
     git = GitRepo(repo_root)
+    tag_target_sha = git.rev_parse(args.tag_target)
 
-    evidence_path = args.evidence or os.path.join(
-        repo_root, "docs", "release", "qa-signoff", f"v{args.version}.evidence.json"
-    )
-    if not os.path.isfile(evidence_path):
-        print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
-        return 1
-    with open(evidence_path) as f:
-        evidence = json.load(f)
+    if args.evidence is not None:
+        # Explicit override: an operator/test-provided path, read from the
+        # working-tree filesystem — applies in every mode, including
+        # --strict-tag-binding, since an explicit override is by definition
+        # the caller taking responsibility for what it points at.
+        evidence_path = args.evidence
+        if not os.path.isfile(evidence_path):
+            print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
+            return 1
+        evidence_relpath = os.path.relpath(evidence_path, repo_root)
+        with open(evidence_path) as f:
+            evidence = json.load(f)
+    elif args.strict_tag_binding:
+        # --strict-tag-binding's default resolution is git-tree-based, not
+        # disk-based (latest_evidence_path_at_ref(), not
+        # latest_evidence_path()) — see the module-level note above
+        # _existing_evidence_attempts_at() for why this one call site can't
+        # trust the working-tree filesystem the way the general R1-R10 flow
+        # below does.
+        evidence_relpath = latest_evidence_path_at_ref(git, tag_target_sha, args.version)
+        if evidence_relpath is None:
+            print(
+                f"error: no evidence generated yet for version {args.version} — run "
+                f"/release-evidence-finalize {args.version} (build-release-evidence.py) after "
+                "both sign-off gates have produced a sign-off for the candidate",
+                file=sys.stderr,
+            )
+            return 1
+        evidence_text = git.show_file(tag_target_sha, evidence_relpath)
+        if evidence_text is None:
+            # Defensive only — latest_evidence_path_at_ref() just confirmed
+            # this blob exists at tag_target_sha via the same GitRepo
+            # instance.
+            print(f"error: could not read committed evidence at {evidence_relpath}", file=sys.stderr)
+            return 1
+        evidence = json.loads(evidence_text)
+    else:
+        evidence_path = latest_evidence_path(repo_root, args.version)
+        if evidence_path is None:
+            print(
+                f"error: no evidence generated yet for version {args.version} — run "
+                f"/release-evidence-finalize {args.version} (build-release-evidence.py) after "
+                "both sign-off gates have produced a sign-off for the candidate",
+                file=sys.stderr,
+            )
+            return 1
+        if not os.path.isfile(evidence_path):
+            print(f"error: evidence file not found: {evidence_path}", file=sys.stderr)
+            return 1
+        evidence_relpath = os.path.relpath(evidence_path, repo_root)
+        with open(evidence_path) as f:
+            evidence = json.load(f)
 
-    evidence_relpath = os.path.relpath(evidence_path, repo_root)
+    if args.strict_tag_binding:
+        candidate_sha = evidence["candidate"]["candidate_sha"]
+        violations = strict_candidate_binding_violations(git, args.version, candidate_sha, tag_target_sha)
+        if violations:
+            print(f"strict candidate/tag binding: BLOCK — {len(violations)} violation(s):")
+            for v in violations:
+                print(f"  - {v}")
+            return 1
+        print(
+            f"strict candidate/tag binding: OK — {candidate_sha} -> {tag_target_sha} is a "
+            f"legal Option-4 candidate/tag binding for v{args.version} "
+            f"(evidence: {evidence_relpath})"
+        )
+        return 0
+
     catalog_relpath = args.catalog
 
     qa_signoff_path = args.qa_signoff or os.path.join(
@@ -926,7 +1435,34 @@ def main() -> int:
     )
     all_blocks += r1_blocks
 
-    r1b_blocks = rule_r1b_self_protection(git, evidence, args.tag_target, evidence_relpath)
+    # Every rule below that resolves candidate_sha directly via a git call
+    # (R1b's --diff-filter=M log, R2/R3's _load_catalog_text(candidate_sha)
+    # on a drifted digest, R6's committer_date) assumes candidate_sha is a
+    # real ancestor of tag_target — true whenever R1 accepted the candidate,
+    # false for "not-ancestor" (a candidate_sha that doesn't even reach
+    # tag_target, e.g. a bogus/unrelated SHA). Without this guard, that case
+    # reaches an unresolvable git range/ref and either crashes with an
+    # uncaught CalledProcessError (R1b, R6) or exits early via a bare
+    # SystemExit that skips the normal "BLOCK — N rule violation(s)"
+    # reporting and gives a misleading "does not exist" message for a file
+    # that does exist at tag_target (R2/R3) — found via AAASM-5998's own
+    # falsification testing of the not-ancestor case, both in the original
+    # fix and in this PR's own review. R1 has already refused in this case
+    # ("R1 has already refused" below); none of R1b/R2/R3/R6's questions
+    # (was the record modified after the fact / has the catalog drifted
+    # since candidate / does the candidate predate the evidence) are
+    # answerable for a candidate that was never a valid ancestor to begin
+    # with, so skip all three rather than let any of them crash or mislead.
+    # R4/R5 are unaffected — both resolve only tag_target_sha, never
+    # candidate_sha — so they still run and still contribute a genuine
+    # finding regardless.
+    candidate_is_ancestor = reuse_class != "not-ancestor"
+
+    r1b_blocks = (
+        rule_r1b_self_protection(git, evidence, args.tag_target, evidence_relpath)
+        if candidate_is_ancestor
+        else []
+    )
     all_blocks += r1b_blocks
 
     if r1_blocks:
@@ -938,7 +1474,11 @@ def main() -> int:
         print("R1 BLOCKED — all journey statuses in this evidence are STALE for "
               f"tag_target {args.tag_target}")
 
-    r2_r3_blocks = rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text)
+    r2_r3_blocks = (
+        rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text)
+        if candidate_is_ancestor
+        else []
+    )
     all_blocks += r2_r3_blocks
 
     r4_blocks = rule_r4_platforms(git, evidence, args.tag_target, catalog_relpath)
@@ -947,13 +1487,23 @@ def main() -> int:
     r5_blocks = rule_r5_negative_control(git, evidence, args.tag_target, catalog_relpath)
     all_blocks += r5_blocks
 
-    r6_blocks = rule_r6_temporal(git, evidence)
+    r6_blocks = rule_r6_temporal(git, evidence) if candidate_is_ancestor else []
     all_blocks += r6_blocks
 
     r7_blocks = rule_r7_signoff_consistency(
         evidence, qa_signoff_text, security_signoff_text, qa_signoff_path, security_signoff_path,
     )
     all_blocks += r7_blocks
+
+    r11_blocks = rule_r11_security_candidate_binding(
+        git, evidence, security_signoff_text, security_signoff_path,
+    )
+    all_blocks += r11_blocks
+    if r11_blocks:
+        print(f"R11 security candidate binding: BLOCK — {len(r11_blocks)} violation(s)")
+    elif security_signoff_text:
+        print("R11 security candidate binding: OK — security sign-off's Candidate SHA "
+              "matches the QA evidence's candidate_sha")
 
     r8_blocks = rule_r8_derived_table(evidence, qa_signoff_text, qa_signoff_path)
     all_blocks += r8_blocks

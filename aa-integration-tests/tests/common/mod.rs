@@ -43,6 +43,8 @@ pub mod mock_llm;
 #[allow(dead_code)]
 pub mod node_sdk;
 #[allow(dead_code)]
+pub mod precondition;
+#[allow(dead_code)]
 pub mod scenario;
 #[allow(dead_code)]
 pub mod sdk_driver;

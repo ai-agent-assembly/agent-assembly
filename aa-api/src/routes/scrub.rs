@@ -468,6 +468,7 @@ mod tests {
             let alert = SecretAlert {
                 agent_id: aa_core::AgentId::from_bytes([0x11; 16]),
                 team_id: None,
+                event_id: None,
                 kinds,
                 finding_count,
             };

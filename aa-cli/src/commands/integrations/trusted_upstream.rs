@@ -206,16 +206,16 @@ pub fn write_trusted_upstream_config(args: &TrustedUpstreamArgs) -> Result<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    // AASM_STATE_DIR is a process-global env var; serialize the tests that
-    // touch it so they cannot observe each other's value (the ambient-env
-    // test-isolation pitfall this codebase's own ADR 0036 work already names
-    // for `aa-proxy`'s equivalent tests).
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
+    // AASM_STATE_DIR is a process-global env var, and this module is not its
+    // only mutator within the `aa-cli` lib test binary — `run.rs`,
+    // `proxy/start.rs`, `proxy/guard.rs`, and `proxy/launch_state.rs` all
+    // mutate it too. A module-local lock here would not serialize against
+    // theirs (AAASM-5989's "secondary observation": exactly the failure mode
+    // AAASM-2502 fixed everywhere else, verified rather than assumed harmless
+    // for this file), so this uses the crate-wide guard those already share.
     fn with_state_dir<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_support::env_guard();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("AASM_STATE_DIR", dir.path());
         let result = f(dir.path());

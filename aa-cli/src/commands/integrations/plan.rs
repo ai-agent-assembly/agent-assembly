@@ -102,6 +102,7 @@ pub fn run(args: PlanArgs, options: SessionOptions, output: OutputFormat) -> Exi
 pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<PlanReport, Failure> {
     let scope = resolve_scope(args)?;
     let project_root = super::target::project_root_for_plan(scope)?;
+    let user_config_home = super::target::user_config_home_for_plan(scope)?;
     resolve_tool(session, &args.tool, true).await?;
     let runtime = RuntimeInfo::from_session(session);
     let view = session
@@ -117,6 +118,7 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
             allow_privileged_host_steps: args.allow_privileged_host_steps || args.install_managed_settings,
             requested_level: requested_level(args.install_managed_settings),
             project_root: &project_root,
+            user_config_home: &user_config_home,
         })
         .await
         .map_err(verb_failure)?;

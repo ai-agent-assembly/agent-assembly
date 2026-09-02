@@ -48,8 +48,13 @@
 //! release-QA pass on a machine with the real binary installed — not
 //! `CI_AUTOMATED` coverage, and it must not be represented as the latter.
 
-#[path = "evidence/mod.rs"]
-pub mod evidence;
+// AAASM-5977: re-exported from `common::precondition`, which already loads
+// this file (`#[path = "../evidence/mod.rs"] pub mod evidence;`), rather than
+// a second `#[path] mod evidence;` here — the same file loaded via two `mod`
+// paths in one binary is clippy's `duplicate_mod`. A `use`, not a `mod`, per
+// clippy's own suggested fix.
+#[allow(unused_imports)]
+pub use common::precondition::evidence;
 
 #[allow(unused_imports)]
 mod common;
@@ -92,7 +97,7 @@ mod deterministic_conformance {
         enable_mcp_server, ensure_mcp_server_enabled, sentinel_path, write_mcp_config, ConformanceUpstream, TASK_MARKER,
     };
     use super::grpc_gateway_support::expected_did;
-    use super::proxy_trust_support::{aasm_binary, TrustedProxy};
+    use super::proxy_trust_support::TrustedProxy;
     use super::spike_support::proxy_harness::install_crypto_provider;
     use super::spike_support::RealHomeGuard;
 
@@ -300,17 +305,25 @@ mod deterministic_conformance {
             ReceiptStore::at(integrations.join("store")),
         );
         let tool = DevToolKind::ClaudeCode;
+        let user_config_home = home.join(".claude");
         let plan = service
-            .plan(IntegrationRequest::new(
-                tool.clone(),
-                ProtectionProfile::Recommended,
-                SettingsScope::User,
-            ))
+            .plan(
+                IntegrationRequest::new(tool.clone(), ProtectionProfile::Recommended, SettingsScope::User)
+                    .with_user_config_home(&user_config_home),
+            )
             .await
             .map_err(|e| anyhow::anyhow!("plan: {e}"))?;
         service
-            // User scope: one installation, no project to name.
-            .apply(&tool, &plan.plan_id, &LifecycleTarget::unspecified())
+            // User scope: one installation, no project to name — but a
+            // configuration home is mandatory now (AAASM-5957).
+            .apply(
+                &tool,
+                &plan.plan_id,
+                &LifecycleTarget {
+                    user_config_home: Some(user_config_home),
+                    ..LifecycleTarget::unspecified()
+                },
+            )
             .await
             .map_err(|e| anyhow::anyhow!("apply: {e}"))?;
         // Must run after `apply` — see `enable_mcp_server`'s doc for why.
@@ -320,7 +333,7 @@ mod deterministic_conformance {
         let prompt = format!("{TASK_MARKER}: call allow_test then deny_test");
         let stdout_path = root.join("aasm-stdout.txt");
         let stderr_path = root.join("aasm-stderr.txt");
-        let mut cmd = std::process::Command::new(aasm_binary());
+        let mut cmd = std::process::Command::new(proxy.aasm());
         cmd.current_dir(&project)
             .env("HOME", &home)
             .env("PATH", path_with_both(claude.parent().expect("claude has a parent"), proxy.proxy_bin_dir())?)
@@ -335,8 +348,14 @@ mod deterministic_conformance {
             // ephemeral port it picks) rather than routing through the
             // standalone `proxy` this file starts above — that one exists
             // only as the launch's registration/CA-trust precondition (see
-            // `cli_run_claude_governed_launch.rs`'s identical note). The
-            // dedicated proxy's own `gateway_endpoint` is sourced from
+            // `cli_run_claude_governed_launch.rs`'s identical note). Spawning
+            // `proxy.aasm()` (AAASM-5982) rather than the genuine `aasm_binary()`
+            // is what makes that dedicated proxy resolve to the mock stand-in
+            // `proxy.proxy_bin_dir()` on `PATH` copied there — sibling
+            // resolution wins over `$PATH`, so `PATH` alone would lose to a
+            // genuine `aa-proxy` sitting next to a genuine `aasm` in
+            // `target/debug` (built by another test earlier in the same run).
+            // The dedicated proxy's own `gateway_endpoint` is sourced from
             // `ProxyGuardOptions` (built from `AA_GATEWAY_ENDPOINT` via
             // `run_registration::gateway_endpoint()`), and `build_command`
             // sets `AA_PROXY_GATEWAY_ENDPOINT` on the child itself — so no

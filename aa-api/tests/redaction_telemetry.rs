@@ -92,6 +92,13 @@ async fn proxy_redaction_event_surfaces_on_alerts_api() {
     assert_eq!(items[0]["detected_pattern_type"], "AwsAccessKey");
     assert_eq!(items[0]["redacted_value"], "[REDACTED:AwsAccessKey]");
     assert_eq!(items[0]["team_id"], "team-pioneer");
+    // AAASM-5905: this is the whole point of the telemetry hop — an operator
+    // looking at this alert can trace it back to the exact proxy-side
+    // RedactionEvent that produced it, not just grep two processes' logs.
+    assert_eq!(
+        items[0]["event_id"], "evt-1",
+        "the alert must expose the originating RedactionEvent's event_id for cross-process correlation"
+    );
 }
 
 #[tokio::test]

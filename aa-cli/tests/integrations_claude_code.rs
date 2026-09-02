@@ -19,8 +19,12 @@
 //! redirected into one temp directory **before** the integration is constructed,
 //! in the test process and in the CLI's environment. Nothing reads or writes the
 //! developer's real `~/.claude` or `~/.aa`, and no keychain operation is
-//! performed. `nextest` runs each test in its own process, which is what makes
-//! the process-wide redirection safe.
+//! performed. `nextest` runs each test in its own process, so the redirection
+//! never observes another test there; under plain `cargo test`, where every test
+//! in this file shares one process, `Harness` holds
+//! [`aa_cli::env_guard::lock`] for its entire lifetime (AAASM-5989) so a second
+//! `Harness` under construction on another thread blocks until the first is
+//! dropped, instead of racing it for the same globals.
 //!
 //! # Skipping
 //!
@@ -79,6 +83,14 @@ fn require_claude(scenario: &str) -> bool {
 }
 
 struct Harness {
+    // Held for the whole struct lifetime, not just construction — see the
+    // module doc's Safety section (AAASM-5989). Field order doesn't matter for
+    // this (a `MutexGuard` unlocks on `Drop` regardless of declaration order,
+    // and struct fields drop in declaration order only among fields declared
+    // in the same struct, which affects nothing here), but it's declared first
+    // as documentation: this is what makes every other field safe to mutate
+    // globally.
+    _env_guard: aa_cli::env_guard::EnvGuard,
     dir: tempfile::TempDir,
     socket: std::path::PathBuf,
     token_file: std::path::PathBuf,
@@ -88,6 +100,7 @@ struct Harness {
 
 impl Harness {
     fn start() -> Self {
+        let _env_guard = aa_cli::env_guard::lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         let claude_home = dir.path().join(".claude");
@@ -158,6 +171,7 @@ impl Harness {
         assert!(socket.exists(), "the test server never bound its socket");
 
         Self {
+            _env_guard,
             dir,
             socket,
             token_file,
@@ -174,6 +188,11 @@ impl Harness {
     /// `boot_cwd`, which is how a restart in a real deployment picks up a new
     /// directory: whatever launched it. A caller's project binding must not move
     /// when that happens (AAASM-5913).
+    ///
+    /// The `set_current_dir` calls below mutate this process's cwd, another
+    /// process-global — safe here only because `self` is still holding
+    /// `_env_guard` from construction (AAASM-5989), so no concurrent test can
+    /// resolve a relative path against it mid-mutation.
     fn restart_service_from(&mut self, boot_cwd: &std::path::Path) {
         self.shutdown.cancel();
         if let Some(handle) = self.server.take() {
@@ -313,13 +332,21 @@ fn stderr(out: &Output) -> String {
 /// makes every *later* test's `aasm` child unable to resolve a directory at all —
 /// which surfaces as "Claude Code is not installed on this host" in a test that
 /// has nothing to do with directories.
-struct Cwd(std::path::PathBuf);
+struct Cwd(
+    std::path::PathBuf,
+    #[allow(dead_code, reason = "held for its Drop, never read")] aa_cli::env_guard::EnvGuard,
+);
 
 impl Cwd {
+    /// Holds [`aa_cli::env_guard::lock`] for its own lifetime, same as
+    /// `Harness` (AAASM-5989) — every caller in this file constructs a
+    /// `Harness` while still holding `_cwd`, and the guard is reentrant per
+    /// thread precisely so that nesting is safe rather than a deadlock.
     fn set(to: &std::path::Path) -> Self {
+        let guard = aa_cli::env_guard::lock();
         let previous = std::env::current_dir().expect("the current directory must be readable");
         std::env::set_current_dir(to).unwrap_or_else(|e| panic!("chdir to {}: {e}", to.display()));
-        Self(previous)
+        Self(previous, guard)
     }
 }
 

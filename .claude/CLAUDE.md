@@ -83,7 +83,12 @@ authoritative *versus the untrusted SDK's own scan*, not the policy gate. The
 
 ## Build, test, lint
 
-See `CONTRIBUTING.md` and the `Makefile` for the full list. Common commands:
+See `CONTRIBUTING.md` and the `Makefile` for the full list. For the fast-edit vs.
+targeted-test vs. multi-agent/worktree vs. full-QA distinction, sccache guidance,
+and the target-dir lifecycle tool (`scripts/rust-target-lifecycle.sh`), see
+`docs/bench-5992/rust-dev-performance-policy.md` (AAASM-5991) — read it before
+running an unscoped `cargo nextest run --workspace`/`-p <pkg>` or assuming disk
+pressure needs a manual `cargo clean`. Common commands:
 
 ```bash
 lefthook install                       # one-time: fmt/deny on commit, doc on push

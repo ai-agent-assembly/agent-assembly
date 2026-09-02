@@ -109,10 +109,11 @@ impl Drop for TestGateway {
 /// Point the SDK/CLI gateway-endpoint resolution at `endpoint` for the lifetime
 /// of the guard.
 ///
-/// `AA_GATEWAY_ENDPOINT` is process-global, so the guard also takes the shared
-/// env lock — two tests racing on it would each measure the other's gateway.
+/// `AA_GATEWAY_ENDPOINT` is process-global, so the guard also takes the
+/// crate-wide env lock (AAASM-5989) — two tests racing on it would each
+/// measure the other's gateway.
 pub struct GatewayEnv {
-    _lock: std::sync::MutexGuard<'static, ()>,
+    _lock: aa_cli::env_guard::EnvGuard,
     prior: Option<String>,
     prior_state_dir: Option<String>,
 }
@@ -129,7 +130,7 @@ impl GatewayEnv {
     /// different identities and the parity assertions would be comparing
     /// strangers.
     pub fn point_at(endpoint: &str) -> Self {
-        let lock = env_lock().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lock = aa_cli::env_guard::lock();
         let prior = std::env::var("AA_GATEWAY_ENDPOINT").ok();
         let prior_state_dir = std::env::var("AASM_STATE_DIR").ok();
         std::env::set_var("AA_GATEWAY_ENDPOINT", endpoint);
@@ -160,11 +161,6 @@ impl Drop for GatewayEnv {
             None => std::env::remove_var("AASM_STATE_DIR"),
         }
     }
-}
-
-fn env_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
 /// The real service with an optional tap on `Register`.

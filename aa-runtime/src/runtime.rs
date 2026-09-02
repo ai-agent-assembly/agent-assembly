@@ -100,12 +100,19 @@ fn spawn_devint(tracker: &TaskTracker, token: &CancellationToken, config: &Runti
 #[cfg(test)]
 mod devint_wiring_tests {
     use super::*;
+    use crate::test_env::EnvGuard;
 
-    /// Build the config the way the binary does, so the test also pins that
-    /// `AA_DEVINT_ENABLED` is what turns the surface on.
-    fn config_with_devint(enabled: bool) -> RuntimeConfig {
-        std::env::set_var("AA_AGENT_ID", "devint-wiring-test");
-        std::env::set_var("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
+    /// Set the env vars the config load reads, on an already-held guard, so
+    /// the test also pins that `AA_DEVINT_ENABLED` is what turns the surface
+    /// on.
+    ///
+    /// Takes `&mut EnvGuard` rather than acquiring its own — the crate-wide
+    /// lock (AAASM-5970) is held for a guard's whole lifetime and is not
+    /// reentrant, so a helper called while `redirect_into`'s guard is still
+    /// alive must extend that guard instead of trying to take the lock again.
+    fn config_with_devint(env: &mut EnvGuard, enabled: bool) -> RuntimeConfig {
+        env.set("AA_AGENT_ID", "devint-wiring-test");
+        env.set("AA_DEVINT_ENABLED", if enabled { "1" } else { "0" });
         let config = RuntimeConfig::from_env().expect("config");
         assert_eq!(config.devint_enabled, enabled);
         config
@@ -113,10 +120,16 @@ mod devint_wiring_tests {
 
     /// Redirect every path the DI-API touches into `dir`, so no test ever reads
     /// or writes the developer's real `~/.aa` or `~/.aasm`.
-    fn redirect_into(dir: &std::path::Path) {
-        std::env::set_var("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
-        std::env::set_var("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
-        std::env::set_var("AASM_STATE_DIR", dir.join("state"));
+    ///
+    /// Returns the guard so callers keep it alive for the rest of the test
+    /// (and can add more vars to it, e.g. via [`config_with_devint`]) rather
+    /// than each acquiring their own lock.
+    fn redirect_into(dir: &std::path::Path) -> EnvGuard {
+        let mut env = EnvGuard::new();
+        env.set("AA_DEVINT_SOCKET", dir.join("run/devint.sock"));
+        env.set("AA_DEVINT_TOKEN_FILE", dir.join("run/devint.token"));
+        env.set("AASM_STATE_DIR", dir.join("state"));
+        env
     }
 
     /// The wiring, end to end: a runtime asked for the DI-API enrols the CLI,
@@ -124,11 +137,11 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn an_enabled_runtime_serves_the_di_api_to_a_real_client() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
+        let mut env = redirect_into(dir.path());
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        spawn_devint(&tracker, &token, &config_with_devint(true));
+        spawn_devint(&tracker, &token, &config_with_devint(&mut env, true));
 
         let socket = crate::devint::devint_socket_path().expect("socket path");
         let token_file = crate::devint::enrolment_path().expect("token path");
@@ -155,11 +168,11 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn a_runtime_that_does_not_want_the_di_api_binds_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
+        let mut env = redirect_into(dir.path());
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        let config = config_with_devint(false);
+        let config = config_with_devint(&mut env, false);
         if config.devint_enabled {
             spawn_devint(&tracker, &token, &config);
         }
@@ -175,14 +188,15 @@ mod devint_wiring_tests {
     #[tokio::test]
     async fn an_unbindable_di_api_is_skipped_rather_than_fatal() {
         let dir = tempfile::tempdir().expect("tempdir");
-        redirect_into(dir.path());
-        // A socket path whose parent cannot be created.
-        std::env::set_var("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
+        let mut env = redirect_into(dir.path());
+        // A socket path whose parent cannot be created — overrides the value
+        // `redirect_into` just set, on the same already-held guard.
+        env.set("AA_DEVINT_SOCKET", dir.path().join("not-a-dir/run/devint.sock"));
         std::fs::write(dir.path().join("not-a-dir"), b"file").expect("seed");
 
         let tracker = TaskTracker::new();
         let token = CancellationToken::new();
-        spawn_devint(&tracker, &token, &config_with_devint(true));
+        spawn_devint(&tracker, &token, &config_with_devint(&mut env, true));
 
         tracker.close();
         tracker.wait().await;
@@ -220,9 +234,12 @@ fn load_policy(policy_path: &Option<std::path::PathBuf>) -> std::sync::Arc<crate
 
 /// Attempt to spawn the proxy subsystem as a subprocess on the given [`TaskTracker`].
 ///
-/// Locates the `aa-proxy` binary via `which` and spawns it as a child process.
-/// If the binary is not found, the proxy layer is immediately degraded.
-/// If the subprocess exits unexpectedly at runtime, a
+/// Locates the `aa-proxy` binary via [`aa_core::binary_resolve::resolve_binary`]
+/// — the exe-sibling-first resolver `aa-cli`'s standalone `aasm proxy start`
+/// and this module's own [`probe_proxy`][crate::layer] use, so a spawn and a
+/// probe can never disagree about which `aa-proxy` is present (AAASM-5982,
+/// ADR 0030 §6.4). If the binary is not found, the proxy layer is immediately
+/// degraded. If the subprocess exits unexpectedly at runtime, a
 /// [`PipelineEvent::LayerDegradation`] is emitted on the broadcast channel.
 fn spawn_proxy(
     tracker: &TaskTracker,
@@ -231,14 +248,11 @@ fn spawn_proxy(
     gateway_endpoint: Option<&str>,
     degraded_layers: &mut Vec<String>,
 ) {
-    let proxy_bin = match which::which("aa-proxy") {
-        Ok(path) => path,
-        Err(e) => {
-            tracing::warn!(error = %e, "aa-proxy binary not found — degrading proxy layer");
-            emit_proxy_degradation(broadcast_tx, active_layers, format!("binary not found: {e}"));
-            degraded_layers.push("proxy".to_string());
-            return;
-        }
+    let Some(proxy_bin) = aa_core::binary_resolve::resolve_binary("aa-proxy") else {
+        tracing::warn!("aa-proxy binary not found — degrading proxy layer");
+        emit_proxy_degradation(broadcast_tx, active_layers, "binary not found".to_string());
+        degraded_layers.push("proxy".to_string());
+        return;
     };
 
     let proxy_broadcast_tx = broadcast_tx.clone();
@@ -956,6 +970,41 @@ fn spawn_ipc_server(
 
 /// Spawn the health/metrics HTTP server task, binding to the configured
 /// `metrics_addr` and serving until the cancellation token fires.
+/// Refuses a non-loopback health/metrics bind unless the operator has
+/// explicitly opted in via `AA_METRICS_ALLOW_REMOTE=1` (AAASM-5985).
+///
+/// Mirrors the bind rule the product already applies to `aa-proxy`
+/// (`aa_proxy::config::check_bind_addr`, AAASM-5348) — a non-loopback bind
+/// must be a deliberate choice, not silently inherited from a default meant
+/// for a different deployment shape. This is a narrower version: the health
+/// server carries no live traffic and no TLS termination, so there is no
+/// "protections configured" check to reuse, only the opt-in itself. The
+/// `/health` and `/metrics` payload names which enforcement layers are
+/// degraded and why — governance posture, not a version string — which is
+/// exactly the kind of pre-attack reconnaissance AAASM-5348 already decided
+/// a bind rule should gate.
+///
+/// Loopback stays unconditionally allowed: it is reachable only by local
+/// processes on the same host, which already have far stronger access to
+/// this information (the environment, the binary, the config file) than
+/// this HTTP response provides.
+fn check_metrics_bind_addr(addr: std::net::SocketAddr) -> Result<(), String> {
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    let allow_remote = std::env::var("AA_METRICS_ALLOW_REMOTE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if allow_remote {
+        return Ok(());
+    }
+    Err(format!(
+        "refusing non-loopback health/metrics bind {addr} — set AA_METRICS_ALLOW_REMOTE=1 \
+         to opt in (AAASM-5985); this endpoint has no authentication and discloses which \
+         enforcement layers are degraded"
+    ))
+}
+
 fn spawn_health_server(
     tracker: &TaskTracker,
     config: &RuntimeConfig,
@@ -966,6 +1015,10 @@ fn spawn_health_server(
         .metrics_addr
         .parse()
         .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
+    if let Err(refusal) = check_metrics_bind_addr(addr) {
+        tracing::error!(%refusal, "health server not started");
+        return;
+    }
     tracker.spawn(async move {
         match tokio::net::TcpListener::bind(addr).await {
             Ok(listener) => {
@@ -1243,6 +1296,8 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use tokio_util::task::TaskTracker;
 
+    use crate::test_env::EnvGuard;
+
     /// Verifies that `load_policy(None)` returns empty rules (enforcement disabled).
     #[test]
     fn load_policy_none_returns_empty_rules() {
@@ -1262,6 +1317,45 @@ mod tests {
         let policy = super::load_policy(&Some(tmp.path().to_path_buf()));
         assert_eq!(policy.rules.len(), 1);
         assert_eq!(policy.rules[0].name, "test-rule");
+    }
+
+    /// Loopback is unconditionally allowed regardless of the opt-in — it is
+    /// reachable only by local processes, which already have stronger access
+    /// than this endpoint provides.
+    #[test]
+    fn check_metrics_bind_addr_allows_loopback_without_opt_in() {
+        let mut env = EnvGuard::new();
+        env.unset("AA_METRICS_ALLOW_REMOTE");
+        let addr: std::net::SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        assert!(super::check_metrics_bind_addr(addr).is_ok());
+    }
+
+    /// AAASM-5985: the exact reproduced finding — a non-loopback bind with
+    /// no opt-in must be refused. Falsification: deleting the `is_loopback`
+    /// short-circuit above would make this fail (loopback would also refuse,
+    /// contradicting the assertion above), and deleting the opt-in check
+    /// below would make the opt-in test below fail — this test alone cannot
+    /// be satisfied by a rule that refuses everything or allows everything.
+    #[test]
+    fn check_metrics_bind_addr_refuses_non_loopback_without_opt_in() {
+        let mut env = EnvGuard::new();
+        env.unset("AA_METRICS_ALLOW_REMOTE");
+        let addr: std::net::SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        let err = super::check_metrics_bind_addr(addr).expect_err("must refuse");
+        assert!(
+            err.contains("AA_METRICS_ALLOW_REMOTE"),
+            "refusal should name the opt-in: {err}"
+        );
+    }
+
+    /// An explicit opt-in permits the same bind the previous test refused.
+    #[test]
+    fn check_metrics_bind_addr_allows_non_loopback_with_explicit_opt_in() {
+        let mut env = EnvGuard::new();
+        env.set("AA_METRICS_ALLOW_REMOTE", "1");
+        let addr: std::net::SocketAddr = "0.0.0.0:8080".parse().unwrap();
+        assert!(super::check_metrics_bind_addr(addr).is_ok());
+        env.unset("AA_METRICS_ALLOW_REMOTE");
     }
 
     /// Verifies the structured concurrency primitives drain cleanly under load.
@@ -1408,9 +1502,22 @@ mod tests {
 
     #[test]
     fn spawn_proxy_binary_not_found_emits_degradation() {
-        // Temporarily set PATH to empty so `which("aa-proxy")` fails.
-        let orig_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", "");
+        // Temporarily set PATH to empty and HOME to a directory with no
+        // `.cargo/bin`, so every lookup `aa_core::binary_resolve::resolve_binary`
+        // performs — `$PATH` and `~/.cargo/bin` — misses. The exe-sibling
+        // lookup misses on its own: the test binary's directory never
+        // contains `aa-proxy`. Without overriding HOME too, this test would
+        // pass or fail depending on whether the machine running it happens to
+        // have `aa-proxy` installed under the real `~/.cargo/bin`.
+        //
+        // Goes through `EnvGuard` (AAASM-5970) rather than a bare `set_var` +
+        // manual restore: the manual restore only ran on the success path, so
+        // a panicking assertion below used to leave PATH/HOME overridden for
+        // every test the harness scheduled afterwards.
+        let mut env = EnvGuard::new();
+        env.set("PATH", "");
+        let empty_home = tempfile::tempdir().unwrap();
+        env.set("HOME", empty_home.path().to_str().unwrap());
 
         let tracker = TaskTracker::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
@@ -1418,8 +1525,6 @@ mod tests {
         let mut degraded = Vec::new();
 
         super::spawn_proxy(&tracker, &tx, active_layers, None, &mut degraded);
-
-        std::env::set_var("PATH", &orig_path);
 
         // Binary not found should immediately degrade.
         assert!(degraded.contains(&"proxy".to_string()));
@@ -1452,8 +1557,9 @@ mod tests {
             return;
         }
 
+        let mut env = EnvGuard::new();
         let orig_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{orig_path}", tmp.path().display()));
+        env.set("PATH", format!("{}:{orig_path}", tmp.path().display()));
 
         let tracker = TaskTracker::new();
         let (tx, mut rx) = tokio::sync::broadcast::channel::<crate::pipeline::PipelineEvent>(16);
@@ -1471,8 +1577,6 @@ mod tests {
             .await
             .expect("proxy task did not exit within timeout");
 
-        std::env::set_var("PATH", &orig_path);
-
         let event = rx.try_recv().unwrap();
         match event {
             crate::pipeline::PipelineEvent::LayerDegradation(info) => {
@@ -1482,6 +1586,47 @@ mod tests {
             }
             _ => panic!("expected LayerDegradation event"),
         }
+    }
+
+    /// Falsifiability check for AAASM-5970 AC5: a test that panics mid-body
+    /// while it holds an `EnvGuard` over `PATH` must not leave `PATH`
+    /// mutated for whatever the test harness schedules next.
+    ///
+    /// This is exactly the property the two `spawn_proxy_*` tests above
+    /// need and the pre-fix code did not have: `spawn_proxy_binary_not_found_emits_degradation`
+    /// used to call `std::env::set_var("PATH", &orig_path)` only after its
+    /// assertions ran, so a failing assertion left `PATH` blank for every
+    /// later test. Verified manually: temporarily replacing `EnvGuard`'s
+    /// `Drop` impl with a no-op reddens this test (`PATH` stays
+    /// `"/definitely-not-the-real-path"` after the panic); restoring the
+    /// real `Drop` impl turns it green again. See AAASM-5970 for the
+    /// before/after record.
+    #[test]
+    fn a_panic_while_path_is_guarded_still_restores_path() {
+        let original = std::env::var_os("PATH");
+
+        // Run the panicking body on its own thread: `std::thread::spawn` +
+        // `.join()` gives a real unwind through `EnvGuard`'s `Drop`, and
+        // isolates that panic from this test's own pass/fail (the default
+        // panic hook still prints it, which is expected and fine).
+        let panicked = std::thread::spawn(|| {
+            let mut env = EnvGuard::new();
+            env.set("PATH", "/definitely-not-the-real-path");
+            panic!("AAASM-5970 negative control: simulated mid-body failure while PATH is guarded");
+        })
+        .join()
+        .is_err();
+        assert!(
+            panicked,
+            "the spawned closure must have panicked for this to be a real check"
+        );
+
+        assert_eq!(
+            std::env::var_os("PATH"),
+            original,
+            "PATH must be exactly what it was before the panic — a guard that only restores \
+             on its owner's success path (the pre-AAASM-5970 behaviour) leaves it corrupted here"
+        );
     }
 
     /// Verify the broadcast channel integration: send a PipelineEvent through

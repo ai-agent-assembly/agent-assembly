@@ -165,7 +165,11 @@ impl ApprovalService for ApprovalServiceImpl {
         let (id, decision) =
             convert::decide_request_to_core(&req).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
-        match self.queue.decide(id, decision) {
+        // AAASM-5657: `_persisted` so this decision (whether it originated
+        // from a request this queue submitted itself or one it only
+        // ingested from another process) is visible to every process
+        // sharing the durable store.
+        match self.queue.decide_persisted(id, decision).await {
             Ok(()) => {
                 // Cancel any pending escalation now that a decision has been made.
                 self.cancel_escalation_timer(id);

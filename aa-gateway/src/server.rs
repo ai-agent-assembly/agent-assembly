@@ -36,7 +36,7 @@ use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
 use crate::approval::NoopAuditSink;
 use crate::budget::persistence::{
-    default_budget_path, load_from_disk, save_to_disk_atomic, start_background_writer, start_window_flush_task,
+    default_budget_path, save_to_disk_atomic, start_background_writer, start_window_flush_task,
 };
 use crate::budget::{BudgetAlert, BudgetTracker, BudgetWindow};
 use tokio_util::sync::CancellationToken;
@@ -200,9 +200,12 @@ async fn setup_audit(
 ///   (`CREATE TABLE IF NOT EXISTS`), and that is all: there is no in-place
 ///   schema evolution. Against tables that already exist the statements are a
 ///   no-op, so one left over from an earlier build is left as it stands, key
-///   included. Rows survive because nothing rewrites them; changing the key
-///   needs a migration that recreates the tables, and none is written — see
-///   the *Migration position* note on `PROJECTION_SCHEMA` in
+///   included — but `migrate` now fails boot instead of proceeding if that
+///   stale table is missing a column the rest of this crate reads or writes
+///   (AAASM-5788, `check_table_columns` in `storage/sensitive_data/sqlite.rs`).
+///   Rows survive because nothing rewrites them; changing the key needs a
+///   migration that recreates the tables, and none is written — see the
+///   *Migration position* note on `PROJECTION_TABLES` in
 ///   `storage/sensitive_data/sqlite.rs`.
 /// * **Failure is fail-closed, in the paths that read this.** A database that
 ///   cannot be opened or migrated fails the boot of [`serve_tcp`] /
@@ -336,19 +339,20 @@ fn read_global_doc_yaml(dir: &Path) -> String {
 /// [`BudgetTracker`] pre-populated with the restored spend totals, and
 /// return it wrapped in `Arc` alongside the budget file path.
 ///
-/// Falls back to an empty tracker if the file is missing or corrupt.
-fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAlert>) -> (Arc<BudgetTracker>, PathBuf) {
+/// A missing file is a normal empty budget. A *corrupt or unreadable* file
+/// degrades the tracker instead (AAASM-5647, `load_or_degrade`) — every
+/// budget check fails closed until the file is repaired or removed, and a
+/// [`aa_runtime::pipeline::PipelineEvent::LayerDegradation`] is broadcast on
+/// `degradation_tx` so the failure is observable, not just a `tracing::warn!`
+/// line. A silent zero-spend reset is not acceptable for a spend control.
+fn setup_budget(
+    policy_path: &Path,
+    budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: &broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
+) -> (Arc<BudgetTracker>, PathBuf) {
     let budget_path = default_budget_path();
 
-    let persisted = load_from_disk(&budget_path).unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "failed to load budget state, starting fresh");
-        crate::budget::persistence::PersistedBudget {
-            per_agent: vec![],
-            team_budgets: Default::default(),
-            global: crate::budget::types::BudgetState::new_today(),
-            timezone: chrono_tz::UTC,
-        }
-    });
+    let (persisted, degraded) = crate::budget::persistence::load_or_degrade(&budget_path, degradation_tx);
 
     // Extract limits and rollover window from the policy YAML so the tracker
     // enforces them. For a cascade directory (AAASM-3499) the limits live in
@@ -419,9 +423,13 @@ fn setup_budget(policy_path: &Path, budget_alert_tx: broadcast::Sender<BudgetAle
             "budget sub-day rollover window configured"
         );
     }
-    let tracker = Arc::new(tracker);
+    let tracker = Arc::new(tracker.degraded(degraded));
 
-    tracing::info!(path = %budget_path.display(), "budget state loaded");
+    if degraded {
+        tracing::error!(path = %budget_path.display(), "budget state degraded — every check will deny until repaired");
+    } else {
+        tracing::info!(path = %budget_path.display(), "budget state loaded");
+    }
 
     (tracker, budget_path)
 }
@@ -709,18 +717,15 @@ async fn shutdown_signal() {
 /// and updates the routing status on the pending approval queue entry.
 fn spawn_escalation_audit_task(
     scheduler: &Option<Arc<EscalationScheduler>>,
-    audit_tx: tokio::sync::mpsc::Sender<AuditEntry>,
+    chain: Arc<crate::audit::AuditChain>,
     approval_queue: Arc<ApprovalQueue>,
 ) {
     let Some(sched) = scheduler else { return };
     let mut rx = sched.subscribe();
     tokio::spawn(async move {
-        let seq_base = std::sync::atomic::AtomicU64::new(u64::MAX / 2);
-        let mut prev_hash = [0u8; 32];
         loop {
             match rx.recv().await {
                 Ok(event) => {
-                    let seq = seq_base.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -736,17 +741,31 @@ fn spawn_escalation_audit_task(
                     .to_string();
                     let agent_id = aa_core::identity::AgentId::from_bytes([0u8; 16]);
                     let session_id = aa_core::identity::SessionId::from_bytes([0u8; 16]);
-                    let entry = AuditEntry::new(
-                        seq,
-                        now,
-                        AuditEventType::ApprovalEscalated,
-                        agent_id,
-                        session_id,
-                        payload,
-                        prev_hash,
-                    );
-                    prev_hash = *entry.entry_hash();
-                    let _ = audit_tx.try_send(entry);
+                    // AAASM-5626 — previously this task kept its own private
+                    // `seq_base`/`prev_hash` pair (seeded at `u64::MAX / 2`,
+                    // never persisted/recovered) and used `let _ =
+                    // audit_tx.try_send(entry)`, so a drop here was never even
+                    // counted. Sharing the same `AuditChain` the RPC services
+                    // use closes both gaps: one real chain per file, and a
+                    // drop here is now visible the same way any other
+                    // producer's drop is.
+                    if let crate::audit::EmitOutcome::Dropped { seq } | crate::audit::EmitOutcome::Closed { seq } =
+                        chain
+                            .emit(|seq, previous_hash| {
+                                AuditEntry::new(
+                                    seq,
+                                    now,
+                                    AuditEventType::ApprovalEscalated,
+                                    agent_id,
+                                    session_id,
+                                    payload,
+                                    previous_hash,
+                                )
+                            })
+                            .await
+                    {
+                        tracing::warn!(seq, "audit channel full or closed — escalation entry dropped");
+                    }
                     // Update the pending approval's routing status so dashboard/CLI
                     // consumers see the escalation reflected immediately.
                     let escalation_ts = now / 1_000_000_000; // ns → s
@@ -777,6 +796,20 @@ fn spawn_escalation_audit_task(
 
 /// Persist the current budget snapshot to disk. Best-effort — logs on failure.
 fn final_budget_save(tracker: &BudgetTracker, budget_path: &Path) {
+    // AAASM-5647 — mirrors the background writer's skip: a degraded tracker's
+    // in-memory state is the synthetic empty snapshot `load_or_degrade` built,
+    // not the corrupt file's real content. Saving it here on a graceful
+    // shutdown would overwrite the corrupt file with a fresh, parseable,
+    // empty budget — destroying the evidence an operator needs to repair it,
+    // and silently un-degrading the tracker on the next boot (the file would
+    // load cleanly, so `load_or_degrade` would report `degraded: false`).
+    if tracker.is_degraded() {
+        tracing::warn!(
+            path = %budget_path.display(),
+            "budget state degraded — shutdown save skipped to preserve the corrupt file for reconciliation"
+        );
+        return;
+    }
     let snapshot = tracker.snapshot();
     match save_to_disk_atomic(budget_path, &snapshot) {
         Ok(()) => tracing::info!(path = %budget_path.display(), "budget state saved on shutdown"),
@@ -832,10 +865,16 @@ pub async fn serve_tcp(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
-    let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx, &degradation_tx);
+    // AAASM-5647 — a degraded tracker's corrupt/unreadable file is left in
+    // place for an operator to inspect and repair; overwriting it with the
+    // background writer's synthetic (empty) snapshot would turn "degraded
+    // until reconciled" into "degraded forever, evidence destroyed".
+    let _budget_writer =
+        (!tracker.is_degraded()).then(|| start_background_writer(Arc::clone(&tracker), budget_path.clone()));
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     // AAASM-5440 — the projection is attached before the engine is shared, so
@@ -853,11 +892,28 @@ pub async fn serve_tcp(
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
+    // AAASM-5626 — one chain shared by every producer writing this file (the
+    // two RPC services below, plus the escalation task): a private head per
+    // producer forks the chain into interleaved, mutually-unverifiable runs.
+    // See `crate::audit::AuditChain`. The constructors below still take
+    // `audit_tx.clone()`/`audit_drops.clone()`/`initial_hash` to build their
+    // own throwaway private chain (keeping every constructor's existing
+    // signature); `.with_shared_chain` immediately replaces it with this one.
+    let audit_chain = Arc::new(crate::audit::AuditChain::new(
+        audit_tx.clone(),
+        Arc::clone(&audit_drops),
+        initial_hash,
+        initial_seq,
+    ));
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+    spawn_escalation_audit_task(
+        &escalation_scheduler,
+        Arc::clone(&audit_chain),
+        Arc::clone(&approval_queue),
+    );
 
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
@@ -880,13 +936,13 @@ pub async fn serve_tcp(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_initial_seq(initial_seq)
+    .with_shared_chain(Arc::clone(&audit_chain))
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
     .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
-        .with_initial_seq(initial_seq);
+        .with_shared_chain(Arc::clone(&audit_chain));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
     // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
@@ -1032,10 +1088,14 @@ pub async fn serve_uds(
     registry: Arc<AgentRegistry>,
     approval_queue: Arc<ApprovalQueue>,
     budget_alert_tx: broadcast::Sender<BudgetAlert>,
+    degradation_tx: broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
     storage: Option<Arc<dyn crate::storage::StorageBackend>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx);
-    let _budget_writer = start_background_writer(Arc::clone(&tracker), budget_path.clone());
+    let (tracker, budget_path) = setup_budget(policy_path, budget_alert_tx, &degradation_tx);
+    // AAASM-5647 — see `serve_tcp`: preserve a degraded state file for
+    // reconciliation instead of overwriting it with an empty snapshot.
+    let _budget_writer =
+        (!tracker.is_degraded()).then(|| start_background_writer(Arc::clone(&tracker), budget_path.clone()));
     let _budget_flush = maybe_spawn_window_flush(Arc::clone(&tracker));
     let invalidation_hub = InvalidationHub::new();
     // AAASM-5440 — the same wiring `serve_tcp` performs; see
@@ -1053,11 +1113,28 @@ pub async fn serve_uds(
     let approval_notifier: Arc<dyn ApprovalResolvedNotifier> = invalidation_hub.clone();
     approval_queue.set_resolved_notifier(approval_notifier);
     let (audit_tx, audit_drops, initial_hash, initial_seq) = setup_audit("gateway", "default", storage).await?;
+    // AAASM-5626 — one chain shared by every producer writing this file (the
+    // two RPC services below, plus the escalation task): a private head per
+    // producer forks the chain into interleaved, mutually-unverifiable runs.
+    // See `crate::audit::AuditChain`. The constructors below still take
+    // `audit_tx.clone()`/`audit_drops.clone()`/`initial_hash` to build their
+    // own throwaway private chain (keeping every constructor's existing
+    // signature); `.with_shared_chain` immediately replaces it with this one.
+    let audit_chain = Arc::new(crate::audit::AuditChain::new(
+        audit_tx.clone(),
+        Arc::clone(&audit_drops),
+        initial_hash,
+        initial_seq,
+    ));
     let escalation_scheduler = start_escalation_scheduler();
     let db_token = CancellationToken::new();
     let db_scheduler = start_db_escalation_scheduler(Arc::clone(&approval_queue), db_token.clone()).await;
 
-    spawn_escalation_audit_task(&escalation_scheduler, audit_tx.clone(), Arc::clone(&approval_queue));
+    spawn_escalation_audit_task(
+        &escalation_scheduler,
+        Arc::clone(&audit_chain),
+        Arc::clone(&approval_queue),
+    );
 
     // AAASM-3378: enable the live anomaly detector on the shipped serve path.
     let (anomaly_detector, anomaly_tx, _anomaly_rx) = setup_anomaly();
@@ -1080,13 +1157,13 @@ pub async fn serve_uds(
         Arc::clone(&audit_drops),
         initial_hash,
     )
-    .with_initial_seq(initial_seq)
+    .with_shared_chain(Arc::clone(&audit_chain))
     .with_db_scheduler(db_scheduler.clone())
     .with_anomaly_detection(anomaly_detector, anomaly_tx)
     .with_secret_alert_tx(secret_alert_tx)
     .with_ops_publisher(op_control_publisher);
     let audit_svc = AuditServiceImpl::new_with_registry(audit_tx, audit_drops, initial_hash, Arc::clone(&registry))
-        .with_initial_seq(initial_seq);
+        .with_shared_chain(Arc::clone(&audit_chain));
     let (edge_repo, _cross_team_rx) = InMemoryEdgeRepo::with_events(Arc::clone(&registry));
     // AAASM-4032: resolve the deployment tenancy posture once at boot. It now
     // gates only team-less agent *registration* (see `AgentLifecycleServiceImpl`);
@@ -1514,6 +1591,61 @@ mod tests {
         assert!(
             select_challenge_store(&redis).await.is_none(),
             "without the redis-cache feature the in-memory default is kept",
+        );
+    }
+
+    /// AAASM-5647 — `final_budget_save` must not overwrite a degraded
+    /// tracker's corrupt state file with a fresh empty snapshot on shutdown:
+    /// that would destroy the evidence an operator needs to repair it, and
+    /// silently un-degrade the tracker on the next boot (the file would then
+    /// load cleanly). Mirrors the background-writer skip's own reasoning.
+    #[test]
+    fn final_budget_save_does_not_overwrite_a_degraded_tracker() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+        let original = b"NOT VALID JSON {{{";
+        std::fs::write(&path, original).unwrap();
+
+        let (alert_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+            alert_tx,
+        )
+        .degraded(true);
+
+        final_budget_save(&tracker, &path);
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            original,
+            "the corrupt file must survive a shutdown save while degraded"
+        );
+    }
+
+    /// Negative control: an un-degraded tracker's shutdown save still writes.
+    #[test]
+    fn final_budget_save_writes_when_not_degraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("budget.json");
+
+        let (alert_tx, _rx) = tokio::sync::broadcast::channel(16);
+        let tracker = BudgetTracker::new_with_alert_sender(
+            crate::budget::PricingTable::default_table(),
+            None,
+            None,
+            chrono_tz::UTC,
+            alert_tx,
+        );
+        assert!(!tracker.is_degraded());
+
+        final_budget_save(&tracker, &path);
+
+        assert!(
+            path.exists(),
+            "a non-degraded tracker's shutdown save must write the file"
         );
     }
 }

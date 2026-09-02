@@ -141,6 +141,34 @@ export class ProjectRootUnsupportedError extends DevIntError {
   }
 }
 
+/**
+ * The negotiated connection cannot carry a caller-chosen configuration home.
+ *
+ * Sibling of {@link ProjectRootUnsupportedError}, one scope over and one
+ * version later (AAASM-5957): `PlanArgs.user_config_home` arrived at DI-API
+ * 7, protobuf drops an unknown field during decode, and an older runtime
+ * would silently answer from its own `CLAUDE_CONFIG_DIR`/`$HOME` instead of
+ * refusing or degrading. Same reason this has to live here rather than be
+ * left to the service alone: there is no round trip that produces it.
+ */
+export class UserConfigHomeUnsupportedError extends DevIntError {
+  override readonly name = 'UserConfigHomeUnsupportedError';
+  readonly remediation: string;
+  constructor(
+    readonly negotiatedVersion: number,
+    readonly since: number,
+  ) {
+    super(
+      `this connection negotiated DI-API ${negotiatedVersion}; a caller-chosen configuration home ` +
+        `arrived in DI-API ${since}, so a user-scope plan authored over it would be ` +
+        `resolved against the runtime's own environment rather than yours`,
+    );
+    this.remediation =
+      `Update the AASM runtime to one speaking DI-API ${since} or later. ` +
+      'Project and managed scope are unaffected and work against this runtime as-is.';
+  }
+}
+
 /** One line a UI can show for any failure: what happened, then what to do. */
 export function actionable(error: unknown): string {
   if (error instanceof DevIntError) return `${error.message} — ${error.remediation}`;

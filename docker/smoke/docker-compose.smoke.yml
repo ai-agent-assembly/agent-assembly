@@ -27,7 +27,11 @@ services:
       AA_POLICY_PATH: "/etc/aa/policy.toml"
       # Pin metrics to loopback inside the container; the harness does not probe
       # it over the network, the agent reaches the runtime over the UDS only.
-      AA_METRICS_ADDR: "0.0.0.0:8080"
+      # Was "0.0.0.0:8080" (not actually loopback, despite the comment above) —
+      # AAASM-5985's bind rule now refuses that value without an explicit
+      # AA_METRICS_ALLOW_REMOTE=1 opt-in; loopback is what this compose file
+      # always meant, so fix the value to match the comment instead.
+      AA_METRICS_ADDR: "127.0.0.1:8080"
     volumes:
       - aa-runtime-socket:/tmp
       - ./policy.toml:/etc/aa/policy.toml:ro

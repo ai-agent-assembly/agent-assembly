@@ -176,6 +176,11 @@ on:
       - "qa/resource-classes.yaml"
       - "scripts/qa/resource-lock.py"
       - "scripts/qa/resource-scheduler-negative-control.sh"
+      # AAASM-6013: per-ticket pickup claim, same qa_registry router — closes
+      # the TOCTOU gap resource-lock.py's build-job slots don't cover (a
+      # ticket claim outlives any single subprocess, unlike a build slot).
+      - "scripts/qa/ticket-claim.py"
+      - "scripts/qa/ticket-claim-negative-control.sh"
       # AAASM-5949: the watchdog's liveness/ownership tracking + CPU-time
       # parser (first slice of AAASM-5894, split by design review). Same
       # `qa_registry` router as the resource-lock mechanism above — it
@@ -497,6 +502,10 @@ jobs:
               - 'qa/resource-classes.yaml'
               - 'scripts/qa/resource-lock.py'
               - 'scripts/qa/resource-scheduler-negative-control.sh'
+              # AAASM-6013: per-ticket pickup claim. Same router flag, same
+              # qa/** + scripts/qa/** surface.
+              - 'scripts/qa/ticket-claim.py'
+              - 'scripts/qa/ticket-claim-negative-control.sh'
               # AAASM-5949: watchdog liveness/ownership + CPU-time parser.
               - 'scripts/qa/qa-watchdog.py'
               - 'scripts/qa/qa-watchdog-cpu-parser-test.sh'
@@ -661,14 +670,33 @@ jobs:
       # (bpfel/wasm32/thumbv7) keep their own linkers — this is per-target,
       # not a global RUSTFLAGS, on purpose.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # AAASM-5994: this job already runs with CARGO_INCREMENTAL=0 (workflow
+      # env, AAASM-2579) — the one regime sccache can actually cache (it
+      # cannot cache incrementally-compiled workspace members; see
+      # docs/bench-5992/report.md §5). RUSTC_WRAPPER routes every rustc
+      # invocation through sccache; SCCACHE_GHA_ENABLED backs it with the
+      # GitHub Actions cache, separate from Swatinem/rust-cache's own key.
+      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
         run: sudo apt-get install -y mold
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      # AAASM-6005: rust-cache's own target-artifact cache didn't reliably
+      # save/restore even across two pushes to the same branch ("No cache
+      # found" both times), while the leaner registry/git-only cache below
+      # does — and with sccache present for the object cache, disabling the
+      # unreliable target-cache measured 4m14s (warm) vs. 9m58s with it on.
+      # Still caches the Cargo registry/git index (cache-targets only
+      # controls target/ artifacts). See that ticket for the full A/B/C
+      # evidence and docs/bench-5992/rust-dev-performance-policy.md.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          cache-targets: "false"
       - name: Download prebuilt dashboard assets (required by aa-cli)
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -750,6 +778,11 @@ jobs:
       # Measured on the first run of this job: 5m03s for the first commit vs
       # ~33s for each subsequent one — that 5m03s is the part being cached.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # AAASM-5994: this job walks and builds MULTIPLE commits per run — the
+      # highest-repeat-compile job in this workflow, and exactly the
+      # CARGO_INCREMENTAL=0 regime sccache can cache (docs/bench-5992/report.md §5).
+      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -761,6 +794,7 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
         run: sudo apt-get install -y mold
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build every commit the merge introduces
@@ -787,12 +821,17 @@ jobs:
     env:
       # AAASM-2581: select mold for host-target links only.
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+      # AAASM-5994: see the `build` job's comment — same CARGO_INCREMENTAL=0
+      # regime sccache can cache (docs/bench-5992/report.md §5).
+      RUSTC_WRAPPER: "sccache"
+      SCCACHE_GHA_ENABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         run: sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
         run: sudo apt-get install -y mold
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
@@ -1374,6 +1413,11 @@ jobs:
       # silently being dropped before `execvp`.
       - name: Self-test resource-lock.py (negative control)
         run: bash scripts/qa/resource-scheduler-negative-control.sh
+
+      # AAASM-6013: real-concurrent-process ticket-claim race + release/sweep
+      # cases — see the harness's own header comment.
+      - name: Self-test ticket-claim.py (negative control)
+        run: bash scripts/qa/ticket-claim-negative-control.sh
 
       # AAASM-5949: string-fixture tests for qa-watchdog.py's parse_ps_time()
       # — pure-function CPU-time-string parsing plus a live-process smoke

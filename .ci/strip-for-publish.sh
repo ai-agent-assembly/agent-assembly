@@ -54,6 +54,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MARKED_FILES=(
     "${REPO_ROOT}/aa-cli/Cargo.toml"
     "${REPO_ROOT}/aa-cli/src/commands/mod.rs"
+    # AAASM-5955: main() marks the production entrypoint via a call into
+    # run_registration, which the `devtool` region in commands/mod.rs above
+    # already removes from the published crate. This call has to go with it.
+    "${REPO_ROOT}/aa-cli/src/main.rs"
     # AAASM-2388: gateway NATS audit consumer (async-nats + publish=false
     # aa-storage-postgres). Removed so the published gateway has no held-back deps.
     "${REPO_ROOT}/aa-gateway/Cargo.toml"

@@ -151,6 +151,11 @@ impl RedactionTelemetryService for RedactionTelemetryIngest {
         let alert = SecretAlert {
             agent_id,
             team_id,
+            // AAASM-5905: the whole point of this cross-process hop is to
+            // make the proxy's redaction event traceable from the
+            // dashboard — dropping it here would leave that correlation
+            // recoverable only by grepping two processes' logs.
+            event_id: Some(event.event_id.clone()),
             kinds,
             finding_count,
         };
@@ -198,5 +203,53 @@ mod tests {
     fn resolve_agent_id_reads_full_uuid_bytes() {
         let raw = [7u8; 16];
         assert_eq!(resolve_agent_id(&raw), AgentId::from_bytes(raw));
+    }
+
+    /// AAASM-5905: the whole point of this ingest is that a dashboard alert
+    /// can be traced back to the proxy-side redaction event that produced it.
+    /// Falsification: before this ticket's fix, `SecretAlert` had no
+    /// `event_id` field at all, so this assertion could not even be written —
+    /// republishing silently discarded the correlation id `report_redaction`
+    /// already required as its idempotency key.
+    #[tokio::test]
+    async fn republished_alert_carries_the_reported_event_id() {
+        let (tx, mut rx) = broadcast::channel(4);
+        let ingest = RedactionTelemetryIngest::new(tx);
+        let event = aa_proto::assembly::telemetry::v1::RedactionEvent {
+            event_id: "evt-correlation-42".to_string(),
+            occurred_at_ms: 0,
+            agent_id: Vec::new(),
+            team_id: String::new(),
+            destination_host: "api.anthropic.com".to_string(),
+            finding_kinds: vec!["AwsAccessKey".to_string()],
+            finding_count: 1,
+        };
+
+        let resp = ingest
+            .report_redaction(Request::new(ReportRedactionRequest { event: Some(event) }))
+            .await
+            .expect("report_redaction should succeed");
+        assert!(resp.into_inner().recorded);
+
+        let alert = rx.try_recv().expect("republished SecretAlert should be on the channel");
+        assert_eq!(
+            alert.event_id.as_deref(),
+            Some("evt-correlation-42"),
+            "the alert must carry the originating RedactionEvent's event_id for dashboard correlation"
+        );
+    }
+
+    /// A `--no-proxy` / gateway-native `SecretAlert` (never built from a
+    /// `RedactionEvent`) must not have a correlation id fabricated for it.
+    #[test]
+    fn gateway_native_alert_has_no_event_id() {
+        let alert = SecretAlert {
+            agent_id: UNATTRIBUTED_PROXY_AGENT,
+            team_id: None,
+            event_id: None,
+            kinds: vec![CredentialKind::AwsAccessKey],
+            finding_count: 1,
+        };
+        assert_eq!(alert.event_id, None);
     }
 }

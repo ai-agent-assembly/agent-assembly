@@ -30,6 +30,19 @@ use super::{PostgresBackend, PostgresConfig, SqliteBackend, SqliteConfig, Storag
 /// `ConnectionFailed` (bad path / permissions) or `MigrationFailed`
 /// (schema apply error).
 pub async fn open_sqlite_backend(path: &Path) -> StorageResult<Arc<dyn StorageBackend>> {
+    Ok(open_sqlite_backend_shared(path).await?)
+}
+
+/// Same as [`open_sqlite_backend`], but returns the concrete `Arc<SqliteBackend>`
+/// instead of erasing it to `Arc<dyn StorageBackend>`.
+///
+/// AAASM-5657: `ApprovalStore` is a *separate* trait `SqliteBackend` opts
+/// into (`super::approval`), the same way [`super::sensitive_data`]'s
+/// projection trait is — the erased `Arc<dyn StorageBackend>` from
+/// [`open_sqlite_backend`] cannot be recovered back into `Arc<dyn
+/// ApprovalStore>`. A caller that needs both views coerces this one `Arc`
+/// twice so they share a pool, rather than opening the file a second time.
+pub async fn open_sqlite_backend_shared(path: &Path) -> StorageResult<Arc<SqliteBackend>> {
     let backend = SqliteBackend::open(&SqliteConfig {
         path: path.to_path_buf(),
     })

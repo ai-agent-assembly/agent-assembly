@@ -89,36 +89,27 @@ fn default_log_path() -> PathBuf {
         .join("proxy.log")
 }
 
-/// Resolve the aa-proxy binary by trying, in order:
-/// 1. `which aa-proxy` (checks PATH)
-/// 2. `~/.cargo/bin/aa-proxy`
+/// Resolve the `aa-proxy` binary.
 ///
-/// The former `./target/release/aa-proxy` cwd-relative fallback was dropped
-/// (AAASM-4020): resolving a binary relative to the current working directory
-/// lets whoever controls where `aasm` is invoked substitute an attacker-planted
-/// `aa-proxy`. Only trusted, absolute locations (PATH, the cargo bin dir) are
-/// honored.
+/// Search order: directory of the running `aasm` executable → directories in
+/// `$PATH` (absolute entries only) → `~/.cargo/bin/aa-proxy`. Every candidate
+/// is an absolute location derived from the *installation*, never from the
+/// current working directory.
+///
+/// Delegates to [`aa_core::binary_resolve::resolve_binary`] — the same
+/// resolver `aa-runtime`'s proxy spawn and platform probe use (AAASM-5982),
+/// so `aasm proxy start`, an auto-started proxy, and a probe can never
+/// disagree about which `aa-proxy` is present. The exe-dir lookup is first so
+/// a release / Homebrew install — where `aa-proxy` ships alongside `aasm` in
+/// the same directory — works even when that directory is not on `$PATH`, and
+/// so a `$PATH` hit from some other installation never shadows the sibling
+/// shipped with this `aasm` (ADR 0030 §6.4).
+///
+/// There is no `./target/...` cwd-relative fallback: resolving a binary
+/// relative to the current working directory lets whoever controls where
+/// `aasm` is invoked substitute an attacker-planted `aa-proxy` (AAASM-4020).
 pub fn resolve_binary() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        if let Ok(out) = std::process::Command::new("which").arg("aa-proxy").output() {
-            if out.status.success() {
-                let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string());
-                if p.exists() {
-                    return Some(p);
-                }
-            }
-        }
-    }
-
-    if let Some(home) = dirs::home_dir() {
-        let cargo_bin = home.join(".cargo").join("bin").join("aa-proxy");
-        if cargo_bin.exists() {
-            return Some(cargo_bin);
-        }
-    }
-
-    None
+    aa_core::binary_resolve::resolve_binary("aa-proxy")
 }
 
 /// Build the environment overrides applied to the spawned `aa-proxy` child.
@@ -203,8 +194,8 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let Some(binary) = resolve_binary() else {
         eprintln!(
             "error: aa-proxy binary not found.\n\
-             Install with `cargo install aa-proxy` or ensure it is on PATH \
-             or in ~/.cargo/bin."
+             Install with `cargo install aa-proxy` or ensure it is beside the \
+             `aasm` executable, on PATH, or in ~/.cargo/bin."
         );
         return ExitCode::FAILURE;
     };
@@ -328,7 +319,7 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         cmd.process_group(0);
     }
 
-    let child = match cmd.spawn() {
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("error: failed to spawn aa-proxy from {}: {e}", binary.display());
@@ -346,12 +337,27 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         println!("Logs: {}", log_file.display());
         ExitCode::SUCCESS
     } else {
+        // The process was spawned (and may already have installed a CA
+        // trust-store leaf / injected provider credentials) even though it
+        // never bound its listen port — leaving it running here would orphan
+        // it with no PID file left to find it by (AAASM-5372). Terminated
+        // (not `pid::kill_process`) because this is our own child: it can
+        // observe death via `try_wait` instead of a signal-0 poll that stays
+        // blind to a zombie until reaped, and it leaves nothing to reap.
+        let killed = pid::terminate_child(&mut child);
+        let _ = pid::remove_pid();
         eprintln!(
             "error: aa-proxy did not bind to {} within 5s.\nCheck logs: {}",
             args.listen,
             log_file.display()
         );
-        let _ = pid::remove_pid();
+        if killed {
+            eprintln!("Terminated the unbound proxy process (PID {child_pid}).");
+        } else {
+            eprintln!(
+                "warning: could not confirm PID {child_pid} was terminated — check for a stray aa-proxy process."
+            );
+        }
         ExitCode::FAILURE
     }
 }
@@ -714,5 +720,78 @@ mod tests {
     fn the_record_names_the_path_that_was_spawned() {
         let state = state_for_child(std::process::id(), Path::new("/opt/aa/aa-proxy"), "127.0.0.1:8899");
         assert_eq!(state.exe_path, PathBuf::from("/opt/aa/aa-proxy"));
+    }
+
+    /// AAASM-5372 AC4: a start that can never bind must not leave a live
+    /// child behind, and must not leave a pid file pointing at a process the
+    /// CLI can no longer see. Asserting the exit code alone (the pre-fix
+    /// behaviour) would pass without proving either of those.
+    #[cfg(unix)]
+    #[test]
+    fn a_start_that_cannot_bind_leaves_no_surviving_child() {
+        let _env_lock = crate::test_support::env_guard();
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let prior = std::env::var("AA_DATA_DIR").ok();
+        std::env::set_var("AA_DATA_DIR", &data_dir);
+
+        // A marker file the fixture process writes its own PID to as soon as
+        // it starts, so the test can identify it independent of run_background
+        // (which never hands the Child back to its caller).
+        let marker = tmp.path().join("child.pid");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(format!("echo $$ > {}; sleep 30", marker.display()));
+
+        let args = StartArgs {
+            listen: "127.0.0.1:1".to_string(), // never bound by the fixture — wait_for_port always times out
+            gateway: None,
+            ca_dir: None,
+            no_detach: false,
+            log_file: Some(tmp.path().join("proxy.log")),
+            allow_remote_clients: false,
+        };
+
+        let exit = run_background(cmd, args, Path::new("aa-proxy-test-fixture"));
+        assert_eq!(exit, ExitCode::FAILURE);
+
+        // Wait briefly for the marker to appear (the fixture writes it
+        // immediately, but the shell still has to be scheduled).
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let child_pid: u32 = loop {
+            if let Ok(content) = std::fs::read_to_string(&marker) {
+                if let Ok(pid) = content.trim().parse() {
+                    break pid;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture never wrote its PID marker"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+
+        assert!(
+            !pid::pid_path().exists(),
+            "a failed start must not leave a pid file behind"
+        );
+
+        // `kill(pid, 0)` alone cannot distinguish "dead" from "zombie, not yet
+        // reaped" — check the process state instead; only a live (non-zombie)
+        // state counts as a surviving child.
+        let ps = std::process::Command::new("ps")
+            .args(["-o", "state=", "-p", &child_pid.to_string()])
+            .output()
+            .expect("ps must run");
+        let state = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+        assert!(
+            state.is_empty() || state.starts_with('Z'),
+            "PID {child_pid} must be gone or a zombie after a failed start, saw ps state {state:?}"
+        );
+
+        match prior {
+            Some(v) => std::env::set_var("AA_DATA_DIR", v),
+            None => std::env::remove_var("AA_DATA_DIR"),
+        }
     }
 }

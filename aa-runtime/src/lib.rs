@@ -7,6 +7,7 @@
 pub mod approval;
 pub mod approval_sink;
 pub mod audit_publisher;
+pub mod build_identity;
 pub mod config;
 pub mod correlation;
 pub mod devint;
@@ -26,5 +27,7 @@ pub mod policy;
 pub mod privilege;
 pub mod redaction_telemetry_client;
 pub mod runtime;
+#[cfg(test)]
+mod test_env;
 
 pub use runtime::run;

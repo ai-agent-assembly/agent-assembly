@@ -38,8 +38,12 @@
 //! into a passing protection assertion is what this Epic exists to stop; so is
 //! quietly not looking.
 
-// Used by `every_declared_attack_family_has_a_scenario`, which is Linux-gated
-// for the reason stated on it.
+// BTreeMap: used by `an_agent_enumerating_its_environment_finds_only_what_the_launch_delegated`
+// (not gated — `require_confining_backend` declines at runtime on non-Linux,
+// but the `set_child_environment` call site still needs to compile there).
+use std::collections::BTreeMap;
+// BTreeSet: used only by `every_declared_attack_family_has_a_scenario`, which
+// is Linux-gated for the reason stated on it.
 #[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
@@ -1153,14 +1157,21 @@ os.waitpid(pid,0)",
 /// is withheld" and "this variable is given".
 ///
 /// The **finding probe** looks for the delegated *value* on the mechanism's own
-/// command line, which the lowering passes as `--env NAME=VALUE`. Recorded rather
-/// than asserted, for the same reason as the `/proc` sweep: the backend claims
-/// nothing about the supervisor process. What is asserted is that the credential
-/// domain does not report itself as preventing.
+/// command line, which the lowering still passes as `--env NAME=VALUE` —
+/// AAASM-5940 did not remove that argv shape, it only refuses to *derive* the
+/// flag from a bare `CredentialPosture` automatically. Since AAASM-6009, this
+/// test (like every real caller — `aa-cli`'s governed launch path) instead
+/// resolves the child's exact environment itself via
+/// `SandlockBackend::set_child_environment` before launching, which is the one
+/// channel `prepare()` still accepts; the emitted `--env` flags are otherwise
+/// unchanged. Recorded rather than asserted, for the same reason as the
+/// `/proc` sweep: the backend claims nothing about the supervisor process.
+/// What is asserted is that the credential domain does not report itself as
+/// preventing.
 #[test]
 fn an_agent_enumerating_its_environment_finds_only_what_the_launch_delegated() {
     let scenario = "adversarial: environment enumeration finds only what the launch delegated";
-    let Some(backend) = require_confining_backend(scenario) else {
+    let Some(mut backend) = require_confining_backend(scenario) else {
         return;
     };
     let Some(env_program) = ["/usr/bin/env", "/bin/env"]
@@ -1209,6 +1220,14 @@ fn an_agent_enumerating_its_environment_finds_only_what_the_launch_delegated() {
         ambient_unremoved: Vec::new(),
     };
 
+    // `with_credentials` still carries the posture the capability report reads;
+    // `set_child_environment` is the separate, required step that actually
+    // resolves what the child receives (AAASM-5940 refuses to derive it from
+    // the posture alone — see the AAASM-6009 note above).
+    backend.set_child_environment(BTreeMap::from([(
+        "X_AA5712_ENUM_CORRELATION_ID".to_string(),
+        delegated_value.clone(),
+    )]));
     let (attack, evidence) = launch_confined(
         &backend,
         &shell_spec(&script, vec![scratch.permitted_selector()], Vec::new()).with_credentials(posture(
@@ -1217,7 +1236,12 @@ fn an_agent_enumerating_its_environment_finds_only_what_the_launch_delegated() {
         )),
     );
     // Control: one name moved from `removed` to `delegated`. Nothing else about
-    // the two launches differs.
+    // the two launches differs — including the child environment, which grows
+    // by exactly that one name.
+    backend.set_child_environment(BTreeMap::from([
+        ("X_AA5712_ENUM_CORRELATION_ID".to_string(), delegated_value.clone()),
+        ("X_AA5712_ENUM_SECRET_TOKEN".to_string(), withheld_value.clone()),
+    ]));
     let (control, _) = launch_confined(
         &backend,
         &shell_spec(&script, vec![scratch.permitted_selector()], Vec::new()).with_credentials(posture(

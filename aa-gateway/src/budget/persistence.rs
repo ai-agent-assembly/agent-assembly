@@ -60,6 +60,47 @@ pub fn load_from_disk(path: &std::path::Path) -> Result<PersistedBudget, Persist
     }
 }
 
+/// Load persisted budget from disk, degrading `"gateway/budget"` instead of
+/// silently returning an empty (zero-spend) tracker on a corrupt or
+/// unreadable file (AAASM-5647).
+///
+/// Returns `(state, degraded)`. `load_from_disk` already treats a genuinely
+/// missing file as an empty budget (`Ok`, see above) — every `Err` here is
+/// therefore a real corruption/read failure, not routine first-boot absence.
+/// The caller is responsible for building a [`crate::budget::tracker::BudgetTracker`]
+/// with `degraded` set so budget checks fail closed until the file is
+/// repaired, rather than seeding a synthetic spent/limit balance (a seeded
+/// balance cannot be enforced consistently across every check/spend entry
+/// point — see the tracker's `degraded` gates).
+pub fn load_or_degrade(
+    path: &std::path::Path,
+    broadcast_tx: &tokio::sync::broadcast::Sender<aa_runtime::pipeline::PipelineEvent>,
+) -> (PersistedBudget, bool) {
+    match load_from_disk(path) {
+        Ok(state) => (state, false),
+        Err(e) => {
+            let reason = format!(
+                "planned=enforced achieved=degraded_exhausted: budget state file {} unreadable or \
+                 corrupt ({e}); every budget check denies until the file is repaired or removed",
+                path.display()
+            );
+            let info = aa_runtime::pipeline::LayerDegradationInfo {
+                layer: "gateway/budget".to_string(),
+                reason,
+                remaining_layers: Vec::new(),
+            };
+            let _ = broadcast_tx.send(aa_runtime::pipeline::PipelineEvent::LayerDegradation(info));
+            let empty = PersistedBudget {
+                per_agent: vec![],
+                team_budgets: Default::default(),
+                global: crate::budget::types::BudgetState::new_today(),
+                timezone: default_timezone(),
+            };
+            (empty, true)
+        }
+    }
+}
+
 /// Write budget to path atomically: write to `<path>.json.tmp`, then rename.
 pub fn save_to_disk_atomic(path: &std::path::Path, budget: &PersistedBudget) -> Result<(), PersistenceError> {
     if let Some(parent) = path.parent() {

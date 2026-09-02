@@ -48,6 +48,13 @@ use tokio_util::task::TaskTracker;
 /// `integrations_*` test files keep their own: a harness shared between files
 /// becomes a constraint on all of them.
 struct Harness {
+    // Held for the whole struct lifetime — see the `set_var` calls below
+    // (AAASM-5989). `cargo nextest` isolates each test in its own process, so
+    // this is uncontended there; under plain `cargo test`, where every test in
+    // this file shares one process, it serializes overlapping `Harness`
+    // construction instead of letting two race on `AA_DEVINT_TOKEN_FILE`/
+    // `AA_DEVINT_SOCKET`.
+    _env_guard: aa_cli::env_guard::EnvGuard,
     dir: tempfile::TempDir,
     socket: PathBuf,
     token_file: PathBuf,
@@ -59,6 +66,7 @@ struct Harness {
 
 impl Harness {
     fn start() -> Self {
+        let _env_guard = aa_cli::env_guard::lock();
         let dir = tempfile::tempdir().expect("tempdir");
         let run = dir.path().join("run");
         std::fs::create_dir_all(&run).expect("run dir");
@@ -108,6 +116,7 @@ impl Harness {
         assert!(socket.exists(), "the test server never bound its socket");
 
         Self {
+            _env_guard,
             dir,
             socket,
             token_file,
@@ -128,6 +137,11 @@ impl Harness {
             .env("AA_DEVINT_TOKEN_FILE", &self.token_file)
             .env("AASM_STATE_DIR", self.dir.path().join("state"))
             .env("HOME", self.dir.path())
+            // AAASM-5957: the fixture's settings file lives at this harness's
+            // root directly, so the caller-supplied configuration home is
+            // pointed there rather than left to the `$HOME/.claude` default —
+            // otherwise it would name a home the receipt never recorded.
+            .env("CLAUDE_CONFIG_DIR", self.dir.path())
             .env("AASM_API_KEY", "");
         cmd.output().expect("run aasm")
     }

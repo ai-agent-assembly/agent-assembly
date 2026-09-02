@@ -154,6 +154,7 @@ mod tests {
         tx.send(SecretAlert {
             agent_id: AgentId::from_bytes([2u8; 16]),
             team_id: Some("team-x".to_string()),
+            event_id: None,
             kinds: vec![CredentialKind::AwsAccessKey],
             finding_count: 1,
         })

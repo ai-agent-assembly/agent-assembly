@@ -141,6 +141,16 @@ pub struct BudgetTracker {
     /// Rollover strategy. Defaults to [`BudgetWindow::Daily`]; override via
     /// [`BudgetTracker::with_window`] to enable sub-day rollover (AAASM-1600).
     window: BudgetWindow,
+    /// AAASM-5647 — set when this tracker was built from a corrupt/unreadable
+    /// persisted state file (see [`crate::budget::persistence::load_or_degrade`])
+    /// rather than seeding a synthetic spend balance, which cannot be kept
+    /// consistent across every check/spend entry point below. While `true`,
+    /// every deciding entry point (`check_daily`, `check_monthly`,
+    /// `record_cost`, `check_and_decrement`, `reserve_spend`) denies, so a
+    /// spend-control boundary fails closed instead of silently resetting to
+    /// zero-spend. Cleared only by rebuilding the tracker after the state file
+    /// is repaired or removed.
+    degraded: bool,
 }
 
 impl BudgetTracker {
@@ -185,6 +195,7 @@ impl BudgetTracker {
             alert_tx,
             timezone,
             window: BudgetWindow::Daily,
+            degraded: false,
         }
     }
 
@@ -282,6 +293,7 @@ impl BudgetTracker {
             alert_tx,
             timezone,
             window: BudgetWindow::Daily,
+            degraded: false,
         }
     }
 
@@ -291,6 +303,20 @@ impl BudgetTracker {
     pub fn with_window(mut self, window: BudgetWindow) -> Self {
         self.window = window;
         self
+    }
+
+    /// AAASM-5647 — mark this tracker degraded: every deciding entry point
+    /// denies until it is rebuilt from a repaired state file. Set from
+    /// [`crate::budget::persistence::load_or_degrade`]'s return.
+    pub fn degraded(mut self, yes: bool) -> Self {
+        self.degraded = yes;
+        self
+    }
+
+    /// Whether this tracker was built from a corrupt/unreadable state file
+    /// and is currently denying every budget check.
+    pub fn is_degraded(&self) -> bool {
+        self.degraded
     }
 
     /// Return the currently-configured rollover strategy.
@@ -426,6 +452,11 @@ impl BudgetTracker {
     /// in the configured timezone. Used by `PolicyEngine` Stage 7 where the
     /// per-action cost is not yet known and only a limit check is needed.
     pub fn check_daily(&self, agent_id: &AgentId, limit: Decimal) -> bool {
+        if self.degraded {
+            // AAASM-5647 — a spend control fails closed on unreadable state,
+            // not open: report every agent as having met its limit.
+            return true;
+        }
         if let Some(mut entry) = self.per_agent.get_mut(agent_id) {
             entry.maybe_reset_window(chrono::Utc::now(), self.window, self.timezone);
             entry.spent_usd >= limit
@@ -439,6 +470,10 @@ impl BudgetTracker {
     /// Automatically resets monthly spend when the stored month differs from the
     /// current month in the configured timezone.
     pub fn check_monthly(&self, agent_id: &AgentId, limit: Decimal) -> bool {
+        if self.degraded {
+            // AAASM-5647 — see check_daily.
+            return true;
+        }
         if let Some(mut entry) = self.per_agent.get_mut(agent_id) {
             entry.maybe_reset_window(chrono::Utc::now(), self.window, self.timezone);
             entry.monthly_spent_usd.map(|m| m >= limit).unwrap_or(false)
@@ -573,6 +608,10 @@ impl BudgetTracker {
         org_id: Option<&str>,
         cost: Decimal,
     ) -> BudgetStatus {
+        if self.degraded {
+            // AAASM-5647 — see check_daily; no spend is recorded while degraded.
+            return BudgetStatus::LimitExceeded;
+        }
         let has_monthly = self.monthly_limit_usd.is_some()
             || self.team_monthly_limit_usd.is_some()
             || self.org_monthly_limit_usd.is_some();
@@ -783,6 +822,10 @@ impl BudgetTracker {
         ancestors: &[[u8; 16]],
         amount: Decimal,
     ) -> Result<(), crate::budget::types::BudgetError> {
+        if self.degraded {
+            // AAASM-5647 — see check_daily; nothing committed while degraded.
+            return Err(crate::budget::types::BudgetError::StateUnavailable);
+        }
         // Acquire per-ancestor locks root-down (ancestors is leaf→root; reverse to get root-first).
         // Deterministic ordering prevents A-then-B vs B-then-A deadlocks across concurrent calls.
         let ancestor_arcs: Vec<_> = ancestors
@@ -865,6 +908,11 @@ impl BudgetTracker {
         amount: Decimal,
     ) -> Result<(), crate::budget::types::BudgetError> {
         use crate::budget::types::{BudgetError, BudgetKind};
+
+        if self.degraded {
+            // AAASM-5647 — see check_daily; nothing committed while degraded.
+            return Err(BudgetError::StateUnavailable);
+        }
 
         // Acquire the per-ancestor locks root-down, then the agent's own lock,
         // so concurrent reservations that share any node serialise in a single

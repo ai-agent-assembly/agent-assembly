@@ -56,7 +56,7 @@ use super::apply_outcome::{ApplyMutation, MutationUnknown};
 use super::client::{ClientError, DevIntClient, PlanRequest, TargetRequest};
 use super::negotiate::{
     DI_API_APPLY_OUTCOME_SINCE, DI_API_MAX_SUPPORTED, DI_API_MIN_SUPPORTED, DI_API_POLICY_POSTURE_SINCE,
-    DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE,
+    DI_API_PROJECT_ROOT_SINCE, DI_API_PROVENANCE_SINCE, DI_API_USER_CONFIG_HOME_SINCE,
 };
 use super::provenance::ProvenanceVerdict;
 use super::scope::{TokenScope, ToolScope};
@@ -156,7 +156,16 @@ async fn an_older_peer_keeps_every_verb_it_had() {
         }
         // …and a verb actually answers, not merely reports itself available.
         assert!(
-            client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
+            client
+                .status(
+                    &claude_code_id(),
+                    TargetRequest {
+                        settings_scope: "managed",
+                        ..TargetRequest::default()
+                    }
+                )
+                .await
+                .is_ok(),
             "v{version} must still be able to call the lifecycle"
         );
         assert_eq!(client.list_tools().await.expect("list").tools.len(), 1);
@@ -248,7 +257,14 @@ async fn v5_adds_the_apply_outcome_and_nothing_below_it_receives_one() {
     for version in DI_API_MIN_SUPPORTED..=DI_API_MAX_SUPPORTED {
         let mut client = connect_offering(&server, &[version]).await;
         let applied = client
-            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .apply(
+                &claude_code_id(),
+                "plan-1",
+                TargetRequest {
+                    settings_scope: "managed",
+                    ..TargetRequest::default()
+                },
+            )
             .await
             .expect("apply");
         if version >= DI_API_APPLY_OUTCOME_SINCE {
@@ -285,7 +301,14 @@ async fn a_new_client_reading_an_older_peer_concludes_unknown_not_unchanged() {
     for version in DI_API_MIN_SUPPORTED..DI_API_APPLY_OUTCOME_SINCE {
         let mut client = connect_offering(&server, &[version]).await;
         let applied = client
-            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .apply(
+                &claude_code_id(),
+                "plan-1",
+                TargetRequest {
+                    settings_scope: "managed",
+                    ..TargetRequest::default()
+                },
+            )
             .await
             .expect("apply");
         let mutation = client.negotiated().apply_mutation(&applied);
@@ -337,7 +360,14 @@ async fn every_stated_outcome_crosses_the_socket_as_itself() {
         let server = TestServer::start(FakeLifecycle::reporting(stated.clone())).await;
         let mut client = connect_offering(&server, &[DI_API_APPLY_OUTCOME_SINCE]).await;
         let applied = client
-            .apply(&claude_code_id(), "plan-1", TargetRequest::default())
+            .apply(
+                &claude_code_id(),
+                "plan-1",
+                TargetRequest {
+                    settings_scope: "managed",
+                    ..TargetRequest::default()
+                },
+            )
             .await
             .expect("apply");
         let read = client.negotiated().apply_mutation(&applied);
@@ -451,7 +481,16 @@ async fn v6_is_required_for_project_scope_and_an_older_peer_is_refused_before_th
         // gate that half-wrote a frame would desync every later call on a
         // connection the caller has every reason to keep using.
         assert!(
-            client.status(&claude_code_id(), TargetRequest::default()).await.is_ok(),
+            client
+                .status(
+                    &claude_code_id(),
+                    TargetRequest {
+                        settings_scope: "managed",
+                        ..TargetRequest::default()
+                    }
+                )
+                .await
+                .is_ok(),
             "v{version} lost the connection to a refusal that never reached the wire"
         );
     }
@@ -488,33 +527,157 @@ async fn project_scope_reaches_the_service_at_v6() {
     server.shutdown().await;
 }
 
-/// **Blast-radius control**: the gate touches project scope and nothing else.
+/// **Blast-radius control**: the project-root gate touches project scope and
+/// nothing else.
 ///
-/// User and managed destinations were never the caller's to name — the service
-/// derives both from the host, so it has nothing to be told and no reason to
-/// need v6. A gate written as "below v6, refuse" rather than "below v6, refuse
-/// *project* scope" would break every older peer's entire lifecycle, which is a
-/// far larger regression than the one being fixed.
+/// Managed destinations were never the caller's to name — the service derives
+/// them from the host, so they have nothing to be told and no reason to need
+/// v6. A gate written as "below v6, refuse" rather than "below v6, refuse
+/// *project* scope" would break every older peer's entire lifecycle, which is
+/// a far larger regression than the one being fixed.
+///
+/// User scope is **not** in this sweep any more (AAASM-5957): it has since
+/// grown its own version gate at v7, tested separately
+/// (`v7_is_required_for_user_scope_and_an_older_peer_is_refused_before_the_send`)
+/// — asserting it "untouched" here would just be asserting the older ticket's
+/// premise, not this one's.
 #[tokio::test]
-async fn user_and_managed_scope_are_untouched_by_the_project_root_gate() {
+async fn managed_scope_is_untouched_by_the_project_root_gate() {
     let server = TestServer::start(FakeLifecycle::default()).await;
     for version in DI_API_MIN_SUPPORTED..DI_API_PROJECT_ROOT_SINCE {
-        for scope in ["user", "managed"] {
-            let mut client = connect_offering(&server, &[version]).await;
-            assert!(
-                client
-                    .plan(PlanRequest {
-                        tool_id: &claude_code_id(),
-                        profile: "recommended",
-                        settings_scope: scope,
-                        ..PlanRequest::default()
-                    })
-                    .await
-                    .is_ok(),
-                "v{version} lost {scope} scope to a gate that only concerns project scope"
-            );
-        }
+        let mut client = connect_offering(&server, &[version]).await;
+        assert!(
+            client
+                .plan(PlanRequest {
+                    tool_id: &claude_code_id(),
+                    profile: "recommended",
+                    settings_scope: "managed",
+                    ..PlanRequest::default()
+                })
+                .await
+                .is_ok(),
+            "v{version} lost managed scope to a gate that only concerns project scope"
+        );
     }
+    server.shutdown().await;
+}
+
+// ── v7: the caller's user configuration home (AAASM-5957) ───────────────────
+
+/// A directory a user-scope plan can legitimately name.
+///
+/// Only the *parent* has to exist (`parse_user_config_home`): `~/.claude` itself
+/// is absent on a host before the first install, and a fixture that required the
+/// leaf too would refuse every honest first-run caller along with the placeholder
+/// strings it exists to reject.
+fn a_real_user_config_home() -> tempfile::TempDir {
+    tempfile::tempdir().expect("tempdir")
+}
+
+/// **New client, old peer — refused before the send.**
+///
+/// The same shape of hazard as [`v6_is_required_for_project_scope_and_an_older_peer_is_refused_before_the_send`],
+/// one version later, for the destination [`Target::here`](super::client) resolves
+/// for user scope instead of the one it resolves for project scope: proto3 drops
+/// an unrecognised `user_config_home` field on decode, so a v6 runtime never
+/// learns a home was sent and answers with a plan authored against its own
+/// ambient `CLAUDE_CONFIG_DIR` — AAASM-5957 exactly, wearing a success.
+#[tokio::test]
+async fn v7_is_required_for_user_scope_and_an_older_peer_is_refused_before_the_send() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let home = a_real_user_config_home();
+    let home_path = home.path().join(".claude");
+    for version in DI_API_MIN_SUPPORTED..DI_API_USER_CONFIG_HOME_SINCE {
+        let mut client = connect_offering(&server, &[version]).await;
+        let before = server.lifecycle().calls();
+
+        let outcome = client
+            .plan(PlanRequest {
+                tool_id: &claude_code_id(),
+                profile: "recommended",
+                settings_scope: "user",
+                user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+                ..PlanRequest::default()
+            })
+            .await;
+
+        let Err(refused) = outcome else {
+            panic!("v{version} must refuse user scope rather than send a home it will drop");
+        };
+        let ClientError::Incompatible(reported) = &refused else {
+            panic!("v{version} must refuse on version grounds, got {refused:?}");
+        };
+        assert!(
+            reported.reason.contains(&format!("DI-API {version}")),
+            "the reason must name the version that cannot carry the home: {}",
+            reported.reason
+        );
+        assert!(
+            reported
+                .reason
+                .contains(&format!("DI-API {DI_API_USER_CONFIG_HOME_SINCE}")),
+            "the reason must name the version that can: {}",
+            reported.reason
+        );
+        assert!(
+            !reported.remediation.is_empty(),
+            "a refusal a user cannot act on is a dead end"
+        );
+
+        assert_eq!(
+            server.lifecycle().calls(),
+            before,
+            "v{version} sent the request anyway — the home was dropped on arrival and the plan \
+             was authored against the runtime's own configuration home"
+        );
+
+        // The refusal is local, so the connection must be untouched by it — see
+        // the identical reasoning on the project-root gate's sweep above.
+        assert!(
+            client
+                .status(
+                    &claude_code_id(),
+                    TargetRequest {
+                        settings_scope: "managed",
+                        ..TargetRequest::default()
+                    }
+                )
+                .await
+                .is_ok(),
+            "v{version} lost the connection to a refusal that never reached the wire"
+        );
+    }
+    server.shutdown().await;
+}
+
+/// **Positive control**: at v7 the same call reaches the service.
+///
+/// Without this, a gate that refused user scope at *every* version — or one
+/// whose comparison was inverted — would satisfy the sweep above completely.
+#[tokio::test]
+async fn user_scope_reaches_the_service_at_v7() {
+    let server = TestServer::start(FakeLifecycle::default()).await;
+    let home = a_real_user_config_home();
+    let home_path = home.path().join(".claude");
+    let mut client = connect_offering(&server, &[DI_API_USER_CONFIG_HOME_SINCE]).await;
+    let before = server.lifecycle().calls();
+
+    let plan = client
+        .plan(PlanRequest {
+            tool_id: &claude_code_id(),
+            profile: "recommended",
+            settings_scope: "user",
+            user_config_home: home_path.to_str().expect("utf-8 tempdir"),
+            ..PlanRequest::default()
+        })
+        .await
+        .expect("v7 carries the user configuration home, so the plan must be authored");
+
+    assert!(!plan.plan_id.is_empty());
+    assert!(
+        server.lifecycle().calls() > before,
+        "the plan must have been served by the lifecycle, not fabricated by the client"
+    );
     server.shutdown().await;
 }
 
@@ -564,10 +727,17 @@ async fn an_unparseable_scope_token_is_refused_by_the_server_not_the_version_gat
 /// for a test run.
 const _: () = {
     assert!(DI_API_PROVENANCE_SINCE >= DI_API_MIN_SUPPORTED);
-    // The project root is the newest addition. If it stops being so, the v6
-    // sweeps above are pinning the wrong version and their "below this it is
-    // refused" loops silently stop covering the top of the window.
-    assert!(DI_API_PROJECT_ROOT_SINCE == DI_API_MAX_SUPPORTED);
+    // The user configuration home is the newest addition (AAASM-5957). If it
+    // stops being so, the v7 sweeps above are pinning the wrong version and
+    // their "below this it is refused" loops silently stop covering the top
+    // of the window.
+    assert!(DI_API_USER_CONFIG_HOME_SINCE == DI_API_MAX_SUPPORTED);
+    // The project root was the newest addition until v7 (AAASM-5957), so its
+    // sweeps now run over a strict interior of the window rather than up to
+    // its top — as provenance's already did after AAASM-5674, and apply
+    // outcome's after AAASM-5913.
+    assert!(DI_API_PROJECT_ROOT_SINCE < DI_API_MAX_SUPPORTED);
+    assert!(DI_API_PROJECT_ROOT_SINCE > DI_API_APPLY_OUTCOME_SINCE);
     // The apply outcome was the newest addition until v6 (AAASM-5913), so its
     // sweeps now run over a strict interior of the window rather than up to its
     // top — as provenance's already did after AAASM-5674.
@@ -575,6 +745,9 @@ const _: () = {
     assert!(DI_API_APPLY_OUTCOME_SINCE > DI_API_PROVENANCE_SINCE);
     assert!(DI_API_PROVENANCE_SINCE < DI_API_MAX_SUPPORTED);
     assert!(DI_API_PROVENANCE_SINCE > DI_API_POLICY_POSTURE_SINCE);
+    // The v7 sweep loops `MIN..USER_CONFIG_HOME_SINCE`; at equality that range
+    // is empty and every assertion in it would vacuously hold.
+    assert!(DI_API_USER_CONFIG_HOME_SINCE > DI_API_MIN_SUPPORTED);
     // The v6 sweep loops `MIN..PROJECT_ROOT_SINCE`; at equality that range is
     // empty and every assertion in it would vacuously hold.
     assert!(DI_API_PROJECT_ROOT_SINCE > DI_API_MIN_SUPPORTED);
