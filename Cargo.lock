@@ -199,6 +199,7 @@ dependencies = [
  "aa-devtool-windsurf",
  "async-trait",
  "futures",
+ "tempfile",
  "tokio",
 ]
 
@@ -494,6 +495,7 @@ dependencies = [
  "aa-security",
  "landlock",
  "libc",
+ "tempfile",
 ]
 
 [[package]]
