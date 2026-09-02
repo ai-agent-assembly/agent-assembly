@@ -23,10 +23,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::mpsc;
 
-use aa_core::audit::{AuditEntry, GovernanceMutationAudit};
+use aa_core::audit::GovernanceMutationAudit;
 use aa_core::{AgentId, EnforcementMode, SessionId};
+use aa_gateway::audit::AuditChain;
 use aa_gateway::registry::AgentRegistry;
 
 /// Cadence of the shadow-expiry reconciler. Shadow windows are bounded at 72h
@@ -56,11 +56,7 @@ const REVERT_ACTION: &str = "enforcement_mode";
 /// so tests can drive it directly with a fixed `now` instead of sleeping.
 ///
 /// Returns the number of agents reverted this tick.
-pub async fn tick(
-    registry: &AgentRegistry,
-    audit_sender: Option<&mpsc::Sender<AuditEntry>>,
-    now: DateTime<Utc>,
-) -> usize {
+pub async fn tick(registry: &AgentRegistry, audit_chain: Option<&Arc<AuditChain>>, now: DateTime<Utc>) -> usize {
     let expired = registry.agents_with_expired_shadow(now);
     let mut reverted = 0;
     for agent_id in expired {
@@ -82,7 +78,7 @@ pub async fn tick(
         {
             Ok(()) => {
                 reverted += 1;
-                emit_revert_audit(audit_sender, &agent_id, org, team);
+                emit_revert_audit(audit_chain, &agent_id, org, team).await;
             }
             Err(err) => {
                 // A failed persist rolls the in-memory mutation back, so the
@@ -101,20 +97,21 @@ pub async fn tick(
 
 /// Emit a system-attributed [`GovernanceMutationAudit`] for one auto-revert.
 ///
-/// Best-effort onto the audit channel, matching the dispatch path in
-/// `routes::agents`: a full or absent channel drops the entry rather than
-/// failing the revert the reconciler already performed. `seq` / `previous_hash`
-/// are zero because the audit sink re-sequences and re-chains as it persists.
+/// Best-effort onto the shared `audit_chain` (AAASM-6020), matching the
+/// dispatch path in `routes::agents`: a full or absent channel drops the
+/// entry rather than failing the revert the reconciler already performed,
+/// but `seq`/`previous_hash` are assigned by the shared chain head so this
+/// entry links correctly with every other producer writing the same file.
 ///
 /// The `actor` is the fixed [`SYSTEM_ACTOR`], never a request identity; the
 /// tenant is the agent's own org / team.
-fn emit_revert_audit(
-    audit_sender: Option<&mpsc::Sender<AuditEntry>>,
+async fn emit_revert_audit(
+    audit_chain: Option<&Arc<AuditChain>>,
     agent_id: &[u8; 16],
     org: Option<String>,
     team: Option<String>,
 ) {
-    let Some(sender) = audit_sender else {
+    let Some(chain) = audit_chain else {
         return;
     };
     let record = match GovernanceMutationAudit::new(
@@ -135,8 +132,10 @@ fn emit_revert_audit(
             return;
         }
     };
-    let entry = record.to_audit_entry(0, unix_now_ns(), SessionId::from_bytes([0u8; 16]), [0u8; 32]);
-    let _ = sender.try_send(entry);
+    let now = unix_now_ns();
+    let _ = chain
+        .emit(|seq, previous_hash| record.to_audit_entry(seq, now, SessionId::from_bytes([0u8; 16]), previous_hash))
+        .await;
 }
 
 /// Current Unix timestamp in nanoseconds. Mirrors the dispatch-path helper so
@@ -160,12 +159,12 @@ fn hex_agent_id(agent_id: &[u8; 16]) -> String {
 /// handle and the audit sender, so it runs until process shutdown.
 pub fn spawn_shadow_expiry_watcher(
     registry: Arc<AgentRegistry>,
-    audit_sender: Option<mpsc::Sender<AuditEntry>>,
+    audit_chain: Option<Arc<AuditChain>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(TICK_INTERVAL).await;
-            tick(registry.as_ref(), audit_sender.as_ref(), Utc::now()).await;
+            tick(registry.as_ref(), audit_chain.as_ref(), Utc::now()).await;
         }
     })
 }
@@ -269,8 +268,14 @@ mod tests {
         reg.register(make_record(id, Some(EnforcementMode::Observe), Some(past)))
             .unwrap();
 
-        let (tx, mut rx) = mpsc::channel::<AuditEntry>(16);
-        let reverted = tick(&reg, Some(&tx), Utc::now()).await;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<aa_core::AuditEntry>(16);
+        let chain = Arc::new(AuditChain::new(
+            tx,
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            [0u8; 32],
+            0,
+        ));
+        let reverted = tick(&reg, Some(&chain), Utc::now()).await;
         assert_eq!(reverted, 1);
 
         let entry = rx.try_recv().expect("an audit entry must be emitted");

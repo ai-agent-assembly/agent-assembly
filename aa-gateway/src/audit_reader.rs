@@ -26,6 +26,11 @@ impl AuditReader {
         Self { dir }
     }
 
+    /// The audit directory this reader targets.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     /// List audit entries with pagination and optional filters.
     ///
     /// Returns `(entries, total_matching)` where entries are sorted in

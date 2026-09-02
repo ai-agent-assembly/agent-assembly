@@ -6,13 +6,12 @@
 //! timeout elapses and the queue auto-resolves it as [`ApprovalDecision::TimedOut`].
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::SystemTime;
 
 use dashmap::{DashMap, DashSet};
 use sha2::{Digest, Sha256};
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use uuid::Uuid;
 
 use aa_core::identity::{AgentId, SessionId};
@@ -304,8 +303,22 @@ pub struct ApprovalQueue {
     /// cap should add a future builder.
     resolved_history_cap: usize,
     audit_tx: Option<mpsc::Sender<AuditEntry>>,
-    audit_seq: AtomicU64,
-    audit_last_hash: Mutex<[u8; 32]>,
+    /// The `seq`/hash-chain head for this queue's two audit-emitting paths
+    /// (`submit`'s `ApprovalRequested` and `emit_resolution_audit`'s
+    /// Approved/Rejected/TimedOut). One shared `std::sync::Mutex` — not
+    /// `aa_gateway::audit::AuditChain`, which would make `aa-runtime` depend
+    /// on `aa-gateway` and create a crate cycle (`aa-gateway` already depends
+    /// on `aa-runtime`) — but the *same* AAASM-5626 pattern: `seq` is
+    /// consumed unconditionally so a dropped entry leaves a verifiable gap,
+    /// and `last_hash` only advances after `try_send` actually succeeds, so
+    /// a dropped entry can never leave the next entry's `previous_hash`
+    /// pointing at one that was never written (AAASM-6020 — this queue
+    /// previously advanced the hash *before* checking `try_send`'s result in
+    /// `submit`, and fabricated a broken `previous_hash = [0u8; 32]` link on
+    /// lock contention in `emit_resolution_audit`). A plain `Mutex` is
+    /// correct here for the same reason as `AuditChain::state`: the critical
+    /// section never awaits.
+    audit_state: StdMutex<AuditChainState>,
     event_tx: broadcast::Sender<ApprovalRequest>,
     /// Broadcast channel that fires when a pending request auto-expires
     /// (its per-request timeout fires before any human decision arrives).
@@ -327,6 +340,13 @@ pub struct ApprovalQueue {
     /// and no local oneshot waiter with a real receiver — see
     /// [`rehydrate_from_storage`](Self::rehydrate_from_storage).
     ingested: DashSet<ApprovalRequestId>,
+}
+
+/// The `seq` counter + hash-chain head shared by both of
+/// [`ApprovalQueue`]'s audit-emitting paths.
+struct AuditChainState {
+    next_seq: u64,
+    last_hash: [u8; 32],
 }
 
 /// Hash a string into a 16-byte identifier using SHA-256 truncation.
@@ -382,8 +402,10 @@ impl ApprovalQueue {
             resolved_history: StdMutex::new(VecDeque::with_capacity(DEFAULT_RESOLVED_HISTORY_CAP)),
             resolved_history_cap: DEFAULT_RESOLVED_HISTORY_CAP,
             audit_tx: None,
-            audit_seq: AtomicU64::new(0),
-            audit_last_hash: Mutex::new([0u8; 32]),
+            audit_state: StdMutex::new(AuditChainState {
+                next_seq: 0,
+                last_hash: [0u8; 32],
+            }),
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
@@ -405,8 +427,10 @@ impl ApprovalQueue {
             resolved_history: StdMutex::new(VecDeque::with_capacity(cap)),
             resolved_history_cap: cap,
             audit_tx: None,
-            audit_seq: AtomicU64::new(0),
-            audit_last_hash: Mutex::new([0u8; 32]),
+            audit_state: StdMutex::new(AuditChainState {
+                next_seq: 0,
+                last_hash: [0u8; 32],
+            }),
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
@@ -428,14 +452,32 @@ impl ApprovalQueue {
             resolved_history: StdMutex::new(VecDeque::with_capacity(DEFAULT_RESOLVED_HISTORY_CAP)),
             resolved_history_cap: DEFAULT_RESOLVED_HISTORY_CAP,
             audit_tx: Some(audit_tx),
-            audit_seq: AtomicU64::new(0),
-            audit_last_hash: Mutex::new(initial_hash),
+            audit_state: StdMutex::new(AuditChainState {
+                next_seq: 0,
+                last_hash: initial_hash,
+            }),
             event_tx,
             expiry_event_tx,
             resolved_notifier: OnceLock::new(),
             storage: OnceLock::new(),
             ingested: DashSet::new(),
         })
+    }
+
+    /// Lock `audit_state`, recovering from poisoning instead of propagating
+    /// the panic.
+    ///
+    /// Mirrors `aa_gateway::audit::AuditChain::lock_state`: the only code
+    /// that runs while this lock is held is building an `AuditEntry` and
+    /// reading/writing plain `u64`/`[u8; 32]` fields, so a panic mid-build
+    /// leaves no invariant broken — `next_seq` is already advanced by the
+    /// time the entry is built (correct either way: a panicked entry is
+    /// exactly as unsent as a dropped one), and `last_hash` is only written
+    /// after a successful `try_send`. Recovering the guard is safe.
+    fn lock_audit_state(&self) -> std::sync::MutexGuard<'_, AuditChainState> {
+        self.audit_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Install the push sink notified on every resolution (AAASM-2378).
@@ -954,6 +996,14 @@ impl ApprovalQueue {
 
     /// Emit a hash-chained audit entry for an approval decision over `audit_tx`
     /// when an audit channel is configured. No-op when none is set.
+    ///
+    /// `seq` is always consumed, even if `try_send` fails, so a dropped
+    /// entry leaves a verifiable gap rather than being silently reused by
+    /// the next entry (AAASM-5626 pattern). `last_hash` only advances after
+    /// `try_send` succeeds — previously this advanced unconditionally and,
+    /// on lock contention, fabricated a `previous_hash = [0u8; 32]` link
+    /// instead of dropping the entry, either of which makes the *next*
+    /// entry's link unverifiable rather than just missing (AAASM-6020).
     fn emit_resolution_audit(&self, req: &ApprovalRequest, decision: &ApprovalDecision, decided_by: &str) {
         let Some(audit_tx) = &self.audit_tx else {
             return;
@@ -963,7 +1013,6 @@ impl ApprovalQueue {
             ApprovalDecision::Rejected { .. } => AuditEventType::ApprovalDenied,
             ApprovalDecision::TimedOut { .. } => AuditEventType::ApprovalTimedOut,
         };
-        let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
         let agent_id = AgentId::from_bytes(hash_to_16(&req.agent_id));
         let session_id = SessionId::from_bytes(hash_to_16(&req.request_id.to_string()));
         let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
@@ -977,47 +1026,36 @@ impl ApprovalQueue {
         })
         .to_string();
 
-        // Use try_lock to avoid blocking the resolve path; fall back to
-        // a broken chain link rather than deadlocking.
-        let (entry, hash_updated) = match self.audit_last_hash.try_lock() {
-            Ok(mut guard) => {
-                let entry = AuditEntry::new(
-                    seq,
-                    timestamp_ns,
-                    audit_event_type,
-                    agent_id,
-                    session_id,
-                    payload,
-                    *guard,
-                );
-                *guard = *entry.entry_hash();
-                (entry, true)
-            }
-            Err(_) => {
-                let entry = AuditEntry::new(
-                    seq,
-                    timestamp_ns,
-                    audit_event_type,
-                    agent_id,
-                    session_id,
-                    payload,
-                    [0u8; 32],
-                );
-                (entry, false)
-            }
-        };
+        let mut state = self.lock_audit_state();
+        let seq = state.next_seq;
+        state.next_seq += 1;
+        let previous_hash = state.last_hash;
 
-        if !hash_updated {
-            tracing::debug!(seq, "audit hash chain lock contended — entry uses zero previous_hash");
-        }
+        let entry = AuditEntry::new(
+            seq,
+            timestamp_ns,
+            audit_event_type,
+            agent_id,
+            session_id,
+            payload,
+            previous_hash,
+        );
+        let entry_hash = *entry.entry_hash();
 
-        if let Err(e) = audit_tx.try_send(entry) {
-            match e {
-                mpsc::error::TrySendError::Full(_) => {
-                    tracing::warn!(seq, "audit channel full — approval event dropped");
-                }
-                mpsc::error::TrySendError::Closed(_) => {
-                    tracing::error!("audit channel closed — AuditWriter task has exited");
+        match audit_tx.try_send(entry) {
+            Ok(()) => {
+                state.last_hash = entry_hash;
+                drop(state);
+            }
+            Err(e) => {
+                drop(state);
+                match e {
+                    mpsc::error::TrySendError::Full(_) => {
+                        tracing::warn!(seq, "audit channel full — approval event dropped");
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        tracing::error!("audit channel closed — AuditWriter task has exited");
+                    }
                 }
             }
         }
@@ -1100,9 +1138,13 @@ impl ApprovalQueue {
             "approval requested"
         );
 
-        // Record the submission as an ApprovalRequested audit entry.
+        // Record the submission as an ApprovalRequested audit entry. `seq` is
+        // always consumed and `last_hash` only advances after a successful
+        // `try_send` — same AAASM-6020 fix as `emit_resolution_audit`;
+        // `std::sync::Mutex::lock` in this sync fn just blocks briefly on
+        // contention, so there is no reason to keep the old
+        // contention-drops-the-entry `try_lock` fallback.
         if let Some(audit_tx) = &self.audit_tx {
-            let seq = self.audit_seq.fetch_add(1, Ordering::Relaxed);
             let agent_id = AgentId::from_bytes(hash_to_16(&request.agent_id));
             let session_id = SessionId::from_bytes(hash_to_16(&id.to_string()));
             let timestamp_ns = Timestamp::from(SystemTime::now()).as_nanos();
@@ -1116,19 +1158,26 @@ impl ApprovalQueue {
             })
             .to_string();
 
-            if let Ok(mut guard) = self.audit_last_hash.try_lock() {
-                let entry = AuditEntry::new(
-                    seq,
-                    timestamp_ns,
-                    AuditEventType::ApprovalRequested,
-                    agent_id,
-                    session_id,
-                    payload,
-                    *guard,
-                );
-                *guard = *entry.entry_hash();
-                let _ = audit_tx.try_send(entry);
+            let mut state = self.lock_audit_state();
+            let seq = state.next_seq;
+            state.next_seq += 1;
+            let previous_hash = state.last_hash;
+
+            let entry = AuditEntry::new(
+                seq,
+                timestamp_ns,
+                AuditEventType::ApprovalRequested,
+                agent_id,
+                session_id,
+                payload,
+                previous_hash,
+            );
+            let entry_hash = *entry.entry_hash();
+
+            if audit_tx.try_send(entry).is_ok() {
+                state.last_hash = entry_hash;
             }
+            drop(state);
         }
 
         let (tx, rx) = oneshot::channel();
@@ -1847,6 +1896,67 @@ mod tests {
         assert_eq!(entry1.previous_hash(), entry0.entry_hash());
         // Hash chain entries should have distinct hashes.
         assert_ne!(entry0.entry_hash(), entry1.entry_hash());
+    }
+
+    /// AAASM-6020 regression: a dropped entry (channel full) must consume
+    /// `seq` without advancing `last_hash`, so the *next* successfully-sent
+    /// entry still links to the last entry that was actually written — not
+    /// to the one that was dropped. Before this fix, `submit`'s hash update
+    /// ran unconditionally ahead of `try_send`'s result, so a drop here
+    /// would have left `decide`'s entry pointing at a hash no reader could
+    /// ever see, indistinguishable from tampering.
+    #[tokio::test]
+    async fn dropped_entry_does_not_advance_hash_head() {
+        // Capacity 1, pre-filled, so `submit`'s ApprovalRequested entry is
+        // dropped (Full) while the channel is still open.
+        let (tx, mut rx) = mpsc::channel::<AuditEntry>(1);
+        let filler = AuditEntry::new(
+            999,
+            0,
+            AuditEventType::ToolCallIntercepted,
+            AgentId::from_bytes([0u8; 16]),
+            SessionId::from_bytes([0u8; 16]),
+            String::new(),
+            [0u8; 32],
+        );
+        tx.try_send(filler).expect("fill capacity 1 channel");
+        let q = ApprovalQueue::with_audit(tx, [0u8; 32]);
+
+        let req = make_request(60);
+        let id = req.request_id;
+        let (_rid, _fut) = q.submit(req);
+
+        // Drain the filler; submit's own entry never reached the channel.
+        let filler_entry = rx.try_recv().expect("filler entry present");
+        assert_eq!(filler_entry.seq(), 999);
+        assert!(
+            rx.try_recv().is_err(),
+            "submit's entry must have been dropped, not queued"
+        );
+
+        // The next successful emission (decide) must still chain from the
+        // initial hash — not from the dropped submit entry's hash, which
+        // was never computed into `last_hash`.
+        q.decide(
+            id,
+            ApprovalDecision::Approved {
+                by: "alice".to_string(),
+                reason: None,
+                conditions: vec![],
+            },
+        )
+        .expect("decide should succeed");
+
+        let decide_entry = rx
+            .try_recv()
+            .expect("decide entry sent — channel drained back to capacity 1");
+        assert_eq!(
+            *decide_entry.previous_hash(),
+            [0u8; 32],
+            "previous_hash must still be the initial hash: the dropped submit entry never advanced it"
+        );
+        // seq is still contiguous with the dropped entry's seq (0), not reused.
+        assert_eq!(decide_entry.seq(), 1);
     }
 
     #[tokio::test]

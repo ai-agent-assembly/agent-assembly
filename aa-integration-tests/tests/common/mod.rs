@@ -181,11 +181,11 @@ pub struct TopologyTestEnv {
 
 impl TopologyTestEnv {
     /// Spin up the harness with an `mpsc` audit sink wired to
-    /// [`AppState::audit_sender`]. Returns the env paired with the
-    /// receive end of the channel so tests can drain the entries the
-    /// route handlers emit (see AAASM-2033 — the `/dispatch_tool` WASM
-    /// path produces `[SandboxStarted, <outcome>]` per invocation; the
-    /// native path produces `[ToolDispatched]`).
+    /// [`AppState::audit_chain`] (AAASM-6020 — was a bare `audit_sender`).
+    /// Returns the env paired with the receive end of the channel so tests
+    /// can drain the entries the route handlers emit (see AAASM-2033 — the
+    /// `/dispatch_tool` WASM path produces `[SandboxStarted, <outcome>]`
+    /// per invocation; the native path produces `[ToolDispatched]`).
     ///
     /// Capacity is 64 entries — handlers `try_send` (non-blocking), so
     /// the channel only buffers; tests drain promptly after each
@@ -194,7 +194,7 @@ impl TopologyTestEnv {
     pub async fn start_with_audit_sink() -> anyhow::Result<(Self, mpsc::Receiver<AuditEntry>)> {
         let (mut state, audit_dir, alert_store, key_store) = build_test_state()?;
         let (sender, receiver) = mpsc::channel::<AuditEntry>(64);
-        state.audit_sender = Some(sender);
+        state.set_audit_chain_from_sender(sender);
 
         let agent_registry = Arc::clone(&state.agent_registry);
         let trace_store = Arc::clone(&state.trace_store);
@@ -947,7 +947,7 @@ spec:
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
@@ -1101,7 +1101,7 @@ spec:
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
@@ -1256,7 +1256,7 @@ spec:
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
@@ -1403,7 +1403,7 @@ spec:
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),
@@ -1543,7 +1543,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
             ops_registry: Arc::new(OpsRegistry::new()),
             destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),

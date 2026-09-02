@@ -42,7 +42,7 @@ fn compute_hmac(secret: &[u8], body: &[u8]) -> Vec<u8> {
 
 /// Build an AppState with:
 /// - A `SecretCache` backed by `StaticResolver` (returns `TEST_SECRET`).
-/// - An `audit_sender` connected to an `mpsc` channel of the given capacity.
+/// - An `audit_chain` connected to an `mpsc` channel of the given capacity.
 ///
 /// Returns the state plus the receiver so tests can assert events landed.
 fn test_state_with_audit(capacity: usize) -> (AppState, mpsc::Receiver<aa_core::AuditEntry>) {
@@ -52,7 +52,7 @@ fn test_state_with_audit(capacity: usize) -> (AppState, mpsc::Receiver<aa_core::
     });
     state.saas_secret_cache = Arc::new(SecretCache::with_resolver(resolver));
     let (tx, rx) = mpsc::channel(capacity);
-    state.audit_sender = Some(tx);
+    state.set_audit_chain_from_sender(tx);
     (state, rx)
 }
 
@@ -239,12 +239,16 @@ async fn unknown_provider_path_returns_404() {
 #[tokio::test]
 async fn audit_pipeline_backpressure_returns_503() {
     // Channel with capacity 1, then fill it so try_send returns Full.
-    let (mut state, _rx) = test_state_with_audit(1);
-    // Pre-fill the channel via the existing sender — but we need to hold the
-    // receiver as well so the channel isn't closed. The receiver returned by
-    // `test_state_with_audit` is the only one; keep it alive for the duration.
-    let tx_clone = state.audit_sender.clone().unwrap();
-    // Use a separate sender clone to push a synthetic entry to fill the slot.
+    // Built directly (not via `test_state_with_audit`) so we can keep a
+    // sender clone to pre-fill the channel before wiring the chain — we
+    // also need to hold the receiver so the channel isn't closed.
+    let mut state = common::test_state();
+    let resolver: Arc<dyn SecretResolver> = Arc::new(StaticResolver {
+        value: TEST_SECRET.to_vec(),
+    });
+    state.saas_secret_cache = Arc::new(SecretCache::with_resolver(resolver));
+    let (tx, _rx) = mpsc::channel(1);
+    let tx_clone = tx.clone();
     let filler = aa_core::AuditEntry::new(
         0,
         0,
@@ -256,7 +260,7 @@ async fn audit_pipeline_backpressure_returns_503() {
     );
     tx_clone.try_send(filler).expect("fill capacity");
     // Now another attempt will fail with TrySendError::Full.
-    state.audit_sender = Some(tx_clone);
+    state.set_audit_chain_from_sender(tx);
     let app = build_app(state);
 
     let body = claude_ai_body();
@@ -276,7 +280,7 @@ async fn audit_pipeline_disconnected_returns_503() {
         value: TEST_SECRET.to_vec(),
     });
     state.saas_secret_cache = Arc::new(SecretCache::with_resolver(resolver));
-    // audit_sender stays None — simulates pipeline unconnected.
+    // audit_chain stays None — simulates pipeline unconnected.
     let app = build_app(state);
 
     let body = claude_ai_body();

@@ -185,7 +185,7 @@ spec:
         iam_api_key_store: aa_api::routes::iam::seeded_iam_store(),
         ops_registry: Arc::new(OpsRegistry::new()),
         destination_store: Arc::new(InMemoryDestinationStore::new(Arc::new(NoopRuleReferenceChecker))),
-        audit_sender: None,
+        audit_chain: None,
         saas_secret_cache: Arc::new(aa_api::routes::devtools::secret_cache::SecretCache::new()),
         saas_replay_cache: Arc::new(aa_api::routes::devtools::replay_cache::ReplayCache::new()),
         alert_rule_store: Arc::new(InMemoryAlertRuleStore::new()),

@@ -102,13 +102,17 @@ pub struct AppState {
     pub ops_registry: Arc<OpsRegistry>,
     /// Notification-destination store backing `/alerts/destinations` (AAASM-1388).
     pub destination_store: Arc<dyn DestinationStore>,
-    /// Optional sender into the shared audit-ingest channel (see
-    /// `aa-gateway::audit::AuditWriter`). When `None`, audit-emitting
-    /// handlers respond with HTTP 503 to signal that the audit pipeline
-    /// is not connected — they do not buffer events. The webhook handler
-    /// in `routes::devtools::saas_webhook` is the first consumer of this
-    /// seam (AAASM-924); future routes wire in the same way.
-    pub audit_sender: Option<mpsc::Sender<AuditEntry>>,
+    /// Shared hash-chain head + `seq` counter over the audit-ingest channel
+    /// (see `aa-gateway::audit::AuditChain` / `AuditWriter`). Every producer
+    /// that emits into the local-mode audit file goes through this one
+    /// instance's `emit` — a private per-producer seq/hash pair forks the
+    /// chain into interleaved, mutually-unverifiable runs, exactly the bug
+    /// AAASM-5626 fixed in aa-gateway and AAASM-6020 fixed here (AAASM-6020).
+    /// When `None`, audit-emitting handlers respond with HTTP 503 to signal
+    /// that the audit pipeline is not connected — they do not buffer events.
+    /// The webhook handler in `routes::devtools::saas_webhook` is the first
+    /// consumer of this seam (AAASM-924); future routes wire in the same way.
+    pub audit_chain: Option<Arc<aa_gateway::audit::AuditChain>>,
     /// Per-provider HMAC secret cache used by the SaaS webhook handler
     /// (AAASM-924). 5-minute TTL by default. Shared across requests so
     /// the resolver backend is hit at most once per TTL window per key.
@@ -178,6 +182,23 @@ pub struct AppState {
     /// §9, AAASM-5359). Always present: an export that cannot be attributed
     /// must not happen, so there is no `None` for the handler to fall through.
     pub sensitive_data_export_log: Arc<dyn crate::routes::sensitive_data::ExportAccessLog>,
+}
+
+impl AppState {
+    /// Test seam: wire `audit_chain` over `tx` with a fresh chain head.
+    ///
+    /// Existing tests construct their own `mpsc::channel` to observe emitted
+    /// entries; this keeps them working without hand-building an `AuditChain`
+    /// (whose fields are private) at every call site.
+    #[doc(hidden)]
+    pub fn set_audit_chain_from_sender(&mut self, tx: mpsc::Sender<AuditEntry>) {
+        self.audit_chain = Some(Arc::new(aa_gateway::audit::AuditChain::new(
+            tx,
+            Arc::new(AtomicU64::new(0)),
+            [0u8; 32],
+            0,
+        )));
+    }
 }
 
 /// Error returned by [`AppState::local_in_memory`] when the in-memory wiring
@@ -270,7 +291,7 @@ impl AppState {
     ///
     /// Documented limitations of the in-memory wiring (callers / the PR body
     /// should surface these):
-    /// * `audit_sender` is `None` — audit-emitting handlers (e.g. the SaaS
+    /// * `audit_chain` is `None` — audit-emitting handlers (e.g. the SaaS
     ///   webhook) respond 503; audit *reads* return an empty list.
     /// * `retention_engine` is `None` — `/api/v1/admin/retention-policy`
     ///   handlers respond 503 (no `storage` section in this mode).
@@ -458,7 +479,7 @@ impl AppState {
             destination_store: Arc::new(crate::destinations::store::InMemoryDestinationStore::new(Arc::new(
                 crate::destinations::store::NoopRuleReferenceChecker,
             ))),
-            audit_sender: None,
+            audit_chain: None,
             saas_secret_cache: Arc::new(crate::routes::devtools::secret_cache::SecretCache::new()),
             saas_replay_cache: Arc::new(crate::routes::devtools::replay_cache::ReplayCache::new()),
             alert_rule_store: Arc::new(crate::alerts::rules::store::InMemoryAlertRuleStore::new()),
@@ -501,8 +522,10 @@ impl AppState {
     ///   [`LocalAuth::Off`] it stays bypassed exactly like `local_in_memory`.
     /// * **Audit + retention** — a SQLite [`StorageBackend`] is opened under a
     ///   per-process temp directory. An [`AuditWriter`] is spawned in dual-sink
-    ///   mode (JSONL + SQLite) and its sender is threaded into `audit_sender`, so
-    ///   audit-emitting handlers persist instead of returning 503. A
+    ///   mode (JSONL + SQLite) and its sender is wrapped in an `AuditChain`
+    ///   threaded into `audit_chain`, so audit-emitting handlers persist
+    ///   instead of returning 503, sharing one hash-chain head across every
+    ///   producer (AAASM-6020). A
     ///   [`RetentionEngine`] over the same backend backs the
     ///   `/api/v1/admin/retention-policy` handlers (get / put / run-once) instead
     ///   of 503. The audit *reader* points at the same JSONL directory.
@@ -728,7 +751,17 @@ impl AppState {
             .map_err(|e| LocalStateError::Audit(format!("{e}")))?
             .with_storage(storage.clone());
         tokio::spawn(writer.run());
-        state.audit_sender = Some(audit_tx);
+        // AAASM-6020: seed a fresh chain head — this is a fresh per-process
+        // temp directory (`audit_jsonl_dir` above), so there is no prior file
+        // to resume `last_hash`/`seq` from (unlike aa-gateway's own server
+        // wiring, which does resume via `AuditWriter::read_last_hash` /
+        // `read_last_seq` against a durable, restart-surviving directory).
+        state.audit_chain = Some(Arc::new(aa_gateway::audit::AuditChain::new(
+            audit_tx,
+            Arc::new(AtomicU64::new(0)),
+            [0u8; 32],
+            0,
+        )));
         state.audit_reader = Arc::new(AuditReader::new(audit_jsonl_dir));
 
         // Retention engine over the same backend, using aa-core's validated
@@ -850,7 +883,7 @@ mod tests {
     fn local_in_memory_has_documented_disconnected_seams() {
         let state = AppState::local_in_memory().expect("in-memory state builds");
         // The in-memory wiring deliberately leaves these seams disconnected.
-        assert!(state.audit_sender.is_none(), "audit pipeline is disconnected");
+        assert!(state.audit_chain.is_none(), "audit pipeline is disconnected");
         assert!(state.retention_engine.is_none(), "no storage section in this mode");
         assert!(matches!(state.auth_config.mode, AuthMode::Off), "auth is bypassed");
         assert!(state.secrets_store.list().is_empty(), "no secrets pre-registered");
@@ -864,10 +897,7 @@ mod tests {
         // LocalAuth::Off keeps the bypass, but hardening still connects the
         // audit + retention seams that local_in_memory leaves None.
         assert!(matches!(state.auth_config.mode, AuthMode::Off));
-        assert!(
-            state.audit_sender.is_some(),
-            "hardened mode connects the audit pipeline"
-        );
+        assert!(state.audit_chain.is_some(), "hardened mode connects the audit pipeline");
         assert!(state.retention_engine.is_some(), "hardened mode wires retention");
     }
 

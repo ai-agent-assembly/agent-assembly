@@ -111,12 +111,12 @@ fn parse_agent_id(id: &str) -> Result<[u8; 16], ProblemDetail> {
 /// which must already be validated non-empty (the audit record rejects an empty
 /// reason as a defence-in-depth backstop).
 ///
-/// Emission is best-effort onto the existing `audit_sender` channel, matching
-/// the dispatch path (`dispatch.rs`): a full or disconnected channel drops the
-/// entry rather than failing the mutation the operator already performed. The
-/// `seq` / `previous_hash` are zero because the audit sink re-sequences and
-/// re-chains entries as it persists them.
-fn emit_governance_mutation_audit(
+/// Emission is best-effort onto the shared `audit_chain` (AAASM-6020): a full
+/// or disconnected channel drops the entry rather than failing the mutation
+/// the operator already performed, but `seq`/`previous_hash` are assigned by
+/// the shared chain head so this entry links correctly with every other
+/// producer writing the same file.
+async fn emit_governance_mutation_audit(
     state: &AppState,
     caller: &AuthenticatedCaller,
     agent_id: &[u8; 16],
@@ -125,7 +125,7 @@ fn emit_governance_mutation_audit(
     before: &str,
     after: &str,
 ) {
-    let Some(sender) = state.audit_sender.as_ref() else {
+    let Some(chain) = state.audit_chain.as_ref() else {
         return;
     };
     let record = match GovernanceMutationAudit::new(
@@ -148,9 +148,11 @@ fn emit_governance_mutation_audit(
             return;
         }
     };
-    let entry = record.to_audit_entry(0, unix_now_ns(), SessionId::from_bytes([0u8; 16]), [0u8; 32]);
+    let now = unix_now_ns();
     // Best-effort, non-blocking: backpressure is non-fatal for the response.
-    let _ = sender.try_send(entry);
+    let _ = chain
+        .emit(|seq, previous_hash| record.to_audit_entry(seq, now, SessionId::from_bytes([0u8; 16]), previous_hash))
+        .await;
 }
 
 /// Current Unix timestamp in nanoseconds. Mirrors the dispatch-path helper so
@@ -773,7 +775,8 @@ pub async fn suspend_agent(
         &body.reason,
         &previous_status,
         &new_status,
-    );
+    )
+    .await;
 
     Ok((
         StatusCode::OK,
@@ -1138,7 +1141,8 @@ pub async fn set_enforcement_mode(
         &audit_reason,
         previous_wire,
         new_mode.as_wire(),
-    );
+    )
+    .await;
 
     Ok((
         StatusCode::OK,
@@ -1225,7 +1229,8 @@ async fn apply_enforcement_cascade(
             &audit_reason,
             previous_wire,
             new_mode.as_wire(),
-        );
+        )
+        .await;
     }
 
     let count = affected_ids.len();
@@ -3225,7 +3230,7 @@ mod tests {
     ) -> (AppState, tokio::sync::mpsc::Receiver<AuditEntry>) {
         let mut state = state_with_policies(records, vec![]);
         let (tx, rx) = tokio::sync::mpsc::channel::<AuditEntry>(4096);
-        state.audit_sender = Some(tx);
+        state.set_audit_chain_from_sender(tx);
         (state, rx)
     }
 

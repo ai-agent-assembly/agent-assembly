@@ -155,25 +155,30 @@ pub async fn dispatch_tool(
 
     // Emit audit entry with the placeholder-form args. Non-blocking;
     // 503 if the pipeline is not connected (matches devtools pattern).
-    if let Some(sender) = state.audit_sender.as_ref() {
+    if let Some(chain) = state.audit_chain.as_ref() {
         // v0.0.1: no per-dispatch session/agent context flows in via the
         // HTTP body. The E2E harness wires concrete ids via the test env
         // (ST8 / AAASM-1931); here we emit zero-byte identifiers so the
         // audit chain stays well-formed without leaking arbitrary
         // caller-supplied bytes.
-        let entry = aa_core::audit::audit_entry_for_tool_dispatch(
-            0,
-            unix_now_ns(),
-            AgentId::from_bytes([0u8; 16]),
-            SessionId::from_bytes([0u8; 16]),
-            &body.args,
-            [0u8; 32],
-        );
-        // try_send: backpressure is non-fatal for the response — the
-        // entry is dropped if the channel is full. The ST-O-3 E2E
-        // assertion grep's the on-disk JSONL, so the channel needs to
-        // drain in the test harness.
-        let _ = sender.try_send(entry);
+        let now = unix_now_ns();
+        let args = &body.args;
+        // try_send (inside `emit`): backpressure is non-fatal for the
+        // response — the entry is dropped if the channel is full. The
+        // ST-O-3 E2E assertion grep's the on-disk JSONL, so the channel
+        // needs to drain in the test harness.
+        let _ = chain
+            .emit(|seq, previous_hash| {
+                aa_core::audit::audit_entry_for_tool_dispatch(
+                    seq,
+                    now,
+                    AgentId::from_bytes([0u8; 16]),
+                    SessionId::from_bytes([0u8; 16]),
+                    args,
+                    previous_hash,
+                )
+            })
+            .await;
     }
 
     Ok(Json(DispatchToolResponse {
@@ -226,19 +231,28 @@ async fn dispatch_wasm(
     // Same zero-id contract as the native-path entry above — concrete
     // session/agent ids will be wired through once the dispatch route
     // is reachable from a session-aware caller (AAASM-1931 follow-up).
-    if let Some(sender) = state.audit_sender.as_ref() {
+    if let Some(chain) = state.audit_chain.as_ref() {
         let now = unix_now_ns();
-        for (idx, event_type) in audit_events.iter().enumerate() {
-            let entry = AuditEntry::new(
-                idx as u64,
-                now,
-                *event_type,
-                AgentId::from_bytes([0u8; 16]),
-                SessionId::from_bytes([0u8; 16]),
-                String::new(),
-                [0u8; 32],
-            );
-            let _ = sender.try_send(entry);
+        // AAASM-6020: each iteration is its own `emit` — previously this
+        // hardcoded `seq=idx`/`previous_hash=[0u8;32]` per entry, so the
+        // *second* entry of a single request already produced a
+        // `previous_hash` pointing nowhere: `verify_chain` reported
+        // `Tampered` on the very first WASM-sandbox dispatch that emitted
+        // more than one lifecycle event.
+        for event_type in audit_events.iter() {
+            let _ = chain
+                .emit(|seq, previous_hash| {
+                    AuditEntry::new(
+                        seq,
+                        now,
+                        *event_type,
+                        AgentId::from_bytes([0u8; 16]),
+                        SessionId::from_bytes([0u8; 16]),
+                        String::new(),
+                        previous_hash,
+                    )
+                })
+                .await;
         }
     }
 
@@ -429,13 +443,13 @@ mod tests {
     async fn emits_audit_entry_with_placeholder_form_args() {
         let mut st = state();
         let (tx, mut rx) = mpsc::channel(8);
-        st.audit_sender = Some(tx);
+        st.set_audit_chain_from_sender(tx);
 
         let body = req(serde_json::json!({"q": "noop"}));
         let resp = dispatch_tool(Extension(st), writer(), Json(body)).await.expect("ok").0;
         assert!(resp.names_substituted.is_empty());
 
-        // The audit path runs only when audit_sender is wired; an entry must be queued.
+        // The audit path runs only when audit_chain is wired; an entry must be queued.
         let entry = rx.try_recv().expect("audit entry emitted when sender is connected");
         // Native dispatch emits with zero-byte identifiers (no per-dispatch context).
         assert_eq!(entry.agent_id(), AgentId::from_bytes([0u8; 16]));
