@@ -43,3 +43,23 @@ aasm admin run-retention --dry-run
   "dry_run": true
 }
 ```
+
+### Retention window and scope
+
+`warm_days` is a **span** that follows the hot window, not an absolute age —
+the cold action fires once a row's total age reaches `hot_days + warm_days`.
+At the shipped defaults (`hot_days: 30`, `warm_days: 90`) that is **120
+days**, not 90.
+
+`cold_action: archive` is **rejected** at configuration time — neither the
+Postgres nor the SQLite backend implements archival, so `drop` is the only
+supported cold action. Selecting `archive` fails validation before any
+retention pass runs (`aasm admin run-retention` and the gateway's own
+scheduled sweep alike); it does not fall back to `drop` or take any other
+implicit action.
+
+This command only ever touches the `audit_events` table — retention here has
+no effect on any other audit record the gateway or its adjacent services
+produce. See [Audit assurance](../security/audit-assurance.md#what-is-retained-and-what-is-deleted)
+for the full inventory of the four distinct audit records, their individual
+bounds, and what deletes each one.
