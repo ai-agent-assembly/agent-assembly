@@ -55,7 +55,7 @@ importers:
         specifier: ^7.85.0
         version: 7.87.0(react@19.2.8)
       react-router:
-        specifier: ^8.3.0
+        specifier: ^8.3.1
         version: 8.3.1(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       recharts:
         specifier: ^3.10.1
