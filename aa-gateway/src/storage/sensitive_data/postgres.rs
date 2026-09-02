@@ -29,8 +29,13 @@ use super::store::{CategoryFindingAggregate, SensitiveDataEventFilter, Sensitive
 /// `(org_id, tenant_id, event_id)` rather than `event_id` alone (AAASM-5447),
 /// and for the migration position. The two backends must be changed together —
 /// a key that matches on one and not the other reintroduces the defect on
-/// whichever deployment uses the unfixed one.
-const PROJECTION_SCHEMA: &[&str] = &[
+/// whichever deployment uses the unfixed one. This also extends to the
+/// boot-time column check (AAASM-5788, `check_table_columns`): SQLite got it
+/// first only because it is the backend the property tests run against
+/// without a container, not because Postgres is less exposed to a stale
+/// table — see that module's doc for why a silent no-op here is worse than
+/// on most tables.
+const PROJECTION_TABLES: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sensitive_data_events (
         schema_version_major      INTEGER     NOT NULL,
         schema_version_minor      INTEGER     NOT NULL,
@@ -75,10 +80,6 @@ const PROJECTION_SCHEMA: &[&str] = &[
         reason_codes              TEXT        NOT NULL,
         PRIMARY KEY (org_id, tenant_id, event_id)
     )",
-    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
-        ON sensitive_data_events(org_id, tenant_id, occurred_at_ns)",
-    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_verdict
-        ON sensitive_data_events(org_id, tenant_id, verdict)",
     "CREATE TABLE IF NOT EXISTS sensitive_data_findings (
         schema_version_major INTEGER NOT NULL,
         schema_version_minor INTEGER NOT NULL,
@@ -100,13 +101,23 @@ const PROJECTION_SCHEMA: &[&str] = &[
         aggregate_key        TEXT    NOT NULL,
         PRIMARY KEY (org_id, tenant_id, event_id, finding_ordinal)
     )",
+];
+
+/// Indexes, applied only after `check_table_columns` has confirmed both
+/// tables actually have the columns these indexes name — see the matching
+/// const in the SQLite module for why the ordering matters (AAASM-5788).
+const PROJECTION_INDEXES: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_ts
+        ON sensitive_data_events(org_id, tenant_id, occurred_at_ns)",
+    "CREATE INDEX IF NOT EXISTS idx_sd_events_scope_verdict
+        ON sensitive_data_events(org_id, tenant_id, verdict)",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_category
         ON sensitive_data_findings(org_id, tenant_id, verdict, category)",
     "CREATE INDEX IF NOT EXISTS idx_sd_findings_scope_ts
         ON sensitive_data_findings(org_id, tenant_id, occurred_at_ns)",
 ];
 
-/// The inverse of [`PROJECTION_SCHEMA`].
+/// The inverse of [`PROJECTION_TABLES`] + [`PROJECTION_INDEXES`].
 const PROJECTION_ROLLBACK: &[&str] = &[
     "DROP TABLE IF EXISTS sensitive_data_findings",
     "DROP TABLE IF EXISTS sensitive_data_events",
@@ -274,7 +285,17 @@ fn placeholders(count: usize) -> String {
 #[async_trait]
 impl SensitiveDataProjection for PostgresBackend {
     async fn migrate_sensitive_data_projection(&self) -> StorageResult<()> {
-        apply_statements(self.pool(), PROJECTION_SCHEMA).await
+        apply_statements(self.pool(), PROJECTION_TABLES).await?;
+        // See the matching check in the SQLite module (AAASM-5788): `CREATE
+        // TABLE IF NOT EXISTS` never widens a table that already exists, so
+        // a stale table from a build predating a column addition would
+        // otherwise pass migration silently. This must run before
+        // `PROJECTION_INDEXES` — an index over a column the stale table is
+        // missing would otherwise fail with Postgres's own raw
+        // "column ... does not exist" error first.
+        check_table_columns(self.pool(), "sensitive_data_events", EVENT_COLUMNS).await?;
+        check_table_columns(self.pool(), "sensitive_data_findings", FINDING_COLUMNS).await?;
+        apply_statements(self.pool(), PROJECTION_INDEXES).await
     }
 
     async fn rollback_sensitive_data_projection(&self) -> StorageResult<()> {
@@ -529,6 +550,38 @@ impl SensitiveDataProjection for PostgresBackend {
             })
             .collect()
     }
+}
+
+/// Verify a table's live columns cover the ones this crate reads and writes.
+///
+/// Mirrors the SQLite module's helper of the same name (AAASM-5788), reading
+/// `information_schema.columns` instead of `PRAGMA table_info` — Postgres's
+/// portable equivalent, unaffected by search_path since the query is scoped
+/// to `table_name` alone and this projection never creates its tables in a
+/// non-default schema.
+async fn check_table_columns(pool: &PgPool, table: &str, columns: &str) -> StorageResult<()> {
+    let rows = sqlx::query("SELECT column_name FROM information_schema.columns WHERE table_name = $1")
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::MigrationFailed(format!("inspect {table}: {e}")))?;
+    let present: std::collections::HashSet<String> = rows
+        .iter()
+        .map(|row| row.try_get::<String, _>("column_name").unwrap_or_default())
+        .collect();
+    let missing: Vec<&str> = columns
+        .split(',')
+        .map(str::trim)
+        .filter(|col| !present.contains(*col))
+        .collect();
+    if !missing.is_empty() {
+        return Err(StorageError::MigrationFailed(format!(
+            "{table} exists but is missing column(s) {}: it predates the current schema and was not \
+             altered in place — CREATE TABLE IF NOT EXISTS never widens an existing table",
+            missing.join(", ")
+        )));
+    }
+    Ok(())
 }
 
 /// Apply a DDL set atomically — PostgreSQL has transactional DDL, so a
