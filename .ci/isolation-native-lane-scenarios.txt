@@ -25,14 +25,20 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 16
+# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 17
 # from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
 # aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
 # 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
 # scenarios to the second file and the third file itself, covering
 # DirectEgressBypass, CloudMetadata, AddressRepresentation and
 # UnixSocketsAndDescriptors — the four `AttackFamily` variants this backend has
-# no protection for, only a capability report that says so).
+# no protection for, only a capability report that says so; AAASM-5532 attempted
+# to add 1 more to the second file, the detached/re-parented-descendant class the
+# AAASM-5872 campaign found uncovered anywhere in this repo, but left it
+# `#[ignore]`d — see that test's own doc comment for the real, CI-evidenced
+# reason (a Landlock `Permission denied` reading a re-parented grandchild's own
+# `/proc/self/stat` that four real-CI iterations could not conclusively
+# root-cause within this pass's scope).
 #
 # AAASM-5805 also ported four of the Sandlock lane's eight negotiation
 # scenarios to `adversarial_negotiation_native.rs` — the four that generalize

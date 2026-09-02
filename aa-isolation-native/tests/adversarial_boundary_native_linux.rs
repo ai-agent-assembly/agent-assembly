@@ -58,7 +58,7 @@ use aa_isolation_native::{launch, CompletedRun, NativeBackend, REQUIRED_ABI_VERS
 mod adversarial;
 
 use adversarial::evidence::{self, Measurement};
-use adversarial::AttackFamily;
+use adversarial::{assert_prevented, AttackFamily, ControlledPair, Effect};
 
 const SECRET: &str = "aa-native-adversarial-secret-2f6d";
 
@@ -217,8 +217,138 @@ fn as_grandchild(inner: &str) -> String {
     format!("/bin/sh -c {}; exit 0", shell_word(inner))
 }
 
+/// The three files a detached grandchild's leaf script leaves behind, so the
+/// scenario can observe it without racing it.
+struct DetachRecord {
+    /// The grandchild's own PID, written first — identifies the process to
+    /// check for cleanup afterward.
+    pid_file: PathBuf,
+    /// The grandchild's parent PID, written after it has slept — read late so
+    /// the read happens once the orphaning this scenario is measuring has
+    /// already occurred, rather than racing it.
+    ppid_file: PathBuf,
+    /// Written last, after `inner` has run (whether or not `inner` succeeded —
+    /// this leaf never sets `-e`). Its presence is the synchronization point:
+    /// polling for it, rather than sleeping a fixed duration, is what keeps the
+    /// test run's timing identical to the control's instead of guessing at it.
+    done_marker: PathBuf,
+    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own stderr,
+    /// captured because two prior real-CI-driven fixes both left the ppid
+    /// empty without explaining why.
+    read_stderr_file: PathBuf,
+    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own exit
+    /// status (`$?`), captured alongside `read_stderr_file`.
+    read_status_file: PathBuf,
+    /// AAASM-5532 diagnostic pass, round 2: `cat /proc/self/stat`'s stdout —
+    /// a plain output-redirected file, so it exists (empty or not) even when
+    /// the read fails, unlike the input-redirected `read < /proc/self/stat`
+    /// this replaced for diagnosis.
+    stat_dump_file: PathBuf,
+}
+
+/// Detach `inner` from the launched process via `setsid --fork` plus a second
+/// fork, and record the surviving grandchild's identity at the returned
+/// [`DetachRecord`]'s paths before running it, so AAASM-5532's scenario below
+/// can find that process and confirm — rather than assume — that it actually
+/// re-parented and that nothing is left running once the scenario is done.
+///
+/// The shape is a genuine double fork, not the single-fork `setsid cmd &`
+/// idiom: `setsid --fork` (the `--fork` is load-bearing — plain `setsid`
+/// `exec`s in place instead of forking when its caller is not already a
+/// process-group leader, which a non-interactive `sh` under this launcher
+/// never is) forks P1 into a new session; P1's script forks a parenthesised
+/// subshell that itself backgrounds the leaf command as P2 and then, having
+/// started it, exits immediately — orphaning P2 out from under that subshell
+/// before P1 even reaches its own `exit 0`. `wait` in the outermost script
+/// blocks the launched process (P0) only on P1, not on P2, so P0 finishing
+/// tells this scenario nothing about whether P2 has run yet or already
+/// re-parented — the leaf sleeps briefly before reading its own parent PID so
+/// that read happens after the orphaning, and the caller polls for
+/// `done_marker` rather than sleeping a guessed duration before checking the
+/// effect.
+///
+/// The parent PID is read with the shell's own `read` builtin, deliberately
+/// not `awk` (or any other external program): spawning one would make *that
+/// program's* `/proc/self` the thing read, which is a new child of the leaf
+/// and never re-parents — always reporting the leaf's own PID and never `1`,
+/// whatever the kernel actually did. CI caught exactly this on the first
+/// version of this scenario, which used `awk` and got an empty ppid field
+/// back every time. `read`, run by the leaf shell itself with no fork, reads
+/// that shell's own `/proc/self/stat`.
+fn as_detached_grandchild(files: &DetachRecord, inner: &str) -> String {
+    // AAASM-5532 diagnostic pass, round 2: the first diagnostic capture
+    // (`read ... 2> stderr_file`) came back with exit status 2 and an
+    // unwritten stderr file — meaning the *input* redirection
+    // (`< /proc/self/stat`) itself failed before `read` ever started, and a
+    // failed input redirection on a simple command is reported to the
+    // shell's own (unredirected, and here unreachable) stderr rather than
+    // the command's own `2>`, which is why the capture came back empty. A
+    // plain `cat /proc/self/stat > dump 2> dump_stderr` does not have this
+    // blind spot: its *output* redirections are still set up even when the
+    // read itself fails, so this directly answers "can this process open
+    // /proc/self/stat at all, and if not, what does the kernel say why."
+    let leaf = format!(
+        "echo $$ > {} ; sleep 0.3 ; cat /proc/self/stat > {} 2> {} ; echo $? > {} ; read -r _ _ _ ppid _ < {} ; \
+         printf '%s' \"$ppid\" > {} ; {inner} ; printf x > {}",
+        shell_word(&files.pid_file.to_string_lossy()),
+        shell_word(&files.stat_dump_file.to_string_lossy()),
+        shell_word(&files.read_stderr_file.to_string_lossy()),
+        shell_word(&files.read_status_file.to_string_lossy()),
+        shell_word(&files.stat_dump_file.to_string_lossy()),
+        shell_word(&files.ppid_file.to_string_lossy()),
+        shell_word(&files.done_marker.to_string_lossy()),
+    );
+    let subshell = format!("( /bin/sh -c {} & ) ; exit 0", shell_word(&leaf));
+    format!("setsid --fork /bin/sh -c {} & wait", shell_word(&subshell))
+}
+
 fn shell_word(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Poll `path` for a decimal PID and return it once one is written.
+///
+/// `None` if nothing appeared inside `timeout` — a scenario turns that into a
+/// "proves nothing" failure rather than treating an empty file as pid 0.
+fn wait_for_pid_file(path: &Path, timeout: Duration) -> Option<i32> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(contents) = std::fs::read_to_string(path) {
+            if let Ok(pid) = contents.trim().parse::<i32>() {
+                return Some(pid);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// Poll for `path` to exist within `timeout`.
+fn wait_for_path(path: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    path.exists()
+}
+
+/// Poll for `/proc/<pid>` to stop existing within `timeout` — the cleanup half
+/// of the detached-grandchild scenario: a boundary that denies the write but
+/// leaves the re-parented process running would still be an orphan this suite
+/// has to catch.
+fn wait_for_pid_exit(pid: i32, timeout: Duration) -> bool {
+    let proc_path = PathBuf::from(format!("/proc/{pid}"));
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !proc_path.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    !proc_path.exists()
 }
 
 fn assert_the_program_ran(scenario: &str, completed: &CompletedRun) {
@@ -513,6 +643,259 @@ fn an_alternate_executable_path_is_confined_alike() {
         AttackFamily::ProcessTreeAndAlternateExecutables,
         "a symlinked interpreter was confined exactly as the ordinary one, against a control that shows \
          the write is otherwise possible",
+    );
+}
+
+/// **AAASM-5532: the one attack class the prior two passes on this ticket found
+/// nowhere in this repo.** A grandchild that calls `setsid()` and double-forks to
+/// escape the launched process's session and process group is confined
+/// identically to an ordinary descendant.
+///
+/// Every scenario above this one measures descendants that stay inside the
+/// launched process's tree — [`descendant_confinement_at_three_depths`] in the
+/// sibling confinement suite goes three `fork`/`exec` levels deep, but every one
+/// of those descendants is still a *child* of something the launcher started,
+/// still in the same process group. `setsid()` plus a second fork is different in
+/// kind: the survivor leaves the launched process's session and process group
+/// entirely and, once its immediate parent exits, is re-parented by the kernel to
+/// the nearest subreaper — PID 1 on this runner, since nothing upstream of the
+/// launcher installs one (`prctl(PR_SET_CHILD_SUBREAPER)`). Landlock is
+/// documented as scoping a *task's* inherited security credential rather than
+/// its process-group or session membership, which predicts the boundary follows
+/// the detached grandchild anyway — but that is a claim about the mechanism, not
+/// a measurement of this backend on this kernel, and this scenario is the
+/// difference between the two. If it fails, that is the honest answer: this
+/// backend's reach does not extend to a re-parented descendant, and the
+/// prevention claim above cannot be made for this attack class.
+///
+/// # What is actually measured, not assumed
+///
+/// * **Re-parenting** — read, not inferred from the shell script's shape. Each
+///   grandchild writes its own parent PID to `/proc/self/stat` *after* sleeping
+///   past the point its immediate parent has exited, and the scenario asserts
+///   that value is `1`: the definition of "re-parented to the nearest
+///   subreaper" on a runner where nothing upstream of the launcher installs
+///   one. A value other than `1` fails loudly, naming
+///   `PR_SET_CHILD_SUBREAPER` as the other explanation, rather than silently
+///   passing a scenario that never actually detached.
+/// * **The write, via [`ControlledPair`]** — the same adjudicator every other
+///   suite in this repo uses, so a broken detach script reads as
+///   [`PairVerdict::ControlProducedNoEffect`] and a recorded `not_measured`
+///   decline rather than as a silent pass.
+/// * **Cleanup** — both grandchildren's PIDs are polled out of `/proc`
+///   afterward. A boundary that denies the write but leaves the orphaned
+///   process running is a defect this scenario also has to catch, not a
+///   partial success.
+///
+/// Both runs synchronize on a completion marker the leaf writes only after
+/// `inner` has run (successfully or not — this leaf never sets `-e`), so the
+/// test run's timing is identical to the control's rather than a guessed sleep
+/// racing the leaf.
+///
+/// # `#[ignore]`d: a real, CI-evidenced blocker, not a scenario defect
+///
+/// Four real-CI iterations on `ubuntu-24.04` (`gh pr checks` on PR #2348,
+/// AAASM-5532) converged on the actual cause of the control run's own empty
+/// `ppid_file` — not a harness bug, not a fixable grant-scoping mistake:
+///
+/// 1. First real failure: `awk '{print $4}' /proc/self/stat` read `awk`'s own
+///    `/proc/self`, not the leaf's — fixed with the shell's own `read`
+///    builtin (no fork).
+/// 2. Second real failure, same symptom: a "fix" adding an explicit `/proc`
+///    read grant was a no-op — `spec()`'s `spec_with(..., include_proc:
+///    true)` already grants it via `system_reads`.
+/// 3. Third real failure: diagnostic capture on the `read` itself came back
+///    with exit status 2 and *no* stderr — a failed *input* redirection is
+///    reported to the shell's own unredirected stderr, not the command's own
+///    `2>`, so nothing was actually captured.
+/// 4. Fourth real failure, now conclusive: replacing the input-redirected
+///    `read` with `cat /proc/self/stat > dump 2> dump_stderr` (whose output
+///    redirection is set up regardless of whether `cat` itself succeeds)
+///    surfaced the real error: **`cat: /proc/self/stat: Permission denied`**
+///    — a genuine Landlock denial, even though `/proc` is granted as a
+///    directory (confirmed in `aa-isolation-native/src/rules.rs::install`:
+///    a directory-scoped `PathBeneath` rule keeps every access right,
+///    including `ReadFile`, and should cover files beneath it).
+///
+/// The most likely explanation — not itself re-verified this pass, since
+/// confirming it needs iterating against Landlock's actual magic-symlink
+/// resolution behavior on real hardware, beyond this bonus scenario's
+/// budget — is that `/proc/self` is a magic symlink whose target resolves
+/// per-reader, and Landlock's real-path resolution for it does not behave
+/// the same as for an ordinary symlink under a granted directory. Whatever
+/// the precise kernel mechanism, the denial is real and reproducible, not
+/// a test defect: the identical `/proc` grant reaches ordinary files
+/// (`system_reads`'s own doc cites `/proc/bootconfig` working under this
+/// exact rule shape).
+///
+/// Left `#[ignore]`d rather than deleted so the four-iteration evidence
+/// trail stays attached to working code, and removed from
+/// `.ci/isolation-native-lane-scenarios.txt` (that manifest's own gate
+/// requires every listed name to be `measured`, which an `#[ignore]`d test
+/// cannot be). This attack class — detached/re-parented descendant
+/// confinement — remains the one class from AAASM-5532's original set with
+/// no working coverage; a follow-up needs either a `/proc`-avoiding way to
+/// observe re-parenting (e.g. a compiled helper reading its own PPID via
+/// `getppid()` instead of `/proc/self/stat`) or a resolved understanding of
+/// why the grant does not reach this specific magic-symlink target.
+#[test]
+#[ignore]
+fn a_detached_and_reparented_grandchild_is_confined_alike() {
+    const SCENARIO: &str = "native adversarial: a detached and re-parented grandchild is confined alike";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let scratch = Scratch::new("detach");
+    let control_target = scratch.permitted().join("control-write");
+    let control_files = DetachRecord {
+        pid_file: scratch.permitted().join("control-pid"),
+        ppid_file: scratch.permitted().join("control-ppid"),
+        done_marker: scratch.permitted().join("control-done"),
+        read_stderr_file: scratch.permitted().join("control-read-stderr"),
+        read_status_file: scratch.permitted().join("control-read-status"),
+        stat_dump_file: scratch.permitted().join("control-stat-dump"),
+    };
+    let test_target = scratch.forbidden().join("escaped-write");
+    let test_files = DetachRecord {
+        pid_file: scratch.permitted().join("test-pid"),
+        ppid_file: scratch.permitted().join("test-ppid"),
+        done_marker: scratch.permitted().join("test-done"),
+        read_stderr_file: scratch.permitted().join("test-read-stderr"),
+        read_status_file: scratch.permitted().join("test-read-status"),
+        stat_dump_file: scratch.permitted().join("test-stat-dump"),
+    };
+
+    let (control, _) = run(
+        &backend,
+        &spec(
+            &as_detached_grandchild(
+                &control_files,
+                &format!("printf x > {}", shell_word(&control_target.to_string_lossy())),
+            ),
+            // The leaf reads its own re-parented identity from `/proc/self/stat`
+            // (see `as_detached_grandchild`'s doc) — without an explicit read
+            // grant covering `/proc`, that read is denied like any other
+            // ungranted path, and `read` silently sets `$ppid` to the empty
+            // string on EOF rather than failing loudly (CI caught exactly this:
+            // an empty `ppid_file` reads as "harness bug", per
+            // `assert_reparented_to_the_nearest_subreaper`'s own panic message,
+            // not a Landlock finding about this attack class).
+            vec![permit_only_selector("/proc")],
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        ),
+    );
+    assert_the_program_ran(SCENARIO, &control);
+    let control_pid = wait_for_pid_file(&control_files.pid_file, Duration::from_secs(5)).unwrap_or_else(|| {
+        panic!("[{SCENARIO}] the control's detached grandchild never recorded its PID, so nothing below is measured")
+    });
+    assert!(
+        wait_for_path(&control_files.done_marker, Duration::from_secs(5)),
+        "the control's detached grandchild never finished, so the effect check below proves nothing. stderr: \
+         {:?}",
+        control.stderr
+    );
+    assert_reparented_to_the_nearest_subreaper(SCENARIO, "control", &control_files);
+    assert!(
+        control_target.exists(),
+        "the control's detached, re-parented grandchild did not write the file it was permitted to write, so \
+         the test run below proves nothing. stderr: {:?}",
+        control.stderr
+    );
+    assert!(
+        wait_for_pid_exit(control_pid, Duration::from_secs(5)),
+        "the control's detached grandchild (pid {control_pid}) was still running after completing its write, \
+         so this scenario's cleanup check cannot be trusted"
+    );
+
+    let (test, _) = run(
+        &backend,
+        &spec(
+            &as_detached_grandchild(
+                &test_files,
+                &format!("printf x > {}", shell_word(&test_target.to_string_lossy())),
+            ),
+            // Same /proc read grant as the control run above — the two must
+            // stay identical except for the write target, or a difference in
+            // the leaf's own read behaviour (not the attack) could explain a
+            // divergence in the pair.
+            vec![permit_only_selector("/proc")],
+            vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
+        ),
+    );
+    assert_the_program_ran(SCENARIO, &test);
+    let test_pid = wait_for_pid_file(&test_files.pid_file, Duration::from_secs(5)).unwrap_or_else(|| {
+        panic!("[{SCENARIO}] the test's detached grandchild never recorded its PID, so its escape attempt never ran")
+    });
+    assert!(
+        wait_for_path(&test_files.done_marker, Duration::from_secs(5)),
+        "the test's detached grandchild never finished its escape attempt, so the effect check below proves \
+         nothing. stderr: {:?}",
+        test.stderr
+    );
+    assert_reparented_to_the_nearest_subreaper(SCENARIO, "test", &test_files);
+
+    let pair = ControlledPair::new(
+        AttackFamily::ProcessTreeAndAlternateExecutables,
+        Effect::new(
+            "a detached, re-parented grandchild writes outside its grant",
+            test_target.exists(),
+            format!("{} exists: {}", test_target.display(), test_target.exists()),
+        ),
+        Effect::new(
+            "the identical detach sequence writes inside its grant",
+            control_target.exists(),
+            format!("{} exists: {}", control_target.display(), control_target.exists()),
+        ),
+    );
+    let detail = assert_prevented(SCENARIO, &pair);
+
+    assert!(
+        wait_for_pid_exit(test_pid, Duration::from_secs(5)),
+        "the detached, re-parented grandchild (pid {test_pid}) that attempted the forbidden write was still \
+         running after this scenario's wait window — a denied write must not leave an orphan behind either"
+    );
+
+    measured(
+        SCENARIO,
+        AttackFamily::ProcessTreeAndAlternateExecutables,
+        &format!(
+            "{detail}; both grandchildren's parent PID read 1 after re-parenting, and neither was left \
+             running once the scenario finished"
+        ),
+    );
+}
+
+/// Assert that `ppid_file` — read by the leaf after it slept past the point its
+/// immediate parent exited — names PID 1, the nearest subreaper on a runner
+/// where nothing upstream of the launcher installs one via
+/// `prctl(PR_SET_CHILD_SUBREAPER)`. That is what "re-parented" means here, read
+/// from `/proc` rather than assumed from the detach script's shape.
+fn assert_reparented_to_the_nearest_subreaper(scenario: &str, run_label: &str, files: &DetachRecord) {
+    let ppid_file = &files.ppid_file;
+    let contents = std::fs::read_to_string(ppid_file).unwrap_or_else(|e| {
+        panic!(
+            "[{scenario}] the {run_label} run's grandchild never recorded its parent PID at {}: {e}",
+            ppid_file.display()
+        )
+    });
+    let ppid: i32 = contents.trim().parse().unwrap_or_else(|e| {
+        // AAASM-5532 diagnostic pass: read back what the leaf's own `read <
+        // /proc/self/stat` actually did, rather than guess a third time —
+        // two prior real-CI-driven fixes both left this empty.
+        let status = std::fs::read_to_string(&files.read_status_file).unwrap_or_else(|_| "<not written>".to_string());
+        let stderr = std::fs::read_to_string(&files.read_stderr_file).unwrap_or_else(|_| "<not written>".to_string());
+        panic!(
+            "[{scenario}] the {run_label} run's grandchild wrote a non-numeric parent PID {:?}: {e}. The \
+             read's own exit status was {status:?} and its stderr was {stderr:?}.",
+            contents.trim()
+        )
+    });
+    assert_eq!(
+        ppid, 1,
+        "[{scenario}] the {run_label} run's detached grandchild reports parent PID {ppid}, not 1 — either it \
+         never actually re-parented (its immediate parent had not yet exited when it read \
+         /proc/self/stat) or this runner has a subreaper other than PID 1 installed via \
+         PR_SET_CHILD_SUBREAPER upstream of the launcher"
     );
 }
 
