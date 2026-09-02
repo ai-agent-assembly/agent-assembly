@@ -148,7 +148,7 @@ test.describe('AAASM-1592 S-K — Retention Policy admin page (functional AC)', 
     expect(sent.warm_days).toBe(90)
   })
 
-  test('AC3 — warm_days <= hot_days shows inline error and disables Save', async ({ page }) => {
+  test('AC3 — warm_days=0 shows inline error and disables Save', async ({ page }) => {
     const state: MockState = {
       doc: makeDoc({ hot_days: 30, warm_days: 90 }),
       putRequests: [],
@@ -157,13 +157,28 @@ test.describe('AAASM-1592 S-K — Retention Policy admin page (functional AC)', 
     await mockBackend(page, state)
 
     await gotoRetentionPolicy(page)
-    await page.getByTestId('retention-policy-warm-days').fill('30')
+    await page.getByTestId('retention-policy-warm-days').fill('0')
 
     await expect(page.getByTestId('retention-policy-warm-days-error')).toBeVisible()
     await expect(page.getByTestId('retention-policy-save')).toBeDisabled()
   })
 
-  test('AC4 — cold_action=archive without archive_url shows inline error', async ({ page }) => {
+  test('AC3b — warm_days smaller than hot_days is accepted (a span, not an age)', async ({ page }) => {
+    const state: MockState = {
+      doc: makeDoc({ hot_days: 30, warm_days: 90 }),
+      putRequests: [],
+      postRunRequests: [],
+    }
+    await mockBackend(page, state)
+
+    await gotoRetentionPolicy(page)
+    await page.getByTestId('retention-policy-warm-days').fill('5')
+
+    await expect(page.getByTestId('retention-policy-warm-days-error')).not.toBeVisible()
+    await expect(page.getByTestId('retention-policy-save')).not.toBeDisabled()
+  })
+
+  test('AC4 — cold_action=archive shows inline error and disables Save', async ({ page }) => {
     const state: MockState = {
       doc: makeDoc(),
       putRequests: [],
@@ -175,7 +190,7 @@ test.describe('AAASM-1592 S-K — Retention Policy admin page (functional AC)', 
     await page.getByTestId('retention-policy-cold-action').selectOption('archive')
 
     await expect(page.getByTestId('retention-policy-archive-field')).toBeVisible()
-    await expect(page.getByTestId('retention-policy-archive-url-error')).toContainText(/required/)
+    await expect(page.getByTestId('retention-policy-cold-action-error')).toContainText(/not implemented/)
     await expect(page.getByTestId('retention-policy-save')).toBeDisabled()
   })
 
