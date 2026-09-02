@@ -254,9 +254,19 @@ struct DetachRecord {
 /// that read happens after the orphaning, and the caller polls for
 /// `done_marker` rather than sleeping a guessed duration before checking the
 /// effect.
+///
+/// The parent PID is read with the shell's own `read` builtin, deliberately
+/// not `awk` (or any other external program): spawning one would make *that
+/// program's* `/proc/self` the thing read, which is a new child of the leaf
+/// and never re-parents — always reporting the leaf's own PID and never `1`,
+/// whatever the kernel actually did. CI caught exactly this on the first
+/// version of this scenario, which used `awk` and got an empty ppid field
+/// back every time. `read`, run by the leaf shell itself with no fork, reads
+/// that shell's own `/proc/self/stat`.
 fn as_detached_grandchild(files: &DetachRecord, inner: &str) -> String {
     let leaf = format!(
-        "echo $$ > {} ; sleep 0.3 ; awk '{{print $4}}' /proc/self/stat > {} ; {inner} ; printf x > {}",
+        "echo $$ > {} ; sleep 0.3 ; read -r _ _ _ ppid _ < /proc/self/stat ; printf '%s' \"$ppid\" > {} ; \
+         {inner} ; printf x > {}",
         shell_word(&files.pid_file.to_string_lossy()),
         shell_word(&files.ppid_file.to_string_lossy()),
         shell_word(&files.done_marker.to_string_lossy()),
