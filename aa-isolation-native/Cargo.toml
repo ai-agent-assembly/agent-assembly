@@ -96,5 +96,10 @@ aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.6", features = ["
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 libc = { workspace = true }
 
+# AAASM-5979: plants executables under a temporary cwd for the `locate_launcher`
+# `$PATH`-filtering regression tests.
+[dev-dependencies.tempfile]
+workspace = true
+
 [lints]
 workspace = true

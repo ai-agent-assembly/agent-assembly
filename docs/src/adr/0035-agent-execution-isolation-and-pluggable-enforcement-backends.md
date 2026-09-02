@@ -331,10 +331,19 @@ ADR.
 
 ## Amendment — AAASM-5808 (2026-08-21): `--isolation auto` selects by capability, not by a fixed default
 
-**Scope of this amendment: it names the algorithm `--isolation auto` uses now that two
-`IsolationBackend` implementors exist, and records why eligibility is decided by the same
-`plan()`/`negotiate()` machinery a real launch uses rather than a hand-written comparison.
-It reverses no prior decision.**
+**Scope of this amendment: it names the algorithm `--isolation auto` uses now that more
+than one `IsolationBackend` implementor exists, and records why eligibility is decided by
+the same `plan()`/`negotiate()` machinery a real launch uses rather than a hand-written
+comparison. It reverses no prior decision.**
+
+> **Update:** at the time this amendment was written, exactly two `IsolationBackend`
+> implementors existed (`sandlock`, `aasm-native`), and the candidate list below named
+> only those two. `aasm-macos-vm` ([AAASM-5811](https://lightning-dust-mite.atlassian.net/browse/AAASM-5811))
+> was added afterward as a third `IsolationBackend` implementor and a third entry in
+> `aa-cli/src/commands/run.rs`'s `CANDIDATES` list — the algorithm and its rationale below
+> are unchanged, only the candidate list is longer. See the [execution-isolation
+> docs](../security/execution-isolation.md#choosing-between-the-two-backends) for the
+> current three-entry list.
 
 ### Why an amendment rather than a new ADR
 
@@ -357,13 +366,14 @@ choice that is wrong for some policies by construction.
 
 ### The selection algorithm: a fixed, ordered eligibility walk over `plan()` verdicts
 
-`--isolation auto` walks a fixed, ordered candidate list — `[sandlock, aasm-native]`,
-Sandlock first — and selects the first candidate for which `backend.plan(probe_spec)`
-returns `Ok`, where `probe_spec` is an `ExecutionSpec` carrying nothing but the launch's
-lowered requirements. The walk is lazy: once a candidate is eligible, no later candidate
-is even discovered or probed. When no candidate is eligible, the launch refuses, naming
-every candidate considered and why it was rejected — there is no fallback to a default
-backend or to an unconfined launch, matching
+`--isolation auto` walks a fixed, ordered candidate list — `[sandlock, aasm-native,
+aasm-macos-vm]`, Sandlock first, then AASM-native, then the macOS VM backend — and selects
+the first candidate for which `backend.plan(probe_spec)` returns `Ok`, where `probe_spec`
+is an `ExecutionSpec` carrying nothing but the launch's lowered requirements. The walk is
+lazy: once a candidate is eligible, no later candidate is even discovered or probed. When
+no candidate is eligible, the launch refuses, naming every candidate considered and why it
+was rejected — there is no fallback to a default backend or to an unconfined launch,
+matching
 [decision 4](#4-capability-negotiation-happens-before-the-untrusted-process-starts)'s
 existing "refuse before spawn, never degrade to unconfined" rule.
 

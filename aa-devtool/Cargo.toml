@@ -25,6 +25,9 @@ tokio = { workspace = true, features = ["full"] }
 [dev-dependencies]
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+# AAASM-5979: plants an executable under a temporary cwd for the
+# `find_on_path` `$PATH`-filtering regression tests.
+tempfile = { workspace = true }
 # AAASM-5277: `tests/legacy_shim_sample.rs` drives the *unmodified* public
 # sample adapter through the new lifecycle contract via `LegacyAdapterShim`,
 # which is what makes ADR 0030 §7's "nothing breaks on day one" checkable. The

@@ -381,34 +381,43 @@ numbers above **recommends AASM-native as the default** for
 `aasm run --isolation auto`, since it grades at least as well as Sandlock on
 every measured dimension and strictly better on several.
 
-**`aasm run --isolation auto` does not use that recommendation. Sandlock
-remains the default.** The mechanical rule optimizes for measured performance
-alone; it has no way to weigh what a faster backend stops enforcing. AASM-native
+**`aasm run --isolation auto` does not use that recommendation as a fixed
+default.** The mechanical rule optimizes for measured performance alone; it
+has no way to weigh what a faster backend stops enforcing. AASM-native
 enforces only three of the eight domains above (`FilesystemRead`,
 `FilesystemWrite`, `Syscall`) — it enforces nothing for network egress,
 process creation, resource ceilings, IPC, or credential isolation, five
-domains Sandlock does at least partially cover. Flipping `--isolation auto`'s
-default to chase the performance win would silently reduce what every
+domains Sandlock does at least partially cover. Unconditionally preferring
+AASM-native to chase the performance win would silently reduce what every
 existing `--isolation auto` policy actually gets enforced, for callers who
-did not ask for that trade-off. That reduction was judged unacceptable
-regardless of the mechanical rule's output, so the default was **not**
-changed; `aa-cli/src/commands/run.rs`'s `isolation_backend` default continues
-to select Sandlock.
+did not ask for that trade-off.
 
-AASM-native is fully usable today — it is not gated behind this decision —
-for any policy whose *required* isolation domains are limited to
-filesystem read/write and/or syscall: select it explicitly with
-`--isolation-backend aasm-native` (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)
-above). What this decision withholds is only the *automatic* selection
-`--isolation auto` performs when a policy does not name a backend.
+Instead, [AAASM-5808](https://lightning-dust-mite.atlassian.net/browse/AAASM-5808)
+(shipped 2026-08-21, recorded as [an amendment to ADR
+0035](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#amendment--aaasm-5808-2026-08-21---isolation-auto-selects-by-capability-not-by-a-fixed-default))
+replaced the fixed default with per-launch, capability-aware selection:
+`--isolation auto` walks a fixed, ordered candidate list —
+`sandlock`, then `aasm-native`, then `aasm-macos-vm` — and selects the first
+candidate for which `backend.plan(probe_spec)` succeeds against the policy's
+own lowered requirements, using the same `plan()`/`negotiate()` machinery a
+real launch uses rather than the hand-written domain table above. The walk
+is lazy and stops at the first eligible candidate, so a policy Sandlock can
+fully satisfy still selects Sandlock first, exactly as before this
+amendment; only a policy Sandlock cannot satisfy (including because Sandlock
+itself is unavailable on this host) falls through to AASM-native, and only
+when neither Linux backend is eligible does the walk reach `aasm-macos-vm`.
+When no candidate is eligible, the launch refuses, naming every candidate
+considered and why — there is no fallback to an unconfined launch. (When a
+policy lowers to no requirements at all, `auto` returns Sandlock directly
+without walking the list — the pre-existing `NoRequirementsLowered` refusal
+handles that case downstream.)
 
-A capability-aware selection — one that inspects a policy's *required*
-domains, negotiates against each backend's actual capability report, and
-picks the safest/lowest-cost backend that fully satisfies the requirement,
-rather than picking the fastest backend regardless of coverage — is tracked
-as a follow-up, [AAASM-5808](https://lightning-dust-mite.atlassian.net/browse/AAASM-5808).
-It is not scheduled or committed to a timeline as of this page; until it
-ships, `--isolation auto` selects Sandlock unconditionally.
+AASM-native remains fully usable today outside automatic selection too — it
+is not gated behind this decision — for any policy whose *required*
+isolation domains are limited to filesystem read/write and/or syscall:
+select it explicitly with `--isolation-backend aasm-native` (see
+[AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)
+above).
 
 ## Troubleshooting
 

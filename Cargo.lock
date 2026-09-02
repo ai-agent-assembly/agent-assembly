@@ -199,6 +199,7 @@ dependencies = [
  "aa-devtool-windsurf",
  "async-trait",
  "futures",
+ "tempfile",
  "tokio",
 ]
 
@@ -481,6 +482,7 @@ dependencies = [
  "aa-isolation-macos-vm",
  "aa-isolation-native",
  "aa-isolation-vm-proto",
+ "libc",
 ]
 
 [[package]]
@@ -493,6 +495,7 @@ dependencies = [
  "aa-security",
  "landlock",
  "libc",
+ "tempfile",
 ]
 
 [[package]]

@@ -3298,6 +3298,22 @@ async fn run_confined(
         .map_err(|e| anyhow::anyhow!("the thread waiting on the confined launch failed: {e}"))?
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
+    // AAASM-5869: for a backend whose confined process does not share this
+    // supervisor's own stdio (aasm-macos-vm — the guest's stdout/stderr arrive
+    // over the control socket, not a local file descriptor), forward it to the
+    // operator now. `None` means the backend runs a real host `Command` with
+    // inherited stdio instead (aasm-native, sandlock): the operator's terminal
+    // already has the output, and printing it again here would duplicate it.
+    if let Some((stdout, stderr)) = backend.confined_output(&handle) {
+        use std::io::Write as _;
+        if !stdout.is_empty() {
+            let _ = std::io::stdout().write_all(&stdout);
+        }
+        if !stderr.is_empty() {
+            let _ = std::io::stderr().write_all(&stderr);
+        }
+    }
+
     // The evidenced transition (ADR 0035 §10): what the run actually produced,
     // joined to the plan. `with_evidence` may only *lower* a posture, and this
     // backend records no per-decision channel, so nothing here can turn "the
