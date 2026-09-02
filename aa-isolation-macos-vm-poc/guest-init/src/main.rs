@@ -479,6 +479,82 @@ fn main() {
         ],
     );
 
+    // AAASM-5849 (Landlock-capable-kernel pass): the toolchain binaries
+    // added this pass (git, python3, /bin/sh) have only ever been exercised
+    // via direct exec (the *-direct controls above) or via docker import on
+    // the host — never through the real aa-isolation-launch protocol under
+    // actual Landlock enforcement, because every kernel through the prior
+    // pass lacked CONFIG_SECURITY_LANDLOCK. On a Landlock-capable kernel,
+    // these two scenarios are the toolchain's own equivalent of the
+    // busybox fs-read+fs-write/outside-grant pair above: same
+    // ControlledPair shape (identical grants and program, only the write
+    // target differs), but exercising a *write* denial specifically, since
+    // every existing scenario's negative half was a read denial.
+    //
+    // Unlike busybox (static, no dependencies), git/python3 are
+    // dynamically linked against the Alpine toolchain's musl libc — `ldd`
+    // against the actual extracted binaries shows both need
+    // /lib/ld-musl-aarch64.so.1 (the ELF interpreter) plus per-binary
+    // shared libraries under /usr/lib (libpython3.12.so.1.0,
+    // libpcre2-8.so.0) and /lib (libz.so.1). The kernel opens the
+    // interpreter as part of the same execve() that loads the program
+    // itself, so a ruleset granting only the program's own directory (the
+    // busybox scenarios' shape) makes execve() itself fail with EACCES —
+    // indistinguishable, from this binary's own output alone, from a grant
+    // that was simply missing the program's directory, until traced back
+    // to `ldd` (found the hard way: the first version of this scenario
+    // granted only /usr/bin and refused pre-exec, identically to
+    // no-grants, until this was diagnosed). --fs-read must cover /lib and
+    // /usr/lib too, not just /usr/bin, for a dynamically-linked program to
+    // exec at all under Landlock.
+    run_child(
+        console,
+        "aa-isolation-launch test: python3 fs-write, target INSIDE grant",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--fs-read=/usr/bin",
+            "--fs-read=/lib",
+            "--fs-read=/usr/lib",
+            "--fs-write=/tmp",
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            "open('/tmp/aaasm-5849-write-ok.txt', 'w').write('landlock-write-ok')",
+        ],
+    );
+    run_child(
+        console,
+        "aa-isolation-launch test: python3 fs-write, target OUTSIDE grant",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--fs-read=/usr/bin",
+            "--fs-read=/lib",
+            "--fs-read=/usr/lib",
+            "--fs-write=/tmp",
+            "--",
+            "/usr/bin/python3",
+            "-c",
+            "open('/root/aaasm-5849-write-denied.txt', 'w').write('should-not-write')",
+        ],
+    );
+    // Same grant shape, git instead of python3 — the ticket's own title
+    // names git specifically ("cannot run arbitrary agent commands
+    // (python/git/node/etc)"); this is that command, exec'd through the
+    // real launch protocol rather than guest-init's direct-exec control.
+    run_child(
+        console,
+        "aa-isolation-launch test: git --version",
+        "/usr/local/bin/aa-isolation-launch",
+        &[
+            "--fs-read=/usr/bin",
+            "--fs-read=/lib",
+            "--fs-read=/usr/lib",
+            "--",
+            "/usr/bin/git",
+            "--version",
+        ],
+    );
+
     write_fd(console, "[guest-init] GUEST-INIT-DONE, boot diagnostics complete\n");
 
     // AAASM-5837: real launches from here on. `dial_and_serve_forever` never
