@@ -387,6 +387,18 @@ fn main() {
         "/usr/bin/python3",
         &["-c", "import hashlib; print(hashlib.sha256(b'aaasm-5849').hexdigest())"],
     );
+    // /bin/sh is a symlink to Alpine's own /bin/busybox (the real file the
+    // toolchain tar carries), distinct from the fixed set's own
+    // /usr/local/bin/busybox — same absolute-symlink family as the
+    // /sbin/init bug this pass fixed in build-guest-rootfs.sh, so it is
+    // worth exercising specifically rather than assuming it resolves the
+    // same way just because busybox-direct above does.
+    run_child(
+        console,
+        "sh-direct (positive control)",
+        "/bin/sh",
+        &["-c", "echo aaasm-5849-sh-ok"],
+    );
 
     // Now the real, unmodified aa-isolation-launch binary, against three
     // scenarios, to characterize what it can actually enforce on this
