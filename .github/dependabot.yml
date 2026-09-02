@@ -133,6 +133,31 @@ updates:
       prefix: "⬆"
     open-pull-requests-limit: 5
 
+  # ── Go ────────────────────────────────────────────────────────────────────
+  # Only the base-image smoke agent is listed, and that is deliberate
+  # (AAASM-6025). The repo has three go.mod files, but the other two —
+  # aa-integration-tests/tests/fixtures/e2e/sdk_go_driver and
+  # .../f115/probe_go — resolve the SDK through a `replace` directive pointing
+  # at a local filesystem path that only exists at test time. Dependabot
+  # resolves manifests in a clean container with no sibling checkout, so it
+  # cannot build a dependency graph for either of them and listing them here
+  # would only produce recurring update-job failures. That unresolvable
+  # `replace` is also why the dependency graph ingested exactly one Go package
+  # for this whole repository: the SBOM's only golang purl was
+  # github.com/ai-agent-assembly/go-sdk, from this module, with zero
+  # transitive Go dependencies recorded. Those two fixtures therefore have no
+  # alert coverage at all and must be swept by hand — a bounded, documented
+  # gap, not an oversight. Zero alerts on a Go manifest here does not mean
+  # zero risk.
+  - package-ecosystem: "gomod"
+    directory: "/docker/smoke/agents/go"
+    schedule:
+      interval: "daily"
+    labels: ["dependencies", "go"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 5
+
   # ── GitHub Actions ────────────────────────────────────────────────────────
   # All actions in .github/workflows/ are pinned to full commit SHAs
   # (per SonarCloud rule S7637). Dependabot will open PRs to update both
