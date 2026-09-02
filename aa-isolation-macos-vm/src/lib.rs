@@ -65,10 +65,11 @@ pub mod vmm;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use aa_core::attestation::ClaimTerm;
 use aa_isolation::{
-    negotiate, BackendCapabilities, BackendIdentity, EnforcementEvidence, EnforcementPlan, ExecutionHandle,
-    ExecutionSpec, ExitDisposition, IsolationBackend, Lowering, PlanRefusal, PreparedExecution, Provenance, SpawnError,
-    TerminationRequest,
+    negotiate, BackendCapabilities, BackendIdentity, CapabilityDomain, EnforcementEvidence, EnforcementPlan,
+    EvidenceKind, EvidenceRecord, ExecutionHandle, ExecutionSpec, ExitDisposition, IsolationBackend, Lowering,
+    PlanRefusal, PreparedExecution, Provenance, RequirementOutcome, SpawnError, TerminationRequest,
 };
 use aa_isolation_native::permitted_scope;
 use aa_isolation_vm_proto::{Disposition, Message, TerminationMode};
@@ -81,11 +82,31 @@ pub const BACKEND_ID: &str = "aasm-macos-vm";
 struct Session {
     vm: vmm::VmSession,
     share_dir: Option<std::path::PathBuf>,
+    /// The plan this session was prepared from, kept for
+    /// [`IsolationBackend::evidence`] — the only place this backend still
+    /// needs it once `spawn` has run.
+    plan: EnforcementPlan,
+    /// The guest-mapped read/write scope this run actually sent in its
+    /// `LaunchRequest`, recorded once `spawn` builds it (AAASM-6031) — `None`
+    /// only if `evidence` is somehow reached before `spawn` set it, which
+    /// should not happen since an [`ExecutionHandle`] is minted only inside
+    /// `spawn`; evidence degrades to a Configured-only record rather than
+    /// panicking in that case.
+    installed_grants: Option<InstalledGrants>,
     /// Set once [`Message::LaunchOutcome`] arrives, so a second
     /// [`IsolationBackend::wait_for_exit`] call returns the same answer
     /// without re-reading the (already fully-consumed) connection — required
     /// by that method's own contract.
     outcome: Option<Message>,
+}
+
+/// The guest-mapped filesystem scope a run's `LaunchRequest` actually carried
+/// — the fact [`IsolationBackend::evidence`] reports as `Installed`, since
+/// this is what the guest applied to the boundary before it executed the
+/// program (AAASM-6031).
+struct InstalledGrants {
+    fs_read: Vec<String>,
+    fs_write: Vec<String>,
 }
 
 /// A macOS backend that delegates confinement to `aa-isolation-native` inside
@@ -247,6 +268,62 @@ impl MacosVmBackend {
 /// something this crate should be in the business of re-implementing a
 /// parser for — the entitlements blob is an internal, Apple-owned encoding
 /// with no public Rust crate this workspace already depends on for it.
+/// Whether a planned requirement's outcome actually granted anything —
+/// mirrors `aa-isolation-native`'s and `aa-isolation-sandlock`'s identical
+/// helper, since a `Refused`/degraded-to-nothing requirement has no grant to
+/// report as `Installed`.
+fn emits_grants(outcome: &RequirementOutcome) -> bool {
+    matches!(
+        outcome,
+        RequirementOutcome::Enforced { .. } | RequirementOutcome::Observed { .. }
+    )
+}
+
+/// The `Configured`/`Installed` evidence a plan justifies on its own, before
+/// any guest has actually booted — split out from
+/// [`IsolationBackend::evidence`](trait@aa_isolation::IsolationBackend) so it
+/// is unit-testable without the real VM substrate `prepare`/`spawn` require
+/// (AAASM-6031): the guest-accepted grant set itself still needs a real run,
+/// but this half of the record set does not.
+fn evidence_from_plan(plan: &EnforcementPlan) -> EnforcementEvidence {
+    let mut evidence = EnforcementEvidence::from_plan(plan);
+
+    // What stood between AASM and the guest kernel, on every run — mirrors
+    // `aa-isolation-native`'s identical record, since that is the crate
+    // actually enforcing inside the guest here.
+    evidence.record(EvidenceRecord::about_run(
+        EvidenceKind::Configured,
+        ClaimTerm::Planned,
+        format!(
+            "the boundary was configured through {BACKEND_ID}, delegating confinement to \
+             aa-isolation-native running inside a Virtualization.framework guest over the AAASM-5837 launch \
+             protocol"
+        ),
+    ));
+
+    // Installed: the read/write scope was on this run's `LaunchRequest`, and
+    // the guest applies it to itself before it executes the program — not a
+    // claim that anything was decided, matching every other backend's
+    // `EvidenceKind::Installed` record.
+    for planned in plan.planned() {
+        if !emits_grants(&planned.outcome) {
+            continue;
+        }
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            planned.requirement.domain(),
+            ClaimTerm::Planned,
+            format!(
+                "the permitted path scope for this domain was on the LaunchRequest the guest accepted, and \
+                 the guest applies it to itself before it executes the program ({} lowering step(s))",
+                planned.lowering.steps().len()
+            ),
+        ));
+    }
+
+    evidence
+}
+
 fn entitlement_check(helper_path: &std::path::Path) -> Result<(), String> {
     if !helper_path.is_file() {
         return Err(format!("the helper binary at {} does not exist", helper_path.display()));
@@ -323,6 +400,8 @@ impl IsolationBackend for MacosVmBackend {
             Session {
                 vm,
                 share_dir,
+                plan: plan.clone(),
+                installed_grants: None,
                 outcome: None,
             },
         );
@@ -397,8 +476,8 @@ impl IsolationBackend for MacosVmBackend {
                 .share_dir
                 .as_ref()
                 .map(|_| paths::GUEST_SHARE_MOUNTPOINT.to_string()),
-            fs_read,
-            fs_write,
+            fs_read: fs_read.clone(),
+            fs_write: fs_write.clone(),
             syscall_filter: None,
         };
 
@@ -409,7 +488,13 @@ impl IsolationBackend for MacosVmBackend {
             detail: format!("failed to read the guest's reply: {err}"),
         })?;
         match reply {
-            Message::LaunchAccepted { .. } => {}
+            // The guest accepted and applied `fs_read`/`fs_write` before
+            // executing the program — record exactly what it accepted, not
+            // merely what this launch intended, so `evidence` reports a run
+            // fact rather than a plan restated (AAASM-6031).
+            Message::LaunchAccepted { .. } => {
+                session.installed_grants = Some(InstalledGrants { fs_read, fs_write });
+            }
             Message::LaunchRefused { reason, .. } => {
                 return Err(SpawnError::Spawn {
                     detail: format!("the guest refused this launch: {reason}"),
@@ -498,11 +583,63 @@ impl IsolationBackend for MacosVmBackend {
         // Still no per-decision records: the guest kernel delivers a denial
         // to the confined process, not to this supervisor, so — like
         // `aa-isolation-native` on Linux — this backend has no `Decision`
-        // record to report for any run. `Configured`/`Installed`/`Exercised`
-        // evidence built from a run's own `implicit_grants` and grant set is
-        // real, scoped follow-on work (AAASM-5813 AC4/evidence reporting),
-        // not yet built this pass.
-        EnforcementEvidence::new(self.identity(), handle.posture())
+        // record to report for any run (AAASM-6029's spike finding: a
+        // per-decision channel out of the guest is out of scope, deferred).
+        // What follows is the `Configured`/`Installed` tier the other
+        // backends already build (AAASM-6031) — never `Enforced`/`Measured`,
+        // which this backend genuinely cannot produce yet.
+        let sessions = self.sessions.lock().expect("session lock poisoned");
+        let Some(session) = sessions.get(handle.token()) else {
+            return EnforcementEvidence::new(self.identity(), handle.posture()).with_record(EvidenceRecord::about_run(
+                EvidenceKind::Configured,
+                ClaimTerm::Unmeasured,
+                "no prepared boundary is recorded for this handle",
+            ));
+        };
+
+        let mut evidence = evidence_from_plan(&session.plan);
+
+        // The grant set the guest actually accepted, always, including when
+        // it is empty — a run whose evidence is silent about the boundary
+        // reads as a run that had a permissive one.
+        match &session.installed_grants {
+            Some(grants) => {
+                for (domain, guest_paths, label) in [
+                    (CapabilityDomain::FilesystemRead, &grants.fs_read, "read"),
+                    (CapabilityDomain::FilesystemWrite, &grants.fs_write, "write"),
+                ] {
+                    evidence.record(EvidenceRecord::new(
+                        EvidenceKind::Installed,
+                        domain,
+                        ClaimTerm::Planned,
+                        if guest_paths.is_empty() {
+                            format!(
+                                "permitted {label} path scope: none. This run's LaunchRequest granted no \
+                                 guest paths in this domain"
+                            )
+                        } else {
+                            format!(
+                                "permitted {label} path scope, accepted by the guest before it executed the \
+                                 program: {}",
+                                guest_paths.join(", ")
+                            )
+                        },
+                    ));
+                }
+            }
+            None => {
+                // Should not happen — `ExecutionHandle` is minted only after
+                // `spawn` records this — but a missing grant record must
+                // degrade the claim rather than silently omit it.
+                evidence.record(EvidenceRecord::about_run(
+                    EvidenceKind::Configured,
+                    ClaimTerm::Unmeasured,
+                    "no LaunchRequest grant set was recorded for this run",
+                ));
+            }
+        }
+
+        evidence
     }
 
     /// AAASM-5869: the trait-level override that lets `aasm run` forward what
@@ -519,7 +656,9 @@ impl IsolationBackend for MacosVmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aa_isolation::BackendAvailability;
+    use aa_isolation::{
+        permit_only_selector, BackendAvailability, ControlRequirement, LaunchPosture, RequirementScope,
+    };
 
     #[test]
     fn discovery_always_yields_a_backend() {
@@ -554,5 +693,120 @@ mod tests {
         let backend = MacosVmBackend::unavailable("test".to_string());
         let spec = ExecutionSpec::new("probe", aa_isolation::IdentityRef::root("probe"));
         assert!(backend.plan(&spec).is_err());
+    }
+
+    /// AAASM-6031, regression for the bug the ticket names: `evidence()` for a
+    /// handle this backend has no session for (never prepared, or the process
+    /// was restarted) must return the `Configured`/`Unmeasured` fallback
+    /// record every other backend returns for the same situation — not the
+    /// empty, zero-record evidence the pre-fix code returned unconditionally.
+    #[test]
+    fn evidence_for_an_unknown_handle_is_configured_unmeasured_not_empty() {
+        let backend = MacosVmBackend::unavailable("test".to_string());
+        let handle = ExecutionHandle::new(backend.identity(), "no-such-token", LaunchPosture::Ready);
+        let evidence = backend.evidence(&handle);
+        assert!(
+            !evidence.records().is_empty(),
+            "evidence() returned zero records for a completed run — AAASM-6031's regression"
+        );
+        assert!(
+            evidence
+                .records()
+                .iter()
+                .any(|r| r.kind == EvidenceKind::Configured && r.claim == ClaimTerm::Unmeasured),
+            "{:?}",
+            evidence.records()
+        );
+    }
+
+    /// A capability set that supports `FilesystemWrite` prevention, mirroring
+    /// what `capability::discover` reports on a real host that measured a
+    /// denial — built by hand here so this test needs no guest boot.
+    fn writable_capabilities() -> BackendCapabilities {
+        use aa_isolation::{
+            CapabilityReport, DecisionTiming, DescendantCoverage, FailurePosture, Mediation, PlatformBoundary,
+            Synchrony,
+        };
+        BackendCapabilities::new(
+            BackendAvailability::Available,
+            PlatformBoundary::GuestKernel,
+            vec![CapabilityReport::new(
+                CapabilityDomain::FilesystemWrite,
+                Mediation::Enforce,
+                DecisionTiming::Pre,
+                Synchrony::Sync,
+            )
+            .with_descendants(DescendantCoverage::ProcessTree)
+            .with_failure_posture(FailurePosture::FailClosed)],
+        )
+        .expect("no duplicate domains")
+    }
+
+    /// **The property this ticket exists for, at the pure-logic level.**
+    /// `evidence_from_plan` — the half of `evidence()` that needs no real
+    /// guest — must build a `Configured` record about the run plus an
+    /// `Installed` record for any domain whose requirement actually got a
+    /// grant, honestly labelled `Planned` rather than any `Decision`-tier
+    /// term this backend cannot support (AAASM-6029).
+    #[test]
+    fn evidence_from_plan_reports_configured_and_installed_for_a_met_requirement() {
+        let identity = MacosVmBackend::identity_value();
+        let spec = ExecutionSpec::new("/bin/true", aa_isolation::IdentityRef::root("evidence-test")).with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)
+                .with_scope(RequirementScope::Selectors(vec![permit_only_selector("/tmp")])),
+        );
+        let plan = negotiate(&spec, &identity, &writable_capabilities(), &|_requirement, _outcome| {
+            Lowering::new(Vec::<String>::new())
+        })
+        .expect("a FilesystemWrite prevention requirement plans against a capability that supports it");
+
+        let evidence = evidence_from_plan(&plan);
+
+        // Configured: at least the plan-derived baseline record plus this
+        // backend's own about-run record naming what enforces inside the
+        // guest.
+        assert!(
+            evidence
+                .records()
+                .iter()
+                .any(|r| r.kind == EvidenceKind::Configured && r.detail.contains(BACKEND_ID)),
+            "{:?}",
+            evidence.records()
+        );
+
+        // Installed: the met requirement's domain got a record naming the
+        // LaunchRequest as the channel the scope was installed through.
+        let installed = evidence
+            .records_for(CapabilityDomain::FilesystemWrite)
+            .find(|r| r.kind == EvidenceKind::Installed)
+            .unwrap_or_else(|| panic!("no Installed record for FilesystemWrite: {:?}", evidence.records()));
+        assert_eq!(installed.claim, ClaimTerm::Planned);
+        assert!(installed.detail.contains("LaunchRequest"), "{}", installed.detail);
+
+        // Never a stronger claim than this backend can actually support —
+        // AAASM-6029's spike finding, held here as a predicate rather than a
+        // comment.
+        assert!(!evidence.supports_prevention_claim(CapabilityDomain::FilesystemWrite));
+    }
+
+    /// A domain nothing requested gets no `Installed` record — silence about
+    /// a domain the plan never touched must not be misread as a grant.
+    #[test]
+    fn evidence_from_plan_installs_nothing_for_an_unrequested_domain() {
+        let identity = MacosVmBackend::identity_value();
+        let spec = ExecutionSpec::new("/bin/true", aa_isolation::IdentityRef::root("evidence-test-empty"));
+        let plan = negotiate(&spec, &identity, &writable_capabilities(), &|_requirement, _outcome| {
+            Lowering::new(Vec::<String>::new())
+        })
+        .expect("a requirement-less spec always plans");
+
+        let evidence = evidence_from_plan(&plan);
+        assert!(
+            evidence
+                .records_for(CapabilityDomain::FilesystemWrite)
+                .all(|r| r.kind != EvidenceKind::Installed),
+            "{:?}",
+            evidence.records()
+        );
     }
 }
