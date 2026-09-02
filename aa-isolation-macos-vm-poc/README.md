@@ -1609,12 +1609,14 @@ acceptance criterion; wiring this substrate into `aasm run` as a real
 
 ## Guest dev toolchain (AAASM-5849)
 
-**Status: closed end to end this pass — the ext4 image now builds
-successfully, and a real VZ boot of the resulting image ran `git
---version` and a `python3` sha256 script for real inside the guest.
-The full `aa-isolation-launch` protocol path remains blocked by the
-missing Landlock-capable kernel, unchanged from prior passes — see
-"Retry pass: closing the ext4-assembly and real-boot gap" below.**
+**Status: ext4 assembly and guest image-content verification closed this
+pass — the image now builds successfully, and a real VZ boot ran `git
+--version`, a `python3` sha256 script, and `/bin/sh` for real inside the
+guest, all three `GUEST_RESIDENT_PROGRAMS` toolchain entries. Execution
+*through* the real `aa-isolation-launch` enforcement path remains
+blocked by the missing Landlock-capable kernel, unchanged from prior
+passes — see "Retry pass: closing the ext4-assembly and real-boot gap"
+below.**
 
 ### Finding this pass addresses
 
@@ -1758,21 +1760,29 @@ positive control passing (`exited status=0`). Confirms the new
 toolchain-plus-fixed-set image boots for real, structurally — same as
 every prior pass's rootfs.
 
-**New this pass**: `guest-init` gained two more direct-exec positive
-controls (`git-direct`, `python3-direct`), same pattern as the existing
-`busybox-direct` control — necessary because every `aa-isolation-launch`
-scenario still refuses pre-flight on this substitute kernel (unchanged;
-see "Landlock-capable guest kernel" below), so nothing else in the boot
-sequence would otherwise prove git/python3 are reachable and functional
-*inside a real VZ guest specifically*, as opposed to only under `docker
-import` on the host (the prior pass's evidence). Real console output
-this pass: `git version 2.45.4`, and a `python3 -c "import hashlib; ..."`
-sha256 digest that matches the identical computation run locally on the
-host — confirmed byte-for-byte, not eyeballed. Both exited status 0.
+**New this pass**: `guest-init` gained three more direct-exec positive
+controls (`git-direct`, `python3-direct`, `sh-direct` — all three
+`GUEST_RESIDENT_PROGRAMS` toolchain entries), same pattern as the
+existing `busybox-direct` control — necessary because every
+`aa-isolation-launch` scenario still refuses pre-flight on this
+substitute kernel (unchanged; see "Landlock-capable guest kernel"
+below), so nothing else in the boot sequence would otherwise prove
+git/python3/sh are reachable and functional *inside a real VZ guest
+specifically*, as opposed to only under `docker import` on the host (the
+prior pass's evidence). `/bin/sh` is worth calling out specifically: it
+is a symlink to Alpine's own `/bin/busybox` (the real file the toolchain
+tar carries), distinct from the fixed set's `/usr/local/bin/busybox`,
+and in the same absolute-symlink family as the `/sbin/init` bug this
+pass fixed — not assumed to resolve the same way just because
+`busybox-direct` does. Real console output this pass: `git version
+2.45.4`; a `python3 -c "import hashlib; ..."` sha256 digest that matches
+the identical computation run locally on the host, confirmed
+byte-for-byte, not eyeballed; `sh -c "echo aaasm-5849-sh-ok"` printing
+`aaasm-5849-sh-ok`. All three exited status 0.
 
-**Still not achieved, honestly**: `git`/`python3` executing *through*
-`aa-isolation-launch`'s real launch protocol, under actual Landlock
-enforcement. That needs the Landlock-capable guest kernel
+**Still not achieved, honestly**: `git`/`python3`/`sh` executing
+*through* `aa-isolation-launch`'s real launch protocol, under actual
+Landlock enforcement. That needs the Landlock-capable guest kernel
 (`scripts/build-landlock-kernel.sh`'s output — a multi-step, from-source
 kernel build/re-sign on real Virtualization.framework hardware), which
 was not cached on this host (`images/` is git-ignored) and rebuilding it
