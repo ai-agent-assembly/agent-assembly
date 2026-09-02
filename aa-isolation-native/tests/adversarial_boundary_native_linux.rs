@@ -232,6 +232,13 @@ struct DetachRecord {
     /// polling for it, rather than sleeping a fixed duration, is what keeps the
     /// test run's timing identical to the control's instead of guessing at it.
     done_marker: PathBuf,
+    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own stderr,
+    /// captured because two prior real-CI-driven fixes both left the ppid
+    /// empty without explaining why.
+    read_stderr_file: PathBuf,
+    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own exit
+    /// status (`$?`), captured alongside `read_stderr_file`.
+    read_status_file: PathBuf,
 }
 
 /// Detach `inner` from the launched process via `setsid --fork` plus a second
@@ -264,10 +271,20 @@ struct DetachRecord {
 /// back every time. `read`, run by the leaf shell itself with no fork, reads
 /// that shell's own `/proc/self/stat`.
 fn as_detached_grandchild(files: &DetachRecord, inner: &str) -> String {
+    // AAASM-5532 diagnostic pass: two straightforward fixes (awk-forking,
+    // then a redundant /proc read grant that `system_reads(true)` already
+    // provides) both failed to change this outcome on real CI — the empty
+    // ppid survives both, so the actual cause is still unconfirmed. Rather
+    // than guess a third time, this leaf now redirects the `read`'s own
+    // stderr to a file and records its exit status, so the next real CI run
+    // reveals what actually happened at that redirection instead of only
+    // its silent, empty-on-failure result.
     let leaf = format!(
-        "echo $$ > {} ; sleep 0.3 ; read -r _ _ _ ppid _ < /proc/self/stat ; printf '%s' \"$ppid\" > {} ; \
-         {inner} ; printf x > {}",
+        "echo $$ > {} ; sleep 0.3 ; read -r _ _ _ ppid _ < /proc/self/stat 2> {} ; echo $? > {} ; printf '%s' \
+         \"$ppid\" > {} ; {inner} ; printf x > {}",
         shell_word(&files.pid_file.to_string_lossy()),
+        shell_word(&files.read_stderr_file.to_string_lossy()),
+        shell_word(&files.read_status_file.to_string_lossy()),
         shell_word(&files.ppid_file.to_string_lossy()),
         shell_word(&files.done_marker.to_string_lossy()),
     );
@@ -676,12 +693,16 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
         pid_file: scratch.permitted().join("control-pid"),
         ppid_file: scratch.permitted().join("control-ppid"),
         done_marker: scratch.permitted().join("control-done"),
+        read_stderr_file: scratch.permitted().join("control-read-stderr"),
+        read_status_file: scratch.permitted().join("control-read-status"),
     };
     let test_target = scratch.forbidden().join("escaped-write");
     let test_files = DetachRecord {
         pid_file: scratch.permitted().join("test-pid"),
         ppid_file: scratch.permitted().join("test-ppid"),
         done_marker: scratch.permitted().join("test-done"),
+        read_stderr_file: scratch.permitted().join("test-read-stderr"),
+        read_status_file: scratch.permitted().join("test-read-status"),
     };
 
     let (control, _) = run(
@@ -713,7 +734,7 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
          {:?}",
         control.stderr
     );
-    assert_reparented_to_the_nearest_subreaper(SCENARIO, "control", &control_files.ppid_file);
+    assert_reparented_to_the_nearest_subreaper(SCENARIO, "control", &control_files);
     assert!(
         control_target.exists(),
         "the control's detached, re-parented grandchild did not write the file it was permitted to write, so \
@@ -751,7 +772,7 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
          nothing. stderr: {:?}",
         test.stderr
     );
-    assert_reparented_to_the_nearest_subreaper(SCENARIO, "test", &test_files.ppid_file);
+    assert_reparented_to_the_nearest_subreaper(SCENARIO, "test", &test_files);
 
     let pair = ControlledPair::new(
         AttackFamily::ProcessTreeAndAlternateExecutables,
@@ -789,7 +810,8 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
 /// where nothing upstream of the launcher installs one via
 /// `prctl(PR_SET_CHILD_SUBREAPER)`. That is what "re-parented" means here, read
 /// from `/proc` rather than assumed from the detach script's shape.
-fn assert_reparented_to_the_nearest_subreaper(scenario: &str, run_label: &str, ppid_file: &Path) {
+fn assert_reparented_to_the_nearest_subreaper(scenario: &str, run_label: &str, files: &DetachRecord) {
+    let ppid_file = &files.ppid_file;
     let contents = std::fs::read_to_string(ppid_file).unwrap_or_else(|e| {
         panic!(
             "[{scenario}] the {run_label} run's grandchild never recorded its parent PID at {}: {e}",
@@ -797,8 +819,14 @@ fn assert_reparented_to_the_nearest_subreaper(scenario: &str, run_label: &str, p
         )
     });
     let ppid: i32 = contents.trim().parse().unwrap_or_else(|e| {
+        // AAASM-5532 diagnostic pass: read back what the leaf's own `read <
+        // /proc/self/stat` actually did, rather than guess a third time —
+        // two prior real-CI-driven fixes both left this empty.
+        let status = std::fs::read_to_string(&files.read_status_file).unwrap_or_else(|_| "<not written>".to_string());
+        let stderr = std::fs::read_to_string(&files.read_stderr_file).unwrap_or_else(|_| "<not written>".to_string());
         panic!(
-            "[{scenario}] the {run_label} run's grandchild wrote a non-numeric parent PID {:?}: {e}",
+            "[{scenario}] the {run_label} run's grandchild wrote a non-numeric parent PID {:?}: {e}. The \
+             read's own exit status was {status:?} and its stderr was {stderr:?}.",
             contents.trim()
         )
     });
