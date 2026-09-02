@@ -97,23 +97,15 @@ fn validate_update_request(req: &UpdateRetentionPolicyRequest) -> Result<(), Pro
             .with_detail("hot_days must be >= 1")
             .with_error_code("retention_policy_invalid_hot_days"));
     }
-    if req.warm_days <= req.hot_days {
+    if req.warm_days < 1 {
         return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-            .with_detail("warm_days must be strictly greater than hot_days")
+            .with_detail("warm_days must be >= 1")
             .with_error_code("retention_policy_invalid_warm_days"));
     }
     if req.cold_action == ColdActionDto::Archive {
-        let url = req.archive_url.as_deref().unwrap_or("");
-        if url.is_empty() {
-            return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-                .with_detail("archive_url is required when cold_action == \"archive\"")
-                .with_error_code("retention_policy_missing_archive_url"));
-        }
-        if !url.starts_with("s3://") && !url.starts_with("gs://") {
-            return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
-                .with_detail("archive_url must start with s3:// or gs://")
-                .with_error_code("retention_policy_invalid_archive_url"));
-        }
+        return Err(ProblemDetail::from_status(StatusCode::BAD_REQUEST)
+            .with_detail("cold_action=archive is not implemented — no backend can archive; set cold_action=drop")
+            .with_error_code("retention_policy_archive_unsupported"));
     }
     Ok(())
 }
@@ -282,10 +274,10 @@ mod tests {
     #[tokio::test]
     async fn update_policy_rejects_invalid_thresholds() {
         let state = hardened().await;
-        // warm_days must be strictly greater than hot_days.
+        // warm_days must be >= 1.
         let req = UpdateRetentionPolicyRequest {
             hot_days: 10,
-            warm_days: 5,
+            warm_days: 0,
             cold_action: ColdActionDto::Drop,
             archive_url: None,
         };
@@ -294,6 +286,25 @@ mod tests {
             .expect_err("rejected");
         assert_eq!(err.status, StatusCode::BAD_REQUEST.as_u16());
         assert_eq!(err.error_code, Some("retention_policy_invalid_warm_days"));
+    }
+
+    #[tokio::test]
+    async fn update_policy_accepts_warm_days_less_than_hot_days() {
+        // AAASM-5774: warm_days is a span following hot_days, not an age
+        // relative to it, so a value smaller than hot_days is valid.
+        let state = hardened().await;
+        let req = UpdateRetentionPolicyRequest {
+            hot_days: 10,
+            warm_days: 5,
+            cold_action: ColdActionDto::Drop,
+            archive_url: None,
+        };
+        let doc = update_retention_policy(admin_auth(), Extension(state), Json(req))
+            .await
+            .expect("applied")
+            .0;
+        assert_eq!(doc.hot_days, 10);
+        assert_eq!(doc.warm_days, 5);
     }
 
     #[tokio::test]

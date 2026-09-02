@@ -9,9 +9,10 @@ use super::retention::{ColdAction, RetentionPolicy};
 /// Reasons a [`RetentionConfig`] can be invalid at startup time.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RetentionConfigError {
-    /// `cold_action == Archive` was set but no `archive_url` was provided.
-    #[error("cold_action=archive requires archive_url to be set")]
-    MissingArchiveUrl,
+    /// `cold_action == Archive` was selected — no backend implements
+    /// archival, regardless of whether `archive_url` is set.
+    #[error("cold_action=archive is not implemented; no backend can archive — set cold_action=drop (AAASM-5774)")]
+    ArchiveUnsupported,
     /// `schedule` is not a valid cron expression.
     #[error("invalid cron schedule {schedule:?}: {reason}")]
     InvalidSchedule {
@@ -49,11 +50,11 @@ impl RetentionConfig {
     ///
     /// # Errors
     ///
-    /// - [`RetentionConfigError::MissingArchiveUrl`] when `cold_action`
-    ///   is [`ColdAction::Archive`] but `archive_url` is `None`.
+    /// - [`RetentionConfigError::ArchiveUnsupported`] when `cold_action`
+    ///   is [`ColdAction::Archive`] — no backend implements archival.
     pub fn validate(&self) -> Result<(), RetentionConfigError> {
-        if self.cold_action == ColdAction::Archive && self.archive_url.is_none() {
-            return Err(RetentionConfigError::MissingArchiveUrl);
+        if self.cold_action == ColdAction::Archive {
+            return Err(RetentionConfigError::ArchiveUnsupported);
         }
         self.parsed_schedule()?;
         Ok(())
@@ -126,23 +127,20 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_archive_action_without_url() {
-        let cfg = RetentionConfig {
+    fn validate_rejects_archive_action_regardless_of_archive_url() {
+        let without_url = RetentionConfig {
             cold_action: ColdAction::Archive,
             archive_url: None,
             ..RetentionConfig::default()
         };
-        assert_eq!(cfg.validate(), Err(RetentionConfigError::MissingArchiveUrl));
-    }
+        assert_eq!(without_url.validate(), Err(RetentionConfigError::ArchiveUnsupported));
 
-    #[test]
-    fn validate_accepts_archive_action_with_url() {
-        let cfg = RetentionConfig {
+        let with_url = RetentionConfig {
             cold_action: ColdAction::Archive,
             archive_url: Some("s3://example/path/".to_string()),
             ..RetentionConfig::default()
         };
-        assert!(cfg.validate().is_ok());
+        assert_eq!(with_url.validate(), Err(RetentionConfigError::ArchiveUnsupported));
     }
 
     #[test]

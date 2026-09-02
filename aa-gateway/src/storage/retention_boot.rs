@@ -61,8 +61,8 @@ fn core_to_storage_retention(cfg: &CoreRetentionConfig) -> StorageRetentionConfi
 ///
 /// # Errors
 ///
-/// - [`RetentionConfigError::MissingArchiveUrl`] when
-///   `cold_action == Archive` but no `archive_url` is configured.
+/// - [`RetentionConfigError::ArchiveUnsupported`] when
+///   `cold_action == Archive` — no backend implements archival.
 /// - [`RetentionConfigError::InvalidSchedule`] when the configured
 ///   cron expression cannot be parsed. Fail-fast at startup is
 ///   preferred over a panic on the first tick.
@@ -153,10 +153,10 @@ mod tests {
         }
     }
 
-    /// Cold-action archive without an archive_url must fail validation
-    /// at startup.
+    /// Cold-action archive must fail validation at startup, regardless
+    /// of whether archive_url is set — no backend implements it.
     #[tokio::test]
-    async fn archive_action_without_url_returns_missing_archive_url() {
+    async fn archive_action_returns_archive_unsupported() {
         let (_tmp, db_path) = tmp_sqlite();
         let storage: Arc<dyn StorageBackend> = open_sqlite_backend(&db_path).await.expect("open backend");
 
@@ -166,9 +166,9 @@ mod tests {
             ..CoreRetentionConfig::default()
         };
         match spawn_retention_engine(storage, &cfg, CancellationToken::new()) {
-            Err(RetentionConfigError::MissingArchiveUrl) => {}
-            Err(other) => panic!("expected MissingArchiveUrl, got {other:?}"),
-            Ok(_) => panic!("archive without url must surface as Err"),
+            Err(RetentionConfigError::ArchiveUnsupported) => {}
+            Err(other) => panic!("expected ArchiveUnsupported, got {other:?}"),
+            Ok(_) => panic!("archive must surface as Err"),
         }
     }
 }

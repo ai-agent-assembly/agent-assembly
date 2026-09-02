@@ -23,7 +23,7 @@ import {
 interface FormErrors {
   hot_days?: string
   warm_days?: string
-  archive_url?: string
+  cold_action?: string
 }
 
 function validate(req: UpdateRetentionPolicyRequest): FormErrors {
@@ -31,16 +31,11 @@ function validate(req: UpdateRetentionPolicyRequest): FormErrors {
   if (!Number.isFinite(req.hot_days) || req.hot_days < 1) {
     errors.hot_days = 'hot_days must be ≥ 1'
   }
-  if (!Number.isFinite(req.warm_days) || req.warm_days <= req.hot_days) {
-    errors.warm_days = 'warm_days must be strictly greater than hot_days'
+  if (!Number.isFinite(req.warm_days) || req.warm_days < 1) {
+    errors.warm_days = 'warm_days must be ≥ 1'
   }
   if (req.cold_action === 'archive') {
-    const url = (req.archive_url ?? '').trim()
-    if (!url) {
-      errors.archive_url = 'archive_url is required when cold_action is "archive"'
-    } else if (!url.startsWith('s3://') && !url.startsWith('gs://')) {
-      errors.archive_url = 'archive_url must start with s3:// or gs://'
-    }
+    errors.cold_action = 'cold_action "archive" is not implemented on any backend — choose "drop"'
   }
   return errors
 }
@@ -185,7 +180,8 @@ export function RetentionPolicyPage({ client = retentionPolicyClient }: Retentio
       <p>
         Audit and metric rows are partitioned into <strong>hot</strong>, <strong>warm</strong>, and <strong>cold</strong>{' '}
         tiers. Hot rows stay indexed for fast queries; warm rows are compressed where the backend supports it; cold rows
-        are dropped or archived to an object store. Changes apply immediately — the gateway does not need a restart.
+        are dropped (archiving to an object store is not implemented on any backend). Changes apply immediately — the
+        gateway does not need a restart.
       </p>
 
       <div className="retention-policy__field">
@@ -215,7 +211,10 @@ export function RetentionPolicyPage({ client = retentionPolicyClient }: Retentio
         <label htmlFor="warm_days" className="retention-policy__field-label">
           Warm tier (days)
         </label>
-        <p className="retention-policy__field-help">Compressed, slower queries. Must be greater than hot tier.</p>
+        <p className="retention-policy__field-help">
+          Compressed, slower queries. Spans the tier following hot — total row age when the cold action fires is hot
+          + warm (e.g. 30 + 90 = 120 days at the defaults).
+        </p>
         <input
           id="warm_days"
           name="warm_days"
@@ -241,14 +240,20 @@ export function RetentionPolicyPage({ client = retentionPolicyClient }: Retentio
         <select
           id="cold_action"
           name="cold_action"
-          className="retention-policy__select"
+          className={`retention-policy__select${errors.cold_action ? ' retention-policy__select--error' : ''}`}
           value={form.cold_action}
           onChange={(e) => updateField('cold_action', e.target.value as ColdActionDto)}
           data-testid="retention-policy-cold-action"
+          aria-invalid={Boolean(errors.cold_action)}
         >
           <option value="drop">Drop</option>
-          <option value="archive">Archive to S3</option>
+          <option value="archive">Archive to S3 (not implemented)</option>
         </select>
+        {errors.cold_action && (
+          <div className="retention-policy__field-error" data-testid="retention-policy-cold-action-error">
+            {errors.cold_action}
+          </div>
+        )}
       </div>
 
       {form.cold_action === 'archive' && (
@@ -256,23 +261,20 @@ export function RetentionPolicyPage({ client = retentionPolicyClient }: Retentio
           <label htmlFor="archive_url" className="retention-policy__field-label">
             Archive URL
           </label>
-          <p className="retention-policy__field-help">Must start with s3:// or gs://</p>
+          <p className="retention-policy__field-help">
+            Reserved for a future archive implementation — not implemented on any backend today. Saving with
+            cold_action = archive is rejected.
+          </p>
           <input
             id="archive_url"
             name="archive_url"
             type="text"
-            className={`retention-policy__input${errors.archive_url ? ' retention-policy__input--error' : ''}`}
+            className="retention-policy__input"
             value={form.archive_url ?? ''}
             onChange={(e) => updateField('archive_url', e.target.value)}
             placeholder="s3://my-bucket/aasm-archive/"
             data-testid="retention-policy-archive-url"
-            aria-invalid={Boolean(errors.archive_url)}
           />
-          {errors.archive_url && (
-            <div className="retention-policy__field-error" data-testid="retention-policy-archive-url-error">
-              {errors.archive_url}
-            </div>
-          )}
         </div>
       )}
 

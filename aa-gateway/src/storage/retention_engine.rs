@@ -69,7 +69,7 @@ impl RetentionEngine {
     /// # Errors
     ///
     /// - Any [`RetentionConfigError`] from
-    ///   [`RetentionConfig::validate`] (missing archive_url, invalid
+    ///   [`RetentionConfig::validate`] (`cold_action = archive`, invalid
     ///   schedule). The active config is preserved when an error is
     ///   returned.
     pub fn hot_reload(&self, new_config: RetentionConfig) -> Result<(), RetentionConfigError> {
@@ -460,14 +460,15 @@ mod tests {
         let initial = RetentionConfig::default();
         let engine = RetentionEngine::new(backend, initial.clone());
 
-        // archive without archive_url fails RetentionConfig::validate
+        // Archive is rejected by RetentionConfig::validate regardless of
+        // archive_url.
         let invalid = RetentionConfig {
             cold_action: ColdAction::Archive,
             archive_url: None,
             ..RetentionConfig::default()
         };
         let err = engine.hot_reload(invalid).expect_err("invalid config must be rejected");
-        assert_eq!(err, RetentionConfigError::MissingArchiveUrl);
+        assert_eq!(err, RetentionConfigError::ArchiveUnsupported);
         assert_eq!(
             engine.current_config(),
             initial,

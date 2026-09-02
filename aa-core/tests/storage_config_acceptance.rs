@@ -111,24 +111,20 @@ storage:
     assert_eq!(format!("{err}"), "archive_url is required when cold_action is archive",);
 }
 
-/// AC #6 — `warm_days <= hot_days` is a startup error with the
-/// documented message naming both values.
+/// AAASM-5774 — `warm_days == 0` is a startup error; `warm_days` is a
+/// span following `hot_days`, not an age relative to it, so a value
+/// smaller than `hot_days` is valid — only zero is not.
 #[test]
-fn warm_days_less_than_hot_days_fails_validation() {
-    // Use warm = hot to also catch the strict-inequality edge case.
+fn warm_days_zero_fails_validation() {
     let yaml = r#"
 storage:
   retention:
     hot_days: 60
-    warm_days: 30
+    warm_days: 0
 "#;
     let cfg = GatewayConfig::from_yaml_str(yaml).expect("YAML must parse");
-    let err = cfg.validate().expect_err("warm_days < hot_days must fail validation");
-    // The {hot, warm} pair is the precise Story-AC message.
-    assert!(matches!(
-        err,
-        ConfigError::WarmDaysNotGreaterThanHotDays { hot: 60, warm: 30 }
-    ));
+    let err = cfg.validate().expect_err("warm_days == 0 must fail validation");
+    assert!(matches!(err, ConfigError::WarmDaysMustBePositive));
 }
 
 /// Tiny RAII guard for env-var manipulation in the AC tests.

@@ -205,12 +205,13 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 schedule = %cfg.storage.retention.schedule,
                 hot_days = cfg.storage.retention.hot_days,
                 warm_days = cfg.storage.retention.warm_days,
+                cold_cutoff_days = i64::from(cfg.storage.retention.hot_days) + i64::from(cfg.storage.retention.warm_days),
                 "retention engine started"
             );
             Some(handle)
         }
         Err(err) => {
-            tracing::warn!(error = %err, "retention engine disabled — config rejected by validator");
+            tracing::error!(error = %err, "retention engine disabled — config rejected by validator");
             None
         }
     };

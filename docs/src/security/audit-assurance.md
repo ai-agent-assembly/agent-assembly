@@ -143,13 +143,17 @@ an operator can reasonably arrive at from the sections above:
   `now - (hot_days + warm_days)`, so at the defaults (30 and 90) a row is
   deleted once it is **120 days** old, not 90. The two numbers add; they are not
   a schedule of one absolute age followed by another.
-- **`cold_action = Archive` is not implemented.** On Postgres it does not
-  archive and it does not prune — `apply_retention` returns
-  `RetentionError` and the whole pass fails
-  (`aa-gateway/src/storage/postgres.rs`). On SQLite it logs a warning and
-  **falls back to dropping the rows** (`aa-gateway/src/storage/sqlite.rs`), so
-  selecting it deletes exactly the data an operator chose it to preserve.
-  `Drop` is the only cold action that behaves as named.
+- **`cold_action = Archive` is not implemented, and selecting it is now
+  refused at configuration time on both backends** (AAASM-5774) — the
+  gateway's own config validation and the admin
+  `PUT /api/v1/admin/retention-policy` endpoint both reject it before any
+  retention pass runs, so a misconfigured policy cannot execute at all.
+  `apply_retention` itself also refuses it as a second line of defense
+  (`aa-gateway/src/storage/postgres.rs`, `sqlite.rs`) with an identical
+  error on both backends and no rows modified. **Before this fix, SQLite
+  instead logged a warning and silently fell through to `DELETE`** —
+  selecting Archive deleted exactly the data an operator chose it to
+  preserve. `Drop` is the only cold action that behaves as named.
 - **On the proxy sink, size wins over age.** `max_age` is a *maximum* age, never
   a minimum guarantee — a busy proxy rotates a segment away before its age is up.
   That case is not silent: it increments `retention_shortfalls`, so an operator

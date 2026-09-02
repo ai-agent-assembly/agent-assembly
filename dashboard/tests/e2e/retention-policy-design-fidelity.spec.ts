@@ -167,7 +167,9 @@ test.describe('AAASM-1592 S-K — Retention Policy page design fidelity', () => 
     await mockBackend(page, makeDoc())
     await gotoRetentionPolicy(page)
 
-    await page.getByTestId('retention-policy-warm-days').fill('30')
+    // warm_days is a span following hot_days, not an age relative to it —
+    // only 0 is invalid now (AAASM-5774).
+    await page.getByTestId('retention-policy-warm-days').fill('0')
 
     const warmInput = page.getByTestId('retention-policy-warm-days')
     const errorClass = await warmInput.evaluate((el) =>
@@ -183,19 +185,24 @@ test.describe('AAASM-1592 S-K — Retention Policy page design fidelity', () => 
     await page.screenshot({ path: `${EVIDENCE_DIR}/03-validation-error.png`, fullPage: true })
   })
 
-  test('archive mode — Archive URL field appears with placeholder + danger-bordered when empty', async ({ page }) => {
+  test('archive mode — not-implemented error on the select, Archive URL field still shown', async ({ page }) => {
     await mockBackend(page, makeDoc())
     await gotoRetentionPolicy(page)
 
     await page.getByTestId('retention-policy-cold-action').selectOption('archive')
 
+    // AAASM-5774: cold_action=archive is rejected outright — the danger
+    // styling now lands on the select, not the (no-longer-validated)
+    // archive_url input.
+    const coldActionSelect = page.getByTestId('retention-policy-cold-action')
+    const borderColor = await coldActionSelect.evaluate((el) => window.getComputedStyle(el).borderTopColor)
+    expect(borderColor).toBe(TOKEN_RGB.dangerBorder)
+    await expect(page.getByTestId('retention-policy-cold-action-error')).toContainText(/not implemented/)
+
     const archiveField = page.getByTestId('retention-policy-archive-field')
     await expect(archiveField).toBeVisible()
     const archiveInput = page.getByTestId('retention-policy-archive-url')
     await expect(archiveInput).toHaveAttribute('placeholder', /s3:\/\//)
-
-    const borderColor = await archiveInput.evaluate((el) => window.getComputedStyle(el).borderTopColor)
-    expect(borderColor).toBe(TOKEN_RGB.dangerBorder)
 
     await page.screenshot({ path: `${EVIDENCE_DIR}/04-archive-mode.png`, fullPage: true })
   })

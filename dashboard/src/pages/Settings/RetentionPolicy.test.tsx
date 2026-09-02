@@ -118,20 +118,33 @@ describe('RetentionPolicyPage', () => {
     expect(screen.queryByTestId('retention-policy-last-run-empty')).toBeNull()
   })
 
-  it('disables Save and shows the warm_days <= hot_days error when invalid', async () => {
+  it('disables Save and shows the warm_days error when warm_days is 0', async () => {
     const user = userEvent.setup()
     const client = makeFakeClient()
     render(<RetentionPolicyPage client={client} />)
 
     const warmInput = await screen.findByTestId<HTMLInputElement>('retention-policy-warm-days')
     await user.clear(warmInput)
-    await user.type(warmInput, '30')
+    await user.type(warmInput, '0')
 
     expect(screen.getByTestId('retention-policy-warm-days-error')).toBeInTheDocument()
     expect(screen.getByTestId<HTMLButtonElement>('retention-policy-save')).toBeDisabled()
   })
 
-  it('shows the archive_url required error when cold_action switches to archive', async () => {
+  it('accepts warm_days smaller than hot_days (a span, not an age)', async () => {
+    const user = userEvent.setup()
+    const client = makeFakeClient()
+    render(<RetentionPolicyPage client={client} />)
+
+    const warmInput = await screen.findByTestId<HTMLInputElement>('retention-policy-warm-days')
+    await user.clear(warmInput)
+    await user.type(warmInput, '5')
+
+    expect(screen.queryByTestId('retention-policy-warm-days-error')).toBeNull()
+    expect(screen.getByTestId<HTMLButtonElement>('retention-policy-save')).not.toBeDisabled()
+  })
+
+  it('shows the archive-unsupported error when cold_action switches to archive', async () => {
     const user = userEvent.setup()
     const client = makeFakeClient()
     render(<RetentionPolicyPage client={client} />)
@@ -140,24 +153,7 @@ describe('RetentionPolicyPage', () => {
     await user.selectOptions(select, 'archive')
 
     expect(screen.getByTestId('retention-policy-archive-field')).toBeInTheDocument()
-    expect(screen.getByTestId('retention-policy-archive-url-error')).toHaveTextContent(
-      /required when cold_action is "archive"/,
-    )
-    expect(screen.getByTestId<HTMLButtonElement>('retention-policy-save')).toBeDisabled()
-  })
-
-  it('rejects archive_url values that lack a s3:// or gs:// prefix', async () => {
-    const user = userEvent.setup()
-    const client = makeFakeClient()
-    render(<RetentionPolicyPage client={client} />)
-
-    const select = await screen.findByTestId<HTMLSelectElement>('retention-policy-cold-action')
-    await user.selectOptions(select, 'archive')
-
-    const urlInput = await screen.findByTestId<HTMLInputElement>('retention-policy-archive-url')
-    await user.type(urlInput, 'https://example.com/bucket')
-
-    expect(screen.getByTestId('retention-policy-archive-url-error')).toHaveTextContent(/s3:\/\/ or gs:\/\//)
+    expect(screen.getByTestId('retention-policy-cold-action-error')).toHaveTextContent(/not implemented/)
     expect(screen.getByTestId<HTMLButtonElement>('retention-policy-save')).toBeDisabled()
   })
 
