@@ -200,9 +200,12 @@ async fn setup_audit(
 ///   (`CREATE TABLE IF NOT EXISTS`), and that is all: there is no in-place
 ///   schema evolution. Against tables that already exist the statements are a
 ///   no-op, so one left over from an earlier build is left as it stands, key
-///   included. Rows survive because nothing rewrites them; changing the key
-///   needs a migration that recreates the tables, and none is written — see
-///   the *Migration position* note on `PROJECTION_SCHEMA` in
+///   included — but `migrate` now fails boot instead of proceeding if that
+///   stale table is missing a column the rest of this crate reads or writes
+///   (AAASM-5788, `check_table_columns` in `storage/sensitive_data/sqlite.rs`).
+///   Rows survive because nothing rewrites them; changing the key needs a
+///   migration that recreates the tables, and none is written — see the
+///   *Migration position* note on `PROJECTION_TABLES` in
 ///   `storage/sensitive_data/sqlite.rs`.
 /// * **Failure is fail-closed, in the paths that read this.** A database that
 ///   cannot be opened or migrated fails the boot of [`serve_tcp`] /
