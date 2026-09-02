@@ -141,7 +141,7 @@ Four candidate channels exist. None is usable as shipped.
 |---|---|---|
 | **Landlock audit records** (`AUDIT_LANDLOCK_ACCESS`) | A real per-denial record: the denied access right, the object, the originating domain | Requires **Landlock ABI 7 / Linux 6.15**. The backend's own floor is **ABI v3 / Linux 6.2** (`rules.rs:155-163`), so requiring audit would raise the kernel floor by nine releases. And the records go to the **kernel audit subsystem** — host-wide netlink, needing `CAP_AUDIT_READ`, correlated to the confined process only by PID. See the cost note below |
 | **seccomp audit records** (`type=1326`) | Which syscall was refused | Same audit-subsystem path, plus `SECCOMP_RET_KILL_PROCESS` is logged only *"if that action appears in the `actions_logged` file"* and auditing is enabled (`seccomp(2)`) — a host-wide sysctl AASM does not own |
-| **`SECCOMP_RET_TRAP`** | `SIGSYS` to the offending thread, syscall not executed | The record would be produced **inside the confined, untrusted process**. Under ADR 0035's threat model the agent is untrusted; a denial record self-reported by the thing being confined is not evidence. Rejected on threat-model grounds, not cost |
+| **`SECCOMP_RET_TRAP`** | `SIGSYS` to the offending thread, syscall not executed | The record would be produced **inside the confined, untrusted process**. Under Core ADR 0035's threat model the agent is untrusted; a denial record self-reported by the thing being confined is not evidence. Rejected on threat-model grounds, not cost |
 | **`SECCOMP_RET_USER_NOTIF`** | The real answer for the `Syscall` domain: a synchronous, pre-effect notification per filtered syscall, delivered to the supervisor. Linux 5.0+ | A new enforcement architecture, not an evidence add-on. See below |
 
 **The `SECCOMP_RET_USER_NOTIF` trade, stated as a trade.** The AAASM-5801
@@ -165,7 +165,7 @@ later ... but that is explicitly deferred". Four costs it does not enumerate:
    the confined program, and must be passed out to the supervisor over a unix
    socket with `SCM_RIGHTS` before the `execve`. That is a new host↔confined
    channel in a design whose stated property is that "the supervisor stays
-   structurally outside the boundary" (`backend.rs` module doc, ADR 0035 §5).
+   structurally outside the boundary" (`backend.rs` module doc, Core ADR 0035 §5).
 3. **One listener per thread, ever.** *"At most one seccomp filter using the
    `SECCOMP_FILTER_FLAG_NEW_LISTENER` flag can be installed for a thread"*
    (`seccomp(2)`). This forecloses composing AASM's notifier with any other.
