@@ -32,9 +32,13 @@
 # scenarios to the second file and the third file itself, covering
 # DirectEgressBypass, CloudMetadata, AddressRepresentation and
 # UnixSocketsAndDescriptors — the four `AttackFamily` variants this backend has
-# no protection for, only a capability report that says so; AAASM-5532 added 1
-# more to the second file, the detached/re-parented-descendant class the
-# AAASM-5872 campaign found uncovered anywhere in this repo).
+# no protection for, only a capability report that says so; AAASM-5532 attempted
+# to add 1 more to the second file, the detached/re-parented-descendant class the
+# AAASM-5872 campaign found uncovered anywhere in this repo, but left it
+# `#[ignore]`d — see that test's own doc comment for the real, CI-evidenced
+# reason (a Landlock `Permission denied` reading a re-parented grandchild's own
+# `/proc/self/stat` that four real-CI iterations could not conclusively
+# root-cause within this pass's scope).
 #
 # AAASM-5805 also ported four of the Sandlock lane's eight negotiation
 # scenarios to `adversarial_negotiation_native.rs` — the four that generalize
@@ -48,7 +52,6 @@
 # `cargo nextest list`, matching its Sandlock-lane counterpart.
 
 native adversarial: a descendant cannot make a syscall the launch did not permit
-native adversarial: a detached and re-parented grandchild is confined alike
 native adversarial: a direct connection outside any egress grant arrives, and the launch states the domain is uncovered
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant

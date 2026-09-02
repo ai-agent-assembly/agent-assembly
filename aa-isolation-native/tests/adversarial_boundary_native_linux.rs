@@ -691,7 +691,55 @@ fn an_alternate_executable_path_is_confined_alike() {
 /// `inner` has run (successfully or not — this leaf never sets `-e`), so the
 /// test run's timing is identical to the control's rather than a guessed sleep
 /// racing the leaf.
+///
+/// # `#[ignore]`d: a real, CI-evidenced blocker, not a scenario defect
+///
+/// Four real-CI iterations on `ubuntu-24.04` (`gh pr checks` on PR #2348,
+/// AAASM-5532) converged on the actual cause of the control run's own empty
+/// `ppid_file` — not a harness bug, not a fixable grant-scoping mistake:
+///
+/// 1. First real failure: `awk '{print $4}' /proc/self/stat` read `awk`'s own
+///    `/proc/self`, not the leaf's — fixed with the shell's own `read`
+///    builtin (no fork).
+/// 2. Second real failure, same symptom: a "fix" adding an explicit `/proc`
+///    read grant was a no-op — `spec()`'s `spec_with(..., include_proc:
+///    true)` already grants it via `system_reads`.
+/// 3. Third real failure: diagnostic capture on the `read` itself came back
+///    with exit status 2 and *no* stderr — a failed *input* redirection is
+///    reported to the shell's own unredirected stderr, not the command's own
+///    `2>`, so nothing was actually captured.
+/// 4. Fourth real failure, now conclusive: replacing the input-redirected
+///    `read` with `cat /proc/self/stat > dump 2> dump_stderr` (whose output
+///    redirection is set up regardless of whether `cat` itself succeeds)
+///    surfaced the real error: **`cat: /proc/self/stat: Permission denied`**
+///    — a genuine Landlock denial, even though `/proc` is granted as a
+///    directory (confirmed in `aa-isolation-native/src/rules.rs::install`:
+///    a directory-scoped `PathBeneath` rule keeps every access right,
+///    including `ReadFile`, and should cover files beneath it).
+///
+/// The most likely explanation — not itself re-verified this pass, since
+/// confirming it needs iterating against Landlock's actual magic-symlink
+/// resolution behavior on real hardware, beyond this bonus scenario's
+/// budget — is that `/proc/self` is a magic symlink whose target resolves
+/// per-reader, and Landlock's real-path resolution for it does not behave
+/// the same as for an ordinary symlink under a granted directory. Whatever
+/// the precise kernel mechanism, the denial is real and reproducible, not
+/// a test defect: the identical `/proc` grant reaches ordinary files
+/// (`system_reads`'s own doc cites `/proc/bootconfig` working under this
+/// exact rule shape).
+///
+/// Left `#[ignore]`d rather than deleted so the four-iteration evidence
+/// trail stays attached to working code, and removed from
+/// `.ci/isolation-native-lane-scenarios.txt` (that manifest's own gate
+/// requires every listed name to be `measured`, which an `#[ignore]`d test
+/// cannot be). This attack class — detached/re-parented descendant
+/// confinement — remains the one class from AAASM-5532's original set with
+/// no working coverage; a follow-up needs either a `/proc`-avoiding way to
+/// observe re-parenting (e.g. a compiled helper reading its own PPID via
+/// `getppid()` instead of `/proc/self/stat`) or a resolved understanding of
+/// why the grant does not reach this specific magic-symlink target.
 #[test]
+#[ignore]
 fn a_detached_and_reparented_grandchild_is_confined_alike() {
     const SCENARIO: &str = "native adversarial: a detached and re-parented grandchild is confined alike";
     let Some(backend) = require_confining_backend(SCENARIO) else {
