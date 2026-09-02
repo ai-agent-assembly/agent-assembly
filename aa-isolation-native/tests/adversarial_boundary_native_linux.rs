@@ -691,7 +691,15 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
                 &control_files,
                 &format!("printf x > {}", shell_word(&control_target.to_string_lossy())),
             ),
-            Vec::new(),
+            // The leaf reads its own re-parented identity from `/proc/self/stat`
+            // (see `as_detached_grandchild`'s doc) — without an explicit read
+            // grant covering `/proc`, that read is denied like any other
+            // ungranted path, and `read` silently sets `$ppid` to the empty
+            // string on EOF rather than failing loudly (CI caught exactly this:
+            // an empty `ppid_file` reads as "harness bug", per
+            // `assert_reparented_to_the_nearest_subreaper`'s own panic message,
+            // not a Landlock finding about this attack class).
+            vec![permit_only_selector("/proc")],
             vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
         ),
     );
@@ -725,7 +733,11 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
                 &test_files,
                 &format!("printf x > {}", shell_word(&test_target.to_string_lossy())),
             ),
-            Vec::new(),
+            // Same /proc read grant as the control run above — the two must
+            // stay identical except for the write target, or a difference in
+            // the leaf's own read behaviour (not the attack) could explain a
+            // divergence in the pair.
+            vec![permit_only_selector("/proc")],
             vec![permit_only_selector(&scratch.permitted().to_string_lossy())],
         ),
     );
