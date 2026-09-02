@@ -29,8 +29,8 @@ of its deliverables have become inappropriate rather than merely answered.
 
 Running the spike as written would re-derive decisions that are already
 ratified and would risk producing a second, competing platform matrix beside
-[ADR 0033 §5.3](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md#53-the-verified-platform-matrix) —
-exactly the source-of-truth drift [ADR 0034](../docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
+[Core ADR 0033 §5.3](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md#53-the-verified-platform-matrix) —
+exactly the source-of-truth drift [Core ADR 0034](../docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
 exists to prevent. This artifact re-baselines the ticket instead.
 
 ## Why this file lives here
@@ -42,12 +42,12 @@ This is an evidence artifact, not book content — the same placement decision
 point-in-time re-baseline is not living operator prose.
 
 It is deliberately **not** a new ADR. Every durable decision this artifact
-reports is already recorded in ADR 0033 or ADR 0035; a new ADR restating them
-would create a second citable source for the platform matrix. Where this
-re-baseline concludes that a ratified record should change, it says so as a
-recommendation for an **amendment to the existing ADR** — the pattern ADR 0035
-already uses three times (AAASM-5751, AAASM-5801, AAASM-5808) — and leaves the
-decision to the Epic owner.
+reports is already recorded in Core ADR 0033 or Core ADR 0035; a new ADR
+restating them would create a second citable source for the platform matrix.
+Where this re-baseline concludes that a ratified record should change, it says
+so as a recommendation for an **amendment to the existing ADR** — the pattern
+Core ADR 0035 already uses three times (AAASM-5751, AAASM-5801, AAASM-5808) —
+and leaves the decision to the Epic owner.
 
 ## Method
 
@@ -56,8 +56,8 @@ the ticket's own assumptions. Sources used:
 
 | Source | What it settles |
 |---|---|
-| [ADR 0033](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) §5.1–§5.3, §6, §7, *Explicitly forbidden designs* | The canonical six-element model, what the Linux eBPF programs actually do, the verified platform matrix, the claim vocabulary |
-| [ADR 0035](../docs/src/adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md) + its three amendments | The execution-isolation contract, the threat model, backends, what policy deliberately cannot express, `--isolation auto`'s selection algorithm |
+| [Core ADR 0033](../docs/src/adr/0033-canonical-governance-and-enforcement-architecture.md) §5.1–§5.3, §6, §7, *Explicitly forbidden designs* | The canonical six-element model, what the Linux eBPF programs actually do, the verified platform matrix, the claim vocabulary |
+| [Core ADR 0035](../docs/src/adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md) + its three amendments | The execution-isolation contract, the threat model, backends, what policy deliberately cannot express, `--isolation auto`'s selection algorithm |
 | [`docs/src/security/execution-isolation.md`](../docs/src/security/execution-isolation.md) | The operator-facing support matrix, runtime prerequisites, per-backend capability table, benchmark summary |
 | [`docs/src/devtools/limitations.md`](../docs/src/devtools/limitations.md) § *Hooks are not registered* | Why `PreToolUse` is deliberately unwired (AAASM-5646, Done) |
 | `aa-isolation/src/lib.rs`, `descendant.rs`, `evidence.rs`, `plan.rs` | The negotiation/evidence contract: `negotiate`, `PlanRefusal`, `BackendCapabilities`, `EnforcementEvidence::supports_prevention_claim`, `DescendantCoverage` |
@@ -67,7 +67,7 @@ the ticket's own assumptions. Sources used:
 | `aa-integration-tests/tests/adversarial_isolation_launch.rs` | Which of AAASM-5532's seventeen attack classes are measured (three) |
 | `.github/workflows/ci.yml` jobs `isolation-backend-linux` (`:3100`), `isolation-backend-native-linux` (`:3294`), `isolation-benchmark-*`, `isolation-dogfood-scenarios` | Which isolation lanes CI actually runs |
 
-Windows was verified rather than inherited. ADR 0033 §5.3's dispositive claim
+Windows was verified rather than inherited. Core ADR 0033 §5.3's dispositive claim
 is that `windows_sys` is declared in no workspace manifest, so the stray
 `#[cfg(windows)]` blocks cannot compile. Re-checked at `2bcccfc82`:
 `git grep -c windows remote/main -- '*Cargo.toml'` returns no match (exit 1),
@@ -88,23 +88,23 @@ the empty result is a real absence and not a broken query.
 
 | Original topic | Classification | Evidence |
 |---|---|---|
-| seccomp-BPF, Landlock | **Implemented** | `aa-isolation-native` composes Landlock (filesystem) + seccomp-bpf (syscall) — ADR 0035's AAASM-5801 amendment. Floor stated plainly: Landlock ABI v3 / Linux 6.2, seccomp x86_64-only (`aa-isolation-native/src/rules.rs`). CI lane `isolation-backend-native-linux` |
-| eBPF LSM (`bpf_lsm`) | **Still unresolved — and explicitly not attempted** | ADR 0033 §5.1: no `bpf_lsm` program, `SEC("lsm/…")` hook or `bpf_override_return` call exists in the tree, and `aa-ebpf-probes/src/syscall_guard.rs:55-60` says so in its own words. Superseded in *purpose* by the seccomp path above, which reaches the pre-effect denial `bpf_lsm` was wanted for |
-| namespaces, cgroups | **Superseded** | Not an AASM mechanism question any more. ADR 0035 decision 2 puts mechanism choice inside a backend; Sandlock supplies `ProcessCreation`/`Resource`/`Ipc` coverage externally and AASM-native supplies none. Which primitive a backend uses is its own business, reported as capability domains |
+| seccomp-BPF, Landlock | **Implemented** | `aa-isolation-native` composes Landlock (filesystem) + seccomp-bpf (syscall) — Core ADR 0035's AAASM-5801 amendment. Floor stated plainly: Landlock ABI v3 / Linux 6.2, seccomp x86_64-only (`aa-isolation-native/src/rules.rs`). CI lane `isolation-backend-native-linux` |
+| eBPF LSM (`bpf_lsm`) | **Still unresolved — and explicitly not attempted** | Core ADR 0033 §5.1: no `bpf_lsm` program, `SEC("lsm/…")` hook or `bpf_override_return` call exists in the tree, and `aa-ebpf-probes/src/syscall_guard.rs:55-60` says so in its own words. Superseded in *purpose* by the seccomp path above, which reaches the pre-effect denial `bpf_lsm` was wanted for |
+| namespaces, cgroups | **Superseded** | Not an AASM mechanism question any more. Core ADR 0035 decision 2 puts mechanism choice inside a backend; Sandlock supplies `ProcessCreation`/`Resource`/`Ipc` coverage externally and AASM-native supplies none. Which primitive a backend uses is its own business, reported as capability domains |
 | nftables | **Superseded** | Network egress is E3 transport mediation (`aa-proxy`), not a host firewall. Sandlock reports `NetworkEgress` supported; AASM-native reports it `Unsupported`. No host packet-filter integration is planned or needed for the domains the contract defines |
 | Container runtime controls | **No longer appropriate** | Repo policy: self-hosted deployment is out of scope product-wide. See [Containers and VMs](#re-baseline-containers-and-vms) |
-| Synchronous deny vs. observe/kill-after | **Implemented — as a type-level invariant, not a study** | ADR 0033 §6 fixes the vocabulary; `aa-isolation` enforces it structurally: `CapabilityReport::can_prevent` needs enforcement + pre-effect timing + synchronous semantics together, `negotiate` returns `Err(PlanRefusal)` before spawn when a `Required` prevention requirement meets an observe-only capability, and `EnforcementEvidence::supports_prevention_claim` ignores `Configured`/`Installed` records entirely. The eBPF syscall guard's asynchronous `SIGKILL` is `Detected`, never *denied before execution* |
+| Synchronous deny vs. observe/kill-after | **Implemented — as a type-level invariant, not a study** | Core ADR 0033 §6 fixes the vocabulary; `aa-isolation` enforces it structurally: `CapabilityReport::can_prevent` needs enforcement + pre-effect timing + synchronous semantics together, `negotiate` returns `Err(PlanRefusal)` before spawn when a `Required` prevention requirement meets an observe-only capability, and `EnforcementEvidence::supports_prevention_claim` ignores `Configured`/`Installed` records entirely. The eBPF syscall guard's asynchronous `SIGKILL` is `Detected`, never *denied before execution* |
 | Process-tree propagation | **Implemented** | `DescendantCoverage` is reported per capability; `DescendantCoverage::Unmeasured` exists so "nobody looked" cannot read as coverage, and `negotiate` refuses a `DescendantRequirement::ProcessTree` against anything else (`aa-isolation/src/descendant.rs`). The governance half — a sub-agent asking for *better* terms — is `authority_widening`, with `AuthorityWidening::{LineageBroken,RequirementDropped,IntentWeakened,PostureWeakened,…}`. Grandchild confinement is one of the five hardware-qualified macOS scenarios |
-| PID reuse, eBPF map capacity, privileged loader | **Partially implemented** | Privileged loader: decided — `aa-ebpf-loaderd` is the sole `CAP_BPF` holder, `aa-runtime` holds none (ADR 0033 §5.2). PID reuse and map capacity remain unstudied, but they are properties of the *observation* layer, not of the isolation boundary, so they no longer gate a mediation decision |
-| gVisor, Kata, Firecracker | **Superseded** | The pluggable `IsolationBackend` contract turned "which isolation substrate" from an architecture question into an implementation choice behind a stable contract. ADR 0035 *Alternatives considered* already rejected requiring a microVM for every launch, and `aasm-macos-vm` demonstrates the guest-VM route where it is the only option. Adding one of these is a backend proposal, not a feasibility study |
+| PID reuse, eBPF map capacity, privileged loader | **Partially implemented** | Privileged loader: decided — `aa-ebpf-loaderd` is the sole `CAP_BPF` holder, `aa-runtime` holds none (Core ADR 0033 §5.2). PID reuse and map capacity remain unstudied, but they are properties of the *observation* layer, not of the isolation boundary, so they no longer gate a mediation decision |
+| gVisor, Kata, Firecracker | **Superseded** | The pluggable `IsolationBackend` contract turned "which isolation substrate" from an architecture question into an implementation choice behind a stable contract. Core ADR 0035 *Alternatives considered* already rejected requiring a microVM for every launch, and `aasm-macos-vm` demonstrates the guest-VM route where it is the only option. Adding one of these is a backend proposal, not a feasibility study |
 
 ## Re-baseline: macOS
 
 | Original topic | Classification | Evidence |
 |---|---|---|
-| Endpoint Security, Network Extension | **Implemented as a decided non-goal** | ADR 0033 §5.3 records them as an **explicit non-goal**, asserted in product docs and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`). ADR 0035 *Reconsideration trigger 4* names them and **has not fired**. DTrace was considered and rejected as observability-only |
+| Endpoint Security, Network Extension | **Implemented as a decided non-goal** | Core ADR 0033 §5.3 records them as an **explicit non-goal**, asserted in product docs and pinned by a test asserting the literal limitation string (`aa-cli/src/commands/integrations/model.rs:1200,1204`). Core ADR 0035 *Reconsideration trigger 4* names them and **has not fired**. DTrace was considered and rejected as observability-only |
 | Sandbox profiles | **Superseded** | AAASM-5810/5811 chose a different boundary shape: a confined Linux guest under Virtualization.framework, reusing `aa-isolation-native` inside the guest, rather than an in-process App Sandbox profile on the host |
-| launchd / MDM | **Partially implemented** | The macOS root-owned managed-settings write is the **only** production producer of `EvidenceKind::HostAttested` and the only route by which ADR 0030's `HostEnforced` rung is reachable at all (`aa-devtool-claude-code/src/lifecycle.rs:556`). Whether the tool honours those keys at runtime is **Unmeasured** — the adapter's own docs call it *"the open half of AAASM-5298"* |
+| launchd / MDM | **Partially implemented** | The macOS root-owned managed-settings write is the **only** production producer of `EvidenceKind::HostAttested` and the only route by which Core ADR 0030's `HostEnforced` rung is reachable at all (`aa-devtool-claude-code/src/lifecycle.rs:556`). Whether the tool honours those keys at runtime is **Unmeasured** — the adapter's own docs call it *"the open half of AAASM-5298"* |
 | Keychain / session constraints | **Implemented** | `aa-proxy` CA trust on macOS shells out to `security add-trusted-cert` and needs admin authorization; AAASM-5978 made this conditional via `AA_PROXY_SYSTEM_TRUST_INSTALL`, and the Claude Code managed launch sets `Never` and uses process-scoped `NODE_EXTRA_CA_CERTS` trust instead — so that path makes zero System Keychain calls |
 | Entitlement, signing, distribution, user consent | **Implemented** | `com.apple.security.virtualization`, local ad-hoc codesign, no Apple provisioning grant needed at this trust level (AAASM-5840 pattern, hardware-qualification report). The released `aasm` binary cannot carry the entitlement, which is *why* the operator supplies helper/kernel/rootfs via `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}`. Guest kernel and busybox are GPL-2.0-only, recorded in `metadata/isolation-backends.json`, shipped through no channel, and `scripts/check-backend-license-compliance.sh` fails the day one is |
 | Local-first OSS vs. managed enterprise | **Implemented as a decision** | Local-first is the shipped route (operator-supplied artifacts, no bundled backend binary on any channel). Managed-enterprise deployment is out of scope product-wide |
@@ -137,16 +137,16 @@ unclaimed.
    workspace manifest — re-verified this pass with a positive control, as
    described under [Method](#method).
 
-No ETW, WFP or minifilter code exists. Nothing has changed since ADR 0033 §5.3
-recorded this. **Recommendation: keep Windows out of scope**; a Windows host
-adapter stays *research* until an implementation exists, and must be labelled
-as such (ADR 0033 §6).
+No ETW, WFP or minifilter code exists. Nothing has changed since Core ADR 0033
+§5.3 recorded this. **Recommendation: keep Windows out of scope**; a Windows
+host adapter stays *research* until an implementation exists, and must be
+labelled as such (Core ADR 0033 §6).
 
 ## Re-baseline: containers and VMs
 
 | Original topic | Classification | Evidence |
 |---|---|---|
-| Default-deny egress, read-only filesystems, dropped capabilities, seccomp/AppArmor/SELinux | **Superseded** | These are mechanism realizations, and ADR 0035 decision 2 puts mechanism inside a backend while AASM owns the execution contract. An operator states isolation *properties* (`none`/`auto`/`process`) and capability-domain requirements; the backend realizes them. Re-studying container-runtime flags would re-open a decision the contract already made |
+| Default-deny egress, read-only filesystems, dropped capabilities, seccomp/AppArmor/SELinux | **Superseded** | These are mechanism realizations, and Core ADR 0035 decision 2 puts mechanism inside a backend while AASM owns the execution contract. An operator states isolation *properties* (`none`/`auto`/`process`) and capability-domain requirements; the backend realizes them. Re-studying container-runtime flags would re-open a decision the contract already made |
 | Metadata-service protection | **Still unresolved**, but low-value at current direction | Sandlock covers `NetworkEgress`; AASM-native does not; the macOS guest has no network device at all. There is no cloud-metadata capability domain reachable through any shipped backend today |
 | Credential brokering | **Partially implemented** | `aa-isolation/src/ambient.rs` + `descriptor.rs` model this: `CredentialPosture` splits *removed* from *could not be removed*, `EnvironmentPlanner` cannot place a kept compatibility exception in `removed`, and a non-empty `ambient_unremoved` means the run is not least-authority and every rendering must say so. A capability-token/broker protocol is **not** built — and nothing currently requires one |
 | Container-owner vs. host-owner boundary | **No longer appropriate** | This question only pays off for a deployment model this product does not ship. Repo policy: self-hosted deployment is out of scope product-wide — no Helm/Terraform/Kubernetes/air-gapped work |
@@ -171,7 +171,7 @@ gap to close; it is a boundary already stated correctly.
 
 | Assumption | Classification | Evidence |
 |---|---|---|
-| Agent untrusted, host operator trusted | **Implemented** | ADR 0035 threat model states it as a deliberate non-goal: execution isolation does not protect a machine from its own root/administrator account, and an operator removing AASM is not a bypass of anything claimed |
+| Agent untrusted, host operator trusted | **Implemented** | Core ADR 0035 threat model states it as a deliberate non-goal: execution isolation does not protect a machine from its own root/administrator account, and an operator removing AASM is not a bypass of anything claimed |
 | Local user and agent share identity | **Partially implemented** | Two named, measured residuals: `/proc/<pid>/environ` remains readable, so an empty-then-delegated child environment is not by itself a credential boundary ([AAASM-5785](https://lightning-dust-mite.atlassian.net/browse/AAASM-5785)); and `aasm run` deliberately passes the agent's own upstream credentials through — only proxy variables are stripped from the child environment — because the launched tool needs them to function |
 | User has administrator/root | **Implemented** | Same non-goal as above; stated plainly rather than caveated away |
 | Enterprise manages the device | **Partially implemented** | The macOS managed-settings route is the one reachable `HostEnforced` path, and its runtime honouring is Unmeasured. No MDM/Windows-domain story exists, and none is in scope |
@@ -181,8 +181,8 @@ gap to close; it is a boundary already stated correctly.
 
 | Deliverable | Classification | Where it is, or why not |
 |---|---|---|
-| Platform comparison matrix | **Implemented** | ADR 0033 §5.3 (E3/E4 per platform) and `docs/src/security/execution-isolation.md`'s support + per-backend capability tables. A third matrix should not be created |
-| Reference-monitor architecture proposal | **No longer appropriate** | A separate reference monitor would be a new host interception mechanism sitting beside the one already negotiated by `aasm run`. ADR 0033 forbids re-introducing an interception-layer framing, and ADR 0035 already assigns E2/E4/E5/E6 to the isolation path. See [Why not a new mediation layer](#why-a-new-host-wide-pretooluse-mediation-layer-is-not-the-recommendation) |
+| Platform comparison matrix | **Implemented** | Core ADR 0033 §5.3 (E3/E4 per platform) and `docs/src/security/execution-isolation.md`'s support + per-backend capability tables. A third matrix should not be created |
+| Reference-monitor architecture proposal | **No longer appropriate** | A separate reference monitor would be a new host interception mechanism sitting beside the one already negotiated by `aasm run`. Core ADR 0033 forbids re-introducing an interception-layer framing, and Core ADR 0035 already assigns E2/E4/E5/E6 to the isolation path. See [Why not a new mediation layer](#why-a-new-host-wide-pretooluse-mediation-layer-is-not-the-recommendation) |
 | Credential-broker / capability-token design implications | **Partially implemented** | Modelled procedurally (`ambient.rs`, `descriptor.rs`, `CredentialPosture`, AAASM-5709) rather than as a token protocol. No consumer requires a token protocol today |
 | Required privileges, install UX, performance costs | **Implemented** | Runtime-prerequisite tables per backend (Linux, AASM-native, macOS VM) with the exact diagnostic and fix for each failure; AAASM-5805's three-arm benchmark grades P1–P7 with admissibility rules, committed in `benchmarks/isolation/METHODOLOGY.md`; licensing/distribution stated per channel |
 | Failure and recovery model | **Implemented** | Refuse-before-spawn with no fallback; a launch that asked for a boundary never runs unconfined. `Degraded` always carries planned *and* achieved as separate fields. `negotiate`'s refusal is the `Err` arm, so a refused launch is not representable as an `EnforcementPlan` |
@@ -226,10 +226,11 @@ absence* into an *undocumented, untested bypass* — a worse state.
 **2. The pre-effect mechanism for that same problem already exists, and it is
 not the hook.** `aasm run --isolation` establishes a kernel-enforced boundary
 around the launched agent's whole native process tree and every descendant, and
-it does so **before the untrusted process starts** — ADR 0033's E2 + E4 + E5 +
-E6. A `GovernanceAction::ProcessExec` deny rule against `Capability::TerminalExec`
-that the Claude Code integration cannot generate in time *is* enforceable
-today, by a filesystem/syscall boundary the process cannot step outside of,
+it does so **before the untrusted process starts** — Core ADR 0033's E2 + E4 +
+E5 + E6. A `GovernanceAction::ProcessExec` deny rule against
+`Capability::TerminalExec` that the Claude Code integration cannot generate in
+time *is* enforceable today, by a filesystem/syscall boundary the process
+cannot step outside of,
 without a per-tool-call adjudication round trip. That is a different and
 stronger shape than a hook: it does not depend on the tool cooperating, on a
 hook's exit code, or on any settings file being honoured at runtime.
@@ -237,7 +238,7 @@ hook's exit code, or on any settings file being honoured at runtime.
 **3. `aa-proxy` and `aa-ebpf` are complements, not the answer — and must not be
 described as one.** It would be convenient to close 5534 with "host-wide
 mediation is already handled by the proxy and eBPF layers." That claim is
-false, and it is false in exactly the way ADR 0033's forbidden designs #2
+false, and it is false in exactly the way Core ADR 0033's forbidden designs #2
 and #4 name:
 
 - `aa-proxy` is **E3 transport mediation** — outbound HTTPS only, HTTP/1.1 on
@@ -297,7 +298,7 @@ means a backend that covers the union, not a selection change.
 
 `NameResolution`, `Ipc`, `Credential` and `Resource` report
 `DomainCoverage::PolicyCannotExpress`. This is **already recorded as accepted,
-measured risk** in ADR 0035's AAASM-5751 amendment, and for three of them
+measured risk** in Core ADR 0035's AAASM-5751 amendment, and for three of them
 Sandlock can enforce something an operator has no way to ask for. Listed here
 so the boundary picture is not missing a domain, **not** as a new decision —
 the ADR's reasoning (speculative schema is a public contract that cannot be
@@ -365,7 +366,7 @@ absorbed into 5534:
   adjacent.
 - **Capability-aware `--isolation auto` selection** —
   [AAASM-5808](https://lightning-dust-mite.atlassian.net/browse/AAASM-5808),
-  Done; the algorithm is recorded as an ADR 0035 amendment.
+  Done; the algorithm is recorded as an Core ADR 0035 amendment.
 - **The PreToolUse hook decision itself** —
   [AAASM-5646](https://lightning-dust-mite.atlassian.net/browse/AAASM-5646),
   Done; `limitations.md` states it does not wait on 5534.
@@ -389,7 +390,7 @@ Concretely:
    remaining question that changes what the product may claim.
 4. **Route G6 to AAASM-5532** rather than to a new ticket — the Linux-privileged
    adversarial lane is already that ticket's own stated acceptance criterion.
-5. **Leave G3, G4, G5 and G7 where they are** — recorded in ADR 0035's
+5. **Leave G3, G4, G5 and G7 where they are** — recorded in Core ADR 0035's
    amendment, in the docs' platform matrix, and in AAASM-5785/5814/5840/5849
    respectively. None needs a new decision.
 6. **Do not open a reference-monitor or host-wide `PreToolUse` implementation
@@ -410,7 +411,7 @@ recorded here rather than changed, following the AAASM-5527 precedent.
 does not use that recommendation. Sandlock remains the default"* — and `:411` —
 *"until it ships, `--isolation auto` selects Sandlock unconditionally"* — both
 describe the pre-AAASM-5808 behaviour. AAASM-5808 is Done and ratified as an
-ADR 0035 amendment (2026-08-21): `aa-cli/src/commands/run.rs:1529` routes
+Core ADR 0035 amendment (2026-08-21): `aa-cli/src/commands/run.rs:1529` routes
 `IsolationIntent::Auto` to `auto_select` (`:1656`), which walks a candidate
 list and selects by `plan()` eligibility. The page's own claim that
 `isolation_backend`'s default "continues to select Sandlock" is true only for
@@ -422,7 +423,7 @@ disposition: a Bug under Epic 5526 to reconcile that section (and its heading,
 *"Choosing between the two backends"*, on a page that opens by stating three
 backends ship).
 
-### F2 — ADR 0035's AAASM-5808 amendment names a two-candidate walk; the code walks three
+### F2 — Core ADR 0035's AAASM-5808 amendment names a two-candidate walk; the code walks three
 
 The amendment states the candidate list is `[sandlock, aasm-native]`, Sandlock
 first. `auto_select`'s `CANDIDATES` is a three-element array including
@@ -431,5 +432,5 @@ backend is only reachable on a macOS host in the first place, and an
 unavailable candidate is rejected with a recorded `ConsideredBackend` — but the
 ratified text and the code do not say the same thing.
 
-**Suggested disposition:** a small amendment correction to ADR 0035, or a Bug
+**Suggested disposition:** a small amendment correction to Core ADR 0035, or a Bug
 alongside F1. Not fixed here: a spike should not edit a ratified ADR.
