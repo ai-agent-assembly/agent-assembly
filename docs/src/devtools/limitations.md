@@ -36,6 +36,7 @@ cannot do, that one records where the documentation used to say otherwise.
 | Drift detection and repair | **Supported** | Detected at `status`/`verify` time, not in real time. |
 | Adjudicating protection probe | **Supported** | Shipped as the default probe (AAASM-5300); see [`verify`](#what-verify-adjudicates-and-when-it-still-exits-6). |
 | `strict` blocking on a high-severity scanner finding | **Planned** | [AAASM-5277](https://lightning-dust-mite.atlassian.net/browse/AAASM-5277), [AAASM-5281](https://lightning-dust-mite.atlassian.net/browse/AAASM-5281). Today `strict` redacts, like `recommended`. |
+| `PreToolUse` hook registration (pre-execution mediation of shell/file tool calls) | **Planned** | [AAASM-5646](https://lightning-dust-mite.atlassian.net/browse/AAASM-5646), [AAASM-5534](https://lightning-dust-mite.atlassian.net/browse/AAASM-5534). No adapter registers one today, on any platform — see [Hooks are not registered](#hooks-are-not-registered-pretooluse-is-unmediated) below. |
 | Endpoint managed-settings file | **Installable, opt-in and authorized** | [AAASM-5298](https://lightning-dust-mite.atlassian.net/browse/AAASM-5298). `--install-managed-settings`; verified by read-back. |
 | Endpoint managed-settings *enforcement* keys | **Still unmeasured** | Documented as non-overridable; no real override attempt has been measured on any host. [How it would be measured](managed-device-measurement.md). |
 | Byte-exact configuration restore | **Unsupported** | Semantics-exact by accepted constraint (C3). |
@@ -465,12 +466,73 @@ Three knock-on limits worth stating:
 
 [AAASM-5344]: https://lightning-dust-mite.atlassian.net/browse/AAASM-5344
 
+## Hooks are not registered: `PreToolUse` is unmediated
+
+**No adapter registers a `PreToolUse` hook, on any platform** ([AAASM-5646]).
+`WRITABLE_KEYS` in `aa-devtool-claude-code/src/managed_settings.rs` and the
+non-managed `settings.json` write path in `aa-devtool-claude-code/src/apply.rs`
+both carry a `permissions`/`permissionMode` surface but no `hooks` key, and no
+code path in this crate constructs one. Concretely: a shell command run through
+Claude Code's `Bash` tool, and a file read/write/edit through its file tools,
+reach the tool **before** anything Agent Assembly wrote is consulted. This is
+true of the shipped adapter even when the managed-settings file, the proxy CA
+and the launch environment are all correctly installed — those mechanisms cover
+different surfaces (see the capability table above), not this one.
+
+This is a **decision, not an oversight discovered too late to fix**: the
+mechanism exists and is deliberately not wired, for three reasons that make
+"wire it up" a bigger design question than a hook registration:
+
+1. **The decision function `PreToolUse` would need to call —
+   `handle_policy_query` (`aa-runtime/src/pipeline/mod.rs`) — is private to a
+   running `aa-runtime` process and reached only over gRPC**, with registry
+   lineage, `op_control` state and audit-write side effects a hook process has
+   none of. A hook invoked as a short-lived subprocess evaluating a policy file
+   directly (the way `aasm policy simulate` does) is a *different, weaker*
+   mechanism — no agent registry, no lineage-resolved cascade, no audit trail
+   — and shipping it under the same name as "routes to `handle_policy_query`"
+   would be exactly the kind of overclaim this page exists to prevent.
+2. **`allowManagedHooksOnly` makes a locally-written hook inert under the
+   profile that most needs it.** `managed_settings_document()` sets
+   `allowManagedHooksOnly: strict` for the `strict` profile — so once that key
+   is present, Claude Code honours a `hooks` entry **only** if it also lives in
+   the root-owned managed-settings document, not in `~/.claude/settings.json`.
+   Writing a hook there is a materially different, higher-stakes change: it
+   goes through `WRITABLE_KEYS`, `validate_managed_document` and the
+   `ConsentDisclosure`/read-back path that governs every other write to that
+   file, and a root-owned document whose hook `command` names a
+   user-writable binary path is its own review question.
+3. **The exit-code contract has no test pinning it.** This page's inferred-
+   bypass list already names "a hook exiting `1` instead of `2`" — Claude
+   Code only blocks on exit code `2`; `1` and any other non-zero code do not.
+   Registering a hook without a regression test asserting the exact contract
+   (a real Bash call blocked, with the file it would have created absent, per
+   exit code `2` and *not* `1`) would convert a documented absence into an
+   undocumented, untested bypass — a worse state than today's.
+
+[AAASM-5646] tracks this decision explicitly; [AAASM-5534] is the separate,
+broader question of whether host-wide `PreToolUse` mediation is feasible at
+all — this page's answer does not wait on that study.
+
+**What this means for a policy author**: a `GovernanceAction::ProcessExec`
+(`aa-core/src/policy.rs`) deny rule targeting a `Capability::TerminalExec`
+(`aa-security/src/policy/capability.rs`) compiles, validates, and is evaluated
+correctly by the policy engine — but nothing on the Claude Code integration
+path today generates that action before the shell command already ran. The
+same is true of a file-access deny rule against the `Read`/`Write`/`Edit`
+tools. Enforcement against these tool calls, where it exists at all today, is
+the sidecar proxy and eBPF layers described at the top of this repository's
+`.claude/CLAUDE.md` — not this integration.
+
+[AAASM-5646]: https://lightning-dust-mite.atlassian.net/browse/AAASM-5646
+[AAASM-5534]: https://lightning-dust-mite.atlassian.net/browse/AAASM-5534
+
 ## Hooks cannot carry a sensitive-data claim
 
 Claude Code hooks govern **tool and action execution**. They cannot see or modify
 model-bound prompt content, so no hook can support a sensitive-data protection
-claim. They remain available for tool governance; they are never a substitute for
-in-path interception.
+claim. **None are registered today** (see above); even if one were, it would
+never be a substitute for in-path interception.
 
 `NODE_TLS_REJECT_UNAUTHORIZED` is **never set** by Agent Assembly. Setting it
 would make interception "work" by disabling certificate verification, and a TLS
