@@ -14,13 +14,15 @@
 //! third case rather than silently building a `LaunchRequest` naming a path
 //! the guest will fail to find.
 //!
-//! **The guest image today carries no general toolchain** — no python, no
-//! git, no shell beyond busybox's own applets (see AAASM-5849, filed
-//! alongside this module). Every real `aasm run <command>` invocation whose
-//! program is not one of [`GUEST_RESIDENT_PROGRAMS`] and not under the
-//! shared directory refuses here, honestly, rather than reaching the guest
-//! and failing there in a way this backend cannot distinguish from every
-//! other kind of guest-side failure.
+//! **The guest image carries a real, minimal dev toolchain** — `git`,
+//! `python3`, and `/bin/sh` (AAASM-5849; see
+//! `aa-isolation-macos-vm-poc/README.md`'s "Guest dev toolchain (AAASM-5849)"
+//! for what was actually verified and what wasn't). Every real
+//! `aasm run <command>` invocation whose program is not one of
+//! [`GUEST_RESIDENT_PROGRAMS`] and not under the shared directory still
+//! refuses here, honestly, rather than reaching the guest and failing there
+//! in a way this backend cannot distinguish from every other kind of
+//! guest-side failure.
 
 use std::path::{Path, PathBuf};
 
@@ -33,7 +35,18 @@ pub const GUEST_SHARE_MOUNTPOINT: &str = "/mnt/share";
 /// virtiofs share — see `aa-isolation-macos-vm-poc/scripts/build-guest-rootfs.sh`.
 /// A request naming one of these passes through unmapped; naming anything
 /// else absolute and outside the share is refused (see [`to_guest_path`]).
-pub const GUEST_RESIDENT_PROGRAMS: &[&str] = &["/usr/local/bin/aa-isolation-launch", "/usr/local/bin/busybox"];
+///
+/// `/usr/bin/git`, `/usr/bin/python3`, and `/bin/sh` (AAASM-5849) are the
+/// real paths `scripts/fetch-guest-toolchain.sh`'s pinned Alpine extraction
+/// installs them at — confirmed by the same extraction the rootfs build
+/// uses, not assumed.
+pub const GUEST_RESIDENT_PROGRAMS: &[&str] = &[
+    "/usr/local/bin/aa-isolation-launch",
+    "/usr/local/bin/busybox",
+    "/usr/bin/git",
+    "/usr/bin/python3",
+    "/bin/sh",
+];
 
 /// Why a host path could not be mapped into the guest's reachable
 /// filesystem.
@@ -43,8 +56,8 @@ pub enum PathMappingError {
     /// mounted in the guest at all beyond the fixed guest-resident binaries.
     NoShareConfigured,
     /// The path is outside the shared directory and is not one of
-    /// [`GUEST_RESIDENT_PROGRAMS`] — the guest cannot reach it, and per
-    /// AAASM-5849 the guest today carries no toolchain to substitute.
+    /// [`GUEST_RESIDENT_PROGRAMS`] — the guest's fixed toolchain (AAASM-5849)
+    /// does not include this program either.
     Unreachable {
         /// The host path that could not be mapped.
         host_path: String,
@@ -62,7 +75,7 @@ impl core::fmt::Display for PathMappingError {
             Self::Unreachable { host_path } => write!(
                 f,
                 "`{host_path}` is outside the shared project directory and is not one of this guest image's \
-                 fixed resident binaries ({}) — the guest has no toolchain to reach it (AAASM-5849)",
+                 fixed resident binaries ({}) — see AAASM-5849 for what the guest's toolchain does carry",
                 GUEST_RESIDENT_PROGRAMS.join(", ")
             ),
         }
@@ -116,6 +129,13 @@ mod tests {
     }
 
     #[test]
+    fn the_aaasm_5849_toolchain_programs_pass_through_unmapped_even_with_no_share() {
+        for program in ["/usr/bin/git", "/usr/bin/python3", "/bin/sh"] {
+            assert_eq!(to_guest_path(program, None), Ok(program.to_string()));
+        }
+    }
+
+    #[test]
     fn a_path_under_the_share_is_rewritten_to_the_guest_mountpoint() {
         let share = Path::new("/Users/dev/myproject");
         assert_eq!(
@@ -127,11 +147,11 @@ mod tests {
     #[test]
     fn a_path_outside_the_share_is_refused_by_name() {
         let share = Path::new("/Users/dev/myproject");
-        let result = to_guest_path("/usr/bin/python3", Some(share));
+        let result = to_guest_path("/usr/bin/ruby", Some(share));
         assert_eq!(
             result,
             Err(PathMappingError::Unreachable {
-                host_path: "/usr/bin/python3".to_string()
+                host_path: "/usr/bin/ruby".to_string()
             })
         );
     }
@@ -139,7 +159,7 @@ mod tests {
     #[test]
     fn a_path_outside_the_share_with_no_share_configured_names_the_right_error() {
         assert_eq!(
-            to_guest_path("/usr/bin/python3", None),
+            to_guest_path("/usr/bin/ruby", None),
             Err(PathMappingError::NoShareConfigured)
         );
     }

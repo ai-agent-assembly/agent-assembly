@@ -161,8 +161,9 @@ fn shared_limitations() -> Vec<String> {
     vec![
         "the permitted set is a list of path subtrees, mapped through `crate::paths::to_guest_path` \
          from the launch's own working directory; anything outside the shared directory and outside \
-         `crate::paths::GUEST_RESIDENT_PROGRAMS` is refused before the guest boots, never silently \
-         dropped (AAASM-5849 tracks the guest image having no general toolchain to reach beyond that)"
+         `crate::paths::GUEST_RESIDENT_PROGRAMS`'s fixed set (the guest's own binaries plus the \
+         AAASM-5849 dev toolchain — git, python3, /bin/sh) is refused before the guest boots, never \
+         silently dropped"
             .to_string(),
         "what was measured is the virtiofs share this launch's working directory is mounted at — a \
          grant on a guest-resident program's own path (the implicit exec grant every launch carries) is \
