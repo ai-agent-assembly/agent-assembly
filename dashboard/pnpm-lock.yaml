@@ -104,7 +104,7 @@ importers:
         specifier: ^7.18.0
         version: 7.18.0(eslint@8.57.1)(typescript@5.9.3)
       '@vitejs/plugin-react':
-        specifier: ^6.0.5
+        specifier: ^6.1.1
         version: 6.1.1(vite@8.2.2(esbuild@0.28.1)(yaml@2.9.0))
       '@vitest/coverage-v8':
         specifier: ^4.1.7
