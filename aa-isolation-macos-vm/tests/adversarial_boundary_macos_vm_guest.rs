@@ -81,23 +81,29 @@
 //! runs above — this is real, repeated, real-hardware evidence, not a
 //! one-off.
 //!
-//! A third, genuinely distinct issue was found (not fixed) while
-//! stress-testing concurrency beyond what this file needs: `real_hardware.rs`
-//! run under the *default* parallel test runner — three tests, each booting
-//! its own guest at nearly the same instant — intermittently hits
-//! `VZVirtualMachine.start failed: ... "A directory sharing device
-//! configuration is invalid." ... "No such file or directory"` (confirmed via
-//! the same un-suppressed-stderr technique; the target directory is created
-//! synchronously before the helper is spawned and is never removed early —
-//! this is not a defect in this crate's own directory handling). This reads
-//! as a Virtualization.framework-level race in concurrent `VZVirtualMachine`
+//! A third, genuinely distinct issue was found while stress-testing
+//! concurrency beyond what this file needs: `real_hardware.rs` run under the
+//! *default* parallel test runner — three tests, each booting its own guest
+//! at nearly the same instant — intermittently hits `VZVirtualMachine.start
+//! failed: ... "A directory sharing device configuration is invalid." ...
+//! "No such file or directory"` (confirmed via the same un-suppressed-stderr
+//! technique; the target directory is created synchronously before the
+//! helper is spawned and is never removed early — this is not a defect in
+//! this crate's own directory handling). This reads as a
+//! Virtualization.framework-level race in concurrent `VZVirtualMachine`
 //! *start* validation, not a rootfs-sharing problem — a different mechanism
 //! than AAASM-5854's own scope, and `vmm::boot`'s existing bounded retry
-//! (3 attempts, 300ms backoff) does not reliably absorb it. Not chased
-//! further this pass — see AAASM-5854's own tracking comment for the
-//! disclosure and why `--test-threads=1` remains the documented, correct
-//! constraint for any file (this one included) that boots more than one real
-//! guest.
+//! (3 attempts, 300ms backoff) does not reliably absorb it.
+//!
+//! **AAASM-5870**: `vmm::boot` now brackets every boot in a cross-process
+//! `flock` (`vmm::BootLock`) so no two boots issued by this crate overlap
+//! inside a helper's `VZVirtualMachine.start()` call — see that type's own
+//! docs for the full reasoning and its known limitation (not verified
+//! against a live concurrent boot this pass; no substrate artifacts were
+//! available to build one). `--test-threads=1` remains the documented,
+//! correct constraint for any file (this one included) that boots more than
+//! one real guest, until the lock alone is confirmed sufficient on real
+//! hardware.
 
 use std::path::Path;
 

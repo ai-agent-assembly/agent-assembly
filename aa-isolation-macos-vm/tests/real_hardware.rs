@@ -26,8 +26,25 @@
 //! *start* validation, confirmed via un-suppressed helper stderr, not a
 //! defect in this crate's own directory creation (the shared directory is
 //! created synchronously before the helper is spawned, and nothing removes
-//! it early). Not root-caused or fixed this pass — `--test-threads=1`
-//! remains the correct, documented product constraint until it is.
+//! it early).
+//!
+//! **AAASM-5870**: `vmm::boot` now holds a cross-process advisory lock
+//! (`vmm::BootLock`, see its own docs for the evidence and reasoning) for
+//! the duration of every boot, so no two boots issued by this crate — from
+//! this file's three tests, from `MacosVmBackend::discover()`'s own probe
+//! boot, or from two real concurrent `aasm run` invocations — are ever
+//! mid-`VZVirtualMachine.start()` at the same time. This is the same
+//! boundary `--test-threads=1` already serializes on, made the crate's own
+//! default behavior instead of a testing convention. It has a regression
+//! test for the locking mechanism itself
+//! (`vmm::tests::boot_lock_serializes_concurrent_acquirers`), but **whether
+//! it is sufficient to eliminate this failure was not verified on live
+//! hardware this pass** — the substrate artifacts
+//! (`AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}`) were not available in
+//! this pass's environment to build and boot real concurrent guests against.
+//! `--test-threads=1` therefore remains the documented, correct invocation
+//! until someone with the substrate confirms the lock alone is enough to
+//! drop it.
 //!
 //! The first test below bypasses `aa_isolation::plan::negotiate` deliberately
 //! (calls `prepare`/`spawn`/`wait_for_exit` directly against a hand-built
