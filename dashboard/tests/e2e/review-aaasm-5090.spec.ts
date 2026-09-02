@@ -91,6 +91,13 @@ const MATRIX = {
   ],
   // Call samples need a proposed-vs-current policy diff nothing computes yet.
   sampleCalls: [],
+  // AAASM-5106 / ADR 0024: `cascadeLoaded` is required-but-always-present on the
+  // wire, so a realistic payload carries it — the fields this fixture omits are
+  // the ones the gateway genuinely has no source for, and this is not one of
+  // them. Omitting it made `decodeCascadeFields` reject the body and render the
+  // cascade lane's "shape this dashboard cannot read" absence, which is a
+  // different surface from the absent-vs-zero folds this spec exists to check.
+  cascadeLoaded: true,
 }
 
 interface Harness {
