@@ -239,6 +239,11 @@ struct DetachRecord {
     /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own exit
     /// status (`$?`), captured alongside `read_stderr_file`.
     read_status_file: PathBuf,
+    /// AAASM-5532 diagnostic pass, round 2: `cat /proc/self/stat`'s stdout —
+    /// a plain output-redirected file, so it exists (empty or not) even when
+    /// the read fails, unlike the input-redirected `read < /proc/self/stat`
+    /// this replaced for diagnosis.
+    stat_dump_file: PathBuf,
 }
 
 /// Detach `inner` from the launched process via `setsid --fork` plus a second
@@ -271,20 +276,25 @@ struct DetachRecord {
 /// back every time. `read`, run by the leaf shell itself with no fork, reads
 /// that shell's own `/proc/self/stat`.
 fn as_detached_grandchild(files: &DetachRecord, inner: &str) -> String {
-    // AAASM-5532 diagnostic pass: two straightforward fixes (awk-forking,
-    // then a redundant /proc read grant that `system_reads(true)` already
-    // provides) both failed to change this outcome on real CI — the empty
-    // ppid survives both, so the actual cause is still unconfirmed. Rather
-    // than guess a third time, this leaf now redirects the `read`'s own
-    // stderr to a file and records its exit status, so the next real CI run
-    // reveals what actually happened at that redirection instead of only
-    // its silent, empty-on-failure result.
+    // AAASM-5532 diagnostic pass, round 2: the first diagnostic capture
+    // (`read ... 2> stderr_file`) came back with exit status 2 and an
+    // unwritten stderr file — meaning the *input* redirection
+    // (`< /proc/self/stat`) itself failed before `read` ever started, and a
+    // failed input redirection on a simple command is reported to the
+    // shell's own (unredirected, and here unreachable) stderr rather than
+    // the command's own `2>`, which is why the capture came back empty. A
+    // plain `cat /proc/self/stat > dump 2> dump_stderr` does not have this
+    // blind spot: its *output* redirections are still set up even when the
+    // read itself fails, so this directly answers "can this process open
+    // /proc/self/stat at all, and if not, what does the kernel say why."
     let leaf = format!(
-        "echo $$ > {} ; sleep 0.3 ; read -r _ _ _ ppid _ < /proc/self/stat 2> {} ; echo $? > {} ; printf '%s' \
-         \"$ppid\" > {} ; {inner} ; printf x > {}",
+        "echo $$ > {} ; sleep 0.3 ; cat /proc/self/stat > {} 2> {} ; echo $? > {} ; read -r _ _ _ ppid _ < {} ; \
+         printf '%s' \"$ppid\" > {} ; {inner} ; printf x > {}",
         shell_word(&files.pid_file.to_string_lossy()),
+        shell_word(&files.stat_dump_file.to_string_lossy()),
         shell_word(&files.read_stderr_file.to_string_lossy()),
         shell_word(&files.read_status_file.to_string_lossy()),
+        shell_word(&files.stat_dump_file.to_string_lossy()),
         shell_word(&files.ppid_file.to_string_lossy()),
         shell_word(&files.done_marker.to_string_lossy()),
     );
@@ -695,6 +705,7 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
         done_marker: scratch.permitted().join("control-done"),
         read_stderr_file: scratch.permitted().join("control-read-stderr"),
         read_status_file: scratch.permitted().join("control-read-status"),
+        stat_dump_file: scratch.permitted().join("control-stat-dump"),
     };
     let test_target = scratch.forbidden().join("escaped-write");
     let test_files = DetachRecord {
@@ -703,6 +714,7 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
         done_marker: scratch.permitted().join("test-done"),
         read_stderr_file: scratch.permitted().join("test-read-stderr"),
         read_status_file: scratch.permitted().join("test-read-status"),
+        stat_dump_file: scratch.permitted().join("test-stat-dump"),
     };
 
     let (control, _) = run(
