@@ -238,7 +238,15 @@ impl BootLock {
     /// backoff.
     fn acquire() -> std::io::Result<Self> {
         let path = lock_path();
-        let file = std::fs::OpenOptions::new().create(true).write(true).open(&path)?;
+        // `truncate(false)`, deliberately: this file's only purpose is to be
+        // `flock`ed — its contents (there are none) are never read or
+        // meaningful — so truncating on every open is unnecessary churn on
+        // a path other processes may be contending to open concurrently.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)?;
         // SAFETY: `file`'s fd is valid for the duration of this call, and
         // `flock` only ever inspects/locks it — no aliasing or lifetime
         // hazard.
