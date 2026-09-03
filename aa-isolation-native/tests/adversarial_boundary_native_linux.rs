@@ -217,7 +217,7 @@ fn as_grandchild(inner: &str) -> String {
     format!("/bin/sh -c {}; exit 0", shell_word(inner))
 }
 
-/// The three files a detached grandchild's leaf script leaves behind, so the
+/// The files a detached grandchild's leaf script leaves behind, so the
 /// scenario can observe it without racing it.
 struct DetachRecord {
     /// The grandchild's own PID, written first — identifies the process to
@@ -232,18 +232,13 @@ struct DetachRecord {
     /// polling for it, rather than sleeping a fixed duration, is what keeps the
     /// test run's timing identical to the control's instead of guessing at it.
     done_marker: PathBuf,
-    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own stderr,
-    /// captured because two prior real-CI-driven fixes both left the ppid
-    /// empty without explaining why.
+    /// AAASM-6041: the `getppid()` read's own stderr, kept so a failure of the
+    /// *replacement* mechanism (rather than the `/proc/self` one AAASM-5532
+    /// diagnosed) still surfaces a real cause instead of a bare empty ppid.
     read_stderr_file: PathBuf,
-    /// AAASM-5532 diagnostic pass: the `/proc/self/stat` read's own exit
-    /// status (`$?`), captured alongside `read_stderr_file`.
+    /// AAASM-6041: the `getppid()` read's own exit status (`$?`), alongside
+    /// `read_stderr_file`.
     read_status_file: PathBuf,
-    /// AAASM-5532 diagnostic pass, round 2: `cat /proc/self/stat`'s stdout —
-    /// a plain output-redirected file, so it exists (empty or not) even when
-    /// the read fails, unlike the input-redirected `read < /proc/self/stat`
-    /// this replaced for diagnosis.
-    stat_dump_file: PathBuf,
 }
 
 /// Detach `inner` from the launched process via `setsid --fork` plus a second
@@ -267,36 +262,67 @@ struct DetachRecord {
 /// `done_marker` rather than sleeping a guessed duration before checking the
 /// effect.
 ///
-/// The parent PID is read with the shell's own `read` builtin, deliberately
-/// not `awk` (or any other external program): spawning one would make *that
-/// program's* `/proc/self` the thing read, which is a new child of the leaf
-/// and never re-parents — always reporting the leaf's own PID and never `1`,
-/// whatever the kernel actually did. CI caught exactly this on the first
-/// version of this scenario, which used `awk` and got an empty ppid field
-/// back every time. `read`, run by the leaf shell itself with no fork, reads
-/// that shell's own `/proc/self/stat`.
+/// # Why the parent PID is read via `python3 -c 'os.getppid()'`, not `/proc/self`
+///
+/// AAASM-5532's first three passes tried reading `/proc/self/stat` from the
+/// leaf, and its fourth pass got a real, reproducible `Permission denied` —
+/// which a follow-up research pass (AAASM-5532's proc-self Landlock probe
+/// report) then showed was **not** a Landlock or kernel limitation: 4
+/// independent CI runs proved `/proc/self` reads work fine for a re-parented
+/// descendant under an *unscoped* `/proc` grant. AAASM-6041 found the real
+/// cause in this backend's own, deliberate `/proc` scoping
+/// (`aa-isolation-native/src/proc_scope.rs`, AAASM-5804): granting `/proc`
+/// does not install one rule on `/proc` — to keep every *other* process's
+/// `/proc/<pid>/environ` outside the boundary, it installs one rule per
+/// non-PID top-level entry plus **the literal string `/proc/self`**, resolved
+/// once, in the launched process (P0), before `execve`. That rule's kernel
+/// object is P0's own per-PID directory. A grandchild this scenario detaches
+/// has a *different* real PID, so *its* `/proc/self` resolves to a directory
+/// no rule names — exactly the "descendant cannot read its own per-PID entry
+/// either" limitation `proc_scope.rs`'s own module doc already states. This
+/// is not a bug to fix: withholding it is what keeps every other process's
+/// `/proc/<pid>` out of the boundary, and loosening it back to an unscoped
+/// `/proc` grant would undo AAASM-5804.
+///
+/// `getppid()` is a plain syscall, not filesystem-mediated by Landlock at
+/// all, so it sidesteps the scoping limitation entirely rather than working
+/// around it — exactly the follow-up direction AAASM-5532's `#[ignore]`
+/// doc comment named ("a compiled helper reading its own PPID via
+/// `getppid()` instead of `/proc/self/stat`"). `python3` is used instead of a
+/// new compiled helper binary because `CPython`'s `os.getppid()` calls the
+/// raw syscall directly (no `/proc` read), and `python3` is already proven to
+/// exec correctly under this exact `system_reads` grant shape by the
+/// AAASM-5849 real-Landlock-enforcement pass (dynamically-linked, needs `/usr`
+/// and `/lib` granted for its interpreter and libraries — both already in
+/// `system_reads`).
+///
+/// `read`, not `awk`, is still used to drain `pid_file`'s marker line further
+/// down in each scenario that calls this helper for reasons unrelated to
+/// `/proc`: spawning `awk` here would make *that new process's* identity, not
+/// the leaf's, the thing recorded, and CI caught exactly this on the first
+/// version of this scenario.
 fn as_detached_grandchild(files: &DetachRecord, inner: &str) -> String {
-    // AAASM-5532 diagnostic pass, round 2: the first diagnostic capture
-    // (`read ... 2> stderr_file`) came back with exit status 2 and an
-    // unwritten stderr file — meaning the *input* redirection
-    // (`< /proc/self/stat`) itself failed before `read` ever started, and a
-    // failed input redirection on a simple command is reported to the
-    // shell's own (unredirected, and here unreachable) stderr rather than
-    // the command's own `2>`, which is why the capture came back empty. A
-    // plain `cat /proc/self/stat > dump 2> dump_stderr` does not have this
-    // blind spot: its *output* redirections are still set up even when the
-    // read itself fails, so this directly answers "can this process open
-    // /proc/self/stat at all, and if not, what does the kernel say why."
+    // `exec`, not a plain invocation: spawning `python3` as a *child* of the
+    // leaf (the first draft of this fix did exactly that) makes `getppid()`
+    // report the leaf's own pid, not the leaf's parent — the same "measuring
+    // the wrong process's identity" mistake `awk` made in this scenario's
+    // very first version, just one syscall later. `exec` replaces the leaf
+    // shell's process image with python3 *in place*, keeping the same pid and
+    // therefore the same, correctly-current ppid `getppid()` reports — no new
+    // process is created to do the reading.
+    let py_script = format!(
+        "import os\nopen({ppid_file:?}, 'w').write(str(os.getppid()))\nos.system({inner:?})\nopen({done_marker:?}, \
+         'w').write('x')\n",
+        ppid_file = files.ppid_file.to_string_lossy(),
+        inner = inner,
+        done_marker = files.done_marker.to_string_lossy(),
+    );
     let leaf = format!(
-        "echo $$ > {} ; sleep 0.3 ; cat /proc/self/stat > {} 2> {} ; echo $? > {} ; read -r _ _ _ ppid _ < {} ; \
-         printf '%s' \"$ppid\" > {} ; {inner} ; printf x > {}",
+        "echo $$ > {} ; sleep 0.3 ; exec python3 -c {} 2> {} ; echo $? > {}",
         shell_word(&files.pid_file.to_string_lossy()),
-        shell_word(&files.stat_dump_file.to_string_lossy()),
+        shell_word(&py_script),
         shell_word(&files.read_stderr_file.to_string_lossy()),
         shell_word(&files.read_status_file.to_string_lossy()),
-        shell_word(&files.stat_dump_file.to_string_lossy()),
-        shell_word(&files.ppid_file.to_string_lossy()),
-        shell_word(&files.done_marker.to_string_lossy()),
     );
     let subshell = format!("( /bin/sh -c {} & ) ; exit 0", shell_word(&leaf));
     format!("setsid --fork /bin/sh -c {} & wait", shell_word(&subshell))
@@ -671,8 +697,10 @@ fn an_alternate_executable_path_is_confined_alike() {
 /// # What is actually measured, not assumed
 ///
 /// * **Re-parenting** — read, not inferred from the shell script's shape. Each
-///   grandchild writes its own parent PID to `/proc/self/stat` *after* sleeping
-///   past the point its immediate parent has exited, and the scenario asserts
+///   grandchild `exec`s into `getppid()` (see `as_detached_grandchild`'s own
+///   doc for why `exec`, not a child process, and why `getppid()` rather than
+///   `/proc/self`) *after* sleeping past the point its immediate parent has
+///   exited, and the scenario asserts
 ///   that value is `1`: the definition of "re-parented to the nearest
 ///   subreaper" on a runner where nothing upstream of the launcher installs
 ///   one. A value other than `1` fails loudly, naming
@@ -692,54 +720,34 @@ fn an_alternate_executable_path_is_confined_alike() {
 /// test run's timing is identical to the control's rather than a guessed sleep
 /// racing the leaf.
 ///
-/// # `#[ignore]`d: a real, CI-evidenced blocker, not a scenario defect
+/// # Real-CI history: two mechanisms diagnosed and one worked around, not fixed
 ///
 /// Four real-CI iterations on `ubuntu-24.04` (`gh pr checks` on PR #2348,
-/// AAASM-5532) converged on the actual cause of the control run's own empty
-/// `ppid_file` — not a harness bug, not a fixable grant-scoping mistake:
+/// AAASM-5532) converged on a real, reproducible `cat: /proc/self/stat:
+/// Permission denied` reading the detached grandchild's own `/proc/self` —
+/// via the shell's own `read` builtin (not `awk`, which reads *its own*
+/// `/proc/self` as a freshly-forked process and never re-parents; caught on
+/// the very first version of this scenario) with output-redirected
+/// diagnostics (an input-redirected `read < /proc/self/stat`'s own failure is
+/// reported to the shell's unredirected stderr, not the command's `2>`, so it
+/// captures nothing — the third iteration's dead end).
 ///
-/// 1. First real failure: `awk '{print $4}' /proc/self/stat` read `awk`'s own
-///    `/proc/self`, not the leaf's — fixed with the shell's own `read`
-///    builtin (no fork).
-/// 2. Second real failure, same symptom: a "fix" adding an explicit `/proc`
-///    read grant was a no-op — `spec()`'s `spec_with(..., include_proc:
-///    true)` already grants it via `system_reads`.
-/// 3. Third real failure: diagnostic capture on the `read` itself came back
-///    with exit status 2 and *no* stderr — a failed *input* redirection is
-///    reported to the shell's own unredirected stderr, not the command's own
-///    `2>`, so nothing was actually captured.
-/// 4. Fourth real failure, now conclusive: replacing the input-redirected
-///    `read` with `cat /proc/self/stat > dump 2> dump_stderr` (whose output
-///    redirection is set up regardless of whether `cat` itself succeeds)
-///    surfaced the real error: **`cat: /proc/self/stat: Permission denied`**
-///    — a genuine Landlock denial, even though `/proc` is granted as a
-///    directory (confirmed in `aa-isolation-native/src/rules.rs::install`:
-///    a directory-scoped `PathBeneath` rule keeps every access right,
-///    including `ReadFile`, and should cover files beneath it).
+/// A follow-up research pass (AAASM-5532's proc-self Landlock probe report)
+/// then showed this was **not** a Landlock or kernel limitation: 4 zero-cost
+/// GitHub-hosted CI runs, each closing one fidelity gap against the real
+/// product's exact ruleset and launch order — including genuine PID-1
+/// re-parenting — all read `/proc/self/stat` successfully under an *unscoped*
+/// `/proc` grant.
 ///
-/// The most likely explanation — not itself re-verified this pass, since
-/// confirming it needs iterating against Landlock's actual magic-symlink
-/// resolution behavior on real hardware, beyond this bonus scenario's
-/// budget — is that `/proc/self` is a magic symlink whose target resolves
-/// per-reader, and Landlock's real-path resolution for it does not behave
-/// the same as for an ordinary symlink under a granted directory. Whatever
-/// the precise kernel mechanism, the denial is real and reproducible, not
-/// a test defect: the identical `/proc` grant reaches ordinary files
-/// (`system_reads`'s own doc cites `/proc/bootconfig` working under this
-/// exact rule shape).
-///
-/// Left `#[ignore]`d rather than deleted so the four-iteration evidence
-/// trail stays attached to working code, and removed from
-/// `.ci/isolation-native-lane-scenarios.txt` (that manifest's own gate
-/// requires every listed name to be `measured`, which an `#[ignore]`d test
-/// cannot be). This attack class — detached/re-parented descendant
-/// confinement — remains the one class from AAASM-5532's original set with
-/// no working coverage; a follow-up needs either a `/proc`-avoiding way to
-/// observe re-parenting (e.g. a compiled helper reading its own PPID via
-/// `getppid()` instead of `/proc/self/stat`) or a resolved understanding of
-/// why the grant does not reach this specific magic-symlink target.
+/// AAASM-6041 found the real, precise cause: this backend's own `/proc`
+/// scoping (`aa-isolation-native/src/proc_scope.rs`, AAASM-5804) trades a
+/// deliberate, documented limitation for a real security property. See
+/// `as_detached_grandchild`'s own doc for the mechanism and why the fix here
+/// is `getppid()`, not a `/proc` grant change — a `/proc` grant that reached
+/// every descendant's own per-PID directory would have to stop excluding
+/// other *processes'* per-PID directories too, undoing AAASM-5804. Restored
+/// to `.ci/isolation-native-lane-scenarios.txt` alongside this fix.
 #[test]
-#[ignore]
 fn a_detached_and_reparented_grandchild_is_confined_alike() {
     const SCENARIO: &str = "native adversarial: a detached and re-parented grandchild is confined alike";
     let Some(backend) = require_confining_backend(SCENARIO) else {
@@ -753,7 +761,6 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
         done_marker: scratch.permitted().join("control-done"),
         read_stderr_file: scratch.permitted().join("control-read-stderr"),
         read_status_file: scratch.permitted().join("control-read-status"),
-        stat_dump_file: scratch.permitted().join("control-stat-dump"),
     };
     let test_target = scratch.forbidden().join("escaped-write");
     let test_files = DetachRecord {
@@ -762,7 +769,6 @@ fn a_detached_and_reparented_grandchild_is_confined_alike() {
         done_marker: scratch.permitted().join("test-done"),
         read_stderr_file: scratch.permitted().join("test-read-stderr"),
         read_status_file: scratch.permitted().join("test-read-status"),
-        stat_dump_file: scratch.permitted().join("test-stat-dump"),
     };
 
     let (control, _) = run(
@@ -893,8 +899,8 @@ fn assert_reparented_to_the_nearest_subreaper(scenario: &str, run_label: &str, f
     assert_eq!(
         ppid, 1,
         "[{scenario}] the {run_label} run's detached grandchild reports parent PID {ppid}, not 1 — either it \
-         never actually re-parented (its immediate parent had not yet exited when it read \
-         /proc/self/stat) or this runner has a subreaper other than PID 1 installed via \
+         never actually re-parented (its immediate parent had not yet exited when it called \
+         getppid()) or this runner has a subreaper other than PID 1 installed via \
          PR_SET_CHILD_SUBREAPER upstream of the launcher"
     );
 }

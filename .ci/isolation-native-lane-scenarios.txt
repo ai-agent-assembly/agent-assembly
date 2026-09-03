@@ -25,20 +25,27 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 17
+# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 18
 # from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
 # aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
 # 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
 # scenarios to the second file and the third file itself, covering
 # DirectEgressBypass, CloudMetadata, AddressRepresentation and
 # UnixSocketsAndDescriptors — the four `AttackFamily` variants this backend has
-# no protection for, only a capability report that says so; AAASM-5532 attempted
-# to add 1 more to the second file, the detached/re-parented-descendant class the
-# AAASM-5872 campaign found uncovered anywhere in this repo, but left it
-# `#[ignore]`d — see that test's own doc comment for the real, CI-evidenced
-# reason (a Landlock `Permission denied` reading a re-parented grandchild's own
-# `/proc/self/stat` that four real-CI iterations could not conclusively
-# root-cause within this pass's scope).
+# no protection for, only a capability report that says so; AAASM-5532 added 1
+# more to the second file, the detached/re-parented-descendant class the
+# AAASM-5872 campaign found uncovered anywhere in this repo. It shipped
+# `#[ignore]`d first (PR #2348) after a real, reproducible `Permission denied`
+# reading a re-parented grandchild's own `/proc/self/stat`; AAASM-6041 found the
+# real cause — not a Landlock/kernel limitation (a follow-up research pass
+# disproved that), but this backend's own deliberate `/proc` scoping
+# (`aa-isolation-native/src/proc_scope.rs`, AAASM-5804) granting `/proc/self`
+# only for the top-level launched process, never a forked descendant — and
+# fixed the scenario's own observation mechanism to read the parent PID via
+# `getppid()` (a plain syscall, not filesystem-mediated) instead. See
+# `as_detached_grandchild`'s doc for the fix and why it needed two attempts
+# (the first accidentally repeated the exact "measuring the wrong process"
+# mistake this same scenario's `awk` version made originally).
 #
 # AAASM-5805 also ported four of the Sandlock lane's eight negotiation
 # scenarios to `adversarial_negotiation_native.rs` — the four that generalize
@@ -52,6 +59,7 @@
 # `cargo nextest list`, matching its Sandlock-lane counterpart.
 
 native adversarial: a descendant cannot make a syscall the launch did not permit
+native adversarial: a detached and re-parented grandchild is confined alike
 native adversarial: a direct connection outside any egress grant arrives, and the launch states the domain is uncovered
 native adversarial: a hard link cannot bring a forbidden file into the grant
 native adversarial: a parent-traversal path does not escape the grant
