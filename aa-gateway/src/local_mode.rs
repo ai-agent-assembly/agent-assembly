@@ -7,7 +7,7 @@
 //!
 //! [`DeploymentMode::Local`]: aa_core::config::DeploymentMode::Local
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -226,6 +226,21 @@ pub enum LocalModeError {
         #[source]
         source: StorageError,
     },
+    /// `config.host` was not loopback and `AA_LOCAL_ALLOW_REMOTE` was not
+    /// set (AAASM-5011).
+    ///
+    /// Local mode defaults to `AuthMode::Off` (see `router_with_resolved_dist`'s
+    /// AAASM-3909 comment), so a non-loopback bind with no explicit opt-in
+    /// would put an unauthenticated admin API on the network. Fails closed
+    /// — a silently-idle container serving nothing would be worse than a
+    /// startup error naming exactly what to set.
+    #[error("refusing to bind local gateway to {addr}: {reason}")]
+    RemoteBindNotPermitted {
+        /// The socket address that was requested.
+        addr: String,
+        /// Human-readable explanation naming the opt-in env var.
+        reason: String,
+    },
 }
 
 /// Build the local-mode Axum router.
@@ -369,6 +384,42 @@ pub(crate) async fn open_storage(path: &Path) -> Result<(SqlitePool, Arc<dyn Sto
     Ok((pool, storage))
 }
 
+/// Whether the local gateway may bind to `addr` (AAASM-5011).
+///
+/// Loopback is always allowed and is the default (`LocalModeConfig::default()`'s
+/// `host`) — this preserves AAASM-1576 AC #6's original guarantee (never
+/// `0.0.0.0` *by default*) unconditionally. Anything else is refused unless
+/// `AA_LOCAL_ALLOW_REMOTE=1` (or `true`) is set: local mode defaults to
+/// `AuthMode::Off` (see `router_with_resolved_dist`'s AAASM-3909 comment),
+/// so an unopted-in non-loopback bind would put an unauthenticated admin
+/// API on the network. Unlike `aa-proxy::check_bind_addr` (AAASM-5348) this
+/// is a single opt-in, not a second auth precondition — `/healthz` and
+/// `/api/v1/health` stay unauthenticated even with auth configured, so
+/// gating the opt-in on auth being on would protect exactly one route
+/// while still leaving `docker run -p` broken for an operator who set the
+/// opt-in but not auth. The auth posture is surfaced as a warning at the
+/// call site instead.
+///
+/// Returns `Err` with a human-readable reason naming the opt-in; `Ok(())`
+/// otherwise.
+pub(crate) fn check_local_bind_addr(addr: SocketAddr) -> Result<(), String> {
+    if addr.ip().is_loopback() {
+        return Ok(());
+    }
+    let allowed = std::env::var("AA_LOCAL_ALLOW_REMOTE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if allowed {
+        return Ok(());
+    }
+    Err(format!(
+        "{addr} is not loopback and AA_LOCAL_ALLOW_REMOTE is not set. Local mode defaults to \
+         127.0.0.1 because it defaults to no authentication (AuthMode::Off) — set \
+         AA_LOCAL_ALLOW_REMOTE=1 to bind a non-loopback address anyway (e.g. for `docker run -p`), \
+         ideally alongside AA_GATEWAY_AUTH or AA_JWT_SECRET."
+    ))
+}
+
 /// Probe `GET http://127.0.0.1:{port}/healthz` with a 100 ms timeout.
 ///
 /// Used as the auto-start idempotency check by `start_local()` (AAASM-1725):
@@ -484,14 +535,25 @@ pub(crate) async fn start_local_with_pid_path(
     config: &LocalModeConfig,
     pid_path: &Path,
 ) -> Result<LocalGatewayHandle, LocalModeError> {
-    // 1. Pre-flight idempotency probe (AAASM-1715).
+    // 1. Refuse a non-loopback bind up front, before the idempotency probe
+    //    or any storage side effect (AAASM-5011). The probe below always
+    //    checks 127.0.0.1 regardless of `config.host` — without this gate
+    //    first, a refused non-loopback config could still short-circuit
+    //    through the "already running" path and hand back a handle whose
+    //    `local_addr` claims a bind that was never actually validated.
+    let requested_addr = SocketAddr::new(config.host, config.port);
+    check_local_bind_addr(requested_addr).map_err(|reason| LocalModeError::RemoteBindNotPermitted {
+        addr: requested_addr.to_string(),
+        reason,
+    })?;
+
+    // 2. Pre-flight idempotency probe (AAASM-1715).
     if probe_running(config.port).await {
-        let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
         // Closed channel: shutdown_tx.send(()) is a no-op because the
         // existing gateway runs in a different process — we don't own it.
         let (shutdown_tx, _closed_rx) = oneshot::channel();
         return Ok(LocalGatewayHandle {
-            local_addr: addr,
+            local_addr: requested_addr,
             shutdown_tx,
             server_task: None,
             pool: None,
@@ -500,7 +562,7 @@ pub(crate) async fn start_local_with_pid_path(
         });
     }
 
-    // 2. Storage (AAASM-1710 / AAASM-1859). `open_storage` now also
+    // 3. Storage (AAASM-1710 / AAASM-1859). `open_storage` now also
     //    constructs the SQLite-backed `StorageBackend` and applies
     //    pending schema migrations. The pool stays on the handle for
     //    AAASM-1576 AC #8's explicit close-on-shutdown; the storage
@@ -510,9 +572,10 @@ pub(crate) async fn start_local_with_pid_path(
     //    lifecycle owner.
     let (pool, storage) = open_storage(&config.storage_path).await?;
 
-    // 3. Bind 127.0.0.1:port (AC #6 — explicit Ipv4Addr::LOCALHOST,
-    //    never 0.0.0.0).
-    let requested_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), config.port);
+    // 4. Bind config.host:port. AC #6's original guarantee (never 0.0.0.0
+    //    by default) is preserved by LocalModeConfig::default()'s host —
+    //    a non-default host only reaches here because check_local_bind_addr
+    //    already accepted it in step 1 (AAASM-5011).
     let listener = TcpListener::bind(requested_addr)
         .await
         .map_err(|source| LocalModeError::Bind {
@@ -520,17 +583,26 @@ pub(crate) async fn start_local_with_pid_path(
             source,
         })?;
     let local_addr = listener.local_addr().unwrap_or(requested_addr);
+    if !local_addr.ip().is_loopback() {
+        tracing::warn!(
+            target: "aa_gateway::local_mode",
+            %local_addr,
+            "local gateway bound to a non-loopback address via AA_LOCAL_ALLOW_REMOTE; \
+             local mode defaults to no authentication (AuthMode::Off) — set AA_GATEWAY_AUTH \
+             or AA_JWT_SECRET unless this host is otherwise network-isolated",
+        );
+    }
 
-    // 4. Startup banner (stderr).
+    // 5. Startup banner (stderr).
     write_banner(&local_addr, &config.storage_path);
 
-    // 5. PID file (AC #7).
+    // 6. PID file (AC #7).
     std::fs::write(pid_path, std::process::id().to_string()).map_err(|source| LocalModeError::PidFile {
         path: pid_path.to_path_buf(),
         source,
     })?;
 
-    // 6. Serve. The shutdown_rx side stays in the spawned task; the
+    // 7. Serve. The shutdown_rx side stays in the spawned task; the
     //    handle keeps shutdown_tx for AAASM-1728's signal handler.
     //    The `JoinHandle` lives on the handle so `shutdown()` can await
     //    the task's completion after signalling shutdown_tx.
@@ -563,7 +635,18 @@ mod tests {
 
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    /// Serialize `AA_LOCAL_ALLOW_REMOTE`-dependent tests under `cargo test`
+    /// (redundant, but harmless, under `cargo nextest`'s one-process-per-test
+    /// model — matches the pattern in `aa-gateway/src/auth.rs`).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_allow_remote_env() {
+        std::env::remove_var("AA_LOCAL_ALLOW_REMOTE");
+    }
 
     /// AAASM-1576 AC #4, driven through the router built by `router()`:
     /// `GET /healthz` returns 200 with `application/json` content-type and
@@ -887,36 +970,173 @@ mod tests {
     /// AAASM-1576 AC #1 + AC #6 end-to-end:
     /// `start_local()` binds `127.0.0.1:<port>` (never `0.0.0.0`) and
     /// `/healthz` responds with the documented local-mode JSON.
-    #[tokio::test]
-    async fn start_local_binds_127_0_0_1_and_serves_healthz() {
-        let (config, _tmp, port) = test_config_with_ephemeral_port().await;
-        let pid_path = _tmp.path().join("gateway.pid");
+    ///
+    /// Explicitly unsets `AA_LOCAL_ALLOW_REMOTE` (AAASM-5011): before that
+    /// env var existed, this test's pass condition couldn't depend on
+    /// ambient process env at all — the bind was hardcoded. Now it can,
+    /// so this is the actual AC #6 regression test, not just a test that
+    /// happens to still pass.
+    ///
+    /// Plain `#[test]` on a private current-thread runtime rather than
+    /// `#[tokio::test]`, matching `aa-api/tests/serve_local_hardened.rs`:
+    /// `ENV_LOCK` must stay held for the whole env-dependent body, and
+    /// holding a `std::sync::MutexGuard` across an actual `.await` point
+    /// is `clippy::await_holding_lock` (denied via `-D warnings`); driving
+    /// the async work through `block_on` instead keeps the guard's scope
+    /// off the await points clippy inspects.
+    #[test]
+    fn start_local_binds_127_0_0_1_and_serves_healthz() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_allow_remote_env();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        rt.block_on(async {
+            let (config, _tmp, port) = test_config_with_ephemeral_port().await;
+            let pid_path = _tmp.path().join("gateway.pid");
 
-        let handle = start_local_with_pid_path(&config, &pid_path)
-            .await
-            .expect("start_local");
+            let handle = start_local_with_pid_path(&config, &pid_path)
+                .await
+                .expect("start_local");
 
-        // AC #6 — bound address is the v4 loopback, not 0.0.0.0.
-        assert_eq!(
-            handle.local_addr.ip(),
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            "start_local must bind 127.0.0.1, never 0.0.0.0"
+            // AC #6 — bound address is the v4 loopback, not 0.0.0.0.
+            assert_eq!(
+                handle.local_addr.ip(),
+                IpAddr::V4(Ipv4Addr::LOCALHOST),
+                "start_local must bind 127.0.0.1, never 0.0.0.0"
+            );
+            assert_eq!(handle.local_addr.port(), port);
+
+            // AC #1 — /healthz reachable with the documented body.
+            let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
+                .await
+                .expect("GET /healthz")
+                .json::<serde_json::Value>()
+                .await
+                .expect("parse json");
+            assert_eq!(body["mode"], "local");
+            assert_eq!(body["storage"], "sqlite");
+
+            // Tear down — the spawned axum task lives until the runtime shuts it
+            // down at the end of the test. Signal it explicitly via the handle.
+            let _ = handle.shutdown_tx.send(());
+        });
+    }
+
+    /// Three-way check on [`check_local_bind_addr`] (AAASM-5011): a rule
+    /// that always refuses or always allows would satisfy any two of
+    /// these individually, but not all three together.
+    #[test]
+    fn check_local_bind_addr_loopback_always_allowed() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_allow_remote_env();
+        assert!(check_local_bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 7391)).is_ok());
+        // The IPv4 loopback range is the whole 127.0.0.0/8, not just
+        // 127.0.0.1 — proves the check is `is_loopback()`, not a
+        // hardcoded equality against the single most common address.
+        assert!(
+            check_local_bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 7391)).is_ok(),
+            "127.0.0.2 is still within 127.0.0.0/8 and must be treated as loopback"
         );
-        assert_eq!(handle.local_addr.port(), port);
+        // IPv6 loopback (::1) must be allowed on the same footing as IPv4.
+        assert!(
+            check_local_bind_addr(SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 7391)).is_ok(),
+            "::1 is IPv6 loopback and must be allowed without the opt-in"
+        );
+    }
 
-        // AC #1 — /healthz reachable with the documented body.
-        let body = reqwest::get(format!("http://127.0.0.1:{port}/healthz"))
-            .await
-            .expect("GET /healthz")
-            .json::<serde_json::Value>()
-            .await
-            .expect("parse json");
-        assert_eq!(body["mode"], "local");
-        assert_eq!(body["storage"], "sqlite");
+    #[test]
+    fn check_local_bind_addr_non_loopback_refused_without_opt_in() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_allow_remote_env();
+        let err = check_local_bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7391))
+            .expect_err("non-loopback bind must be refused without the opt-in");
+        assert!(
+            err.contains("AA_LOCAL_ALLOW_REMOTE"),
+            "refusal reason must name the opt-in so an operator knows what to set: {err}"
+        );
+        // The IPv6 unspecified address (::) must be refused on the same
+        // footing as IPv4's 0.0.0.0.
+        assert!(
+            check_local_bind_addr(SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 7391)).is_err(),
+            ":: must be refused without the opt-in, same as 0.0.0.0"
+        );
+    }
 
-        // Tear down — the spawned axum task lives until the runtime shuts it
-        // down at the end of the test. Signal it explicitly via the handle.
+    #[test]
+    fn check_local_bind_addr_non_loopback_allowed_with_opt_in() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_LOCAL_ALLOW_REMOTE", "1");
+        let result = check_local_bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 7391));
+        clear_allow_remote_env();
+        assert!(result.is_ok(), "the explicit opt-in must permit a non-loopback bind");
+    }
+
+    /// `start_local_with_pid_path` end-to-end with the opt-in set: the
+    /// gateway actually binds the requested non-loopback address rather
+    /// than silently falling back to loopback (AAASM-5011).
+    ///
+    /// Plain `#[test]` + private runtime — see
+    /// `start_local_binds_127_0_0_1_and_serves_healthz` for why.
+    #[test]
+    fn start_local_with_opt_in_binds_the_requested_non_loopback_host() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_LOCAL_ALLOW_REMOTE", "1");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        let handle = rt.block_on(async {
+            let (mut config, _tmp, _port) = test_config_with_ephemeral_port().await;
+            config.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+            let pid_path = _tmp.path().join("gateway.pid");
+
+            let result = start_local_with_pid_path(&config, &pid_path).await;
+            (result, _tmp)
+        });
+        clear_allow_remote_env();
+        let (handle, _tmp) = handle;
+        let handle = handle.expect("start_local with opt-in set must succeed");
+
+        assert!(
+            handle.local_addr.ip().is_unspecified(),
+            "expected the requested 0.0.0.0 bind, got {}",
+            handle.local_addr.ip()
+        );
+
         let _ = handle.shutdown_tx.send(());
+    }
+
+    /// `start_local_with_pid_path` end-to-end with no opt-in: refuses to
+    /// start rather than silently binding loopback or panicking
+    /// (AAASM-5011) — a fail-closed error the operator can act on.
+    ///
+    /// Plain `#[test]` + private runtime — see
+    /// `start_local_binds_127_0_0_1_and_serves_healthz` for why.
+    #[test]
+    fn start_local_without_opt_in_refuses_non_loopback_host() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_allow_remote_env();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        rt.block_on(async {
+            let (mut config, _tmp, _port) = test_config_with_ephemeral_port().await;
+            config.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+            let pid_path = _tmp.path().join("gateway.pid");
+
+            // `.expect_err()` would require `LocalGatewayHandle: Debug`, which
+            // it deliberately isn't — match explicitly instead.
+            match start_local_with_pid_path(&config, &pid_path).await {
+                Err(err) => assert!(
+                    matches!(err, LocalModeError::RemoteBindNotPermitted { .. }),
+                    "expected RemoteBindNotPermitted, got {err:?}"
+                ),
+                Ok(_) => panic!("start_local without the opt-in must refuse a non-loopback host"),
+            }
+        });
     }
 
     /// AAASM-1576 AC #7: `start_local()` must write the running process
@@ -986,6 +1206,52 @@ mod tests {
 
         let _ = first.shutdown_tx.send(());
         let _ = second.shutdown_tx.send(());
+    }
+
+    /// AAASM-5011 regression: the probe-based "already running"
+    /// short-circuit must not bypass `check_local_bind_addr`. The probe
+    /// always checks `127.0.0.1:<port>` regardless of `config.host`, so
+    /// without the check running *before* the probe, a second call with a
+    /// non-loopback `config.host` and no opt-in could short-circuit
+    /// through the probe and hand back a handle claiming a bind address
+    /// that was never validated (and never actually bound by this call).
+    ///
+    /// Plain `#[test]` + private runtime — see
+    /// `start_local_binds_127_0_0_1_and_serves_healthz` for why.
+    #[test]
+    fn start_local_refuses_non_loopback_host_even_when_already_running_on_loopback() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_allow_remote_env();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+        rt.block_on(async {
+            let (mut config, _tmp, _port) = test_config_with_ephemeral_port().await;
+            let first_pid_path = _tmp.path().join("first.pid");
+            let second_pid_path = _tmp.path().join("second.pid");
+
+            let first = start_local_with_pid_path(&config, &first_pid_path)
+                .await
+                .expect("first start_local on loopback must succeed");
+
+            // Same port (so the probe would report "already running"), but
+            // a non-loopback host and no opt-in — must still be refused.
+            config.host = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+            match start_local_with_pid_path(&config, &second_pid_path).await {
+                Err(err) => assert!(
+                    matches!(err, LocalModeError::RemoteBindNotPermitted { .. }),
+                    "expected RemoteBindNotPermitted, got {err:?}"
+                ),
+                Ok(_) => panic!(
+                    "the probe short-circuit must not bypass check_local_bind_addr \
+                     for a non-loopback config.host"
+                ),
+            }
+            assert!(!second_pid_path.exists(), "a refused start must not write a PID file");
+
+            let _ = first.shutdown_tx.send(());
+        });
     }
 
     /// AAASM-1576 AC #5 (de-flaked per AAASM-3650): `start_local()`
