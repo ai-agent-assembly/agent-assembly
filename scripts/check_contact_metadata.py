@@ -21,6 +21,23 @@ Consumer strategy (least intrusive per artifact):
 * `README.md` — a **precise single-literal sync** of the one security email in
   the "Security & Support" bullet. No other byte of the README is rewritten.
 
+MARKER-NAME EXCEPTION (AAASM-5756)
+-----------------------------------
+`.github` and `python-sdk` render both facts from a single `security_contact`
+region via `render_security_contact_block`. This repo deliberately keeps the
+two separate `security_contact_email` / `security_sla` regions above instead
+of unifying them, evaluated and kept as-is under AAASM-5756: (a) this repo's
+generated email body is a sentence fragment ("Alternatively, email **X**")
+completed by hand-authored prose after the END sentinel (the "with the
+subject line: ..." text), unlike the self-contained paragraph the other repos
+render, so folding it into one region would either generate over that
+hand-authored continuation or leave it orphaned outside the region; and (b)
+this repo's SLA table carries a repo-specific third row ("Patch or
+mitigation") plus a hand-authored header row, both of which must stay outside
+the generated region — a single region spanning both facts would either
+swallow that repo-specific row or require a second bounded region inside the
+first, which bounded-region tooling here does not support.
+
 CROSS-REPO DISTRIBUTION CONTRACT
 --------------------------------
 We **pin** the canonical facts to a specific `.github` commit (see
