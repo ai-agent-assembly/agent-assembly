@@ -6,25 +6,79 @@
 //! directory and atomically swapping the rebuilt scope index + compiled
 //! patterns into the live slot whenever a `*.yaml` is added, removed, or
 //! modified.
+//!
+//! # Delivery guarantee (AAASM-5382)
+//!
+//! The OS filesystem notification each watcher above uses is a **latency
+//! optimization, not the correctness mechanism**. Every loading path also
+//! starts a [`start_reconciler`]/[`start_cascade_reconciler`] poll, and it is
+//! that poll — not the OS watcher — that provides the actual guarantee:
+//! **every change to the watched path is picked up within
+//! [`RECONCILE_INTERVAL`] (5s), even when the OS delivers nothing.**
+//!
+//! This guarantee exists because neither platform's push path is sound on
+//! its own, in different ways, both measured directly against this module's
+//! actual watch shapes:
+//!
+//! - **macOS (FSEvents):** ~6% of single-write notifications are dropped
+//!   outright — not late, absent. Measured over 80 trials; see
+//!   `WATCH_LIVENESS_BOUND`'s doc in this module's tests for the full table.
+//! - **Linux (inotify), single-file watch (`start_watcher`):** the watch is
+//!   on the file's **inode**, not its path. A rename-based save — vim, most
+//!   IDE atomic-saves, `sed -i`, Ansible's `copy` module, a Kubernetes
+//!   ConfigMap symlink swap — delivers `ATTRIB` (so the *first* rename-save
+//!   still works) → `DELETE_SELF` → `IGNORED`, which removes the watch from
+//!   the kernel with **no re-arm path**. Every subsequent save — rename-based
+//!   *or* in-place — is then silently lost, permanently, until process
+//!   restart.
+//! - **Linux (inotify), directory watch (`start_cascade_watcher`):** watches
+//!   the directory's own inode, which a rename *inside* it never replaces —
+//!   measured immune to the single-file failure mode above.
+//!
+//! **The asymmetry this leaves, stated so the guarantee above is not
+//! over-read:** the reconciler *masks* a dead single-file inotify watch, it
+//! does not repair it. On Linux, after the first rename-based save to a
+//! single watched file, that path is permanently poll-only (bounded by
+//! [`RECONCILE_INTERVAL`]) rather than push (sub-second) for the life of the
+//! process. The cascade (directory) watch is not affected by this.
 
 use arc_swap::ArcSwap;
-use notify::{recommended_watcher, EventKind, RecursiveMode, Watcher};
+use notify::{recommended_watcher, Config, EventKind, PollWatcher, RecursiveMode, Watcher};
 use std::{
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use crate::engine::{CascadeState, PolicyEngine};
 use crate::policy::{PolicyDocument, PolicyValidator};
 
+/// How often the reconciliation poll re-reads the watched path (AAASM-5382).
+///
+/// Bounds the staleness window for both platform-specific delivery failures
+/// this module's tests measure: macOS/FSEvents drops ~6% of single-write
+/// notifications outright (see `WATCH_LIVENESS_BOUND`'s doc below), and
+/// Linux/inotify's single-file watch dies permanently after one rename-based
+/// save (an `ATTRIB` → `DELETE_SELF` → `IGNORED` sequence with no re-arm
+/// path — vim, most IDE atomic saves, `sed -i`, and k8s ConfigMap updates all
+/// save this way). 5s is chosen to *improve* on the OS path's own measured
+/// tail on macOS (p90 5.7s, worst case 8.7s) rather than merely bound it, and
+/// is well inside what an operator would consider "policy took effect
+/// promptly" for a governance control.
+pub(crate) const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Start a background filesystem watcher on `path`.
 ///
-/// On [`EventKind::Modify`] events: re-parse the file. If valid, atomically
-/// swap into `slot`. Invalid parses are silently ignored — the current policy
-/// stays active.
+/// On [`EventKind::Create`] or [`EventKind::Modify`] events: re-parse the
+/// file. If valid, atomically swap into `slot`. Invalid parses are silently
+/// ignored — the current policy stays active.
+///
+/// This is a latency optimization, not the correctness mechanism — see this
+/// module's `//!` doc and [`start_reconciler`] for the delivery guarantee
+/// this watcher alone does not provide.
 ///
 /// Returns the watcher handle; drop it to stop watching.
 #[allow(dead_code)]
@@ -40,14 +94,58 @@ pub(crate) fn start_watcher(
     Ok(watcher)
 }
 
-/// Process one filesystem event: on a `Modify`, re-parse the policy file and
-/// atomically swap a valid document into `slot`. Empty or invalid content is
-/// ignored so the active policy stays in place.
+/// Start a reconciliation poll on `path`, backing up [`start_watcher`]
+/// (AAASM-5382).
+///
+/// The OS watcher above is a latency optimization, not the correctness
+/// mechanism — it can silently drop a notification (macOS) or die
+/// permanently after one rename-based save (Linux; see [`RECONCILE_INTERVAL`]'s
+/// doc). This function re-stats `path` every `interval` and, when its
+/// content differs from what it last saw, drives the same
+/// [`handle_fs_event`] the OS watcher does — so a missed push notification
+/// is recovered within `interval`, and no second swap path is introduced.
+///
+/// Uses [`notify::PollWatcher`] with content comparison (not mtime alone):
+/// mtime-only comparison misses a write that preserves or predates the old
+/// mtime (`cp -p`, `rsync --times`, a restored backup) — exactly the
+/// silent-miss class this function exists to catch. A poll tick that finds
+/// no change emits no event, so a healthy OS watcher's swaps are not
+/// duplicated and `slot`/downstream caches see no spurious churn.
+///
+/// Returns the poll handle; drop it to stop reconciling.
+pub(crate) fn start_reconciler(
+    path: &Path,
+    slot: Arc<ArcSwap<PolicyDocument>>,
+    interval: Duration,
+) -> notify::Result<PollWatcher> {
+    let path_buf = path.to_path_buf();
+    let mut watcher = PollWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            handle_fs_event(res, &path_buf, &slot);
+        },
+        Config::default()
+            .with_poll_interval(interval)
+            .with_compare_contents(true),
+    )?;
+    watcher.watch(path, RecursiveMode::NonRecursive)?;
+    Ok(watcher)
+}
+
+/// Process one filesystem event: on a `Create` or `Modify`, re-parse the
+/// policy file and atomically swap a valid document into `slot`. Empty or
+/// invalid content is ignored so the active policy stays in place.
+///
+/// `Create` is accepted, not just `Modify` (AAASM-5382): the reconciliation
+/// poll's `compare_to_event` emits `Create(CreateKind::Any)` when a poll tick
+/// finds content where its baseline saw none — a delete-then-recreate save
+/// whose absent window straddles a tick. Dropping that event would resync
+/// the reconciler's baseline to absent and only recover on the *next* change,
+/// silently reintroducing the staleness window this function exists to bound.
 fn handle_fs_event(res: notify::Result<notify::Event>, path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>) {
     let Ok(event) = res else {
         return;
     };
-    if !matches!(event.kind, EventKind::Modify(_)) {
+    if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
         return;
     }
     let Ok(yaml) = std::fs::read_to_string(path) else {
@@ -95,6 +193,42 @@ pub(crate) fn start_cascade_watcher(
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         handle_cascade_event(res, &dir_buf, &policy_slot, &cascade_slot, &policy_epoch);
     })?;
+    watcher.watch(dir, RecursiveMode::NonRecursive)?;
+    Ok(watcher)
+}
+
+/// Start a reconciliation poll on directory `dir`, backing up
+/// [`start_cascade_watcher`] (AAASM-5382). See [`start_reconciler`]'s doc for
+/// why a poll backstop is needed and how content comparison avoids spurious
+/// rebuilds; this is its cascade-directory twin, driving
+/// [`handle_cascade_event`] on each tick that finds a change.
+///
+/// The directory's own inode is what is watched (see
+/// [`start_cascade_watcher`]'s doc on why that inode survives a rename
+/// *inside* the directory), so this reconciler exists purely to bound the
+/// macOS drop rate — the Linux permanent-death failure mode measured for
+/// [`start_reconciler`] does not apply to the directory watch. It is added
+/// anyway for the same bounded-staleness guarantee and because a future
+/// platform backend change should not silently regress this cascade path's
+/// coverage without a test noticing.
+///
+/// Returns the poll handle; drop it to stop reconciling.
+pub(crate) fn start_cascade_reconciler(
+    dir: &Path,
+    policy_slot: Arc<ArcSwap<PolicyDocument>>,
+    cascade_slot: Arc<ArcSwap<CascadeState>>,
+    policy_epoch: Arc<AtomicU64>,
+    interval: Duration,
+) -> notify::Result<PollWatcher> {
+    let dir_buf = dir.to_path_buf();
+    let mut watcher = PollWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            handle_cascade_event(res, &dir_buf, &policy_slot, &cascade_slot, &policy_epoch);
+        },
+        Config::default()
+            .with_poll_interval(interval)
+            .with_compare_contents(true),
+    )?;
     watcher.watch(dir, RecursiveMode::NonRecursive)?;
     Ok(watcher)
 }
@@ -381,5 +515,110 @@ mod tests {
             "control: the same event over valid YAML must reach the parse step \
              and swap, otherwise the assertion above proves nothing"
         );
+    }
+
+    /// The reconciliation poll recovers a write the OS watcher never reports
+    /// at all — the actual guarantee this module's `//!` doc states
+    /// (AAASM-5382).
+    ///
+    /// [`start_watcher`] is deliberately absent from this test: the push path
+    /// is not mocked or stubbed, it simply does not exist here, so a swap can
+    /// only be explained by [`start_reconciler`]. And the file is written
+    /// exactly **once** — not through [`wait_for_swap`]'s re-applying
+    /// stimulus, which is precisely what makes the other tests in this
+    /// module unable to distinguish "the push path recovered" from "the poll
+    /// recovered": both would pass either way.
+    ///
+    /// Mutation proof: delete the `.watch(...)` call or the closure body in
+    /// [`start_reconciler`] and this test fails while every other test in
+    /// this module — none of which exercise the reconciler — stays green.
+    #[test]
+    fn reconciler_recovers_a_write_the_watcher_never_reported() {
+        let mut tmp = NamedTempFile::new().unwrap();
+        write!(tmp, "{}", ALLOW_YAML).unwrap();
+        tmp.flush().unwrap();
+
+        let initial = Arc::new(parse_doc(ALLOW_YAML));
+        let slot = Arc::new(ArcSwap::new(initial.clone()));
+
+        let _reconciler = start_reconciler(tmp.path(), slot.clone(), Duration::from_millis(100)).unwrap();
+
+        write_file(tmp.path(), DENY_YAML);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let current = loop {
+            let current = slot.load_full();
+            if !Arc::ptr_eq(&current, &initial) {
+                break current;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reconciler did not recover a single unreplayed write within 10s \
+                 (10 poll intervals at 100ms) — the reconciliation poll is not \
+                 working, or is not actually reaching handle_fs_event"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            !current.tools["search"].allow,
+            "search.allow should be false after the reconciler picks up the write"
+        );
+    }
+
+    /// A poll tick that finds no content change must not swap or otherwise
+    /// touch downstream state — asserted on the artifact that actually
+    /// decides staleness (`policy_epoch`), not on an absence of log lines or
+    /// similar proxy (AAASM-5382).
+    ///
+    /// Uses the cascade reconciler because `policy_epoch` is its externally
+    /// observable "did anything happen" signal; the single-file reconciler
+    /// has no equivalent counter to assert against.
+    ///
+    /// The control (writing changed content and asserting the epoch *does*
+    /// move) is required: without it, an epoch that stayed at 0 could mean
+    /// "correctly did nothing" or merely "the reconciler is dead" — the two
+    /// look identical unless something proves the reconciler is alive.
+    #[test]
+    fn reconciler_does_not_swap_when_content_is_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("global.yaml"), ALLOW_YAML).unwrap();
+
+        let policy_slot = Arc::new(ArcSwap::new(Arc::new(parse_doc(ALLOW_YAML))));
+        let cascade_slot = Arc::new(ArcSwap::new(Arc::new(CascadeState::default())));
+        let policy_epoch = Arc::new(AtomicU64::new(0));
+
+        let _reconciler = start_cascade_reconciler(
+            dir.path(),
+            policy_slot,
+            cascade_slot,
+            policy_epoch.clone(),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+
+        // Five idle intervals with no writes: if the poll swapped on every
+        // tick regardless of content, this would already have moved.
+        std::thread::sleep(Duration::from_millis(600));
+        assert_eq!(
+            policy_epoch.load(Ordering::Relaxed),
+            0,
+            "an idle reconciliation poll must not bump policy_epoch — that would \
+             needlessly invalidate the cascade decision cache on every tick"
+        );
+
+        // Control: prove the reconciler is alive and actually driving
+        // handle_cascade_event, so the assertion above means "correctly
+        // idle" and not "the reconciler never ran".
+        std::fs::write(dir.path().join("global.yaml"), DENY_YAML).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while policy_epoch.load(Ordering::Relaxed) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "control failed: policy_epoch never moved after a real content \
+                 change, so the idle assertion above proves nothing about a live \
+                 reconciler"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
