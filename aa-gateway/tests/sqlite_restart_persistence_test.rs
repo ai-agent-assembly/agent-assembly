@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use aa_core::identity::AgentId;
 use aa_gateway::storage::{
-    AgentRecord, AuditEvent, AuditFilter, MetricQuery, PolicyDocument, SqliteBackend, SqliteConfig, StorageBackend,
+    AgentRecord, AgentScope, AuditEvent, AuditFilter, MetricQuery, PolicyDocument, SqliteBackend, SqliteConfig,
+    StorageBackend,
 };
 use chrono::{TimeZone, Utc};
 use tempfile::TempDir;
@@ -101,7 +102,7 @@ async fn sqlite_data_survives_gateway_restart() {
     assert_eq!(ev.payload, Some(serde_json::json!({"survives": true})));
 
     let agent_row = backend
-        .get_agent(&agent)
+        .get_agent(&AgentScope::org("org-1"), &agent)
         .await
         .expect("get_agent")
         .expect("agent must persist across restart");

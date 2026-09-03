@@ -16,7 +16,7 @@ use aa_core::identity::AgentId;
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 
-use super::agent::{AgentFilter, AgentRecord};
+use super::agent::{AgentFilter, AgentRecord, AgentScope};
 use super::audit::{AuditEvent, AuditFilter};
 use super::backend::StorageBackend;
 use super::error::{StorageError, StorageResult};
@@ -363,15 +363,15 @@ fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Sqlite>, filter: &
         qb.push(if started { " AND " } else { " WHERE " });
         started = true;
     };
-    if let Some(team_id) = filter.team_id.as_ref() {
+    if let Some(team_id) = filter.team_id() {
         connective(qb);
-        qb.push("team_id = ").push_bind(team_id.clone());
+        qb.push("team_id = ").push_bind(team_id.to_owned());
     }
-    if let Some(org_id) = filter.org_id.as_ref() {
+    if let Some(org_id) = filter.scope().org_id() {
         connective(qb);
-        qb.push("org_id = ").push_bind(org_id.clone());
+        qb.push("org_id = ").push_bind(org_id.to_owned());
     }
-    if let Some(name_contains) = filter.name_contains.as_ref() {
+    if let Some(name_contains) = filter.name_contains() {
         connective(qb);
         qb.push("json_extract(metadata, '$.name') LIKE ")
             .push_bind(format!("%{name_contains}%"));
@@ -467,15 +467,20 @@ impl StorageBackend for SqliteBackend {
         Ok(())
     }
 
-    async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
-        let row = sqlx::query(
+    async fn get_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, enforcement_mode, \
-             enforcement_mode_expires_at FROM agent_registry WHERE agent_id = ?",
-        )
-        .bind(agent_id_to_text(id))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+             enforcement_mode_expires_at FROM agent_registry WHERE agent_id = ",
+        );
+        qb.push_bind(agent_id_to_text(id));
+        if let Some(org_id) = scope.org_id() {
+            qb.push(" AND org_id = ").push_bind(org_id.to_owned());
+        }
+        let row = qb
+            .build()
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         row.as_ref().map(row_to_agent_record).transpose()
     }
 
@@ -486,9 +491,9 @@ impl StorageBackend for SqliteBackend {
         );
         push_agent_where(&mut qb, &filter);
         qb.push(" ORDER BY agent_id");
-        if let Some(limit) = filter.limit {
+        if let Some(limit) = filter.limit() {
             qb.push(" LIMIT ").push_bind(i64::from(limit));
-            if let Some(offset) = filter.offset {
+            if let Some(offset) = filter.offset() {
                 qb.push(" OFFSET ").push_bind(i64::from(offset));
             }
         }
@@ -500,9 +505,14 @@ impl StorageBackend for SqliteBackend {
         rows.iter().map(row_to_agent_record).collect()
     }
 
-    async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
-        let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = ?")
-            .bind(agent_id_to_text(id))
+    async fn delete_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<()> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("DELETE FROM agent_registry WHERE agent_id = ");
+        qb.push_bind(agent_id_to_text(id));
+        if let Some(org_id) = scope.org_id() {
+            qb.push(" AND org_id = ").push_bind(org_id.to_owned());
+        }
+        let result = qb
+            .build()
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -1129,7 +1139,11 @@ mod tests {
             .expect("count");
         assert_eq!(count, 1, "upsert should not duplicate the row");
 
-        let fetched = backend.get_agent(&rec.agent_id).await.expect("get").expect("present");
+        let fetched = backend
+            .get_agent(&AgentScope::org("org-1"), &rec.agent_id)
+            .await
+            .expect("get")
+            .expect("present");
         assert_eq!(fetched.last_seen_at, later);
     }
 
@@ -1147,7 +1161,11 @@ mod tests {
         rec.enforcement_mode_expires_at = Some(deadline);
         backend.upsert_agent(rec.clone()).await.expect("upsert");
 
-        let fetched = backend.get_agent(&rec.agent_id).await.expect("get").expect("present");
+        let fetched = backend
+            .get_agent(&AgentScope::org("org-1"), &rec.agent_id)
+            .await
+            .expect("get")
+            .expect("present");
         assert_eq!(fetched.enforcement_mode, "observe");
         assert_eq!(fetched.enforcement_mode_expires_at, Some(deadline));
     }
@@ -1157,7 +1175,14 @@ mod tests {
         let (_tmp, backend) = open_temp_backend().await;
         backend.migrate().await.expect("migrate");
         let missing = AgentId::from_bytes([0xff; 16]);
-        assert!(backend.get_agent(&missing).await.expect("get").is_none());
+        // Deliberately exercising the escape hatch itself (AAASM-5648).
+        #[allow(clippy::disallowed_methods)]
+        let deployment_scope = AgentScope::entire_deployment();
+        assert!(backend
+            .get_agent(&deployment_scope, &missing)
+            .await
+            .expect("get")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1172,29 +1197,25 @@ mod tests {
             backend.upsert_agent(rec).await.expect("seed");
         }
 
+        // Deliberately exercising the escape hatch itself — these two filters
+        // intentionally span every org to prove the non-org filter axes still
+        // work (AAASM-5648).
+        #[allow(clippy::disallowed_methods)]
         let team_x = backend
-            .list_agents(AgentFilter {
-                team_id: Some("team-x".into()),
-                ..AgentFilter::default()
-            })
+            .list_agents(AgentFilter::new(AgentScope::entire_deployment()).with_team("team-x"))
             .await
             .expect("by team");
         assert_eq!(team_x.len(), 2);
 
         let org_1 = backend
-            .list_agents(AgentFilter {
-                org_id: Some("org-1".into()),
-                ..AgentFilter::default()
-            })
+            .list_agents(AgentFilter::new(AgentScope::org("org-1")))
             .await
             .expect("by org");
         assert_eq!(org_1.len(), 2);
 
+        #[allow(clippy::disallowed_methods)]
         let named_alpha = backend
-            .list_agents(AgentFilter {
-                name_contains: Some("Alpha".into()),
-                ..AgentFilter::default()
-            })
+            .list_agents(AgentFilter::new(AgentScope::entire_deployment()).with_name_contains("Alpha"))
             .await
             .expect("by name substring");
         assert_eq!(named_alpha.len(), 2);
@@ -1210,17 +1231,84 @@ mod tests {
         let rec = sample_agent(9, "team-x", "org-1", "Bravo");
         backend.upsert_agent(rec.clone()).await.expect("seed");
 
-        backend.delete_agent(&rec.agent_id).await.expect("first delete");
+        backend
+            .delete_agent(&AgentScope::org("org-1"), &rec.agent_id)
+            .await
+            .expect("first delete");
         assert!(
-            backend.get_agent(&rec.agent_id).await.expect("get").is_none(),
+            backend
+                .get_agent(&AgentScope::org("org-1"), &rec.agent_id)
+                .await
+                .expect("get")
+                .is_none(),
             "row should be removed"
         );
 
         let err = backend
-            .delete_agent(&rec.agent_id)
+            .delete_agent(&AgentScope::org("org-1"), &rec.agent_id)
             .await
             .expect_err("second delete must report NotFound");
         assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    /// AAASM-5648: a `get_agent`/`list_agents`/`delete_agent` call scoped to
+    /// org-2 must not see, or be able to delete, an agent registered under
+    /// org-1 — the type-level `AgentScope` requirement exists precisely so
+    /// this cannot regress into an unscoped call.
+    #[tokio::test]
+    async fn cross_org_scope_hides_and_protects_the_other_orgs_agent() {
+        let (_tmp, backend) = open_temp_backend().await;
+        backend.migrate().await.expect("migrate");
+        let rec = sample_agent(13, "team-x", "org-1", "Charlie");
+        backend.upsert_agent(rec.clone()).await.expect("seed");
+
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("org-2"), &rec.agent_id)
+                .await
+                .expect("get"),
+            None,
+            "org-2's scope must not see org-1's agent",
+        );
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("org-1"), &rec.agent_id)
+                .await
+                .expect("get"),
+            Some(rec.clone()),
+            "org-1's own scope must still see its own agent",
+        );
+        // Deliberately exercising the escape hatch itself (AAASM-5648).
+        #[allow(clippy::disallowed_methods)]
+        let deployment_scope = AgentScope::entire_deployment();
+        assert_eq!(
+            backend.get_agent(&deployment_scope, &rec.agent_id).await.expect("get"),
+            Some(rec.clone()),
+            "the boot-time escape hatch must still see every org",
+        );
+
+        let listed = backend
+            .list_agents(AgentFilter::new(AgentScope::org("org-2")))
+            .await
+            .expect("list");
+        assert!(
+            !listed.iter().any(|r| r.agent_id == rec.agent_id),
+            "org-2's scoped list must not include org-1's agent",
+        );
+
+        let err = backend
+            .delete_agent(&AgentScope::org("org-2"), &rec.agent_id)
+            .await
+            .expect_err("delete scoped to the wrong org must not affect the other org's row");
+        assert!(matches!(err, StorageError::NotFound(_)));
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("org-1"), &rec.agent_id)
+                .await
+                .expect("get"),
+            Some(rec),
+            "org-1's agent must survive an org-2-scoped delete attempt",
+        );
     }
 
     fn policy_doc(name: &str, body: &str) -> PolicyDocument {

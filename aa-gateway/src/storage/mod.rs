@@ -45,7 +45,7 @@ pub mod sensitive_data;
 pub mod sqlite;
 pub mod timescale;
 
-pub use agent::{AgentFilter, AgentRecord, TeamId};
+pub use agent::{AgentFilter, AgentRecord, AgentScope, TeamId};
 pub use audit::{AuditEvent, AuditFilter};
 pub use audit_bridge::audit_entry_to_storage_event;
 pub use backend::StorageBackend;

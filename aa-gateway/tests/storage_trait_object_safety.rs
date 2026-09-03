@@ -19,9 +19,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 
 use aa_gateway::storage::{
-    AgentFilter, AgentRecord, AuditEvent, AuditFilter, HealthStatus, Metric, MetricPoint, MetricQuery, PolicyDocument,
-    PolicyMeta, PolicyVersion, RetentionPolicy, RetentionStats, RowCounts, StorageBackend, StorageError, StorageHealth,
-    StorageResult,
+    AgentFilter, AgentRecord, AgentScope, AuditEvent, AuditFilter, HealthStatus, Metric, MetricPoint, MetricQuery,
+    PolicyDocument, PolicyMeta, PolicyVersion, RetentionPolicy, RetentionStats, RowCounts, StorageBackend,
+    StorageError, StorageHealth, StorageResult,
 };
 
 /// No-op `StorageBackend` implementation used only to prove dyn-safety.
@@ -41,13 +41,13 @@ impl StorageBackend for NoopStorage {
     async fn upsert_agent(&self, _: AgentRecord) -> StorageResult<()> {
         Ok(())
     }
-    async fn get_agent(&self, _: &AgentId) -> StorageResult<Option<AgentRecord>> {
+    async fn get_agent(&self, _: &AgentScope, _: &AgentId) -> StorageResult<Option<AgentRecord>> {
         Ok(None)
     }
     async fn list_agents(&self, _: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
         Ok(vec![])
     }
-    async fn delete_agent(&self, _: &AgentId) -> StorageResult<()> {
+    async fn delete_agent(&self, _: &AgentScope, _: &AgentId) -> StorageResult<()> {
         Ok(())
     }
     async fn save_policy(&self, doc: PolicyDocument) -> StorageResult<PolicyVersion> {
@@ -134,7 +134,9 @@ fn storage_error_covers_six_failure_modes() {
 #[test]
 fn supporting_types_are_publicly_constructible() {
     let _ = AuditFilter::default();
-    let _ = AgentFilter::default();
+    // AgentFilter deliberately has no Default (AAASM-5648) — construct via
+    // the mandatory-scope constructor instead.
+    let _ = AgentFilter::new(AgentScope::org("noop-org"));
     let _ = MetricQuery::default();
     let _ = RowCounts::default();
     let _: BTreeMap<String, String> = BTreeMap::new();
