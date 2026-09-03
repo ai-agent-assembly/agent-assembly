@@ -35,8 +35,8 @@ with the subject line: `[SECURITY] agent-assembly — <brief description>`.
 | Stage | Target |
 |---|---|
 <!-- BEGIN GENERATED: security_sla -->
-| Initial acknowledgement | Within 2 business days |
-| Severity assessment | Within 5 business days |
+| Acknowledgement | Within 2 business days |
+| Initial assessment | Within 5 business days |
 <!-- END GENERATED: security_sla -->
 | Patch or mitigation | Dependent on severity (Critical: 7 days, High: 14 days, Medium/Low: next release) |
 

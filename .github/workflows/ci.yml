@@ -168,6 +168,14 @@ on:
       - "CONTRIBUTING.md"
       - "SECURITY.md"
       - "scripts/qa/validate-community-health.py"
+      # AAASM-5756: the contact-metadata gate's negative-control harness.
+      # Paired with the `contact_metadata_gate` router filter below — a
+      # router filter without a matching `on.*.paths` entry is a dead
+      # trigger (ADR 0028). Note: `scripts/check_contact_metadata.py` and
+      # `README.md` are pre-existing gaps in this same filter predating this
+      # ticket (contact-metadata-check.yml itself is untouched here) — out
+      # of this ticket's scope, not fixed by this entry.
+      - "scripts/tests/contact-metadata-negative-control.sh"
       # AAASM-5893: the resource-lock slot mechanism (Subtask 1 of AAASM-5891's
       # resource-aware QA-campaign scheduler). Paired with the `qa_registry`
       # router filter below — `qa/tests/fixtures/**` above already covers the
@@ -571,6 +579,10 @@ jobs:
               - 'README.md'
               - 'scripts/check_contact_metadata.py'
               - '.github/workflows/contact-metadata-check.yml'
+              # AAASM-5756: the gate's negative-control harness. Same
+              # ADR 0028 pairing rule as qa_registry above — this path also
+              # needs a matching on.push.paths entry or it's a dead trigger.
+              - 'scripts/tests/contact-metadata-negative-control.sh'
             # AAASM-5677: glob-for-glob copy of doc-links.yml's own `changes`
             # router.
             doc_links_gate:
@@ -1371,6 +1383,25 @@ jobs:
 
       - name: Validate community-health files
         run: python3 scripts/qa/validate-community-health.py .
+
+  contact-metadata-negative-control-gate:
+    needs: [changes]
+    # AAASM-5756. Proves scripts/check_contact_metadata.py's `--check` gate
+    # is genuinely load-bearing, not merely present — same "negative control
+    # first" convention as registry-health-gate/backend-license above. Its
+    # own job/filter rather than a step inside `contact-metadata-gate`
+    # below: that job is a `uses:` call into the reusable
+    # ./.github/workflows/contact-metadata-check.yml workflow (a
+    # glob-for-glob copy of its own changes router per AAASM-5677), which
+    # this ticket deliberately does not modify, and a `uses:` job cannot
+    # carry its own extra steps.
+    if: needs.changes.outputs.contact_metadata_gate == 'true'
+    name: Contact-metadata gate negative control
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Self-test the contact-metadata gate (negative control)
+        run: bash scripts/tests/contact-metadata-negative-control.sh
 
   resource-lock-health-gate:
     needs: [changes]
@@ -4023,6 +4054,12 @@ jobs:
       # missing, or stripped of its required sections is a false PASS on
       # exactly the gap AAASM-5873's audit named (J33: NOT_COVERED).
       - community-health-gate
+      # AAASM-5756: blocks, like `registry-health-gate`/`community-health-gate`
+      # above and for the same reason — a contact-metadata gate whose
+      # `--check` mode no longer actually rejects a dropped/drifted region is
+      # a false PASS on the exact defect (SLA label divergence) this Story
+      # exists to prevent from recurring silently.
+      - contact-metadata-negative-control-gate
       # AAASM-5893: blocks, like `registry-health-gate` above and for the
       # same reason — a resource-lock mechanism that validates against a
       # broken registry, or whose exec-lock-survival regression case (11)
