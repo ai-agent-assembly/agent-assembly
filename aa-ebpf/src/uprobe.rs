@@ -27,8 +27,18 @@ pub struct UprobeManager {
 impl UprobeManager {
     /// Attach `SSL_write` uprobe and `SSL_read` uretprobe to the target PID.
     ///
-    /// Supports both OpenSSL 1.1.x (`SSL_write` symbol) and 3.x
-    /// (`SSL_write_ex` symbol) — both are attached when present.
+    /// Attaches by the `SSL_write` and `SSL_read` symbol names only. **The
+    /// OpenSSL 3.x `SSL_write_ex` / `SSL_read_ex` entry points are not
+    /// attached** — a prior version of this doc comment claimed they were
+    /// (AAASM-5634), which was false: neither symbol is referenced anywhere
+    /// in this crate or `aa-ebpf-probes`. `SSL_write`/`SSL_read` remain
+    /// present and commonly used in OpenSSL 3.x, so this is not a total gap,
+    /// but a caller that specifically uses the `_ex` variants (their retry
+    /// and short-write semantics differ from the classic API) is invisible to
+    /// this uprobe layer. See
+    /// `docs/src/security/enforcement-paths-and-limitations.md`'s "TLS
+    /// visibility is OpenSSL only" bullet for the public-facing statement of
+    /// this limitation.
     ///
     /// # Errors
     ///
