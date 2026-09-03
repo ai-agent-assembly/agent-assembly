@@ -119,11 +119,15 @@ visible in the code rather than inferred:
   `SIGKILL`. The signal is delivered at the next signal-check point, so the
   offending syscall completes before the task dies. That is containment after
   the fact, not a syscall firewall.
-- **TLS visibility is OpenSSL only.** Attachment is by the `SSL_write` /
-  `SSL_read` symbol names against a library found by scanning the process maps
-  for `libssl.so` (`aa-ebpf/src/uprobe.rs`). A process using Go's `crypto/tls`,
-  rustls, BoringSSL, GnuTLS or NSS — or a statically linked TLS stack — is
-  invisible here and needs the proxy mechanism instead (AAASM-3872).
+- **TLS visibility is OpenSSL only, and only the classic API.** Attachment is
+  by the `SSL_write` / `SSL_read` symbol names against a library found by
+  scanning the process maps for `libssl.so` (`aa-ebpf/src/uprobe.rs`). The
+  OpenSSL 3.x `SSL_write_ex` / `SSL_read_ex` entry points are **not**
+  attached (AAASM-5634) — a caller that specifically uses them is invisible
+  here even though the process is linked against OpenSSL. A process using
+  Go's `crypto/tls`, rustls, BoringSSL, GnuTLS or NSS — or a statically
+  linked TLS stack — is invisible here too, and needs the proxy mechanism
+  instead (AAASM-3872).
 - **Linux, and it fails open.** There is no `cfg(target_arch)` gate in the eBPF
   crates: the TLS uprobes attach by symbol resolved from `/proc/<pid>/maps` and
   the exec tracepoints resolve offsets from live BTF, so both work on aarch64.
