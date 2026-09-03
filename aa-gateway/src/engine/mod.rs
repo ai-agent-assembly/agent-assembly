@@ -298,6 +298,13 @@ pub struct PolicyEngine {
     /// `_watcher`, which is the single-file watcher.
     _cascade_watcher: Option<notify::RecommendedWatcher>,
     _watcher: Option<notify::RecommendedWatcher>,
+    /// Reconciliation poll backing whichever of `_watcher`/`_cascade_watcher`
+    /// is present (AAASM-5382) — the actual correctness mechanism; the OS
+    /// watcher above is a latency optimization. See `watcher`'s module doc
+    /// for the delivery guarantee this provides and the failure modes it
+    /// covers. `None` for engines with no watcher to back (in-memory,
+    /// simulation, test construction).
+    _reconciler: Option<notify::PollWatcher>,
     /// Optional registry for resolving agent lineage during cascade evaluation.
     /// When `None`, `collect_cascade` walks only Global and Agent scopes.
     registry: Option<Arc<AgentRegistry>>,
@@ -495,6 +502,12 @@ impl PolicyEngine {
         let budget = Arc::new(budget_tracker);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
+        let reconciler = crate::engine::watcher::start_reconciler(
+            path,
+            policy_arc.clone(),
+            crate::engine::watcher::RECONCILE_INTERVAL,
+        )
+        .ok();
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -506,6 +519,7 @@ impl PolicyEngine {
             })),
             _cascade_watcher: None,
             _watcher: watcher,
+            _reconciler: reconciler,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
@@ -795,6 +809,14 @@ impl PolicyEngine {
             policy_epoch.clone(),
         )
         .ok();
+        let cascade_reconciler = crate::engine::watcher::start_cascade_reconciler(
+            dir,
+            policy_arc.clone(),
+            cascade.clone(),
+            policy_epoch.clone(),
+            crate::engine::watcher::RECONCILE_INTERVAL,
+        )
+        .ok();
 
         PolicyEngine {
             policy: policy_arc,
@@ -804,6 +826,7 @@ impl PolicyEngine {
             cascade,
             _cascade_watcher: cascade_watcher,
             _watcher: None,
+            _reconciler: cascade_reconciler,
             registry: None,
             policy_epoch,
             invalidation_hub: None,
@@ -832,6 +855,12 @@ impl PolicyEngine {
             .unwrap_or_default();
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
+        let reconciler = crate::engine::watcher::start_reconciler(
+            path,
+            policy_arc.clone(),
+            crate::engine::watcher::RECONCILE_INTERVAL,
+        )
+        .ok();
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -843,6 +872,7 @@ impl PolicyEngine {
             })),
             _cascade_watcher: None,
             _watcher: watcher,
+            _reconciler: reconciler,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
@@ -889,6 +919,7 @@ impl PolicyEngine {
             cascade: Arc::new(ArcSwap::from_pointee(CascadeState::default())),
             _cascade_watcher: None,
             _watcher: None,
+            _reconciler: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
@@ -1083,6 +1114,7 @@ impl PolicyEngine {
             })),
             _cascade_watcher: None,
             _watcher: None,
+            _reconciler: None,
             registry: self.registry.clone(),
             policy_epoch: self.policy_epoch.clone(),
             invalidation_hub: None,
@@ -1120,6 +1152,7 @@ impl PolicyEngine {
             cascade: Arc::new(ArcSwap::new(self.cascade.load_full())),
             _cascade_watcher: None,
             _watcher: None,
+            _reconciler: None,
             registry: self.registry.clone(),
             policy_epoch: self.policy_epoch.clone(),
             invalidation_hub: None,
@@ -2706,6 +2739,7 @@ mod tests {
             })),
             _cascade_watcher: None,
             _watcher: None,
+            _reconciler: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
@@ -4611,6 +4645,88 @@ mod tests {
         assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
     }
 
+    /// Linux/inotify's single-file watch dies permanently after one
+    /// rename-based save — measured directly against `notify` 8.2.0's
+    /// `inotify.rs`: a rename delivers `ATTRIB` (so the *first* rename-save
+    /// still lands via the push path) → `DELETE_SELF` → `IGNORED`, which
+    /// drops the watch from the kernel with no re-arm path. Every
+    /// *subsequent* save, rename-based or in-place, is then silently lost
+    /// on the push path — only the reconciliation poll recovers it
+    /// (AAASM-5382).
+    ///
+    /// This is deliberately a **two**-rename test, not one: a single
+    /// rename-save passes for the wrong reason (`ATTRIB` alone), and would
+    /// stay green even if `start_reconciler` were never wired into
+    /// `load_from_file` at all. The second rename is what only the
+    /// reconciler can deliver, so this is the falsifier for the wiring in
+    /// `load_from_file` — test 1 in `watcher.rs` already falsifies the
+    /// reconciler mechanism itself in isolation; this proves it's actually
+    /// attached to the real construction path.
+    ///
+    /// Editors that save by rename (vim, most IDE atomic-saves, `sed -i`,
+    /// Ansible's `copy` module, a Kubernetes ConfigMap symlink swap) hit
+    /// exactly this sequence — this is the common case, not an edge case.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rename_saves_keep_reloading_after_inotify_watch_dies() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, "version: \"1\"\ntools:\n  search:\n    allow: true\n").unwrap();
+
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        let engine = PolicyEngine::load_from_file(&path, alert_tx).expect("initial load must succeed");
+
+        fn rename_save(dir: &std::path::Path, target: &std::path::Path, contents: &str) {
+            let staged = dir.join(".policy.yaml.tmp");
+            std::fs::write(&staged, contents).unwrap();
+            std::fs::rename(&staged, target).unwrap();
+        }
+
+        fn wait_for(engine: &PolicyEngine, deadline: std::time::Instant, expect_allow: bool, what: &str) {
+            loop {
+                if engine.policy.load_full().tools["search"].allow == expect_allow {
+                    return;
+                }
+                assert!(std::time::Instant::now() < deadline, "{what}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        let deadline = std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4;
+
+        // Rename-save #1: ATTRIB still reaches the push path — this is the
+        // deliberately-unsurprising half, kept as the control that proves
+        // hot-reload is wired at all before the falsifying second rename.
+        rename_save(
+            dir.path(),
+            &path,
+            "version: \"1\"\ntools:\n  search:\n    allow: false\n",
+        );
+        wait_for(
+            &engine,
+            deadline,
+            false,
+            "rename-save #1 (ATTRIB) should reach the push path or, failing that, the reconciler",
+        );
+
+        // Rename-save #2: the inotify watch is measured dead by this point
+        // (DELETE_SELF/IGNORED already fired on save #1) — only the
+        // reconciliation poll can deliver this one.
+        rename_save(
+            dir.path(),
+            &path,
+            "version: \"1\"\ntools:\n  search:\n    allow: true\n",
+        );
+        wait_for(
+            &engine,
+            deadline,
+            true,
+            "rename-save #2 was not recovered — the inotify watch is dead after the \
+             first rename (measured: ATTRIB -> DELETE_SELF -> IGNORED, no re-arm) and \
+             the reconciliation poll did not back it up as AAASM-5382 requires",
+        );
+    }
+
     // ── budget timezone fail-closed (AAASM-3875) ──────────────────────────────
 
     #[test]
@@ -4964,6 +5080,7 @@ mod tests {
             })),
             _cascade_watcher: None,
             _watcher: None,
+            _reconciler: None,
             registry: None,
             policy_epoch: Arc::new(AtomicU64::new(0)),
             invalidation_hub: None,
