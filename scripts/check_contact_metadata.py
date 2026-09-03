@@ -102,8 +102,8 @@ def _security_email_body() -> str:
 def _security_sla_body() -> str:
     return "\n".join(
         [
-            f"| Initial acknowledgement | Within {CANONICAL['sla_acknowledgement']} |",
-            f"| Severity assessment | Within {CANONICAL['sla_initial_assessment']} |",
+            f"| Acknowledgement | Within {CANONICAL['sla_acknowledgement']} |",
+            f"| Initial assessment | Within {CANONICAL['sla_initial_assessment']} |",
         ]
     )
 
