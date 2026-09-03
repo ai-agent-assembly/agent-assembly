@@ -5,5 +5,5 @@ type-complexity-threshold = 250
 cognitive-complexity-threshold = 30
 
 disallowed-methods = [
-  { path = "aa_gateway::storage::agent::AgentScope::entire_deployment", reason = "AAASM-5648: cross-tenant agent-registry access. Only boot-time rehydrate_from_storage may use it; annotate the call with #[allow(clippy::disallowed_methods)] and justify in a comment." },
+  { path = "aa_gateway::storage::agent::AgentScope::entire_deployment", reason = "AAASM-5648: cross-tenant agent-registry access. Legitimate only at the known call sites already annotated with #[allow(clippy::disallowed_methods)] (rehydrate_from_storage's boot-time replay, deregister_persisted's org-less fallback, and the escape-hatch assertions in the isolation tests) — a new, unannotated call site is the regression this guard exists to catch." },
 ]
