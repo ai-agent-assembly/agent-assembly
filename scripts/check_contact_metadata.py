@@ -163,9 +163,15 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Exit non-zero if any consumer file drifts from the pinned registry.",
     )
+    parser.add_argument(
+        "--root",
+        default=None,
+        help="Repository root to resolve SECURITY.md/README.md against "
+        "(default: this script's own repo root). For fixture-based testing.",
+    )
     args = parser.parse_args(argv)
 
-    root = _repo_root()
+    root = Path(args.root).resolve() if args.root is not None else _repo_root()
     try:
         _consistency_guard()
         targets = _targets(root)
