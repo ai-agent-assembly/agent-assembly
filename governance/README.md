@@ -421,7 +421,7 @@ example.
    terms (*Experimental* / *Planned* / *Unsupported*); those answer a different
    question about a different subject, and §6's "three different questions" table
    is the split. *Degraded* is the one exception: it is deliberately spelled the
-   same on this axis as on ADR 0030's overriding-state axis (see "Three axes,
+   same on this axis as on Core ADR 030's overriding-state axis (see "Three axes,
    three owners" below) and a row may carry it when the drop is itself the
    degradation being reported. A drop point measured precisely is otherwise still
    `unmeasured` for the action: the measurement is about the observer.
