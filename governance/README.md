@@ -416,7 +416,12 @@ example.
    way is how overstatements get authored.
 2. Copy `testdata/valid-minimal.yaml` — it carries one of every required field.
 3. Pick `coverage` from ADR 0033 §6's eleven terms. If none fits, the answer is
-   `unmeasured`, not a twelfth term.
+   `unmeasured`, not a twelfth term. Pick from the terms that answer the question
+   `coverage` asks — *what is known about this action* — not from the availability
+   terms (*Experimental* / *Planned* / *Unsupported*) or from *Degraded*; those
+   answer different questions about different subjects, and §6's "three different
+   questions" table is the split. A drop point measured precisely is still
+   `unmeasured` for the action: the measurement is about the observer.
 4. Answer all three of distributed / buildable / activated. `unmeasured` is an
    honest value for `buildable`; leaving a field out is not — an omitted
    dimension reads as the **broadest** admissible value
