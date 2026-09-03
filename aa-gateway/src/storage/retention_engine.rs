@@ -172,7 +172,7 @@ mod tests {
 
     use super::*;
     use crate::storage::{
-        AgentFilter, AgentRecord, AuditEvent, AuditFilter, ColdAction, Metric, MetricPoint, MetricQuery,
+        AgentFilter, AgentRecord, AgentScope, AuditEvent, AuditFilter, ColdAction, Metric, MetricPoint, MetricQuery,
         PolicyDocument, PolicyMeta, PolicyVersion, RetentionPolicy, StorageError, StorageHealth,
     };
     use aa_core::identity::AgentId;
@@ -233,13 +233,13 @@ mod tests {
         async fn upsert_agent(&self, _: AgentRecord) -> StorageResult<()> {
             unreachable!()
         }
-        async fn get_agent(&self, _: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        async fn get_agent(&self, _: &AgentScope, _: &AgentId) -> StorageResult<Option<AgentRecord>> {
             unreachable!()
         }
         async fn list_agents(&self, _: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
             unreachable!()
         }
-        async fn delete_agent(&self, _: &AgentId) -> StorageResult<()> {
+        async fn delete_agent(&self, _: &AgentScope, _: &AgentId) -> StorageResult<()> {
             unreachable!()
         }
         async fn save_policy(&self, _: PolicyDocument) -> StorageResult<PolicyVersion> {

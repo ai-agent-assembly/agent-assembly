@@ -465,8 +465,11 @@ impl AgentRegistry {
     ///
     /// Called once at gateway boot, after
     /// [`StorageBackend::migrate`](crate::storage::StorageBackend::migrate)
-    /// runs and before any request is served. Reads every row from
-    /// `storage.list_agents(AgentFilter::default())`, converts each through
+    /// runs and before any request is served. Reads every row across every
+    /// tenant via [`AgentScope::entire_deployment`](crate::storage::AgentScope) —
+    /// the only legitimate cross-tenant read in this crate (AAASM-5648): the
+    /// in-memory registry this populates is what every later tenant-scoped
+    /// read is filtered from. Converts each row through
     /// [`storage_bridge::storage_to_runtime`](super::storage_bridge::storage_to_runtime),
     /// and calls the sync [`register`](Self::register) — restored entries
     /// reappear as root-level agents with status
@@ -486,7 +489,14 @@ impl AgentRegistry {
         let Some(storage) = self.storage.as_ref() else {
             return Ok(0);
         };
-        let rows = storage.list_agents(crate::storage::AgentFilter::default()).await?;
+        // Boot-time full-registry replay: the in-memory registry is the
+        // deployment-wide view every tenant-scoped read is later filtered
+        // from, so this call is legitimately cross-tenant. The only such
+        // site in the crate (AAASM-5648) — see the pub(crate) constructor's
+        // own doc comment.
+        #[allow(clippy::disallowed_methods)]
+        let scope = crate::storage::AgentScope::entire_deployment();
+        let rows = storage.list_agents(crate::storage::AgentFilter::new(scope)).await?;
         let mut restored = 0usize;
         for row in rows {
             let runtime = super::storage_bridge::storage_to_runtime(row);
@@ -527,7 +537,16 @@ impl AgentRegistry {
         let (record, effects) = self.deregister(agent_id, mode)?;
         if let Some(storage) = self.storage.as_ref() {
             let id = aa_core::identity::AgentId::from_bytes(*agent_id);
-            match storage.delete_agent(&id).await {
+            // The record just came out of the in-memory registry, so its
+            // org_id (if any) is already known — scope the durable delete to
+            // it rather than reaching for the entire_deployment() escape
+            // hatch (AAASM-5648).
+            #[allow(clippy::disallowed_methods)]
+            let scope = match record.org_id.as_deref() {
+                Some(org_id) => crate::storage::AgentScope::org(org_id),
+                None => crate::storage::AgentScope::entire_deployment(),
+            };
+            match storage.delete_agent(&scope, &id).await {
                 Ok(()) | Err(crate::storage::StorageError::NotFound(_)) => {}
                 Err(err) => return Err(RegistryError::Storage(err)),
             }

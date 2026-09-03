@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
-use super::agent::{AgentFilter, AgentRecord};
+use super::agent::{AgentFilter, AgentRecord, AgentScope};
 use super::audit::{AuditEvent, AuditFilter};
 use super::backend::StorageBackend;
 use super::error::{StorageError, StorageResult};
@@ -233,15 +233,15 @@ fn push_agent_where<'q>(qb: &mut sqlx::QueryBuilder<'q, sqlx::Postgres>, filter:
         qb.push(if started { " AND " } else { " WHERE " });
         started = true;
     };
-    if let Some(team_id) = filter.team_id.as_ref() {
+    if let Some(team_id) = filter.team_id() {
         connective(qb);
-        qb.push("team_id = ").push_bind(team_id.clone());
+        qb.push("team_id = ").push_bind(team_id.to_owned());
     }
-    if let Some(org_id) = filter.org_id.as_ref() {
+    if let Some(org_id) = filter.scope().org_id() {
         connective(qb);
-        qb.push("org_id = ").push_bind(org_id.clone());
+        qb.push("org_id = ").push_bind(org_id.to_owned());
     }
-    if let Some(name_contains) = filter.name_contains.as_ref() {
+    if let Some(name_contains) = filter.name_contains() {
         connective(qb);
         qb.push("metadata->>'name' LIKE ")
             .push_bind(format!("%{name_contains}%"));
@@ -492,27 +492,33 @@ impl StorageBackend for PostgresBackend {
         .map_err(|e| StorageError::QueryFailed(e.to_string()))
     }
 
-    /// Return the agent record for `id`, if registered.
+    /// Return the agent record for `id`, if registered within `scope`.
     ///
-    /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
-    /// as a `StorageError`.
-    async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
-        let row = sqlx::query(
+    /// Returns `Ok(None)` for unknown ids or ids belonging to a different org
+    /// than `scope`; only backend failure surfaces as a `StorageError`
+    /// (AAASM-5648).
+    async fn get_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<Option<AgentRecord>> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
-             enforcement_mode, enforcement_mode_expires_at FROM agent_registry WHERE agent_id = $1",
-        )
-        .bind(agent_id_to_text(id))
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+             enforcement_mode, enforcement_mode_expires_at FROM agent_registry WHERE agent_id = ",
+        );
+        qb.push_bind(agent_id_to_text(id));
+        if let Some(org_id) = scope.org_id() {
+            qb.push(" AND org_id = ").push_bind(org_id.to_owned());
+        }
+        let row = qb
+            .build()
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         row.as_ref().map(row_to_agent_record).transpose()
     }
 
     /// Return all agent records matching `filter`, ordered by `agent_id`.
     ///
-    /// `filter.limit` and `filter.offset` translate to PostgreSQL
-    /// `LIMIT`/`OFFSET` bound as `i64`. `name_contains` performs a
-    /// substring search against the `metadata.name` JSONB key.
+    /// `filter`'s limit/offset translate to PostgreSQL `LIMIT`/`OFFSET` bound
+    /// as `i64`. `name_contains` performs a substring search against the
+    /// `metadata.name` JSONB key.
     async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>> {
         let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
             "SELECT agent_id, team_id, org_id, metadata, registered_at, last_seen_at, \
@@ -520,9 +526,9 @@ impl StorageBackend for PostgresBackend {
         );
         push_agent_where(&mut qb, &filter);
         qb.push(" ORDER BY agent_id");
-        if let Some(limit) = filter.limit {
+        if let Some(limit) = filter.limit() {
             qb.push(" LIMIT ").push_bind(i64::from(limit));
-            if let Some(offset) = filter.offset {
+            if let Some(offset) = filter.offset() {
                 qb.push(" OFFSET ").push_bind(i64::from(offset));
             }
         }
@@ -534,16 +540,21 @@ impl StorageBackend for PostgresBackend {
         rows.iter().map(row_to_agent_record).collect()
     }
 
-    /// Remove the agent record for `id`.
+    /// Remove the agent record for `id`, if it is registered within `scope`.
     ///
     /// # Errors
     ///
-    /// Returns `StorageError` when no row matches; the error
+    /// Returns `StorageError` when no row matches within `scope`; the error
     /// payload carries the offending agent id (TEXT form) so callers can
     /// log it without re-encoding.
-    async fn delete_agent(&self, id: &AgentId) -> StorageResult<()> {
-        let result = sqlx::query("DELETE FROM agent_registry WHERE agent_id = $1")
-            .bind(agent_id_to_text(id))
+    async fn delete_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<()> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("DELETE FROM agent_registry WHERE agent_id = ");
+        qb.push_bind(agent_id_to_text(id));
+        if let Some(org_id) = scope.org_id() {
+            qb.push(" AND org_id = ").push_bind(org_id.to_owned());
+        }
+        let result = qb
+            .build()
             .execute(&self.pool)
             .await
             .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
@@ -1375,7 +1386,7 @@ mod tests {
         backend.upsert_agent(record.clone()).await.expect("upsert");
 
         let fetched = backend
-            .get_agent(&agent_id)
+            .get_agent(&AgentScope::org("acme"), &agent_id)
             .await
             .expect("get_agent")
             .expect("agent should exist");
@@ -1404,7 +1415,7 @@ mod tests {
             .expect("second upsert");
 
         let fetched = backend
-            .get_agent(&agent_id)
+            .get_agent(&AgentScope::org("acme"), &agent_id)
             .await
             .expect("get_agent")
             .expect("agent should exist");
@@ -1440,10 +1451,7 @@ mod tests {
         backend.upsert_agent(in_other.clone()).await.expect("upsert other");
 
         let listed = backend
-            .list_agents(AgentFilter {
-                team_id: Some(team.clone()),
-                ..AgentFilter::default()
-            })
+            .list_agents(AgentFilter::new(AgentScope::org("acme")).with_team(team.clone()))
             .await
             .expect("list");
 
@@ -1463,7 +1471,7 @@ mod tests {
 
         let missing = fresh_agent_id();
         let err = backend
-            .delete_agent(&missing)
+            .delete_agent(&AgentScope::org("acme"), &missing)
             .await
             .expect_err("delete of unknown id must error");
 
@@ -1477,6 +1485,79 @@ mod tests {
             }
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    /// AAASM-5648: a `get_agent`/`list_agents`/`delete_agent` call scoped to
+    /// org B must not see, or be able to delete, an agent registered under
+    /// org A — the type-level `AgentScope` requirement exists precisely so
+    /// this cannot regress into an unscoped call.
+    #[tokio::test]
+    async fn cross_org_scope_hides_and_protects_the_other_orgs_agent() {
+        let Some(backend) = pg_backend_or_skip().await else {
+            return;
+        };
+        backend.migrate().await.expect("migrate");
+
+        let ts = now_micros();
+        let mut in_org_b = sample_agent_record(fresh_agent_id(), ts, ts);
+        in_org_b.org_id = Some("globex".to_string());
+        backend
+            .upsert_agent(in_org_b.clone())
+            .await
+            .expect("upsert org-b agent");
+
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("acme"), &in_org_b.agent_id)
+                .await
+                .expect("get_agent"),
+            None,
+            "org A's scope must not see org B's agent",
+        );
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("globex"), &in_org_b.agent_id)
+                .await
+                .expect("get_agent"),
+            Some(in_org_b.clone()),
+            "org B's own scope must still see its own agent",
+        );
+        // Deliberately exercising the escape hatch itself, not a leaked
+        // unscoped call — this is the one place the disallowed-method lint
+        // should be silenced (AAASM-5648).
+        #[allow(clippy::disallowed_methods)]
+        let deployment_scope = AgentScope::entire_deployment();
+        assert_eq!(
+            backend
+                .get_agent(&deployment_scope, &in_org_b.agent_id)
+                .await
+                .expect("get_agent"),
+            Some(in_org_b.clone()),
+            "the boot-time escape hatch must still see every org",
+        );
+
+        let listed = backend
+            .list_agents(AgentFilter::new(AgentScope::org("acme")))
+            .await
+            .expect("list");
+        assert!(
+            !listed.iter().any(|r| r.agent_id == in_org_b.agent_id),
+            "org A's scoped list must not include org B's agent",
+        );
+
+        let err = backend
+            .delete_agent(&AgentScope::org("acme"), &in_org_b.agent_id)
+            .await
+            .expect_err("delete scoped to the wrong org must not affect the other org's row");
+        assert!(matches!(err, StorageError::NotFound(_)));
+        assert_eq!(
+            backend
+                .get_agent(&AgentScope::org("globex"), &in_org_b.agent_id)
+                .await
+                .expect("get_agent"),
+            Some(in_org_b),
+            "org B's agent must survive an org-A-scoped delete attempt",
+        );
     }
 
     /// Mint a fresh, unique policy name so each test's saves and rollbacks

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use aa_core::identity::AgentId;
 
-use super::agent::{AgentFilter, AgentRecord};
+use super::agent::{AgentFilter, AgentRecord, AgentScope};
 use super::audit::{AuditEvent, AuditFilter};
 use super::error::StorageResult;
 use super::health::StorageHealth;
@@ -59,29 +59,40 @@ pub trait StorageBackend: Send + Sync + 'static {
     ///   on backend failure.
     async fn upsert_agent(&self, record: AgentRecord) -> StorageResult<()>;
 
-    /// Return the agent record for `id`, if registered.
+    /// Return the agent record for `id`, if registered in `scope`.
+    ///
+    /// `scope` is mandatory (AAASM-5648): an implementor MUST filter by it —
+    /// a record belonging to a different org than `scope` names is
+    /// indistinguishable from an unknown id and MUST be reported as `Ok(None)`.
+    /// Ignoring `scope` is a tenant-isolation defect, not an optimization.
     ///
     /// # Errors
     ///
-    /// Returns `Ok(None)` for unknown ids; only backend failure surfaces
-    /// as `StorageError` /
+    /// Returns `Ok(None)` for unknown ids or ids outside `scope`; only backend
+    /// failure surfaces as `StorageError` /
     /// `StorageError`.
-    async fn get_agent(&self, id: &AgentId) -> StorageResult<Option<AgentRecord>>;
+    async fn get_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<Option<AgentRecord>>;
 
     /// Return all agent records matching `filter`, paged per the filter limits.
+    ///
+    /// [`AgentFilter::scope`] is mandatory for the same reason as
+    /// [`get_agent`](Self::get_agent)'s `scope` parameter.
     ///
     /// # Errors
     ///
     /// As [`query_audit_events`](Self::query_audit_events).
     async fn list_agents(&self, filter: AgentFilter) -> StorageResult<Vec<AgentRecord>>;
 
-    /// Remove the agent record for `id`.
+    /// Remove the agent record for `id`, if it is registered in `scope`.
+    ///
+    /// Scoped for the same reason as [`get_agent`](Self::get_agent) — a
+    /// cross-tenant delete is the same class of defect as a cross-tenant read.
     ///
     /// # Errors
     ///
     /// - `StorageError`
-    ///   when no record matches.
-    async fn delete_agent(&self, id: &AgentId) -> StorageResult<()>;
+    ///   when no record matches within `scope`.
+    async fn delete_agent(&self, scope: &AgentScope, id: &AgentId) -> StorageResult<()>;
 
     /// Save a new policy version. Returns the assigned [`PolicyVersion`].
     ///
