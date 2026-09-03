@@ -1,8 +1,13 @@
 //! Kprobe management for file I/O interception (AAASM-38).
 //!
-//! Attaches `openat_kprobe`, `write_kprobe`, and `unlink_kprobe` from
-//! `aa-ebpf-programs` to the corresponding kernel functions, filtered by
-//! the target PID stored in a BPF map.
+//! Attaches entry + return kprobe pairs for `openat`, `read`, `write`,
+//! `unlink` and `rename` (`unlink`/`rename` each also cover the legacy
+//! non-`at` glibc entry point on x86_64, AAASM-1574) from
+//! `aa-ebpf-programs`, filtered by the target PID stored in a BPF map. The
+//! authoritative program-name/kernel-function list is
+//! [`KprobeManager::KPROBE_TARGETS`] — this doc previously named only
+//! `openat`/`write`/`unlink` under stale program names and drifted out of
+//! sync when `read`/`rename` coverage was added (AAASM-6050).
 
 #[cfg(target_os = "linux")]
 use aya::Ebpf;
