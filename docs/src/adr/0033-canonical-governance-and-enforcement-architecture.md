@@ -539,8 +539,10 @@ consistent with this and discriminates rather than defaulting: N13 (shipped
 eBPF probes whose events are never bridged) is `coverage: unmeasured` with
 `coverage_qualifiers.secondary: observed`; G10 (audit send dropped, counter
 incremented, hash-chain gap) and G11 (degradation events emitted, no renderer)
-are `unmeasured` too — while six of the eleven `degraded_mode` rows carry a
-positive term.
+are `unmeasured` too — while five of the eleven `degraded_mode` rows (G1, G3,
+G4, G5, G8) carry one of the six positive terms per ADR 0034 §2.5 — G6's
+`coverage: degraded` is the ratified shared spelling, not a positive term
+(see "Three axes, three owners" in `governance/README.md`).
 
 Mapped onto the verified mechanisms:
 

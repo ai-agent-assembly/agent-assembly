@@ -418,9 +418,12 @@ example.
 3. Pick `coverage` from ADR 0033 §6's eleven terms. If none fits, the answer is
    `unmeasured`, not a twelfth term. Pick from the terms that answer the question
    `coverage` asks — *what is known about this action* — not from the availability
-   terms (*Experimental* / *Planned* / *Unsupported*) or from *Degraded*; those
-   answer different questions about different subjects, and §6's "three different
-   questions" table is the split. A drop point measured precisely is still
+   terms (*Experimental* / *Planned* / *Unsupported*); those answer a different
+   question about a different subject, and §6's "three different questions" table
+   is the split. *Degraded* is the one exception: it is deliberately spelled the
+   same on this axis as on ADR 0030's overriding-state axis (see "Three axes,
+   three owners" below) and a row may carry it when the drop is itself the
+   degradation being reported. A drop point measured precisely is otherwise still
    `unmeasured` for the action: the measurement is about the observer.
 4. Answer all three of distributed / buildable / activated. `unmeasured` is an
    honest value for `buildable`; leaving a field out is not — an omitted
