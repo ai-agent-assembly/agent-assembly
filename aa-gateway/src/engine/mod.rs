@@ -4692,7 +4692,11 @@ mod tests {
             }
         }
 
-        let deadline = std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4;
+        // Each stage gets its own fresh budget of RECONCILE_INTERVAL * 4 --
+        // a single shared deadline across both waits would let a slow (but
+        // legitimate) delivery of save #1 starve save #2's budget, failing
+        // the test for a reason that has nothing to do with what it's
+        // actually falsifying.
 
         // Rename-save #1: ATTRIB still reaches the push path — this is the
         // deliberately-unsurprising half, kept as the control that proves
@@ -4704,7 +4708,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            deadline,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
             false,
             "rename-save #1 (ATTRIB) should reach the push path or, failing that, the reconciler",
         );
@@ -4719,7 +4723,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            deadline,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
             true,
             "rename-save #2 was not recovered — the inotify watch is dead after the \
              first rename (measured: ATTRIB -> DELETE_SELF -> IGNORED, no re-arm) and \
