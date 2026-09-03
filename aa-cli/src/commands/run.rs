@@ -3093,15 +3093,23 @@ fn effective_child_env(
 /// raw `std::env::vars()` copy) would break this invariant silently; if one
 /// is ever introduced, it must go through `build_child_env` too.
 ///
-/// # Why the working directory is copied across explicitly
+/// # Why the command is moved, not copied field by field
 ///
-/// `cmd` is a `std::process::Command` and this spawns a `tokio` one, so every
-/// piece of state has to be carried over by name — nothing is inherited. The
-/// working directory was the third thing to be lost that way: the plan set it,
-/// `--dry-run` printed it, and the child started in the launcher's directory
-/// regardless (AAASM-5706, caught by
-/// `exec_starts_the_child_in_the_requested_working_directory`). Anything added to
-/// the bound command in future has to be added here too.
+/// Three times now a piece of launch state has been lost crossing from the
+/// bound `std::process::Command` into the `tokio` one that actually spawns:
+/// program (AAASM-5327), args (AAASM-5329), and the working directory
+/// (AAASM-5706, caught by `exec_starts_the_child_in_the_requested_working_directory`
+/// only because a test asserted the child actually started where it was told
+/// to — the plan and the `--dry-run` output both looked correct while it ran
+/// in the launcher's own directory). Each time the fix was to add the missing
+/// field to a copy list, which just moves the next omission one field further
+/// out. `tokio::process::Command::from(cmd)` moves the whole `std::process::Command`
+/// — program, args, cwd, and anything else a `DevToolAdapter` ever sets on it
+/// — in one step, so there is no copy list left to fall out of sync. Env is
+/// still applied explicitly below because it is *recomputed* here (merged
+/// with `child_env` and proxy-sanitized), not carried over verbatim.
+/// Reintroducing a `tokio::process::Command::new(..)` + per-field copy here
+/// is the regression this guards against.
 async fn spawn_and_wait(
     cmd: std::process::Command,
     child_env: &HashMap<String, String>,
@@ -3111,8 +3119,7 @@ async fn spawn_and_wait(
     let trusted_https_proxy = effective.get("HTTPS_PROXY").cloned();
     let trusted_http_proxy = effective.get("HTTP_PROXY").cloned();
 
-    let mut tokio_cmd = tokio::process::Command::new(cmd.get_program());
-    tokio_cmd.args(cmd.get_args());
+    let mut tokio_cmd = tokio::process::Command::from(cmd);
     tokio_cmd.envs(&effective);
     for name in &removed {
         tokio_cmd.env_remove(name);
@@ -3127,9 +3134,6 @@ async fn spawn_and_wait(
         if let Some(v) = trusted_http_proxy {
             tokio_cmd.env("HTTP_PROXY", v);
         }
-    }
-    if let Some(dir) = cmd.get_current_dir() {
-        tokio_cmd.current_dir(dir);
     }
 
     let mut child = tokio_cmd.spawn()?;
@@ -4664,6 +4668,37 @@ mod tests {
             real_env.contains("HTTP_PROXY=http://receipted-proxy:9000"),
             "got:\n{}",
             got()
+        );
+    }
+
+    /// AAASM-5777: proves `spawn_and_wait` carries launch state that was
+    /// never on the old field-by-field copy list (program, args, cwd —
+    /// see AAASM-5327/5329/5706), by exercising a field outside that list:
+    /// stdio. Under the pre-fix code (`tokio::process::Command::new(program)`
+    /// + `.args()` + explicit `current_dir`), stdio was never carried across
+    /// either, so the child's stdout went to the test harness's own stdout
+    /// and the redirected file stayed empty — this test would have failed
+    /// against that code (confirmed by temporarily reverting the fix and
+    /// running it). With the whole command moved via `From`, there is no
+    /// copy list for a field like this to fall off of.
+    #[tokio::test]
+    async fn spawn_and_wait_carries_launch_state_no_field_list_would_have_copied() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let out = tmp.path().join("stdout.txt");
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("printf aa-stdio-reached");
+        cmd.stdout(std::fs::File::create(&out).expect("create redirect target"));
+
+        let code = spawn_and_wait(cmd, &HashMap::new(), true)
+            .await
+            .expect("spawn_and_wait must succeed");
+        assert_eq!(code, 0);
+
+        let captured = std::fs::read_to_string(&out).expect("read redirected stdout");
+        assert_eq!(
+            captured, "aa-stdio-reached",
+            "stdout redirection set on the std::process::Command must reach the real child; \
+             an empty file means the command was rebuilt rather than moved"
         );
     }
 
