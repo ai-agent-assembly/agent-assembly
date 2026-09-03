@@ -215,6 +215,7 @@ those spellings are read nowhere in the core and are silently ignored. Use the
 | `AAASM_SQLITE_PATH` | SQLite event-buffer path |
 | `AAASM_STORAGE_BACKEND` | Storage backend selector (`sqlite` or `postgres`) |
 | `AAASM_GATEWAY_PORT` | Gateway listen port |
+| `AAASM_GATEWAY_HOST` | Local-mode gateway bind host (default `127.0.0.1`; a non-loopback value additionally requires `AA_LOCAL_ALLOW_REMOTE`, AAASM-5011) |
 | `AAASM_RETENTION_HOT_DAYS` / `AAASM_RETENTION_WARM_DAYS` / `AAASM_RETENTION_COLD_ACTION` | Audit-retention tiering |
 | `AAASM_TLS_CERT` / `AAASM_TLS_KEY` | Gateway TLS certificate / key paths |
 | `AAASM_DASHBOARD_DIST` | Operator override for the dashboard `dist/` directory served by the gateway |

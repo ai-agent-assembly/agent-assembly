@@ -5,7 +5,7 @@
 //! other story in the Epic depends on these types to decide whether
 //! the gateway should boot in local-dev or remote-control-plane mode.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 /// Errors that can occur while loading or parsing a `GatewayConfig`.
@@ -32,6 +32,12 @@ pub enum ConfigError {
     /// `AAASM_GATEWAY_PORT` was not a valid `u16`.
     #[error("invalid AAASM_GATEWAY_PORT value: '{raw}' (expected u16)")]
     InvalidPort {
+        /// The unrecognised value as read from the environment.
+        raw: String,
+    },
+    /// `AAASM_GATEWAY_HOST` was not a valid IP address.
+    #[error("invalid AAASM_GATEWAY_HOST value: '{raw}' (expected an IP address)")]
+    InvalidHost {
         /// The unrecognised value as read from the environment.
         raw: String,
     },
@@ -106,6 +112,14 @@ pub enum DeploymentMode {
 pub struct LocalModeConfig {
     /// TCP port the local gateway listens on. Default: `7391`.
     pub port: u16,
+    /// Address the local gateway's HTTP listener binds to.
+    ///
+    /// Default: `127.0.0.1` — local mode defaults to unauthenticated
+    /// (`AuthMode::Off`), so loopback-only binding is the security boundary
+    /// substituting for auth. Only `AA_LOCAL_ALLOW_REMOTE=1` (checked at
+    /// bind time, not here) permits a non-loopback value to actually take
+    /// effect (AAASM-5011) — this field alone does not bypass that gate.
+    pub host: IpAddr,
     /// Whether to serve the dashboard SPA at the same address. Default: `true`.
     pub dashboard: bool,
     /// SQLite database path. Default: `~/.aasm/local.db` (un-expanded).
@@ -116,6 +130,7 @@ impl Default for LocalModeConfig {
     fn default() -> Self {
         Self {
             port: 7391,
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             dashboard: true,
             storage_path: PathBuf::from("~/.aasm/local.db"),
         }
@@ -568,8 +583,9 @@ impl GatewayConfig {
     /// Apply the documented `AA_MODE` / `AAASM_*` environment variables
     /// on top of `self`, overriding any fields they set.
     ///
-    /// Returns `ConfigError::InvalidMode` / `ConfigError::InvalidPort`
-    /// when an env var has been set to a value that cannot be parsed.
+    /// Returns `ConfigError::InvalidMode` / `ConfigError::InvalidPort` /
+    /// `ConfigError::InvalidHost` when an env var has been set to a value
+    /// that cannot be parsed.
     pub fn apply_env_overrides(&mut self) -> Result<(), ConfigError> {
         self.apply_env_overrides_with(|key| std::env::var(key).ok())
     }
@@ -592,6 +608,10 @@ impl GatewayConfig {
             let port: u16 = raw.parse().map_err(|_| ConfigError::InvalidPort { raw: raw.clone() })?;
             self.local.port = port;
             self.remote.listen_addr.set_port(port);
+        }
+        if let Some(raw) = get_env("AAASM_GATEWAY_HOST") {
+            let host: IpAddr = raw.parse().map_err(|_| ConfigError::InvalidHost { raw: raw.clone() })?;
+            self.local.host = host;
         }
         self.apply_storage_env_overrides(&get_env)?;
         self.apply_tls_env_overrides(&get_env);
@@ -968,6 +988,29 @@ agent:
         assert!(matches!(err, ConfigError::InvalidPort { ref raw } if raw == "not-a-number"));
         assert!(msg.contains("AAASM_GATEWAY_PORT"));
         assert!(msg.contains("not-a-number"));
+    }
+
+    #[test]
+    fn apply_env_overrides_host_updates_local_only() {
+        let mut cfg = GatewayConfig::default();
+        cfg.apply_env_overrides_with(env(&[("AAASM_GATEWAY_HOST", "0.0.0.0")]))
+            .unwrap();
+        assert_eq!(cfg.local.host, IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        // AAASM_GATEWAY_HOST touches only local.host — remote.listen_addr's
+        // ip stays at its own default (already 0.0.0.0), untouched by this var.
+        assert_eq!(cfg.remote.listen_addr.ip().to_string(), "0.0.0.0");
+    }
+
+    #[test]
+    fn apply_env_overrides_host_invalid_returns_named_error() {
+        let mut cfg = GatewayConfig::default();
+        let err = cfg
+            .apply_env_overrides_with(env(&[("AAASM_GATEWAY_HOST", "not-an-ip")]))
+            .expect_err("non-IP host must return Err");
+        let msg = format!("{err}");
+        assert!(matches!(err, ConfigError::InvalidHost { ref raw } if raw == "not-an-ip"));
+        assert!(msg.contains("AAASM_GATEWAY_HOST"));
+        assert!(msg.contains("not-an-ip"));
     }
 
     #[test]
