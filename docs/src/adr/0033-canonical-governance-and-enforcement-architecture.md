@@ -512,6 +512,38 @@ an undifferentiated verb like "protects", "enforces" or "catches".
 | **Planned** | Decided but not implemented | A ticket reference; no capability claim |
 | **Unsupported** | Not available on this platform/configuration, with no plan asserted | The platform matrix row (§5.3) |
 
+**These eleven terms answer three different questions, about three different
+subjects. A claim must be readable as answering exactly one.**
+
+| Question | Terms | Subject |
+| --- | --- | --- |
+| What is known about this action? | *Observed*, *Detected*, *Evaluated*, *Denied before execution*, *Redacted*, *Approval required* — with *Unmeasured* as their floor | one action, on one host, at one time |
+| Why is no capability claimed here? | *Experimental*, *Planned*, *Unsupported* | a capability, on a platform or in a configuration |
+| How far below its planned level is a configured control running? | *Degraded* | a pair of levels, never a point |
+
+ADR 0034 §2.5 already treats terms from different rows as incomparable and
+requires an exact match rather than a grading; this table is where the reason
+lives. A claim that names no subject is answering the first question, because
+that is the question the manifest's `coverage` field ranges over
+(`governance/README.md`, "Three axes, three owners").
+
+**Measuring where evidence stops is measurement about the observer, not about
+the action.** A control that builds a record and then drops it — instrumented,
+with a counter, a positive control and a provable gap — has produced *no*
+evidence attributed to the action. The action is *Unmeasured*. §4 states this
+already for the audit log ("an empty audit log is evidence about the
+*observer*, not about the agent"); it is restated here because three
+repositories independently read a precisely-measured drop as disqualifying
+*Unmeasured*, when it is exactly the condition the term names. The manifest is
+consistent with this and discriminates rather than defaulting: N13 (shipped
+eBPF probes whose events are never bridged) is `coverage: unmeasured` with
+`coverage_qualifiers.secondary: observed`; G10 (audit send dropped, counter
+incremented, hash-chain gap) and G11 (degradation events emitted, no renderer)
+are `unmeasured` too — while five of the eleven `degraded_mode` rows (G1, G3,
+G4, G5, G8) carry one of the six positive terms per ADR 0034 §2.5 — G6's
+`coverage: degraded` is the ratified shared spelling, not a positive term
+(see "Three axes, three owners" in `governance/README.md`).
+
 Mapped onto the verified mechanisms:
 
 | Mechanism | Highest term it can legitimately reach today |
