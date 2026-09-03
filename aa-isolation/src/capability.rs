@@ -524,9 +524,42 @@ impl CapabilityReport {
             && self.unsatisfied_prerequisite().is_none()
     }
 
-    /// Whether this capability produces evidence about actions on its domain.
+    /// Whether this capability's mediation and timing are *shaped* like
+    /// something that could produce evidence about actions on its domain —
+    /// **not** a guarantee that any backend actually does.
     ///
-    /// True for enforcing controls as well: enforcing implies knowing.
+    /// # This does not mean "enforcing implies knowing"
+    ///
+    /// An earlier version of this doc comment claimed exactly that, and the
+    /// AAASM-6029 per-decision prevention evidence spike found it false for
+    /// every shipped backend on every domain: `aa-isolation-native` and
+    /// `aa-isolation-sandlock` both enforce (deny before effect) while
+    /// producing **no per-action evidence at all** — no shipped mechanism
+    /// currently reports which decision was made, only that a boundary is
+    /// installed. `true` here means only that [`Mediation`] is `Enforce` or
+    /// `Observe`, [`DecisionTiming`] is not `None`, and the domain is
+    /// available — none of which a backend's actual per-decision reporting
+    /// (`aa-isolation-native/src/proc_scope.rs` and neighbours; there is no
+    /// dedicated field for it yet, see AAASM-6029's recommended
+    /// `DecisionReporting` axis) is required to back up.
+    ///
+    /// # Why this predicate is not fixed to match, yet
+    ///
+    /// [`plan::negotiate`](crate::plan::negotiate) refuses an
+    /// [`RequirementIntent::Observe`](crate::spec::RequirementIntent::Observe)
+    /// requirement with `NoEvidenceProduced` only when this returns `false` —
+    /// so today it can never refuse one against an *enforcing* domain, even
+    /// though the backend delivers no per-action observation. This is
+    /// **latent, not live**: `ControlRequirement::observe` is constructed only
+    /// in tests and the adversarial harness, never by a production
+    /// policy-lowering path, so nothing shipped currently takes the
+    /// over-accepting branch, and a run's post-launch claim stays honest
+    /// independently (`EnforcementEvidence::claim_for` only counts runtime
+    /// records, not this capability report). Tightening this predicate before
+    /// a producer of real per-decision evidence exists would only start
+    /// refusing `Observe` requirements nothing currently builds — churn, not a
+    /// fix. It becomes accurate the day a `DecisionReporting`-shaped field
+    /// exists on [`CapabilityReport`] and lands alongside its first producer.
     pub fn can_observe(&self) -> bool {
         self.support.is_available()
             && matches!(self.mediation, Mediation::Enforce | Mediation::Observe)
@@ -713,5 +746,26 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), CapabilityDomain::ALL.len());
+    }
+
+    /// AAASM-6040: pins the corrected reading of `can_observe()` after the
+    /// AAASM-6029 spike found its old doc comment ("enforcing implies
+    /// knowing") false — an enforcing report with a `Sync` decision and no
+    /// unsatisfied prerequisite is exactly the shape every shipped backend
+    /// reports on every domain, and none of them produces per-action
+    /// evidence. `can_observe()` says the shape is right, not that a backend
+    /// actually reports anything: it must stay `true` here regardless.
+    #[test]
+    fn can_observe_is_true_for_an_enforcing_report_that_produces_no_per_action_evidence() {
+        let report = CapabilityReport::new(
+            CapabilityDomain::FilesystemWrite,
+            Mediation::Enforce,
+            DecisionTiming::Pre,
+            Synchrony::Sync,
+        );
+        assert!(
+            report.can_observe(),
+            "can_observe() is a mediation/timing shape check, not an evidence guarantee — see its own doc"
+        );
     }
 }
