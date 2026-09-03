@@ -579,6 +579,7 @@ mod tests {
             port: 0,
             dashboard: false,
             storage_path: std::path::PathBuf::from("/dev/null"),
+            ..LocalModeConfig::default()
         }
     }
 
@@ -674,6 +675,7 @@ mod tests {
             port: 0,
             dashboard: false,
             storage_path: db_path,
+            ..LocalModeConfig::default()
         };
 
         let app = router(&cfg, Some(Arc::clone(&storage)));
@@ -877,6 +879,7 @@ mod tests {
             port,
             dashboard: false,
             storage_path: tmp.path().join("local.db"),
+            ..LocalModeConfig::default()
         };
         (config, tmp, port)
     }
@@ -1149,6 +1152,7 @@ mod tests {
             port: 0,
             dashboard: true,
             storage_path: std::path::PathBuf::from("/dev/null"),
+            ..LocalModeConfig::default()
         }
     }
 
@@ -1251,6 +1255,7 @@ mod tests {
             port: 0,
             dashboard: false,
             storage_path: std::path::PathBuf::from("/dev/null"),
+            ..LocalModeConfig::default()
         };
         let app = router_with_resolved_dist(&cfg, Some(dist.path()), None);
 
