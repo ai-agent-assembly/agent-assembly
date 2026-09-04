@@ -147,12 +147,12 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         eprintln!("warning: could not write PID file: {e}");
     }
 
-    // Readiness probe: poll TCP while confirming the spawned child is the
-    // one that became ready (AAASM-5832 — a bare TCP connect cannot tell
-    // "my child bound this" from "something else already was").
+    // Readiness probe: poll the child's log for aa-gateway's own post-bind
+    // marker (AAASM-6053 — a bare TCP connect cannot tell "my child bound
+    // this" from "something else already was", per AAASM-5832's gap).
     if args.socket.is_none() {
         let addr = args.listen.clone();
-        match wait_for_child_ready(&mut child, &addr, READINESS_TIMEOUT) {
+        match wait_for_child_ready(&mut child, &log_file, READINESS_TIMEOUT) {
             ReadinessOutcome::Ready => {}
             ReadinessOutcome::ChildExited => {
                 eprintln!(
@@ -367,26 +367,29 @@ enum ReadinessOutcome {
     Timeout,
 }
 
-/// Poll `addr` for a TCP connection while confirming the spawned `child` is
-/// still alive. A bare TCP connect (`wait_for_tcp`) cannot distinguish "my
-/// child is now listening" from "someone else already was" — checking child
-/// liveness at each poll, and again after a real `READINESS_POLL` grace
-/// window both before the first check and before declaring success, closes
-/// that gap: a same-tick check fires before the child has even been
-/// scheduled, so only elapsed wall-clock time gives it a real chance to hit
-/// its own bind()/panic path (e.g. AddrInUse) before a connect is trusted
-/// (AAASM-5832).
-fn wait_for_child_ready(child: &mut std::process::Child, addr: &str, timeout: Duration) -> ReadinessOutcome {
-    let Ok(socket_addr) = addr.parse() else {
-        return ReadinessOutcome::Timeout;
-    };
+/// Poll the spawned `child`'s log file for `aa-gateway`'s own post-bind
+/// readiness marker while confirming the child is still alive.
+///
+/// AAASM-5832 tried to close the "my child is now listening" vs. "someone
+/// else already was" ambiguity by re-checking child liveness around a bare
+/// TCP connect. That was not enough (AAASM-6053): a connect to an address
+/// someone else already holds succeeds immediately, while `aa-gateway`'s own
+/// async service setup can take several seconds to even attempt its bind —
+/// plenty of time for the stale-liveness re-check to still observe `Ok(None)`
+/// and declare success before the real child has failed with `AddrInUse`.
+///
+/// The marker (`aa_core::gateway_readiness::TCP_LISTENING_MARKER`) closes
+/// that gap by construction rather than by timing: `aa-gateway` only ever
+/// writes it to its log after its *own* `bind()` returned `Ok`, so nothing
+/// else that merely happens to hold the port can produce it. Scoped to the
+/// `--listen` (TCP) path only — `--socket` (UDS) start skips this readiness
+/// probe entirely, unchanged from before this fix.
+fn wait_for_child_ready(child: &mut std::process::Child, log_file: &Path, timeout: Duration) -> ReadinessOutcome {
     let deadline = Instant::now() + timeout;
 
-    // Give the child a real chance to reach its own bind()/panic path
-    // before trusting anything — a same-tick check right after spawn()
-    // fires before the child has even been scheduled, so it can never
-    // observe an AddrInUse crash that hasn't happened yet (AAASM-5832
-    // review finding).
+    // Give the child a real chance to reach its own bind() before trusting
+    // anything — a same-tick check right after spawn() fires before the
+    // child has even been scheduled.
     std::thread::sleep(READINESS_POLL.min(timeout));
 
     loop {
@@ -397,21 +400,8 @@ fn wait_for_child_ready(child: &mut std::process::Child, addr: &str, timeout: Du
             Err(_) => return ReadinessOutcome::ChildExited,
         }
 
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return ReadinessOutcome::Timeout;
-        }
-        if std::net::TcpStream::connect_timeout(&socket_addr, remaining.min(READINESS_POLL)).is_ok() {
-            // Don't trust an immediate re-check — give the child one more
-            // full poll interval of real elapsed time before confirming it
-            // is still the one alive and bound, closing the TOCTOU window.
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            std::thread::sleep(remaining.min(READINESS_POLL));
-            return if matches!(child.try_wait(), Ok(None)) {
-                ReadinessOutcome::Ready
-            } else {
-                ReadinessOutcome::ChildExited
-            };
+        if log_has_listening_marker(log_file) {
+            return ReadinessOutcome::Ready;
         }
 
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -420,6 +410,15 @@ fn wait_for_child_ready(child: &mut std::process::Child, addr: &str, timeout: Du
         }
         std::thread::sleep(remaining.min(READINESS_POLL));
     }
+}
+
+/// Whether the child's log file (so far) contains `aa-gateway`'s post-bind
+/// readiness marker. A missing or not-yet-flushed file is "not ready yet",
+/// not an error — the caller keeps polling until the timeout.
+fn log_has_listening_marker(log_file: &Path) -> bool {
+    std::fs::read_to_string(log_file)
+        .map(|contents| contents.contains(aa_core::gateway_readiness::TCP_LISTENING_MARKER))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -552,17 +551,13 @@ mod tests {
     }
 
     #[test]
-    fn wait_for_child_ready_reports_child_exited_even_when_port_already_has_a_listener() {
-        use std::net::TcpListener;
-        let _net = crate::test_support::net_guard();
-        // Something else is already listening on this port (the collision that
-        // causes AddrInUse for our spawned child in the real scenario).
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+    fn wait_for_child_ready_reports_child_exited_when_it_exits_before_the_marker_appears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_file = tmp.path().join("gateway.log");
+        std::fs::write(&log_file, b"").unwrap();
 
-        // Our "spawned child" exits almost immediately, as aa-gateway does on
-        // AddrInUse.
+        // Our "spawned child" exits almost immediately without ever writing
+        // the readiness marker, as aa-gateway does on AddrInUse.
         let mut child = std::process::Command::new("true")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -570,18 +565,52 @@ mod tests {
             .spawn()
             .expect("failed to spawn 'true'");
 
-        let outcome = wait_for_child_ready(&mut child, &addr, Duration::from_secs(2));
+        let outcome = wait_for_child_ready(&mut child, &log_file, Duration::from_secs(2));
         assert_eq!(outcome, ReadinessOutcome::ChildExited);
-        drop(listener);
+    }
+
+    /// AAASM-6053 regression: a live child whose log never carries the
+    /// marker must time out, never be declared `Ready` on liveness alone.
+    /// This is the exact shape of the bug — something else already
+    /// listening on the target port let a bare TCP connect succeed while
+    /// the real child was still seconds away from its own `AddrInUse`
+    /// failure — reframed as "no marker ⇒ no success", independent of
+    /// anything happening to be listening on any port.
+    #[test]
+    fn wait_for_child_ready_times_out_when_child_alive_but_marker_never_appears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_file = tmp.path().join("gateway.log");
+        std::fs::write(
+            &log_file,
+            b"starting gRPC server on TCP (per-RPC credential auth enforced)\n",
+        )
+        .unwrap();
+
+        // A long-lived "child" that stays alive for the whole poll window
+        // without ever writing the readiness marker to its log.
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn 'sleep'");
+
+        let outcome = wait_for_child_ready(&mut child, &log_file, Duration::from_millis(500));
+        assert_eq!(outcome, ReadinessOutcome::Timeout);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
-    fn wait_for_child_ready_returns_ready_when_child_alive_and_port_open() {
-        use std::net::TcpListener;
-        let _net = crate::test_support::net_guard();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let addr = format!("127.0.0.1:{port}");
+    fn wait_for_child_ready_returns_ready_once_the_marker_appears_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log_file = tmp.path().join("gateway.log");
+        std::fs::write(
+            &log_file,
+            format!("{}\n", aa_core::gateway_readiness::TCP_LISTENING_MARKER),
+        )
+        .unwrap();
 
         // A long-lived "child" that does not exit during the poll window.
         let mut child = std::process::Command::new("sleep")
@@ -592,11 +621,10 @@ mod tests {
             .spawn()
             .expect("failed to spawn 'sleep'");
 
-        let outcome = wait_for_child_ready(&mut child, &addr, Duration::from_secs(2));
+        let outcome = wait_for_child_ready(&mut child, &log_file, Duration::from_secs(2));
         assert_eq!(outcome, ReadinessOutcome::Ready);
         let _ = child.kill();
         let _ = child.wait();
-        drop(listener);
     }
 
     /// Create an executable file at `path` (sets the user-exec bit on Unix).
