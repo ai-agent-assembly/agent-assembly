@@ -304,7 +304,7 @@ pub struct PolicyEngine {
     /// for the delivery guarantee this provides and the failure modes it
     /// covers. `None` for engines with no watcher to back (in-memory,
     /// simulation, test construction).
-    _reconciler: Option<notify::PollWatcher>,
+    _reconciler: Option<crate::engine::watcher::Reconciler>,
     /// Optional registry for resolving agent lineage during cascade evaluation.
     /// When `None`, `collect_cascade` walks only Global and Agent scopes.
     registry: Option<Arc<AgentRegistry>>,
@@ -502,12 +502,11 @@ impl PolicyEngine {
         let budget = Arc::new(budget_tracker);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
-        let reconciler = crate::engine::watcher::start_reconciler(
+        let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
             crate::engine::watcher::RECONCILE_INTERVAL,
-        )
-        .ok();
+        ));
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -855,12 +854,11 @@ impl PolicyEngine {
             .unwrap_or_default();
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
-        let reconciler = crate::engine::watcher::start_reconciler(
+        let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
             crate::engine::watcher::RECONCILE_INTERVAL,
-        )
-        .ok();
+        ));
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -4692,25 +4690,11 @@ mod tests {
             }
         }
 
-        // Each stage gets its own fresh budget of RECONCILE_INTERVAL * 24 --
+        // Each stage gets its own fresh budget of RECONCILE_INTERVAL * 4 --
         // a single shared deadline across both waits would let a slow (but
         // legitimate) delivery of save #1 starve save #2's budget, failing
         // the test for a reason that has nothing to do with what it's
         // actually falsifying.
-        //
-        // AAASM-6052: widened from *4 (20s) to *24 (120s) after this test
-        // started failing deterministically on CI's shared Linux runner —
-        // always exactly at the old 20s deadline, with wait #1 (direct
-        // inotify push) always succeeding well within its own budget. The
-        // mechanism itself was already verified correct (design review +
-        // green CI on this same code at PR #2361's merge); the working
-        // hypothesis is that the reconciler's background poll thread (a
-        // plain OS thread, not tokio-scheduled) can be starved of CPU time
-        // for well over 20s under this job's ~8000-test nextest parallelism,
-        // not that the 5s poll interval itself stopped ticking. 120s is
-        // generous enough to absorb that starvation without turning this
-        // into an effectively-unbounded wait if the reconciler is ever
-        // truly broken again.
 
         // Rename-save #1: ATTRIB still reaches the push path — this is the
         // deliberately-unsurprising half, kept as the control that proves
@@ -4722,7 +4706,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 24,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
             false,
             "rename-save #1 (ATTRIB) should reach the push path or, failing that, the reconciler",
         );
@@ -4730,6 +4714,21 @@ mod tests {
         // Rename-save #2: the inotify watch is measured dead by this point
         // (DELETE_SELF/IGNORED already fired on save #1) — only the
         // reconciliation poll can deliver this one.
+        //
+        // AAASM-6052: this was the wait that failed deterministically on
+        // CI's Linux runner despite the mechanism appearing correct at
+        // PR #2361's merge. Root cause: the reconciler used to compare each
+        // poll tick against its own private last-seen-content baseline
+        // (`notify::PollWatcher` + `with_compare_contents(true)`), not
+        // against `slot`. Save #1 above lands via the still-live inotify
+        // push before the reconciler's first tick, so its baseline never
+        // observes the intermediate `allow: false`; save #2 then restores
+        // the *original* `allow: true` content, which matches that stale
+        // baseline, so the poll never fires — `slot` stays stuck at
+        // `false` forever, independent of how long this waits. See
+        // `start_reconciler`'s doc in `watcher.rs` for the fix (compare
+        // against `slot`, not a private baseline) — restored to the
+        // original *4 (20s) budget now that the real defect is fixed.
         rename_save(
             dir.path(),
             &path,
@@ -4737,7 +4736,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 24,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
             true,
             "rename-save #2 was not recovered — the inotify watch is dead after the \
              first rename (measured: ATTRIB -> DELETE_SELF -> IGNORED, no re-arm) and \
