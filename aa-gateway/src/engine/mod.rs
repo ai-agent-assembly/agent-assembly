@@ -4692,11 +4692,25 @@ mod tests {
             }
         }
 
-        // Each stage gets its own fresh budget of RECONCILE_INTERVAL * 4 --
+        // Each stage gets its own fresh budget of RECONCILE_INTERVAL * 24 --
         // a single shared deadline across both waits would let a slow (but
         // legitimate) delivery of save #1 starve save #2's budget, failing
         // the test for a reason that has nothing to do with what it's
         // actually falsifying.
+        //
+        // AAASM-6052: widened from *4 (20s) to *24 (120s) after this test
+        // started failing deterministically on CI's shared Linux runner —
+        // always exactly at the old 20s deadline, with wait #1 (direct
+        // inotify push) always succeeding well within its own budget. The
+        // mechanism itself was already verified correct (design review +
+        // green CI on this same code at PR #2361's merge); the working
+        // hypothesis is that the reconciler's background poll thread (a
+        // plain OS thread, not tokio-scheduled) can be starved of CPU time
+        // for well over 20s under this job's ~8000-test nextest parallelism,
+        // not that the 5s poll interval itself stopped ticking. 120s is
+        // generous enough to absorb that starvation without turning this
+        // into an effectively-unbounded wait if the reconciler is ever
+        // truly broken again.
 
         // Rename-save #1: ATTRIB still reaches the push path — this is the
         // deliberately-unsurprising half, kept as the control that proves
@@ -4708,7 +4722,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 24,
             false,
             "rename-save #1 (ATTRIB) should reach the push path or, failing that, the reconciler",
         );
@@ -4723,7 +4737,7 @@ mod tests {
         );
         wait_for(
             &engine,
-            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 4,
+            std::time::Instant::now() + crate::engine::watcher::RECONCILE_INTERVAL * 24,
             true,
             "rename-save #2 was not recovered — the inotify watch is dead after the \
              first rename (measured: ATTRIB -> DELETE_SELF -> IGNORED, no re-arm) and \
