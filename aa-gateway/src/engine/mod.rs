@@ -304,7 +304,7 @@ pub struct PolicyEngine {
     /// for the delivery guarantee this provides and the failure modes it
     /// covers. `None` for engines with no watcher to back (in-memory,
     /// simulation, test construction).
-    _reconciler: Option<notify::PollWatcher>,
+    _reconciler: Option<crate::engine::watcher::Reconciler>,
     /// Optional registry for resolving agent lineage during cascade evaluation.
     /// When `None`, `collect_cascade` walks only Global and Agent scopes.
     registry: Option<Arc<AgentRegistry>>,
@@ -502,12 +502,11 @@ impl PolicyEngine {
         let budget = Arc::new(budget_tracker);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
-        let reconciler = crate::engine::watcher::start_reconciler(
+        let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
             crate::engine::watcher::RECONCILE_INTERVAL,
-        )
-        .ok();
+        ));
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -855,12 +854,11 @@ impl PolicyEngine {
             .unwrap_or_default();
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
         let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
-        let reconciler = crate::engine::watcher::start_reconciler(
+        let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
             crate::engine::watcher::RECONCILE_INTERVAL,
-        )
-        .ok();
+        ));
         Ok(PolicyEngine {
             policy: policy_arc,
             scanner: aa_security::CredentialScanner::new(),
@@ -4716,6 +4714,21 @@ mod tests {
         // Rename-save #2: the inotify watch is measured dead by this point
         // (DELETE_SELF/IGNORED already fired on save #1) — only the
         // reconciliation poll can deliver this one.
+        //
+        // AAASM-6052: this was the wait that failed deterministically on
+        // CI's Linux runner despite the mechanism appearing correct at
+        // PR #2361's merge. Root cause: the reconciler used to compare each
+        // poll tick against its own private last-seen-content baseline
+        // (`notify::PollWatcher` + `with_compare_contents(true)`), not
+        // against `slot`. Save #1 above lands via the still-live inotify
+        // push before the reconciler's first tick, so its baseline never
+        // observes the intermediate `allow: false`; save #2 then restores
+        // the *original* `allow: true` content, which matches that stale
+        // baseline, so the poll never fires — `slot` stays stuck at
+        // `false` forever, independent of how long this waits. See
+        // `start_reconciler`'s doc in `watcher.rs` for the fix (compare
+        // against `slot`, not a private baseline) — restored to the
+        // original *4 (20s) budget now that the real defect is fixed.
         rename_save(
             dir.path(),
             &path,

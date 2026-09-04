@@ -47,7 +47,7 @@ use notify::{recommended_watcher, Config, EventKind, PollWatcher, RecursiveMode,
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -100,35 +100,96 @@ pub(crate) fn start_watcher(
 /// The OS watcher above is a latency optimization, not the correctness
 /// mechanism — it can silently drop a notification (macOS) or die
 /// permanently after one rename-based save (Linux; see [`RECONCILE_INTERVAL`]'s
-/// doc). This function re-stats `path` every `interval` and, when its
-/// content differs from what it last saw, drives the same
-/// [`handle_fs_event`] the OS watcher does — so a missed push notification
-/// is recovered within `interval`, and no second swap path is introduced.
+/// doc). This function re-reads `path` every `interval` and, when the parsed
+/// document differs from what `slot` currently holds, swaps it in — so a
+/// missed push notification is recovered within `interval`.
 ///
-/// Uses [`notify::PollWatcher`] with content comparison (not mtime alone):
-/// mtime-only comparison misses a write that preserves or predates the old
-/// mtime (`cp -p`, `rsync --times`, a restored backup) — exactly the
-/// silent-miss class this function exists to catch. A poll tick that finds
-/// no change emits no event, so a healthy OS watcher's swaps are not
-/// duplicated and `slot`/downstream caches see no spurious churn.
+/// # Why this compares against `slot`, not its own private baseline (AAASM-6052)
+///
+/// An earlier version of this function used [`notify::PollWatcher`] with
+/// `with_compare_contents(true)`, which tracks its *own* last-seen file
+/// content and only fires when the current read differs from that private
+/// baseline. That is wrong when [`start_watcher`]'s OS push already applied
+/// an intermediate change the poll never ticked over: file content A → B
+/// (delivered by the push, `slot` now holds B) → A, all inside one
+/// `interval`, leaves the poll's baseline at A throughout — its last read
+/// was A, its next read is A, so it sees no difference and never fires,
+/// even though `slot` (B) has permanently diverged from the file (A). This
+/// reproduced deterministically on Linux, where a rename-based save kills
+/// [`start_watcher`]'s single-file inotify watch after the *first* save
+/// (see this module's `//!` doc) — everything from the second save onward
+/// depends solely on this poll, and the two-saves-in-one-interval case
+/// above was exactly the reconciler's own blind spot. Comparing against
+/// `slot` instead of a private baseline makes every tick self-correcting:
+/// whatever the file actually holds either matches `slot` (no-op) or it
+/// doesn't (swap), independent of how `slot` got out of sync.
 ///
 /// Returns the poll handle; drop it to stop reconciling.
-pub(crate) fn start_reconciler(
-    path: &Path,
-    slot: Arc<ArcSwap<PolicyDocument>>,
-    interval: Duration,
-) -> notify::Result<PollWatcher> {
+pub(crate) fn start_reconciler(path: &Path, slot: Arc<ArcSwap<PolicyDocument>>, interval: Duration) -> Reconciler {
     let path_buf = path.to_path_buf();
-    let mut watcher = PollWatcher::new(
-        move |res: notify::Result<notify::Event>| {
-            handle_fs_event(res, &path_buf, &slot);
-        },
-        Config::default()
-            .with_poll_interval(interval)
-            .with_compare_contents(true),
-    )?;
-    watcher.watch(path, RecursiveMode::NonRecursive)?;
-    Ok(watcher)
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_flag = stop.clone();
+    let handle = std::thread::spawn(move || {
+        while !stop_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(interval);
+            if stop_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            reconcile_file_tick(&path_buf, &slot);
+        }
+    });
+    Reconciler::SlotCompare {
+        stop,
+        handle: Some(handle),
+    }
+}
+
+/// One reconciliation tick for [`start_reconciler`]: read + parse `path`,
+/// and swap into `slot` only when the parsed document differs from what
+/// `slot` currently holds. See [`start_reconciler`]'s doc for why the
+/// comparison is against `slot` rather than a private baseline.
+fn reconcile_file_tick(path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>) {
+    let Ok(yaml) = std::fs::read_to_string(path) else {
+        return;
+    };
+    // Skip a mid-truncation read, same rationale as `handle_fs_event`.
+    if yaml.trim().is_empty() {
+        return;
+    }
+    let Ok(output) = PolicyValidator::from_yaml(&yaml) else {
+        return;
+    };
+    if slot.load().as_ref() != &output.document {
+        slot.store(Arc::new(output.document));
+    }
+}
+
+/// Handle to a running reconciliation poll — either the slot-comparing
+/// thread [`start_reconciler`] starts, or (for the cascade/directory case)
+/// a [`notify::PollWatcher`]. Dropping it stops the reconciliation.
+pub(crate) enum Reconciler {
+    /// [`start_reconciler`]'s slot-comparing background thread.
+    SlotCompare {
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<()>>,
+    },
+    /// [`start_cascade_reconciler`]'s `notify::PollWatcher`. The cascade
+    /// (directory) watch is not subject to the single-file bug this module
+    /// documents — see [`start_cascade_reconciler`]'s doc — so it keeps
+    /// using `notify`'s own content-compare poll.
+    Poll(#[allow(dead_code)] PollWatcher),
+}
+
+impl Drop for Reconciler {
+    fn drop(&mut self) {
+        if let Reconciler::SlotCompare { stop, handle } = self {
+            stop.store(true, Ordering::Relaxed);
+            if let Some(handle) = handle.take() {
+                let _ = handle.join();
+            }
+        }
+        // `Reconciler::Poll(watcher)` stops on its own `Drop` impl.
+    }
 }
 
 /// Process one filesystem event: on a `Create` or `Modify`, re-parse the
@@ -219,7 +280,7 @@ pub(crate) fn start_cascade_reconciler(
     cascade_slot: Arc<ArcSwap<CascadeState>>,
     policy_epoch: Arc<AtomicU64>,
     interval: Duration,
-) -> notify::Result<PollWatcher> {
+) -> notify::Result<Reconciler> {
     let dir_buf = dir.to_path_buf();
     let mut watcher = PollWatcher::new(
         move |res: notify::Result<notify::Event>| {
@@ -230,7 +291,7 @@ pub(crate) fn start_cascade_reconciler(
             .with_compare_contents(true),
     )?;
     watcher.watch(dir, RecursiveMode::NonRecursive)?;
-    Ok(watcher)
+    Ok(Reconciler::Poll(watcher))
 }
 
 /// Process one directory event: if it touches a `*.yaml` and is a
@@ -541,7 +602,7 @@ mod tests {
         let initial = Arc::new(parse_doc(ALLOW_YAML));
         let slot = Arc::new(ArcSwap::new(initial.clone()));
 
-        let _reconciler = start_reconciler(tmp.path(), slot.clone(), Duration::from_millis(100)).unwrap();
+        let _reconciler = start_reconciler(tmp.path(), slot.clone(), Duration::from_millis(100));
 
         write_file(tmp.path(), DENY_YAML);
 
@@ -563,6 +624,64 @@ mod tests {
             !current.tools["search"].allow,
             "search.allow should be false after the reconciler picks up the write"
         );
+    }
+
+    /// Falsifier for AAASM-6052: a push notification that lands *before* the
+    /// reconciler's first tick, followed by a write that restores the
+    /// original content, must still be recovered — not silently stranded.
+    ///
+    /// This reproduces the exact desync the old (pre-fix) reconciler could
+    /// not recover from. The old implementation used `notify::PollWatcher`
+    /// with `with_compare_contents(true)`, which tracks its own private
+    /// last-seen-content baseline and only fires when a poll's *read*
+    /// differs from that baseline. Here `slot.store(DENY)` simulates
+    /// `start_watcher`'s inotify push applying an intermediate change the
+    /// reconciler's poll never itself observed (its baseline stays at
+    /// `ALLOW_YAML` throughout); the file is then written back to
+    /// `ALLOW_YAML`, which equals that stale baseline — the old
+    /// implementation saw no diff and never fired again, leaving `slot`
+    /// permanently stuck at `DENY_YAML` no matter how long this waited.
+    /// This is what actually failed on CI's Linux runner in
+    /// `engine::tests::rename_saves_keep_reloading_after_inotify_watch_dies`
+    /// (that test's two saves land close enough together that inotify's
+    /// push delivers the first one before the reconciler's next tick).
+    ///
+    /// The fix (see `start_reconciler`'s doc) compares each tick's read
+    /// against `slot`'s *current* content instead of a private baseline, so
+    /// this file/slot desync self-corrects on the very next tick regardless
+    /// of how `slot` came to disagree with the file.
+    #[test]
+    fn reconciler_recovers_a_slot_desynced_by_an_external_push() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+
+        let initial = Arc::new(parse_doc(ALLOW_YAML));
+        let slot = Arc::new(ArcSwap::new(initial));
+
+        let _reconciler = start_reconciler(&path, slot.clone(), Duration::from_millis(100));
+
+        // Simulate `start_watcher`'s inotify push already having applied an
+        // intermediate change the reconciler never itself observed.
+        slot.store(Arc::new(parse_doc(DENY_YAML)));
+
+        // The file is written back to its *original* content — equal to
+        // whatever a private-baseline reconciler last saw before the push.
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if slot.load_full().tools["search"].allow {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "reconciler did not recover a slot desynced by an external push — \
+                 it is comparing against a private baseline instead of `slot`'s \
+                 current content (AAASM-6052)"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// A poll tick that finds no content change must not swap or otherwise
