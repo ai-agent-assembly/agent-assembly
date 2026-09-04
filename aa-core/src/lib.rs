@@ -37,6 +37,7 @@ pub mod capability;
 pub mod config;
 pub mod dev_tool;
 pub mod evaluators;
+pub mod gateway_readiness;
 pub mod identity;
 pub mod identity_attribution;
 #[cfg(feature = "std")]
