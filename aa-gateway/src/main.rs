@@ -95,6 +95,14 @@ struct Cli {
     /// when neither the flag nor the env var is set.
     #[arg(long)]
     audit_dir: Option<PathBuf>,
+
+    /// Gateway SQLite database path, for the DB-backed approval-escalation
+    /// scheduler. Equivalent to setting the `AA_GATEWAY_DB_PATH` environment
+    /// variable; primarily intended for nonroot/containerized deployments
+    /// where `$HOME` is unset or unwritable (AAASM-5010). Falls back to
+    /// `$HOME/.aa/aa_gateway.db` when neither the flag nor the env var is set.
+    #[arg(long)]
+    db_path: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -119,6 +127,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // gateway picks it up through `default_audit_dir()` (AAASM-1601).
     if let Some(ref dir) = cli.audit_dir {
         std::env::set_var("AA_AUDIT_DIR", dir);
+    }
+
+    // `--db-path` is a thin alias for the env var so the spawned gateway
+    // picks it up through `default_gateway_db_path()` (AAASM-5010).
+    if let Some(ref path) = cli.db_path {
+        std::env::set_var("AA_GATEWAY_DB_PATH", path);
     }
 
     let mode = resolve_mode(cli.mode, |k| std::env::var(k).ok())?;
