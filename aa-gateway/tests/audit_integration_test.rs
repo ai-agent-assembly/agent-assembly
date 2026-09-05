@@ -19,7 +19,7 @@ use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decisi
 use aa_proto::assembly::policy::v1::action_context::Action;
 use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
-use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, ToolCallContext};
+use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, FileOpContext, ToolCallContext};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tonic::transport::Server;
@@ -189,6 +189,70 @@ async fn check_action_allow_produces_audit_entry() {
     let payload: serde_json::Value = serde_json::from_str(entry.payload()).unwrap();
     assert_eq!(payload["decision"], Decision::Allow as i32);
     assert_eq!(payload["action_type"], ActionType::ToolCall as i32);
+
+    // AAASM-5007 — the tool this request named, so an allow and a deny for
+    // different tools are distinguishable from the payload alone.
+    assert_eq!(payload["action"], "web_search");
+
+    // AAASM-5007: `policy_rule`/`reason` are empty on an Allow by design —
+    // there is no rule to name and no reason to give. This is stated
+    // explicitly because AAASM-5007's own repro misread an Allow record's
+    // empty `policy_rule`/`reason` as evidence of a defect; the actual
+    // defect (fixed by this change) was that the record carried no `action`
+    // field, so it couldn't be told apart from the deny it was compared
+    // against. Asserted here so a future reader doesn't re-file that
+    // misdiagnosis against this test's fixture.
+    assert_eq!(payload["policy_rule"], "");
+    assert_eq!(payload["reason"], "");
+
+    // AAASM-5007 — human-readable hex forms of the entry's own subject/session,
+    // alongside the raw byte-array top-level fields every other consumer of
+    // `AuditEntry` depends on (unchanged).
+    assert_eq!(payload["agent_id_hex"], hex::encode(entry.agent_id().as_bytes()));
+    assert_eq!(payload["session_id_hex"], hex::encode(entry.session_id().as_bytes()));
+}
+
+/// AAASM-5007 — the `"action"` label for a non-`ToolCall` action type, so the
+/// `Action::ToolCall`-only arm of a naive implementation isn't left as the
+/// only one exercised.
+#[tokio::test]
+async fn check_action_file_op_records_path_as_action_label() {
+    let (addr, mut audit_rx, _drops) = start_server_with_audit_rx().await;
+    let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
+
+    let req = CheckActionRequest {
+        agent_id: Some(ProtoAgentId {
+            org_id: "test-org".into(),
+            team_id: "test-team".into(),
+            agent_id: "test-agent".into(),
+        }),
+        action_type: ActionType::FileOperation as i32,
+        context: Some(ActionContext {
+            action: Some(Action::FileOp(FileOpContext {
+                operation: "read".into(),
+                path: "/etc/passwd".into(),
+                is_sensitive_path: true,
+            })),
+        }),
+        trace_id: "trace-fileop".into(),
+        span_id: "span-fileop".into(),
+        credential_token: String::new(),
+        caller_agent_id: None,
+    };
+
+    let resp = client.check_action(req).await.unwrap().into_inner();
+    assert_eq!(
+        resp.decision,
+        Decision::Allow as i32,
+        "no capabilities block configured — allowed by default"
+    );
+
+    let entry = tokio::time::timeout(std::time::Duration::from_secs(2), audit_rx.recv())
+        .await
+        .expect("timed out waiting for audit entry")
+        .expect("channel closed without entry");
+    let payload: serde_json::Value = serde_json::from_str(entry.payload()).unwrap();
+    assert_eq!(payload["action"], "/etc/passwd");
 }
 
 #[tokio::test]
@@ -209,6 +273,30 @@ async fn check_action_deny_produces_policy_violation_event() {
         .expect("channel closed without entry");
 
     assert_eq!(entry.event_type(), AuditEventType::PolicyViolation);
+
+    let payload: serde_json::Value = serde_json::from_str(entry.payload()).unwrap();
+
+    // AAASM-5007 — the tool this request named.
+    assert_eq!(payload["action"], "dangerous");
+
+    // AAASM-5007 — `reason` explains WHY (prose); `policy_rule` must now name
+    // WHICH scoped policy fired, not repeat `reason` verbatim. Before this
+    // fix both fields carried the identical generic stage prose
+    // ("tool denied by policy"), which is what this assertion would have
+    // caught: a `policy_rule != ""` check alone passes a duplicate value
+    // just as well as a real identifier.
+    let reason = payload["reason"].as_str().expect("reason must be a string");
+    let policy_rule = payload["policy_rule"].as_str().expect("policy_rule must be a string");
+    assert!(!reason.is_empty(), "a deny must carry a non-empty reason");
+    assert!(!policy_rule.is_empty(), "a deny must carry a non-empty policy_rule");
+    assert_ne!(
+        policy_rule, reason,
+        "policy_rule must identify the rule, not duplicate the reason prose"
+    );
+    assert_eq!(
+        policy_rule, "tool:dangerous",
+        "policy_rule should name the scope that fired"
+    );
 }
 
 // ── Commit 19: ReportEvents RPC produces audit entries ──────────────────────

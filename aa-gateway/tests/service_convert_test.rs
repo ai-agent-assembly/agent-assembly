@@ -318,6 +318,7 @@ fn eval_result_with_credential_findings_returns_redact() {
         canonical_findings: vec![],
         deny_action: None,
         policy_doc_id: None,
+        policy_scope: None,
         narrowed: false,
     };
     let resp = eval_result_to_response(&eval, 77, "");

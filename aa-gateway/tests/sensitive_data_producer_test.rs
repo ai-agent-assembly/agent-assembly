@@ -463,6 +463,7 @@ fn assert_identical_decisions(bare: PolicyEngine, sunk: PolicyEngine) {
             canonical_findings,
             deny_action,
             policy_doc_id,
+            policy_scope: _,
             narrowed,
         } = bare.evaluate(&ctx(), &action);
         let with_sink = sunk.evaluate(&ctx(), &action);

@@ -204,6 +204,35 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
     Ok((ctx, action))
 }
 
+/// Human-readable label naming what a `CheckActionRequest` acted on — the
+/// tool, file, host, or command — for the audit payload's `"action"` key
+/// (AAASM-5007).
+///
+/// Before this, `record_audit`'s payload carried the bare `action_type` int
+/// and nothing else identifying the action, so two audit entries for
+/// different tools (e.g. an allowed `read_file` and a denied `delete_file`)
+/// were indistinguishable without cross-referencing the trace_id against a
+/// separate log — which is what produced this ticket's misdiagnosis that the
+/// allowed action left no audit trail at all (it did; it just couldn't be
+/// told apart from the deny).
+///
+/// Mirrors the `Action` arms [`request_to_core`] already matches. `None`
+/// when the request carries no context (a malformed/legacy request that
+/// [`request_to_core`] itself would reject with [`ConvertError::MissingContext`]
+/// — `record_audit` runs on the response path and must not panic or fail the
+/// RPC over a missing label, so this returns `Option` rather than `Result`).
+pub fn action_label(req: &CheckActionRequest) -> Option<String> {
+    let action = req.context.as_ref()?.action.as_ref()?;
+    Some(match action {
+        Action::ToolCall(tc) => tc.tool_name.clone(),
+        Action::ToolResult(tr) => tr.tool_name.clone(),
+        Action::FileOp(fo) => fo.path.clone(),
+        Action::NetworkCall(nc) => format!("{}:{}", nc.host, nc.port),
+        Action::ProcessExec(pe) => pe.command.clone(),
+        Action::LlmCall(lc) => lc.model.clone(),
+    })
+}
+
 /// Convert an [`EvaluationResult`] into a [`CheckActionResponse`].
 ///
 /// `latency_us` is the measured evaluation wall time in microseconds.
@@ -351,6 +380,7 @@ pub fn result_to_response(result: &PolicyResult, latency_us: i64, policy_rule: &
         canonical_findings: vec![],
         deny_action: None,
         policy_doc_id: None,
+        policy_scope: None,
         narrowed: false,
     };
     eval_result_to_response(&eval, latency_us, policy_rule)
@@ -555,6 +585,7 @@ mod tests {
             canonical_findings: vec![finding],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         }
     }
@@ -613,6 +644,7 @@ mod tests {
             canonical_findings: vec![canonical],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -631,6 +663,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -651,6 +684,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -671,6 +705,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "");
