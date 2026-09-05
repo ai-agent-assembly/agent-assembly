@@ -94,6 +94,27 @@ impl GatewayRegistrationClient {
     }
 }
 
+/// The `ProtoAgentId` triple this config's durable identity registers as:
+/// `org_id` (currently always empty — `AssemblyConfig` has no org concept),
+/// `team_id` from config, and the `did:key` derived from the durable keypair.
+///
+/// Shared by [`build_challenge_request`] and [`build_register_request`] so the
+/// two requests of one possession-proof handshake name the identical triple —
+/// and by [`AssemblyClient::register`](crate::client::AssemblyClient::register),
+/// which stores this exact value for `query_policy` to substitute later
+/// (AAASM-6057). Before AAASM-6057 that substitution re-derived only the DID
+/// through a separate call, which is what let `team_id` drift out of sync: the
+/// gateway's registry key is the whole triple, so a caller-supplied `team_id`
+/// on `CheckActionRequest` (every FFI shim sends an empty one) still missed
+/// the registered record even after AAASM-5835 corrected `agent_id` alone.
+pub(crate) fn registered_identity(config: &AssemblyConfig, keypair: &AgentKeypair) -> ProtoAgentId {
+    ProtoAgentId {
+        org_id: String::new(),
+        team_id: config.team_id.clone().unwrap_or_default(),
+        agent_id: keypair.did_key(),
+    }
+}
+
 /// Build the `ChallengeRequest` for the registration possession-proof handshake
 /// (AAASM-3866).
 ///
@@ -104,11 +125,7 @@ impl GatewayRegistrationClient {
 pub fn build_challenge_request(config: &AssemblyConfig) -> Result<ChallengeRequest, SdkClientError> {
     let keypair = identity_keypair(config)?;
     Ok(ChallengeRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: config.team_id.clone().unwrap_or_default(),
-            agent_id: keypair.did_key(),
-        }),
+        agent_id: Some(registered_identity(config, &keypair)),
         public_key: keypair.public_key_hex(),
     })
 }
@@ -146,11 +163,7 @@ pub fn build_register_request(
     let possession_proof = keypair.sign(nonce).to_vec();
 
     Ok(RegisterRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: config.team_id.clone().unwrap_or_default(),
-            agent_id: keypair.did_key(),
-        }),
+        agent_id: Some(registered_identity(config, &keypair)),
         name,
         framework,
         version: env!("CARGO_PKG_VERSION").to_string(),

@@ -12,6 +12,8 @@ use std::time::Duration;
 
 use zeroize::Zeroizing;
 
+use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
+
 use crate::config::AssemblyConfig;
 use crate::error::SdkClientError;
 use crate::gateway::{build_challenge_request, build_register_request, GatewayRegistrationClient};
@@ -43,25 +45,27 @@ pub struct AssemblyClient {
     /// dump readable by a host attacker (AAASM-3629). The plaintext is only
     /// cloned out transiently when attached to an outgoing request.
     credential_token: Mutex<Option<Zeroizing<String>>>,
-    /// The `did:key` DID this client actually registered as, stored at
-    /// [`register`](Self::register) success (AAASM-5835).
+    /// The full `AgentId` triple (`org_id`/`team_id`/`did:key`) this client
+    /// actually registered as, stored at [`register`](Self::register) success
+    /// (AAASM-5835, extended to the whole triple by AAASM-6057).
     ///
-    /// `AssemblyConfig::registration_did` resolves a caller-supplied
-    /// `agent_id` (a human label such as `"my-agent"`) to the `did:key` the
-    /// gateway's `AgentLifecycleService.Register` actually recorded — the
-    /// registry keys agents by that DID, not by the label. `query_policy`
-    /// callers (the per-language FFI shims) pass the human label straight
-    /// through on `CheckActionRequest.agent_id`, since they never see the
-    /// derived DID; forwarded as-is, that label never matches any
-    /// registered triple, and the gateway's `find_by_credential_token`
-    /// fallback then reports it as "credential token registered to a
-    /// different agent" — a real decision is never reached, on *every*
-    /// governed call, allow or deny alike. Stored here so `query_policy` can
-    /// substitute the DID that was actually registered — mirroring how
-    /// `credential_token` above is captured once at registration and
-    /// reattached on every subsequent check, rather than trusted from the
-    /// caller.
-    registered_agent_id: Mutex<Option<String>>,
+    /// The gateway's registry keys an agent by the *whole* triple, not by
+    /// `agent_id` alone (`SHA256("{org_id}/{team_id}/{agent_id}")`). Every
+    /// FFI shim builds `CheckActionRequest.agent_id` from the caller's
+    /// pre-registration human label and never learns what `register`
+    /// actually recorded — the human label's `agent_id`, and (before
+    /// AAASM-6057) its `team_id`/`org_id` too, since a caller-configured
+    /// `team_id` is never threaded through to the per-call FFI request.
+    /// Forwarded as-is, that request misses the registered record, and the
+    /// gateway's `find_by_credential_token` fallback reports it as
+    /// "credential token registered to a different agent" — a real decision
+    /// is never reached, on *every* governed call, allow or deny alike, for
+    /// any deployment that sets a `team_id`. Stored here as the exact value
+    /// [`build_register_request`] sent (not re-derived) so `query_policy` can
+    /// substitute the whole triple — mirroring how `credential_token` above
+    /// is captured once at registration and reattached on every subsequent
+    /// check, rather than trusted from the caller.
+    registered_agent_id: Mutex<Option<ProtoAgentId>>,
     #[cfg(feature = "preflight")]
     preflight: Option<Preflight>,
 }
@@ -145,6 +149,10 @@ impl AssemblyClient {
         // attacker-derivable challenge.
         let challenge = client.request_challenge(build_challenge_request(config)?).await?;
         let request = build_register_request(config, name, framework, &challenge.nonce)?;
+        // Captured before `request` moves into `register` below — the exact
+        // triple sent, not re-derived, so it cannot drift from what the
+        // gateway actually recorded (AAASM-6057).
+        let registered_identity = request.agent_id.clone();
         let response = client.register(request).await?;
 
         {
@@ -152,21 +160,15 @@ impl AssemblyClient {
             *guard = Some(Zeroizing::new(response.credential_token));
         }
 
-        // Re-resolve the same durable identity `build_register_request` just
-        // registered with — `registration_did` reads the persisted key
-        // `identity_store` enrolled above, so this returns the identical DID
-        // rather than deriving a new one (AAASM-5835). Stored so
-        // `query_policy` can correct a caller's human-label `agent_id` to
-        // what the gateway actually recorded the agent under.
+        // Stored so `query_policy` can substitute the whole triple the
+        // gateway actually recorded in place of a caller's pre-registration
+        // one (AAASM-5835 / AAASM-6057).
         {
-            let did = config
-                .registration_did()
-                .map_err(|e| SdkClientError::IdentityUnavailable(e.to_string()))?;
             let mut guard = self
                 .registered_agent_id
                 .lock()
                 .map_err(|_| SdkClientError::LockPoisoned)?;
-            *guard = Some(did);
+            *guard = registered_identity;
         }
 
         Ok(response.assigned_policy)
@@ -306,18 +308,20 @@ impl AssemblyClient {
             }
         }
 
-        // Substitute the DID this client actually registered as (AAASM-5835).
-        // Every FFI shim builds `CheckActionRequest.agent_id` from the same
-        // human-label `agent_id` the caller passed to `register` — it never
-        // learns the derived `did:key` `register` resolved that label to, so
-        // it cannot supply it. Unconditional, unlike `credential_token`
-        // above: one `AssemblyClient` registers as exactly one identity, so
-        // there is no legitimate per-call override to preserve — a caller-
-        // supplied `agent_id` here is always the pre-registration label, never
-        // a deliberate choice of a *different* registered identity.
+        // Substitute the whole `AgentId` triple this client actually
+        // registered as (AAASM-5835, extended from `agent_id` alone to the
+        // full triple by AAASM-6057). Every FFI shim builds
+        // `CheckActionRequest.agent_id` from the same human-label the caller
+        // passed to `register` — it never learns the triple `register`
+        // actually recorded, so it cannot supply it. Unconditional, unlike
+        // `credential_token` above: one `AssemblyClient` registers as exactly
+        // one identity, so there is no legitimate per-call override to
+        // preserve — a caller-supplied `agent_id` here is always the
+        // pre-registration label, never a deliberate choice of a *different*
+        // registered identity, and the same holds for `team_id`/`org_id`.
         if let Ok(guard) = self.registered_agent_id.lock() {
-            if let Some(did) = guard.as_ref() {
-                request.agent_id.get_or_insert_with(Default::default).agent_id = did.clone();
+            if let Some(registered) = guard.as_ref() {
+                request.agent_id = Some(registered.clone());
             }
         }
 
@@ -717,10 +721,10 @@ mod tests {
             *self.credential_token.lock().unwrap() = None;
         }
 
-        /// Test-only seam: set the stored registered DID without a live
-        /// gateway round-trip (AAASM-5835).
-        fn set_registered_agent_id_for_test(&self, did: &str) {
-            *self.registered_agent_id.lock().unwrap() = Some(did.to_string());
+        /// Test-only seam: set the stored registered `AgentId` triple without
+        /// a live gateway round-trip (AAASM-5835 / AAASM-6057).
+        fn set_registered_agent_id_for_test(&self, registered: ProtoAgentId) {
+            *self.registered_agent_id.lock().unwrap() = Some(registered);
         }
     }
 
@@ -841,7 +845,11 @@ mod tests {
         use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
 
         let (client, mut rx) = test_client(vec![]);
-        client.set_registered_agent_id_for_test("did:key:z6MkRealRegisteredDid");
+        client.set_registered_agent_id_for_test(AgentId {
+            org_id: String::new(),
+            team_id: String::new(),
+            agent_id: "did:key:z6MkRealRegisteredDid".to_string(),
+        });
 
         let request = CheckActionRequest {
             agent_id: Some(AgentId {
@@ -861,6 +869,49 @@ mod tests {
                     request.agent_id.as_ref().map(|a| a.agent_id.as_str()),
                     Some("did:key:z6MkRealRegisteredDid"),
                     "query_policy must substitute the registered DID, not forward the caller's human label"
+                );
+                resp.send(CheckActionResponse::default()).unwrap();
+            }
+            other => panic!("expected QueryPolicy, got {other:?}"),
+        }
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn query_policy_substitutes_the_registered_team_id_too() {
+        // AAASM-6057: AAASM-5835 corrected only `agent_id`. A deployment that
+        // configures a `team_id` still had every governed call denied, because
+        // the FFI shim's per-call request always carries an empty `team_id`
+        // (it never learns the config's team_id) and the gateway's registry
+        // key is the whole `org_id/team_id/agent_id` triple.
+        use aa_proto::assembly::common::v1::AgentId;
+        use aa_proto::assembly::policy::v1::{CheckActionRequest, CheckActionResponse};
+
+        let (client, mut rx) = test_client(vec![]);
+        client.set_registered_agent_id_for_test(AgentId {
+            org_id: String::new(),
+            team_id: "team-tenant-x".to_string(),
+            agent_id: "did:key:z6MkRealRegisteredDid".to_string(),
+        });
+
+        let request = CheckActionRequest {
+            agent_id: Some(AgentId {
+                org_id: String::new(),
+                team_id: String::new(),
+                agent_id: "my-human-label".to_string(),
+            }),
+            ..Default::default()
+        };
+        let handle = std::thread::spawn(move || {
+            client.query_policy(request).unwrap();
+        });
+
+        match rx.blocking_recv().expect("should receive a command") {
+            IpcCommand::QueryPolicy { request, resp } => {
+                assert_eq!(
+                    request.agent_id.as_ref().map(|a| a.team_id.as_str()),
+                    Some("team-tenant-x"),
+                    "query_policy must substitute the registered team_id, not forward the caller's empty one"
                 );
                 resp.send(CheckActionResponse::default()).unwrap();
             }
