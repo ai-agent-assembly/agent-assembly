@@ -43,6 +43,8 @@ fn lifecycle_config(agent_id: &str) -> RuntimeConfig {
         policy_path: None,
         // No gateway → policy evaluated locally, op-control kill switch inactive.
         gateway_endpoint: None,
+        gateway_credential_token: None,
+        gateway_agent_id: None,
         correlation_window_ms: 500,
         correlation_interval_ms: 50,
         // No NATS config → audit publisher disabled.

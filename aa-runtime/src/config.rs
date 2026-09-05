@@ -11,6 +11,35 @@ use crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES;
 /// (AAASM-3987).
 pub const DEFAULT_GATEWAY_TIMEOUT_MS: u64 = 5_000;
 
+/// A gateway credential token, held only long enough to attach it to outbound
+/// requests.
+///
+/// The sole reason this isn't a plain `String`: [`RuntimeConfig`] derives
+/// `Debug` (logged/printed via `{:?}` in error paths and tests), and a bare
+/// `String` field would put the live credential in any such output. `Debug`
+/// is overridden to print a fixed placeholder instead.
+#[derive(Clone)]
+pub struct CredentialToken(String);
+
+impl CredentialToken {
+    /// Wrap a token value. Exposed for test fixtures that construct a
+    /// [`RuntimeConfig`] directly rather than through [`RuntimeConfig::from_env`].
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// Borrow the token value, e.g. to attach as gRPC request metadata.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for CredentialToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CredentialToken(<redacted>)")
+    }
+}
+
 /// Configuration for the `aa-runtime` sidecar process.
 ///
 /// All fields are populated by [`RuntimeConfig::from_env`].
@@ -104,6 +133,36 @@ pub struct RuntimeConfig {
     /// gateway via [`crate::gateway_client::GatewayClient`] instead of
     /// evaluating locally with [`crate::policy::PolicyRules`].
     pub gateway_endpoint: Option<String>,
+
+    /// Credential token authenticating the `OpControlStream` subscription
+    /// (AAASM-5009) to a gateway that enforces per-RPC credential auth
+    /// (`aa-gateway/src/iam/grpc_auth.rs`).
+    ///
+    /// Read from `AA_GATEWAY_CREDENTIAL_TOKEN`. `None` when unset or empty —
+    /// the subscription is then sent without a credential, which a
+    /// credential-enforcing gateway rejects (every shipped gateway does; see
+    /// `aa-gateway/src/main.rs`). Requires [`gateway_agent_id`](Self::gateway_agent_id)
+    /// to also be set — `from_env` fails at boot rather than silently retrying
+    /// forever if only one of the pair is provided.
+    pub gateway_credential_token: Option<CredentialToken>,
+
+    /// The registered agent identity (a `did:key`, minted by
+    /// `AgentLifecycleService.Register`) that
+    /// [`gateway_credential_token`](Self::gateway_credential_token) was issued
+    /// for.
+    ///
+    /// Read from `AA_GATEWAY_AGENT_ID`. Deliberately distinct from
+    /// [`agent_id`](Self::agent_id): the gateway keys its credential registry
+    /// by `SHA256("{org_id}/{team_id}/{registered_agent_id}")`
+    /// (`aa-gateway/src/registry/convert.rs`), and the human-readable
+    /// `AA_AGENT_ID` this runtime instance uses to name its IPC socket is
+    /// never itself registered. The org component of that key is always
+    /// empty — every SDK registration hardcodes `org_id: ""`
+    /// (`aa-sdk-client/src/gateway.rs`) — so there is no corresponding
+    /// `AA_GATEWAY_ORG_ID`; [`agent_team_id`](Self::agent_team_id) is reused
+    /// as the team component since it already serves the identical purpose
+    /// for the unauthenticated subscription path this replaces.
+    pub gateway_agent_id: Option<String>,
 
     /// Sliding window duration in milliseconds for the correlation engine.
     ///
@@ -211,6 +270,8 @@ impl RuntimeConfig {
     /// | `AA_GATEWAY_TIMEOUT_MS` | `u64` | `5000` (per-RPC gateway deadline) |
     /// | `AA_AGENT_TEAM_ID` | `String` | `""` (op-control subscription identity) |
     /// | `AA_AGENT_ORG_ID` | `String` | `""` (op-control subscription identity) |
+    /// | `AA_GATEWAY_CREDENTIAL_TOKEN` | `Option<CredentialToken>` | `None` (op-control subscription is sent unauthenticated) |
+    /// | `AA_GATEWAY_AGENT_ID` | `Option<String>` | `None`; **required** when `AA_GATEWAY_CREDENTIAL_TOKEN` is set |
     pub fn from_env() -> Result<Self, String> {
         let agent_id = std::env::var("AA_AGENT_ID").map_err(|_| "AA_AGENT_ID is required but not set".to_string())?;
 
@@ -278,6 +339,24 @@ impl RuntimeConfig {
 
         let gateway_endpoint = std::env::var("AA_GATEWAY_ENDPOINT").ok().filter(|v| !v.is_empty());
 
+        let gateway_credential_token = std::env::var("AA_GATEWAY_CREDENTIAL_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(CredentialToken);
+        let gateway_agent_id = std::env::var("AA_GATEWAY_AGENT_ID").ok().filter(|v| !v.is_empty());
+
+        // Fail loud at boot rather than leave the op-control subscriber to
+        // retry forever against a gateway that will keep rejecting it for a
+        // reason the operator can't see from the reconnect-loop logs alone
+        // (AAASM-5009).
+        if gateway_credential_token.is_some() && gateway_agent_id.is_none() {
+            return Err(
+                "AA_GATEWAY_CREDENTIAL_TOKEN is set but AA_GATEWAY_AGENT_ID is not — both are \
+                 required to authenticate the op-control subscription"
+                    .to_string(),
+            );
+        }
+
         let correlation_window_ms = std::env::var("AA_CORRELATION_WINDOW_MS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -339,6 +418,8 @@ impl RuntimeConfig {
             metrics_addr,
             policy_path,
             gateway_endpoint,
+            gateway_credential_token,
+            gateway_agent_id,
             correlation_window_ms,
             correlation_interval_ms,
             nats_config_path,
@@ -765,6 +846,92 @@ mod tests {
 
         env.unset("AA_AGENT_ID");
         env.unset("AA_GATEWAY_ENDPOINT");
+    }
+
+    #[test]
+    fn gateway_credential_and_agent_id_default_to_none() {
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-cred-default");
+        env.unset("AA_GATEWAY_CREDENTIAL_TOKEN");
+        env.unset("AA_GATEWAY_AGENT_ID");
+
+        let config = RuntimeConfig::from_env().unwrap();
+
+        assert!(config.gateway_credential_token.is_none());
+        assert!(config.gateway_agent_id.is_none());
+
+        env.unset("AA_AGENT_ID");
+    }
+
+    #[test]
+    fn gateway_credential_and_agent_id_read_from_env_when_both_set() {
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-cred-both");
+        env.set("AA_GATEWAY_CREDENTIAL_TOKEN", "tok-abc123");
+        env.set("AA_GATEWAY_AGENT_ID", "did:key:z6MkExample");
+
+        let config = RuntimeConfig::from_env().unwrap();
+
+        assert_eq!(config.gateway_credential_token.unwrap().as_str(), "tok-abc123");
+        assert_eq!(config.gateway_agent_id, Some("did:key:z6MkExample".to_string()));
+
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_CREDENTIAL_TOKEN");
+        env.unset("AA_GATEWAY_AGENT_ID");
+    }
+
+    /// AAASM-5009: a token with no registered identity for it to belong to
+    /// would leave the op-control subscriber retrying forever against
+    /// `permission_denied` with nothing in the logs pointing at the missing
+    /// var — fail at boot instead.
+    #[test]
+    fn boot_fails_when_credential_token_set_without_gateway_agent_id() {
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-cred-missing-id");
+        env.set("AA_GATEWAY_CREDENTIAL_TOKEN", "tok-abc123");
+        env.unset("AA_GATEWAY_AGENT_ID");
+
+        let result = RuntimeConfig::from_env();
+
+        assert!(
+            result.is_err(),
+            "must fail closed rather than start with an unusable credential"
+        );
+        let message = result.unwrap_err();
+        assert!(message.contains("AA_GATEWAY_CREDENTIAL_TOKEN"));
+        assert!(message.contains("AA_GATEWAY_AGENT_ID"));
+
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_CREDENTIAL_TOKEN");
+    }
+
+    /// `AA_GATEWAY_AGENT_ID` alone (no token) is accepted — it's meaningless
+    /// without a token to authenticate, but there's no ambiguity to fail
+    /// closed against the way there is for the reverse case.
+    #[test]
+    fn gateway_agent_id_alone_without_token_is_accepted() {
+        let mut env = EnvGuard::new();
+        env.set("AA_AGENT_ID", "agent-cred-id-only");
+        env.unset("AA_GATEWAY_CREDENTIAL_TOKEN");
+        env.set("AA_GATEWAY_AGENT_ID", "did:key:z6MkExample");
+
+        let config = RuntimeConfig::from_env().unwrap();
+
+        assert!(config.gateway_credential_token.is_none());
+        assert_eq!(config.gateway_agent_id, Some("did:key:z6MkExample".to_string()));
+
+        env.unset("AA_AGENT_ID");
+        env.unset("AA_GATEWAY_AGENT_ID");
+    }
+
+    /// The credential must never appear in `{:?}` output — `RuntimeConfig`
+    /// derives `Debug` and is logged/printed in several error paths.
+    #[test]
+    fn credential_token_debug_output_never_contains_the_value() {
+        let token = CredentialToken("super-secret-value".to_string());
+        let rendered = format!("{token:?}");
+        assert!(!rendered.contains("super-secret-value"));
+        assert_eq!(rendered, "CredentialToken(<redacted>)");
     }
 
     #[test]
