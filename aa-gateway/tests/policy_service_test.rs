@@ -574,13 +574,22 @@ tools:
         .register(level_test_record(&proto_id, aa_core::GovernanceLevel::L2Enforce))
         .unwrap();
 
-    // Issue the request on a background task so we can inspect the approval
-    // queue while the server is blocked on the operator decision.
+    // AAASM-4986: check_action returns Pending immediately — no need to
+    // spawn a background task and sleep to inspect the queue mid-flight.
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
-    let client_task = tokio::spawn(async move { client.check_action(tool_call_request("any_tool")).await });
-
-    // Allow the server time to enqueue the request.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        client.check_action(tool_call_request("any_tool")),
+    )
+    .await
+    .expect("check_action must return immediately, not block on the operator decision")
+    .unwrap()
+    .into_inner();
+    assert_eq!(
+        resp.decision,
+        Decision::Pending as i32,
+        "rule with `governance_level >= L2` must hold the action for approval"
+    );
 
     // The rule must have fired → exactly one pending entry.
     let pending = queue.list();
@@ -591,7 +600,8 @@ tools:
     );
     assert_eq!(pending[0].agent_id, "agent-1");
 
-    // Decide approve so the client task can complete cleanly.
+    // Decide approve — the resolution runs in a spawned continuation, off
+    // this call, and is exercised end-to-end by `approval_flow_test.rs`.
     queue
         .decide(
             pending[0].request_id,
@@ -602,9 +612,6 @@ tools:
             },
         )
         .unwrap();
-
-    let resp = client_task.await.unwrap().unwrap().into_inner();
-    assert_eq!(resp.decision, Decision::Allow as i32);
 }
 
 #[tokio::test]
