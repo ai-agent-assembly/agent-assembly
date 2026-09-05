@@ -132,6 +132,8 @@ services. Values below are taken directly from that file.
 | `AA_POLICY_PATH` | `/etc/aa/policy.toml` | Path to the mounted local policy file. |
 | `AA_METRICS_ADDR` | `0.0.0.0:8080` (default) | Bind address for the health/metrics HTTP server. |
 | `AA_GATEWAY_ENDPOINT` | _(unset)_ | Left unset for standalone, gateway-less enforcement. Set it to call a gateway (self-hosted from source, or the SaaS endpoint) instead. |
+| `AA_GATEWAY_CREDENTIAL_TOKEN` | _(unset)_ | Authenticates the op-control (live kill-switch) subscription to a gateway that enforces per-RPC credential auth — every shipped gateway does, so without this the subscription is permanently rejected and the kill switch never connects (AAASM-5009). Requires `AA_GATEWAY_AGENT_ID` to also be set; startup fails otherwise. |
+| `AA_GATEWAY_AGENT_ID` | _(unset)_ | The registered `did:key` identity the credential above was issued for — **not** the same value as `AA_AGENT_ID` above. |
 
 `agent-stub`:
 

@@ -263,6 +263,8 @@ Read in `aa-runtime/src/config.rs`:
 | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | Oversized-field threshold; the enforcement stage redacts whole fields over the limit (fail-closed). |
 | `AA_GATEWAY_ENDPOINT` | gRPC endpoint of the gateway (shared with the SDK client). |
 | `AA_GATEWAY_FAIL_CLOSED` | Deny when the gateway is unreachable. |
+| `AA_GATEWAY_CREDENTIAL_TOKEN` | Authenticates the op-control (live kill-switch) `OpControlStream` subscription — required by any gateway enforcing per-RPC credential auth (AAASM-5009); requires `AA_GATEWAY_AGENT_ID` too. |
+| `AA_GATEWAY_AGENT_ID` | The registered `did:key` the credential above belongs to; distinct from `AA_AGENT_ID` above. |
 
 ### `aa-gateway` — registry, policy engine, budgets, audit
 
