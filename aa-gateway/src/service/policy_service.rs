@@ -540,10 +540,22 @@ impl PolicyServiceImpl {
         let eval = self.engine.evaluate(&ctx, &action);
         let latency_us = start.elapsed().as_micros() as i64;
 
-        // Derive a policy_rule label from the deny/approval reason.
+        // Derive a policy_rule label identifying WHICH rule fired.
+        //
+        // AAASM-5007: this used to be `reason.clone()` for every deny, which
+        // duplicated the `reason` field verbatim (both carried the same
+        // generic stage prose, e.g. "tool denied by policy") rather than
+        // naming a rule — an operator reading the audit log could see THAT a
+        // request was denied and WHY in prose, but not WHICH scoped policy
+        // document/tier fired. `eval.policy_scope` (populated at the cascade
+        // deny sites from the deciding `PolicyDecision::Deny`'s
+        // `source_scope`) gives a real, distinct identifier — e.g.
+        // "tool:delete_file" — when available. Falls back to the reason for
+        // the deny paths that never had a `PolicyScope` to attribute to
+        // (rate-limit, budget, credential-scan) rather than leaving it empty.
         let policy_rule = match &eval.decision {
             aa_core::PolicyResult::Allow => String::new(),
-            aa_core::PolicyResult::Deny { reason } => reason.clone(),
+            aa_core::PolicyResult::Deny { reason } => eval.policy_scope.clone().unwrap_or_else(|| reason.clone()),
             aa_core::PolicyResult::RequiresApproval { .. } => "requires_approval".to_string(),
         };
 
@@ -1026,6 +1038,21 @@ impl PolicyServiceImpl {
         let root_agent_id_hex = lineage.root_agent_id.map(|id| hex::encode(id.as_bytes()));
         let parent_agent_id_hex = lineage.parent_agent_id.map(|id| hex::encode(id.as_bytes()));
 
+        // AAASM-5007 — the entry's own subject/session serialize to raw byte
+        // arrays at the top level (`AgentId`/`SessionId`'s `Serialize` derive,
+        // unchanged for compatibility with every other consumer of that
+        // repr). Mirror root/parent's hex-encoding above so the payload JSON
+        // — the form an operator actually reads — carries a human-readable
+        // string instead.
+        let agent_id_hex = hex::encode(agent_id.as_bytes());
+        let session_id_hex = hex::encode(session_id.as_bytes());
+
+        // AAASM-5007 — name what the action acted on. See `action_label`'s
+        // doc for why this was the root cause of the ticket's "allow wasn't
+        // audited" misdiagnosis: both records existed, they just couldn't be
+        // told apart without this.
+        let action_label = convert::action_label(req);
+
         // AAASM-3376 — the session_id stored on the entry is SHA256(trace_id)[:16],
         // which is one-way: the raw trace_id and the per-action span_id are lost
         // once the entry is persisted. Carry both in the payload JSON so they
@@ -1068,6 +1095,7 @@ impl PolicyServiceImpl {
         let payload = match shadow {
             Some(s) => serde_json::json!({
                 "action_type": req.action_type,
+                "action": &action_label,
                 "decision": response.decision,
                 "verdict": verdict,
                 "latency_ms": latency_ms,
@@ -1086,6 +1114,8 @@ impl PolicyServiceImpl {
                 "span_id": span_id_str,
                 "org_id": &lineage.org_id,
                 "team_id": &lineage.team_id,
+                "agent_id_hex": &agent_id_hex,
+                "session_id_hex": &session_id_hex,
                 "root_agent_id": &root_agent_id_hex,
                 "parent_agent_id": &parent_agent_id_hex,
                 "depth": lineage.depth,
@@ -1094,6 +1124,7 @@ impl PolicyServiceImpl {
             }),
             None => serde_json::json!({
                 "action_type": req.action_type,
+                "action": &action_label,
                 "decision": response.decision,
                 "verdict": verdict,
                 "latency_ms": latency_ms,
@@ -1109,6 +1140,8 @@ impl PolicyServiceImpl {
                 "span_id": span_id_str,
                 "org_id": &lineage.org_id,
                 "team_id": &lineage.team_id,
+                "agent_id_hex": &agent_id_hex,
+                "session_id_hex": &session_id_hex,
                 "root_agent_id": &root_agent_id_hex,
                 "parent_agent_id": &parent_agent_id_hex,
                 "depth": lineage.depth,
