@@ -271,6 +271,7 @@ Read in `aa-runtime/src/config.rs`:
 | `AA_MODE` | `aa-gateway/src/main.rs` | Deployment mode: `legacy-grpc`, `local`, or `remote`. The gRPC service is always exposed; `--mode` overrides the env var. |
 | `AAASM_GATEWAY_PORT` | `aa-core/src/config.rs` | Gateway port in `local` mode. |
 | `AA_AUDIT_DIR` | `aa-gateway/src/server.rs` | Directory for the tamper-evident JSONL audit log. |
+| `AA_GATEWAY_DB_PATH` | `aa-gateway/src/server.rs` | SQLite file path for the DB-backed approval-escalation scheduler (default `$HOME/.aa/aa_gateway.db`; needed on nonroot/containerized deployments where `$HOME` is unset or unwritable, AAASM-5010). `--db-path` is a thin CLI alias. |
 | `AA_DATA_DIR` | `aa-gateway/src/policy/history/config.rs` | Base data dir; e.g. policy history lands under `$AA_DATA_DIR/policy-history/`. |
 | `AA_AUDIT_NATS_URL` + `AA_AUDIT_POSTGRES_URL` | `aa-gateway/src/audit_consumer.rs` | Both must be set to enable the async audit consumer (NATS → Postgres). |
 | `AA_SENSITIVE_DATA_PROJECTION_DB` | `aa-gateway/src/server.rs` | SQLite path for the durable sensitive-data projection. Unset or empty leaves the tier off. Read only under `legacy-grpc` (the default mode); a path that cannot be opened or migrated fails the boot. See [Sensitive-data projection](../operations/sensitive-data-projection.md). |
