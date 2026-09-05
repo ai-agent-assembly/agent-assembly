@@ -84,6 +84,12 @@ impl AnomalyHook {
 }
 
 /// gRPC service implementation wiring `CheckAction` / `BatchCheck` to [`PolicyEngine`].
+///
+/// `Clone` (AAASM-4986) is cheap — every field is an `Arc`/`Option<Arc<_>>`/
+/// broadcast `Sender` — and is what lets [`Self::run_approval_continuation`]
+/// move an owned copy of the service into a spawned task that outlives the
+/// original `CheckAction`/`BatchCheck` call's stack frame.
+#[derive(Clone)]
 pub struct PolicyServiceImpl {
     engine: Arc<PolicyEngine>,
     registry: Option<Arc<AgentRegistry>>,
@@ -755,20 +761,35 @@ impl PolicyServiceImpl {
         }
     }
 
-    /// Submit a `RequiresApproval` evaluation to the approval queue, await
-    /// the human decision (with timeout), and return the final response.
+    /// Submit a `RequiresApproval` evaluation to the approval queue and
+    /// return immediately with a `Pending` response — it does **not** await
+    /// the human decision. Call [`Self::run_approval_continuation`] with the
+    /// returned future to do that off the request's stack (AAASM-4986).
     ///
-    /// Returns `Some(response)` when the evaluation was `RequiresApproval` and
-    /// the queue was available. Returns `None` when the evaluation is not
-    /// `RequiresApproval` or the queue is absent (degraded mode — caller falls
-    /// through to the normal conversion path).
+    /// Returns `Some((pending, approval_id, future, timeout_secs))` when the
+    /// evaluation was `RequiresApproval` and the queue was available.
+    /// Returns `None` when the evaluation is not `RequiresApproval` or the
+    /// queue is absent (degraded mode — caller falls through to the normal
+    /// conversion path).
+    ///
+    /// Before AAASM-4986 this awaited the decision here, which meant
+    /// `check_action` blocked for up to `timeout_secs` (commonly minutes) —
+    /// far longer than `aa-runtime`'s 5s gateway-RPC deadline
+    /// (`DEFAULT_GATEWAY_TIMEOUT_MS`), so the runtime's own timeout always
+    /// fired first and no caller ever observed a real approval outcome, only
+    /// a fail-closed "gateway unreachable" Deny.
     async fn maybe_submit_approval(
         &self,
         req: &CheckActionRequest,
         eval: &EvaluationResult,
         latency_us: i64,
         policy_rule: &str,
-    ) -> Option<CheckActionResponse> {
+    ) -> Option<(
+        CheckActionResponse,
+        aa_runtime::approval::ApprovalRequestId,
+        aa_runtime::approval::ApprovalFuture,
+        u32,
+    )> {
         let timeout_secs = match &eval.decision {
             aa_core::PolicyResult::RequiresApproval { timeout_secs } => *timeout_secs,
             _ => return None,
@@ -917,6 +938,54 @@ impl PolicyServiceImpl {
             Some(history_entry),
         );
 
+        // Return Pending immediately — the human decision is awaited by
+        // Self::run_approval_continuation, off this call's stack.
+        let pending = CheckActionResponse {
+            decision: aa_proto::assembly::common::v1::Decision::Pending as i32,
+            reason: String::new(),
+            policy_rule: policy_rule.to_string(),
+            approval_id: approval_id.to_string(),
+            redact: None,
+            decision_latency_us: latency_us,
+            ..Default::default()
+        };
+
+        Some((pending, approval_id, future, timeout_secs))
+    }
+
+    /// Await an approval's human decision off the originating
+    /// `CheckAction`/`BatchCheck` call's stack, then run the resolution-time
+    /// half of the post-processing pipeline and emit the final audit entry
+    /// (AAASM-4986).
+    ///
+    /// Takes `self` by value (not `&self`) — spawned via `tokio::spawn`, this
+    /// runs after the RPC that created it has already returned, so it needs
+    /// its own owned copy of the service (cheap: every field is an `Arc` or
+    /// similar) and of everything it was evaluated against.
+    ///
+    /// Deliberately does **not** re-run [`Self::maybe_detect_anomaly`] or the
+    /// ops-registry ingest — both already ran once, at submission time,
+    /// against the live request. Re-running them here would double-count the
+    /// action into the anomaly detector's baseline. `anomaly_event` is the
+    /// detector's verdict from that earlier run, carried through so
+    /// [`Self::enforce_anomaly_block`] can still apply it to whichever
+    /// decision the human actually reaches. Budget accrual, by contrast, is
+    /// applied here and only here — an approval-held action has not executed
+    /// and must not reserve spend until (if) it is actually allowed.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_approval_continuation(
+        self,
+        req: CheckActionRequest,
+        eval: EvaluationResult,
+        policy_rule: String,
+        latency_us: i64,
+        approval_id: aa_runtime::approval::ApprovalRequestId,
+        future: aa_runtime::approval::ApprovalFuture,
+        timeout_secs: u32,
+        ops_op_id: Option<String>,
+        anomaly_event: Option<AnomalyEvent>,
+        shadow_event: Option<ShadowEvent>,
+    ) {
         // Await the operator's decision with a timeout guard.
         // The ApprovalQueue also spawns its own timeout task, so both race;
         // whichever fires first wins (the queue's resolve is idempotent).
@@ -943,12 +1012,21 @@ impl PolicyServiceImpl {
             }
         };
 
-        Some(convert::approval_decision_to_response(
-            &decision,
-            &approval_id,
-            latency_us,
-            policy_rule,
-        ))
+        let response = convert::approval_decision_to_response(&decision, &approval_id, latency_us, &policy_rule);
+        let response = self.enforce_anomaly_block(response, anomaly_event.as_ref());
+        let response = self.maybe_accrue_llm_spend(&req, response);
+        let response = self.stamp_identity_assurance(&req, response);
+
+        if let Some(op_id) = ops_op_id.as_deref() {
+            let decision = response.decision;
+            if decision == aa_proto::assembly::common::v1::Decision::Allow as i32 {
+                self.allow_op(op_id);
+            } else if decision == aa_proto::assembly::common::v1::Decision::Deny as i32 {
+                self.terminate_op(op_id);
+            }
+        }
+
+        self.record_audit(&req, &response, &eval, shadow_event.as_ref()).await;
     }
 
     /// Build an `AuditEntry` from a request and evaluation result, then fire-and-forget
@@ -1865,18 +1943,55 @@ impl PolicyService for PolicyServiceImpl {
         let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
         let deny_action = eval.deny_action;
 
-        // If RequiresApproval, submit to the queue and block until decided.
-        let response =
-            if let Some(approval_response) = self.maybe_submit_approval(&req, &eval, latency_us, &policy_rule).await {
-                approval_response
-            } else {
-                convert::eval_result_to_response(&eval, latency_us, &policy_rule)
-            };
-
         // AAASM-3378 / AAASM-3384: run the live anomaly detector over the
-        // evaluated action, then enforce a block-equivalent detection as a hard
-        // Deny before the ops transition / audit observe the final decision.
+        // evaluated action once, against the live evaluation — before the
+        // RequiresApproval branch below, so an action later held for
+        // approval is scored exactly once (AAASM-4986: re-running this in
+        // the approval continuation would double-count the action into the
+        // detector's spike/loop baseline). Carried into the continuation so
+        // whichever decision the human eventually reaches still gets this
+        // run's detection applied via `enforce_anomaly_block`.
         let anomaly_event = self.maybe_detect_anomaly(&req, &eval);
+
+        // If RequiresApproval, submit to the queue and return Pending
+        // immediately (AAASM-4986) — the human decision, and the rest of
+        // this pipeline (anomaly enforcement, budget accrual, ops
+        // transition, final audit), run in a spawned continuation off this
+        // call's stack. Blocking here up to the full approval timeout used
+        // to make every approval-required call fail closed at aa-runtime's
+        // much shorter gateway-RPC deadline before a human ever saw it.
+        if let Some((pending, approval_id, future, timeout_secs)) =
+            self.maybe_submit_approval(&req, &eval, latency_us, &policy_rule).await
+        {
+            let pending = self.stamp_identity_assurance(&req, pending);
+
+            tracing::debug!(
+                decision = pending.decision,
+                latency_us = pending.decision_latency_us,
+                "check_action response"
+            );
+
+            // Fire-and-forget audit entry recording the hold itself
+            // (AuditEventType::ApprovalRequested) — never blocks the response.
+            self.record_audit(&req, &pending, &eval, shadow_event.as_ref()).await;
+
+            tokio::spawn(self.clone().run_approval_continuation(
+                req,
+                eval,
+                policy_rule,
+                latency_us,
+                approval_id,
+                future,
+                timeout_secs,
+                ops_op_id,
+                anomaly_event,
+                shadow_event,
+            ));
+
+            return Ok(Response::new(pending));
+        }
+
+        let response = convert::eval_result_to_response(&eval, latency_us, &policy_rule);
         let response = self.enforce_anomaly_block(response, anomaly_event.as_ref());
 
         // AAASM-3353 / AAASM-3986: atomically reserve LLM-call cost so daily /
@@ -1886,7 +2001,7 @@ impl PolicyService for PolicyServiceImpl {
         let response = self.maybe_accrue_llm_spend(&req, response);
 
         // AAASM-5665: stamp how the claimed `agentId` was treated. Placed after
-        // every path that can rewrite the decision (approval, anomaly, budget)
+        // every path that can rewrite the decision (anomaly, budget)
         // so a rewritten response carries it too.
         let response = self.stamp_identity_assurance(&req, response);
 
@@ -1963,16 +2078,36 @@ impl PolicyService for PolicyServiceImpl {
             let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
             let deny_action = eval.deny_action;
 
-            let resp = if let Some(approval_response) =
+            // AAASM-3378 / AAASM-3384: detect once, before the RequiresApproval
+            // branch below — same reasoning as `check_action` (AAASM-4986).
+            let anomaly_event = self.maybe_detect_anomaly(req, &eval);
+
+            // AAASM-4986: same non-blocking approval path as `check_action` —
+            // a RequiresApproval entry returns Pending immediately and its
+            // continuation runs independently, so it no longer stalls the
+            // rest of this batch behind one human decision.
+            if let Some((pending, approval_id, future, timeout_secs)) =
                 self.maybe_submit_approval(req, &eval, latency_us, &policy_rule).await
             {
-                approval_response
-            } else {
-                convert::eval_result_to_response(&eval, latency_us, &policy_rule)
-            };
-            // AAASM-3378 / AAASM-3384: detect + enforce a block-equivalent
-            // anomaly as a hard Deny in batch mode too.
-            let anomaly_event = self.maybe_detect_anomaly(req, &eval);
+                let pending = self.stamp_identity_assurance(req, pending);
+                self.record_audit(req, &pending, &eval, shadow_event.as_ref()).await;
+                tokio::spawn(self.clone().run_approval_continuation(
+                    req.clone(),
+                    eval,
+                    policy_rule,
+                    latency_us,
+                    approval_id,
+                    future,
+                    timeout_secs,
+                    None, // batch_check does not ingest an ops-registry entry per request
+                    anomaly_event,
+                    shadow_event,
+                ));
+                responses.push(pending);
+                continue;
+            }
+
+            let resp = convert::eval_result_to_response(&eval, latency_us, &policy_rule);
             let resp = self.enforce_anomaly_block(resp, anomaly_event.as_ref());
             // AAASM-3353 / AAASM-3986: atomically reserve LLM-call cost so budget
             // limits fire in batch mode too, rewriting to Deny on overspend.
