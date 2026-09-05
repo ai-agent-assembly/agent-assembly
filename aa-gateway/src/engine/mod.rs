@@ -118,6 +118,19 @@ pub struct EvaluationResult {
     /// fail-closed deny — those verdicts are produced without a nameable cascade
     /// document, so no digest is attributed rather than a misleading one.
     pub policy_doc_id: Option<String>,
+    /// AAASM-5007 — the [`crate::policy::scope::PolicyScope`] that produced a
+    /// `Deny` (e.g. `"tool:delete_file"`, `"global"`), rendered via its
+    /// `Display` impl. Carried to the audit write's `policy_rule` field so an
+    /// operator can distinguish *which* rule fired instead of reading a value
+    /// identical to `reason` (both previously carried the same generic stage
+    /// prose, e.g. "tool denied by policy" — a duplicate, not an identifier).
+    ///
+    /// `None` on Allow/RequiresApproval, and on the rate-limit / budget /
+    /// credential-scan denies that are computed before or outside cascade-doc
+    /// resolution and so never had a `PolicyScope` to attribute to — the same
+    /// "no nameable source, so no misleading value" convention as
+    /// [`policy_doc_id`](Self::policy_doc_id).
+    pub policy_scope: Option<String>,
     /// AAASM-5100 / ADR-0018 item A — `true` when this action was **permitted but
     /// scoped down** by an in-force policy allow-list rather than blocked: the
     /// action's capability was admitted only because it fell inside the merged
@@ -141,6 +154,7 @@ impl EvaluationResult {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         }
     }
@@ -162,6 +176,29 @@ impl EvaluationResult {
             canonical_findings,
             deny_action,
             policy_doc_id: None,
+            policy_scope: None,
+            narrowed: false,
+        }
+    }
+
+    /// A bare `Deny` carrying a `policy_scope` label (AAASM-5007).
+    ///
+    /// For the primary (single-document) evaluation path, which has no
+    /// [`crate::policy::scope::PolicyScope`] cascade of its own to attribute
+    /// a deny to (see [`Self::policy_scope`]'s doc) but can still name the
+    /// specific policy construct that fired — e.g. `"tool:{name}"` for a
+    /// per-tool deny — mirroring the identifier shape the cascade path's
+    /// `PolicyScope::Tool` produces, without depending on that cascade-only
+    /// type from the primary-path stages.
+    fn deny_scoped(reason: impl Into<String>, scope: impl Into<String>) -> Self {
+        Self {
+            decision: aa_core::PolicyResult::Deny { reason: reason.into() },
+            redacted_payload: None,
+            credential_findings: vec![],
+            canonical_findings: vec![],
+            deny_action: None,
+            policy_doc_id: None,
+            policy_scope: Some(scope.into()),
             narrowed: false,
         }
     }
@@ -245,6 +282,9 @@ pub fn transform_for_observe_mode(
         // document still fired; preserve its attribution so the dry-run audit
         // entry still names the document that would have decided in enforce mode.
         policy_doc_id: result.policy_doc_id,
+        // Same reasoning as policy_doc_id above — preserve the would-be deny's
+        // scope so the dry-run audit entry still names it.
+        policy_scope: result.policy_scope,
         // The observe-mode allow masks a would-be deny/pending, not a scoping —
         // it is a dry-run allow, never a `narrow`.
         narrowed: false,
@@ -1257,7 +1297,10 @@ impl PolicyEngine {
         // consult `"*"` too.
         if let Some(tp) = tool_policy.or_else(|| policy.tools.get("*")) {
             if !tp.allow {
-                return Some(EvaluationResult::deny("tool denied by policy"));
+                return Some(EvaluationResult::deny_scoped(
+                    "tool denied by policy",
+                    format!("tool:{name}"),
+                ));
             }
         }
 
@@ -1328,6 +1371,7 @@ impl PolicyEngine {
                 canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
+                policy_scope: None,
                 narrowed: false,
             });
         }
@@ -1518,6 +1562,7 @@ impl PolicyEngine {
                 canonical_findings,
                 deny_action: None,
                 policy_doc_id: None,
+                policy_scope: None,
                 narrowed: false,
             });
         }
@@ -1747,6 +1792,7 @@ impl PolicyEngine {
             canonical_findings,
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed,
         }
     }
@@ -1987,7 +2033,7 @@ impl PolicyEngine {
         action: &aa_core::GovernanceAction,
     ) -> EvaluationResult {
         // Stage 1 — Schedule: time-dependent, evaluated FRESH on every request.
-        if let Some(PolicyDecision::Deny { reason, .. }) = decision::evaluate_schedule_cascade(&cascade) {
+        if let Some(PolicyDecision::Deny { reason, source_scope }) = decision::evaluate_schedule_cascade(&cascade) {
             return EvaluationResult {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
@@ -1995,6 +2041,7 @@ impl PolicyEngine {
                 canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id: None,
+                policy_scope: Some(source_scope.to_string()),
                 narrowed: false,
             };
         }
@@ -2017,7 +2064,7 @@ impl PolicyEngine {
         let (verdict, policy_doc_id) = self.resolve_merge_verdict(&cascade, ctx, action, cache_key, pctx_dyn);
 
         // If already denied, return immediately.
-        if let PolicyDecision::Deny { reason, .. } = verdict {
+        if let PolicyDecision::Deny { reason, source_scope } = verdict {
             return EvaluationResult {
                 decision: aa_core::PolicyResult::Deny { reason },
                 redacted_payload: None,
@@ -2025,6 +2072,7 @@ impl PolicyEngine {
                 canonical_findings: vec![],
                 deny_action: None,
                 policy_doc_id,
+                policy_scope: Some(source_scope.to_string()),
                 narrowed: false,
             };
         }
@@ -2104,6 +2152,10 @@ impl PolicyEngine {
             canonical_findings,
             deny_action,
             policy_doc_id,
+            // `verdict` here is never `Deny` — that arm already returned above —
+            // so there is no scope to attribute (`RequireApproval`/`Allow` don't
+            // carry one).
+            policy_scope: None,
             narrowed,
         }
     }
@@ -5894,6 +5946,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         }
     }
@@ -5919,6 +5972,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: Some(DenyAction::Block),
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         }
     }
@@ -5948,6 +6002,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);

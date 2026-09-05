@@ -351,6 +351,7 @@ pub fn result_to_response(result: &PolicyResult, latency_us: i64, policy_rule: &
         canonical_findings: vec![],
         deny_action: None,
         policy_doc_id: None,
+        policy_scope: None,
         narrowed: false,
     };
     eval_result_to_response(&eval, latency_us, policy_rule)
@@ -555,6 +556,7 @@ mod tests {
             canonical_findings: vec![finding],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         }
     }
@@ -613,6 +615,7 @@ mod tests {
             canonical_findings: vec![canonical],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -631,6 +634,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -651,6 +655,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "data_pattern_scan");
@@ -671,6 +676,7 @@ mod tests {
             canonical_findings: vec![],
             deny_action: None,
             policy_doc_id: None,
+            policy_scope: None,
             narrowed: false,
         };
         let resp = eval_result_to_response(&eval, 0, "");
