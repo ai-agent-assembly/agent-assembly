@@ -1016,7 +1016,7 @@ pub async fn serve_tcp(
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
     let secrets_svc = SecretsServiceImpl::new(Arc::new(InMemorySecretsStore::new()));
 
-    let addr = listen_addr.parse()?;
+    let addr: std::net::SocketAddr = listen_addr.parse()?;
 
     // AAASM-3788 — mTLS wire point. The credential-token interceptor above is
     // the always-on authentication layer; mTLS is optional transport hardening.
@@ -1036,6 +1036,22 @@ pub async fn serve_tcp(
     }
 
     tracing::info!(%addr, "starting gRPC server on TCP (per-RPC credential auth enforced)");
+
+    // AAASM-6053: bind explicitly, before tonic's internal service setup, so a
+    // bind failure (e.g. `AddrInUse`) surfaces immediately as a returned
+    // `Err` rather than lazily inside `serve_with_shutdown`'s first poll —
+    // which on this codepath was observed to take several seconds (the
+    // service-construction work above runs first), long enough for
+    // `aa-cli`'s readiness probe to observe a successful TCP connect to
+    // whatever *else* already held the port and declare the gateway ready
+    // before this process ever attempted its own bind. The `listening on`
+    // log line below is the positive signal `aa-cli` now waits for instead
+    // of trusting a bare connect (see `wait_for_child_ready` in
+    // `aa-cli/src/commands/gateway/start.rs`) — it is only emitted once this
+    // process has actually bound the address itself.
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "{}", aa_core::gateway_readiness::TCP_LISTENING_MARKER);
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
     Server::builder()
         // AAASM-4759: unauthenticated liveness endpoint — see `serving_health_service`.
@@ -1069,7 +1085,7 @@ pub async fn serve_tcp(
                 .max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
             auth.clone(),
         ))
-        .serve_with_shutdown(addr, async move {
+        .serve_with_incoming_shutdown(incoming, async move {
             shutdown_signal().await;
             db_token.cancel();
         })
