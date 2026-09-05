@@ -41,6 +41,12 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 /// Upper bound on the reconnect delay (1s → 2 → 4 → … → 32s cap).
 const MAX_BACKOFF: Duration = Duration::from_secs(32);
 
+/// Metadata key the gateway's credential-auth interceptor reads
+/// (`aa-gateway/src/iam/grpc_auth.rs::CREDENTIAL_METADATA_KEY`). Duplicated
+/// here as a literal rather than imported — `aa-runtime` does not (and must
+/// not) depend on `aa-gateway`.
+const CREDENTIAL_METADATA_KEY: &str = "x-aa-credential-token";
+
 /// Reserved `op_id` addressing **every** op for the subscribed agent — a global
 /// kill switch.
 ///
@@ -169,28 +175,62 @@ impl OpControlClient {
     ///
     /// `gateway_url` is the same endpoint the policy-check path forwards to;
     /// `agent_id` must match the `agent_id` on this agent's `CheckActionRequest`s
-    /// so the gateway routes the right signals. Abort the returned
-    /// [`JoinHandle`] to stop the subscriber.
-    pub fn start(gateway_url: String, agent_id: AgentId, store: OpControlStore) -> JoinHandle<()> {
-        tokio::spawn(async move { run(gateway_url, agent_id, store).await })
+    /// so the gateway routes the right signals. `credential`, when present, is
+    /// attached to every subscribe attempt as gRPC metadata — required by any
+    /// gateway that enforces per-RPC credential auth (AAASM-5009); see
+    /// [`crate::config::RuntimeConfig::gateway_credential_token`]. Abort the
+    /// returned [`JoinHandle`] to stop the subscriber.
+    pub fn start(
+        gateway_url: String,
+        agent_id: AgentId,
+        credential: Option<String>,
+        store: OpControlStore,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move { run(gateway_url, agent_id, credential, store).await })
     }
 }
 
 /// Reconnect loop: subscribe, apply signals, and on disconnect back off
 /// exponentially before resubscribing.
-async fn run(gateway_url: String, agent_id: AgentId, store: OpControlStore) {
+async fn run(gateway_url: String, agent_id: AgentId, credential: Option<String>, store: OpControlStore) {
     let mut backoff = INITIAL_BACKOFF;
+    // Tracks whether the *previous* failure was already logged as an auth
+    // rejection, so a gateway that keeps rejecting the same bad/missing
+    // credential logs once, not once per backoff tick — the tick-scoped
+    // `tracing::warn!` below is fine for a flapping network but would spam
+    // for a config error that will never self-resolve.
+    let mut auth_failure_logged = false;
     loop {
-        match subscribe_once(&gateway_url, &agent_id, &store).await {
+        match subscribe_once(&gateway_url, &agent_id, credential.as_deref(), &store).await {
             // The gateway closed the stream cleanly — reconnect promptly.
-            Ok(()) => backoff = INITIAL_BACKOFF,
+            Ok(()) => {
+                backoff = INITIAL_BACKOFF;
+                auth_failure_logged = false;
+            }
             Err(err) => {
                 metrics::counter!("aa_op_control_reconnects_total").increment(1);
-                tracing::warn!(
-                    error = %err,
-                    backoff_secs = backoff.as_secs(),
-                    "op-control stream dropped; reconnecting after backoff"
-                );
+                let is_auth_failure = err
+                    .downcast_ref::<tonic::Status>()
+                    .is_some_and(|s| matches!(s.code(), tonic::Code::Unauthenticated | tonic::Code::PermissionDenied));
+                if is_auth_failure {
+                    if !auth_failure_logged {
+                        tracing::error!(
+                            error = %err,
+                            "op-control stream rejected by the gateway's credential auth — this will keep \
+                             failing until fixed. Check that AA_GATEWAY_CREDENTIAL_TOKEN is a token \
+                             registered under AA_GATEWAY_AGENT_ID (same team as AA_AGENT_TEAM_ID), or \
+                             unset both if this gateway does not enforce op-control auth"
+                        );
+                        auth_failure_logged = true;
+                    }
+                } else {
+                    auth_failure_logged = false;
+                    tracing::warn!(
+                        error = %err,
+                        backoff_secs = backoff.as_secs(),
+                        "op-control stream dropped; reconnecting after backoff"
+                    );
+                }
                 tokio::time::sleep(backoff).await;
                 backoff = next_backoff(backoff);
             }
@@ -203,12 +243,19 @@ async fn run(gateway_url: String, agent_id: AgentId, store: OpControlStore) {
 async fn subscribe_once(
     gateway_url: &str,
     agent_id: &AgentId,
+    credential: Option<&str>,
     store: &OpControlStore,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut client = PolicyServiceClient::connect(gateway_url.to_owned()).await?;
-    let request = OpControlSubscribeRequest {
+    let mut request = tonic::Request::new(OpControlSubscribeRequest {
         agent_id: Some(agent_id.clone()),
-    };
+    });
+    if let Some(token) = credential {
+        request.metadata_mut().insert(
+            CREDENTIAL_METADATA_KEY,
+            tonic::metadata::MetadataValue::try_from(token)?,
+        );
+    }
     let response = client.op_control_stream(request).await?;
     let mut inbound = response.into_inner();
 

@@ -34,6 +34,14 @@ services:
       # Limited-function self-host: run with no central gateway. The runtime
       # enforces locally from the mounted policy file instead of calling the
       # SaaS gateway. Leaving AA_GATEWAY_ENDPOINT unset keeps it standalone.
+      #
+      # If you do set AA_GATEWAY_ENDPOINT to call a gateway, also set
+      # AA_GATEWAY_CREDENTIAL_TOKEN + AA_GATEWAY_AGENT_ID (the did:key that
+      # token was registered under) — every shipped gateway enforces per-RPC
+      # credential auth, and without them the op-control (live kill-switch)
+      # subscription is permanently rejected (AAASM-5009).
+      # AA_GATEWAY_CREDENTIAL_TOKEN: "<token from AgentLifecycleService.Register>"
+      # AA_GATEWAY_AGENT_ID: "<the did:key that token was registered under>"
       AA_POLICY_PATH: "/etc/aa/policy.toml"
       # AA_METRICS_ADDR: "0.0.0.0:8080"   # default shown for reference
       # Health/metrics is unauthenticated and reports which enforcement

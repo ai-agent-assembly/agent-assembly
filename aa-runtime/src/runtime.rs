@@ -771,21 +771,57 @@ async fn build_gateway_client(
 /// configured, so the gateway's pause/resume/terminate signals reach the shared
 /// [`OpControlStore`]. Without an endpoint there is no kill-switch channel, so
 /// the store stays empty and this is a no-op.
+///
+/// AAASM-5009: every shipped gateway enforces per-RPC credential auth
+/// (`aa-gateway/src/iam/grpc_auth.rs`), so an unauthenticated subscription is
+/// permanently rejected. When [`RuntimeConfig::gateway_credential_token`] and
+/// [`RuntimeConfig::gateway_agent_id`] are both set (`RuntimeConfig::from_env`
+/// guarantees they're either both set or both unset), the subscriber attaches
+/// the credential and subscribes as the *registered* identity the credential
+/// belongs to — which is not the same triple as `agent_id`/`agent_org_id`; see
+/// [`RuntimeConfig::gateway_agent_id`]'s doc for why. Without a credential the
+/// subscription is still attempted (so a gateway that hasn't opted into
+/// credential auth keeps working unchanged) but logged as likely to fail
+/// against a gateway that has.
 fn spawn_op_control(tracker: &TaskTracker, config: &RuntimeConfig, op_control: &crate::op_control::OpControlStore) {
     let Some(endpoint) = &config.gateway_endpoint else {
         tracing::info!("no gateway endpoint configured — op-control kill switch inactive");
         return;
     };
-    let subscriber_agent = aa_proto::assembly::common::v1::AgentId {
-        org_id: config.agent_org_id.clone(),
-        team_id: config.agent_team_id.clone(),
-        agent_id: config.agent_id.clone(),
+    let (subscriber_agent, credential) = match (&config.gateway_credential_token, &config.gateway_agent_id) {
+        (Some(token), Some(gateway_agent_id)) => (
+            aa_proto::assembly::common::v1::AgentId {
+                org_id: String::new(),
+                team_id: config.agent_team_id.clone(),
+                agent_id: gateway_agent_id.clone(),
+            },
+            Some(token.as_str().to_owned()),
+        ),
+        _ => (
+            aa_proto::assembly::common::v1::AgentId {
+                org_id: config.agent_org_id.clone(),
+                team_id: config.agent_team_id.clone(),
+                agent_id: config.agent_id.clone(),
+            },
+            None,
+        ),
     };
-    let handle = crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, op_control.clone());
+    let has_credential = credential.is_some();
+    let handle =
+        crate::op_control::OpControlClient::start(endpoint.clone(), subscriber_agent, credential, op_control.clone());
     tracker.spawn(async move {
         let _ = handle.await;
     });
-    tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
+    if has_credential {
+        tracing::info!(endpoint, "op-control subscriber spawned — live kill switch active");
+    } else {
+        tracing::warn!(
+            endpoint,
+            "op-control subscriber spawned without a credential (AA_GATEWAY_CREDENTIAL_TOKEN unset) — \
+             a gateway enforcing credential auth will reject this subscription and the live kill switch \
+             will not connect"
+        );
+    }
 }
 
 /// Log a single correlation outcome.
@@ -1793,6 +1829,8 @@ mod tests {
             metrics_addr: "0.0.0.0:8080".to_string(),
             policy_path: None,
             gateway_endpoint: None,
+            gateway_credential_token: None,
+            gateway_agent_id: None,
             correlation_window_ms: 5_000,
             correlation_interval_ms: 1_000,
             nats_config_path,
@@ -1893,6 +1931,27 @@ mod tests {
         assert_eq!(tracker.len(), 1, "an op-control subscriber task should be spawned");
         // Don't await — the subscriber reconnect-loops forever by design; the
         // detached task is dropped when the test runtime shuts down.
+        tracker.close();
+    }
+
+    /// AAASM-5009: when a credential and its registered identity are both
+    /// configured, `spawn_op_control` must still spawn (this test doesn't
+    /// reach far enough to observe *which* identity/credential it used — that
+    /// is `aa-runtime/tests/op_control_dispatch.rs`'s job against a real mock
+    /// gateway — this only pins that the wiring doesn't panic or silently
+    /// no-op on the credentialed path).
+    #[tokio::test]
+    async fn spawn_op_control_spawns_subscriber_with_credential_configured() {
+        let tracker = TaskTracker::new();
+        let store = crate::op_control::OpControlStore::new();
+        let mut config = audit_test_config(None);
+        config.gateway_endpoint = Some("http://127.0.0.1:1".to_string());
+        config.gateway_credential_token = Some(crate::config::CredentialToken::new("tok-abc123"));
+        config.gateway_agent_id = Some("did:key:z6MkExample".to_string());
+
+        super::spawn_op_control(&tracker, &config, &store);
+
+        assert_eq!(tracker.len(), 1, "an op-control subscriber task should be spawned");
         tracker.close();
     }
 

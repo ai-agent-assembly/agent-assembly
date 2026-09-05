@@ -77,6 +77,8 @@ mod tests {
             metrics_addr: "0.0.0.0:8080".to_string(),
             policy_path: None,
             gateway_endpoint: None,
+            gateway_credential_token: None,
+            gateway_agent_id: None,
             correlation_window_ms: 8_000,
             correlation_interval_ms: 2_000,
             nats_config_path: None,
