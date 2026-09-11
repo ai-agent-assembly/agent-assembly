@@ -1188,6 +1188,7 @@ mod tests {
             steps: Vec::new(),
             planned_level: "host_enforced".to_string(),
             achieved_level: "host_enforced".to_string(),
+            consent_auto_approved: true,
         }
     }
 
@@ -1201,6 +1202,7 @@ mod tests {
             steps: Vec::new(),
             residual: Vec::new(),
             warnings: Vec::new(),
+            consent_auto_approved: true,
         }
     }
 
@@ -1368,6 +1370,7 @@ mod tests {
                 vec!["settings".to_string()],
                 Vec::new(),
                 None,
+                true,
             ),
         ] {
             let token = serde_json::to_value(&report).expect("serialize")["outcome"]
@@ -1409,6 +1412,7 @@ mod tests {
             vec!["settings".to_string()],
             Vec::new(),
             None,
+            true,
         )
         .render_human();
 

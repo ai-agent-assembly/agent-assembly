@@ -80,6 +80,12 @@ OUTCOME:
 
     A --dry-run that found drift reports no outcome at all: it previewed work
     rather than doing it, and it did not establish that anything already held.
+
+CONSENT:
+    --yes/-y skips Agent Assembly's own confirmation prompt only. It never
+    bypasses operating-system administrator authorization or another
+    security boundary. `consent_auto_approved` in --output json says whether
+    this run's prompt was skipped that way (AAASM-6085).
 ";
 
 /// `aasm integrations repair` arguments.
@@ -95,7 +101,10 @@ pub struct RepairArgs {
 
     /// Repair without asking. Required for non-interactive and `--output json`
     /// runs.
-    #[arg(long)]
+    ///
+    /// Skips only this command's own confirmation — never a host
+    /// authorization boundary (AAASM-6085; see `--help` CONSENT section).
+    #[arg(short = 'y', long)]
     pub yes: bool,
 }
 
@@ -228,6 +237,7 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
                 view.repaired.clone(),
                 unresolved,
                 status,
+                args.yes,
             ),
             output,
         );

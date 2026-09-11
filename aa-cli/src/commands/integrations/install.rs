@@ -41,8 +41,36 @@ use super::target::Target;
 use super::trusted_upstream::{write_trusted_upstream_config, TrustedUpstreamArgs};
 use super::{confirm, exit::Outcome, open, run_blocking, verb_failure, ProfileArg, ScopeArg};
 
+/// What `--yes`/`-y` does and does not skip (AAASM-6085).
+const CONSENT_HELP: &str = "\
+CONSENT:
+    --yes skips Agent Assembly's own confirmation prompt only. It never
+    bypasses operating-system administrator authorization or another
+    security boundary.
+
+    With --install-managed-settings (or any plan carrying a privileged host
+    step), --yes still lets that step reach the real OS authorization prompt
+    (Touch ID, an admin password, sudo, or the platform equivalent) — it is
+    not answered for you, and a run in a non-interactive session with no way
+    to satisfy it fails closed with no partial write, exactly as it would
+    without --yes.
+
+    --output json reports `consent_auto_approved: true` when --yes skipped
+    this command's own prompt, so automation can tell that apart from a plan
+    that had nothing to ask about (`consent_auto_approved: false`, no
+    privileged step present) without parsing prose.
+
+    Examples (non-interactive, automation-safe):
+
+        aasm integrations install claude-code --install-managed-settings \\
+            --profile strict --yes
+        aasm integrations install claude-code --install-managed-settings \\
+            --profile strict -y --output json
+";
+
 /// `aasm integrations install` arguments.
 #[derive(Args)]
+#[command(after_long_help = CONSENT_HELP)]
 pub struct InstallArgs {
     /// The tool to integrate, as `aasm integrations list` reports it.
     pub tool: String,
@@ -74,7 +102,11 @@ pub struct InstallArgs {
 
     /// Apply without asking. Required for non-interactive and `--output json`
     /// runs, which have no way to answer a prompt.
-    #[arg(long)]
+    ///
+    /// Skips only this command's own confirmation — it never bypasses a host
+    /// authorization prompt a privileged step still requires (AAASM-6085; see
+    /// [`CONSENT_HELP`]).
+    #[arg(short = 'y', long)]
     pub yes: bool,
 
     /// Show the plan and stop, exactly as `aasm integrations plan` does.
@@ -164,8 +196,12 @@ pub fn run(args: InstallArgs, options: SessionOptions, output: OutputFormat) -> 
         // version gate lives. An older runtime states no outcome, and this
         // command reports that rather than guessing one (AAASM-5674).
         let mutation = session.client.negotiated().apply_mutation(&applied);
-        let (report, outcome) =
-            InstallReport::from_applied(super::model::PlanReport { applied: true, ..plan }, &applied, &mutation);
+        let (report, outcome) = InstallReport::from_applied(
+            super::model::PlanReport { applied: true, ..plan },
+            &applied,
+            &mutation,
+            args.yes,
+        );
 
         // A step that failed is a partial install, and the user has to be told
         // which one — an exit code of 0 here would leave them believing an

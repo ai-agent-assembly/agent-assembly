@@ -516,6 +516,16 @@ pub struct InstallReport {
     pub planned_level: String,
     /// The level actually reached.
     pub achieved_level: String,
+    /// Whether `--yes`/`-y` skipped Agent Assembly's own confirmation prompt
+    /// (AAASM-6085).
+    ///
+    /// This is **not** a claim about host privilege: it says only that the
+    /// caller was not asked "apply this plan?" before the apply verb was
+    /// sent. A step requiring administrator authorization still reached that
+    /// boundary honestly — `--yes` has no path into it (see
+    /// `aa_devtool_claude_code::managed_settings`, whose authority guard
+    /// takes no consent parameter at all).
+    pub consent_auto_approved: bool,
 }
 
 impl InstallReport {
@@ -525,7 +535,16 @@ impl InstallReport {
     /// [`Negotiated::apply_mutation`](aa_runtime::devint::Negotiated::apply_mutation),
     /// which is where the version gate lives. Passing a value read straight off
     /// `ApplyView::outcome` would skip it.
-    pub fn from_applied(plan: PlanReport, applied: &wire::ApplyView, mutation: &ApplyMutation) -> (Self, Outcome) {
+    ///
+    /// `consent_auto_approved` is the caller's own `--yes`/`-y`, recorded here
+    /// because it was already consumed by [`super::confirm`] before this is
+    /// called and a script reading the report has no other way to see it.
+    pub fn from_applied(
+        plan: PlanReport,
+        applied: &wire::ApplyView,
+        mutation: &ApplyMutation,
+        consent_auto_approved: bool,
+    ) -> (Self, Outcome) {
         let steps: Vec<StepOutcomeRow> = applied
             .steps
             .iter()
@@ -546,6 +565,7 @@ impl InstallReport {
             steps,
             planned_level: applied.planned_level.clone(),
             achieved_level: applied.achieved_level.clone(),
+            consent_auto_approved,
         };
         (report, verdict.exit)
     }
@@ -1148,6 +1168,10 @@ pub struct RepairReport {
     pub nothing_to_repair: Option<String>,
     /// The status after the repair, when one ran.
     pub status: Option<Box<StatusReport>>,
+    /// Whether `--yes`/`-y` skipped Agent Assembly's own confirmation prompt
+    /// (AAASM-6085). `false` for every no-op/preview path: no prompt existed
+    /// there to skip, regardless of the flag's value.
+    pub consent_auto_approved: bool,
 }
 
 impl RepairReport {
@@ -1176,6 +1200,7 @@ impl RepairReport {
             unresolved: Vec::new(),
             nothing_to_repair: Some(reason),
             status,
+            consent_auto_approved: false,
         }
     }
 
@@ -1201,6 +1226,7 @@ impl RepairReport {
             unresolved: Vec::new(),
             nothing_to_repair: None,
             status,
+            consent_auto_approved: false,
         }
     }
 
@@ -1210,6 +1236,15 @@ impl RepairReport {
     /// `repaired` is the mutation evidence, and it is the service's own answer
     /// rather than something inferred from the drift that went in: a verb that
     /// ran and restored nothing is `unchanged`, not `changed`.
+    ///
+    /// `consent_auto_approved` is the caller's own `--yes`/`-y` (AAASM-6085) —
+    /// recorded here since [`super::confirm`] already consumed it by the time
+    /// this is called.
+    // One more field than clippy's default threshold, added by AAASM-6085 to
+    // an already-exhaustive constructor; a builder for one seven-field struct
+    // used from two call sites would be more indirection than the seven
+    // fields it replaces.
+    #[allow(clippy::too_many_arguments)]
     pub fn ran(
         runtime: RuntimeInfo,
         tool_id: &str,
@@ -1218,6 +1253,7 @@ impl RepairReport {
         repaired: Vec<String>,
         unresolved: Vec<UnsupportedRow>,
         status: Option<Box<StatusReport>>,
+        consent_auto_approved: bool,
     ) -> Self {
         Self {
             outcome: Some(ChangeOutcome::of(outcome, !repaired.is_empty())),
@@ -1231,6 +1267,7 @@ impl RepairReport {
             // `repaired` says; this field is for runs that never got here.
             nothing_to_repair: None,
             status,
+            consent_auto_approved,
         }
     }
 }
@@ -1275,6 +1312,10 @@ pub struct RemoveReport {
     pub residual: Vec<String>,
     /// Anything else to read first.
     pub warnings: Vec<String>,
+    /// Whether `--yes`/`-y` skipped Agent Assembly's own confirmation prompt
+    /// (AAASM-6085). `false` on a preview or a no-op: no prompt existed there
+    /// to skip, regardless of the flag's value.
+    pub consent_auto_approved: bool,
 }
 
 impl RemoveReport {
@@ -1297,6 +1338,7 @@ impl RemoveReport {
             steps: Vec::new(),
             residual: Vec::new(),
             warnings: vec![reason],
+            consent_auto_approved: false,
         }
     }
 
@@ -1306,7 +1348,17 @@ impl RemoveReport {
     /// two calls mean: the Remove verb without a plan id *authors* the reversal
     /// and mutates nothing, and with one it *executes* it. So a preview reports
     /// no outcome and an execution reports `changed`.
-    pub fn from_view(runtime: RuntimeInfo, view: &wire::RemovalView, dry_run: bool) -> Self {
+    ///
+    /// `consent_auto_approved` is the caller's own `--yes`/`-y` (AAASM-6085).
+    /// A preview never reaches [`super::confirm`], so `dry_run` wins over it
+    /// here rather than trusting every call site to pass `false` by hand —
+    /// the same reasoning as `outcome` two lines up.
+    pub fn from_view(
+        runtime: RuntimeInfo,
+        view: &wire::RemovalView,
+        dry_run: bool,
+        consent_auto_approved: bool,
+    ) -> Self {
         Self {
             outcome: (!dry_run).then_some(ChangeOutcome::Changed),
             runtime,
@@ -1319,6 +1371,7 @@ impl RemoveReport {
             steps: view.steps.iter().map(StepRow::from).collect(),
             residual: view.residual.clone(),
             warnings: view.warnings.clone(),
+            consent_auto_approved: !dry_run && consent_auto_approved,
         }
     }
 }
@@ -1999,7 +2052,7 @@ mod tests {
                 since: 5,
             }),
         ] {
-            let (report, _) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation);
+            let (report, _) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation, false);
             assert_eq!(
                 report.outcome.is_none(),
                 report.outcome_unknown.is_some(),
@@ -2045,7 +2098,7 @@ mod tests {
 
         // The shipped reading of the same frame, through the version gate.
         let stated = ApplyMutation::from_view(frame.outcome.as_ref(), 4);
-        let (report, exit) = InstallReport::from_applied(plan_stub(), &frame, &stated);
+        let (report, exit) = InstallReport::from_applied(plan_stub(), &frame, &stated, false);
         let json = serde_json::to_value(&report).expect("serialize");
         assert_eq!(
             json["outcome"],
@@ -2067,7 +2120,7 @@ mod tests {
             negotiated_version: 4,
             since: 5,
         });
-        let (report, exit) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation);
+        let (report, exit) = InstallReport::from_applied(plan_stub(), &apply_view(None), &mutation, false);
         let json = serde_json::to_value(&report).expect("serialize");
         assert_eq!(json["outcome"], serde_json::Value::Null);
         assert!(
@@ -2075,5 +2128,83 @@ mod tests {
             "the reason must name the peer that could not say: {json}"
         );
         assert_eq!(exit, Outcome::Success, "the apply itself worked");
+    }
+
+    /// `consent_auto_approved` (AAASM-6085) carries the caller's own
+    /// `--yes`/`-y` verbatim — it is not re-derived from the apply outcome, so
+    /// a `--yes` run and an interactively-confirmed run remain distinguishable
+    /// in `--output json` even when both applied cleanly.
+    #[test]
+    fn install_report_carries_the_callers_own_consent_flag() {
+        for yes in [true, false] {
+            let (report, _) = InstallReport::from_applied(plan_stub(), &apply_view(None), &ApplyMutation::Changed, yes);
+            assert_eq!(report.consent_auto_approved, yes);
+        }
+    }
+
+    fn removal_view() -> wire::RemovalView {
+        wire::RemovalView {
+            schema_version: 1,
+            plan_id: "plan-1".to_string(),
+            tool_id: "claude-code".to_string(),
+            steps: Vec::new(),
+            residual: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// A preview never carries `--yes`'s value: it runs before
+    /// [`super::confirm`] is ever reached, so there was no prompt to skip.
+    #[test]
+    fn a_remove_preview_never_reports_consent_auto_approved() {
+        let report = RemoveReport::from_view(runtime(), &removal_view(), true, true);
+        assert!(
+            !report.consent_auto_approved,
+            "a --dry-run preview asked no question, so --yes answered nothing"
+        );
+    }
+
+    /// The executed removal, by contrast, carries the flag the caller passed.
+    #[test]
+    fn an_executed_remove_carries_the_callers_own_consent_flag() {
+        for yes in [true, false] {
+            let report = RemoveReport::from_view(runtime(), &removal_view(), false, yes);
+            assert_eq!(report.consent_auto_approved, yes);
+        }
+    }
+
+    /// Every no-op report (nothing installed to remove, nothing drifted to
+    /// repair, no receipt to repair) reports `consent_auto_approved: false`
+    /// regardless of the flag: none of these paths ever reach `confirm()`.
+    #[test]
+    fn no_op_reports_never_claim_a_skipped_prompt() {
+        assert!(
+            !RemoveReport::nothing_to_remove(runtime(), "claude-code", false, "reason".to_string())
+                .consent_auto_approved
+        );
+        assert!(
+            !RepairReport::nothing_to_do(runtime(), "claude-code", false, "reason".to_string(), None)
+                .consent_auto_approved
+        );
+        assert!(!RepairReport::preview(runtime(), "claude-code", Vec::new(), None).consent_auto_approved);
+    }
+
+    /// The executed repair carries the flag the caller passed, same as install
+    /// and remove.
+    #[test]
+    fn a_ran_repair_carries_the_callers_own_consent_flag() {
+        for yes in [true, false] {
+            let report = RepairReport::ran(
+                runtime(),
+                "claude-code",
+                Outcome::Success,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                None,
+                yes,
+            );
+            assert_eq!(report.consent_auto_approved, yes);
+        }
     }
 }
