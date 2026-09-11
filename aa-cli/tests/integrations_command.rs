@@ -254,6 +254,67 @@ fn a_non_interactive_install_without_yes_aborts_and_changes_nothing() {
     assert!(h.settings_contents().is_none(), "an aborted install wrote settings");
 }
 
+/// AAASM-6085: `-y` is a short alias for `--yes`, not a second implementation
+/// of consent — same effect, same report shape.
+#[test]
+fn dash_y_behaves_exactly_like_dash_dash_yes() {
+    let h = Harness::start(|f| f);
+    let output = h.aasm(&["install", "claude-code", "-y"]);
+    assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
+    assert!(h.settings_contents().is_some(), "-y did not apply the plan");
+}
+
+/// AAASM-6085: `--yes`/`-y` skipping AASM's own prompt must be visible to
+/// automation without parsing prose. It reports the flag it consumed, not a
+/// claim about the apply's outcome (a `--yes` run and an interactively
+/// confirmed run can both reach `outcome: changed`; only this field tells
+/// them apart).
+#[test]
+fn json_output_reports_that_yes_auto_approved_this_commands_own_prompt() {
+    let h = Harness::start(|f| f);
+    let output = h.aasm(&["install", "claude-code", "--yes", "--output", "json"]);
+    assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("install JSON");
+    assert_eq!(report["consent_auto_approved"], serde_json::Value::Bool(true));
+}
+
+/// The same field, for `repair` and `remove` (AAASM-6085) — one shared
+/// consent model, one shared reporting shape.
+#[test]
+fn repair_and_remove_report_consent_auto_approved_too() {
+    let h = Harness::start(|f| f);
+    std::fs::write(&h.settings, r#"{"theme":"solarized"}"#).expect("seed");
+    assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
+    std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"gruvbox"}"#).expect("tamper");
+
+    let repaired = h.aasm(&["repair", "claude-code", "-y", "--output", "json"]);
+    assert_eq!(code(&repaired), exit::SUCCESS, "{}", combined(&repaired));
+    let repair_report: serde_json::Value = serde_json::from_str(&stdout(&repaired)).expect("repair JSON");
+    assert_eq!(repair_report["consent_auto_approved"], serde_json::Value::Bool(true));
+
+    let removed = h.aasm(&["remove", "claude-code", "-y", "--output", "json"]);
+    assert_eq!(code(&removed), exit::SUCCESS, "{}", combined(&removed));
+    let remove_report: serde_json::Value = serde_json::from_str(&stdout(&removed)).expect("remove JSON");
+    assert_eq!(remove_report["consent_auto_approved"], serde_json::Value::Bool(true));
+}
+
+/// A `--dry-run` preview never sends the apply verb, so it reports the plan,
+/// not an install outcome — `consent_auto_approved` is absent from it
+/// entirely, even when `--yes` was passed alongside it (AAASM-6085): there is
+/// no report field claiming a prompt was skipped, because `confirm()` was
+/// never reached to skip one.
+#[test]
+fn a_dry_run_install_report_carries_no_consent_field_even_with_yes() {
+    let h = Harness::start(|f| f);
+    let output = h.aasm(&["install", "claude-code", "--yes", "--dry-run", "--output", "json"]);
+    assert_eq!(code(&output), exit::SUCCESS, "{}", combined(&output));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&output)).expect("plan JSON");
+    assert!(
+        report.get("consent_auto_approved").is_none(),
+        "a plan preview is not an install outcome and must not carry this field: {report}"
+    );
+}
+
 // ── verify: the anti-vacuous-pass guard ──────────────────────────────────────
 
 /// **The** load-bearing test, and it is deliberately adversarial: the fixture
