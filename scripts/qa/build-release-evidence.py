@@ -267,6 +267,49 @@ def _extract_verdict_line(md_text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _extract_waiver_exceptions(md_text: str) -> dict[str, dict[str, str]]:
+    """Map journey id -> `exception` object, from the sign-off's `## Waivers`
+    section (AAASM-6090).
+
+    Each waiver is a bullet block of the form the TEMPLATE.md documents:
+
+        - **Waived by:** <name>, <date>, ...
+        - **Condition waived:** J04 `UNTESTED_OR_BLOCKED` (ref: `<ref>`) — ...
+        - **Justification:** ...
+
+    Faithfully transcribed, not invented: a journey is only marked waived
+    here because a human already wrote a `**Condition waived:**` line naming
+    it — this function locates and structures that existing record, the same
+    "no new hand-authored input" contract every other field in this script
+    follows (see module docstring). A `**Condition waived:**` line naming a
+    journey id with no `ref:` is a malformed waiver record and is skipped
+    (not silently accepted with a missing ref) — `check-release-evidence.py`'s
+    R3 rule requires `ref` on every waiver exception, so an unresolvable one
+    here would just surface as a clearer error there instead of here; this
+    function does not raise, since a still-being-drafted Waivers section is a
+    normal state before a sign-off's first "real" write.
+    """
+    section = re.search(r"^## Waivers\n(.*?)(?=\n## |\Z)", md_text, re.S | re.M)
+    if not section:
+        return {}
+    exceptions: dict[str, dict[str, str]] = {}
+    for block in re.split(r"\n(?=- \*\*Waived by:\*\*)", section.group(1)):
+        waived_by = re.search(r"\*\*Waived by:\*\*\s*(.+)", block)
+        condition = re.search(r"\*\*Condition waived:\*\*\s*(.+)", block)
+        if not waived_by or not condition:
+            continue
+        jid_match = re.match(r"\s*(J\d+[A-Za-z]?)\b", condition.group(1))
+        ref_match = re.search(r"ref:\s*`?([\w.-]+)`?", condition.group(1))
+        if not jid_match or not ref_match:
+            continue
+        exceptions[jid_match.group(1)] = {
+            "kind": "waiver",
+            "approved_by": waived_by.group(1).strip(),
+            "ref": ref_match.group(1),
+        }
+    return exceptions
+
+
 def build_evidence(
     version: str,
     repo_root: str,
@@ -296,6 +339,7 @@ def build_evidence(
         print(f"warning: {qa_signoff_path} not found — every required journey "
               f"will be recorded NOT_RUN", file=sys.stderr)
     table = _extract_selected_journeys_table(qa_signoff_text)
+    waivers = _extract_waiver_exceptions(qa_signoff_text)
 
     journeys = []
     for entry in required:
@@ -304,7 +348,7 @@ def build_evidence(
         raw_cell = row["result"] if row is not None else None
         status = _map_journey_status(jid, raw_cell) if raw_cell is not None else "NOT_RUN"
         assert status in VALID_STATUSES, f"{jid}: mapped to invalid status {status!r}"
-        journeys.append({
+        journey: dict[str, Any] = {
             "id": jid,
             "status": status,
             "digest": registry_digest.per_journey_digest(entry),
@@ -323,7 +367,11 @@ def build_evidence(
             # not re-read at render time.
             "priority": (row.get("priority") if row is not None else None) or entry.get("priority"),
             "evidence_cell": row.get("evidence") if row is not None else None,
-        })
+        }
+        exception = waivers.get(jid)
+        if exception is not None:
+            journey["exception"] = exception
+        journeys.append(journey)
 
     if candidate_sha is None:
         candidate_sha = _run_git(repo_root, "rev-parse", "HEAD")
@@ -345,7 +393,25 @@ def build_evidence(
             print(f"warning: sign-off {path} not found", file=sys.stderr)
         return {"path": path, "verdict": verdict}
 
-    all_pass = bool(journeys) and all(j["status"] == "PASS" for j in journeys)
+    # AAASM-6090: a journey with status != PASS is still resolved when it
+    # carries a genuine waiver/registry_gap exception — exactly what R3
+    # (check-release-evidence.py) already treats as admissible. Requiring
+    # literal PASS here made this field permanently BLOCK for any release
+    # using the documented, expected pre-tag published-artifact waiver
+    # (AAASM-3007's pattern, every prior RC), contradicting R3's own rule.
+    # FAIL is never covered by an exception — a waiver excuses "not run",
+    # not "ran and failed".
+    def _resolved(j: dict[str, Any]) -> bool:
+        if j["status"] == "PASS":
+            return True
+        exception = j.get("exception")
+        return (
+            j["status"] != "FAIL"
+            and exception is not None
+            and exception.get("kind") in ("waiver", "registry_gap")
+        )
+
+    all_pass = bool(journeys) and all(_resolved(j) for j in journeys)
 
     return {
         "evidence_version": "1",
