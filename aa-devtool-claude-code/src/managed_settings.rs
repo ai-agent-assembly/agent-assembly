@@ -1671,6 +1671,39 @@ mod tests {
         assert!(!host.target.exists());
     }
 
+    /// AAASM-6085's negative control: `--yes`/`-y` cannot silently elevate
+    /// privilege, because there is no code path by which it could. Neither
+    /// [`ManagedSettingsInstaller::install`] nor [`PrivilegedFileAuthority`]
+    /// (see its `install_file`/`delete_file` signatures above) takes a
+    /// consent/`assume_yes` parameter at all — `aa-cli`'s `confirm(args.yes,
+    /// ...)` is consumed and fully spent one layer up, before any call into
+    /// this module, and has nothing left to pass down. This test exercises
+    /// the three ways an authority can fail (denied, unavailable,
+    /// non-interactive) with a *granting* disclosure already in hand — the
+    /// same shape a `--yes` run reaches — and shows each one still leaves the
+    /// host untouched: the authority boundary answers to the authority, and
+    /// only to it.
+    #[test]
+    fn no_authority_outcome_can_be_overridden_by_a_consent_flag_because_none_reaches_here() {
+        for authority in [
+            FakeAuthority::denying(),
+            FakeAuthority::unavailable(),
+            FakeAuthority::non_interactive(),
+        ] {
+            let host = Host::new();
+            let installer = host.installer(authority);
+            let doc = document();
+            let disclosure = installer.disclose(&doc).expect("disclosure");
+            installer
+                .install(&disclosure)
+                .expect_err("no consent value exists that could turn this into a success");
+            assert!(
+                !host.target.exists(),
+                "a run that never reached authorization must leave nothing behind"
+            );
+        }
+    }
+
     #[test]
     fn a_managed_file_agent_assembly_did_not_write_is_refused() {
         let host = Host::new();
