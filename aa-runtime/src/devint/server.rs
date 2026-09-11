@@ -759,15 +759,28 @@ fn parse_project_root(
     let canonical = path.canonicalize().map_err(|e| LifecycleError::Refused {
         detail: format!("the project root {raw:?} could not be resolved on this host: {e}"),
     })?;
-    if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_a_project()) {
-        return Err(LifecycleError::Refused {
-            detail: format!(
-                "the project root {} contains {}, so a project-scoped write there would land on a \
-                 surface that belongs to another scope and be recorded as if it did not",
-                canonical.display(),
-                surface.display()
-            ),
-        });
+    // AAASM-6067/J79: this containment refusal exists to protect a
+    // *project-scoped write* from landing on another scope's surface (see the
+    // `$HOME` example above) — it has nothing to say about a `User`- or
+    // `Managed`-scope plan, where `project_root` is sent only so the plan can
+    // disclose "a project configuration exists nearby and will be left
+    // alone" (see this function's own doc comment). Applying it regardless of
+    // `scope` meant `aasm integrations install claude-code
+    // --install-managed-settings` — a plan `resolve_scope` had already forced
+    // to `Managed`, with no project-scoped write anywhere in it — refused
+    // outright merely because the caller's cwd was `$HOME`, discovered only
+    // when a real end-to-end run hit it for the first time.
+    if scope == SettingsScope::Project {
+        if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_a_project()) {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "the project root {} contains {}, so a project-scoped write there would land on a \
+                     surface that belongs to another scope and be recorded as if it did not",
+                    canonical.display(),
+                    surface.display()
+                ),
+            });
+        }
     }
     Ok(Some(canonical))
 }
@@ -834,15 +847,26 @@ fn parse_user_config_home(
         Some(leaf) => canonical_parent.join(leaf),
         None => canonical_parent,
     };
-    if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_user_config()) {
-        return Err(LifecycleError::Refused {
-            detail: format!(
-                "the configuration home {} contains {}, so a user-scoped write there would land on a \
-                 surface that belongs to another scope and be recorded as if it did not",
-                canonical.display(),
-                surface.display()
-            ),
-        });
+    // AAASM-6067/J79/AAASM-6084: same fix as `parse_project_root`'s containment
+    // check, for the identical reason. `user_config_home` is sent at every
+    // scope (`aa-cli/src/commands/integrations/target.rs`'s
+    // `user_config_home_for_plan` doc comment: "At `project` and `managed`
+    // scope the service uses it only to disclose that a user configuration
+    // exists nearby and will be left alone") — it is never a write
+    // destination outside `User` scope, so a `CLAUDE_CONFIG_DIR` that happens
+    // to alias `$HOME` or `/` at `Project`/`Managed` scope has nothing to
+    // protect here either.
+    if scope == SettingsScope::User {
+        if let Some(surface) = owned_surface_within(&canonical, &surfaces_not_owned_by_user_config()) {
+            return Err(LifecycleError::Refused {
+                detail: format!(
+                    "the configuration home {} contains {}, so a user-scoped write there would land on \
+                     a surface that belongs to another scope and be recorded as if it did not",
+                    canonical.display(),
+                    surface.display()
+                ),
+            });
+        }
     }
     Ok(Some(canonical))
 }
@@ -1071,6 +1095,80 @@ mod tests {
         assert!(owned_surface_within(&home.join("code").join("repo"), &surfaces).is_none());
         // Nor does a sibling that merely shares a prefix with one.
         assert!(owned_surface_within(&home.join(".claude-notes"), &surfaces).is_none());
+    }
+
+    /// AAASM-6067/J79: the containment refusal exists to protect a
+    /// *project-scoped write* from landing on another scope's surface — it
+    /// has nothing to protect at `User` or `Managed` scope, where
+    /// `project_root` is sent only for disclosure ("a project exists nearby
+    /// and will be left alone"). Before this fix, `aasm integrations install
+    /// claude-code --install-managed-settings` (`Managed` scope, no
+    /// project-scoped write in the plan) refused outright whenever the
+    /// caller's cwd was `$HOME`, discovered only on a real end-to-end run.
+    #[test]
+    fn a_home_like_project_root_is_only_refused_at_project_scope() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let claude_config = home.join(".claude");
+        std::fs::create_dir_all(&claude_config).unwrap();
+        // `surfaces_not_owned_by_a_project()` only recognises a surface it is
+        // told about (`CLAUDE_CONFIG_DIR`, or `$HOME` plus a fixed suffix) —
+        // an ordinary directory that merely happens to be named `.claude`
+        // inside some unrelated tempdir is not one, so the real surface is
+        // named explicitly the same way `AASM_CLAUDE_MANAGED_ROOT` is used
+        // below and in `the_root_directory_is_refused_by_the_real_surface_list`.
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude_config);
+
+        let refusal = parse_project_root(SettingsScope::Project, home.to_str().unwrap())
+            .expect_err("a home-like root still refuses a project-scoped write");
+        assert!(matches!(refusal, LifecycleError::Refused { .. }), "{refusal:?}");
+
+        for scope in [SettingsScope::User, SettingsScope::Managed] {
+            let resolved = parse_project_root(scope, home.to_str().unwrap())
+                .unwrap_or_else(|e| panic!("{scope:?} scope must not refuse a disclosure-only root: {e:?}"))
+                .expect("a non-empty root still resolves at every scope");
+            assert_eq!(resolved, home.canonicalize().unwrap());
+        }
+
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+    }
+
+    /// The `parse_user_config_home` counterpart to
+    /// `a_home_like_project_root_is_only_refused_at_project_scope`: the
+    /// review that fix received (AAASM-6084) found `parse_user_config_home`
+    /// had the identical unscoped containment check, unfixed and untested.
+    #[test]
+    fn an_aliasing_config_home_is_only_refused_at_user_scope() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // The parent must exist (the leaf need not — `parse_user_config_home`
+        // creates neither), and `AASM_STATE_DIR` is pointed at the leaf itself
+        // so it aliases the resolved config home exactly, the same way
+        // `CLAUDE_CONFIG_DIR == $HOME` aliases a project root above.
+        let config_home = dir.path().join("config_home");
+        // Created for real, not left to the leaf-need-not-exist allowance:
+        // `surfaces_not_owned_by_a_project`'s own canonicalisation falls back
+        // to the raw, unresolved path when the target does not exist, which
+        // would compare a `/var/...` surface against the `/private/var/...`
+        // form `parse_user_config_home` derives from its (real) parent —
+        // a macOS symlink mismatch with nothing to do with scope, not the
+        // aliasing this test means to exercise.
+        std::fs::create_dir_all(&config_home).unwrap();
+        std::env::set_var("AASM_STATE_DIR", &config_home);
+
+        let refusal = parse_user_config_home(SettingsScope::User, config_home.to_str().unwrap())
+            .expect_err("an aliasing config home still refuses a user-scoped write");
+        assert!(matches!(refusal, LifecycleError::Refused { .. }), "{refusal:?}");
+
+        for scope in [SettingsScope::Project, SettingsScope::Managed] {
+            let resolved = parse_user_config_home(scope, config_home.to_str().unwrap())
+                .unwrap_or_else(|e| panic!("{scope:?} scope must not refuse a disclosure-only config home: {e:?}"))
+                .expect("a non-empty config home still resolves at every scope");
+            assert_eq!(resolved, dir.path().canonicalize().unwrap().join("config_home"));
+        }
+
+        std::env::remove_var("AASM_STATE_DIR");
     }
 
     /// AAASM-5987: proves `surfaces_not_owned_by_a_project()` — the PRODUCTION
