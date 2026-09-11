@@ -102,6 +102,76 @@ Machine-readable output also makes the mutating commands non-interactive: there
 is nothing on the other end that can answer a prompt, so `install`, `repair` and
 `remove` **abort** (exit `9`) rather than block, unless `--yes` is passed.
 
+## Consent: `--yes`/`-y`
+
+`install`, `repair` and `remove` share one consent model (AAASM-6085).
+
+> **`--yes` skips Agent Assembly's own confirmation prompt only. It never
+> bypasses operating-system administrator authorization or another security
+> boundary.**
+
+`-y` is a short alias for `--yes` on all three commands. Neither form:
+
+- suppresses the material-change disclosure printed before the prompt —
+  `--yes` skips *answering* the question, not *showing* what it would apply;
+- implies `--force` (`remove`'s separate flag for proceeding with a known-
+  incomplete reversal);
+- widens what a plan touches, or turns a warning/error into a success;
+- answers a host-level authorization prompt. A plan with a privileged step
+  (`--install-managed-settings`, or any `--allow-privileged-host-steps`
+  entry) still reaches Touch ID, an admin password, `sudo`, or the platform
+  equivalent honestly — `--yes` has no path into that boundary. In a
+  non-interactive session with no way to satisfy it, the run fails closed
+  with no partial write, the same as it would without `--yes`.
+
+**Without `--yes`, non-interactively:** the command aborts (exit `9`) before
+sending any mutating request, and the message names `--yes` as the fix. Zero
+mutation happens either way.
+
+**With `--yes`:** the command's own prompt is skipped and the run proceeds
+through every ordinary, unprivileged step automatically. A privileged step is
+still attempted honestly, not bypassed — see above.
+
+**Distinguishing consent from host authorization in automation.** `--output
+json` reports `consent_auto_approved: true` when `--yes`/`-y` skipped this
+command's own prompt (`false` on a preview, a no-op, or an interactive run
+that answered the prompt itself). This tells automation "AASM's own gate was
+auto-approved" apart from "there was nothing to ask about". It does **not**
+attempt a second, finer distinction between "host authorization unavailable"
+and "host authorization refused" — both surface as the same ordinary command
+failure (the ordinary non-zero exit and disclosure this document already
+describes for a denied/unavailable authorization), consistent with the
+DI-API's own deliberately coarse deny codes (§5.3): this client does not
+infer more from a message's wording than the wire states structurally. A
+caller that needs that finer split should track it as a follow-up rather
+than assume this document promises it.
+
+**LLM / coding-agent / CI usage.** `--yes --output json` is the shape an
+agent or pipeline should use: no prompt to hang on, and a parseable report
+including `consent_auto_approved` and `outcome`. True unattended execution is
+possible only when the plan has no privileged step (`--profile recommended`
+without `--install-managed-settings`/`--allow-privileged-host-steps`) — a
+plan that does still needs an operator present for the OS prompt, or a
+pre-authorized OS mechanism (e.g. a pre-approved Touch ID/PAM policy) outside
+Agent Assembly's control. Before automating a *repeated* mutation (e.g. a
+scheduled `repair --yes`), run it once without `--yes` to review the plan by
+hand — an automated "yes" to a prompt you have not read is exactly the risk
+this flag exists to bound, not remove.
+
+**Rollback and failure.** A privileged step that fails leaves no partial
+state — the engine reverses everything the run had already applied — whether
+or not `--yes` was passed. `aasm integrations remove` is the general-purpose
+rollback for anything that did install; see below.
+
+Copyable examples:
+
+```console
+$ aasm integrations install claude-code --install-managed-settings --profile strict --yes
+$ aasm integrations install claude-code --install-managed-settings --profile strict -y --output json
+$ aasm integrations repair claude-code --yes --output json
+$ aasm integrations remove claude-code -y --output json
+```
+
 ## `aasm integrations list`
 
 ```text
@@ -167,7 +237,7 @@ Takes every `plan` flag above, plus:
 
 | Flag | Default | Description |
 |---|---|---|
-| `--yes` | off | Apply without asking. Required for non-interactive and machine-readable runs. |
+| `--yes`, `-y` | off | Apply without asking. Required for non-interactive and machine-readable runs. See [Consent](#consent---yes-y). |
 | `--dry-run` | off | Show the plan and stop, exactly as `plan` does. |
 
 The preview you approve is the same plan object that gets applied — not a second
@@ -199,7 +269,7 @@ adapter and run by the service; no real credential is read, sent or printed.
 | Flag | Default | Description |
 |---|---|---|
 | `--dry-run` | off | Show what drifted and stop. |
-| `--yes` | off | Repair without asking. Required for non-interactive and machine-readable runs. |
+| `--yes`, `-y` | off | Repair without asking. Required for non-interactive and machine-readable runs. See [Consent](#consent---yes-y). |
 
 Repairing nothing is a **success** and exits `0` — see
 [Outcome: did the world change?](#outcome-did-the-world-change) below, which is
@@ -212,7 +282,7 @@ for the tool at all, or the AASM-owned state already matches the receipt it has.
 | Flag | Default | Description |
 |---|---|---|
 | `--dry-run` | off | Show the restoration actions and stop. |
-| `--yes` | off | Remove without asking. Required for non-interactive and machine-readable runs. |
+| `--yes`, `-y` | off | Remove without asking. Required for non-interactive and machine-readable runs. See [Consent](#consent---yes-y). |
 | `--force` | off | Proceed even when the reversal is known to be incomplete. |
 
 Removal is derived from the **receipt**, not re-derived from current host state:
