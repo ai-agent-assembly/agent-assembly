@@ -178,7 +178,15 @@ impl CopilotAdapter {
         })?;
         let value = if path.exists() {
             let raw = std::fs::read_to_string(&path)?;
-            serde_json::from_str(&raw).unwrap_or(serde_json::json!({}))
+            // AAASM-6091: a parse failure must refuse, not default to `{}` —
+            // that would silently drop every existing VS Code user setting
+            // the next time governance keys are applied on top of it.
+            serde_json::from_str(&raw).map_err(|e| {
+                AdapterError::SettingsApplyFailed(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} is not valid JSON, refusing to overwrite it: {e}", path.display()),
+                ))
+            })?
         } else {
             serde_json::json!({})
         };
@@ -617,6 +625,27 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["editor.fontSize"], 14, "unmanaged key must be preserved");
         assert!(v["github.copilot.enable"].is_object(), "managed key written");
+    }
+
+    /// AAASM-6091: `read_settings` used to fall back to `{}` on any parse
+    /// failure, so `apply_settings` would silently replace the user's real
+    /// VS Code settings file with only the AA-managed keys. The falsifying
+    /// case: an existing malformed file must refuse, not be replaced.
+    #[tokio::test]
+    async fn apply_settings_refuses_a_malformed_existing_file() {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, "{not valid json").unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+
+        let json = adapter.generate_managed_settings(&empty_policy()).await.unwrap();
+        let result = adapter.apply_settings(&json).await;
+        assert!(
+            result.is_err(),
+            "malformed existing settings.json must refuse rather than be silently replaced"
+        );
+        let unchanged = std::fs::read_to_string(&settings_file).unwrap();
+        assert_eq!(unchanged, "{not valid json");
     }
 
     // ── AC: list_mcp_servers ─────────────────────────────────────────────────

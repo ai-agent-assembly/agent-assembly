@@ -184,7 +184,10 @@ async fn apply_settings_creates_dirs_and_writes_file() {
     let a = WindsurfCascadeAdapter::with_paths(&admin_path, &mcp_path);
     a.apply_settings(r#"{"test":true}"#).await.expect("apply_settings");
     let content = std::fs::read_to_string(&admin_path).expect("read back");
-    assert_eq!(content, r#"{"test":true}"#);
+    // AAASM-6091: apply_settings now reads-merges-writes (pretty-printed)
+    // instead of a byte-for-byte blind replace, so compare parsed values.
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("valid json");
+    assert_eq!(parsed["test"], true);
 }
 
 // ---------------------------------------------------------------------------

@@ -62,9 +62,20 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
     }
 
     // Load existing content (if any) as a JSON object to preserve unmanaged keys.
+    //
+    // AAASM-6091: a parse failure must refuse, not default to an empty object —
+    // silently treating a malformed file as empty would splice the 4 managed
+    // keys onto nothing and overwrite every unmanaged key (hooks, statusLine,
+    // theme, ...) the user's file actually held. Fail closed instead, same as
+    // the receipt-backed engine path (`fingerprint::Doc::parse`).
     let mut base: serde_json::Value = if path.exists() {
         let raw = std::fs::read_to_string(path).map_err(AdapterError::SettingsApplyFailed)?;
-        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Object(Default::default()))
+        serde_json::from_str(&raw).map_err(|e| {
+            AdapterError::SettingsApplyFailed(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not valid JSON, refusing to overwrite it: {e}", path.display()),
+            ))
+        })?
     } else {
         serde_json::Value::Object(Default::default())
     };
@@ -199,6 +210,38 @@ mod tests {
         // Original file must be unchanged.
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("dark"));
+    }
+
+    /// AAASM-6091: a malformed (unparseable) existing `settings.json` must not
+    /// be silently treated as empty — `unwrap_or(Value::Object(default()))`
+    /// discards every unmanaged key (hooks, statusLine, theme, custom fields)
+    /// the instant the file has a syntax error, with no receipt and no way
+    /// back. This is the falsifying test: it must fail on current `main`.
+    #[test]
+    fn apply_settings_does_not_destroy_a_malformed_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = r#"{
+            "theme": "dark",
+            "statusLine": {"type": "command", "command": "~/.claude/statusline.py"},
+            "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]},
+            "tui": "fullscreen",
+            // trailing comment makes this invalid JSON
+        }"#;
+        std::fs::write(&path, original).unwrap();
+        let settings = r#"{
+            "permissions": {"allow": [], "deny": []},
+            "permissionMode": "default",
+            "enabledMcpjsonServers": [],
+            "disabledMcpjsonServers": []
+        }"#;
+        let result = apply_settings_at(&path, settings);
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            result.is_err() || content.contains("statusLine"),
+            "malformed existing settings.json must not be silently replaced: apply either \
+             refused (Err) or preserved the unmanaged keys, but got Ok with content: {content}"
+        );
     }
 
     #[test]
