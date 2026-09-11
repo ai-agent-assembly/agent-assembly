@@ -69,6 +69,12 @@ OUTCOME:
 
     Non-zero means the removal did NOT happen — including the refusal to leave
     items behind without --force, which exits 9 and reports `refused`.
+
+CONSENT:
+    --yes/-y skips Agent Assembly's own confirmation prompt only. It never
+    bypasses operating-system administrator authorization or another
+    security boundary. `consent_auto_approved` in --output json says whether
+    this run's prompt was skipped that way (AAASM-6085).
 ";
 
 /// `aasm integrations remove` arguments.
@@ -84,7 +90,10 @@ pub struct RemoveArgs {
 
     /// Remove without asking. Required for non-interactive and `--output json`
     /// runs.
-    #[arg(long)]
+    ///
+    /// Skips only this command's own confirmation — never a host
+    /// authorization boundary (AAASM-6085; see `--help` CONSENT section).
+    #[arg(short = 'y', long)]
     pub yes: bool,
 
     /// Proceed even when the reversal is known to be incomplete.
@@ -143,7 +152,7 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
             .remove(&args.tool, "", target.as_request())
             .await
             .map_err(verb_failure)?;
-        let preview_report = RemoveReport::from_view(runtime.clone(), &preview, true);
+        let preview_report = RemoveReport::from_view(runtime.clone(), &preview, true, false);
 
         if args.dry_run {
             emit(&preview_report, output);
@@ -186,7 +195,7 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
             .remove(&args.tool, &preview.plan_id, target.as_request())
             .await
             .map_err(verb_failure)?;
-        emit(&RemoveReport::from_view(runtime, &removed, false), output);
+        emit(&RemoveReport::from_view(runtime, &removed, false, args.yes), output);
         Ok(Outcome::Success)
     })
 }
