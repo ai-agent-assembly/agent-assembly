@@ -299,15 +299,33 @@ impl DevToolAdapter for CodexAdapter {
         let new_val: toml::Value = toml::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
 
         // Load existing config (if any) so user-managed keys are preserved.
+        //
+        // AAASM-6091: a parse failure or a non-table document must refuse,
+        // not silently fall back to an empty table — that would splice AA's
+        // keys onto nothing and overwrite the user's real `config.toml`.
         let mut merged: toml::value::Table = if config_path.exists() {
             let raw = std::fs::read_to_string(&config_path).map_err(AdapterError::SettingsApplyFailed)?;
-            toml::from_str::<toml::Value>(&raw)
-                .ok()
-                .and_then(|v| match v {
-                    toml::Value::Table(t) => Some(t),
-                    _ => None,
-                })
-                .unwrap_or_default()
+            match toml::from_str::<toml::Value>(&raw) {
+                Ok(toml::Value::Table(t)) => t,
+                Ok(_) => {
+                    return Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "{} is not a TOML table, refusing to overwrite it",
+                            config_path.display()
+                        ),
+                    )));
+                }
+                Err(e) => {
+                    return Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "{} is not valid TOML, refusing to overwrite it: {e}",
+                            config_path.display()
+                        ),
+                    )));
+                }
+            }
         } else {
             toml::value::Table::new()
         };
@@ -434,6 +452,43 @@ mod tests {
     #[test]
     fn detect_returns_none_when_locator_finds_nothing() {
         assert!(adapter(None, None, None).detect().is_none());
+    }
+
+    /// AAASM-6091: `apply_settings` used to fall back to an empty TOML table
+    /// on any parse failure, silently discarding the user's real
+    /// `config.toml`. The falsifying case: an existing malformed file must
+    /// refuse, not be replaced.
+    #[tokio::test]
+    async fn apply_settings_refuses_a_malformed_existing_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config_path = dir.path().join(".codex/config.toml");
+        std::fs::write(&config_path, "not = valid [ toml").unwrap();
+        let a = adapter(None, None, None).with_home_dir(dir.path().to_path_buf());
+
+        let result = a.apply_settings(r#"approval_policy = "on-request""#).await;
+        assert!(
+            result.is_err(),
+            "malformed existing config.toml must refuse rather than be silently replaced"
+        );
+        let unchanged = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(unchanged, "not = valid [ toml");
+    }
+
+    #[tokio::test]
+    async fn apply_settings_preserves_unmanaged_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".codex")).unwrap();
+        let config_path = dir.path().join(".codex/config.toml");
+        std::fs::write(&config_path, "some_user_key = \"keep-me\"\n").unwrap();
+        let a = adapter(None, None, None).with_home_dir(dir.path().to_path_buf());
+
+        a.apply_settings(r#"approval_policy = "on-request""#).await.unwrap();
+
+        let written = std::fs::read_to_string(&config_path).unwrap();
+        let parsed: toml::Value = toml::from_str(&written).unwrap();
+        assert_eq!(parsed["some_user_key"].as_str(), Some("keep-me"));
+        assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
     }
 
     #[test]
