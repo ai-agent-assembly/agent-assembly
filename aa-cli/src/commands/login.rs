@@ -36,6 +36,14 @@ pub struct LoginArgs {
 ///
 /// [`session_key`]: crate::auth::session::session_key
 pub fn run(args: LoginArgs, ctx: &ResolvedContext) -> ExitCode {
+    // AAASM-6089: `/auth/token` presents the long-lived API key as a bearer, so
+    // check the transport before prompting — a hidden prompt followed by a
+    // refusal would have the user type the secret for nothing.
+    if let Err(e) = ctx.ensure_credential_transport_safe() {
+        eprintln!("error: {e}");
+        return ExitCode::FAILURE;
+    }
+
     let key = match resolve_key(ctx) {
         Ok(k) => k,
         Err(e) => {

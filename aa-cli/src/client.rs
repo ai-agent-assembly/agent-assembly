@@ -45,12 +45,16 @@ pub fn build_client() -> reqwest::Client {
 /// or the request comes back `401`. Routing those call sites through this helper
 /// keeps auth attachment in one place instead of each command re-deriving it
 /// (the audit/logs group regressed by skipping it — AAASM-4659).
-pub fn blocking_get(ctx: &ResolvedContext, url: &str) -> reqwest::blocking::RequestBuilder {
+///
+/// Errors with [`CliError::InsecureApiUrl`] when the context pairs a credential
+/// with a remote cleartext URL, so the key is refused rather than sent in the
+/// clear (AAASM-6089).
+pub fn blocking_get(ctx: &ResolvedContext, url: &str) -> Result<reqwest::blocking::RequestBuilder, CliError> {
     let mut req = reqwest::blocking::Client::new().get(url);
-    if let Some(ref key) = ctx.api_key {
+    if let Some(key) = ctx.credential_for_wire()? {
         req = req.bearer_auth(key);
     }
-    req
+    Ok(req)
 }
 
 /// Which credential [`resolve_bearer`] picked, so [`send_with_auth`] knows
@@ -84,11 +88,15 @@ impl Bearer {
 /// the caller surfaces a clear auth error rather than sending a stale token.
 async fn resolve_bearer(ctx: &ResolvedContext) -> Result<Bearer, CliError> {
     if let Some(session) = load_session(&session_key(ctx)) {
+        // AAASM-6089: a session JWT is a bearer secret too — refuse it on a
+        // remote cleartext URL before it reaches the wire (or the re-mint
+        // exchange, which resends the retained source key).
+        ctx.ensure_credential_transport_safe()?;
         let session = refresh_if_expired(ctx, session).await?;
         return Ok(Bearer::Session(session));
     }
-    match &ctx.api_key {
-        Some(key) => Ok(Bearer::ApiKey(key.clone())),
+    match ctx.credential_for_wire()? {
+        Some(key) => Ok(Bearer::ApiKey(key.to_string())),
         None => Ok(Bearer::None),
     }
 }
@@ -295,6 +303,7 @@ mod tests {
             &ctx(Some("secret-token")),
             "http://127.0.0.1:7391/api/v1/logs?per_page=50&page=1",
         )
+        .expect("loopback http:// must be allowed to carry a credential")
         .build()
         .unwrap();
         let auth = req
@@ -307,9 +316,24 @@ mod tests {
     #[test]
     fn blocking_get_omits_auth_when_no_api_key() {
         let req = blocking_get(&ctx(None), "http://127.0.0.1:7391/api/v1/logs")
+            .expect("no credential means nothing to protect")
             .build()
             .unwrap();
         assert!(req.headers().get(AUTHORIZATION).is_none());
+    }
+
+    /// AAASM-6089: the audit/logs blocking path must refuse to put the operator
+    /// bearer on a remote cleartext URL rather than send it in the clear.
+    #[test]
+    fn blocking_get_refuses_credential_on_remote_plaintext_url() {
+        let mut remote = ctx(Some("secret-token"));
+        remote.api_url = "http://gateway.example.com:8080".to_string();
+        let err = blocking_get(&remote, "http://gateway.example.com:8080/api/v1/logs")
+            .expect_err("a remote http:// URL must not carry the credential");
+        assert!(
+            matches!(err, CliError::InsecureApiUrl { .. }),
+            "expected InsecureApiUrl, got {err:?}"
+        );
     }
 
     /// A non-expired stored session must send `Authorization: Bearer <jwt>` and

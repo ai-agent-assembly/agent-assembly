@@ -76,7 +76,15 @@ pub fn run(args: LogsArgs, ctx: &ResolvedContext) -> ExitCode {
     let since = args.since.as_deref().and_then(parse_since);
     let until = args.until.as_deref().and_then(parse_until);
 
-    let response = match crate::client::blocking_get(ctx, &url).send() {
+    let request = match crate::client::blocking_get(ctx, &url) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let response = match request.send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: failed to connect to {}: {e}", ctx.api_url);

@@ -49,7 +49,12 @@ fn build_rows(ctx: &ResolvedContext) -> Vec<VersionRow> {
         let url = format!("{}/api/v1/health", ctx.api_url);
 
         let mut req = client.get(&url);
-        if let Some(ref key) = ctx.api_key {
+        // AAASM-6089: omit rather than refuse. `/api/v1/health` is always
+        // reachable without a key, and `version` is contractually
+        // non-failing (an unreachable gateway is a row, not an error), so
+        // dropping a credential that would travel in cleartext still yields a
+        // correct probe instead of turning this command into a hard failure.
+        if let Ok(Some(key)) = ctx.credential_for_wire() {
             req = req.bearer_auth(key);
         }
 
