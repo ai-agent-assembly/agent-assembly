@@ -63,9 +63,19 @@ pub fn compute_exit_code(snapshot: &StatusSnapshot) -> ExitCode {
 
 /// Entry point for `aasm status`.
 pub fn dispatch(args: StatusArgs, ctx: &ResolvedContext, output: OutputFormat) -> ExitCode {
+    // AAASM-6089: refuse before any probe runs rather than sending the bearer in
+    // cleartext on the four auth-gated aggregation sub-requests.
+    let api_key = match ctx.credential_for_wire() {
+        Ok(key) => key.map(String::from),
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let api_client = client::StatusClient::new(&ctx.api_url).with_api_key(ctx.api_key.clone());
+        let api_client = client::StatusClient::new(&ctx.api_url).with_api_key(api_key);
 
         if args.watch {
             watch::run_watch_loop(&api_client, output).await;

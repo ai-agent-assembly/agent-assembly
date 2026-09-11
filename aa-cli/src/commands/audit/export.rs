@@ -189,7 +189,15 @@ fn write_to<W: Write>(
 pub fn run(args: ExportArgs, ctx: &ResolvedContext) -> ExitCode {
     let url = build_url(ctx, &args);
 
-    let response = match crate::client::blocking_get(ctx, &url).send() {
+    let request = match crate::client::blocking_get(ctx, &url) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let response = match request.send() {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: failed to connect to {}: {e}", ctx.api_url);

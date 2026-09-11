@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use url::{Host, Url};
 
 use crate::error::CliError;
 
@@ -204,12 +205,86 @@ pub struct ResolvedContext {
     pub api_key: Option<String>,
 }
 
+/// Whether `api_url` may carry a credential without putting it on the wire in
+/// cleartext.
+///
+/// `https://` is always fine. Plaintext `http://` is accepted only for a
+/// loopback host, which covers the built-in default and the `aasm start`
+/// in-process control plane. `localhost` is treated as loopback by name: it is
+/// the documented default, and requiring an IP literal here would reject it.
+/// A URL that does not parse is left to the HTTP client to reject, so this
+/// function does not turn a malformed-URL error into a security error.
+fn credential_transport_is_safe(api_url: &str) -> bool {
+    let Ok(url) = Url::parse(api_url) else {
+        return true;
+    };
+    if url.scheme() != "http" {
+        return true;
+    }
+    match url.host() {
+        Some(Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => true,
+    }
+}
+
+/// Whether the operator explicitly opted in to cleartext credential transport
+/// via `AASM_ALLOW_INSECURE_HTTP=1`, for a deliberately plaintext deployment
+/// behind a trusted tunnel.
+fn insecure_transport_opt_in() -> bool {
+    std::env::var("AASM_ALLOW_INSECURE_HTTP").is_ok_and(|v| v == "1")
+}
+
+impl ResolvedContext {
+    /// Refuse to send *any* credential to this context's `api_url` when doing so
+    /// would put it on the wire in cleartext to a host off this machine
+    /// (AAASM-6089).
+    ///
+    /// This is checked at credential *egress*, not at context resolution: a
+    /// remote `http://` context is perfectly usable for commands that send no
+    /// credential at all, and purely local commands (`context set`,
+    /// `context list`, `logout`, `completion`) must keep working regardless of
+    /// what the configured URL is. Gating at resolution time broke all of them.
+    ///
+    /// Credential-agnostic on purpose — a stored session's JWT is as much a
+    /// bearer secret as the raw `api_key`, so both go through this.
+    pub fn ensure_credential_transport_safe(&self) -> Result<(), CliError> {
+        if credential_transport_is_safe(&self.api_url) || insecure_transport_opt_in() {
+            return Ok(());
+        }
+        Err(CliError::InsecureApiUrl {
+            url: self.api_url.clone(),
+        })
+    }
+
+    /// The credential to attach to an outbound request, or `None` when there is
+    /// nothing to send.
+    ///
+    /// `Ok(None)` keeps the pre-existing contract: the CLI does not fail-fast on
+    /// a missing credential, because the gateway is the sole authorization
+    /// authority and a bypass-default gateway serves unauthenticated requests
+    /// fine. A credential that *would* travel in cleartext is refused instead of
+    /// silently sent.
+    pub fn credential_for_wire(&self) -> Result<Option<&str>, CliError> {
+        let Some(key) = self.api_key.as_deref() else {
+            return Ok(None);
+        };
+        self.ensure_credential_transport_safe()?;
+        Ok(Some(key))
+    }
+}
+
 /// Resolve the active API context by merging CLI flags with the config file.
 ///
 /// Precedence (highest to lowest):
 /// 1. Explicit CLI flags (`--api-url`, `--api-key`)
 /// 2. Named context from config (`--context <name>` or `default_context`)
 /// 3. Built-in default (`http://localhost:8080`)
+///
+/// Resolution itself never fails on transport safety — see
+/// [`ResolvedContext::credential_for_wire`], which is where a cleartext
+/// credential is refused (AAASM-6089).
 pub fn resolve_context(
     config: &CliConfig,
     context_flag: Option<&str>,
@@ -392,6 +467,86 @@ mod tests {
         let cfg = sample_config();
         let result = resolve_context(&cfg, Some("nonexistent"), None, None);
         assert!(result.is_err());
+    }
+
+    // ── Cleartext credential transport (AAASM-6089) ──────────────────────────
+
+    fn ctx_with(api_url: &str, api_key: Option<&str>) -> ResolvedContext {
+        ResolvedContext {
+            name: None,
+            api_url: api_url.to_string(),
+            api_key: api_key.map(String::from),
+        }
+    }
+
+    #[test]
+    fn remote_plaintext_credential_is_refused_at_egress() {
+        let err = ctx_with("http://gateway.example.com:8080", Some("k"))
+            .credential_for_wire()
+            .unwrap_err();
+        assert!(
+            matches!(err, CliError::InsecureApiUrl { .. }),
+            "a remote http:// URL carrying a credential must be refused, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn remote_plaintext_url_without_credential_sends_nothing_and_is_allowed() {
+        // Nothing secret goes on the wire, so this stays usable.
+        let ctx = ctx_with("http://gateway.example.com:8080", None);
+        assert_eq!(ctx.credential_for_wire().unwrap(), None);
+    }
+
+    #[test]
+    fn loopback_plaintext_credential_is_allowed() {
+        // The default and the `aasm start` local control plane must keep working.
+        for url in [
+            "http://localhost:8080",
+            "http://LOCALHOST:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            let ctx = ctx_with(url, Some("k"));
+            let got = ctx
+                .credential_for_wire()
+                .unwrap_or_else(|e| panic!("loopback {url} must be allowed, got {e:?}"));
+            assert_eq!(got, Some("k"), "loopback {url}");
+        }
+    }
+
+    #[test]
+    fn https_credential_is_allowed() {
+        let ctx = ctx_with("https://api.example.com", Some("prod-key"));
+        assert_eq!(ctx.credential_for_wire().unwrap(), Some("prod-key"));
+    }
+
+    /// Resolution must stay infallible on transport safety: a remote `http://`
+    /// context is still resolvable, because purely-local commands
+    /// (`context set`, `context list`, `logout`) run through the same
+    /// resolution path and must not be blocked by it.
+    #[test]
+    fn resolution_does_not_reject_remote_plaintext_context() {
+        let cfg = CliConfig {
+            default_context: None,
+            contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
+        };
+        let resolved = resolve_context(&cfg, None, Some("http://iso.test:8080"), Some("k"))
+            .expect("resolution must not fail on transport safety");
+        assert_eq!(resolved.api_url, "http://iso.test:8080");
+        assert_eq!(resolved.api_key.as_deref(), Some("k"));
+    }
+
+    #[test]
+    fn credential_transport_safety_is_scheme_and_host_based() {
+        // Unit-level cover for the predicate, including the malformed-URL case
+        // that is deliberately deferred to the HTTP client.
+        assert!(credential_transport_is_safe("https://api.example.com"));
+        assert!(credential_transport_is_safe("http://localhost:8080"));
+        assert!(credential_transport_is_safe("http://127.0.0.1:9999"));
+        assert!(credential_transport_is_safe("not a url"));
+        assert!(!credential_transport_is_safe("http://gateway.example.com"));
+        assert!(!credential_transport_is_safe("http://10.0.0.5:8080"));
     }
 
     #[test]

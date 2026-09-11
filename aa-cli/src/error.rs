@@ -17,6 +17,15 @@ pub enum CliError {
     #[error("context not found: {0}")]
     ContextNotFound(String),
 
+    /// The resolved `api_url` would carry a credential in cleartext to a host
+    /// off this machine. Loopback `http://` stays allowed — that is the default
+    /// and the `aasm start` local control plane — but a remote plaintext URL
+    /// puts the API key on the wire (AAASM-6089).
+    #[error(
+        "refusing to send credentials in cleartext to {url} — use https://, or set AASM_ALLOW_INSECURE_HTTP=1 to override"
+    )]
+    InsecureApiUrl { url: String },
+
     /// An HTTP request to the gateway failed.
     #[error("API request failed: {0}")]
     Api(#[from] reqwest::Error),
