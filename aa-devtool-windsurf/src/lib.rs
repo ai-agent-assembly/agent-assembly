@@ -309,10 +309,44 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
     }
 
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
+        // AAASM-6091: this file is shared with the Windsurf tool itself (see
+        // `apply_mcp_governance` above, which already reads it before writing) —
+        // an unconditional `fs::write` of only the AA-generated document
+        // silently destroyed every field the tool or an operator had set
+        // outside `mcp`/`terminal`/`policy`. Splice the AA-managed top-level
+        // keys onto the existing document instead, same pattern as the other
+        // adapters' `apply_settings`. A parse failure refuses rather than
+        // being treated as an empty document.
+        let existing: serde_json::Value = if self.admin_settings_path.exists() {
+            let raw = std::fs::read_to_string(&self.admin_settings_path)?;
+            serde_json::from_str(&raw).map_err(|e| {
+                AdapterError::SettingsApplyFailed(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is not valid JSON, refusing to overwrite it: {e}",
+                        self.admin_settings_path.display()
+                    ),
+                ))
+            })?
+        } else {
+            serde_json::json!({})
+        };
+        let incoming: serde_json::Value =
+            serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        let mut merged = existing;
+        if let (Some(obj), Some(inc)) = (merged.as_object_mut(), incoming.as_object()) {
+            for (k, v) in inc {
+                obj.insert(k.clone(), v.clone());
+            }
+        } else {
+            merged = incoming;
+        }
+
         if let Some(parent) = self.admin_settings_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.admin_settings_path, settings).map_err(AdapterError::SettingsApplyFailed)?;
+        let serialized = serde_json::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        std::fs::write(&self.admin_settings_path, serialized).map_err(AdapterError::SettingsApplyFailed)?;
         Ok(())
     }
 
@@ -636,7 +670,48 @@ mod tests {
         adapter.apply_settings("{\"hello\":\"world\"}").await.unwrap();
 
         let written = std::fs::read_to_string(&admin).unwrap();
-        assert_eq!(written, "{\"hello\":\"world\"}");
+        let parsed: Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed["hello"], "world");
+    }
+
+    /// AAASM-6091: `apply_settings` used to `fs::write` the AA-generated
+    /// document straight over the file, discarding every other key —
+    /// even though `apply_mcp_governance` on the very same file already
+    /// treats it as shared (reads before writing). The falsifying case:
+    /// an unrelated key set before `apply_settings` runs must survive it.
+    #[tokio::test]
+    async fn apply_settings_preserves_unmanaged_keys() {
+        let dir = TempDir::new().unwrap();
+        let admin = dir.path().join("admin_settings.json");
+        std::fs::write(&admin, r#"{"unrelated_operator_setting": "keep-me"}"#).unwrap();
+        let adapter = WindsurfCascadeAdapter::with_paths(&admin, dir.path().join("mcp_settings.json"));
+
+        adapter
+            .apply_settings(r#"{"mcp": {"auto_approve": false, "disabled_servers": []}}"#)
+            .await
+            .unwrap();
+
+        let written = std::fs::read_to_string(&admin).unwrap();
+        let parsed: Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed["unrelated_operator_setting"], "keep-me");
+    }
+
+    /// AAASM-6091: a malformed existing file must refuse, not be silently
+    /// treated as empty and overwritten.
+    #[tokio::test]
+    async fn apply_settings_refuses_a_malformed_existing_file() {
+        let dir = TempDir::new().unwrap();
+        let admin = dir.path().join("admin_settings.json");
+        std::fs::write(&admin, "{not valid json").unwrap();
+        let adapter = WindsurfCascadeAdapter::with_paths(&admin, dir.path().join("mcp_settings.json"));
+
+        let result = adapter.apply_settings(r#"{"mcp": {"auto_approve": false}}"#).await;
+        assert!(
+            result.is_err(),
+            "malformed existing file must refuse rather than be silently replaced"
+        );
+        let unchanged = std::fs::read_to_string(&admin).unwrap();
+        assert_eq!(unchanged, "{not valid json");
     }
 
     #[tokio::test]
