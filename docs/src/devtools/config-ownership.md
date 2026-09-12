@@ -71,7 +71,7 @@ file. A whole-file backup would:
 
 A value that trips the credential scanner is not stored at all; its key is
 named as `withheld_keys` and removal reports it as a residual rather than
-guessing. This is a deliberate fail-closed choice (ADR 0015): an incomplete
+guessing. This is a deliberate fail-closed choice (Core ADR 0015): an incomplete
 restoration is always disclosed, never silently treated as complete.
 
 ### Privileged managed-settings: replace *is* correct here
