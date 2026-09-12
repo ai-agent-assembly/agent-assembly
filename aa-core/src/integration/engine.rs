@@ -2380,6 +2380,157 @@ mod tests {
         assert_eq!(after["theme"], "gruvbox", "the user's own key is untouched");
     }
 
+    /// AAASM-6091 §7 — the mandatory realistic preservation end-to-end.
+    ///
+    /// Starts from a config with nested objects, arrays, and keys the
+    /// managed-keys schema has never heard of (representing hooks, MCP
+    /// server entries, a future preference field). Drives the full real
+    /// lifecycle — install, an unrelated edit, repair, a second unrelated
+    /// edit, remove — and proves the invariant by **semantic comparison of
+    /// the entire final document**, not a handful of spot-checked keys:
+    ///
+    /// ```text
+    /// A              existing configuration (nested objects, arrays, unknown keys)
+    /// A + B          after install (B = AASM's managed keys)
+    /// A + B + C1     after an unrelated user edit
+    /// A + B' + C1    after repair corrects drifted AASM state (B' = corrected B)
+    /// A + B' + C1+C2 after a second unrelated user edit
+    /// A + C1 + C2    after remove — only B disappears, both edits survive
+    /// ```
+    #[test]
+    fn realistic_preservation_e2e_install_edit_repair_edit_remove() {
+        let f = fixture();
+        write_settings(
+            &f,
+            r#"{
+                "theme": "gruvbox",
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo pre"}]}
+                    ]
+                },
+                "mcpServers": {
+                    "filesystem": {"command": "npx", "args": ["-y", "mcp-fs"]}
+                },
+                "someFuturePreference": {"nested": {"deeply": [1, 2, 3]}},
+                "arrayOfScalars": ["a", "b", "c"],
+                "permissions": {"allow": ["Read"], "deny": []},
+                "permissionMode": "acceptEdits"
+            }"#,
+        );
+        let before_install = read_settings(&f);
+
+        // --- A -> A+B: install.
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+        let after_install = read_settings(&f);
+        assert_eq!(
+            after_install["theme"], "gruvbox",
+            "unrelated top-level key survives install"
+        );
+        assert_eq!(
+            after_install["hooks"], before_install["hooks"],
+            "nested hooks object survives install byte-for-byte in value"
+        );
+        assert_eq!(
+            after_install["mcpServers"], before_install["mcpServers"],
+            "nested MCP server object survives install"
+        );
+        assert_eq!(
+            after_install["someFuturePreference"], before_install["someFuturePreference"],
+            "a key the managed-keys schema has never heard of survives install"
+        );
+        assert_eq!(
+            after_install["arrayOfScalars"], before_install["arrayOfScalars"],
+            "an array value survives install"
+        );
+
+        // --- A+B -> A+B+C1: an unrelated user edit (add a new top-level key
+        // AND mutate an existing unrelated nested array), while also
+        // drifting an AASM-owned key so repair has something to correct.
+        let mut edited = after_install.clone();
+        edited["arrayOfScalars"] = serde_json::json!(["a", "b", "c", "d-added-by-user"]);
+        edited["userAddedAfterInstall"] = serde_json::json!({"note": "added between install and repair"});
+        edited["permissionMode"] = serde_json::json!("bypassPermissions"); // AASM-owned drift
+        write_settings(&f, &edited.to_string());
+
+        // --- repair: corrects only the drifted AASM-owned key.
+        let second = e.apply(&plan(&f), &context(2_000)).unwrap();
+        assert!(second.mutated, "drift is what repair exists to correct");
+        let after_repair = read_settings(&f);
+        assert_eq!(
+            after_repair["permissionMode"], "default",
+            "repair corrects AASM-owned drift back to AASM's own value, not the pre-install user value"
+        );
+        assert_eq!(
+            after_repair["arrayOfScalars"],
+            serde_json::json!(["a", "b", "c", "d-added-by-user"]),
+            "the user's array edit made before repair survives repair"
+        );
+        assert_eq!(
+            after_repair["userAddedAfterInstall"],
+            serde_json::json!({"note": "added between install and repair"}),
+            "the user's new key made before repair survives repair"
+        );
+        assert_eq!(after_repair["theme"], "gruvbox");
+        assert_eq!(after_repair["hooks"], before_install["hooks"]);
+
+        // --- A+B'+C1 -> A+B'+C1+C2: a second, later unrelated user edit.
+        let mut edited_again = after_repair.clone();
+        edited_again["theme"] = serde_json::json!("solarized-light");
+        edited_again["addedAfterRepair"] = serde_json::json!(["one-more-thing"]);
+        write_settings(&f, &edited_again.to_string());
+
+        // --- A+B'+C1+C2 -> A+C1+C2: remove. Required invariant: only the
+        // AASM-owned keys disappear; both rounds of unrelated edits survive.
+        let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+        assert!(outcome.residual.is_empty(), "{:?}", outcome.residual);
+        assert!(outcome.receipt_deleted);
+
+        let final_doc = read_settings(&f);
+        assert_eq!(
+            final_doc["permissions"],
+            serde_json::json!({"allow": ["Read"], "deny": []}),
+            "an AASM-owned key that existed before install is restored to its pre-install value, \
+             not left at AASM's own value nor deleted"
+        );
+        assert_eq!(
+            final_doc["permissionMode"], "acceptEdits",
+            "AASM-owned key restored to what it was before AASM ever ran, not to AASM's own value"
+        );
+        assert_eq!(
+            final_doc["theme"], "solarized-light",
+            "the second unrelated edit survives remove"
+        );
+        assert_eq!(
+            final_doc["addedAfterRepair"],
+            serde_json::json!(["one-more-thing"]),
+            "a key added after repair survives remove"
+        );
+        assert_eq!(
+            final_doc["userAddedAfterInstall"],
+            serde_json::json!({"note": "added between install and repair"}),
+            "a key added between install and repair survives remove"
+        );
+        assert_eq!(
+            final_doc["arrayOfScalars"],
+            serde_json::json!(["a", "b", "c", "d-added-by-user"]),
+            "the array edit survives remove"
+        );
+        assert_eq!(
+            final_doc["hooks"], before_install["hooks"],
+            "nested hooks object survives the whole lifecycle"
+        );
+        assert_eq!(
+            final_doc["mcpServers"], before_install["mcpServers"],
+            "nested MCP servers object survives the whole lifecycle"
+        );
+        assert_eq!(
+            final_doc["someFuturePreference"], before_install["someFuturePreference"],
+            "the unknown-schema key survives the whole lifecycle"
+        );
+    }
+
     #[test]
     fn a_tool_upgrade_out_of_range_is_reported_and_not_repaired_away() {
         let f = fixture();
