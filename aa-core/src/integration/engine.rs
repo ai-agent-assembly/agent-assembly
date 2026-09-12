@@ -2531,6 +2531,50 @@ mod tests {
         );
     }
 
+    /// AAASM-6091 §8: repeated install/repair/remove cycles must be
+    /// idempotent and must never accumulate residue from a prior cycle —
+    /// each fresh install starts from the same unrelated baseline the last
+    /// remove left behind, not from whatever the last cycle's AASM state was.
+    #[test]
+    fn repeated_install_repair_remove_cycles_are_idempotent() {
+        let f = fixture();
+        write_settings(
+            &f,
+            r#"{"theme":"dark","unrelated":{"nested":true},"permissionMode":"acceptEdits"}"#,
+        );
+        let baseline = read_settings(&f);
+
+        for cycle in 0..3 {
+            let mut e = engine(&f);
+            e.apply(&plan(&f), &context(1_000 + cycle)).unwrap();
+            assert_eq!(
+                read_settings(&f)["theme"],
+                "dark",
+                "cycle {cycle}: unrelated key survives install"
+            );
+
+            // Repair against unchanged state must be a no-op, every cycle.
+            let repaired = e.apply(&plan(&f), &context(1_500 + cycle)).unwrap();
+            assert!(
+                !repaired.mutated,
+                "cycle {cycle}: repairing an undrifted install must write nothing"
+            );
+
+            let outcome = e.remove(&DevToolKind::ClaudeCode, SettingsScope::User).unwrap();
+            assert!(outcome.residual.is_empty(), "cycle {cycle}: {:?}", outcome.residual);
+            assert!(
+                outcome.receipt_deleted,
+                "cycle {cycle}: receipt must be fully cleaned up"
+            );
+
+            let after = read_settings(&f);
+            assert_eq!(
+                after, baseline,
+                "cycle {cycle}: remove must return exactly to the pre-install baseline"
+            );
+        }
+    }
+
     #[test]
     fn a_tool_upgrade_out_of_range_is_reported_and_not_repaired_away() {
         let f = fixture();
