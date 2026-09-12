@@ -114,6 +114,8 @@
 - [Product Capability Brief](devtools/product-brief.md)
 - [Onboarding a Developer Integration](devtools/onboarding.md)
 - [Protection Levels](devtools/protection-levels.md)
+- [Config Ownership and Non-Destructive Mutation](devtools/config-ownership.md)
+  - [Developer Integration Ownership Matrix](devtools/config-ownership-matrix.md)
 - [Limitations and Known Bypasses](devtools/limitations.md)
 - [Developer Integration API](devtools/developer-integration-api.md)
 - [`aasm integrations` CLI](devtools/cli.md)
