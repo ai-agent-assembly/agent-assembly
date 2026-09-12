@@ -835,6 +835,15 @@ fn unrestorable_reason(step: &StepReceipt) -> String {
             artifact_label(step),
             prior.withheld_keys.join(", ")
         ),
+        // AAASM-6091 §6: named distinctly from the generic case below so a
+        // legacy receipt's residual is legible as "we never captured
+        // evidence for this step" rather than an undifferentiated failure.
+        None if step.is_legacy_ownership_unknown() => format!(
+            "{}: legacy_ownership_unknown — this receipt records no restoration evidence for this \
+             step at all (written before Agent Assembly captured it, or by a version that could \
+             not), so removal cannot prove what it may have displaced",
+            artifact_label(step)
+        ),
         _ => format!("{}: this step recorded no way to undo it", artifact_label(step)),
     }
 }

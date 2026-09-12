@@ -158,6 +158,26 @@ impl StepReceipt {
         self.applied && self.fingerprint.is_some()
     }
 
+    /// Whether this step's ownership provenance is unknown — it mutated a
+    /// settings document but the receipt records no evidence at all of what
+    /// it displaced.
+    ///
+    /// AAASM-6091 §6: this is the explicit legacy state a receipt written
+    /// before [`PriorSettingsState`] existed falls into (or any receipt a
+    /// future bug produces without one). It is distinct from a step whose
+    /// [`PriorSettingsState::withheld_keys`] is non-empty, which *does* have
+    /// restoration evidence — just incomplete evidence for specific keys the
+    /// credential screen caught. A legacy-ownership-unknown step has none at
+    /// all, so nothing about what it may have displaced can be asserted
+    /// either way.
+    /// Removal treats it identically to any other unrestorable step —
+    /// fail-safe, residual reported, receipt kept — this method exists so
+    /// that fact is nameable and testable rather than folded into a single
+    /// undifferentiated "no way to undo it" string.
+    pub fn is_legacy_ownership_unknown(&self) -> bool {
+        self.applied && !self.action.is_protection_test() && self.prior_state.is_none()
+    }
+
     /// Whether removal can prove it restored everything this step displaced.
     ///
     /// A step that was applied without capturing prior state is *not* provably
@@ -643,6 +663,40 @@ mod tests {
         assert!(r.steps[0].prior_state.is_none());
         assert!(r.steps[0].reversal.is_some());
         assert_eq!(r.unrestorable_steps().len(), 1);
+        assert!(r.steps[0].is_legacy_ownership_unknown());
+    }
+
+    #[test]
+    fn a_withheld_prior_value_is_not_legacy_ownership_unknown() {
+        // Distinct states: this step DOES have prior_state — just an
+        // incomplete one for a credential-screened key — so it must not be
+        // folded into the "no evidence at all" legacy classification.
+        let mut r = receipt(ProtectionLevel::Integrated, vec![]);
+        r.steps[0] = r.steps[0].clone().with_prior_state(PriorSettingsState {
+            managed_values_json: "{}".to_string(),
+            absent_keys: vec![],
+            withheld_keys: vec!["permissions".to_string()],
+            document_fingerprint: "sha256:before".to_string(),
+        });
+        assert!(!r.steps[0].is_legacy_ownership_unknown());
+        assert!(!r.steps[0].is_provably_restorable());
+    }
+
+    #[test]
+    fn a_probe_step_is_not_legacy_ownership_unknown() {
+        let step = IntegrationStep::new(
+            "protection-test",
+            StepAction::RunProtectionTest {
+                probe: crate::integration::step::ProbeDescriptor {
+                    id: "model-path".to_string(),
+                    mechanism: crate::integration::capability::IntegrationCapability::ModelPathInterception,
+                    description: "exercise the model path".to_string(),
+                },
+            },
+            "verify the model path is intercepted",
+        );
+        let receipt = StepReceipt::applied(&step, None);
+        assert!(!receipt.is_legacy_ownership_unknown());
     }
 
     #[test]
