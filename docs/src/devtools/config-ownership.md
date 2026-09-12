@@ -1,10 +1,15 @@
 # Config ownership and non-destructive mutation guarantee
 
 > **Guarantee:** Agent Assembly modifies only configuration it explicitly
-> owns, and never reasserts an AASM-owned value over one you changed after
-> install without your explicit say-so. Install, repair, and remove preserve
-> unrelated developer-tool configuration and any changes you make to it
-> afterwards.
+> owns. Install, repair, and remove preserve unrelated developer-tool
+> configuration and any changes you make to it afterwards. **`repair`**
+> specifically never reasserts an AASM-owned value over one you changed
+> after install without your explicit say-so — see [Repair and an
+> AASM-owned key changed
+> externally](#repair-and-an-aasm-owned-key-changed-externally). This does
+> **not** yet extend to re-running `install` against an already-installed
+> tool, which still merges AASM's managed keys back in unconditionally —
+> see [Known gaps](#known-gaps).
 
 This page is the authoritative statement of that guarantee for every
 productized Developer Integration, what backs it in code, where it does not
@@ -183,12 +188,32 @@ The following AAASM-6091 acceptance items are closed:
   restoration evidence at all.
 - A named shared contract-test suite enforcing the preservation invariants.
 - The fail-safe/no-clobber default for an AASM-owned key changed
-  externally, described above, plus its own independent adversarial review.
+  externally, described above.
 
 Not yet closed — do not read this page as claiming otherwise:
 
 - The `reconcile` override is not yet exposed over the DI-API wire protocol
   or `aasm integrations repair` (see the section above).
+- **`Engine::apply()`** — the path `aasm integrations install` re-runs
+  against an already-installed tool — has no drift/conflict check at all.
+  It unconditionally merges the plan's managed-key values back over
+  whatever is currently on disk, the same way `repair` used to before this
+  page's fail-safe default. `realistic_preservation_e2e_install_edit_repair_edit_remove`
+  in `aa-core/src/integration/engine.rs` demonstrates this directly: it
+  externally changes `permissionMode`, calls `apply()` again, and the
+  external value is silently overwritten. The founder's decision and this
+  page's guarantee are scoped to `repair`; making `apply()` conflict-aware
+  the same way is a follow-up, not something this change did.
+- **Concurrent external edit racing an install, and a stale plan executed
+  against a receipt that changed underneath it** — the adversarial/race
+  coverage closed above covers a corrupt receipt, a settings step with no
+  prior state, an out-of-range upgrade, and repeated install/repair/remove
+  cycles, but not an edit racing an in-flight `apply`/`install`, nor a plan
+  authored against stale receipt state. Requirement 5 of the fail-safe
+  decision ("stale receipt / concurrent edit cannot silently win") is
+  therefore only partially covered — the stale-receipt half is tested
+  (`a_corrupt_receipt_blocks_repair_instead_of_silently_reinstalling`), the
+  concurrent-edit-racing half is not.
 
 ## Legacy receipts
 
