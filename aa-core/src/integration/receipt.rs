@@ -158,6 +158,26 @@ impl StepReceipt {
         self.applied && self.fingerprint.is_some()
     }
 
+    /// Whether this step's ownership provenance is unknown — it mutated a
+    /// settings document but the receipt records no evidence at all of what
+    /// it displaced.
+    ///
+    /// AAASM-6091 §6: this is the explicit legacy state a receipt written
+    /// before [`PriorSettingsState`] existed falls into (or any receipt a
+    /// future bug produces without one). It is distinct from a step whose
+    /// [`PriorSettingsState::withheld_keys`] is non-empty, which *does* have
+    /// restoration evidence — just incomplete evidence for specific keys the
+    /// credential screen caught. A legacy-ownership-unknown step has none at
+    /// all, so nothing about what it may have displaced can be asserted
+    /// either way.
+    /// Removal treats it identically to any other unrestorable step —
+    /// fail-safe, residual reported, receipt kept — this method exists so
+    /// that fact is nameable and testable rather than folded into a single
+    /// undifferentiated "no way to undo it" string.
+    pub fn is_legacy_ownership_unknown(&self) -> bool {
+        self.applied && !self.action.is_protection_test() && self.prior_state.is_none()
+    }
+
     /// Whether removal can prove it restored everything this step displaced.
     ///
     /// A step that was applied without capturing prior state is *not* provably
@@ -173,7 +193,23 @@ impl StepReceipt {
         }
         match &self.prior_state {
             Some(prior) => prior.is_fully_restorable(),
-            None => self.reversal.is_some(),
+            // AAASM-6091: `reversal.is_some()` alone over-claims restorability
+            // for an unprivileged `WriteManagedSettings` step (User/Project
+            // scope) with no prior state — the generic executor has no path
+            // to honour that reversal for this action and now refuses it
+            // outright (see `FilesystemExecutor::reverse`), so reporting it
+            // restorable here would tell a user "fully restored" right before
+            // removal actually errors. A privileged (Managed-scope) step is
+            // unaffected: its rollback goes through the managed-settings
+            // installer's own backup, never through `prior_state` at all, so
+            // `reversal.is_some()` still correctly predicts it there.
+            None => match &self.action {
+                StepAction::WriteManagedSettings {
+                    scope: SettingsScope::User | SettingsScope::Project,
+                    ..
+                } => false,
+                _ => self.reversal.is_some(),
+            },
         }
     }
 }
@@ -612,6 +648,55 @@ mod tests {
             reversals[0].affected_paths(),
             vec![PathBuf::from("/home/dev/.aa/ca/aasm-ca.pem")]
         );
+    }
+
+    /// AAASM-6091: `settings_step()`'s fixture carries a `reversal` (a plain
+    /// `ManageArtifact::Remove`) on a User-scope `WriteManagedSettings` step —
+    /// the exact shape that used to report "restorable" purely because
+    /// `reversal.is_some()`, even though the generic executor has no prior
+    /// state to restore from and no legitimate path to honour that reversal
+    /// for this action. The falsifying case: it must not claim restorable.
+    #[test]
+    fn an_unprivileged_settings_step_with_no_prior_state_is_not_provably_restorable() {
+        let r = receipt(ProtectionLevel::Integrated, vec![]);
+        // The default fixture step has a `reversal` set but no `prior_state`.
+        assert!(r.steps[0].prior_state.is_none());
+        assert!(r.steps[0].reversal.is_some());
+        assert_eq!(r.unrestorable_steps().len(), 1);
+        assert!(r.steps[0].is_legacy_ownership_unknown());
+    }
+
+    #[test]
+    fn a_withheld_prior_value_is_not_legacy_ownership_unknown() {
+        // Distinct states: this step DOES have prior_state — just an
+        // incomplete one for a credential-screened key — so it must not be
+        // folded into the "no evidence at all" legacy classification.
+        let mut r = receipt(ProtectionLevel::Integrated, vec![]);
+        r.steps[0] = r.steps[0].clone().with_prior_state(PriorSettingsState {
+            managed_values_json: "{}".to_string(),
+            absent_keys: vec![],
+            withheld_keys: vec!["permissions".to_string()],
+            document_fingerprint: "sha256:before".to_string(),
+        });
+        assert!(!r.steps[0].is_legacy_ownership_unknown());
+        assert!(!r.steps[0].is_provably_restorable());
+    }
+
+    #[test]
+    fn a_probe_step_is_not_legacy_ownership_unknown() {
+        let step = IntegrationStep::new(
+            "protection-test",
+            StepAction::RunProtectionTest {
+                probe: crate::integration::step::ProbeDescriptor {
+                    id: "model-path".to_string(),
+                    mechanism: crate::integration::capability::IntegrationCapability::ModelPathInterception,
+                    description: "exercise the model path".to_string(),
+                },
+            },
+            "verify the model path is intercepted",
+        );
+        let receipt = StepReceipt::applied(&step, None);
+        assert!(!receipt.is_legacy_ownership_unknown());
     }
 
     #[test]

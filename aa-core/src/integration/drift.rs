@@ -510,7 +510,13 @@ mod tests {
             tool_version: Some(ToolVersion::new(2, 1, 220)),
             steps: vec![
                 StepReceipt::applied(&settings_step(), Some("sha256:managed".to_string()))
-                    .with_document_fingerprint("sha256:doc"),
+                    .with_document_fingerprint("sha256:doc")
+                    .with_prior_state(crate::integration::receipt::PriorSettingsState {
+                        managed_values_json: "{}".to_string(),
+                        absent_keys: vec!["permissions".to_string()],
+                        withheld_keys: vec![],
+                        document_fingerprint: "sha256:before".to_string(),
+                    }),
             ],
             planned_level: ProtectionLevel::Integrated,
             achieved_level: ProtectionLevel::Integrated,
