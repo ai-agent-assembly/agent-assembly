@@ -173,7 +173,23 @@ impl StepReceipt {
         }
         match &self.prior_state {
             Some(prior) => prior.is_fully_restorable(),
-            None => self.reversal.is_some(),
+            // AAASM-6091: `reversal.is_some()` alone over-claims restorability
+            // for an unprivileged `WriteManagedSettings` step (User/Project
+            // scope) with no prior state — the generic executor has no path
+            // to honour that reversal for this action and now refuses it
+            // outright (see `FilesystemExecutor::reverse`), so reporting it
+            // restorable here would tell a user "fully restored" right before
+            // removal actually errors. A privileged (Managed-scope) step is
+            // unaffected: its rollback goes through the managed-settings
+            // installer's own backup, never through `prior_state` at all, so
+            // `reversal.is_some()` still correctly predicts it there.
+            None => match &self.action {
+                StepAction::WriteManagedSettings {
+                    scope: SettingsScope::User | SettingsScope::Project,
+                    ..
+                } => false,
+                _ => self.reversal.is_some(),
+            },
         }
     }
 }
@@ -612,6 +628,21 @@ mod tests {
             reversals[0].affected_paths(),
             vec![PathBuf::from("/home/dev/.aa/ca/aasm-ca.pem")]
         );
+    }
+
+    /// AAASM-6091: `settings_step()`'s fixture carries a `reversal` (a plain
+    /// `ManageArtifact::Remove`) on a User-scope `WriteManagedSettings` step —
+    /// the exact shape that used to report "restorable" purely because
+    /// `reversal.is_some()`, even though the generic executor has no prior
+    /// state to restore from and no legitimate path to honour that reversal
+    /// for this action. The falsifying case: it must not claim restorable.
+    #[test]
+    fn an_unprivileged_settings_step_with_no_prior_state_is_not_provably_restorable() {
+        let r = receipt(ProtectionLevel::Integrated, vec![]);
+        // The default fixture step has a `reversal` set but no `prior_state`.
+        assert!(r.steps[0].prior_state.is_none());
+        assert!(r.steps[0].reversal.is_some());
+        assert_eq!(r.unrestorable_steps().len(), 1);
     }
 
     #[test]

@@ -1073,6 +1073,23 @@ impl StepExecutor for FilesystemExecutor {
             return Ok(());
         }
 
+        // AAASM-6091: a `WriteManagedSettings` step with no `prior_state` must
+        // refuse here, never fall through to `step.reversal` below. That match
+        // treats `Some(ManageArtifact::Remove { path })` as "delete `path`" —
+        // correct for an artifact AASM created outright, but `path` here is a
+        // *shared* settings file this step only ever merged into. A future
+        // caller that (mistakenly or otherwise) attaches that reversal to an
+        // unprivileged settings step would otherwise delete a file the user
+        // owns, on receipts with no restoration evidence, with no other guard
+        // in the way. No production plan currently constructs that
+        // combination — this closes the gap regardless of whether one ever
+        // does (contract invariant: SHARED_CONFIG_IS_NEVER_DELETED_BY_DEFAULT).
+        if matches!(&step.action, StepAction::WriteManagedSettings { .. }) {
+            return Err(ExecutionError::Unsupported {
+                kind: step.action.kind(),
+            });
+        }
+
         match &step.reversal {
             Some(StepAction::ManageArtifact {
                 operation: ArtifactOperation::Remove,
@@ -1686,6 +1703,40 @@ mod tests {
             !f.settings.exists(),
             "a file that held nothing but AASM's keys is AASM's to remove"
         );
+    }
+
+    /// AAASM-6091: a `WriteManagedSettings` step with no `prior_state` must
+    /// refuse reversal rather than fall through to `step.reversal` — a
+    /// `ManageArtifact::Remove` reversal there would delete a *shared*
+    /// settings file this step only ever merged into, not one AASM created
+    /// outright. Constructed directly against the executor (a receipt this
+    /// malformed cannot arise from `Engine::apply` today) so it stands as a
+    /// permanent guard against a future caller attaching that combination.
+    #[test]
+    fn reverse_refuses_a_settings_step_with_no_prior_state_even_if_reversal_says_remove() {
+        let f = fixture();
+        std::fs::create_dir_all(f.settings.parent().unwrap()).unwrap();
+        std::fs::write(&f.settings, r#"{"theme":"dark","permissions":{}}"#).unwrap();
+
+        let step = settings_step(&f.settings).with_reversal(StepAction::ManageArtifact {
+            operation: ArtifactOperation::Remove,
+            path: f.settings.clone(),
+        });
+        let receipt = StepReceipt::applied(&step, Some("sha256:whatever".to_string()));
+        assert!(receipt.prior_state.is_none());
+
+        let mut executor = executor(&f);
+        let result = executor.reverse(&receipt);
+        assert!(
+            result.is_err(),
+            "must refuse, not honour the reversal's ManageArtifact::Remove"
+        );
+        assert!(
+            f.settings.exists(),
+            "the shared settings file must survive the refused reversal"
+        );
+        let content = std::fs::read_to_string(&f.settings).unwrap();
+        assert!(content.contains("dark"), "unrelated content must be untouched");
     }
 
     #[test]
