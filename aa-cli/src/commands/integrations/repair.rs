@@ -2,12 +2,23 @@
 //!
 //! # What repair touches
 //!
-//! Only the keys the receipt claims. A user who changed their own editor theme
-//! in the same file has drift in the report and an intact integration; repair
-//! rewrites the managed keys and leaves theirs alone. That boundary is the
-//! engine's, not this command's — which is why `unresolved` below reports what
-//! was deliberately not touched rather than omitting it. "We did not change
-//! your edits" is information; silence reads as "there was nothing else".
+//! Only the keys the receipt claims — and, as of AAASM-6091, only when
+//! nothing else changed them since AASM last wrote them. A user who changed
+//! their own editor theme in the same file has drift in the report and an
+//! intact integration; repair rewrites the managed keys and leaves theirs
+//! alone, as before. But a key AASM itself owns (e.g. `permissionMode`) that
+//! was changed externally since AASM last set it is now a **fail-safe
+//! refusal by default**, not a silent overwrite: `aa-core::integration::
+//! engine::IntegrationEngine::repair`'s `reconcile` parameter is the only way
+//! to re-assert AASM's value for a specific, named step, and this command
+//! does not yet expose it — that requires a DI-API wire change tracked
+//! separately (AAASM-6091 follow-up), so today this command's repair always
+//! passes the empty default and an externally-changed owned key surfaces as
+//! `unrepairable` here rather than being silently rewritten. That boundary is
+//! the engine's, not this command's — which is why `unresolved` below
+//! reports what was deliberately not touched rather than omitting it. "We
+//! did not change your edits" is information; silence reads as "there was
+//! nothing else".
 //!
 //! # Preview first
 //!

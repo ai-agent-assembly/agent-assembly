@@ -303,12 +303,14 @@ impl IntegrationLifecycle for FakeLifecycle {
         &self,
         tool: &DevToolKind,
         _target: &LifecycleTarget,
+        _reconcile: &[String],
     ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         self.enter()?;
         Ok((
             RepairReport {
                 repaired: vec!["settings".to_string()],
                 unrepairable: Vec::new(),
+                conflicts: Vec::new(),
             },
             fake_status(tool),
         ))

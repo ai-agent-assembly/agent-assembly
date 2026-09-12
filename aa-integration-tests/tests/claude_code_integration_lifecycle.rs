@@ -44,7 +44,7 @@ use aa_core::integration::{
     SettingsScope, VerificationOutcome, KNOWN_LAUNCH_BYPASS_ENV_VARS,
 };
 use aa_core::DevToolKind;
-use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
+use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, STEP_MANAGED_SETTINGS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
 use aa_devtool_claude_code::managed_settings::testing::FakeAuthority;
 use aa_devtool_claude_code::managed_settings::PrivilegedFileAuthority;
 use aa_devtool_claude_code::probe::{ProbeReport, ProbeRequest, ProtectionProbe, SYNTHETIC_SECRET};
@@ -530,12 +530,40 @@ async fn install_status_verify_drift_repair_and_remove_are_one_cycle() -> anyhow
     );
 
     // ── repair ─────────────────────────────────────────────────────────────
-    let (report, repaired) = h
+    // `permissions.defaultMode` is AASM-owned, so its external change is an
+    // ownership conflict (AAASM-6091): default repair refuses it rather than
+    // silently reasserting AASM's value.
+    let (report, refused) = h
         .service
-        .repair(&tool, &h.target())
+        .repair(&tool, &h.target(), &[])
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    assert!(!report.repaired.is_empty(), "repair must name what it restored");
+    assert!(
+        report.repaired.is_empty(),
+        "default repair must refuse the externally-changed owned key, not restore it"
+    );
+    assert!(
+        !report.conflicts.is_empty(),
+        "default repair must report the ownership conflict it refused"
+    );
+    assert!(
+        matches!(refused.state, ProtectionState::Drifted { .. }),
+        "{:?}",
+        refused.state
+    );
+    let after_default_repair = h.read_user_settings();
+    assert_eq!(
+        after_default_repair["permissions"]["defaultMode"],
+        serde_json::json!("bypassPermissions"),
+        "default repair must not clobber an externally-changed owned key"
+    );
+
+    // Explicit reconciliation restores just the named owned key.
+    let (_, repaired) = h
+        .service
+        .repair(&tool, &h.target(), &[STEP_MANAGED_SETTINGS.to_string()])
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     assert!(
         !matches!(repaired.state, ProtectionState::Drifted { .. }),
         "{:?}",

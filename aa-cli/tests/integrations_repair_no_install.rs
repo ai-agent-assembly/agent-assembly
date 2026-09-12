@@ -366,7 +366,12 @@ fn a_real_repair_and_a_no_op_repair_are_not_the_same_output() {
         exit::SUCCESS,
         "install failed, so the real-repair half of this test proves nothing"
     );
-    std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"gruvbox"}"#).expect("tamper");
+    // Delete the artifact rather than change the managed key's value: a
+    // value AASM owns changed externally is now an ownership conflict that
+    // default repair refuses (AAASM-6091), which is not the drift this test
+    // needs — a missing artifact is unambiguously AASM's to recreate and
+    // stays auto-repairable.
+    std::fs::remove_file(&h.settings).expect("tamper");
     assert_eq!(
         code(&h.aasm(&["status", "claude-code"])),
         exit::DRIFTED,

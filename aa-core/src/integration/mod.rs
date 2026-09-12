@@ -71,8 +71,8 @@ pub use contract::{
 pub use drift::{ArtifactObservation, DriftFinding, DriftInputs, DriftKind, DriftReport, ObservedStep};
 #[cfg(feature = "serde")]
 pub use engine::{
-    ApplyContext, ApplyOutcome, EngineError, ExecutionError, FilesystemExecutor, IntegrationEngine, RemovalOutcome,
-    RepairOutcome, StepExecutor, StepOutcome,
+    ApplyContext, ApplyOutcome, EngineError, ExecutionError, FilesystemExecutor, IntegrationEngine, OwnershipConflict,
+    RemovalOutcome, RepairOutcome, StepExecutor, StepOutcome,
 };
 pub use fingerprint::{
     absent_managed_keys, canonicalize, contains_credential_material, document_fingerprint, empty_document,

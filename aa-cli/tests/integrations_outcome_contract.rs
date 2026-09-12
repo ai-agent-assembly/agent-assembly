@@ -159,9 +159,18 @@ impl Harness {
         );
     }
 
-    /// Rewrite a key the receipt claims, so the next `repair` has real drift.
+    /// Delete the artifact the install step created, so the next `repair` has
+    /// real, auto-repairable drift.
+    ///
+    /// This used to rewrite the managed key's *value* instead of deleting the
+    /// artifact — but an AASM-owned value changed externally is now an
+    /// ownership conflict repair refuses by default (AAASM-6091), which is
+    /// not the drift shape this outcome-contract suite exists to test. A
+    /// missing artifact is unambiguously AASM's alone to recreate, so it
+    /// stays auto-repairable and keeps this suite's changed/unchanged
+    /// contract testable end to end.
     fn tamper(&self) {
-        std::fs::write(&self.settings, r#"{"aasmManaged":false,"theme":"gruvbox"}"#).expect("tamper");
+        std::fs::remove_file(&self.settings).expect("tamper");
         assert_eq!(
             code(&self.aasm(&["status", "claude-code"])),
             exit::DRIFTED,
