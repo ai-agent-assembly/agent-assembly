@@ -400,12 +400,26 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
     }
 
     async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
-        // Read existing admin settings (or start from default).
-        let mut admin: WindsurfAdminSettings = if self.admin_settings_path.exists() {
+        // AAASM-6091: this used to round-trip the whole file through the
+        // typed `WindsurfAdminSettings` struct, which has no catch-all field —
+        // any top-level key the struct doesn't know about (a field Windsurf
+        // itself writes, a future schema addition, an operator-added key) was
+        // silently dropped on every call, and a parse failure on the existing
+        // file was silently treated as an empty document via
+        // `unwrap_or_default()`. Read/write the raw document instead and
+        // touch only `mcp.disabled_servers`, the one field this method owns —
+        // same pattern `apply_settings` above already uses. A parse failure
+        // now refuses rather than being treated as empty.
+        let mut existing: serde_json::Value = if self.admin_settings_path.exists() {
             let raw = std::fs::read_to_string(&self.admin_settings_path)?;
-            serde_json::from_str(&raw).unwrap_or_default()
+            serde_json::from_str(&raw).map_err(|e| {
+                AdapterError::McpConfigFailed(format!(
+                    "{} is not valid JSON, refusing to overwrite it: {e}",
+                    self.admin_settings_path.display()
+                ))
+            })?
         } else {
-            WindsurfAdminSettings::default()
+            serde_json::json!({})
         };
 
         // Read configured MCP server names from mcp_config_path if it exists.
@@ -425,14 +439,25 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
                 disabled.push(server.clone());
             }
         }
-        admin.mcp.disabled_servers = disabled;
+
+        if !existing.is_object() {
+            existing = serde_json::json!({});
+        }
+        let obj = existing.as_object_mut().expect("just normalized to an object above");
+        let mcp = obj
+            .entry("mcp")
+            .or_insert_with(|| serde_json::json!({"auto_approve": false, "disabled_servers": []}));
+        if !mcp.is_object() {
+            *mcp = serde_json::json!({"auto_approve": false, "disabled_servers": []});
+        }
+        mcp["disabled_servers"] = serde_json::json!(disabled);
 
         // Write back.
         if let Some(parent) = self.admin_settings_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let serialized =
-            serde_json::to_string_pretty(&admin).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+            serde_json::to_string_pretty(&existing).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
         std::fs::write(&self.admin_settings_path, serialized)
             .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
         Ok(())
@@ -822,6 +847,50 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         assert_eq!(disabled, vec!["only-deny"]);
+    }
+
+    /// AAASM-6091 (adversarial review follow-up): a malformed existing admin
+    /// settings file must refuse, not be silently treated as empty.
+    #[tokio::test]
+    async fn apply_mcp_governance_refuses_a_malformed_existing_file() {
+        let (_dir, adapter) = adapter_in_tempdir();
+        std::fs::write(adapter.admin_settings_path(), "{not valid json").unwrap();
+
+        let result = adapter.apply_mcp_governance(&[], &["only-deny".to_string()]).await;
+        assert!(
+            result.is_err(),
+            "malformed existing file must refuse rather than be silently replaced"
+        );
+        let unchanged = std::fs::read_to_string(adapter.admin_settings_path()).unwrap();
+        assert_eq!(unchanged, "{not valid json");
+    }
+
+    /// AAASM-6091 (adversarial review follow-up): a top-level key the
+    /// `WindsurfAdminSettings` schema has never heard of must survive — the
+    /// prior typed-struct round-trip silently dropped it on every call.
+    #[tokio::test]
+    async fn apply_mcp_governance_preserves_unknown_top_level_fields() {
+        let (_dir, adapter) = adapter_in_tempdir();
+        std::fs::write(
+            adapter.admin_settings_path(),
+            r#"{"experimental_feature_flags": {"foo": true}, "license_seat_id": "abc123"}"#,
+        )
+        .unwrap();
+
+        adapter
+            .apply_mcp_governance(&[], &["only-deny".to_string()])
+            .await
+            .unwrap();
+
+        let admin: Value =
+            serde_json::from_str(&std::fs::read_to_string(adapter.admin_settings_path()).unwrap()).unwrap();
+        assert_eq!(admin["experimental_feature_flags"], serde_json::json!({"foo": true}));
+        assert_eq!(admin["license_seat_id"], "abc123");
+        assert_eq!(
+            admin["mcp"]["disabled_servers"].as_array().unwrap()[0],
+            "only-deny",
+            "the actual mutation still applies"
+        );
     }
 
     #[test]
