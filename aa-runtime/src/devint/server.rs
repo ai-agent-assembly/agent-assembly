@@ -524,7 +524,14 @@ impl Connection {
             }
             DiVerb::Repair => {
                 let target = build_target(request)?;
-                let (report, status) = lifecycle.repair(&tool, &target).await?;
+                // AAASM-6091: the wire protocol has no `reconcile` field yet
+                // (a `.proto` change, tracked separately from this fail-safe
+                // fix) — every DI-API repair request is treated as the
+                // default, disclose-and-refuse case. The explicit
+                // reconciliation override exists in `IntegrationLifecycle`
+                // today and is reachable in-process; exposing it over the
+                // wire is deliberately deferred.
+                let (report, status) = lifecycle.repair(&tool, &target, &[]).await?;
                 response.repair = Some(project::repair_view(&tool, &report, &status));
             }
             DiVerb::Remove => {

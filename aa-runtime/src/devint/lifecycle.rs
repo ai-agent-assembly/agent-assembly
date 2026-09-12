@@ -36,7 +36,7 @@ use async_trait::async_trait;
 use aa_core::dev_tool::{DevToolKind, GovernanceLevel};
 use aa_core::integration::{
     DevToolCapabilities, IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest,
-    IntegrationStatus, RemovalPlan, ToolVersion, VerificationResult, VersionCompatibility,
+    IntegrationStatus, OwnershipConflict, RemovalPlan, ToolVersion, VerificationResult, VersionCompatibility,
 };
 
 use super::apply_outcome::ApplyMutation;
@@ -125,6 +125,10 @@ pub struct RepairReport {
     pub repaired: Vec<String>,
     /// Identifiers that drifted and could not be restored, with the reason.
     pub unrepairable: Vec<(IntegrationCapability, String)>,
+    /// AASM-owned keys changed externally since AASM last wrote them, left
+    /// untouched because nothing named them in this repair's `reconcile`
+    /// (AAASM-6091 — fail-safe/no-clobber is the default).
+    pub conflicts: Vec<OwnershipConflict>,
 }
 
 /// An integration-scoped, already-redacted security event.
@@ -339,10 +343,20 @@ pub trait IntegrationLifecycle: Send + Sync {
     async fn verify(&self, tool: &DevToolKind, target: &LifecycleTarget) -> Result<VerificationResult, LifecycleError>;
 
     /// Restore AASM-owned keys that drifted.
+    ///
+    /// # Fail-safe by default (AAASM-6091)
+    ///
+    /// A key AASM owns that changed since AASM last wrote it is reported as a
+    /// conflict and left untouched, not silently reconciled — `reconcile`
+    /// stays empty for the default, disclose-and-refuse behavior. Naming a
+    /// step id in `reconcile` is the explicit user-authorized override: only
+    /// that exact step is overwritten back to AASM's value; naming a step
+    /// with nothing to reconcile changes nothing.
     async fn repair(
         &self,
         tool: &DevToolKind,
         target: &LifecycleTarget,
+        reconcile: &[String],
     ) -> Result<(RepairReport, IntegrationStatus), LifecycleError>;
 
     /// Author and execute the reversal.

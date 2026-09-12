@@ -845,6 +845,7 @@ impl IntegrationLifecycle for EngineLifecycle {
         &self,
         tool: &DevToolKind,
         target: &LifecycleTarget,
+        reconcile: &[String],
     ) -> Result<(RepairReport, IntegrationStatus), LifecycleError> {
         let registered = self.registered(tool)?;
         let (scope, receipt) = self.require_target(tool, target)?;
@@ -860,7 +861,47 @@ impl IntegrationLifecycle for EngineLifecycle {
         let report = self.drift(registered, scope, &status_before.compatibility);
 
         let mut engine = self.engine_for(registered, &plan).await?;
-        let outcome = engine.repair(&plan, &report, now_unix_secs()).map_err(engine_error)?;
+        let outcome = engine
+            .repair(&plan, &report, now_unix_secs(), reconcile)
+            .map_err(engine_error)?;
+
+        // AAASM-6091: an ownership conflict is also surfaced through
+        // `unrepairable` — the one disclosure channel the DI-API wire
+        // protocol and every existing client (including `aasm integrations
+        // repair`'s CLI output) already carry end to end. `RepairReport.
+        // conflicts` on the in-process trait return stays the structured,
+        // full-detail record; this is what a wire caller actually sees today,
+        // since `wire::RepairView` has no `conflicts` field of its own yet
+        // (that would be a `.proto` change, tracked separately — see the
+        // `reconcile` doc comment on `IntegrationLifecycle::repair`).
+        let conflict_disclosures = outcome.conflicts.iter().map(|c| {
+            let keys = if c.managed_keys.is_empty() {
+                "its owned keys".to_string()
+            } else {
+                c.managed_keys.join(", ")
+            };
+            let current = c
+                .current_values_json
+                .as_deref()
+                .map(|v| format!("; current value: {v}"))
+                .unwrap_or_default();
+            let withheld = if c.withheld_keys.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "; withheld from disclosure (looked like a credential): {}",
+                    c.withheld_keys.join(", ")
+                )
+            };
+            (
+                IntegrationCapability::ManagedSettings,
+                format!(
+                    "{}: {keys} changed since Agent Assembly last set them and was left untouched — repair with \
+                     an explicit reconciliation to re-assert Agent Assembly's value{current}{withheld}",
+                    c.artifact
+                ),
+            )
+        });
 
         let repaired = RepairReport {
             repaired: outcome.repaired_steps,
@@ -873,7 +914,9 @@ impl IntegrationLifecycle for EngineLifecycle {
                 .iter()
                 .filter(|f| !f.kind.is_repairable())
                 .map(|f| (finding_mechanism(f.kind), f.detail.clone()))
+                .chain(conflict_disclosures)
                 .collect(),
+            conflicts: outcome.conflicts,
         };
         let status = self.status(tool, target).await?;
         Ok((repaired, status))
@@ -1262,8 +1305,12 @@ mod tests {
         }
     }
 
+    /// AAASM-6091 founder decision: fail-safe/no-clobber is the default for
+    /// an AASM-owned key changed externally — drift is still reported, but
+    /// the default repair call (`reconcile: &[]`) makes zero mutation and
+    /// discloses a conflict instead of silently restoring AASM's value.
     #[tokio::test]
-    async fn drift_in_an_aasm_owned_key_is_reported_and_repaired() {
+    async fn drift_in_an_aasm_owned_key_is_reported_and_refused_by_default() {
         let h = harness(|f| f);
         let plan = h.service.plan(request()).await.expect("plan");
         h.service
@@ -1285,10 +1332,60 @@ mod tests {
 
         let (report, _) = h
             .service
-            .repair(&DevToolKind::ClaudeCode, &h.target())
+            .repair(&DevToolKind::ClaudeCode, &h.target(), &[])
+            .await
+            .expect("repair");
+        assert!(
+            report.repaired.is_empty(),
+            "default repair must make zero mutation: {:?}",
+            report.repaired
+        );
+        assert!(
+            !report.conflicts.is_empty(),
+            "the drifted owned key must be reported as a conflict"
+        );
+        let untouched = std::fs::read_to_string(&h.settings).expect("read");
+        assert!(untouched.contains("solarized"), "the user's own key survives");
+        assert!(
+            !untouched.contains("\"aasmManaged\":true"),
+            "default repair must not silently overwrite the drifted owned key"
+        );
+        assert!(
+            matches!(
+                h.service
+                    .status(&DevToolKind::ClaudeCode, &h.target())
+                    .await
+                    .expect("status")
+                    .state,
+                ProtectionState::Drifted { .. }
+            ),
+            "the drift is still there — nothing reconciled it"
+        );
+    }
+
+    /// The explicit override: naming the step in `reconcile` restores AASM's
+    /// value for that step, and only that step.
+    #[tokio::test]
+    async fn drift_in_an_aasm_owned_key_is_repaired_when_explicitly_reconciled() {
+        let h = harness(|f| f);
+        let plan = h.service.plan(request()).await.expect("plan");
+        h.service
+            .apply(&DevToolKind::ClaudeCode, &plan.plan_id, &h.target())
+            .await
+            .expect("apply");
+
+        std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"solarized"}"#).expect("tamper");
+
+        let (report, _) = h
+            .service
+            .repair(&DevToolKind::ClaudeCode, &h.target(), &["settings".to_string()])
             .await
             .expect("repair");
         assert_eq!(report.repaired, vec!["settings".to_string()]);
+        assert!(
+            report.conflicts.is_empty(),
+            "an explicitly authorized step is not also a conflict"
+        );
         let repaired = std::fs::read_to_string(&h.settings).expect("read");
         assert!(repaired.contains("solarized"), "repair discarded the user's own key");
         assert!(
@@ -1300,7 +1397,7 @@ mod tests {
                     .state,
                 ProtectionState::Drifted { .. }
             ),
-            "repair did not clear the drift"
+            "an explicitly reconciled repair clears the drift"
         );
     }
 
@@ -1421,7 +1518,7 @@ mod tests {
         let refusals = [
             ("status", h.service.status(&tool, &other).await.err()),
             ("verify", h.service.verify(&tool, &other).await.err()),
-            ("repair", h.service.repair(&tool, &other).await.err()),
+            ("repair", h.service.repair(&tool, &other, &[]).await.err()),
             ("remove", h.service.remove(&tool, &other, None).await.err()),
         ];
         for (verb, error) in refusals {
@@ -1658,7 +1755,7 @@ mod tests {
         let refusals = [
             ("status", h.service.status(&tool, &other).await.err()),
             ("verify", h.service.verify(&tool, &other).await.err()),
-            ("repair", h.service.repair(&tool, &other).await.err()),
+            ("repair", h.service.repair(&tool, &other, &[]).await.err()),
             ("remove", h.service.remove(&tool, &other, None).await.err()),
         ];
         for (verb, error) in refusals {

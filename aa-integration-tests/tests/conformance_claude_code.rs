@@ -92,7 +92,9 @@ use aa_core::integration::{
     EvidenceKind, ExerciseOutcome, ProtectionLevel, ProtectionProfile, ProtectionState, SettingsScope,
     VerificationOutcome,
 };
-use aa_devtool_claude_code::lifecycle::{CA_ENV_VAR, MANAGED_KEYS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA};
+use aa_devtool_claude_code::lifecycle::{
+    CA_ENV_VAR, MANAGED_KEYS, STEP_MANAGED_SETTINGS, STEP_NODE_EXTRA_CA_CERTS, STEP_PROXY_CA,
+};
 use aa_devtool_claude_code::probe::ProtectionProbe as _;
 use aa_devtool_claude_code::ProxyAdjudicatedProbe;
 use aa_runtime::devint::{ApplyMutation, IntegrationLifecycle};
@@ -255,21 +257,46 @@ async fn unrelated_user_configuration_survives_install_repair_and_remove() -> an
     );
 
     // A key the user adds *after* install is theirs, and repair must not take it.
+    // `defaultMode` is AASM-owned, so changing it externally is an ownership
+    // conflict (AAASM-6091): default repair refuses it rather than silently
+    // reasserting AASM's value, and only the explicit reconcile path restores it.
     let mut doc = h.read_settings();
     doc["editor"] = serde_json::json!("nvim");
     doc["permissions"]["defaultMode"] = serde_json::json!("bypassPermissions");
     h.write_settings(&serde_json::to_string_pretty(&doc)?);
-    h.repair().await?;
+    let (report, _) = h.repair().await?;
+    assert!(
+        report.repaired.is_empty(),
+        "default repair should refuse the externally-changed owned key, not restore it"
+    );
+    assert!(
+        !report.conflicts.is_empty(),
+        "default repair should report the ownership conflict it refused"
+    );
+    let after_default_repair = h.read_settings();
+    assert_eq!(
+        after_default_repair["permissions"]["defaultMode"],
+        serde_json::json!("bypassPermissions"),
+        "default repair must not clobber an externally-changed owned key"
+    );
+    assert_eq!(
+        after_default_repair["editor"],
+        serde_json::json!("nvim"),
+        "repair overwrote a user-authored key it does not own"
+    );
+
+    // Explicit reconciliation restores just the named owned key.
+    h.repair_reconciling(&[STEP_MANAGED_SETTINGS.to_string()]).await?;
     let after_repair = h.read_settings();
     assert_eq!(
         after_repair["permissions"]["defaultMode"],
         serde_json::json!("default"),
-        "repair did not restore the managed key"
+        "explicit reconcile did not restore the managed key"
     );
     assert_eq!(
         after_repair["editor"],
         serde_json::json!("nvim"),
-        "repair overwrote a user-authored key it does not own"
+        "reconcile overwrote a user-authored key it does not own"
     );
 
     // Removal keeps the post-install user change and restores the rest.
@@ -739,20 +766,42 @@ async fn drift_in_two_mechanisms_is_detected_and_repair_restores_only_owned_stat
     );
 
     // ── repair ─────────────────────────────────────────────────────────────
+    // Mechanism 2 (a missing artifact) is repaired by default. Mechanism 1 is
+    // an AASM-owned settings key changed externally — an ownership conflict
+    // (AAASM-6091) — so default repair restores the trust material and
+    // refuses the settings key rather than silently reasserting it.
     let (report, repaired) = h.repair().await?;
     assert!(!report.repaired.is_empty(), "repair must name what it restored");
     assert!(
-        !matches!(repaired.state, ProtectionState::Drifted { .. }),
-        "drift persists after repair: {:?}",
+        !report.conflicts.is_empty(),
+        "the externally-changed owned settings key must be reported as a conflict, not silently rewritten"
+    );
+    assert!(
+        matches!(repaired.state, ProtectionState::Drifted { .. }),
+        "the refused settings drift must still be reported until explicit reconciliation: {:?}",
         repaired.state
     );
     assert!(h.ca_pem_path().is_file(), "repair did not restore the trust material");
+    let after_default_repair = h.read_settings();
+    assert_eq!(
+        after_default_repair["permissions"]["defaultMode"],
+        serde_json::json!("bypassPermissions"),
+        "default repair must not clobber the externally-changed owned key"
+    );
+
+    // ── explicit reconciliation ────────────────────────────────────────────
+    let (_, reconciled) = h.repair_reconciling(&[STEP_MANAGED_SETTINGS.to_string()]).await?;
+    assert!(
+        !matches!(reconciled.state, ProtectionState::Drifted { .. }),
+        "drift persists after explicit reconciliation: {:?}",
+        reconciled.state
+    );
     let after = h.read_settings();
     assert_eq!(after["permissions"]["defaultMode"], serde_json::json!("default"));
     assert_eq!(
         after["theme"],
         serde_json::json!("edited-by-the-user"),
-        "repair overwrote a user-authored key it does not own"
+        "reconcile overwrote a user-authored key it does not own"
     );
 
     // ── re-verify ──────────────────────────────────────────────────────────
@@ -1306,15 +1355,18 @@ async fn an_unscoped_client_cannot_drive_the_lifecycle() -> anyhow::Result<()> {
 }
 
 // ── Repair must not reach into a key the user owns ──────────────────────────
+//
+// AAASM-6091 founder decision: an AASM-owned key changed externally is now a
+// fail-safe refusal by default, not a silent overwrite. The two scenarios
+// below cover both halves — default refusal, and the explicit reconciliation
+// override — against the real Claude Code adapter end to end, not just the
+// generic engine.
 
-/// The isolated repair guard: every managed key is drifted at once, alongside a
-/// user-authored key with a value repair might plausibly overwrite.
-///
-/// Kept separate from the drift scenario so its failure message says exactly one
-/// thing. A repair that rewrote the document from the receipt would restore the
-/// managed keys correctly and still fail here.
+/// Drift every managed key at once, alongside a user-authored key with a
+/// value repair might plausibly overwrite, and confirm the *default* repair
+/// makes zero mutation to any of it.
 #[tokio::test(flavor = "multi_thread")]
-async fn repair_restores_every_managed_key_and_touches_no_user_key() -> anyhow::Result<()> {
+async fn repair_refuses_drifted_managed_keys_by_default_and_touches_no_user_key() -> anyhow::Result<()> {
     let h = ConformanceHarness::start().await?;
     let user_keys = serde_json::json!({
         "theme": USER_THEME,
@@ -1340,16 +1392,24 @@ async fn repair_restores_every_managed_key_and_touches_no_user_key() -> anyhow::
     h.write_settings(&serde_json::to_string_pretty(&doc)?);
     let perturbed = h.read_settings();
 
-    h.repair().await?;
+    let (report, _status) = h.repair().await?;
+    assert!(
+        report.repaired.is_empty(),
+        "default repair must make zero mutation: {:?}",
+        report.repaired
+    );
+    assert!(
+        !report.conflicts.is_empty(),
+        "the drifted owned keys must be reported as conflicts"
+    );
     let repaired = h.read_settings();
 
     for key in MANAGED_KEYS {
-        assert_ne!(
+        assert_eq!(
             repaired[key], perturbed[key],
-            "repair left the drifted managed key `{key}` as the user set it"
+            "default repair overwrote the drifted managed key `{key}` instead of refusing"
         );
     }
-    assert_eq!(repaired["permissionMode"], serde_json::json!("default"));
     for key in ["theme", "model"] {
         assert_eq!(
             repaired[key], perturbed[key],
@@ -1367,7 +1427,69 @@ async fn repair_restores_every_managed_key_and_touches_no_user_key() -> anyhow::
     );
     assert_eq!(repaired["hooks"], perturbed["hooks"], "repair mutated the user's hooks");
 
-    h.finish("repair touches only owned state");
+    h.finish("default repair refuses and touches only nothing");
+    Ok(())
+}
+
+/// The same drift, explicitly reconciled: AASM's managed keys are restored,
+/// and only those — the user's own keys remain exactly as untouched as they
+/// are in the default-refusal scenario above.
+#[tokio::test(flavor = "multi_thread")]
+async fn repair_reconciling_restores_every_managed_key_and_touches_no_user_key() -> anyhow::Result<()> {
+    let h = ConformanceHarness::start().await?;
+    let user_keys = serde_json::json!({
+        "theme": USER_THEME,
+        "model": "claude-opus-4-1",
+        "env": {"USER_AUTHORED": "keep-me"},
+        "statusLine": {"type": "command", "command": "echo hi"},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]},
+    });
+    h.write_settings(&serde_json::to_string_pretty(&user_keys)?);
+    h.install(ProtectionProfile::Recommended).await?;
+
+    let mut doc = h.read_settings();
+    doc["permissions"] = serde_json::json!({"allow": ["Bash"], "deny": [], "defaultMode": "bypassPermissions"});
+    doc["permissionMode"] = serde_json::json!("bypassPermissions");
+    doc["enabledMcpjsonServers"] = serde_json::json!(["everything"]);
+    doc["disabledMcpjsonServers"] = serde_json::json!(["nothing"]);
+    for key in ["theme", "model"] {
+        doc[key] = serde_json::json!("user-changed-this-after-install");
+    }
+    doc["env"]["USER_AUTHORED"] = serde_json::json!("user-changed-this-too");
+    h.write_settings(&serde_json::to_string_pretty(&doc)?);
+    let perturbed = h.read_settings();
+
+    h.repair_reconciling(&[STEP_MANAGED_SETTINGS.to_string()]).await?;
+    let repaired = h.read_settings();
+
+    for key in MANAGED_KEYS {
+        assert_ne!(
+            repaired[key], perturbed[key],
+            "an explicitly reconciled repair left the drifted managed key `{key}` as the user set it"
+        );
+    }
+    assert_eq!(repaired["permissionMode"], serde_json::json!("default"));
+    for key in ["theme", "model"] {
+        assert_eq!(
+            repaired[key], perturbed[key],
+            "reconciliation overwrote the user-authored key `{key}`, which Agent Assembly does not own"
+        );
+    }
+    assert_eq!(
+        repaired["env"]["USER_AUTHORED"],
+        serde_json::json!("user-changed-this-too"),
+        "reconciliation reached into a nested user-authored value"
+    );
+    assert_eq!(
+        repaired["statusLine"], perturbed["statusLine"],
+        "reconciliation mutated an untouched user-authored key"
+    );
+    assert_eq!(
+        repaired["hooks"], perturbed["hooks"],
+        "reconciliation mutated the user's hooks"
+    );
+
+    h.finish("explicit reconciliation restores only owned state");
     Ok(())
 }
 

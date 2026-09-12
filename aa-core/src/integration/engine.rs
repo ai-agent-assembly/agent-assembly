@@ -195,6 +195,45 @@ pub struct RepairOutcome {
     /// Drift that was found and deliberately left alone, because it is not
     /// AASM's to fix.
     pub preserved_user_changes: Vec<String>,
+    /// AASM-owned keys that drifted since AASM last wrote them, left
+    /// untouched by this repair because nothing authorized overwriting them
+    /// (AAASM-6091 founder decision: fail-safe/no-clobber is the default).
+    /// A caller must re-run repair naming these step ids in `reconcile` to
+    /// force AASM's value back in.
+    pub conflicts: Vec<OwnershipConflict>,
+}
+
+/// A fail-safe refusal: an AASM-owned key no longer matches what AASM last
+/// wrote there, and nothing authorized repair to overwrite it.
+///
+/// # Why this exists (AAASM-6091)
+///
+/// Before this, [`IntegrationEngine::repair`] treated every
+/// [`DriftKind::AasmManagedValueChanged`]
+/// finding as its own to fix and silently rewrote the key back to AASM's
+/// value — indistinguishable, from the outside, from AASM clobbering
+/// whatever put the new value there. The founder decision requires the
+/// opposite default: detect the divergence, mutate nothing, disclose exactly
+/// what diverged, and only overwrite when a caller names this step
+/// explicitly in a later repair's `reconcile` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipConflict {
+    /// The step whose AASM-owned key(s) diverged.
+    pub step_id: String,
+    /// The file this step manages.
+    pub artifact: String,
+    /// The AASM-owned keys this step claims — the exact field(s) a
+    /// reconciliation would replace, named so a caller never has to guess
+    /// what `reconcile` would touch.
+    pub managed_keys: Vec<String>,
+    /// The current on-disk values of `managed_keys`, screened for material
+    /// that looks like a credential (same screen [`PriorSettingsState`]
+    /// uses). `None` when the current document could not be read or parsed —
+    /// the conflict is still reported, just without a value to show.
+    pub current_values_json: Option<String>,
+    /// Which of `managed_keys` were withheld from `current_values_json`
+    /// because their value looked like a credential.
+    pub withheld_keys: Vec<String>,
 }
 
 /// What a removal did.
@@ -507,11 +546,29 @@ impl<E: StepExecutor> IntegrationEngine<E> {
     /// repair that fixed the settings while the receipt was corrupt, or while
     /// half the artifacts were unreadable, would report success for a state it
     /// never established.
+    ///
+    /// # Fail-safe on an AASM-owned key changed externally (AAASM-6091)
+    ///
+    /// A [`DriftKind::AasmManagedValueChanged`] finding means the file no
+    /// longer holds what AASM last wrote for a key it owns — something else
+    /// changed it since. By default this is **not** repaired: the step is
+    /// reported in [`RepairOutcome::conflicts`] and left exactly as found,
+    /// mutating nothing. A caller that has explicit user authorization to
+    /// re-assert AASM's value names the step's id in `reconcile`, and only
+    /// that named step is overwritten — everything else this repair would
+    /// otherwise have acted on is unaffected by which steps `reconcile`
+    /// names.
+    ///
+    /// [`DriftKind::AasmArtifactMissing`] is a different case and is not
+    /// subject to this: there is no external value to overwrite when an
+    /// artifact AASM created is simply gone, so it is recreated as before,
+    /// `reconcile` or not.
     pub fn repair(
         &mut self,
         plan: &IntegrationPlan,
         report: &DriftReport,
         now_unix_secs: u64,
+        reconcile: &[String],
     ) -> Result<RepairOutcome, EngineError> {
         if !report.is_fully_repairable() {
             let blocking: Vec<&str> = report
@@ -534,8 +591,18 @@ impl<E: StepExecutor> IntegrationEngine<E> {
 
         let target_ids = report.repairable_step_ids();
         let mut repaired = Vec::new();
+        let mut conflicts = Vec::new();
 
         for step in plan.steps.iter().filter(|s| target_ids.contains(&s.id)) {
+            let value_changed_externally = report.findings.iter().any(|f| {
+                f.step_id.as_deref() == Some(step.id.as_str()) && f.kind == DriftKind::AasmManagedValueChanged
+            });
+
+            if value_changed_externally && !reconcile.iter().any(|id| id == &step.id) {
+                conflicts.push(conflict_for_step(step));
+                continue;
+            }
+
             let outcome = self
                 .executor
                 .apply(step)
@@ -574,6 +641,7 @@ impl<E: StepExecutor> IntegrationEngine<E> {
                 .filter(|f| f.kind == DriftKind::UserManagedUnrelatedChange)
                 .map(|f| f.artifact.clone())
                 .collect(),
+            conflicts,
         })
     }
 
@@ -845,6 +913,54 @@ fn unrestorable_reason(step: &StepReceipt) -> String {
             artifact_label(step)
         ),
         _ => format!("{}: this step recorded no way to undo it", artifact_label(step)),
+    }
+}
+
+/// Build the disclosure for a step `repair` refused to overwrite because its
+/// AASM-owned key(s) changed externally (AAASM-6091).
+///
+/// Reads the current document directly rather than through the executor: this
+/// is read-only diagnostic on a step repair is explicitly *not* about to
+/// write, not a mutation, so it does not need `StepExecutor`'s write path.
+/// An unreadable or unparseable current document still produces a conflict —
+/// the divergence is real either way — just without a value to show.
+fn conflict_for_step(step: &IntegrationStep) -> OwnershipConflict {
+    let path = step.action.affected_paths().first().cloned();
+    let artifact = path
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| format!("{} ({})", step.id, step.action.kind()));
+
+    let StepAction::WriteManagedSettings {
+        managed_keys, format, ..
+    } = &step.action
+    else {
+        // Only a settings step can have a per-key "current value" worth
+        // screening and showing; every other AasmManagedValueChanged-capable
+        // action still gets a conflict record, just without one.
+        return OwnershipConflict {
+            step_id: step.id.clone(),
+            artifact,
+            managed_keys: Vec::new(),
+            current_values_json: None,
+            withheld_keys: Vec::new(),
+        };
+    };
+
+    let (current_values_json, withheld_keys) = path
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|raw| fingerprint::managed_projection(*format, &raw, managed_keys).ok())
+        .and_then(|projection| fingerprint::screen_managed_values(*format, &projection).ok())
+        .map(|(safe, withheld)| (Some(safe), withheld))
+        .unwrap_or((None, Vec::new()));
+
+    OwnershipConflict {
+        step_id: step.id.clone(),
+        artifact,
+        managed_keys: managed_keys.clone(),
+        current_values_json,
+        withheld_keys,
     }
 }
 
@@ -1467,8 +1583,13 @@ mod tests {
         assert!(report.is_clean(), "{report:?}");
     }
 
+    /// AAASM-6091 founder decision: fail-safe/no-clobber is the *default*
+    /// for an AASM-owned key changed externally. This used to assert the
+    /// opposite (silent reconciliation) — see
+    /// `repair_reconciles_only_the_named_step_when_explicitly_authorized`
+    /// below for what happens when a caller does ask for it.
     #[test]
-    fn repair_rewrites_aasm_state_and_leaves_a_later_user_key_alone() {
+    fn repair_refuses_an_externally_changed_owned_key_by_default() {
         let f = fixture();
         write_settings(&f, r#"{"theme":"dark"}"#);
         let mut e = engine(&f);
@@ -1485,23 +1606,110 @@ mod tests {
         assert!(report.contains(DriftKind::AasmManagedValueChanged));
         assert!(report.is_fully_repairable());
 
-        let outcome = e.repair(&plan(&f), &report, 2_000).unwrap();
+        let outcome = e.repair(&plan(&f), &report, 2_000, &[]).unwrap();
+        assert!(
+            outcome.repaired_steps.is_empty(),
+            "default repair must make zero mutation on an externally changed owned key"
+        );
+        assert_eq!(outcome.conflicts.len(), 1, "{:?}", outcome.conflicts);
+        let conflict = &outcome.conflicts[0];
+        assert_eq!(conflict.step_id, "settings");
+        assert_eq!(
+            conflict.managed_keys,
+            vec!["permissions".to_string(), "permissionMode".to_string()]
+        );
+        assert!(
+            conflict
+                .current_values_json
+                .as_deref()
+                .unwrap()
+                .contains("bypassPermissions"),
+            "the conflict must disclose the current value: {:?}",
+            conflict.current_values_json
+        );
+        assert!(conflict.withheld_keys.is_empty());
+
+        let after = read_settings(&f);
+        assert_eq!(
+            after["permissionMode"], "bypassPermissions",
+            "the external value must be preserved, not silently overwritten"
+        );
+        assert_eq!(
+            after["editorFontSize"], 18,
+            "a user key added after installation is untouched"
+        );
+        assert_eq!(
+            after["theme"], "dark",
+            "a user key present before installation is untouched"
+        );
+        assert!(f.ca.exists(), "repair must not touch steps drift did not name");
+    }
+
+    /// The explicit override path: naming the step in `reconcile` re-asserts
+    /// AASM's value for that step, and only that step.
+    #[test]
+    fn repair_reconciles_only_the_named_step_when_explicitly_authorized() {
+        let f = fixture();
+        write_settings(&f, r#"{"theme":"dark"}"#);
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+
+        let mut doc = read_settings(&f);
+        doc["permissionMode"] = serde_json::json!("bypassPermissions");
+        doc["editorFontSize"] = serde_json::json!(18);
+        std::fs::write(&f.settings, doc.to_string()).unwrap();
+
+        let report = e.detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None);
+        let outcome = e.repair(&plan(&f), &report, 2_000, &["settings".to_string()]).unwrap();
         assert_eq!(outcome.repaired_steps, vec!["settings".to_string()]);
+        assert!(
+            outcome.conflicts.is_empty(),
+            "an authorized step is not also reported as a conflict"
+        );
 
         let after = read_settings(&f);
         assert_eq!(
             after["permissionMode"], "default",
-            "the AASM-managed key must be restored"
+            "the AASM-managed key is restored only when explicitly authorized"
         );
         assert_eq!(
             after["editorFontSize"], 18,
-            "a user key added after installation must survive repair"
+            "a user key added after installation must survive an authorized reconciliation"
         );
         assert_eq!(
             after["theme"], "dark",
-            "a user key present before installation must survive repair"
+            "a user key present before installation must survive an authorized reconciliation"
         );
-        assert!(f.ca.exists(), "repair must not touch steps drift did not name");
+        assert!(
+            f.ca.exists(),
+            "reconciliation must not broaden into steps drift did not name"
+        );
+    }
+
+    /// Naming a step that has no `AasmManagedValueChanged` finding in
+    /// `reconcile` must not do anything it would not otherwise have done —
+    /// `reconcile` can only ever narrow which conflicts are overridden, never
+    /// widen what repair touches.
+    #[test]
+    fn reconcile_naming_an_unaffected_step_changes_nothing() {
+        let f = fixture();
+        write_settings(&f, r#"{"theme":"dark"}"#);
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+
+        let mut doc = read_settings(&f);
+        doc["theme"] = serde_json::json!("light"); // unrelated, not AASM-owned
+        std::fs::write(&f.settings, doc.to_string()).unwrap();
+
+        let report = e.detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None);
+        let outcome = e
+            .repair(&plan(&f), &report, 2_000, &["settings".to_string(), "ca".to_string()])
+            .unwrap();
+        assert!(
+            outcome.repaired_steps.is_empty(),
+            "naming a step with nothing to reconcile must not manufacture a mutation"
+        );
+        assert_eq!(read_settings(&f)["theme"], "light", "the user's own change stands");
     }
 
     #[test]
@@ -1519,7 +1727,7 @@ mod tests {
         assert!(report.contains(DriftKind::UserManagedUnrelatedChange));
         assert!(report.aasm_state_is_intact());
 
-        let outcome = e.repair(&plan(&f), &report, 2_000).unwrap();
+        let outcome = e.repair(&plan(&f), &report, 2_000, &[]).unwrap();
         assert!(
             outcome.repaired_steps.is_empty(),
             "repair must have nothing to do about a key AASM does not own"
@@ -1547,7 +1755,7 @@ mod tests {
         assert!(!report.is_fully_repairable());
 
         let err = e
-            .repair(&plan(&f), &report, 2_000)
+            .repair(&plan(&f), &report, 2_000, &[])
             .expect_err("repair must refuse to write against a receipt it cannot trust");
         assert!(matches!(err, EngineError::Unrepairable { .. }), "{err:?}");
     }
@@ -1562,7 +1770,7 @@ mod tests {
         let report = e.detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None);
         assert!(report.contains(DriftKind::AasmArtifactMissing));
 
-        e.repair(&plan(&f), &report, 2_000).unwrap();
+        e.repair(&plan(&f), &report, 2_000, &[]).unwrap();
         assert!(f.ca.exists());
         assert!(e
             .detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None)
@@ -1595,7 +1803,7 @@ mod tests {
 
         std::fs::remove_file(&f.ca).unwrap();
         let report = e.detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None);
-        let outcome = e.repair(&plan(&f), &report, 2_000).unwrap();
+        let outcome = e.repair(&plan(&f), &report, 2_000, &[]).unwrap();
 
         assert!(
             outcome.receipt.achieved_evidence.is_empty(),
@@ -2587,7 +2795,7 @@ mod tests {
         assert!(report.contains(DriftKind::ToolVersionIncompatible));
 
         let err = e
-            .repair(&plan(&f), &report, 2_000)
+            .repair(&plan(&f), &report, 2_000, &[])
             .expect_err("repair cannot fix a version");
         assert!(matches!(err, EngineError::Unrepairable { .. }), "{err:?}");
     }

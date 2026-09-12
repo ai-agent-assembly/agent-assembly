@@ -343,7 +343,16 @@ impl ConformanceHarness {
     /// Restore Agent Assembly-owned state.
     pub async fn repair(&self) -> anyhow::Result<(RepairReport, IntegrationStatus)> {
         self.service
-            .repair(&self.tool(), &self.target())
+            .repair(&self.tool(), &self.target(), &[])
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    /// Restore Agent Assembly-owned state, explicitly authorizing
+    /// reconciliation for the named steps (AAASM-6091).
+    pub async fn repair_reconciling(&self, steps: &[String]) -> anyhow::Result<(RepairReport, IntegrationStatus)> {
+        self.service
+            .repair(&self.tool(), &self.target(), steps)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }

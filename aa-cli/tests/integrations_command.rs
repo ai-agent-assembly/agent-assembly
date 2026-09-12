@@ -287,8 +287,11 @@ fn repair_and_remove_report_consent_auto_approved_too() {
     assert_eq!(code(&h.aasm(&["install", "claude-code", "--yes"])), exit::SUCCESS);
     std::fs::write(&h.settings, r#"{"aasmManaged":false,"theme":"gruvbox"}"#).expect("tamper");
 
+    // `aasmManaged` is an AASM-owned key changed externally (AAASM-6091):
+    // default repair refuses it rather than silently reasserting it, so the
+    // outcome is degraded — but consent is still recorded for the attempt.
     let repaired = h.aasm(&["repair", "claude-code", "-y", "--output", "json"]);
-    assert_eq!(code(&repaired), exit::SUCCESS, "{}", combined(&repaired));
+    assert_eq!(code(&repaired), exit::DRIFTED, "{}", combined(&repaired));
     let repair_report: serde_json::Value = serde_json::from_str(&stdout(&repaired)).expect("repair JSON");
     assert_eq!(repair_report["consent_auto_approved"], serde_json::Value::Bool(true));
 
@@ -584,16 +587,22 @@ fn tampering_with_a_managed_key_drifts_and_repair_restores_only_what_aasm_owns()
         "the dry run changed the file"
     );
 
+    // `aasmManaged` is itself an AASM-owned key, and it was changed
+    // externally (to `false`) since AASM last set it — an ownership
+    // conflict (AAASM-6091), not routine drift. The CLI does not yet expose
+    // an explicit-reconciliation override, so default repair refuses this
+    // key rather than silently reasserting it; the report and exit code
+    // reflect that the state is still degraded.
     let repaired = h.aasm(&["repair", "claude-code", "--yes"]);
-    assert_eq!(code(&repaired), exit::SUCCESS, "{}", combined(&repaired));
+    assert_eq!(code(&repaired), exit::DRIFTED, "{}", combined(&repaired));
     let after = h.settings_contents().expect("settings");
     assert!(
         after.contains("gruvbox"),
         "repair discarded the user's own edit: {after}"
     );
     assert!(
-        after.contains(r#""aasmManaged":true"#),
-        "repair did not restore the managed key: {after}"
+        after.contains(r#""aasmManaged":false"#),
+        "default repair must not clobber the externally-changed owned key: {after}"
     );
 }
 
