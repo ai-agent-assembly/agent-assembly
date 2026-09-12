@@ -1,8 +1,10 @@
 # Config ownership and non-destructive mutation guarantee
 
 > **Guarantee:** Agent Assembly modifies only configuration it explicitly
-> owns. Install, repair, and remove preserve unrelated developer-tool
-> configuration and any changes you make to it afterwards.
+> owns, and never reasserts an AASM-owned value over one you changed after
+> install without your explicit say-so. Install, repair, and remove preserve
+> unrelated developer-tool configuration and any changes you make to it
+> afterwards.
 
 This page is the authoritative statement of that guarantee for every
 productized Developer Integration, what backs it in code, where it does not
@@ -10,8 +12,10 @@ yet apply, and how to recover if you believe it was violated. It exists
 because of [AAASM-6091](https://lightning-dust-mite.atlassian.net/browse/AAASM-6091):
 a real, confirmed defect (fixed in
 [#2431](https://github.com/ai-agent-assembly/agent-assembly/pull/2431)) where
-one code path did not honour it. See [Known gaps](#known-gaps) for what that
-defect was and what still needs closing.
+one code path did not honour it. See [Known gaps](#known-gaps) for what
+remains open, and [Repair and an AASM-owned key changed
+externally](#repair-and-an-aasm-owned-key-changed-externally) for the
+fail-safe default this page's guarantee was tightened to require.
 
 ## The ownership model
 
@@ -21,7 +25,7 @@ categories, and the category determines what AASM is allowed to write:
 | Category | Example | AASM may |
 |---|---|---|
 | **User/organization-owned state** | Everything else already in `~/.claude/settings.json` before AASM ever ran | Never touch |
-| **AASM-owned keys inside a shared artifact** | `permissions`, `permissionMode`, `enabledMcpjsonServers`, `disabledMcpjsonServers` in Claude Code's `settings.json` | Read, write, and remove *those keys only* |
+| **AASM-owned keys inside a shared artifact** | `permissions`, `permissionMode`, `enabledMcpjsonServers`, `disabledMcpjsonServers` in Claude Code's `settings.json` | Read, write, and remove *those keys only* — and only reassert a value that changed externally after an explicit reconcile (see below) |
 | **AASM-owned artifact** | A settings file that did not exist before install and holds nothing but AASM's own keys | Create, and delete outright on removal |
 | **Privileged, exclusively-AASM-owned surface** | `/Library/Application Support/ClaudeCode/managed-settings.json` | Replace wholesale — this is the one surface designed for it (see [Privileged managed-settings](#privileged-managed-settings-replace-is-correct-here)) |
 | **Unknown/unattributable state** | A pre-AAASM-5278 receipt with no restoration evidence | Fail safe — see [Legacy receipts](#legacy-receipts) |
@@ -106,6 +110,52 @@ make a later removal restore the tampered values repair just corrected,
 rather than your own original values. `Engine::remove()` reads the file
 fresh and restores only what `prior_state` says AASM displaced.
 
+## Repair and an AASM-owned key changed externally
+
+Repair distinguishes two different kinds of drift, and treats them
+differently on purpose:
+
+- **A missing or reset AASM artifact** (`AasmArtifactMissing`) — nothing
+  else has an opinion about this value, so repair restores it by default.
+- **An AASM-owned key whose *value* no longer matches what AASM applied**
+  (`AasmManagedValueChanged`) — something else wrote to a key AASM owns
+  since AASM last set it. Founder decision for AAASM-6091: this is an
+  **ownership conflict**, not routine drift, and the default is **fail-safe
+  / no-clobber** — repair makes zero mutation to that key, leaves the
+  external value exactly as it is, and reports the conflict rather than
+  silently reasserting AASM's value. The reasoning: the receipt recording
+  that AASM once owned the key is not proof that reasserting AASM's value is
+  still what you want — something (you, another tool, an MDM profile) wrote
+  over it since, and guessing which side should win is exactly the kind of
+  destructive assumption AAASM-6091 exists to forbid.
+
+A refused step surfaces as an
+[`OwnershipConflict`](../../../aa-core/src/integration/engine.rs) naming the
+exact step and its managed keys, the artifact path, and the current value of
+those keys (screened through the same credential scanner
+`PriorSettingsState` uses — a value that trips it is withheld and named in
+`withheld_keys` rather than shown). Nothing about the conflict disclosure
+broadens beyond the keys that step already owns.
+
+**Restoring AASM's value requires an explicit reconcile.**
+`IntegrationLifecycle::repair`'s `reconcile` parameter names the specific
+step ids authorized to have their `AasmManagedValueChanged` drift
+overwritten; every other refused step is left untouched and still reported.
+Reconciling one step never touches any other step, and never touches a
+user-authored key the reconciled step does not own — the same key/object-
+level merge described above applies to the reconcile write, it is just no
+longer gated on "the value already matches the receipt".
+
+As of this writing, the `reconcile` override is reachable through
+`IntegrationLifecycle` directly and through the conformance test harness's
+`repair_reconciling()`. It is **not yet exposed** over the DI-API wire
+protocol or in `aasm integrations repair` — every repair request through
+either of those today gets the fail-safe default, and an externally-changed
+owned key surfaces there as `unrepairable` rather than as a mutation. Wiring
+the override through to the CLI is a tracked follow-up, not a silent gap:
+the fail-safe default is what ships either way, and no path anywhere
+reasserts an AASM value over an external change without it.
+
 ## Known gaps
 
 The confirmed defect ([AAASM-6091](https://lightning-dust-mite.atlassian.net/browse/AAASM-6091),
@@ -121,20 +171,24 @@ write; Windsurf's path now reads-merges-writes. This defect never affected
 `aasm integrations install/repair/remove`, whose engine has always failed
 closed on a parse error.
 
-As of this writing, the following AAASM-6091 acceptance items are **not yet
-closed** — do not read this page as claiming they are:
+The following AAASM-6091 acceptance items are closed:
 
 - A realistic end-to-end preservation test exercising the full
   install→edit→repair→edit→remove cycle against a config with nested
   objects, arrays, and unknown future keys.
-- Full adversarial/race coverage (concurrent external edit racing an
-  install, a stale plan, an ownership conflict on the same key).
-- An explicit `legacy_ownership_unknown` classification for a receipt with
-  no restoration evidence at all (today such a step reports unrestorable
-  and leaves a residual — safe, but not yet a named, documented state).
-- A permanent, named shared contract-test suite enforcing the nine
-  preservation invariants across every adapter as a release gate.
-- Independent adversarial review of this guarantee.
+- Adversarial/race coverage (a corrupt/tampered receipt, a settings step
+  with no prior state, an out-of-range tool upgrade, repeated
+  install/repair/remove cycles).
+- A named `legacy_ownership_unknown` classification for a receipt with no
+  restoration evidence at all.
+- A named shared contract-test suite enforcing the preservation invariants.
+- The fail-safe/no-clobber default for an AASM-owned key changed
+  externally, described above, plus its own independent adversarial review.
+
+Not yet closed — do not read this page as claiming otherwise:
+
+- The `reconcile` override is not yet exposed over the DI-API wire protocol
+  or `aasm integrations repair` (see the section above).
 
 ## Legacy receipts
 
