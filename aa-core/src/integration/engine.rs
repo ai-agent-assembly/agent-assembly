@@ -1645,6 +1645,43 @@ mod tests {
         assert!(f.ca.exists(), "repair must not touch steps drift did not name");
     }
 
+    /// The refusal conflict discloses the current value so the operator can
+    /// judge whether to reconcile — but never a value that looks like a
+    /// credential. This is the one code path whose entire purpose is
+    /// preventing that leak, so it gets its own positive test rather than
+    /// relying on every other test happening to use non-secret values.
+    #[test]
+    fn a_conflict_withholds_a_value_that_looks_like_a_credential() {
+        let f = fixture();
+        write_settings(&f, r#"{"theme":"dark"}"#);
+        let mut e = engine(&f);
+        e.apply(&plan(&f), &context(1_000)).unwrap();
+
+        let mut doc = read_settings(&f);
+        doc["permissionMode"] = serde_json::json!(SYNTHETIC_SECRET);
+        std::fs::write(&f.settings, doc.to_string()).unwrap();
+
+        let report = e.detect_drift(&DevToolKind::ClaudeCode, SettingsScope::User, &compatible(), None);
+        let outcome = e.repair(&plan(&f), &report, 2_000, &[]).unwrap();
+
+        assert_eq!(outcome.conflicts.len(), 1, "{:?}", outcome.conflicts);
+        let conflict = &outcome.conflicts[0];
+        assert!(
+            !conflict
+                .current_values_json
+                .as_deref()
+                .unwrap_or_default()
+                .contains(SYNTHETIC_SECRET),
+            "a value that looks like a credential must not reach the disclosure: {:?}",
+            conflict.current_values_json
+        );
+        assert!(
+            conflict.withheld_keys.iter().any(|k| k == "permissionMode"),
+            "the withheld key must be named so the operator knows something was hidden: {:?}",
+            conflict.withheld_keys
+        );
+    }
+
     /// The explicit override path: naming the step in `reconcile` re-asserts
     /// AASM's value for that step, and only that step.
     #[test]
