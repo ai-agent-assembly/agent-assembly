@@ -191,7 +191,7 @@ Verdict: MEASURED-PASS
 
 | Refusal | Exercised? | Verbatim message |
 |---|---|---|
-| Authorization cancelled → `permission required: …` | No — the founder authorized both prompts | — |
+| Authorization cancelled → `permission required: …` | No — the founder authorized the install; the removal reused macOS's short-lived authorization cache with no second visible prompt (see the rollback section above) | — |
 | Non-interactive run → `unavailable: … needs an interactive terminal` | No — this run was interactive | — |
 | Pre-existing foreign file → `… already holds managed settings Agent Assembly did not write` | No — host had no pre-existing file | — |
 
