@@ -60,6 +60,15 @@ The diagram highlights the core architectural crates; storage drivers,
 dev-tool adapters, and test harnesses are folded into summary nodes for clarity.
 Edges follow real `path` dependencies in each crate's `Cargo.toml`.
 
+<details class="aa-dependency-details">
+<summary>Detailed crate dependencies</summary>
+
+The text list below preserves each source → target dependency and the distinct
+preflight relationship. The diagram can be scrolled horizontally without moving
+the surrounding article.
+
+<div class="aa-dependency-pan" role="region" aria-label="Crate dependency diagram, horizontally scrollable" tabindex="0">
+
 ```mermaid
 graph TD
     classDef foundation fill:#e8f1ff,stroke:#5b8def
@@ -126,6 +135,42 @@ graph TD
     aa_cli --> aa_core
     aa_cli --> aa_gateway
 ```
+
+</div>
+
+<!-- dependency-list:start -->
+
+- `aa-core` → `aa-security`
+- `aa-storage` → `aa-core`
+- `aa-cache` → `aa-core`
+- `aa-storage-{memory,postgres,redis,sqlite-buffer}` → `aa-storage`
+- `aa-runtime` → `aa-core`
+- `aa-runtime` → `aa-proto`
+- `aa-runtime` → `aa-ebpf`
+- `aa-sdk-client` → `aa-proto`
+- `aa-sdk-client` → `aa-security` (dotted preflight relationship)
+- `aa-wasm` → `aa-core`
+- `aa-ebpf` → `aa-core`
+- `aa-ebpf` → `aa-ebpf-common`
+- `aa-ebpf-probes /aa-ebpf-programs` → `aa-ebpf-common`
+- `aa-proxy` → `aa-core`
+- `aa-proxy` → `aa-proto`
+- `aa-proxy` → `aa-runtime`
+- `aa-proxy` → `aa-sandbox`
+- `aa-gateway` → `aa-core`
+- `aa-gateway` → `aa-proto`
+- `aa-gateway` → `aa-runtime`
+- `aa-gateway` → `aa-storage`
+- `aa-gateway` → `aa-cache`
+- `aa-api` → `aa-core`
+- `aa-api` → `aa-gateway`
+- `aa-api` → `aa-runtime`
+- `aa-cli` → `aa-core`
+- `aa-cli` → `aa-gateway`
+
+<!-- dependency-list:end -->
+
+</details>
 
 `aa-core` and `aa-proto` are the two foundation leaves everything else builds on:
 `aa-core` holds the Rust domain model and the storage traits, `aa-proto` holds
