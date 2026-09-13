@@ -473,10 +473,18 @@ fn the_command_family_drives_the_native_claude_code_integration() {
     let drifted = h.aasm(&["status", "claude-code"]);
     assert_eq!(drifted.status.code(), Some(5), "{}", stdout(&drifted));
 
+    // `permissions.defaultMode` is an AASM-owned key that changed externally
+    // since AASM last set it — an ownership conflict (AAASM-6091), not
+    // routine drift. Default repair refuses to reassert AASM's value over it
+    // rather than silently clobbering whatever wrote it.
     let repair = h.aasm(&["repair", "claude-code", "--yes"]);
-    assert!(repair.status.success(), "{}", stderr(&repair));
+    assert_eq!(repair.status.code(), Some(5), "{}", stderr(&repair));
     let repaired = h.settings().expect("settings");
-    assert_eq!(repaired["permissions"]["defaultMode"], serde_json::json!("default"));
+    assert_eq!(
+        repaired["permissions"]["defaultMode"],
+        serde_json::json!("bypassPermissions"),
+        "default repair must not clobber the externally-changed owned key"
+    );
     assert_eq!(repaired["theme"], serde_json::json!("gruvbox"));
 
     // The removal preview must read as what removal does. A settings step's
@@ -1068,14 +1076,17 @@ fn a_restarted_service_answers_the_callers_project_and_refuses_a_strangers() {
         "a refused `remove` deleted another project's settings file"
     );
 
-    // `repair` from B, the project it is for, does the work.
+    // `repair` from B, the project it is for, reaches the right file — but
+    // `permissions.defaultMode` is an AASM-owned key that changed externally
+    // since AASM last set it, an ownership conflict (AAASM-6091), so default
+    // repair refuses to reassert AASM's value rather than clobbering it.
     let repair = h.aasm_in(b.path(), &["repair", "claude-code", "--yes"]);
     println!("--- aasm integrations repair (caller in B) ---\n{}", stdout(&repair));
-    assert!(repair.status.success(), "{}", stderr(&repair));
+    assert_eq!(repair.status.code(), Some(5), "{}", stderr(&repair));
     assert_eq!(
         project_settings(b.path()).expect("B still exists"),
-        installed,
-        "the repair did not restore the project the install was for"
+        drifted,
+        "default repair must not clobber the externally-changed owned key"
     );
     for (label, root) in [("A", a.path()), ("C", c.path()), ("D", d.path())] {
         assert_eq!(
@@ -1090,15 +1101,23 @@ fn a_restarted_service_answers_the_callers_project_and_refuses_a_strangers() {
     );
 
     // `verify` reads the same binding: from B it reaches a real file and reports
-    // on it, and from D it refuses like the rest.
+    // on it, and from D it refuses like the rest. `outcome` is legitimately
+    // "failed" here — the tampered `defaultMode` is an ownership conflict
+    // default repair refused to clobber (AAASM-6091), so it is still drifted —
+    // so the binding check is that the report is about B's own file, not that
+    // it necessarily passed.
     let verify = h.aasm_in(b.path(), &["verify", "claude-code", "--output", "json"]);
     let report: serde_json::Value = serde_json::from_str(&stdout(&verify)).expect("json verify report");
     println!("--- aasm integrations verify (caller in B) ---\n{report:#}");
-    assert_ne!(
-        report["outcome"],
-        serde_json::json!("failed"),
-        "verify reported the receipted artifacts as mismatched, which is what reading the wrong \
-         project's file looks like:\n{report:#}"
+    let report_text = report.to_string();
+    assert!(
+        report_text.contains(&b.path().display().to_string()),
+        "verify did not report on B's own file, which is what reading the wrong project's file \
+         looks like:\n{report:#}"
+    );
+    assert!(
+        !report_text.contains(&d.path().display().to_string()),
+        "verify reported on D's file from a caller in B:\n{report:#}"
     );
     assert!(
         !h.aasm_in(d.path(), &["verify", "claude-code"]).status.success(),
