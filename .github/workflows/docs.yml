@@ -198,9 +198,11 @@ jobs:
         run: python3 docs/ci/test_channels.py
 
       - name: Verify accessible dependency list
+        if: github.event_name != 'workflow_run'
         run: |
           python3 docs/ci/test_dependency_list.py
           python3 docs/ci/dependency_list.py --check
+          python3 docs/ci/test_mirror_context.py
 
       # AAASM-4310: verify the shared metadata snippets in docs/src/generated/
       # are up to date with Cargo.toml + metadata/docs.yaml. The generator is
@@ -406,6 +408,22 @@ jobs:
           cp docs/site-root-index.html _site/index.html
 
           echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
+
+      # A release build checks out its frozen tag. Load this additive helper
+      # from the workflow's own revision, never expect it in historical tags.
+      - name: Read mirror helper from the publishing workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: _uiux-publisher
+          sparse-checkout: docs/ci
+
+      - name: Preserve context on the audited standalone mirror
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
+        env:
+          MIRROR_HELPER: ${{ github.event_name == 'workflow_run' && '_uiux-publisher/docs/ci/mirror_context.py' || 'docs/ci/mirror_context.py' }}
+        run: python3 "$MIRROR_HELPER" _site/v0.0.1-rc.6
 
       - name: Upload Pages artifact
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
