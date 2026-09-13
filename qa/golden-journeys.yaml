@@ -2049,15 +2049,25 @@ journeys:
     privileges invocation running /usr/bin/install / /bin/rm against a managed-settings file) is
     proven to actually write/remove the target file on a real macOS host, not merely that the
     surrounding refusal/disclosure/rollback logic is correct against FakeAuthority.
-  # This is the literal gap AAASM-5999's audit found: every existing managed-
+  # This was the literal gap AAASM-5999's audit found: every existing managed-
   # settings test (see J78) substitutes FakeAuthority for the real admin-
   # authority write — deliberately, since it needs a real interactive OS
-  # authorization prompt that cannot run in CI. The CHANGELOG already
-  # discloses this as unmeasured (AAASM-5276 condition C6). AAASM-5308 owns
-  # closing this gap; not fixed here — see AAASM-5308 for scope/plan.
+  # authorization prompt that cannot run in CI. Closed 2026-09-13: a real
+  # founder-authorized macOS administrator install/verify/rollback against
+  # candidate 4d9c29959 (post-AAASM-6091) genuinely exercised the real
+  # MacOsAdminAuthority path — real osascript-driven write and remove, real
+  # read-back verification, real credential redaction on the model path. See
+  # verification-reports/AAASM-5308-managed-enforcement-evidence-2026-09-13.md.
+  # This closes J79's own outcome bar (the admin-authority write/remove
+  # itself) but not AAASM-5276 condition C6's runtime-precedence half (each
+  # managed-only key's resistance to a real user override) — that half stays
+  # open on AAASM-5308, tracked separately, not this journey's own claim.
   release_blocking: true
-  lifecycle_state: gap
-  gap_owner: AAASM-5308
+  lifecycle_state: manual_live
+  evidence:
+  - repo: agent-assembly
+    kind: manual_record
+    selector: verification-reports/AAASM-5308-managed-enforcement-evidence-2026-09-13.md
 
 
 - id: J80
