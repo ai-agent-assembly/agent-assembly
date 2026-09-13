@@ -11,7 +11,7 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/ai-agent-assembly/agent-assembly"
 edit-url-template = "https://github.com/ai-agent-assembly/agent-assembly/edit/main/docs/{path}"
 additional-css = ["theme/aaasm-brand.css", "theme/tabs.css"]
-additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/tabs.js"]
+additional-js = ["mermaid.min.js", "mermaid-init.js", "theme/tabs.js", "theme/dependency-pan.js"]
 
 [preprocessor]
 
