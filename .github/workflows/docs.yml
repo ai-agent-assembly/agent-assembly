@@ -203,6 +203,7 @@ jobs:
           python3 docs/ci/test_dependency_list.py
           python3 docs/ci/dependency_list.py --check
           python3 docs/ci/test_mirror_context.py
+          node --test docs/ci/test_dependency_pan.mjs
 
       # AAASM-4310: verify the shared metadata snippets in docs/src/generated/
       # are up to date with Cargo.toml + metadata/docs.yaml. The generator is
