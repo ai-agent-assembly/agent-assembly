@@ -30,6 +30,9 @@ html { font-size: 16px; }
 /* The authoritative graph uses light node fills in every reading theme. */
 .aa-dependency-pan svg .nodeLabel,
 .aa-dependency-pan svg .nodeLabel * { color: #111827 !important; fill: #111827 !important; }
+.aa-dependency-pan svg .edgeLabel,
+.aa-dependency-pan svg .edgeLabel * { color: var(--fg) !important; }
+.aa-dependency-pan svg .edgeLabel text { fill: var(--fg) !important; }
 .aa-role-field { display: none; }
 @media (max-width: 600px) {
   .aa-role-table, .aa-role-table tbody, .aa-role-table tr,
