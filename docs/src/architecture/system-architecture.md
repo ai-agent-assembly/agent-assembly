@@ -36,14 +36,17 @@ The Cargo workspace declares **28 member crates** in the top-level
 [`Cargo.toml`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/Cargo.toml).
 They group into a handful of architectural roles:
 
-| Role | Crates | What they own |
-|---|---|---|
-| **Foundation** | `aa-core`, `aa-proto`, `aa-security` | Domain types (`AgentId`, `AuditEntry`, policy types), the gRPC/protobuf wire schema, and the credential scanner / redaction primitives. |
-| **Storage** | `aa-storage`, `aa-storage-memory`, `aa-storage-postgres`, `aa-storage-redis`, `aa-storage-sqlite-buffer`, `aa-cache` | Storage trait facade + pluggable drivers, plus the in-process L1 cache. |
-| **Runtime / interception** | `aa-runtime`, `aa-ebpf`, `aa-ebpf-common`, `aa-proxy`, `aa-sdk-client`, `aa-wasm`, `aa-sandbox` | The per-agent runtime chokepoint, the kernel/proxy/SDK interception layers, the FFI-agnostic SDK client, and the WASM tool sandbox. |
-| **Control plane** | `aa-gateway`, `aa-api`, `aa-cli` | The governance gateway (gRPC), the HTTP/OpenAPI read API, and the `aasm` operator CLI. |
-| **Dev-tool adapters** | `aa-devtool`, `aa-devtool-claude-code`, `aa-devtool-codex`, `aa-devtool-copilot`, `aa-devtool-windsurf`, `aa-devtool-saas`, plus the `examples/aa-devtool-sample-myeditor` sample | Adapters that wire common AI dev tools into the governance fabric. |
-| **Test / conformance** | `conformance`, `aa-integration-tests` | The cross-crate trait conformance harness and the end-to-end integration suite. |
+<table class="aa-role-table" role="table" aria-label="Workspace roles">
+<thead role="rowgroup"><tr role="row"><th id="role-name" scope="col" role="columnheader">Role</th><th id="role-crates" scope="col" role="columnheader">Crates</th><th id="role-owns" scope="col" role="columnheader">What they own</th></tr></thead>
+<tbody role="rowgroup">
+<tr role="row"><th id="role-foundation" scope="row" role="rowheader">Foundation</th><td role="cell" headers="role-foundation role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>aa-core</code>, <code>aa-proto</code>, <code>aa-security</code></td><td role="cell" headers="role-foundation role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>Domain types (<code>AgentId</code>, <code>AuditEntry</code>, policy types), the gRPC/protobuf wire schema, and the credential scanner / redaction primitives.</td></tr>
+<tr role="row"><th id="role-storage" scope="row" role="rowheader">Storage</th><td role="cell" headers="role-storage role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>aa-storage</code>, <code>aa-storage-memory</code>, <code>aa-storage-postgres</code>, <code>aa-storage-redis</code>, <code>aa-storage-sqlite-buffer</code>, <code>aa-cache</code></td><td role="cell" headers="role-storage role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>Storage trait facade + pluggable drivers, plus the in-process L1 cache.</td></tr>
+<tr role="row"><th id="role-runtime" scope="row" role="rowheader">Runtime / interception</th><td role="cell" headers="role-runtime role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>aa-runtime</code>, <code>aa-ebpf</code>, <code>aa-ebpf-common</code>, <code>aa-proxy</code>, <code>aa-sdk-client</code>, <code>aa-wasm</code>, <code>aa-sandbox</code></td><td role="cell" headers="role-runtime role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>The per-agent runtime chokepoint, the kernel/proxy/SDK interception layers, the FFI-agnostic SDK client, and the WASM tool sandbox.</td></tr>
+<tr role="row"><th id="role-control" scope="row" role="rowheader">Control plane</th><td role="cell" headers="role-control role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>aa-gateway</code>, <code>aa-api</code>, <code>aa-cli</code></td><td role="cell" headers="role-control role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>The governance gateway (gRPC), the HTTP/OpenAPI read API, and the <code>aasm</code> operator CLI.</td></tr>
+<tr role="row"><th id="role-devtool" scope="row" role="rowheader">Dev-tool adapters</th><td role="cell" headers="role-devtool role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>aa-devtool</code>, <code>aa-devtool-claude-code</code>, <code>aa-devtool-codex</code>, <code>aa-devtool-copilot</code>, <code>aa-devtool-windsurf</code>, <code>aa-devtool-saas</code>, plus the <code>examples/aa-devtool-sample-myeditor</code> sample</td><td role="cell" headers="role-devtool role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>Adapters that wire common AI dev tools into the governance fabric.</td></tr>
+<tr role="row"><th id="role-test" scope="row" role="rowheader">Test / conformance</th><td role="cell" headers="role-test role-crates"><span class="aa-role-field" aria-hidden="true">Crates</span><code>conformance</code>, <code>aa-integration-tests</code></td><td role="cell" headers="role-test role-owns"><span class="aa-role-field" aria-hidden="true">What they own</span>The cross-crate trait conformance harness and the end-to-end integration suite.</td></tr>
+</tbody>
+</table>
 
 Two further eBPF crates — `aa-ebpf-probes` and `aa-ebpf-programs` — live
 alongside the workspace but are intentionally **out of workspace**: they compile
@@ -59,6 +62,15 @@ sibling `python-sdk` / `node-sdk` / `go-sdk` repositories.
 The diagram highlights the core architectural crates; storage drivers,
 dev-tool adapters, and test harnesses are folded into summary nodes for clarity.
 Edges follow real `path` dependencies in each crate's `Cargo.toml`.
+
+<details class="aa-dependency-details">
+<summary>Detailed crate dependencies</summary>
+
+The text list below preserves each source → target dependency and the distinct
+preflight relationship. The diagram can be scrolled horizontally without moving
+the surrounding article.
+
+<div class="aa-dependency-pan" role="region" aria-label="Crate dependency diagram, horizontally scrollable" tabindex="0">
 
 ```mermaid
 graph TD
@@ -126,6 +138,42 @@ graph TD
     aa_cli --> aa_core
     aa_cli --> aa_gateway
 ```
+
+</div>
+
+<!-- dependency-list:start -->
+
+- `aa-core` → `aa-security`
+- `aa-storage` → `aa-core`
+- `aa-cache` → `aa-core`
+- `aa-storage-{memory,postgres,redis,sqlite-buffer}` → `aa-storage`
+- `aa-runtime` → `aa-core`
+- `aa-runtime` → `aa-proto`
+- `aa-runtime` → `aa-ebpf`
+- `aa-sdk-client` → `aa-proto`
+- `aa-sdk-client` → `aa-security` (dotted preflight relationship)
+- `aa-wasm` → `aa-core`
+- `aa-ebpf` → `aa-core`
+- `aa-ebpf` → `aa-ebpf-common`
+- `aa-ebpf-probes /aa-ebpf-programs` → `aa-ebpf-common`
+- `aa-proxy` → `aa-core`
+- `aa-proxy` → `aa-proto`
+- `aa-proxy` → `aa-runtime`
+- `aa-proxy` → `aa-sandbox`
+- `aa-gateway` → `aa-core`
+- `aa-gateway` → `aa-proto`
+- `aa-gateway` → `aa-runtime`
+- `aa-gateway` → `aa-storage`
+- `aa-gateway` → `aa-cache`
+- `aa-api` → `aa-core`
+- `aa-api` → `aa-gateway`
+- `aa-api` → `aa-runtime`
+- `aa-cli` → `aa-core`
+- `aa-cli` → `aa-gateway`
+
+<!-- dependency-list:end -->
+
+</details>
 
 `aa-core` and `aa-proto` are the two foundation leaves everything else builds on:
 `aa-core` holds the Rust domain model and the storage traits, `aa-proto` holds

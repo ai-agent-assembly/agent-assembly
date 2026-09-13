@@ -20,6 +20,35 @@ html { font-size: 16px; }
 .content h2 { font-size: 1.5rem;  font-weight: 700; }
 .content h3 { font-size: 1.25rem; font-weight: 600; }
 
+/* Detailed dependencies are an optional reference, not a miniature hero. */
+.aa-dependency-details { margin-block: 1rem; }
+.aa-dependency-details > summary { cursor: pointer; font-weight: 600; }
+.aa-dependency-details > summary:focus-visible,
+.aa-dependency-pan:focus-visible { outline: 2px solid var(--links); outline-offset: 3px; }
+.aa-dependency-pan { overflow-x: auto; max-width: 100%; }
+.aa-dependency-pan svg { min-width: 1100px; max-width: none !important; }
+/* The authoritative graph uses light node fills in every reading theme. */
+.aa-dependency-pan svg .nodeLabel,
+.aa-dependency-pan svg .nodeLabel * { color: #111827 !important; fill: #111827 !important; }
+.aa-dependency-pan svg .edgeLabel,
+.aa-dependency-pan svg .edgeLabel * { color: var(--fg) !important; }
+.aa-dependency-pan svg .edgeLabel text { fill: var(--fg) !important; }
+.aa-role-field { display: none; }
+@media (max-width: 600px) {
+  .aa-role-table, .aa-role-table tbody, .aa-role-table tr,
+  .aa-role-table td, .aa-role-table th { display: block; width: auto; }
+  .aa-role-table { overflow: visible; font-size: 16px; }
+  .aa-role-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .aa-role-table tbody tr { margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--table-border-color); background: transparent; }
+  .aa-role-table td, .aa-role-table tbody th { padding: 0; border: 0; text-align: left; background: transparent; }
+  .aa-role-table td { margin-top: 8px; }
+  .aa-role-field { display: block; font-weight: 600; }
+  .aa-role-table code { overflow-wrap: anywhere; }
+}
+@media (max-width: 767px) {
+  #mdbook-menu-bar .menu-title, .menu-bar .menu-title { display: none; }
+}
+
 /* ---- Light themes (light, rust) ---- */
 .light, .rust {
   --bg: #f5f4f0;

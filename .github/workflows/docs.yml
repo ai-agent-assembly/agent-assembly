@@ -8,7 +8,7 @@ permissions:
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, uiux/visual-experience-overhaul]
     # AAASM-5677: deliberately NOT path-filtered — the selection that used to
     # live here now lives in the `changes` router below, glob for glob.
     #
@@ -22,7 +22,7 @@ on:
     # workflow that does not trigger produces no check run at all, and a
     # required check that never arrives blocks the pull request forever.
   push:
-    branches: [main]
+    branches: [main, uiux/visual-experience-overhaul]
     paths:
       - 'docs/**'
       - 'README.md'
@@ -197,6 +197,14 @@ jobs:
       - name: Run channel-gate unit tests
         run: python3 docs/ci/test_channels.py
 
+      - name: Verify accessible dependency list
+        if: github.event_name != 'workflow_run'
+        run: |
+          python3 docs/ci/test_dependency_list.py
+          python3 docs/ci/dependency_list.py --check
+          python3 docs/ci/test_mirror_context.py
+          node --test docs/ci/test_dependency_pan.mjs
+
       # AAASM-4310: verify the shared metadata snippets in docs/src/generated/
       # are up to date with Cargo.toml + metadata/docs.yaml. The generator is
       # idempotent; a non-empty diff means someone edited a source without
@@ -236,7 +244,7 @@ jobs:
       # (workflow_run) we publish into <tag>/, archive it, and repoint the
       # stable or pre-release channel to it.
       - name: Resolve target version subpath
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
         id: docver
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -266,7 +274,7 @@ jobs:
         # carries the moving channel targets (pre-release -> vX.Y.Z-pre).
         # archived[] is rebuilt from git tags in the next step so a missing
         # or truncated prior manifest is no longer a permanent loss.
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
         id: restore
         continue-on-error: true
         run: |
@@ -288,7 +296,7 @@ jobs:
         # and self-healing: if a prior release never published docs (e.g.
         # because its Release workflow failed), it is recovered on the next
         # successful deploy.
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
         env:
           VERSION: ${{ steps.docver.outputs.version }}
         run: |
@@ -360,7 +368,7 @@ jobs:
           cat extra-archived.txt
 
       - name: Assemble versioned Pages site
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
         env:
           VERSION: ${{ steps.docver.outputs.version }}
           CHANNEL: ${{ steps.docver.outputs.channel }}
@@ -402,15 +410,31 @@ jobs:
 
           echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
 
+      # A release build checks out its frozen tag. Load this additive helper
+      # from the workflow's own revision, never expect it in historical tags.
+      - name: Read mirror helper from the publishing workflow revision
+        if: github.event_name == 'workflow_run'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: _uiux-publisher
+          sparse-checkout: docs/ci
+
+      - name: Preserve context on the audited standalone mirror
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
+        env:
+          MIRROR_HELPER: ${{ github.event_name == 'workflow_run' && '_uiux-publisher/docs/ci/mirror_context.py' || 'docs/ci/mirror_context.py' }}
+        run: python3 "$MIRROR_HELPER" _site/v0.0.1-rc.6
+
       - name: Upload Pages artifact
-        if: github.event_name != 'pull_request'
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_run'
     needs: build
     runs-on: ubuntu-latest
     # Pages deployment needs the elevated scopes; scoped here so the
