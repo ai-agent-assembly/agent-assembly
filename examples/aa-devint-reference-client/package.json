@@ -23,7 +23,7 @@
     "test:contract": "vitest run test/contract"
   },
   "dependencies": {
-    "@bufbuild/protobuf": "^2.13.0"
+    "@bufbuild/protobuf": "^2.15.0"
   },
   "devDependencies": {
     "@bufbuild/buf": "^1.72.0",
