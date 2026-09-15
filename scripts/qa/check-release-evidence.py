@@ -157,11 +157,48 @@ class GitRepo:
         """Merge commits in `a..b` — `git log --name-only` shows no file
         list for a merge commit by default, so a change that only arrives
         via a merge's non-first-parent side would be invisible to
-        paths_touched_in_range() above. Rather than special-case merge
-        diffing, the guard simply refuses any merge commit in range."""
+        paths_touched_in_range() above. A single merge commit here is not
+        refused outright anymore (AAASM-6001 follow-up, ADR 0037 rev 4) —
+        see verify_single_merge_commit() below, which relies on exactly
+        this blind spot rather than working around it: once a merge is
+        proven to introduce zero content beyond its verified second parent
+        (tree(M) == tree(P2)), the "no file list for a merge" gap is closed
+        by construction, not by enumerating it."""
         if a == b:
             return []
         out = self.run("rev-list", "--merges", f"{a}..{b}").stdout
+        return [line for line in out.splitlines() if line]
+
+    def parents(self, ref: str) -> list[str]:
+        """The commit's parent SHAs, in order — `[]` for a root commit,
+        one entry for an ordinary commit, two for an ordinary merge, more
+        for an octopus merge. Read directly from the commit object, not
+        inferred from log output."""
+        out = self.run("rev-list", "--parents", "-n", "1", ref).stdout.split()
+        return out[1:]
+
+    def tree_at(self, ref: str) -> str:
+        """The git tree object SHA `ref` points at — a content hash, not a
+        commit hash. Two commits with this SHA equal have byte-identical
+        file trees, regardless of history, author, message, or parents."""
+        return self.run("rev-parse", f"{ref}^{{tree}}").stdout.strip()
+
+    def net_diff_name_only_no_renames(self, a: str, b: str) -> list[str]:
+        """The net two-tree diff `a` vs `b`, rename detection off — a
+        separate method from diff_name_only() (used by R1, whose own
+        policy is unaffected by this ADR) and from
+        paths_touched_in_range() (per-commit union, blind to a merge's
+        non-first-parent content). Used only by
+        verify_single_merge_commit()'s V9 cross-check: paths_touched_in_range()
+        already covers every non-merge commit in the range including the
+        merge's second-parent side once the merge is verified, so V9's
+        blind spot (a revert-then-reapply inside that side) is exactly
+        what paths_touched_in_range()'s V8 already covers — the two checks
+        are deliberately redundant with disjoint blind spots, not one
+        subsuming the other."""
+        if a == b:
+            return []
+        out = self.run("diff", "--name-only", "--no-renames", f"{a}", f"{b}").stdout
         return [line for line in out.splitlines() if line]
 
     def log_commits_touching(self, a: str, b: str, path: str) -> list[str]:
@@ -361,6 +398,122 @@ def _path_is_tag_guard_allowlisted(path: str, exact: set[str], attempt_re: re.Pa
     return path in exact or bool(attempt_re.match(path))
 
 
+def verify_single_merge_commit(
+    git: GitRepo, merge_sha: str, candidate_sha: str, tag_target_sha: str,
+) -> tuple[list[str], list[str]]:
+    """Whether the single merge commit `merge_sha` found in
+    `candidate_sha..tag_target_sha` may be trusted as introducing zero
+    content beyond what the candidate already authorizes (AAASM-6001
+    follow-up, ADR 0037 rev 4).
+
+    Why this exists: this repo's actual GitHub settings permit only
+    "Create a merge commit" as a PR merge strategy (squash/rebase both
+    disabled) — every PR merge to `main`, including a trivial evidence-only
+    PR, therefore inserts a 2-parent commit. The prior unconditional
+    "refuse any merge in range" made this guard permanently unsatisfiable
+    for any evidence commit landed through this repo's own required PR
+    flow (found in production, AAASM-6091 rc.7 campaign, PR #2443). The fix
+    is not "allow merges" — it's "prove a specific merge commit's tree is
+    byte-identical to its already-verified second parent's tree," which
+    makes the merge's non-first-parent content blind spot (the reason the
+    old code refused every merge outright) irrelevant: a merge that
+    contributes zero content beyond `P2` cannot smuggle anything through
+    the side `paths_touched_in_range()` can't see, because there is nothing
+    on that side that isn't already `P2`'s own history.
+
+    Returns (violations, audit_lines). Empty violations means `merge_sha`
+    is verified and the caller's allowlist scan may proceed treating the
+    range as if it contained no merge. Non-empty violations is a hard
+    refuse — this runs immediately before an irreversible tag push, so
+    there is no second evidence channel to escalate to; the documented
+    remedy is re-running `/release-evidence-finalize <version>` on the new
+    HEAD, which mints a fresh attempt.
+
+    Candidate can legitimately be *inside* the merged branch, not only at
+    its tip: `build-release-evidence.py` captures `candidate_sha` as HEAD
+    *before* the evidence file is committed (ADR 0037's quine-avoidance
+    contract), so the evidence-adding commit is always one past the
+    candidate on the PR branch. The corrected relation is: `candidate_sha`
+    is P2 itself or an ancestor of P2, with every commit in
+    `candidate_sha..P2` still subject to the ordinary allowlist scan (V8)
+    exactly as if there were no merge at all."""
+    violations: list[str] = []
+    audit: list[str] = []
+    M = merge_sha
+
+    parents = git.parents(M)
+    audit.append(f"merge {M}: parents = {parents}")
+    if len(parents) != 2:
+        violations.append(
+            f"merge {M} has {len(parents)} parent(s), not 2 — octopus/malformed merges are "
+            "not verifiable and are refused"
+        )
+        return violations, audit
+    P1, P2 = parents
+
+    # V1 — the tag must bind to the verified merge itself. Any commit after
+    # M would be either a direct push to main (governance-forbidden) or
+    # another PR merge (already excluded by the caller's "at most one merge
+    # in range" rule) — neither is covered by this merge's own verification.
+    if tag_target_sha != M:
+        violations.append(
+            f"tag_target {tag_target_sha} is not the verified merge commit {M} itself — a "
+            "commit after the merge is not covered by this verification"
+        )
+
+    # V2/V3 already covered by len(parents)==2 above (V2) and are P1 != P2
+    # by construction of a well-formed 2-parent merge commit (V3 — git
+    # refuses to create a merge commit with two identical parents, so this
+    # is unfalsifiable with real git plumbing; not separately checked).
+
+    # V4 — the base side (P1) must introduce NOTHING beyond the already-
+    # verified candidate: P1 == candidate, or P1 is an ancestor of
+    # candidate. This is the keystone — it makes P1 the correct merge base,
+    # so the only non-evil merge result is tree(P2) exactly (V6 below). It
+    # also catches a reversed-parent-order merge (P1 holding the PR-head
+    # content instead of the base).
+    p1_ok = (P1 == candidate_sha) or git.is_ancestor(P1, candidate_sha)
+    if not p1_ok:
+        violations.append(
+            f"merge {M}'s first parent {P1} is not the verified candidate {candidate_sha} "
+            "and is not an ancestor of it — the base side may introduce unverified content"
+        )
+
+    # V5 — the PR-head side (P2) must descend from (or equal) the verified
+    # candidate — the branch that was actually reviewed.
+    p2_ok = (P2 == candidate_sha) or git.is_ancestor(candidate_sha, P2)
+    if not p2_ok:
+        violations.append(
+            f"merge {M}'s second parent {P2} does not descend from the verified candidate "
+            f"{candidate_sha} — the merged branch is not the reviewed one"
+        )
+
+    # V6 — the merge's tree must be byte-identical to P2's tree. Given V4
+    # (P1 is at-or-below candidate, i.e. P1 is the correct merge base), the
+    # only correct three-way merge result is tree(P2) exactly. Equality
+    # here is necessary AND sufficient — a live `git merge-tree --write-tree`
+    # recompute would be strictly redundant (same conclusion, plus a
+    # config-surface dependency on diff.renames/merge.renameLimit/
+    # .gitattributes merge drivers this repo doesn't have today but could
+    # gain, object-DB writes during a verification-only step, and a git
+    # >=2.38 floor) — skipped deliberately, not omitted by oversight.
+    # Mismatch means conflict resolution or a manual edit happened during
+    # the merge — an "evil merge" that must not be silently trusted.
+    if p1_ok:
+        tree_m = git.tree_at(M)
+        tree_p2 = git.tree_at(P2)
+        audit.append(f"tree({M}) = {tree_m}, tree({P2}) = {tree_p2}")
+        if tree_m != tree_p2:
+            violations.append(
+                f"merge {M}'s tree ({tree_m}) does not match its second parent {P2}'s tree "
+                f"({tree_p2}) — the merge result differs from a clean merge of the verified "
+                "branch, which means conflict resolution or a manual edit occurred during the "
+                "merge and cannot be trusted without re-verification"
+            )
+
+    return violations, audit
+
+
 def strict_candidate_binding_violations(
     git: GitRepo, version: str, candidate_sha: str, tag_target_sha: str,
 ) -> list[str]:
@@ -372,7 +525,11 @@ def strict_candidate_binding_violations(
     Accepts iff A is an ancestor of B (or A == B) AND every path that
     differs between them is on `_tag_guard_allowed_paths(version)`'s narrow,
     version-scoped allowlist — nothing broader, no other version's evidence,
-    no mixed allowed+forbidden change in one commit."""
+    no mixed allowed+forbidden change in one commit. At most one merge
+    commit is tolerated in range, and only if verify_single_merge_commit()
+    proves it introduces zero content beyond its own verified branch
+    (AAASM-6001 follow-up, ADR 0037 rev 4) — more than one merge, or a
+    merge that fails verification, is refused exactly as before."""
     violations: list[str] = []
 
     if candidate_sha == tag_target_sha:
@@ -385,17 +542,40 @@ def strict_candidate_binding_violations(
         )
         return violations
 
-    # A merge commit anywhere in range is refused outright rather than
-    # diffed: `git log --name-only` (used below) shows no file list for a
-    # merge commit by default, so a change arriving only via a merge's
-    # non-first-parent side would otherwise be invisible to this scan.
+    # More than one merge in range is refused outright: a chain of
+    # independently-verified merges is conceivable in principle, but no
+    # current release-relay flow produces two, and each additional merge is
+    # an additional PR whose content isn't covered by the single verified
+    # candidate this function is given. A single merge, in contrast, is
+    # verified structurally below rather than refused by the mere fact of
+    # its existence — see verify_single_merge_commit()'s docstring for why
+    # the old "refuse any merge" rule made this guard permanently
+    # unsatisfiable on a repo whose branch protection allows only
+    # "Create a merge commit" PR merges.
     merges = git.merge_commits_in_range(candidate_sha, tag_target_sha)
-    if merges:
+    if len(merges) > 1:
         violations.append(
-            f"merge commit(s) in candidate..tag_target range ({', '.join(merges)}) — not "
-            "permitted; a merge can bring in changes this linear per-commit scan cannot see"
+            f"merge commit(s) in candidate..tag_target range ({', '.join(merges)}) — more than "
+            "one merge is not verifiable and is refused"
         )
         return violations
+    if len(merges) == 1:
+        merge_violations, merge_audit = verify_single_merge_commit(
+            git, merges[0], candidate_sha, tag_target_sha
+        )
+        for line in merge_audit:
+            print(f"strict-tag-binding merge audit: {line}")
+        if merge_violations:
+            violations.extend(merge_violations)
+            return violations
+        # Verified: the merge introduces zero content beyond its second
+        # parent (V6), whose ancestry is already anchored to candidate_sha
+        # (V4/V5). The allowlist scan below still runs over the full
+        # candidate..tag_target range exactly as if there were no merge —
+        # paths_touched_in_range()'s per-commit union already covers every
+        # ordinary commit on the merged branch (the merge's second-parent
+        # side); V6 is what proves there is nothing further on the first-
+        # parent/merge-result side that scan can't see.
 
     exact, attempt_re = _tag_guard_allowed_paths(version)
     # paths_touched_in_range(), not diff_name_only(): the union of every
@@ -418,6 +598,21 @@ def strict_candidate_binding_violations(
         mode = git.mode_at(tag_target_sha, path)
         if mode is not None and mode != "100644":
             violations.append(f"{path} is not a regular file at tag_target (mode {mode})")
+
+    # V9 — independent net-diff cross-check (AAASM-6001 follow-up). Blind
+    # spots are deliberately disjoint from V8's: V8 (paths_touched_in_range,
+    # per-commit union) can miss nothing a merge introduces once the merge
+    # itself is proven content-free by V6 above, but a net two-tree diff
+    # can still miss an intermediate revert-then-reapply within the merged
+    # branch that V8's per-commit scan already catches — so V9 does not
+    # replace V8, it corroborates it via an independently-derived path set.
+    net_changed = git.net_diff_name_only_no_renames(candidate_sha, tag_target_sha)
+    for path in net_changed:
+        if not _path_is_tag_guard_allowlisted(path, exact, attempt_re):
+            violations.append(
+                f"{path} is not on the version-scoped allowlist for v{version} "
+                "(found by the net-diff cross-check)"
+            )
 
     return violations
 

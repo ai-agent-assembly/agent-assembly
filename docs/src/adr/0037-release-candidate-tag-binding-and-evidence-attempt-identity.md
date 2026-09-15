@@ -262,17 +262,93 @@ AAASM-6001's Jira thread; summarized here for the durable record.
   default rename detection left on — a same-content move of a forbidden
   file into an allowlisted path within a single commit, which can pair the
   deletion with the addition and drop the forbidden source path from the
-  diff entirely. A merge commit anywhere in the range is now refused
-  outright for the same reason (`git log --name-only` shows no file list
+  diff entirely. **A single merge commit in range is now verified
+  structurally rather than refused outright** (2026-09-13 revision, below)
+  — more than one merge, or a merge that fails verification, is still
+  refused for the same reason (`git log --name-only` shows no file list
   for a merge commit by default). Regression tests for both cases (revert-
-  then-reapply; the merge-commit refusal falls out of existing coverage)
-  live in the same file.
+  then-reapply; the merge-commit verification/refusal paths) live in the
+  same file.
 - **An allowlisted path is checked for git object mode, not just its
   string, at the tag target** (`GitRepo.mode_at()`) — refuses if a
   gitlink/submodule reference (mode `160000`, pointing at an arbitrary,
   potentially attacker-controlled external commit) has been substituted at
   the exact same path, which the string-only allowlist match alone cannot
   distinguish from an ordinary content edit.
+
+### 4. Verified single-merge-commit acceptance (2026-09-13, owner decision)
+
+**Problem found in production (AAASM-6091 rc.7 campaign, PR #2443).** This
+repo's actual GitHub settings permit only "Create a merge commit" as a PR
+merge strategy — squash and rebase are both disabled
+(`allow_squash_merge: false`, `allow_rebase_merge: false`, verified via
+`gh api repos/ai-agent-assembly/agent-assembly`). Every PR merge into
+`main`, including a trivial evidence-only PR, therefore inserts a
+2-parent merge commit into history. Section 2's original rule — refuse
+any merge commit in the candidate..tag_target range unconditionally —
+made the guard permanently unsatisfiable for any evidence commit landed
+through this repo's own required PR-review flow: there was no terminating
+sequence of PRs that could ever produce a linear range on this repo.
+
+**Decision.** A single merge commit `M` in the candidate..tag_target range
+is verified structurally instead of refused outright. Given `P1, P2 =
+M`'s two parents (in order), acceptance requires ALL of:
+
+- exactly two parents (refuses octopus/malformed merges);
+- `tag_target == M` — the tag binds to the verified merge itself; no
+  commit may follow it (that would be either a governance-forbidden
+  direct push to `main`, or a second PR merge, already excluded by the
+  "at most one merge" rule below);
+- `P1 == candidate_sha`, or `P1` is an ancestor of it — the base side
+  introduces nothing beyond the already-verified candidate, which makes
+  `P1` the correct three-way merge base;
+- `P2 == candidate_sha`, or `P2` descends from it — the merged branch is
+  the one actually reviewed;
+- `tree(M) == tree(P2)` — the merge's tree is byte-identical to its
+  second parent's tree. Given the `P1` condition above, this is
+  necessary *and sufficient* to prove the merge is clean: no conflict
+  resolution, no manual edit during the merge, nothing riding in on the
+  merge's own commit besides what the reviewed branch already contained.
+
+More than one merge commit in range is still refused unconditionally — a
+chain of independently-verified merges is conceivable but no current
+release-relay flow produces one, and each additional merge is an
+additional PR whose content the single verified candidate doesn't cover.
+
+**What was deliberately NOT added:**
+
+- **A live `git merge-tree` recompute.** Given the `P1` condition, `tree(M)
+  == tree(P2)` is already necessary and sufficient — recomputing the merge
+  would be redundant, and would add a dependency on `diff.renames`/
+  `merge.renameLimit`/`.gitattributes` merge-driver config (none of which
+  this repo uses today, but any of which could silently redefine "the
+  recomputed merge" inside the last gate before an irreversible tag push),
+  object-database writes during a verification-only step, and a git ≥2.38
+  floor.
+- **A GitHub API cross-check** (PR review state, CI conclusion, the
+  `merge_commit_sha` field). The structural conditions above already prove
+  the merge introduces *zero content* beyond the verified branch — a
+  stronger property than "a PR was approved." Which PR label a commit
+  carries is not load-bearing for that proof, and GitHub API responses are
+  mutable/unsigned after the fact (a PR can be reopened, retargeted, or
+  have reviews dismissed post-merge). Review/CI evidence corresponding to
+  the candidate is already this guard's caller's job (step 5a's R1/R1b
+  re-run, R7, R11, `release-readiness.sh` checks 11/12/14) — not this
+  narrower check's. A networked dependency here would also force
+  `scripts/tests/release-relay-negative-control.sh`'s real-git,
+  no-mocking fixtures to start mocking GitHub.
+- **GitHub commit-signature verification** (`git log --format='%G?'`).
+  Considered and dropped: this repo's merge commits are unsigned in
+  practice, and requiring signing would be a separate, larger governance
+  change outside this ADR's scope.
+
+This is additive to, not a relaxation of, the narrow allowlist in section
+2 — a verified merge only changes whether the range is treated as if it
+contained no merge for the purpose of that allowlist scan; every path
+touched anywhere in the range (now including the merged branch's own
+commits, reached via the same `paths_touched_in_range()` machinery, plus
+an independent net-two-tree-diff cross-check with disjoint blind spots)
+still must be on the version-scoped allowlist, exactly as before.
 
 ## Revision history
 
@@ -293,3 +369,12 @@ AAASM-6001's Jira thread; summarized here for the durable record.
   Consequences updated to describe step 5b as additional to AAASM-5998's
   existing step 5a, not a replacement of it. No change to the accepted
   Option-4 design itself.
+- 2026-09-13 — Decision section 4 added (owner decision, AAASM-6091 rc.7
+  campaign): a single, structurally-verified merge commit is now accepted
+  in the candidate..tag_target range instead of refused outright, fixing a
+  real production defect — this repo's branch-protection settings permit
+  only "Create a merge commit" PR merges, which made the guard permanently
+  unsatisfiable for any evidence commit landed through the repo's own
+  required PR-review flow. The allowlist itself (section 2) is unchanged;
+  this only changes whether a verified merge's presence disqualifies the
+  range from that allowlist scan at all.
