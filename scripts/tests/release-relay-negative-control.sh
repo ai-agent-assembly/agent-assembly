@@ -686,6 +686,396 @@ setup_fixture_repo "$FIXDIR_REVERT"
   echo "$STRICT_OUT" | grep -qE 'src_marker\.txt' && pass "refusal names the intermediately-tampered path" || fail "refusal did not name src_marker.txt: $STRICT_OUT"
 )
 
+# write_minimal_passing_fixture_content <candidate-sha-for-security-signoff>
+# — the same minimal catalog/qa-signoff/security-signoff triple
+# add_real_evidence() uses inline (a single J90 journey that reaches a real
+# PASS verdict end-to-end), factored out so the merge-commit sub-cases
+# below can call build-release-evidence.py directly (they need control over
+# WHICH commit becomes the candidate, which add_real_evidence() itself
+# doesn't expose) while still producing evidence whose full-guard run
+# (release-readiness stub aside) genuinely reaches PASS, not an incidental
+# BLOCK that would make a merge-acceptance test pass for the wrong reason.
+write_minimal_passing_fixture_content() {
+  local security_candidate_sha="$1"
+  cat > qa/golden-journeys.yaml <<'CATALOG'
+catalog_version: '1'
+journeys:
+- id: J90
+  jira: AAASM-0000
+  name: Synthetic single-journey fixture
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-minimal.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: mock
+CATALOG
+  cat > docs/release/qa-signoff/v0.0.1-fx.md <<'QASIGNOFF'
+# Synthetic QA sign-off fixture
+
+Test-only. Not a real release sign-off.
+
+## Selected journeys
+
+| Journey ID | Priority | Result | Evidence |
+|---|---|---|---|
+| J90 | P0 | **PASS** | synthetic fixture evidence |
+
+## Verdict
+
+Verdict: PASS
+QASIGNOFF
+  cat > docs/release/security-signoff/v0.0.1-fx.md <<SECSIGNOFF
+# Synthetic security sign-off fixture
+
+Test-only. Not a real release sign-off.
+
+- **Candidate SHA:** $security_candidate_sha
+
+## Verdict
+
+Verdict: PASS
+SECSIGNOFF
+}
+
+# ---------------------------------------------------------------------------
+# Sub-cases (p)/(p2)/(q)-(w): verified single-merge-commit acceptance
+# (AAASM-6001 follow-up, ADR 0037 revision 4). Found in production
+# (AAASM-6091 rc.7 campaign): this repo's actual GitHub settings permit
+# only "Create a merge commit" PR merges (squash/rebase both disabled), so
+# the OLD "refuse any merge in range" rule made this guard permanently
+# unsatisfiable for any evidence commit landed through the repo's own
+# required PR-review flow. These cases prove the fix accepts the real
+# topology and still refuses every way a merge could smuggle unverified
+# content past the allowlist scan.
+# ---------------------------------------------------------------------------
+
+# Sub-case (p): the real "Create a merge commit" topology — candidate is an
+# intermediate commit strictly inside the merged branch (the normal shape:
+# build-release-evidence.py captures candidate_sha = HEAD before the
+# evidence commit, so the evidence commit is always one past it), and the
+# base branch has not moved since branching (P1 is a strict ancestor of
+# candidate, not equal to it). Matches the real PR #2443 shape exactly.
+FIXDIR_MERGE="$WORK/fx45-merge"
+setup_fixture_repo "$FIXDIR_MERGE"
+(
+  cd "$FIXDIR_MERGE/repo"
+  git checkout -qb evidence-branch
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  write_minimal_passing_fixture_content "$(git rev-parse HEAD)"
+  git add -A
+  git commit -qm "test: candidate commit on the PR branch"
+  A_SHA="$(git rev-parse HEAD)"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence (PR head)"
+  git checkout -q main
+  git merge -q --no-ff evidence-branch -m "Merge pull request #1 from x/evidence-branch"
+  M_SHA="$(git rev-parse HEAD)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -eq 0 ]; then pass "strict-tag-binding accepts a real create-a-merge-commit topology (candidate strictly inside the branch)"; else fail "strict-tag-binding should accept the real merge-commit topology: $STRICT_OUT"; fi
+  GUARD_OUT="$(bash scripts/release-tag-guard.sh 0.0.1-fx --remote testremote 2>&1)"
+  GUARD_EXIT=$?
+  if [ "$GUARD_EXIT" -eq 0 ]; then pass "guard succeeds end-to-end for a real create-a-merge-commit topology"; else fail "guard should succeed for the real merge-commit topology: $GUARD_OUT"; fi
+  if git ls-remote --tags testremote v0.0.1-fx 2>/dev/null | grep -q .; then pass "tag v0.0.1-fx pushed after a verified merge commit"; else fail "tag was not pushed after a verified merge commit"; fi
+)
+
+# Sub-case (p2): candidate_sha == the merge's first parent exactly (no
+# separate "candidate" commit on the branch — the branch is a single
+# evidence-add commit, so P1 IS candidate_sha, not merely an ancestor of
+# it). This is the shape produced by /release-evidence-finalize when run
+# directly against the merged-into tip before any further branch commits.
+FIXDIR_MERGE2="$WORK/fx45-merge2"
+setup_fixture_repo "$FIXDIR_MERGE2"
+(
+  cd "$FIXDIR_MERGE2/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  write_minimal_passing_fixture_content "$(git rev-parse HEAD)"
+  git add -A
+  git commit -qm "test: candidate commit on main"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -qb evidence-branch2
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence (single-commit PR head)"
+  git checkout -q main
+  git merge -q --no-ff evidence-branch2 -m "Merge pull request #2 from x/evidence-branch2"
+  M_SHA="$(git rev-parse HEAD)"
+  P1="$(git rev-parse "$M_SHA^1")"
+  [ "$P1" = "$A_SHA" ] && pass "sanity: merge's first parent equals candidate_sha exactly (P1 == candidate shape)" || fail "test setup bug: P1 ($P1) != candidate ($A_SHA)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -eq 0 ]; then pass "strict-tag-binding accepts a merge commit whose first parent equals candidate_sha exactly"; else fail "strict-tag-binding should accept the P1==candidate shape: $STRICT_OUT"; fi
+)
+
+# Sub-case (q): TWO merge commits in candidate..tag_target range — refused
+# unconditionally regardless of whether either individual merge would
+# verify on its own.
+FIXDIR_TWOMERGES="$WORK/fx45-twomerges"
+setup_fixture_repo "$FIXDIR_TWOMERGES"
+(
+  cd "$FIXDIR_TWOMERGES/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -qb noise-branch
+  echo "unrelated" > noise.txt
+  git add -A
+  git commit -qm "test: unrelated noise commit"
+  git checkout -q main
+  git merge -q --no-ff noise-branch -m "Merge unrelated noise branch"
+  git checkout -qb evidence-branch3
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -q main
+  git merge -q --no-ff evidence-branch3 -m "Merge pull request #3 from x/evidence-branch3"
+  M_SHA="$(git rev-parse HEAD)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses when candidate..tag_target contains TWO merge commits"; else fail "strict-tag-binding should refuse two merges in range: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'more than.*one merge' && pass "refusal names the two-merge condition" || fail "refusal did not name the two-merge condition: $STRICT_OUT"
+)
+
+# Sub-case (r): V1 — a trailing commit after the merge. tag_target must be
+# the verified merge itself; a commit after it (which could only arrive via
+# a governance-forbidden direct push to main) is not covered by the merge's
+# own verification, even if its content is otherwise innocuous.
+FIXDIR_TRAILING="$WORK/fx45-trailing"
+setup_fixture_repo "$FIXDIR_TRAILING"
+(
+  cd "$FIXDIR_TRAILING/repo"
+  git checkout -qb evidence-branch4
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -q main
+  git merge -q --no-ff evidence-branch4 -m "Merge pull request #4 from x/evidence-branch4"
+  echo "trailing" > trailing.txt
+  git add -A
+  git commit -qm "test: a direct commit after the merge (governance-forbidden in reality)"
+  TAG_TARGET_SHA="$(git rev-parse HEAD)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$TAG_TARGET_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses a trailing commit after the verified merge"; else fail "strict-tag-binding should refuse a commit after the merge: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'not the verified merge commit' && pass "refusal names the tag_target-must-be-the-merge condition (V1)" || fail "refusal did not name V1: $STRICT_OUT"
+)
+
+# Sub-case (s): V2 — an octopus merge (3+ parents) is refused outright as
+# unverifiable, regardless of what any individual parent contains.
+FIXDIR_OCTOPUS="$WORK/fx45-octopus"
+setup_fixture_repo "$FIXDIR_OCTOPUS"
+(
+  cd "$FIXDIR_OCTOPUS/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  write_minimal_passing_fixture_content "$(git rev-parse HEAD)"
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -qb branch-b1
+  echo "b1" > b1.txt
+  git add -A
+  git commit -qm "test: b1 commit"
+  git checkout -q main
+  git checkout -qb branch-b2
+  echo "b2" > b2.txt
+  git add -A
+  git commit -qm "test: b2 commit"
+  git checkout -q main
+  git merge -q --no-ff branch-b1 branch-b2 -m "Octopus merge (3 parents)"
+  M_SHA="$(git rev-parse HEAD)"
+  PARENT_COUNT="$(git rev-list --parents -n 1 "$M_SHA" | wc -w)"
+  [ "$PARENT_COUNT" -eq 4 ] && pass "sanity: octopus merge has 3 parents (commit itself + 3)" || fail "test setup bug: expected 4 fields (commit + 3 parents), got $PARENT_COUNT"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses an octopus merge (3+ parents)"; else fail "strict-tag-binding should refuse an octopus merge: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'parent\(s\), not 2' && pass "refusal names the parent-count condition (V2)" || fail "refusal did not name V2: $STRICT_OUT"
+)
+
+# Sub-case (t): V4 — the base side (first parent) advances PAST the
+# candidate before merging, i.e. is not an ancestor of it. The base side
+# must introduce nothing beyond what the candidate already covers.
+FIXDIR_BASEADVANCE="$WORK/fx45-baseadvance"
+setup_fixture_repo "$FIXDIR_BASEADVANCE"
+(
+  cd "$FIXDIR_BASEADVANCE/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  echo "journeys: []" > qa/golden-journeys.yaml
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -qb evidence-branch5
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -q main
+  echo "base advanced" > unexpected.txt
+  git add -A
+  git commit -qm "test: main advances past candidate before the merge"
+  git merge -q --no-ff evidence-branch5 -m "Merge pull request #5 from x/evidence-branch5"
+  M_SHA="$(git rev-parse HEAD)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses when the merge's base parent is not an ancestor of the candidate"; else fail "strict-tag-binding should refuse a base-advanced-past-candidate merge: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'first parent .* is not the verified candidate' && pass "refusal names the base-parent condition (V4)" || fail "refusal did not name V4: $STRICT_OUT"
+)
+
+# Sub-case (u): V5 — the merge's second parent (P2, the reviewed/PR-head
+# side) does not descend from candidate_sha at all. Isolating this from V4
+# requires P1 == candidate_sha EXACTLY (so V4 is trivially satisfied and
+# the top-of-function blanket is_ancestor(candidate, tag_target) check
+# passes via P1's side, not P2's) while P2 is a completely disjoint
+# history — an orphan branch sharing no commits with main.
+FIXDIR_UNRELATEDCAND="$WORK/fx45-unrelatedcand"
+setup_fixture_repo "$FIXDIR_UNRELATEDCAND"
+(
+  cd "$FIXDIR_UNRELATEDCAND/repo"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -q --orphan orphan-evidence-branch
+  git rm -qrf . > /dev/null
+  mkdir -p docs/release/qa-signoff docs/release/security-signoff
+  python3 -c "
+import json
+json.dump({'candidate': {'candidate_sha': '$A_SHA'}, 'catalog': {}, 'journeys': [], 'signoffs': {}}, open('docs/release/qa-signoff/v0.0.1-fx.evidence.json', 'w'))
+"
+  git add -A
+  git commit -qm "test: evidence on an orphan branch sharing no history with candidate_sha's branch"
+  git checkout -q main
+  git merge -q --no-ff --allow-unrelated-histories orphan-evidence-branch -m "Merge pull request #6 from x/orphan-evidence-branch"
+  M_SHA="$(git rev-parse HEAD)"
+  P1_CHECK="$(git rev-parse "$M_SHA^1")"
+  [ "$P1_CHECK" = "$A_SHA" ] && pass "sanity: merge's first parent is exactly candidate_sha (isolates V5 from V4)" || fail "test setup bug: P1 ($P1_CHECK) != candidate ($A_SHA)"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses when the merge's second parent does not descend from candidate_sha"; else fail "strict-tag-binding should refuse a disjoint-history second parent: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'second parent .* does not descend from' && pass "refusal names the PR-head-ancestry condition (V5)" || fail "refusal did not name V5: $STRICT_OUT"
+)
+
+# Sub-case (v): V6 — an EVIL MERGE. The merge commit's tree does not match
+# its second parent's tree because an ALREADY-ALLOWLISTED path
+# (docs/release/qa-signoff/v0.0.1-fx.md itself) was edited during the
+# merge (conflict-resolution-shaped tampering). This is the case that
+# proves V6 is not redundant with V8/V9: V8 (paths_touched_in_range) sees
+# NOTHING for a merge commit by git's own convention (no file list); V9
+# (the net two-tree diff against candidate) DOES see the changed path, but
+# it is already on the allowlist, so V9 alone would not flag it either.
+# Only the tree-hash comparison catches it.
+FIXDIR_EVILMERGE="$WORK/fx45-evilmerge"
+setup_fixture_repo "$FIXDIR_EVILMERGE"
+(
+  cd "$FIXDIR_EVILMERGE/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  write_minimal_passing_fixture_content "$(git rev-parse HEAD)"
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -qb evidence-branch7
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -q main
+  git merge -q --no-ff --no-commit evidence-branch7
+  echo "Verdict: TAMPERED-DURING-MERGE" > docs/release/qa-signoff/v0.0.1-fx.md
+  git add -A
+  git commit -qm "Merge pull request #7 from x/evidence-branch7 (evil: edited an allowlisted path during the merge)"
+  M_SHA="$(git rev-parse HEAD)"
+  P2_SHA="$(git rev-parse "$M_SHA^2")"
+  # Sanity: confirm this case actually exercises V8's and V9's blind spots,
+  # not a no-op — per-commit scan sees nothing for the merge itself, and
+  # the net diff's changed path is already allowlisted.
+  MERGE_NAMEONLY="$(git log --name-only --no-renames --format= -1 "$M_SHA")"
+  [ -z "$MERGE_NAMEONLY" ] && pass "sanity: git log --name-only shows NOTHING for the merge commit itself (V8's blind spot, as documented)" || fail "test setup bug: merge commit unexpectedly has a name-only diff: $MERGE_NAMEONLY"
+  NET_DIFF="$(git diff --name-only --no-renames "$A_SHA" "$M_SHA")"
+  echo "$NET_DIFF" | grep -qE '^docs/release/qa-signoff/v0\.0\.1-fx\.md$' && pass "sanity: the net diff DOES show the tampered path, but it is already allowlisted (V9's blind spot)" || fail "test setup bug: net diff did not show the tampered signoff path: $NET_DIFF"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses an evil merge that edits an allowlisted path during conflict resolution (V6 — the case V8/V9 alone cannot catch)"; else fail "CRITICAL: strict-tag-binding accepted an evil merge that tampered an allowlisted path: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE "does not match its second parent" && pass "refusal names the tree-mismatch condition (V6)" || fail "refusal did not name V6: $STRICT_OUT"
+)
+
+# Sub-case (w): reversed parent order — merging main's history INTO the
+# evidence branch (so the PR-head content lands as the FIRST parent and
+# the base lands as the SECOND) must still be refused, not accidentally
+# accepted by treating whichever parent "looks like" the base as P1. Main
+# must diverge with its OWN unique commit after the branch point — merging
+# an unchanged ancestor branch is a no-op fast-forward that creates no
+# merge commit at all (regardless of --no-ff), which would silently turn
+# this into a non-test.
+FIXDIR_REVERSED="$WORK/fx45-reversed"
+setup_fixture_repo "$FIXDIR_REVERSED"
+(
+  cd "$FIXDIR_REVERSED/repo"
+  sed -i.bak '/evidence\.json/d' .gitignore && rm -f .gitignore.bak
+  write_minimal_passing_fixture_content "$(git rev-parse HEAD)"
+  git add -A
+  git commit -qm "test: candidate commit"
+  A_SHA="$(git rev-parse HEAD)"
+  git checkout -qb evidence-branch8
+  python3 scripts/qa/build-release-evidence.py --version 0.0.1-fx --repo-root . \
+    --candidate-sha "$A_SHA" --catalog qa/golden-journeys.yaml \
+    --qa-signoff docs/release/qa-signoff/v0.0.1-fx.md \
+    --security-signoff docs/release/security-signoff/v0.0.1-fx.md > /dev/null
+  git add -A
+  git commit -qm "test: add release evidence"
+  git checkout -q main
+  echo "main diverged" > main_diverged.txt
+  git add -A
+  git commit -qm "test: main diverges with its own unique commit"
+  git checkout -q evidence-branch8
+  # Reversed: while ON the evidence branch, merge main IN — HEAD (the
+  # evidence-branch tip) becomes P1, main becomes P2. Real merge commit
+  # since main has unique content now (not a fast-forward no-op).
+  git merge -q --no-ff main -m "test: reversed-parent-order merge"
+  M_SHA="$(git rev-parse HEAD)"
+  PARENT_COUNT="$(git rev-list --parents -n 1 "$M_SHA" | wc -w)"
+  [ "$PARENT_COUNT" -eq 3 ] && pass "sanity: reversed merge is a real 2-parent commit, not a fast-forward no-op" || fail "test setup bug: expected 3 fields (commit + 2 parents), got $PARENT_COUNT"
+  STRICT_OUT="$(python3 scripts/qa/check-release-evidence.py --repo-root . --version 0.0.1-fx --tag-target "$M_SHA" --strict-tag-binding 2>&1)"
+  STRICT_EXIT=$?
+  if [ "$STRICT_EXIT" -ne 0 ]; then pass "strict-tag-binding refuses a reversed-parent-order merge"; else fail "strict-tag-binding should refuse a reversed-parent-order merge: $STRICT_OUT"; fi
+  echo "$STRICT_OUT" | grep -qE 'first parent .* is not the verified candidate' && pass "refusal correctly rejects the reversed base parent (V4 catches it symmetrically)" || fail "refusal did not name V4 for the reversed case: $STRICT_OUT"
+)
+
 # ---------------------------------------------------------------------------
 # Case 6: pre-tag defect -> remediation -> re-entry with the SAME
 # required-journey set. This Story does not reimplement AAASM-5845's
