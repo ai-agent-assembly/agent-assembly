@@ -106,7 +106,7 @@ git commit -m "📝 (release): Evidence for v<X> (verdict: <PASS|BLOCK>)"
 > commit to exactly the evidence file, nothing else.
 >
 > **The evidence commit reaching `main` through this repo's normal PR +
-> review + "Create a merge commit" flow is also accepted** (ADR 0037
+> review + "Create a merge commit" flow is also accepted** (Core ADR 0037
 > revision 4, 2026-09-13) — `--strict-tag-binding` verifies a single merge
 > commit structurally (parent count, tree-hash equality against the
 > reviewed branch, ancestry back to `candidate_sha`) rather than refusing
