@@ -904,7 +904,48 @@ jobs:
           RUBY
           SUMS="$SUMS" ruby "$RUNNER_TEMP/refresh_tap_shas.rb"
 
-          # 4. Re-run the generator: it must report no changes, proving the tap's drift
+          # 4. aa-ebpf's formula sources from crates.io (the crate isn't a
+          #    GitHub Release binary), so step 3 above can never find it in
+          #    SHA256SUMS by design — that keyed lookup is basename-of-url
+          #    against a map of *binary tarball* checksums, and
+          #    `aa-ebpf-<version>.crate` is never a key in that map, for any
+          #    version. Nothing else in this job (or anywhere else) has ever
+          #    refreshed this formula's sha256 either, so it silently carried
+          #    a stale (rc.6) checksum through the rc.7 cut (AAASM-6118). Fix
+          #    it at the actual source of truth: crates.io's own sparse index
+          #    publishes each version's real checksum (`cksum`) directly —
+          #    the same value `cargo publish` computed and the same value
+          #    this session verified by hand against
+          #    https://index.crates.io/aa/-e/aa-ebpf while diagnosing this.
+          #    Non-fatal on lookup failure: the formula is `disable!`d
+          #    (AAASM-4325, no installable brew artifact exists for it yet),
+          #    so a stale/missing checksum here cannot break `brew install`
+          #    for any currently shipped formula — this must never block the
+          #    tap PR for the 3 live formulas over the one inert one.
+          cat > "$RUNNER_TEMP/find_ebpf_cksum.rb" <<'RUBY'
+          # frozen_string_literal: true
+          require "json"
+          target = ENV.fetch("EBPF_TARGET_VERSION")
+          $stdin.each_line do |line|
+            line = line.strip
+            next if line.empty?
+            entry = JSON.parse(line)
+            if entry["vers"] == target
+              puts entry["cksum"]
+              break
+            end
+          end
+          RUBY
+          EBPF_CKSUM=$(curl -fsSL "https://index.crates.io/aa/-e/aa-ebpf" | \
+            EBPF_TARGET_VERSION="$VERSION" ruby "$RUNNER_TEMP/find_ebpf_cksum.rb" || true)
+          if [ -n "$EBPF_CKSUM" ]; then
+            sed -i "s/sha256 \"[a-f0-9]\{64\}\"/sha256 \"${EBPF_CKSUM}\"/" Formula/aasm-ebpf.rb
+            echo "aa-ebpf sha256 refreshed from crates.io index: ${EBPF_CKSUM}"
+          else
+            echo "::warning::could not resolve aa-ebpf@${VERSION}'s checksum from the crates.io sparse index — Formula/aasm-ebpf.rb sha256 left untouched (non-blocking: the formula is disable!'d, AAASM-4325)"
+          fi
+
+          # 5. Re-run the generator: it must report no changes, proving the tap's drift
           #    gate will pass on the PR we open below.
           ruby scripts/generate_formulas.rb
           git -C . diff --stat -- Formula/ metadata/versions.rb || true
