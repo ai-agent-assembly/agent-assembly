@@ -104,6 +104,18 @@ git commit -m "📝 (release): Evidence for v<X> (verdict: <PASS|BLOCK>)"
 > riding along in that commit (a source/config/build/workflow file, another
 > version's evidence, a malformed attempt filename) — keep the evidence
 > commit to exactly the evidence file, nothing else.
+>
+> **The evidence commit reaching `main` through this repo's normal PR +
+> review + "Create a merge commit" flow is also accepted** (Core ADR 0037
+> revision 4, 2026-09-13) — `--strict-tag-binding` verifies a single merge
+> commit structurally (parent count, tree-hash equality against the
+> reviewed branch, ancestry back to `candidate_sha`) rather than refusing
+> any merge outright. Do not work around a guard refusal by minting
+> another attempt against the merge commit itself and hoping for a linear
+> range — that produces an unbounded regress on a repo whose branch
+> protection disallows squash/rebase merges. If the guard still refuses
+> after a normal merge-commit PR landed the evidence, that's a real defect
+> in the guard, not something to route around from this skill.
 
 Report the verdict printed by the emitter (`wrote <path> (verdict: <V>)`).
 
