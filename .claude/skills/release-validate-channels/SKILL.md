@@ -129,7 +129,9 @@ green / red per channel:
 
 Full per-channel probe commands and pass criteria are in
 [REFERENCE.md](REFERENCE.md). Soft reds (do not block, only annotate): PyPI
-yanked-shadow, Docs staleness, deferred GHCR.
+yanked-shadow, Docs staleness, deferred GHCR, npm `latest` dist-tag currency
+(AAASM-6121 — see REFERENCE.md's npm section for the check and its known
+recurring failure mode).
 
 ## Output — the green/red matrix
 
