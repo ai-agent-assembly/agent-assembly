@@ -63,6 +63,13 @@ jobs:
           # Python query pack looks for.
           - language: python
             build-mode: none
+          # go (AAASM-6120): three small first-party Go programs, each its own
+          # module (docker/smoke/agents/go, aa-integration-tests/.../sdk_go_driver,
+          # aa-integration-tests/.../probe_go). build-mode: none is deliberate —
+          # these are test fixtures whose module graphs are not resolvable from a
+          # clean checkout, and source-only extraction does not care.
+          - language: go
+            build-mode: none
 
     steps:
       - name: Checkout
