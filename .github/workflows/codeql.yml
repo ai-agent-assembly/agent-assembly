@@ -71,13 +71,15 @@ jobs:
           - language: python
             build-mode: none
             runner: ubuntu-latest
-          # go (AAASM-6120): three small first-party Go programs, each its own
-          # module (docker/smoke/agents/go, aa-integration-tests/.../sdk_go_driver,
-          # aa-integration-tests/.../probe_go). build-mode: none is deliberate —
-          # these are test fixtures whose module graphs are not resolvable from a
-          # clean checkout, and source-only extraction does not care.
+          # go (AAASM-6120): build-mode: none was tried first and CodeQL rejects
+          # it outright ("Go does not support the none build mode. Please try
+          # using one of the following build modes instead: autobuild, manual"),
+          # so Go needs a traced build. `manual` rather than `autobuild` because
+          # there is no module at the repo root — the Go here is three separate
+          # modules — and only one of them is buildable from a clean checkout.
+          # See the build step below for which, and why.
           - language: go
-            build-mode: none
+            build-mode: manual
             runner: ubuntu-latest
           # swift (AAASM-6120): aa-isolation-macos-vm-poc/ is the repo's only
           # Swift source (24_725 bytes). Swift has no build-mode: none support —
@@ -100,7 +102,31 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
 
-      # Only reached by the swift entry (build-mode: manual). The PoC is a
+      # go (build-mode: manual). docker/smoke/agents/go is the only Go module
+      # that resolves from a clean checkout, and it is also the whole of the Go
+      # that linguist counts for this repo (4_268 bytes == agent.go exactly).
+      # `go mod tidy` is needed because the module deliberately ships without a
+      # go.sum (the smoke image populates it in-image); it only writes an
+      # untracked go.sum and leaves go.mod byte-identical.
+      #
+      # The other two modules are NOT built, and cannot be: each has a `replace`
+      # directive pointing outside this repository at a path that does not exist
+      # in a checkout —
+      #   aa-integration-tests/.../f115/probe_go   -> /tmp/aa-go-sdk-for-test
+      #   aa-integration-tests/.../e2e/sdk_go_driver -> ../../../../../../go-sdk
+      # Both are materialised at test time by the Rust integration-test harness,
+      # so `go build` there fails with "replacement directory ... does not
+      # exist". Wiring a go-sdk clone into the security scan to reach 6.3 kB of
+      # test fixtures would couple this workflow to another repo's default
+      # branch; the gap is recorded here instead.
+      - name: Build the Go smoke agent
+        if: matrix.language == 'go'
+        working-directory: docker/smoke/agents/go
+        run: |
+          go mod tidy
+          go build ./...
+
+      # swift (build-mode: manual). The PoC is a self-contained,
       # dependency-free SwiftPM executable target — Package.swift declares no
       # `dependencies:` and main.swift imports only Foundation and the macOS
       # SDK's Virtualization.framework — so a plain `swift build` succeeds on a
@@ -108,7 +134,7 @@ jobs:
       # com.apple.security.virtualization entitlement is applied by SwiftPM at
       # ad-hoc codesign time and is a runtime concern only, not a build one.
       - name: Build the macOS isolation PoC
-        if: matrix.build-mode == 'manual'
+        if: matrix.language == 'swift'
         working-directory: aa-isolation-macos-vm-poc
         run: swift build
 
