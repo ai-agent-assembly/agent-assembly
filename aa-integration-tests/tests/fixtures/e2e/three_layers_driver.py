@@ -139,6 +139,13 @@ def phase_ebpf(agent_id: str, session_id: str, target: str) -> None:
     syscall = "SSL_write"
     try:
         ctx = ssl.create_default_context()
+        # create_default_context() does not pin a protocol floor, so TLSv1 and
+        # TLSv1.1 remain acceptable to this client if the peer offers nothing
+        # better. This phase deliberately bypasses the SDK to prove the eBPF
+        # layer still sees the egress, and that is the whole point — a phase
+        # that exists to be observed should not be the one place in the repo
+        # that would downgrade. Pin it explicitly.
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         # The connection may fail in restricted CI (no DNS / blocked egress) —
         # that is acceptable. The phase line still goes out so the Rust side
         # can synthesise the audit entry.

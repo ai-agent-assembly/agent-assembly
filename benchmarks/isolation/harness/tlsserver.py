@@ -72,6 +72,12 @@ class LoopbackTlsServer:
     def start(self) -> None:
         self._generate_cert()
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        # PROTOCOL_TLS_SERVER negotiates the highest version both ends support,
+        # but it does not itself forbid TLSv1 / TLSv1.1 — the floor comes from
+        # whatever the linked OpenSSL happens to default to, which is not a
+        # property this file controls. Pin the floor explicitly so the workload
+        # measures the cost of TLS a real client would actually accept.
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(self.cert_path, self.key_path)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         server.socket = context.wrap_socket(server.socket, server_side=True)

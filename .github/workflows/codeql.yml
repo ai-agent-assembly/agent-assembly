@@ -5,7 +5,9 @@ name: CodeQL
 # not-configured). Code scanning only updates the repo's security tab when an
 # analysis is uploaded from a `push` to the default branch, so this workflow
 # triggers on push to main (not just pull_request) plus a weekly schedule.
-# Mirrors the known-good go-sdk codeql.yml, adapted for this Rust + TS/JS repo.
+# Mirrors the known-good go-sdk codeql.yml. The matrix below covers every
+# CodeQL-supported language present in this monorepo (AAASM-6120), not just the
+# Rust + TS/JS it started with.
 
 on:
   workflow_dispatch:
@@ -34,7 +36,9 @@ permissions:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    # runner is matrix-driven and set explicitly on every entry: everything can
+    # be extracted on ubuntu-latest except swift, whose extractor is macOS-only.
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
@@ -45,8 +49,46 @@ jobs:
           # cross-target build complexity that the main CI handles separately.
           - language: rust
             build-mode: none
+            runner: ubuntu-latest
           - language: javascript-typescript
             build-mode: none
+            runner: ubuntu-latest
+          # actions (AAASM-6120): the 18 workflows under .github/workflows were
+          # never analysed by any language above — CodeQL treats workflow YAML as
+          # its own `actions` language. Enabling it on the sibling horonomy org
+          # immediately surfaced 11 real medium-severity findings, so this is not
+          # a no-op tick-box.
+          - language: actions
+            build-mode: none
+            runner: ubuntu-latest
+          # python (AAASM-6120): 836_933 bytes of first-party Python were going
+          # unscanned — the largest unanalysed source body in either org. It is
+          # not vendored and not generated: ~631 kB of governance / CI gate
+          # tooling under scripts/, plus aa-integration-tests/, benchmarks/,
+          # conformance/runner/, qa/ and docker/smoke/. Several of those scripts
+          # shell out and parse untrusted input, which is exactly what the
+          # Python query pack looks for.
+          - language: python
+            build-mode: none
+            runner: ubuntu-latest
+          # go (AAASM-6120): build-mode: none was tried first and CodeQL rejects
+          # it outright ("Go does not support the none build mode. Please try
+          # using one of the following build modes instead: autobuild, manual"),
+          # so Go needs a traced build. `manual` rather than `autobuild` because
+          # there is no module at the repo root — the Go here is three separate
+          # modules — and only one of them is buildable from a clean checkout.
+          # See the build step below for which, and why.
+          - language: go
+            build-mode: manual
+            runner: ubuntu-latest
+          # swift (AAASM-6120): aa-isolation-macos-vm-poc/ is the repo's only
+          # Swift source (24_725 bytes). Swift has no build-mode: none support —
+          # its extractor observes a real compiler invocation — so this entry
+          # needs a macOS runner and an explicit build. macos-latest is a
+          # standard GitHub-hosted runner and is free/unmetered on public repos.
+          - language: swift
+            build-mode: manual
+            runner: macos-latest
 
     steps:
       - name: Checkout
@@ -59,6 +101,42 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+
+      # go (build-mode: manual). docker/smoke/agents/go is the only Go module
+      # that resolves from a clean checkout, and it is also the whole of the Go
+      # that linguist counts for this repo (4_268 bytes == agent.go exactly).
+      # `go mod tidy` is needed because the module deliberately ships without a
+      # go.sum (the smoke image populates it in-image); it only writes an
+      # untracked go.sum and leaves go.mod byte-identical.
+      #
+      # The other two modules are NOT built, and cannot be: each has a `replace`
+      # directive pointing outside this repository at a path that does not exist
+      # in a checkout —
+      #   aa-integration-tests/.../f115/probe_go   -> /tmp/aa-go-sdk-for-test
+      #   aa-integration-tests/.../e2e/sdk_go_driver -> ../../../../../../go-sdk
+      # Both are materialised at test time by the Rust integration-test harness,
+      # so `go build` there fails with "replacement directory ... does not
+      # exist". Wiring a go-sdk clone into the security scan to reach 6.3 kB of
+      # test fixtures would couple this workflow to another repo's default
+      # branch; the gap is recorded here instead.
+      - name: Build the Go smoke agent
+        if: matrix.language == 'go'
+        working-directory: docker/smoke/agents/go
+        run: |
+          go mod tidy
+          go build ./...
+
+      # swift (build-mode: manual). The PoC is a self-contained,
+      # dependency-free SwiftPM executable target — Package.swift declares no
+      # `dependencies:` and main.swift imports only Foundation and the macOS
+      # SDK's Virtualization.framework — so a plain `swift build` succeeds on a
+      # stock runner with no network fetch and no Apple credentials. The
+      # com.apple.security.virtualization entitlement is applied by SwiftPM at
+      # ad-hoc codesign time and is a runtime concern only, not a build one.
+      - name: Build the macOS isolation PoC
+        if: matrix.language == 'swift'
+        working-directory: aa-isolation-macos-vm-poc
+        run: swift build
 
       - name: Analyze
         uses: github/codeql-action/analyze@65216971a11ded447a6b76263d5a144519e5eee1 # codeql-bundle-v2.25.2
