@@ -47,6 +47,13 @@ jobs:
             build-mode: none
           - language: javascript-typescript
             build-mode: none
+          # actions (AAASM-6120): the 18 workflows under .github/workflows were
+          # never analysed by any language above — CodeQL treats workflow YAML as
+          # its own `actions` language. Enabling it on the sibling horonomy org
+          # immediately surfaced 11 real medium-severity findings, so this is not
+          # a no-op tick-box.
+          - language: actions
+            build-mode: none
 
     steps:
       - name: Checkout
