@@ -31,7 +31,23 @@ At minimum, every release must prove, where the channel applies:
 - GitHub Release (assets present, correct SHA, not draft, prerelease flag correct);
 - crates.io (every publishable crate's latest `vers` = release version);
 - PyPI (active release, full wheel matrix, no yanked shadow above it);
-- npm (all packages at explicit version; default/`latest` dist-tag state reported separately — never silently assumed correct);
+- npm (all packages at explicit version; `rc`/channel dist-tag correct;
+  default/`latest` dist-tag state reported separately — never silently
+  assumed correct. **Release-type-aware `latest` PASS criteria** — see
+  node-sdk's `docs/release/npm-dist-tags.md` for the authoritative, durable
+  contract this criteria mirrors:
+    - **Pre-GA / pre-1.0 project, RC or pre-release:** PASS when `latest`
+      equals the *highest published SemVer version across every channel*
+      (this is a deliberate policy, not a placeholder — freezing `latest`
+      before any GA exists would make a bare `npm install <pkg>` resolve to
+      an ancient pre-release, which is the AAASM-3840/4730/4994 bug class).
+    - **Post-GA project, any release:** PASS when `latest` equals the
+      current stable GA and an RC publish leaves it untouched — the
+      pre-GA policy above converges to this automatically via SemVer
+      precedence, no separate logic needed.
+  A project not yet at 1.0 does **not** get flagged for "RC shouldn't be
+  latest" — that's the wrong contract for it; check which contract this
+  project has actually adopted before asserting PASS/FAIL.);
 - Homebrew (formula version + sha256s match the release `SHA256SUMS`);
 - GHCR (expected image tags present, `latest` moved where applicable);
 - SDK consumers (representative install/import/basic call from the *published* artifact, not a workspace-local dependency);

@@ -137,19 +137,27 @@ for pkg in "${NPM_PKGS[@]}"; do
 done
 ```
 
-`release-node.yml`'s `latest`-repair step (AAASM-3840/4730/4994) only
-targets `@agent-assembly/sdk` — the 4 runtime sub-packages' `latest` is
-never advanced by any automation (they are consumed by exact-version
-`optionalDependencies` from the main package, not by their own dist-tag,
-so this is low-impact but real staleness). **This is a known, recurring
-gap** (AAASM-3840 → 4730 → 4994): `npm publish` moves the channel dist-tag
-(`alpha`/`beta`/`rc`) but never `latest` for a pre-release, and the
-separate `latest`-repair step depends on a non-OIDC `NPM_TOKEN` write
-(`npm dist-tag add`, which npm OIDC does not cover — npm/cli#8547) that
-can silently go stale if the token expires or requires interactive 2FA
-(`npm error EOTP` — an npm "Automation"-type token is required for
-unattended CI to skip the OTP prompt; a classic Read-and-Publish token is
-not sufficient even with valid credentials).
+**As of node-sdk PR #449 (2026-09-17), `release-node.yml`'s `latest`-repair
+step loops over all 5 packages** (previously it only targeted
+`@agent-assembly/sdk`; the 4 runtime sub-packages' `latest` had silently
+drifted to an old alpha with no automation ever touching it — low-impact
+since they're consumed by exact-version `optionalDependencies` from the
+main package, not by their own dist-tag, but genuinely stale). In normal
+operation this check should now come back **green** for all 5 packages on
+every release — treat a mismatch as a real regression to investigate, not
+an expected/tolerated state.
+
+`npm publish` moves the channel dist-tag (`alpha`/`beta`/`rc`) but never
+`latest` for a pre-release; the separate `latest`-repair step depends on a
+non-OIDC `NPM_TOKEN` write (`npm dist-tag add`, which npm OIDC does not
+cover — npm/cli#8547) that can still go stale if the token expires or
+requires interactive 2FA (`npm error EOTP` — an npm "Automation"-type token
+is required for unattended CI to skip the OTP prompt; a classic
+Read-and-Publish token is not sufficient even with valid credentials — this
+recurred at rc.7, AAASM-4994, root-caused and resolved). See node-sdk's
+`docs/release/npm-dist-tags.md` for the full durable contract, including why
+this project's `latest`-tracks-newest-across-channels policy is a
+deliberate pre-1.0 decision and not itself a bug.
 
 Treat a mismatch (`latest` != the highest published SemVer across all
 channels) as a **soft red**: annotate, do not block the channel matrix —
