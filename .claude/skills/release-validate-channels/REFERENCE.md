@@ -126,6 +126,37 @@ registry. If only the SDK package is present but the runtime sub-packages
 are not, `release-node.yml` likely failed mid-matrix — surface its run URL
 (see channel 7).
 
+**`latest` dist-tag currency (AAASM-6121 addendum — soft red, annotate only).**
+Package *existence* at `$VERSION` is not the same as npm's default-install
+path resolving to it. Check the `latest` dist-tag separately:
+
+```bash
+for pkg in "${NPM_PKGS[@]}"; do
+  lt="$(npm view "${pkg}" dist-tags.latest 2>/dev/null || true)"
+  echo "${pkg}: latest=${lt:-MISSING}"
+done
+```
+
+`release-node.yml`'s `latest`-repair step (AAASM-3840/4730/4994) only
+targets `@agent-assembly/sdk` — the 4 runtime sub-packages' `latest` is
+never advanced by any automation (they are consumed by exact-version
+`optionalDependencies` from the main package, not by their own dist-tag,
+so this is low-impact but real staleness). **This is a known, recurring
+gap** (AAASM-3840 → 4730 → 4994): `npm publish` moves the channel dist-tag
+(`alpha`/`beta`/`rc`) but never `latest` for a pre-release, and the
+separate `latest`-repair step depends on a non-OIDC `NPM_TOKEN` write
+(`npm dist-tag add`, which npm OIDC does not cover — npm/cli#8547) that
+can silently go stale if the token expires or requires interactive 2FA
+(`npm error EOTP` — an npm "Automation"-type token is required for
+unattended CI to skip the OTP prompt; a classic Read-and-Publish token is
+not sufficient even with valid credentials).
+
+Treat a mismatch (`latest` != the highest published SemVer across all
+channels) as a **soft red**: annotate, do not block the channel matrix —
+package-existence (the hard check above) is what actually gates whether
+`release.yml` succeeded; dist-tag currency is a separate, independently-
+recoverable concern with its own known failure mode.
+
 ### 4. PyPI — wheels + sdist, distinguishing yanked from active
 
 ```bash
