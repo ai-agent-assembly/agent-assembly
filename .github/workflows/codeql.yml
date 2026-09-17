@@ -90,6 +90,14 @@ jobs:
             build-mode: manual
             runner: macos-latest
 
+    # PROBE (AAASM-6120), to be removed before merge: pull_request analyses are
+    # diff-informed, so a PR that only touches this one workflow file reports
+    # zero alerts no matter what the four newly enabled languages actually find.
+    # Disable diff-informed queries for one run to get the true repo-wide alert
+    # set, so anything real is fixed here instead of landing red on main.
+    env:
+      CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
