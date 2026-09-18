@@ -22,10 +22,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::remove_dir_all(&embedded_proto);
         copy_dir_recursive(&sibling, &embedded_proto)
             .expect("failed to mirror ../proto/ into aa-proto/_embedded/proto/");
+        // AAASM-6088: declare only the *source* here. `_embedded/proto/` is
+        // rewritten by the lines above on every run, which leaves its own
+        // directory mtime newer than the build-script `output` stamp cargo
+        // compares it against — so declaring it would make this build script
+        // permanently dirty and recompile aa-proto (and everything downstream
+        // of it) on every cargo invocation. Cargo names it directly:
+        //   stale: changed ".../aa-proto/_embedded/proto"
+        //   dirty: FsStatusOutdated(StaleItem(ChangedFile { ... }))
+        // `../proto/` is the honest input: it is what a change to the wire
+        // protocol edits, and its mtimes are stable across builds.
         println!("cargo:rerun-if-changed={}", sibling.display());
         embedded_proto.clone()
     } else if embedded_proto.join("common.proto").exists() {
-        // crates.io install: _embedded/ ships in the tarball.
+        // crates.io install: _embedded/ ships in the tarball. Nothing rewrites
+        // it in this branch, so it is a stable input and is declared as one.
+        println!("cargo:rerun-if-changed={}", embedded_proto.display());
         embedded_proto.clone()
     } else {
         panic!(
@@ -48,8 +60,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         proto_root.join("devint.proto"),
         proto_root.join("telemetry.proto"),
     ];
-
-    println!("cargo:rerun-if-changed={}", proto_root.display());
 
     tonic_prost_build::configure()
         .build_server(true)
