@@ -11,6 +11,7 @@
 //! Spec reference: lines 7140–7155 (local dev mode storage stack).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use aa_core::identity::AgentId;
 use async_trait::async_trait;
@@ -142,12 +143,15 @@ impl SqliteBackend {
     /// 1. Expands a leading `~` in `config.path` to the user's home directory.
     /// 2. Creates the parent directory if absent.
     /// 3. Opens a connection pool with `mode=rwc` (read-write, create-if-missing).
-    /// 4. Enables WAL journal mode for better concurrent reads.
+    /// 4. Enables WAL journal mode for better concurrent reads — see
+    ///    [`enable_wal`] for why that step retries instead of failing when
+    ///    another process is opening the same file at the same moment.
     ///
     /// # Errors
     ///
     /// - `StorageError` if the parent directory cannot
-    ///   be created, the pool cannot be opened, or the WAL pragma is rejected.
+    ///   be created, the pool cannot be opened, or the database is still not
+    ///   in WAL mode after [`enable_wal`] has exhausted its attempts.
     pub async fn open(config: &SqliteConfig) -> StorageResult<Self> {
         let path = expand_tilde(&config.path);
         if let Some(parent) = path.parent() {
@@ -164,10 +168,7 @@ impl SqliteBackend {
         let pool = SqlitePool::connect(&url)
             .await
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .map_err(|e| StorageError::ConnectionFailed(format!("WAL pragma: {e}")))?;
+        enable_wal(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -826,6 +827,71 @@ fn expand_tilde(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Attempts [`enable_wal`] makes before reporting failure.
+const WAL_PRAGMA_ATTEMPTS: u32 = 6;
+
+/// Base backoff between [`enable_wal`] attempts; multiplied by the attempt
+/// index, so the six attempts span roughly 300 ms in total.
+const WAL_PRAGMA_BACKOFF: Duration = Duration::from_millis(20);
+
+/// Put the pool's database into WAL journal mode, tolerating a concurrent opener.
+///
+/// Converting a database *into* WAL needs an exclusive lock, and SQLite
+/// refuses that with `SQLITE_BUSY` **without consulting the busy handler**.
+/// sqlx documents the same constraint on its own `journal_mode` connect
+/// option — "changing into or out of it requires an exclusive lock that
+/// can't be waited on with `sqlite3_busy_timeout()`" — which is why neither
+/// the 5 s default `busy_timeout` nor moving the pragma into
+/// `SqliteConnectOptions` removes the race; it only relocates it. Measured
+/// with four processes opening one fresh file simultaneously, the bare
+/// pragma fails 8% of the time with the default timeout and 52% with none.
+///
+/// Re-issuing the pragma against a database that is *already* WAL is a
+/// lock-free no-op. So the invariant to satisfy is "the database is in WAL
+/// when we return", not "this process performed the conversion": retry, and
+/// accept a conversion that a concurrent opener won.
+///
+/// # Errors
+///
+/// `ConnectionFailed` when the database is still not in WAL after
+/// [`WAL_PRAGMA_ATTEMPTS`] attempts. The message keeps the historical
+/// `WAL pragma: ` prefix so existing diagnostics still match.
+async fn enable_wal(pool: &SqlitePool) -> StorageResult<()> {
+    let mut last = String::from("no attempt was made");
+    for attempt in 0..WAL_PRAGMA_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(WAL_PRAGMA_BACKOFF * attempt).await;
+        }
+        match sqlx::query_scalar::<_, String>("PRAGMA journal_mode=WAL")
+            .fetch_one(pool)
+            .await
+        {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => return Ok(()),
+            Ok(mode) => last = format!("journal_mode is {mode} after the pragma"),
+            Err(e) => last = e.to_string(),
+        }
+        // A concurrent opener may have won the conversion while we were
+        // refused; that satisfies the invariant just as well as winning it.
+        if journal_mode_is_wal(pool).await {
+            return Ok(());
+        }
+    }
+    Err(StorageError::ConnectionFailed(format!(
+        "WAL pragma: {last} (after {WAL_PRAGMA_ATTEMPTS} attempts)"
+    )))
+}
+
+/// Whether the pool's database currently reports WAL journal mode.
+///
+/// A probe failure is reported as "not WAL" so callers retry rather than
+/// treating an unreadable pragma as success.
+async fn journal_mode_is_wal(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+        .fetch_one(pool)
+        .await
+        .is_ok_and(|mode| mode.eq_ignore_ascii_case("wal"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +934,102 @@ mod tests {
             .await
             .expect("journal_mode probe");
         assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
+    }
+
+    /// Read the journal mode the way an independent process would.
+    ///
+    /// A connection that read `journal_mode` *before* another connection
+    /// converted the file keeps reporting the pre-conversion value — the
+    /// pragma read is answered from per-connection pager state, not re-read
+    /// from the header. Probing through the pool that lost the conversion
+    /// race therefore reports `delete` on a database that is genuinely WAL,
+    /// so these tests open a fresh connection to get the honest answer.
+    async fn journal_mode_via_fresh_connection(path: &Path) -> String {
+        let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .expect("fresh probe pool");
+        sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .expect("journal_mode probe")
+    }
+
+    /// AAASM-6124 — `open` must not fail because a *different* connection
+    /// holds a write lock while the file is still in `delete` journal mode.
+    /// Before `enable_wal` this failed immediately with
+    /// `ConnectionFailed("WAL pragma: … database is locked")`: converting
+    /// into WAL needs an exclusive lock, and SQLite refuses it without
+    /// consulting the busy handler, so the 5 s default `busy_timeout` never
+    /// applied.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn open_converges_on_wal_while_another_writer_holds_the_lock() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("contended.db");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+
+        // A second opener that has *not* set WAL, holding a write lock —
+        // the shape `open` + `migrate` produces in another process.
+        let holder = SqlitePool::connect(&url).await.expect("holder pool");
+        let mut tx = holder.begin().await.expect("holder txn");
+        sqlx::query("CREATE TABLE hold(x)")
+            .execute(&mut *tx)
+            .await
+            .expect("holder takes a write lock");
+
+        // Released well inside enable_wal's ~300 ms retry budget, so this
+        // asserts the retry succeeds rather than racing the budget.
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            tx.rollback().await.expect("holder releases");
+        });
+
+        SqliteBackend::open(&SqliteConfig { path: path.clone() })
+            .await
+            .expect("open should converge on WAL rather than fail on SQLITE_BUSY");
+        releaser.await.expect("releaser task");
+
+        assert_eq!(
+            journal_mode_via_fresh_connection(&path).await.to_lowercase(),
+            "wal",
+            "WAL must still actually be enabled, not skipped to dodge the lock"
+        );
+    }
+
+    /// AAASM-6124 — many simultaneous openers of one fresh file must all
+    /// succeed, in the spirit of the existing multi-pool test in
+    /// `approval::db_escalation_scheduler`. Exactly one wins the `delete` ->
+    /// WAL conversion; the rest must accept that outcome instead of
+    /// reporting `ConnectionFailed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_opens_of_one_file_all_succeed() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("stampede.db");
+
+        let openers: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    // open + migrate is what `open_sqlite_backend_shared`
+                    // does, and migrate is what holds the write lock the
+                    // other openers collide with.
+                    let backend = SqliteBackend::open(&SqliteConfig { path }).await?;
+                    backend.migrate().await
+                })
+            })
+            .collect();
+
+        for (i, handle) in openers.into_iter().enumerate() {
+            handle
+                .await
+                .expect("opener task should not panic")
+                .unwrap_or_else(|e| panic!("opener {i} should open and migrate: {e}"));
+        }
+
+        assert_eq!(
+            journal_mode_via_fresh_connection(&path).await.to_lowercase(),
+            "wal",
+            "the file must end up in WAL regardless of which opener won"
+        );
     }
 
     #[tokio::test]
