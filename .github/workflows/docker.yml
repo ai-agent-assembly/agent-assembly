@@ -45,7 +45,7 @@ jobs:
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0
 
       - name: Build aa-runtime image (PR validation, no push)
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: aa-runtime/Dockerfile
@@ -59,7 +59,7 @@ jobs:
         # AAASM-4480: exercise aa-gateway/Dockerfile on every PR that touches it
         # (mirrors the aa-runtime PR build). Still no `packages: write` — this
         # PR path only builds; the tag-only `publish-gateway` job pushes.
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: aa-gateway/Dockerfile
@@ -96,7 +96,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build + push multi-arch image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: aa-runtime/Dockerfile
@@ -154,7 +154,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build + push multi-arch image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: aa-gateway/Dockerfile
@@ -241,7 +241,7 @@ jobs:
       # PR build: linux/amd64 only + load into local Docker daemon so the
       # follow-up smoke step can `docker run` the image.
       - name: "Build ${{ matrix.lang }} image — loads locally for smoke"
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -338,7 +338,7 @@ jobs:
       #   <lang>:latest                       — only for is_latest entries (the
       #     F114 pin per language). See AAASM-1446.
       - name: "Push ${{ matrix.lang }} image to GHCR"
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
