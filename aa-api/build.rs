@@ -35,25 +35,36 @@ fn main() {
         let _ = std::fs::remove_dir_all(&embedded);
         copy_dir_recursive(&sibling, &embedded)
             .expect("failed to mirror ../dashboard/dist to _embedded/dashboard/dist");
+        // AAASM-6088: declare the *source* only. `_embedded/dashboard/dist` was
+        // just rewritten by the two lines above, so declaring it would leave a
+        // watched path whose mtime cargo sees as newer than the build-script
+        // `output` stamp it compares against — a permanently dirty build script
+        // that rebuilds aa-api, and everything downstream of it, on every cargo
+        // invocation. `../dashboard/dist` is the honest input here, and it is
+        // what `pnpm build` actually writes. Matches aa-proto/build.rs and
+        // aa-ebpf/build.rs, which resolve their inputs the same way.
         println!("cargo:rerun-if-changed=../dashboard/dist");
-    } else if !embedded_index.exists() {
-        // Neither the sibling nor the embedded path has the dashboard.
-        // Generate a stub so include_dir! compiles. This branch fires when
-        // someone clones the repo and does `cargo build -p aa-api` without
-        // first running `pnpm build` in dashboard/. The stub makes local mode
-        // serve a "dashboard not built" page rather than failing the build, so
-        // the crate always compiles both with and without a staged dist.
-        std::fs::create_dir_all(&embedded).expect("cannot create _embedded/dashboard/dist");
-        std::fs::write(
-            &embedded_index,
-            "<!doctype html><html><body>Dashboard not built. Run <code>pnpm build</code> in dashboard/ then rebuild aa-api, OR install a published aasm release that ships the prebuilt dashboard.</body></html>\n",
-        )
-        .expect("cannot write _embedded/dashboard/dist/index.html");
+    } else {
+        if !embedded_index.exists() {
+            // Neither the sibling nor the embedded path has the dashboard.
+            // Generate a stub so include_dir! compiles. This branch fires when
+            // someone clones the repo and does `cargo build -p aa-api` without
+            // first running `pnpm build` in dashboard/. The stub makes local mode
+            // serve a "dashboard not built" page rather than failing the build,
+            // so the crate always compiles both with and without a staged dist.
+            std::fs::create_dir_all(&embedded).expect("cannot create _embedded/dashboard/dist");
+            std::fs::write(
+                &embedded_index,
+                "<!doctype html><html><body>Dashboard not built. Run <code>pnpm build</code> in dashboard/ then rebuild aa-api, OR install a published aasm release that ships the prebuilt dashboard.</body></html>\n",
+            )
+            .expect("cannot write _embedded/dashboard/dist/index.html");
+        }
+        // No sibling to mirror from, so `_embedded/dashboard/dist` is not
+        // rewritten on later runs — either the release-staging step or a prior
+        // build populated it, or the stub above just did. It is a stable input
+        // in this branch and is declared as one.
+        println!("cargo:rerun-if-changed=_embedded/dashboard/dist");
     }
-    // else: _embedded/dashboard/dist/ already populated (from a prior build OR
-    // from the release-staging step — both fine).
-
-    println!("cargo:rerun-if-changed=_embedded/dashboard/dist");
 }
 
 /// Recursively copy `src` → `dst`. Creates `dst` and any parent dirs as needed.
