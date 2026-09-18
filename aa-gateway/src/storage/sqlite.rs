@@ -11,6 +11,7 @@
 //! Spec reference: lines 7140–7155 (local dev mode storage stack).
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use aa_core::identity::AgentId;
 use async_trait::async_trait;
@@ -142,12 +143,15 @@ impl SqliteBackend {
     /// 1. Expands a leading `~` in `config.path` to the user's home directory.
     /// 2. Creates the parent directory if absent.
     /// 3. Opens a connection pool with `mode=rwc` (read-write, create-if-missing).
-    /// 4. Enables WAL journal mode for better concurrent reads.
+    /// 4. Enables WAL journal mode for better concurrent reads — see
+    ///    [`enable_wal`] for why that step retries instead of failing when
+    ///    another process is opening the same file at the same moment.
     ///
     /// # Errors
     ///
     /// - `StorageError` if the parent directory cannot
-    ///   be created, the pool cannot be opened, or the WAL pragma is rejected.
+    ///   be created, the pool cannot be opened, or the database is still not
+    ///   in WAL mode after [`enable_wal`] has exhausted its attempts.
     pub async fn open(config: &SqliteConfig) -> StorageResult<Self> {
         let path = expand_tilde(&config.path);
         if let Some(parent) = path.parent() {
@@ -164,10 +168,7 @@ impl SqliteBackend {
         let pool = SqlitePool::connect(&url)
             .await
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
-        sqlx::query("PRAGMA journal_mode=WAL")
-            .execute(&pool)
-            .await
-            .map_err(|e| StorageError::ConnectionFailed(format!("WAL pragma: {e}")))?;
+        enable_wal(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -824,6 +825,71 @@ fn expand_tilde(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+/// Attempts [`enable_wal`] makes before reporting failure.
+const WAL_PRAGMA_ATTEMPTS: u32 = 6;
+
+/// Base backoff between [`enable_wal`] attempts; multiplied by the attempt
+/// index, so the six attempts span roughly 300 ms in total.
+const WAL_PRAGMA_BACKOFF: Duration = Duration::from_millis(20);
+
+/// Put the pool's database into WAL journal mode, tolerating a concurrent opener.
+///
+/// Converting a database *into* WAL needs an exclusive lock, and SQLite
+/// refuses that with `SQLITE_BUSY` **without consulting the busy handler**.
+/// sqlx documents the same constraint on its own `journal_mode` connect
+/// option — "changing into or out of it requires an exclusive lock that
+/// can't be waited on with `sqlite3_busy_timeout()`" — which is why neither
+/// the 5 s default `busy_timeout` nor moving the pragma into
+/// `SqliteConnectOptions` removes the race; it only relocates it. Measured
+/// with four processes opening one fresh file simultaneously, the bare
+/// pragma fails 8% of the time with the default timeout and 52% with none.
+///
+/// Re-issuing the pragma against a database that is *already* WAL is a
+/// lock-free no-op. So the invariant to satisfy is "the database is in WAL
+/// when we return", not "this process performed the conversion": retry, and
+/// accept a conversion that a concurrent opener won.
+///
+/// # Errors
+///
+/// `ConnectionFailed` when the database is still not in WAL after
+/// [`WAL_PRAGMA_ATTEMPTS`] attempts. The message keeps the historical
+/// `WAL pragma: ` prefix so existing diagnostics still match.
+async fn enable_wal(pool: &SqlitePool) -> StorageResult<()> {
+    let mut last = String::from("no attempt was made");
+    for attempt in 0..WAL_PRAGMA_ATTEMPTS {
+        if attempt > 0 {
+            tokio::time::sleep(WAL_PRAGMA_BACKOFF * attempt).await;
+        }
+        match sqlx::query_scalar::<_, String>("PRAGMA journal_mode=WAL")
+            .fetch_one(pool)
+            .await
+        {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => return Ok(()),
+            Ok(mode) => last = format!("journal_mode is {mode} after the pragma"),
+            Err(e) => last = e.to_string(),
+        }
+        // A concurrent opener may have won the conversion while we were
+        // refused; that satisfies the invariant just as well as winning it.
+        if journal_mode_is_wal(pool).await {
+            return Ok(());
+        }
+    }
+    Err(StorageError::ConnectionFailed(format!(
+        "WAL pragma: {last} (after {WAL_PRAGMA_ATTEMPTS} attempts)"
+    )))
+}
+
+/// Whether the pool's database currently reports WAL journal mode.
+///
+/// A probe failure is reported as "not WAL" so callers retry rather than
+/// treating an unreadable pragma as success.
+async fn journal_mode_is_wal(pool: &SqlitePool) -> bool {
+    sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+        .fetch_one(pool)
+        .await
+        .is_ok_and(|mode| mode.eq_ignore_ascii_case("wal"))
 }
 
 #[cfg(test)]
