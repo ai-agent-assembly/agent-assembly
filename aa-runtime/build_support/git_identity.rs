@@ -72,21 +72,39 @@ fn is_checkout_root(root: &Path) -> bool {
 /// Resolved through `git rev-parse --git-path` rather than assembled from
 /// `<root>/.git/…`: in a linked worktree `.git` is a *file* pointing elsewhere,
 /// and the naive path would watch a file that never changes.
+///
+/// Only paths that exist are emitted (AAASM-6088). `--git-path` answers with a
+/// path whether or not the file is there, and two of these legitimately are not:
+/// a repository that has never been packed has no `packed-refs`, and a
+/// repository whose refs *are* packed has no loose `refs/heads/<branch>`. To
+/// cargo a declared-but-absent path is not "watched in case it appears", it is
+/// permanently stale — `StaleItem(MissingFile { .. })` — which reruns this build
+/// script on every cargo invocation and rebuilds aa-runtime and everything
+/// downstream of it. The surviving path in each pair still moves on a commit, so
+/// the staleness the module doc is protecting against stays covered.
 pub fn watch_git_head(root: &Path) {
     let Some(head) = git_path(root, "HEAD") else {
         return;
     };
-    println!("cargo:rerun-if-changed={}", head.display());
+    watch_if_present(&head);
 
     if let Some(packed) = git_path(root, "packed-refs") {
-        println!("cargo:rerun-if-changed={}", packed.display());
+        watch_if_present(&packed);
     }
 
     // A commit on the checked-out branch moves the ref, not `HEAD` itself.
     if let Some(refname) = git_output(root, &["symbolic-ref", "-q", "HEAD"]) {
         if let Some(ref_path) = git_path(root, &refname) {
-            println!("cargo:rerun-if-changed={}", ref_path.display());
+            watch_if_present(&ref_path);
         }
+    }
+}
+
+/// Emit `rerun-if-changed` for `path`, but only if it exists. See
+/// [`watch_git_head`].
+fn watch_if_present(path: &Path) {
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
 }
 

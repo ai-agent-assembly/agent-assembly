@@ -108,8 +108,23 @@ fn main() {
     // A packaged tarball's vcs info sits beside the manifest, so it is watched
     // there rather than at the workspace root — in a published crate there is
     // no workspace root above it at all.
+    //
+    // AAASM-6088: only when it is actually there. A `rerun-if-changed` path that
+    // does not exist is *permanently* stale to cargo, not "watched in case it
+    // shows up" — it reports
+    //   dirty: FsStatusOutdated(StaleItem(MissingFile { path: ".../.cargo_vcs_info.json" }))
+    // and reruns this build script on every single cargo invocation, which
+    // rebuilds aa-runtime and everything downstream of it (aa-api, aa-gateway,
+    // aa-proxy, aa-integration-tests) even when nothing changed. Nothing is lost
+    // by the guard: this file is written by `cargo package` into the tarball
+    // *before* any build happens inside it, so a build tree never gains it
+    // mid-life. In a checkout it is absent by design and `watch_git_head` above
+    // is what keeps the identity fresh.
     if let Some(dir) = manifest_dir.as_deref() {
-        println!("cargo:rerun-if-changed={}", dir.join(VCS_INFO_FILE).display());
+        let vcs_info = dir.join(VCS_INFO_FILE);
+        if vcs_info.exists() {
+            println!("cargo:rerun-if-changed={}", vcs_info.display());
+        }
     }
 
     let (sha, identity_source) = injected_sha()
