@@ -936,6 +936,102 @@ mod tests {
         assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
     }
 
+    /// Read the journal mode the way an independent process would.
+    ///
+    /// A connection that read `journal_mode` *before* another connection
+    /// converted the file keeps reporting the pre-conversion value — the
+    /// pragma read is answered from per-connection pager state, not re-read
+    /// from the header. Probing through the pool that lost the conversion
+    /// race therefore reports `delete` on a database that is genuinely WAL,
+    /// so these tests open a fresh connection to get the honest answer.
+    async fn journal_mode_via_fresh_connection(path: &Path) -> String {
+        let pool = SqlitePool::connect(&format!("sqlite://{}?mode=rwc", path.display()))
+            .await
+            .expect("fresh probe pool");
+        sqlx::query_scalar::<_, String>("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .expect("journal_mode probe")
+    }
+
+    /// AAASM-6124 — `open` must not fail because a *different* connection
+    /// holds a write lock while the file is still in `delete` journal mode.
+    /// Before `enable_wal` this failed immediately with
+    /// `ConnectionFailed("WAL pragma: … database is locked")`: converting
+    /// into WAL needs an exclusive lock, and SQLite refuses it without
+    /// consulting the busy handler, so the 5 s default `busy_timeout` never
+    /// applied.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn open_converges_on_wal_while_another_writer_holds_the_lock() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("contended.db");
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+
+        // A second opener that has *not* set WAL, holding a write lock —
+        // the shape `open` + `migrate` produces in another process.
+        let holder = SqlitePool::connect(&url).await.expect("holder pool");
+        let mut tx = holder.begin().await.expect("holder txn");
+        sqlx::query("CREATE TABLE hold(x)")
+            .execute(&mut *tx)
+            .await
+            .expect("holder takes a write lock");
+
+        // Released well inside enable_wal's ~300 ms retry budget, so this
+        // asserts the retry succeeds rather than racing the budget.
+        let releaser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            tx.rollback().await.expect("holder releases");
+        });
+
+        SqliteBackend::open(&SqliteConfig { path: path.clone() })
+            .await
+            .expect("open should converge on WAL rather than fail on SQLITE_BUSY");
+        releaser.await.expect("releaser task");
+
+        assert_eq!(
+            journal_mode_via_fresh_connection(&path).await.to_lowercase(),
+            "wal",
+            "WAL must still actually be enabled, not skipped to dodge the lock"
+        );
+    }
+
+    /// AAASM-6124 — many simultaneous openers of one fresh file must all
+    /// succeed, in the spirit of the existing multi-pool test in
+    /// `approval::db_escalation_scheduler`. Exactly one wins the `delete` ->
+    /// WAL conversion; the rest must accept that outcome instead of
+    /// reporting `ConnectionFailed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_opens_of_one_file_all_succeed() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("stampede.db");
+
+        let openers: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                tokio::spawn(async move {
+                    // open + migrate is what `open_sqlite_backend_shared`
+                    // does, and migrate is what holds the write lock the
+                    // other openers collide with.
+                    let backend = SqliteBackend::open(&SqliteConfig { path }).await?;
+                    backend.migrate().await
+                })
+            })
+            .collect();
+
+        for (i, handle) in openers.into_iter().enumerate() {
+            handle
+                .await
+                .expect("opener task should not panic")
+                .unwrap_or_else(|e| panic!("opener {i} should open and migrate: {e}"));
+        }
+
+        assert_eq!(
+            journal_mode_via_fresh_connection(&path).await.to_lowercase(),
+            "wal",
+            "the file must end up in WAL regardless of which opener won"
+        );
+    }
+
     #[tokio::test]
     async fn migrate_creates_all_expected_tables_and_indexes() {
         let (_tmp, backend) = open_temp_backend().await;
