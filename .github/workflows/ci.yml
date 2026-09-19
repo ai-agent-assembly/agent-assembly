@@ -1239,6 +1239,16 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: every debug-profile, default-feature, host-target job
+          # shares one cache entry. `shared-key` replaces the per-job key
+          # outright -- it short-circuits `add-job-id-key` -- so these jobs stop
+          # each saving their own multi-GB `target/` tree. The action still
+          # appends OS, arch, a toolchain+env hash and a lockfile hash, so
+          # nothing is ever shared across an incompatible environment. Jobs
+          # that compile differently (coverage instrumentation, --all-features,
+          # release/bench, cross targets, the sccache lanes) keep their own keys.
+          shared-key: workspace-debug
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run TimescaleDB tests
@@ -1262,6 +1272,9 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run gateway migration drift test
@@ -1576,6 +1589,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
 
       # Selftest first, same reasoning as the backend-license gate above: a
       # checker proven only against input it accepts may be passing vacuously.
@@ -1906,6 +1922,9 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Generate OpenAPI spec from code
         run: cargo run -p aa-api --bin generate_openapi > /tmp/generated-v1.yaml
       - name: Check spec is up to date
@@ -2263,6 +2282,9 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Run conformance suite (all categories)
         run: cargo test -p conformance
 
@@ -2573,7 +2595,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          shared-key: dashboard-e2e-real-backend
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
 
       - name: Install protoc
         # `aa-proto`'s build script shells out to `protoc`, and the runner image
@@ -2848,7 +2871,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: sensitive-data-reference-journey-evidence
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Install protoc
         run: sudo apt-get install -y protobuf-compiler
       - name: Install cargo-nextest
@@ -2997,6 +3021,9 @@ jobs:
         run: sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
@@ -3235,7 +3262,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: isolation-backend-linux
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Install protobuf compiler
@@ -3428,7 +3456,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
-          key: isolation-backend-native-linux
+          # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          shared-key: workspace-debug
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run the confinement suite
