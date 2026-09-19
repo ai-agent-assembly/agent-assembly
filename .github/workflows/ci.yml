@@ -1248,7 +1248,18 @@ jobs:
           # nothing is ever shared across an incompatible environment. Jobs
           # that compile differently (coverage instrumentation, --all-features,
           # release/bench, cross targets, the sccache lanes) keep their own keys.
+          #
+          # `save-if: "false"` on the other nine because sharing a key alone
+          # left the *content* of the entry to whichever job won the save
+          # reservation race, and that was `detection-egress-closure` -- a lane
+          # whose closure is 137 of those 846 crates, 16.2%. The entry came out
+          # at 188 MiB, every heavy job still recompiled the rest, aggregate
+          # time moved 81m52s -> 81m42s, and
+          # `sensitive-data-reference-journey-evidence` regressed 7m47s ->
+          # 19m47s because it gave up its own 1042 MiB per-job cache for a
+          # thinner shared one. One job writes now; the rest restore only.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run TimescaleDB tests
@@ -1275,6 +1286,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run gateway migration drift test
@@ -1592,6 +1604,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
 
       # Selftest first, same reasoning as the backend-license gate above: a
       # checker proven only against input it accepts may be passing vacuously.
@@ -1925,6 +1938,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Generate OpenAPI spec from code
         run: cargo run -p aa-api --bin generate_openapi > /tmp/generated-v1.yaml
       - name: Check spec is up to date
@@ -2285,6 +2299,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Run conformance suite (all categories)
         run: cargo test -p conformance
 
@@ -2596,6 +2611,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
+          # This job is the single designated *writer*: it is the only one of the
+          # ten without `save-if: "false"`. Chosen on measured coverage rather
+          # than size alone -- resolving the ten lanes' actual build commands
+          # through `cargo metadata` puts this one's dependency closure (aa-cli,
+          # the aa-integration-tests test target and aa-api) at 823 of the 846
+          # external crates the ten need between them, 97.3%, and a strict
+          # superset of every other candidate's. It leaves seven of the ten
+          # needing zero extra crates. It is also the heaviest lane, so it pays
+          # the cold build the other nine then skip.
           shared-key: workspace-debug
 
       - name: Install protoc
@@ -2873,6 +2897,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Install protoc
         run: sudo apt-get install -y protobuf-compiler
       - name: Install cargo-nextest
@@ -3024,6 +3049,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
@@ -3264,6 +3290,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Install protobuf compiler
@@ -3458,6 +3485,7 @@ jobs:
         with:
           # AAASM-5448: shared debug cache -- see the `timescaledb-tests` job.
           shared-key: workspace-debug
+          save-if: "false"
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Run the confinement suite
