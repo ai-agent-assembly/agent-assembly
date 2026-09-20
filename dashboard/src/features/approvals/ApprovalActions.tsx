@@ -119,6 +119,15 @@ export function ApprovalActions({
     return (
       <div
         data-testid="approval-actions"
+        // AAASM-6146: this pane replaces the Reject button that opened it, so
+        // the control that had focus is unmounted and focus would otherwise
+        // fall to <body> — which is why the textarea below is autofocused.
+        // Moving focus is only half of it: without dialog semantics a screen
+        // reader announces the textarea with no indication that a new,
+        // separately-cancellable context just opened. It is deliberately not
+        // `aria-modal` — the rest of the queue stays reachable behind it.
+        role="dialog"
+        aria-label="Reject approval"
         style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}
       >
         <textarea
