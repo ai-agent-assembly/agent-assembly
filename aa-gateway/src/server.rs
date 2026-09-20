@@ -663,8 +663,11 @@ async fn start_db_escalation_scheduler(
     // override pointing at a not-yet-created directory) the connect below
     // fails with exactly the "unable to open database file" error this
     // ticket reports, independent of the nonroot/writability question.
+    //
+    // AAASM-6146: `tokio::fs` — this runs on a runtime worker during server
+    // start-up. The fallback behaviour below is unchanged.
     if let Some(parent) = db_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
             tracing::warn!(
                 error = %e,
                 path = %parent.display(),
