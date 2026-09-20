@@ -150,7 +150,7 @@ struct ClaudeCodeSteps(Arc<aa_devtool_claude_code::ClaudeCodeIntegration>);
 #[async_trait]
 impl StepContentSource for ClaudeCodeSteps {
     async fn render(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, String> {
-        self.0.step_content(plan).map_err(|e| e.to_string())
+        self.0.step_content(plan).await.map_err(|e| e.to_string())
     }
 }
 

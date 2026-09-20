@@ -427,7 +427,7 @@ impl ClaudeCodeIntegration {
     /// user reviewed is what the executor checks against, so a CA that was
     /// rotated between plan and apply fails closed instead of being written
     /// silently.
-    pub fn step_content(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, AdapterError> {
+    pub async fn step_content(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, AdapterError> {
         let mut rendered = BTreeMap::new();
         for step in &plan.steps {
             match step.id.as_str() {
@@ -435,7 +435,7 @@ impl ClaudeCodeIntegration {
                     rendered.insert(step.id.clone(), managed_settings_json(plan.profile)?);
                 }
                 STEP_PROXY_CA => {
-                    rendered.insert(step.id.clone(), self.read_ca_pem()?);
+                    rendered.insert(step.id.clone(), self.read_ca_pem().await?);
                 }
                 STEP_SIDE_CHANNEL_SCOPE => {
                     rendered.insert(step.id.clone(), mitm_hosts_document());
@@ -453,13 +453,15 @@ impl ClaudeCodeIntegration {
     }
 
     /// The proxy CA certificate, read from where `aa-proxy` persists it.
-    fn read_ca_pem(&self) -> Result<String, AdapterError> {
+    async fn read_ca_pem(&self) -> Result<String, AdapterError> {
         let path = self.paths.ca_source_path().ok_or_else(|| {
             AdapterError::SettingsGenerationFailed(
                 "the Agent Assembly proxy certificate authority location is unknown; set AA_CA_DIR".to_string(),
             )
         })?;
-        std::fs::read_to_string(path).map_err(|e| {
+        // AAASM-6093: `tokio::fs`, not `std::fs` — every caller of this helper
+        // is an `async fn`, so a blocking read here occupies an executor thread.
+        tokio::fs::read_to_string(path).await.map_err(|e| {
             AdapterError::SettingsGenerationFailed(format!(
                 "the Agent Assembly proxy certificate authority could not be read from {}: {e}. \
                  Start the proxy once (`aasm proxy start`) so it is created, then plan again",
@@ -551,10 +553,11 @@ impl ClaudeCodeIntegration {
     /// [`bypass::environment_bypasses`]; that report is folded into
     /// `findings` here and its `unexamined` half is carried separately by
     /// [`limitation_evidence`](Self::limitation_evidence).
-    fn bypasses_at(&self, settings_path: Option<&Path>, caller_env: Option<&CallerEnvironment>) -> BypassReport {
+    async fn bypasses_at(&self, settings_path: Option<&Path>, caller_env: Option<&CallerEnvironment>) -> BypassReport {
         let mut findings = Vec::new();
         if let Some(path) = settings_path {
-            if let Ok(raw) = std::fs::read_to_string(path) {
+            // AAASM-6093: `tokio::fs`, for the same reason as `read_ca_pem`.
+            if let Ok(raw) = tokio::fs::read_to_string(path).await {
                 findings.extend(bypass::settings_bypasses(&path.display().to_string(), &raw));
             }
         }
@@ -572,13 +575,13 @@ impl ClaudeCodeIntegration {
     /// configuration, it makes the configuration unable to prove anything. An
     /// `Absent` reading only ever lowers the reported state, which is the whole
     /// behaviour needed here.
-    fn limitation_evidence(
+    async fn limitation_evidence(
         &self,
         settings_path: Option<&Path>,
         caller_env: Option<&CallerEnvironment>,
         now: u64,
     ) -> Vec<ProtectionEvidence> {
-        let report = self.bypasses_at(settings_path, caller_env);
+        let report = self.bypasses_at(settings_path, caller_env).await;
         let mut evidence: Vec<ProtectionEvidence> = report
             .findings
             .into_iter()
@@ -1008,7 +1011,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
 
         if interception_available {
             // 2. Trust material — condition C1, first half.
-            let pem = self.read_ca_pem()?;
+            let pem = self.read_ca_pem().await?;
             plan = plan.with_step(
                 IntegrationStep::new(
                     STEP_PROXY_CA,
@@ -1158,6 +1161,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
 
         for finding in self
             .bypasses_at(Some(&settings_path), request.caller_env.as_ref())
+            .await
             .findings
         {
             plan = plan.warn(format!(
@@ -1224,7 +1228,10 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 ));
             }
         }
-        evidence.extend(self.limitation_evidence(settings_path.as_deref(), caller_env, now));
+        evidence.extend(
+            self.limitation_evidence(settings_path.as_deref(), caller_env, now)
+                .await,
+        );
 
         let planned_level = receipt.map_or(ProtectionLevel::NotInstalled, |r| r.planned_level);
         let derivation = StateDerivation {
@@ -1323,7 +1330,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
         // verify reads the caller's repository and not whichever one this shared
         // process was started in (AAASM-5913).
         let settings_path = receipt.settings_file_path();
-        let bypasses = self.bypasses_at(settings_path, caller_env);
+        let bypasses = self.bypasses_at(settings_path, caller_env).await;
         for finding in &bypasses.findings {
             missing.push(finding.detail());
         }
@@ -1333,7 +1340,7 @@ impl DevToolIntegration for ClaudeCodeIntegration {
                 bypasses.unexamined.join(", ")
             ));
         }
-        evidence.extend(self.limitation_evidence(settings_path, caller_env, now));
+        evidence.extend(self.limitation_evidence(settings_path, caller_env, now).await);
 
         let outcome = if !mismatched.is_empty() {
             VerificationOutcome::Failed {
@@ -1636,7 +1643,7 @@ impl ClaudeCodeIntegration {
     /// # Errors
     ///
     /// Propagates any failure to render the bytes a step describes.
-    pub fn loaded_executor(&self, plan: &IntegrationPlan) -> Result<Box<dyn StepExecutor + Send>, AdapterError> {
-        Ok(Box::new(self.scoped_executor(self.step_content(plan)?)))
+    pub async fn loaded_executor(&self, plan: &IntegrationPlan) -> Result<Box<dyn StepExecutor + Send>, AdapterError> {
+        Ok(Box::new(self.scoped_executor(self.step_content(plan).await?)))
     }
 }

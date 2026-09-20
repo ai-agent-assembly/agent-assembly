@@ -638,7 +638,7 @@ async fn the_plan_scopes_the_tools_side_channels_without_touching_other_hosts() 
         .iter()
         .find(|s| s.id == STEP_SIDE_CHANNEL_SCOPE)
         .expect("side-channel step");
-    let rendered = integration.step_content(&plan).expect("content");
+    let rendered = integration.step_content(&plan).await.expect("content");
     let hosts = rendered.get(STEP_SIDE_CHANNEL_SCOPE).expect("host list content");
     for host in MITM_HOSTS {
         assert!(hosts.contains(host), "{hosts}");
