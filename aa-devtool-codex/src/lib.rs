@@ -303,9 +303,14 @@ impl DevToolAdapter for CodexAdapter {
         // AAASM-6091: a parse failure or a non-table document must refuse,
         // not silently fall back to an empty table — that would splice AA's
         // keys onto nothing and overwrite the user's real `config.toml`.
-        let mut merged: toml::value::Table = if config_path.exists() {
-            let raw = std::fs::read_to_string(&config_path).map_err(AdapterError::SettingsApplyFailed)?;
-            match toml::from_str::<toml::Value>(&raw) {
+        //
+        // AAASM-6093: `tokio::fs`, because this is an `async fn` and a blocking
+        // read parks the executor thread. Matching `NotFound` on the read also
+        // removes the `exists()`-then-read window, in which the file could be
+        // removed between the two calls and the absence reported as a read
+        // failure instead.
+        let mut merged: toml::value::Table = match tokio::fs::read_to_string(&config_path).await {
+            Ok(raw) => match toml::from_str::<toml::Value>(&raw) {
                 Ok(toml::Value::Table(t)) => t,
                 Ok(_) => {
                     return Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
@@ -325,9 +330,11 @@ impl DevToolAdapter for CodexAdapter {
                         ),
                     )));
                 }
-            }
-        } else {
-            toml::value::Table::new()
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::value::Table::new(),
+            // Any other read failure — a permission denial, a directory in the
+            // file's place — still refuses, as the mapped `?` did before.
+            Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
         };
 
         // AA-managed keys win; user-managed keys not present in `settings` survive.
@@ -339,13 +346,20 @@ impl DevToolAdapter for CodexAdapter {
 
         // Ensure ~/.codex/ exists.
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(AdapterError::SettingsApplyFailed)?;
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(AdapterError::SettingsApplyFailed)?;
         }
 
-        // Atomic write: write to a sibling tmp file then rename.
+        // Atomic write: write to a sibling tmp file then rename. The rename is
+        // still the atomic step; only the blocking-ness of the calls changed.
         let tmp_path = config_path.with_extension("tmp");
-        std::fs::write(&tmp_path, content.as_bytes()).map_err(AdapterError::SettingsApplyFailed)?;
-        std::fs::rename(&tmp_path, &config_path).map_err(AdapterError::SettingsApplyFailed)?;
+        tokio::fs::write(&tmp_path, content.as_bytes())
+            .await
+            .map_err(AdapterError::SettingsApplyFailed)?;
+        tokio::fs::rename(&tmp_path, &config_path)
+            .await
+            .map_err(AdapterError::SettingsApplyFailed)?;
 
         Ok(())
     }

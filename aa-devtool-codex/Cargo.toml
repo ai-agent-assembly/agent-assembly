@@ -16,6 +16,11 @@ thiserror    = { workspace = true }
 toml         = { workspace = true }
 which        = { workspace = true }
 
+# AAASM-6093: the DevToolAdapter methods are `async fn`, so their file I/O must
+# not block the executor thread. `fs` is the only feature needed here — the
+# runtime itself is the caller's.
+tokio        = { workspace = true, features = ["fs"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio    = { workspace = true, features = ["macros", "rt"] }
