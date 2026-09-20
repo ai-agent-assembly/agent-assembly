@@ -229,16 +229,93 @@ The self-test asserts three properties, and each one can fail independently:
    the tolerance window. If the harness reports GREEN against 500 ms, it cannot
    detect a real regression.
 2. **The startup/steady-state separation is real.** Under `delay`, the
-   *startup-corrected* steady-state ratio of a real workload must stay GREEN.
-   A fixed per-invocation cost must not leak into the steady-state number; if it
-   does, the two costs are not actually separated and the acceptance criterion
-   is unmet.
+   *startup-corrected* steady-state ratio of a real workload must land within
+   ±40 % of **1.0** — the value the control guarantees by construction, since a
+   purely fixed per-invocation cost has nothing to contribute to steady state.
+   If it leaks, the two costs are not actually separated and the acceptance
+   criterion is unmet. P4's grade for that ratio is still recorded, but as an
+   observation, not as the oracle: see "P4's grade is not this assertion's
+   oracle" below.
 3. **Steady-state regressions are detected.** Under `repeat`, the steady-state
    ratio must be ≈2× (within ±40 %) and must classify **RED**.
 
 Assertions 1 and 3 prove sensitivity; assertion 2 proves the two metrics are not
 the same metric wearing two hats. The self-test's own output is committed as
 evidence under `results/`.
+
+### P4's grade is not this assertion's oracle (AAASM-6128)
+
+Assertion 2 was originally written as `p_steady_delay["grade"] == "GREEN"`,
+which borrowed P4's `green_max = 1.10` as its pass condition. That was wrong in
+two independent ways.
+
+**Wrong in principle.** P4's boundary is a pre-registered *product-decision*
+threshold: it feeds the `decide()` rule that chooses between
+`continue-with-substrate`, `add-second-backend` and `build-native-linux-backend`.
+A product threshold is not a test oracle. Reusing it coupled the self-test to a
+number that exists to answer a different question, which is also why the
+tempting repair — raising `green_max` until the self-test stops failing — would
+have silently moved the real verdict boundary. `grade()` is furthermore an upper
+bound only (`value <= green_max` → GREEN), so the borrowed oracle had **no lower
+bound at all**: a ratio of 0.5, meaning the harness had lost the signal
+completely, would have graded GREEN and *passed*. A control that cannot fail in
+the direction of measuring nothing is not a control.
+
+**Wrong in fact.** The quantity being judged is noise about 1.0, and 1.10 is
+inside that noise. Measured on `ubuntu-latest`, 24 samples over 12 distinct
+runners (2 each), run `35491907440`, at the self-test's own defaults of 10
+repetitions after 2 warmups:
+
+| | Observed |
+| --- | --- |
+| n (all graded; none blocked) | 24 |
+| min / max | 0.9762 / 1.1322 |
+| median / mean | 1.0002 / 1.0067 |
+| standard deviation | 0.0324 |
+| p95 \|deviation from 1.0\| | 2.38 % |
+| max \|deviation from 1.0\| | **13.22 %** |
+| samples exceeding P4's `green_max` of 1.10 | **1 of 24 (4.2 %)** |
+
+The last row *is* the defect, reproduced independently of the original report:
+ordinary runner noise crosses 1.10 on its own, so the old oracle turned a
+blocking merge gate into a 4.2 % coin flip. (The ticket's "1 in 3" came from the
+three executions then available; 4.2 % is the refined rate for this failure mode
+specifically, from 24.)
+
+The distribution is also **heavy-tailed, not Gaussian**: 23 samples sit within
+8 % of 1.0 and one sits at 13.22 %, which is 4.1 standard deviations out and 5.5×
+the p95. That tail is what sets the band, and it is why the band is *not*
+tightened below the `CONTROL_TOLERANCE` that assertions 1 and 3 already use:
+
+| Tolerance | Failures in the 24 samples | Headroom over the observed max deviation |
+| --- | --- | --- |
+| 0.15 | 0 | 1.13× |
+| 0.20 | 0 | 1.51× |
+| 0.30 | 0 | 2.27× |
+| **0.40** (`CONTROL_TOLERANCE`) | 0 | **3.03×** |
+
+A tighter band is not free on a sample that already contains a 4.1σ excursion —
+0.15 would be riding 13 % above the largest value actually observed — and
+nothing is gained by it, because assertion 2's job is to catch leakage on the
+scale of the injected cost. The measured leak below is 89 %, which every row of
+that table rejects. So assertion 2 uses `CONTROL_TOLERANCE`, unchanged, and no
+number in `thresholds.py` moves.
+
+**The assertion still bites.** A band wide enough not to flake has to be shown
+to still fail on a real violation. `throttled.sh`'s `repeat` mode is a cost
+proportional to the work rather than fixed in front of it, so it genuinely
+belongs in steady state. Substituting it for the delay arm — changing no
+threshold, assertion, or harness code — gives, on the same runner class:
+
+```text
+BITE_CHECK2 {"id": 2, ..., "passed": false,
+  "expected": {"ratio": 1.0, "tolerance": 0.4},
+  "measured": {"ratio": 1.8922584322255658, "grade": "RED"}}
+```
+
+1.89 against a band of ±0.40 is rejected with a factor of 2.2 to spare, and the
+check reports a *graded* failure rather than a blocked dimension — the
+distinction the next section turns on.
 
 ### The self-test can fail for two very different reasons
 
@@ -276,6 +353,16 @@ No performance conclusion is drawn from any of them. The baseline exists to
 demonstrate the harness produces the intended distributions and to fix the shape
 of the result schema; the self-test files exist to demonstrate the harness can
 detect a regression at all.
+
+One caveat on reading them: the committed self-test evidence was generated
+2026-08-13, *before* assertion 2 stopped borrowing P4's grade as its oracle, so
+its `checks[1].expected` still reads `{"grade": "GREEN", "ratio": 1.0}` rather
+than a tolerance around 1.0. It is not regenerated here, deliberately — a
+re-run on a workstation returns `P4 blocked: no comparable admissible process
+family` and would replace a fully graded record with a blocked one. The evidence
+for the current assertion is the `ubuntu-latest` measurement in "P4's grade is
+not this assertion's oracle" above, and these files are left as the historical
+record they are.
 
 ## Pre-registered thresholds
 
