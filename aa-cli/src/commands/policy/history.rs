@@ -70,7 +70,10 @@ pub struct DiffArgs {
 pub fn run_apply(args: ApplyArgs, ctx: &ResolvedContext) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
-        let yaml = match std::fs::read_to_string(&args.file) {
+        // AAASM-6146: `tokio::fs` — this read is inside the `block_on` async
+        // block, so on a current-thread flavour it would stall the very runtime
+        // that has to drive the HTTP call below. Error handling is unchanged.
+        let yaml = match tokio::fs::read_to_string(&args.file).await {
             Ok(y) => y,
             Err(e) => {
                 eprintln!("error: failed to read {}: {}", args.file.display(), e);
