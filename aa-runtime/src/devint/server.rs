@@ -223,7 +223,10 @@ impl DevIntServer {
             }
         }
 
-        if let Err(e) = std::fs::remove_file(&socket_path) {
+        // AAASM-6146: `tokio::fs` — this runs at the tail of the `async fn`
+        // accept loop, on a runtime worker. Still best-effort: a failure is
+        // warned about and does not fail shutdown.
+        if let Err(e) = tokio::fs::remove_file(&socket_path).await {
             tracing::warn!(error = %e, "failed to remove the DI-API socket on shutdown");
         }
         tracing::info!("DI-API accept loop stopped");
