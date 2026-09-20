@@ -616,7 +616,11 @@ async fn build_audit_publisher(
     config: &RuntimeConfig,
 ) -> Option<std::sync::Arc<crate::audit_publisher::AuditPublisher>> {
     let path = config.nats_config_path.as_ref()?;
-    let toml = match std::fs::read_to_string(path) {
+    // AAASM-6146: `tokio::fs` — `build_audit_publisher` is an `async fn` on the
+    // agent start-up path; a blocking read here parks a runtime worker. The
+    // "unreadable config disables publishing, never aborts startup" contract
+    // (AAASM-2547) is unchanged.
+    let toml = match tokio::fs::read_to_string(path).await {
         Ok(toml) => toml,
         Err(err) => {
             tracing::warn!(error = %err, path = %path.display(), "audit publisher disabled — cannot read NATS config");
