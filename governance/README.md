@@ -299,6 +299,8 @@ because it touched no governance or schema path. The `push` backstop caught it o
 `main` instead, which is the division of labour the header above describes,
 paid for with one red run.
 
+## The three questions
+
 A capability can pass the first and fail the third; three dead capabilities
 were found in this programme exactly that way. Collapsing any two into one
 field is [ADR 0034 forbidden design 5](../docs/src/adr/0034-one-product-truth-and-cross-repository-documentation-governance.md),
