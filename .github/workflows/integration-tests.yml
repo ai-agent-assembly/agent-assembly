@@ -219,7 +219,16 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
-          version: 10
+          # AAASM-6133: pinned, was a floating `10`. This was the only one of
+          # the repository's 18 pnpm/action-setup sites whose resolved version
+          # nobody controlled — it silently followed 10.x-latest (10.34.5 at the
+          # time of pinning) while the 16 sites serving dashboard/ and
+          # examples/aa-devint-reference-client/ all pin 10.9.0, the version
+          # both of those packages declare in `packageManager`. The TypeScript
+          # fixture below has no `packageManager` field of its own, so nothing
+          # else in the tree fixed this. `pnpm install --frozen-lockfile` on
+          # that fixture is verified to pass at this version.
+          version: 10.9.0
 
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
