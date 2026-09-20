@@ -808,8 +808,18 @@ fi
         assert_eq!(
             killed,
             0,
-            "failed to SIGKILL the dedicated proxy pid {proxy_pid}: {}",
+            "failed to SIGKILL the dedicated proxy pid {proxy_pid} (launcher aasm pid {aasm_pid}): \
+             {}\nfull process table at the moment of failure:\n{}",
             describe_kill_error(kill_err.as_ref()),
+            // AAASM-6131: errno alone names the syscall's complaint but not
+            // which of two very different things went wrong. The process table
+            // settles it: a surviving argument-free `aa-proxy` child of
+            // `aasm_pid` means this scan captured the wrong pid and the product
+            // is fine, whereas no such child while `aasm_pid` is still alive
+            // means the dedicated proxy really did die under a live governed
+            // session — a product defect, and the one thing this scenario must
+            // not silently absorb.
+            dump_process_table(),
         );
         assert!(
             wait_for_pid_gone(proxy_pid, Duration::from_secs(5)),
