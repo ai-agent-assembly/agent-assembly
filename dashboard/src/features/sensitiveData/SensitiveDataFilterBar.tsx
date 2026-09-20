@@ -51,7 +51,7 @@ export function SensitiveDataFilterBar({
     <section className="sd-panel" data-testid="sd-filters" aria-label="Sensitive-data filters">
       <div className="sd-filters">
         <label className="sd-field">
-          Window
+          <span>Window</span>
           <select
             data-testid="sd-filter-range"
             value={filters.range}
