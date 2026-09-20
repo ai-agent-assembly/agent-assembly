@@ -64,18 +64,5 @@
     "typescript": "^5.5.3",
     "vite": "^8.1.5",
     "vitest": "^4.1.5"
-  },
-  "pnpm": {
-    "overrides": {
-      "@babel/core": "^7.29.7",
-      "browserslist": "^4.28.7",
-      "dompurify": "^3.4.13",
-      "esbuild": "^0.28.1",
-      "js-yaml": "^4.3.2",
-      "undici": "^7.28.0",
-      "brace-expansion@1": "^1.1.18",
-      "brace-expansion@2": "^2.1.4",
-      "brace-expansion@5": "^5.0.9"
-    }
   }
 }

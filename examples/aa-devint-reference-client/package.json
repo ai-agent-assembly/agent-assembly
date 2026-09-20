@@ -39,12 +39,6 @@
     "onlyBuiltDependencies": [
       "@bufbuild/buf",
       "esbuild"
-    ],
-    "overrides": {
-      "js-yaml": "^4.3.2",
-      "brace-expansion@1": "^1.1.18",
-      "brace-expansion@2": "^2.1.4",
-      "nanoid": "^3.3.17"
-    }
+    ]
   }
 }

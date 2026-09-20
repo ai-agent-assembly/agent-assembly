@@ -1,0 +1,26 @@
+# pnpm settings for the devint reference client. AAASM-6133.
+#
+# These four entries were migrated verbatim out of package.json's
+# "pnpm.overrides" field. pnpm 11 no longer reads that field
+# (https://pnpm.io/settings), so leaving them there meant a one-line bump of
+# any `pnpm/action-setup` pin to 11 would have dropped all four security
+# floors with no error, no warning and a green build. pnpm-workspace.yaml is
+# read by both pnpm 10 and pnpm 11, so the floors survive the major bump
+# whenever it happens.
+#
+# Keys, values and order are unchanged from the package.json block. The same
+# defect class has already caused two real regressions: HORO-377, where a
+# relock silently deleted this block, and AAASM-6032 in
+# ai-agent-assembly/examples. `scripts/check_pnpm_overrides_parity.py` fails
+# the build if this file and pnpm-lock.yaml ever disagree, or if a floor is
+# reintroduced into package.json.
+#
+# `pnpm.onlyBuiltDependencies` is deliberately left in package.json: it is a
+# separate concern reported under its own ticket, and unlike an override floor
+# its loss is loud (pnpm refuses to run the build scripts and the build fails)
+# rather than silent.
+overrides:
+  js-yaml: ^4.3.2
+  brace-expansion@1: ^1.1.18
+  brace-expansion@2: ^2.1.4
+  nanoid: ^3.3.17
