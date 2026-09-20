@@ -1,4 +1,7 @@
 name: CI
+# AAASM-6144 proof-of-bite probe. This pull request exists only to observe
+# whether the Capability Manifest `changes` router selects its work job for a
+# change to a workflow file OTHER than capability-manifest.yml. Do not merge.
 
 permissions:
   contents: read
