@@ -347,7 +347,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
 
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
         let path = self.settings_path_resolver.resolve()?;
-        apply::apply_settings_at(&path, settings)
+        apply::apply_settings_at(&path, settings).await
     }
 
     /// Build the governed launch command.
@@ -401,12 +401,12 @@ impl DevToolAdapter for ClaudeCodeAdapter {
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
         // Primary source: resolved settings.json (global or project-scoped).
         let settings_path = self.settings_path_resolver.resolve()?;
-        let mut servers = apply::read_mcp_servers_from(&settings_path)?;
+        let mut servers = apply::read_mcp_servers_from(&settings_path).await?;
 
         // Secondary source: <cwd>/.claude/.mcp.json when present.
         if let Ok(cwd) = std::env::current_dir() {
             let mcp_json = cwd.join(".claude").join(".mcp.json");
-            let extra = apply::read_mcp_servers_from(&mcp_json)?;
+            let extra = apply::read_mcp_servers_from(&mcp_json).await?;
             // Settings-file entries win on name collision.
             let existing: std::collections::HashSet<String> = servers.iter().map(|s| s.name.clone()).collect();
             for s in extra {
@@ -421,7 +421,7 @@ impl DevToolAdapter for ClaudeCodeAdapter {
 
     async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
         let path = self.settings_path_resolver.resolve()?;
-        apply::apply_mcp_governance_at(&path, allowed, denied)
+        apply::apply_mcp_governance_at(&path, allowed, denied).await
     }
 
     fn governance_level(&self) -> GovernanceLevel {

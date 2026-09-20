@@ -56,9 +56,11 @@ const MANAGED_KEYS: &[&str] = &[
 ///
 /// The write is atomic: content is written to a sibling `.tmp` file then
 /// renamed into place so a mid-write failure never corrupts the original.
-pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), AdapterError> {
+pub(crate) async fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), AdapterError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(AdapterError::SettingsApplyFailed)?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(AdapterError::SettingsApplyFailed)?;
     }
 
     // Load existing content (if any) as a JSON object to preserve unmanaged keys.
@@ -68,16 +70,22 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
     // keys onto nothing and overwrite every unmanaged key (hooks, statusLine,
     // theme, ...) the user's file actually held. Fail closed instead, same as
     // the receipt-backed engine path (`fingerprint::Doc::parse`).
-    let mut base: serde_json::Value = if path.exists() {
-        let raw = std::fs::read_to_string(path).map_err(AdapterError::SettingsApplyFailed)?;
-        serde_json::from_str(&raw).map_err(|e| {
+    //
+    // AAASM-6093: one read instead of `exists()`-then-read. Beyond not blocking
+    // the executor, the single call closes the window between the two in which
+    // the file could be created — under the old shape that file was read as
+    // absent, and "absent" is the branch that overwrites every unmanaged key.
+    let mut base: serde_json::Value = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
             AdapterError::SettingsApplyFailed(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("{} is not valid JSON, refusing to overwrite it: {e}", path.display()),
             ))
-        })?
-    } else {
-        serde_json::Value::Object(Default::default())
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Object(Default::default()),
+        // Any other read failure — a permission denial, a directory in the
+        // file's place — still refuses, exactly as the mapped `?` did before.
+        Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
     };
 
     // Parse the incoming AA-managed settings.
@@ -101,8 +109,12 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
         "{}.tmp",
         path.file_name().unwrap_or_default().to_string_lossy()
     ));
-    std::fs::write(&tmp_path, &serialized).map_err(AdapterError::SettingsApplyFailed)?;
-    std::fs::rename(&tmp_path, path).map_err(AdapterError::SettingsApplyFailed)?;
+    tokio::fs::write(&tmp_path, &serialized)
+        .await
+        .map_err(AdapterError::SettingsApplyFailed)?;
+    tokio::fs::rename(&tmp_path, path)
+        .await
+        .map_err(AdapterError::SettingsApplyFailed)?;
 
     Ok(())
 }
@@ -112,14 +124,18 @@ pub(crate) fn apply_settings_at(path: &Path, settings_json: &str) -> Result<(), 
 /// Replaces `enabledMcpjsonServers` and `disabledMcpjsonServers` with the
 /// supplied slices. All other keys in the existing file are preserved.
 /// Idempotent: running twice with the same arguments produces the same file.
-pub(crate) fn apply_mcp_governance_at(path: &Path, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
+pub(crate) async fn apply_mcp_governance_at(
+    path: &Path,
+    allowed: &[String],
+    denied: &[String],
+) -> Result<(), AdapterError> {
     let mcp_json = serde_json::json!({
         "enabledMcpjsonServers": allowed,
         "disabledMcpjsonServers": denied,
     });
     let json_str =
         serde_json::to_string_pretty(&mcp_json).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
-    apply_settings_at(path, &json_str)
+    apply_settings_at(path, &json_str).await
 }
 
 /// Parse `mcpServers` from a Claude Code JSON config file into a `Vec<McpServerInfo>`.
@@ -128,11 +144,15 @@ pub(crate) fn apply_mcp_governance_at(path: &Path, allowed: &[String], denied: &
 /// settings keys) and standalone `.mcp.json` files that contain only
 /// `mcpServers`. Returns an empty vec when the file is absent or contains no
 /// `mcpServers` key — that is not an error for Claude Code.
-pub(crate) fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, AdapterError> {
-    if !path.exists() {
-        return Ok(vec![]);
-    }
-    let raw = std::fs::read_to_string(path).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
+pub(crate) async fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, AdapterError> {
+    // AAASM-6093: `exists()`-then-read collapsed into one non-blocking read.
+    // The doc comment above already treats an absent file as an empty vec, so
+    // the `NotFound` arm states that contract once instead of twice.
+    let raw = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(AdapterError::McpConfigFailed(e.to_string())),
+    };
     let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
     let Some(servers_obj) = v.get("mcpServers").and_then(|s| s.as_object()) else {
         return Ok(vec![]);
@@ -158,8 +178,8 @@ pub(crate) fn read_mcp_servers_from(path: &Path) -> Result<Vec<McpServerInfo>, A
 mod tests {
     use super::*;
 
-    #[test]
-    fn apply_settings_creates_file_when_absent() {
+    #[tokio::test]
+    async fn apply_settings_creates_file_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let settings = r#"{
@@ -168,15 +188,15 @@ mod tests {
             "enabledMcpjsonServers": [],
             "disabledMcpjsonServers": []
         }"#;
-        apply_settings_at(&path, settings).unwrap();
+        apply_settings_at(&path, settings).await.unwrap();
         assert!(path.exists());
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["permissionMode"], "acceptEdits");
         assert_eq!(v["permissions"]["allow"][0], "Bash");
     }
 
-    #[test]
-    fn apply_settings_preserves_unmanaged_keys() {
+    #[tokio::test]
+    async fn apply_settings_preserves_unmanaged_keys() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"theme": "dark", "version": "1.0"}"#).unwrap();
@@ -186,7 +206,7 @@ mod tests {
             "enabledMcpjsonServers": [],
             "disabledMcpjsonServers": []
         }"#;
-        apply_settings_at(&path, settings).unwrap();
+        apply_settings_at(&path, settings).await.unwrap();
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["theme"], "dark");
         assert_eq!(v["version"], "1.0");
@@ -194,8 +214,8 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn apply_settings_atomic_on_failure() {
+    #[tokio::test]
+    async fn apply_settings_atomic_on_failure() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -203,7 +223,7 @@ mod tests {
         // Make the directory read-only so the .tmp file cannot be created.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
         let settings = r#"{"permissionMode": "default", "permissions": {"allow": [], "deny": []}, "enabledMcpjsonServers": [], "disabledMcpjsonServers": []}"#;
-        let result = apply_settings_at(&path, settings);
+        let result = apply_settings_at(&path, settings).await;
         // Restore permissions so TempDir cleanup succeeds.
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(result.is_err());
@@ -217,8 +237,8 @@ mod tests {
     /// discards every unmanaged key (hooks, statusLine, theme, custom fields)
     /// the instant the file has a syntax error, with no receipt and no way
     /// back. This is the falsifying test: it must fail on current `main`.
-    #[test]
-    fn apply_settings_does_not_destroy_a_malformed_existing_file() {
+    #[tokio::test]
+    async fn apply_settings_does_not_destroy_a_malformed_existing_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let original = r#"{
@@ -235,7 +255,7 @@ mod tests {
             "enabledMcpjsonServers": [],
             "disabledMcpjsonServers": []
         }"#;
-        let result = apply_settings_at(&path, settings);
+        let result = apply_settings_at(&path, settings).await;
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
             result.is_err() || content.contains("statusLine"),
@@ -244,8 +264,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn apply_mcp_governance_replaces_lists() {
+    #[tokio::test]
+    async fn apply_mcp_governance_replaces_lists() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         std::fs::write(
@@ -253,7 +273,9 @@ mod tests {
             r#"{"theme": "dark", "enabledMcpjsonServers": ["old"], "disabledMcpjsonServers": ["gone"]}"#,
         )
         .unwrap();
-        apply_mcp_governance_at(&path, &["filesystem".to_string()], &["search".to_string()]).unwrap();
+        apply_mcp_governance_at(&path, &["filesystem".to_string()], &["search".to_string()])
+            .await
+            .unwrap();
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(v["enabledMcpjsonServers"], serde_json::json!(["filesystem"]));
         assert_eq!(v["disabledMcpjsonServers"], serde_json::json!(["search"]));
