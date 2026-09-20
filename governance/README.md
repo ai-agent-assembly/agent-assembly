@@ -873,6 +873,43 @@ manifest reads as the broadest admissible value.
    indistinguishable from inside the validator. Those two branches, plus
    `--no-git` and a positive control, are asserted by
    `testdata/r15_branch_probes.py`, which the fixture harness runs.
+
+   **The first of those limits has now been reached, and the paragraph above
+   is superseded on one point of fact.** `v0.0.1-rc.7` was published on
+   2026-09-17 from `0044d515d`, which is a descendant of `299de3883`, so
+   `git merge-base --is-ancestor 299de3883 v0.0.1-rc.7` now exits **0**. The
+   evidence tree is an ancestor of a released tag after all — of rc.7, though
+   still of neither rc.6 nor rc.5 nor rc.4 — so R15 has retired on the
+   canonical manifest and `meta.describes_ref` is no longer bound to stay
+   unset by rc.6 arithmetic. The earlier sentences are left standing rather
+   than rewritten, because they were true when written and the correction is
+   the interesting part.
+
+   **AAASM-6125: the retirement was correct and the controls going quiet with
+   it was not.** Publishing rc.7 also re-pointed R15's two negative-control
+   fixtures and the `r15_branch_probes.py` D control at rc.7, where their
+   discriminator paths exist, so all three stopped rejecting and the harness
+   went red for 11 runs on `main` — correctly, since it asserts its own
+   denominator. The reading that the ancestry short-circuit is the defect is
+   refuted by evidence: with the short-circuit disabled both fixtures still
+   exit 0 and D still finds 0, because
+   `aa-integration-tests/tests/cli_run_claude_governed_launch.rs` and
+   `aa-sdk-client/src/identity_store.rs` are present at rc.7. The rule has
+   nothing to find and says so.
+
+   The real defect is that **a negative control's comparison ref was mutable
+   repository state.** A fixture does not describe this repository's release
+   state; it pins the rule's predicate. Both fixture headers already claim that
+   invariant — "a historical tag cannot retroactively acquire a file, so the
+   discriminating power is stable rather than incidental" — while the code
+   resolved the ref from `git tag --list` at run time. `meta.release_scope_ref`
+   closes that gap: present, it is the ref R15 compares against and the
+   ancestry short-circuit does not apply; absent, the live newest tag is used
+   as before. The three R15 fixtures pin `v0.0.1-rc.6`; the canonical manifest
+   pins nothing. **Advancing the fixtures at each release was rejected as the
+   fix** — it is a manual release step a human can skip, which is precisely the
+   failure that happened. See `check_row_release_scope`'s RELEASE-STATE
+   DECISION block for the full argument.
 7. **Five rows were weakened — two for measured absence, three for
    unverifiability.** The distinction is the point, so the heading has to carry
    it. N4 and G8 have no located test in this repo, measured. S6, S9 and G5

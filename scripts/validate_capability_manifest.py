@@ -884,8 +884,61 @@ def check_row_release_scope(
     * Only paths that resolve at the evidence tree are considered, so a
       cross-repo path in prose (`node-sdk/...`, `go-sdk/...`) cannot trigger the
       rule — it is absent at both refs and says nothing about the release.
-    * The rule retires itself. Once a tag containing the evidence tree is cut,
-      `merge-base --is-ancestor` succeeds and R15 stops running for every row.
+    * The rule retires itself for the CANONICAL manifest. Once a tag containing
+      the evidence tree is cut, `merge-base --is-ancestor` succeeds and R15
+      stops running for every row. AAASM-6125 settled that this is correct and
+      not a defect — see RELEASE-STATE DECISION below — and the retirement is
+      announced as a warning rather than taken silently, because "the rule ran
+      and found nothing" and "the rule did not run" must not read alike.
+
+    RELEASE-STATE DECISION (AAASM-6125)
+    -----------------------------------
+    Publishing `v0.0.1-rc.7` on 2026-09-17 put `evidence_tree` 299de3883 inside
+    the newest release tag, and `main` went red for 11 consecutive runs. Not
+    because R15 became wrong: because its two negative-control fixtures and
+    `r15_branch_probes.py`'s D control stopped rejecting, and the harness
+    refuses to report green when a check it owns stops running. Two readings
+    were available, and the first is refuted by evidence rather than declined
+    by preference.
+
+    **(a) "R15 must keep running after a release, so the ancestry
+    short-circuit is the defect." Refuted.** Disabling the short-circuit
+    restores none of the three checks. With `scope_tag` forced to
+    `v0.0.1-rc.7`, both fixtures still exit 0 and the D control still finds 0
+    — because the paths those controls are built on,
+    `aa-integration-tests/tests/cli_run_claude_governed_launch.rs` and
+    `aa-sdk-client/src/identity_store.rs`, are absent at rc.6 and **present at
+    rc.7**. There is nothing left for the rule to find. Removing the
+    short-circuit would only make R15 re-walk 80 rows to reach the same empty
+    answer, and would contradict branch probe B, which asserts the retirement
+    is correct behaviour: the rule retires "rather than reporting a divergence
+    it cannot have found".
+
+    **(b) "R15 legitimately goes quiet, and the fixtures plus manifest must be
+    advanced as a release step." Right in its first half, wrong in its
+    second.** R15's question — does this row cite a path the release lacks? —
+    now genuinely answers no for every row, because the release caught up with
+    the evidence tree. That is the designed steady state and the desirable one.
+
+    Advancing the FIXTURES at each release, however, is the wrong mechanism,
+    and its absence is what caused this outage. A negative control does not
+    describe this repository's release state; it pins the rule's PREDICATE.
+    Both R15 fixture headers already assert exactly that invariant — "a
+    historical tag cannot retroactively acquire a file, so the discriminating
+    power is stable rather than incidental" — and they name `v0.0.1-rc.6` as
+    the ref they reason about. The implementation did not honour it: the
+    comparison ref was resolved from `git tag --list` at run time, so the
+    fixtures were silently re-pointed at rc.7 and their stability argument
+    evaporated. **The defect is that a control's comparison ref was mutable
+    repository state instead of the immutable tag its own header names.**
+
+    Hence `meta.release_scope_ref`. Where present it is the ref R15 compares
+    against, and the ancestry short-circuit does not apply — the pin says
+    "compare against exactly this", so the per-row comparison is allowed to
+    speak. The three R15 fixtures set it to `v0.0.1-rc.6` and therefore
+    discriminate forever; the canonical manifest leaves it unset and keeps live
+    "newest tag" semantics, so it remains free to retire. A release publication
+    can no longer silence a control, because no control consults the newest tag.
     """
     row_tree = row.get("evidence_tree") or tree
     missing = sorted(
