@@ -210,11 +210,14 @@ fi
         Ok(Host { dump, cmd })
     }
 
-    /// The pid of a process that is a **direct child of `parent_pid`** and
-    /// whose command line names `aa-proxy` — i.e., this launch's own
-    /// dedicated proxy, not a leftover from an unrelated run or the
-    /// standalone `TrustedProxy` (which is never a child of the `aasm run`
-    /// process under test; it is spawned independently by this harness).
+    /// The pid of the **long-running dedicated proxy**: a direct child of
+    /// `parent_pid`, running an executable named `aa-proxy`, with no arguments
+    /// — i.e., this launch's own dedicated proxy, not a leftover from an
+    /// unrelated run, not the standalone `TrustedProxy` (which is never a child
+    /// of the `aasm run` process under test; it is spawned independently by
+    /// this harness), and not the transient `aa-proxy --version` identity probe
+    /// the launcher runs just before forking the real thing (AAASM-6131 — see
+    /// the argument-free check below for why that distinction is load-bearing).
     fn find_proxy_child_pid(parent_pid: u32) -> Option<u32> {
         let out = std::process::Command::new("ps")
             .args(["-eo", "pid,ppid,command"])
@@ -241,12 +244,132 @@ fi
             let Some(ppid) = cols.next().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
             };
-            let command: String = cols.collect::<Vec<_>>().join(" ");
-            if ppid == parent_pid && command.contains("aa-proxy") {
-                return Some(pid);
+            if ppid != parent_pid {
+                continue;
             }
+            let Some(executable) = cols.next() else {
+                continue;
+            };
+            // `ends_with`, not `contains`: the match has to be on the
+            // executable this child is actually running, not on any substring
+            // anywhere in its argv. A `contains` over the whole command line
+            // also matches a process that merely *mentions* `aa-proxy` in an
+            // argument.
+            //
+            // This deliberately does not match macOS `ps`'s `(aa-proxy)`
+            // rendering of a process whose argv it cannot read, which is what
+            // it prints for a zombie: a zombie proxy holds no listener and
+            // will never run again, `pid_is_alive` already treats it as dead,
+            // and every caller here wants a *live* proxy to observe or signal.
+            if !executable.ends_with("aa-proxy") {
+                continue;
+            }
+            // AAASM-6131: the dedicated proxy is spawned with **no arguments**
+            // — `ProxyGuard::build_command` (`aa-cli/src/commands/proxy/
+            // guard.rs`) passes everything through the environment and never
+            // calls `.arg()`. Immediately *before* spawning it,
+            // `ProxyGuard::spawn_with_binary` runs an identity probe
+            // (`probe()`, `aa-cli/src/commands/proxy/build_identity.rs`) which
+            // spawns `<same aa-proxy path> --version` as another direct child
+            // of the same `aasm`, waits for it with `try_wait()` — thereby
+            // *reaping* it — and only then forks the long-running proxy.
+            //
+            // So for a few milliseconds there are two `aa-proxy`-named
+            // children of `aasm`, and the earlier one is transient and gets
+            // fully reaped. A scan that accepted either could return the
+            // probe's pid, and every later assertion would then be about a
+            // pid that no longer exists:
+            //
+            //   * scenario E SIGKILLs it and `kill(2)` fails with `ESRCH`
+            //     while the real proxy is still listening (AAASM-6131, main
+            //     run 5668 — reproduced locally under CPU saturation with the
+            //     real proxy alive at a pid 5 higher than the captured one);
+            //   * scenarios A and the SIGTERM path assert the captured pid is
+            //     *gone*, which an already-reaped probe pid satisfies for
+            //     free — a false pass that would let a genuinely leaked
+            //     dedicated proxy through unnoticed.
+            //
+            // Requiring an argument-free argv is what tells the two apart, and
+            // it is the launcher's own invariant rather than a heuristic about
+            // timing: widening the poll window cannot fix a scan that cannot
+            // distinguish its target in the first place.
+            if cols.next().is_some() {
+                continue;
+            }
+            return Some(pid);
         }
         None
+    }
+
+    /// AAASM-6131 regression: [`find_proxy_child_pid`] must return the
+    /// argument-free dedicated proxy, never the `aa-proxy --version` identity
+    /// probe the launcher runs first.
+    ///
+    /// Deterministic, unlike the CPU-saturation race that exposed this on
+    /// `main`: both shapes are stood up as live children of *this* process,
+    /// with the probe-shaped one spawned first so it also holds the lower pid
+    /// and therefore sorts first in `ps` output — which is both the order the
+    /// launcher itself produces and the order under which a first-match scan
+    /// picks the wrong pid. Reverting the argument-free check in
+    /// `find_proxy_child_pid` reddens this test.
+    ///
+    /// Relies on nextest's process-per-test isolation (the runner this repo's
+    /// CI uses) for "no other `aa-proxy`-named child of this process exists".
+    #[test]
+    fn find_proxy_child_pid_ignores_the_version_identity_probe() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A **copy of a real binary** named `aa-proxy`, not a `#!/bin/sh`
+        // script: `ps` reports an interpreted script as `/bin/sh <script>`, so
+        // a script's own name never lands in argv[0] and a fixture built that
+        // way would not model either shape (confirmed the hard way — it made
+        // the scan find nothing at all rather than find the wrong thing).
+        // `/bin/sh` is the one binary POSIX guarantees at a fixed path.
+        //
+        // What the fixture *does* is irrelevant beyond staying observable, so
+        // this needs no real proxy, no CA and no ports.
+        let tmp = tempfile::tempdir()?;
+        let fake = tmp.path().join("aa-proxy");
+        std::fs::copy("/bin/sh", &fake)?;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
+
+        // `Stdio::piped()` on stdin, and the `Child` kept alive below, is what
+        // makes the argument-free shape long-lived: `sh` with no arguments
+        // blocks reading stdin until EOF, and EOF cannot arrive while this test
+        // still owns the write end.
+        let spawn = |args: &[&str]| -> std::io::Result<std::process::Child> {
+            std::process::Command::new(&fake)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        };
+
+        // The launcher's probe carries `--version` specifically, but the
+        // property under test is the discriminator itself — *carries any
+        // argument at all* — and `--version` would make `sh` exit immediately
+        // instead of staying observable. `-c sleep 30` exercises the same
+        // check while surviving the scan.
+        let probe_shaped = KillOnDrop(spawn(&["-c", "sleep 30"])?);
+        let dedicated_shaped = KillOnDrop(spawn(&[])?);
+        let probe_pid = probe_shaped.0.id();
+        let dedicated_pid = dedicated_shaped.0.id();
+        assert!(
+            probe_pid < dedicated_pid,
+            "the probe-shaped child must hold the lower pid for this to model the launcher's own \
+             spawn order (probe {probe_pid}, dedicated {dedicated_pid})",
+        );
+
+        assert_eq!(
+            wait_for_pid_alive(std::process::id(), Duration::from_secs(10)),
+            Some(dedicated_pid),
+            "the scan must return the argument-free dedicated proxy ({dedicated_pid}), not the \
+             `--version` identity probe ({probe_pid}) — signalling the probe's pid is what made \
+             AAASM-6131 fail with ESRCH while the real proxy was still listening",
+        );
+
+        Ok(())
     }
 
     /// Whether `pid` currently exists (`kill -0`) **and is not a zombie**.
@@ -297,6 +420,30 @@ fi
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_else(|e| format!("<ps failed: {e}>"))
+    }
+
+    /// A `kill(2)` failure rendered so that the *reason* survives into a CI log
+    /// (AAASM-6131).
+    ///
+    /// Both the symbolic name and the raw number: the `Display` of an
+    /// `std::io::Error` is the libc description ("No such process"), which is
+    /// readable but not greppable against `libc::ESRCH`, and the raw number is
+    /// greppable but platform-specific. A failure that somehow carried no OS
+    /// error at all is reported as such rather than silently rendering as
+    /// nothing.
+    fn describe_kill_error(err: Option<&std::io::Error>) -> String {
+        match err {
+            Some(err) => {
+                let symbolic = match err.raw_os_error() {
+                    Some(libc::ESRCH) => "ESRCH (no such process — already gone)",
+                    Some(libc::EPERM) => "EPERM (not permitted to signal this process)",
+                    Some(libc::EINVAL) => "EINVAL (invalid signal)",
+                    _ => "unrecognised errno",
+                };
+                format!("{symbolic}, errno={:?}, {err}", err.raw_os_error())
+            }
+            None => "kill(2) reported failure but set no OS error".to_string(),
+        }
     }
 
     fn wait_for_pid_alive(parent_pid: u32, patience: Duration) -> Option<u32> {
@@ -649,7 +796,31 @@ fi
         // graceful signal, since the scenario under test is an abrupt
         // failure, not an orderly shutdown.
         let killed = unsafe { libc::kill(proxy_pid as libc::pid_t, libc::SIGKILL) };
-        assert_eq!(killed, 0, "failed to SIGKILL the dedicated proxy pid {proxy_pid}");
+        // AAASM-6131: read `errno` immediately, before anything else can
+        // overwrite it, and only when the call actually failed — `errno` is not
+        // cleared on success, so a stale value from an earlier unrelated syscall
+        // would otherwise be reported as this call's cause. Without this, a
+        // failure prints only `left: -1`, and ESRCH (the process is already
+        // gone), EPERM (it is not ours to signal) and everything else are
+        // indistinguishable from CI output alone — which is exactly the position
+        // main run 5668 left this test in.
+        let kill_err = (killed != 0).then(std::io::Error::last_os_error);
+        assert_eq!(
+            killed,
+            0,
+            "failed to SIGKILL the dedicated proxy pid {proxy_pid} (launcher aasm pid {aasm_pid}): \
+             {}\nfull process table at the moment of failure:\n{}",
+            describe_kill_error(kill_err.as_ref()),
+            // AAASM-6131: errno alone names the syscall's complaint but not
+            // which of two very different things went wrong. The process table
+            // settles it: a surviving argument-free `aa-proxy` child of
+            // `aasm_pid` means this scan captured the wrong pid and the product
+            // is fine, whereas no such child while `aasm_pid` is still alive
+            // means the dedicated proxy really did die under a live governed
+            // session — a product defect, and the one thing this scenario must
+            // not silently absorb.
+            dump_process_table(),
+        );
         assert!(
             wait_for_pid_gone(proxy_pid, Duration::from_secs(5)),
             "the dedicated proxy did not actually die after SIGKILL — this scenario needs a \
