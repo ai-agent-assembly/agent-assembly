@@ -1,0 +1,68 @@
+# pnpm Overrides Parity — assert security override floors stay where pnpm reads them.
+#
+# WHY THIS EXISTS
+# ----------------
+# AAASM-6133: 13 security override floors were declared in package.json's
+# "pnpm.overrides" field, which pnpm 11 no longer reads
+# (https://pnpm.io/settings). Bumping any one of this repository's 18
+# pnpm/action-setup pins to 11 would have dropped all 13 with no error, no
+# warning and a green build — including dompurify and undici, floors that exist
+# because a transitive dependency otherwise resolves below a patched version.
+# The floors now live in pnpm-workspace.yaml, which pnpm 10 and pnpm 11 both
+# read. This job is the gate that keeps them there.
+#
+# It asserts two things; scripts/check_pnpm_overrides_parity.py has the detail:
+#   1. every pnpm-workspace.yaml "overrides:" mapping matches its sibling
+#      pnpm-lock.yaml (the HORO-377 / AAASM-6032 failure, where a relock
+#      silently deleted the block)
+#   2. no package.json declares a non-empty pnpm.overrides (the AAASM-6133
+#      failure, and the assertion the sibling repository's version of this
+#      script does not have — without it the script exits 0 on a tree with no
+#      pnpm-workspace.yaml, having checked nothing)
+#
+# WHY THERE IS NO `paths:` FILTER
+# --------------------------------
+# The defect this guards against is a relock or a hand edit landing in any
+# directory that declares overrides, and new ones can be added at any time, so
+# this runs on every PR and push to main rather than trying to predict which
+# paths matter. It is stdlib-only Python and finishes in well under a second.
+#
+# NOTE ON REQUIRED-CHECK STATUS
+# ------------------------------
+# This is a standalone workflow, mirroring how ai-agent-assembly/examples ships
+# the same check. Making it a required status check is a branch-protection
+# change and is not done here.
+
+name: pnpm Overrides Parity
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: pnpm overrides parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Run the checker's own tests first: this gate's value is that it can
+      # fail, and these are the tests that prove it still can.
+      - name: Run the checker's unit tests
+        run: python3 scripts/test_check_pnpm_overrides_parity.py
+
+      - name: Assert override floors are declared where pnpm 11 reads them
+        run: python3 scripts/check_pnpm_overrides_parity.py
