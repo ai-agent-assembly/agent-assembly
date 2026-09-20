@@ -284,11 +284,20 @@ code is on the channel and nobody measured the capability against a container.
 The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
-count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 18 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 19 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
 count: [R17] ghcr: 80 rows = 24 carry it + 7 not_applicable + 49 recorded absent + 0 unaccounted
 ```
 
-## The three questions
+`workflow files scanned` is a live count of `.github/workflows/*.yml`, so **adding
+or deleting any workflow moves it**, and `readme_counts_probe.py` then rejects
+this README until the quoted number is advanced. That is the probe working: the
+count is quoted here to make the R17 denominator auditable, and a quoted
+denominator nobody maintains is the defect it exists to catch. It went stale on
+2026-09-20, when AAASM-6133 added `pnpm-overrides-parity.yml` as the 19th
+workflow — a pull request the `changes` router does not select this gate for,
+because it touched no governance or schema path. The `push` backstop caught it on
+`main` instead, which is the division of labour the header above describes,
+paid for with one red run.
 
 A capability can pass the first and fail the third; three dead capabilities
 were found in this programme exactly that way. Collapsing any two into one
