@@ -99,8 +99,13 @@ impl LocalGatewayHandle {
         }
 
         // 3. Remove the PID file.
+        //
+        // AAASM-6146: `tokio::fs`, not `std::fs` — `shutdown` is an `async fn`
+        // driven by the signal handler on a runtime worker, and a blocking
+        // unlink here parks that worker. Still best-effort: the result is
+        // discarded exactly as before.
         if let Some(pid_path) = self.pid_path {
-            let _ = std::fs::remove_file(pid_path);
+            let _ = tokio::fs::remove_file(pid_path).await;
         }
 
         // 4. Close the SqlitePool. Dropping `self.storage` is left to
@@ -597,10 +602,16 @@ pub(crate) async fn start_local_with_pid_path(
     write_banner(&local_addr, &config.storage_path);
 
     // 6. PID file (AC #7).
-    std::fs::write(pid_path, std::process::id().to_string()).map_err(|source| LocalModeError::PidFile {
-        path: pid_path.to_path_buf(),
-        source,
-    })?;
+    //
+    // AAASM-6146: `tokio::fs` — `start_local` is an `async fn`; the write is
+    // small but it sits on the startup path of a runtime worker. The error
+    // mapping is unchanged, so a write failure still aborts startup.
+    tokio::fs::write(pid_path, std::process::id().to_string())
+        .await
+        .map_err(|source| LocalModeError::PidFile {
+            path: pid_path.to_path_buf(),
+            source,
+        })?;
 
     // 7. Serve. The shutdown_rx side stays in the spawned task; the
     //    handle keeps shutdown_tx for AAASM-1728's signal handler.
