@@ -116,7 +116,24 @@ def main() -> int:
     # D — POSITIVE CONTROL. Strip the scope statement from L1 and R15 must fire
     # on exactly L1. Without this, A/B/C are equally consistent with a rule that
     # was never reached at all.
+    #
+    # AAASM-6125. The ref is PINNED to v0.0.1-rc.6 rather than left to resolve as
+    # "the newest v* tag", because the unpinned form made this control depend on
+    # the repository's release history. `v0.0.1-rc.7` was published from a
+    # descendant of the evidence tree, R15 retired for every row, and D found 0
+    # — a positive control reporting the same thing a broken rule would, for 11
+    # consecutive runs on `main`. rc.6 is immutable and the evidence tree is an
+    # ancestor of no earlier tag, so the pin cannot be overtaken.
+    #
+    # Read the honest limit in exchange: D no longer shares A/B/C's ref
+    # resolution. Where the evidence tree sits inside the newest tag — the state
+    # today — A, B and C would report zero errors whatever R15 did, and D no
+    # longer witnesses that for them. What D still buys is the claim it is named
+    # for: R15 is reachable and fires on exactly the row whose statement was
+    # removed. A's warning assertion remains its own witness, since a retired
+    # rule does not warn and a missing tag does.
     doc = fresh()
+    doc["meta"]["release_scope_ref"] = "v0.0.1-rc.6"
     stripped = False
     for row in doc["capabilities"]:
         if row["id"] == "L1":
