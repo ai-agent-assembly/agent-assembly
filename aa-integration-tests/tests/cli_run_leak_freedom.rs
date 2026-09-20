@@ -299,6 +299,30 @@ fi
             .unwrap_or_else(|e| format!("<ps failed: {e}>"))
     }
 
+    /// A `kill(2)` failure rendered so that the *reason* survives into a CI log
+    /// (AAASM-6131).
+    ///
+    /// Both the symbolic name and the raw number: the `Display` of an
+    /// `std::io::Error` is the libc description ("No such process"), which is
+    /// readable but not greppable against `libc::ESRCH`, and the raw number is
+    /// greppable but platform-specific. A failure that somehow carried no OS
+    /// error at all is reported as such rather than silently rendering as
+    /// nothing.
+    fn describe_kill_error(err: Option<&std::io::Error>) -> String {
+        match err {
+            Some(err) => {
+                let symbolic = match err.raw_os_error() {
+                    Some(libc::ESRCH) => "ESRCH (no such process — already gone)",
+                    Some(libc::EPERM) => "EPERM (not permitted to signal this process)",
+                    Some(libc::EINVAL) => "EINVAL (invalid signal)",
+                    _ => "unrecognised errno",
+                };
+                format!("{symbolic}, errno={:?}, {err}", err.raw_os_error())
+            }
+            None => "kill(2) reported failure but set no OS error".to_string(),
+        }
+    }
+
     fn wait_for_pid_alive(parent_pid: u32, patience: Duration) -> Option<u32> {
         let deadline = Instant::now() + patience;
         while Instant::now() < deadline {
@@ -649,7 +673,21 @@ fi
         // graceful signal, since the scenario under test is an abrupt
         // failure, not an orderly shutdown.
         let killed = unsafe { libc::kill(proxy_pid as libc::pid_t, libc::SIGKILL) };
-        assert_eq!(killed, 0, "failed to SIGKILL the dedicated proxy pid {proxy_pid}");
+        // AAASM-6131: read `errno` immediately, before anything else can
+        // overwrite it, and only when the call actually failed — `errno` is not
+        // cleared on success, so a stale value from an earlier unrelated syscall
+        // would otherwise be reported as this call's cause. Without this, a
+        // failure prints only `left: -1`, and ESRCH (the process is already
+        // gone), EPERM (it is not ours to signal) and everything else are
+        // indistinguishable from CI output alone — which is exactly the position
+        // main run 5668 left this test in.
+        let kill_err = (killed != 0).then(std::io::Error::last_os_error);
+        assert_eq!(
+            killed,
+            0,
+            "failed to SIGKILL the dedicated proxy pid {proxy_pid}: {}",
+            describe_kill_error(kill_err.as_ref()),
+        );
         assert!(
             wait_for_pid_gone(proxy_pid, Duration::from_secs(5)),
             "the dedicated proxy did not actually die after SIGKILL — this scenario needs a \
