@@ -338,6 +338,38 @@ jobs:
             --to "${GITHUB_REF_NAME}" \
             --check
 
+      # AAASM-6125. The fixture harness, run WITH THIS TAG PRESENT — which is
+      # the state no gate observed before.
+      #
+      # Publishing `v0.0.1-rc.7` silenced rule R15's two negative-control
+      # fixtures and its D branch control, because all three compared against
+      # "the newest `v*` tag" and the new tag carried their discriminator
+      # paths. Nothing in this workflow noticed: `governance-gate` asked only
+      # whether capability ROWS changed between the two tags, which is a
+      # question about the manifest's content and not about whether the rules
+      # that police it still fire. The gate that did notice was
+      # `capability-manifest.yml` on the NEXT push to `main` — 11 runs of red,
+      # after the release, attributed to whatever had been merged in the
+      # meantime.
+      #
+      # `publish` needs this job, so a tag whose mere existence breaks the
+      # manifest gate now fails the release instead of reddening main
+      # afterwards. That ordering is the point: the release is the event that
+      # changes the repository state these rules read, so the release is where
+      # the reading has to be re-checked.
+      #
+      # The pins added by AAASM-6125 mean R15 specifically can no longer be
+      # silenced this way. This step is the general form, for the next rule
+      # that acquires a dependency on release state — a class this repository
+      # has now been bitten by once, and which is invisible by construction
+      # until a tag moves.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - name: Validator rules still fail closed at this tag
+        run: bash governance/testdata/run-validator-tests.sh
+
   release-evidence-gate:
     # AAASM-5878/5900. Mirrors governance-gate's own shape and rationale
     # above: a prerequisite INSIDE this workflow, not a separate required
