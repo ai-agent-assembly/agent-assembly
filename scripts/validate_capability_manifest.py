@@ -884,8 +884,61 @@ def check_row_release_scope(
     * Only paths that resolve at the evidence tree are considered, so a
       cross-repo path in prose (`node-sdk/...`, `go-sdk/...`) cannot trigger the
       rule — it is absent at both refs and says nothing about the release.
-    * The rule retires itself. Once a tag containing the evidence tree is cut,
-      `merge-base --is-ancestor` succeeds and R15 stops running for every row.
+    * The rule retires itself for the CANONICAL manifest. Once a tag containing
+      the evidence tree is cut, `merge-base --is-ancestor` succeeds and R15
+      stops running for every row. AAASM-6125 settled that this is correct and
+      not a defect — see RELEASE-STATE DECISION below — and the retirement is
+      announced as a warning rather than taken silently, because "the rule ran
+      and found nothing" and "the rule did not run" must not read alike.
+
+    RELEASE-STATE DECISION (AAASM-6125)
+    -----------------------------------
+    Publishing `v0.0.1-rc.7` on 2026-09-17 put `evidence_tree` 299de3883 inside
+    the newest release tag, and `main` went red for 11 consecutive runs. Not
+    because R15 became wrong: because its two negative-control fixtures and
+    `r15_branch_probes.py`'s D control stopped rejecting, and the harness
+    refuses to report green when a check it owns stops running. Two readings
+    were available, and the first is refuted by evidence rather than declined
+    by preference.
+
+    **(a) "R15 must keep running after a release, so the ancestry
+    short-circuit is the defect." Refuted.** Disabling the short-circuit
+    restores none of the three checks. With `scope_tag` forced to
+    `v0.0.1-rc.7`, both fixtures still exit 0 and the D control still finds 0
+    — because the paths those controls are built on,
+    `aa-integration-tests/tests/cli_run_claude_governed_launch.rs` and
+    `aa-sdk-client/src/identity_store.rs`, are absent at rc.6 and **present at
+    rc.7**. There is nothing left for the rule to find. Removing the
+    short-circuit would only make R15 re-walk 80 rows to reach the same empty
+    answer, and would contradict branch probe B, which asserts the retirement
+    is correct behaviour: the rule retires "rather than reporting a divergence
+    it cannot have found".
+
+    **(b) "R15 legitimately goes quiet, and the fixtures plus manifest must be
+    advanced as a release step." Right in its first half, wrong in its
+    second.** R15's question — does this row cite a path the release lacks? —
+    now genuinely answers no for every row, because the release caught up with
+    the evidence tree. That is the designed steady state and the desirable one.
+
+    Advancing the FIXTURES at each release, however, is the wrong mechanism,
+    and its absence is what caused this outage. A negative control does not
+    describe this repository's release state; it pins the rule's PREDICATE.
+    Both R15 fixture headers already assert exactly that invariant — "a
+    historical tag cannot retroactively acquire a file, so the discriminating
+    power is stable rather than incidental" — and they name `v0.0.1-rc.6` as
+    the ref they reason about. The implementation did not honour it: the
+    comparison ref was resolved from `git tag --list` at run time, so the
+    fixtures were silently re-pointed at rc.7 and their stability argument
+    evaporated. **The defect is that a control's comparison ref was mutable
+    repository state instead of the immutable tag its own header names.**
+
+    Hence `meta.release_scope_ref`. Where present it is the ref R15 compares
+    against, and the ancestry short-circuit does not apply — the pin says
+    "compare against exactly this", so the per-row comparison is allowed to
+    speak. The three R15 fixtures set it to `v0.0.1-rc.6` and therefore
+    discriminate forever; the canonical manifest leaves it unset and keeps live
+    "newest tag" semantics, so it remains free to retire. A release publication
+    can no longer silence a control, because no control consults the newest tag.
     """
     row_tree = row.get("evidence_tree") or tree
     missing = sorted(
@@ -1864,24 +1917,70 @@ def validate(doc: dict, rep: Report, use_git: bool, is_canonical: bool = False) 
         rep.error("capabilities", "R1", "manifest holds no rows")
         return
 
-    # R15 needs the newest release tag, and only where the evidence tree is not
-    # already inside it. Resolved once: the answer is a property of the
-    # repository, not of a row, and `git tag --list` is not free per row.
+    # R15 needs a release ref to compare each row's citations against. Resolved
+    # once: the answer is a property of the document and the repository, not of
+    # a row, and `git tag --list` is not free per row.
+    #
+    # AAASM-6125. Two modes, and the pinned one exists because the unpinned one
+    # is mutable state. `meta.release_scope_ref` absent means "the newest v*
+    # tag", which is what the canonical manifest wants and what a NEGATIVE
+    # CONTROL must never have: publishing rc.7 re-pointed R15's fixtures at a
+    # tag their discriminator paths exist at, and three checks stopped rejecting
+    # without anything saying so. A fixture pins the ref its own header reasons
+    # about; see check_row_release_scope's RELEASE-STATE DECISION block.
     scope_tag: str | None = None
     if tree and use_git:
-        scope_tag = newest_release_tag()
-        if scope_tag is None:
-            rep.warn(
-                "meta",
-                "R15",
-                "no v* tag resolves in this checkout, so per-row release-scope divergence "
-                "cannot be checked. A shallow clone and a repository with no releases look "
-                "identical here; CI must check out with fetch-depth: 0 and tags",
-            )
-        elif git("merge-base", "--is-ancestor", tree, scope_tag).returncode == 0:
-            # The evidence tree is inside the newest release, so no row can
-            # cite something the release lacks. The rule retires itself.
-            scope_tag = None
+        pinned = meta.get("release_scope_ref")
+        if pinned:
+            # No ancestry short-circuit here on purpose. The pin says "compare
+            # against exactly this ref", so the per-row comparison is what
+            # answers; short-circuiting would let the repository's tag history
+            # decide whether a pinned document's rule runs, which is the
+            # coupling the pin removes.
+            #
+            # Fail closed when the pin does not resolve. A pin nobody can
+            # resolve is a rule that silently stops running — the defect this
+            # field was added to remove — and the shallow-clone case is caught
+            # loudly rather than luckily: an `invalid-r15-*` fixture would exit
+            # non-zero with an [R15] finding either way, so it is
+            # `valid-r15-scope-stated.yaml`, which must exit 0, that turns the
+            # harness red when the tag is missing.
+            if git("rev-parse", "--verify", "--quiet", f"{pinned}^{{commit}}").returncode != 0:
+                rep.error(
+                    "meta.release_scope_ref",
+                    "R15",
+                    f"{pinned!r} does not resolve in this checkout, so the release ref this "
+                    "document pins R15 to cannot be read and the rule would not run. CI must "
+                    "check out with fetch-depth: 0 and fetch-tags: true",
+                )
+            else:
+                scope_tag = pinned
+        else:
+            scope_tag = newest_release_tag()
+            if scope_tag is None:
+                rep.warn(
+                    "meta",
+                    "R15",
+                    "no v* tag resolves in this checkout, so per-row release-scope divergence "
+                    "cannot be checked. A shallow clone and a repository with no releases look "
+                    "identical here; CI must check out with fetch-depth: 0 and tags",
+                )
+            elif git("merge-base", "--is-ancestor", tree, scope_tag).returncode == 0:
+                # The evidence tree is inside the newest release, so no row can
+                # cite something the release lacks. The rule retires itself —
+                # and says so. A silent retirement is indistinguishable from a
+                # rule that broke, which is how AAASM-6125 reached `main`.
+                rep.warn(
+                    "meta",
+                    "R15",
+                    f"the evidence tree is inside {scope_tag}, the newest release tag, so no "
+                    "row can cite a path the release lacks and R15 has retired for this "
+                    "document. This is the designed steady state, not a failure; it is "
+                    "announced because a retired rule and a broken one both report nothing. "
+                    "A document that must be checked against an earlier ref pins "
+                    "meta.release_scope_ref",
+                )
+                scope_tag = None
 
     # R2 — ids are stable public claim identifiers. AAASM-5588, AAASM-5600 and
     # AAASM-5609 cite them, so a duplicate or a reissued id silently repoints a

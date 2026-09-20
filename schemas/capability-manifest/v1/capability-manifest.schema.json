@@ -66,6 +66,10 @@
           "description": "Optional. The released ref this manifest is asserted to describe. When present the validator runs `git merge-base --is-ancestor <evidence_tree> <describes_ref>` and fails the manifest if it does not hold, per ADR 0034 section 6.3. Absent means the manifest describes only its own evidence_tree.",
           "$ref": "#/definitions/commitish"
         },
+        "release_scope_ref": {
+          "description": "Optional, AAASM-6125. The release ref validator rule R15 compares each row's citations against. Absent means the newest `v*` tag in the checkout, which is what the canonical manifest wants: the interesting question there is whether a row describes the CURRENT release, and that ref moves. Present means exactly this ref, and R15's self-retirement (`git merge-base --is-ancestor <evidence_tree> <ref>`) does not apply. Set it where the answer must not change when a release is published — every R15 negative-control fixture does, because a control pins the rule's predicate rather than describing this repository's release state. Publishing v0.0.1-rc.7 silently re-pointed three such controls at a tag their discriminator paths exist at, and they stopped rejecting.",
+          "$ref": "#/definitions/commitish"
+        },
         "channels_surveyed": {
           "description": "Distribution channels this manifest's rows are entitled to make a claim about. A row naming a channel outside this list is a validator error, because the manifest would be asserting a distribution fact nobody checked.",
           "type": "array",

@@ -63,9 +63,44 @@ def run(module, doc, use_git=True):
 EXPECTED_BRANCHES = 4
 
 
+def unpinned_r15_fixtures() -> list[str]:
+    """R15 fixtures that would float when the next release is published.
+
+    AAASM-6125's recurrence guard, and a REFUSAL rather than a counted check —
+    the same shape as `real_manifest_probes.py`'s dirty-manifest refusal, so it
+    costs the harness no denominator while the invariant holds and turns it red
+    the moment it does not.
+
+    The invariant: no R15 fixture may resolve its comparison ref from the
+    repository's tag history. R15 is the only rule that consults
+    `newest_release_tag()`, so it is the only rule whose fixtures can be
+    silenced by publishing a tag — and they were, for 11 consecutive runs on
+    `main`, when `v0.0.1-rc.7` turned out to carry both discriminator paths.
+    Pinning them was the fix; a pin a future edit can quietly drop is not one,
+    because the drop is invisible until the release AFTER it.
+    """
+    floating = []
+    for fixture in sorted(HERE.glob("*-r15-*.yaml")):
+        doc = yaml.safe_load(fixture.read_text(encoding="utf-8")) or {}
+        if not (doc.get("meta") or {}).get("release_scope_ref"):
+            floating.append(fixture.name)
+    return floating
+
+
 def main() -> int:
     module = load_validator()
     real_git = module.git
+
+    floating = unpinned_r15_fixtures()
+    if floating:
+        print(
+            f"  FAIL  R15 fixtures with no meta.release_scope_ref: {floating}. Each would "
+            "compare against whatever `v*` tag is newest at run time, so publishing a "
+            "release can silence it — AAASM-6125, 11 red runs on main. Pin the ref the "
+            "fixture's own header reasons about."
+        )
+        print("HARNESS_COUNTS passed=0 failed=1")
+        return 1
     failures: list[str] = []
     ran: list[str] = []
 
@@ -116,7 +151,24 @@ def main() -> int:
     # D — POSITIVE CONTROL. Strip the scope statement from L1 and R15 must fire
     # on exactly L1. Without this, A/B/C are equally consistent with a rule that
     # was never reached at all.
+    #
+    # AAASM-6125. The ref is PINNED to v0.0.1-rc.6 rather than left to resolve as
+    # "the newest v* tag", because the unpinned form made this control depend on
+    # the repository's release history. `v0.0.1-rc.7` was published from a
+    # descendant of the evidence tree, R15 retired for every row, and D found 0
+    # — a positive control reporting the same thing a broken rule would, for 11
+    # consecutive runs on `main`. rc.6 is immutable and the evidence tree is an
+    # ancestor of no earlier tag, so the pin cannot be overtaken.
+    #
+    # Read the honest limit in exchange: D no longer shares A/B/C's ref
+    # resolution. Where the evidence tree sits inside the newest tag — the state
+    # today — A, B and C would report zero errors whatever R15 did, and D no
+    # longer witnesses that for them. What D still buys is the claim it is named
+    # for: R15 is reachable and fires on exactly the row whose statement was
+    # removed. A's warning assertion remains its own witness, since a retired
+    # rule does not warn and a missing tag does.
     doc = fresh()
+    doc["meta"]["release_scope_ref"] = "v0.0.1-rc.6"
     stripped = False
     for row in doc["capabilities"]:
         if row["id"] == "L1":

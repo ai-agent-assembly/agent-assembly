@@ -19,12 +19,22 @@
 # unchanged since rc.6; no divergence between main and the release", which is
 # false of every row here and still contains `rc.6`. R15 forces the tag into a
 # field a reviewer can read; it cannot read it for them.
+#
+# AAASM-6125: `meta.release_scope_ref: v0.0.1-rc.6` is present here for the same
+# reason as in the invalid half, and the one-line diff above is preserved because
+# BOTH files carry it. Without the pin this control passed vacuously once rc.7
+# was published — R15 had retired, so exit 0 no longer demonstrated that the
+# `notes` sentence satisfied anything. A positive control that would pass with
+# the rule switched off is not a control. This file is also what turns the
+# harness red on a shallow clone: an unresolvable pin is an [R15] error, which
+# the invalid fixtures would absorb as a non-zero exit and this one cannot.
 manifest_version: 1.0.0
 meta:
   ticket: AAASM-5531
   epic: AAASM-5526
   fix_version: agent-assembly v0.0.1-rc.7
   evidence_tree: 299de38830b5f1b3a239661c35e7bc98c1a78ee4
+  release_scope_ref: v0.0.1-rc.6
   evidence_date: '2026-08-06'
   channels_surveyed:
   - crates_io
