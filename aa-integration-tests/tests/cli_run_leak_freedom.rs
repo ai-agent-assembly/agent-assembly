@@ -210,11 +210,14 @@ fi
         Ok(Host { dump, cmd })
     }
 
-    /// The pid of a process that is a **direct child of `parent_pid`** and
-    /// whose command line names `aa-proxy` — i.e., this launch's own
-    /// dedicated proxy, not a leftover from an unrelated run or the
-    /// standalone `TrustedProxy` (which is never a child of the `aasm run`
-    /// process under test; it is spawned independently by this harness).
+    /// The pid of the **long-running dedicated proxy**: a direct child of
+    /// `parent_pid`, running an executable named `aa-proxy`, with no arguments
+    /// — i.e., this launch's own dedicated proxy, not a leftover from an
+    /// unrelated run, not the standalone `TrustedProxy` (which is never a child
+    /// of the `aasm run` process under test; it is spawned independently by
+    /// this harness), and not the transient `aa-proxy --version` identity probe
+    /// the launcher runs just before forking the real thing (AAASM-6131 — see
+    /// the argument-free check below for why that distinction is load-bearing).
     fn find_proxy_child_pid(parent_pid: u32) -> Option<u32> {
         let out = std::process::Command::new("ps")
             .args(["-eo", "pid,ppid,command"])
@@ -241,10 +244,59 @@ fi
             let Some(ppid) = cols.next().and_then(|s| s.parse::<u32>().ok()) else {
                 continue;
             };
-            let command: String = cols.collect::<Vec<_>>().join(" ");
-            if ppid == parent_pid && command.contains("aa-proxy") {
-                return Some(pid);
+            if ppid != parent_pid {
+                continue;
             }
+            let Some(executable) = cols.next() else {
+                continue;
+            };
+            // `ends_with`, not `contains`: the match has to be on the
+            // executable this child is actually running, not on any substring
+            // anywhere in its argv. A `contains` over the whole command line
+            // also matches a process that merely *mentions* `aa-proxy` in an
+            // argument.
+            //
+            // This deliberately does not match macOS `ps`'s `(aa-proxy)`
+            // rendering of a process whose argv it cannot read, which is what
+            // it prints for a zombie: a zombie proxy holds no listener and
+            // will never run again, `pid_is_alive` already treats it as dead,
+            // and every caller here wants a *live* proxy to observe or signal.
+            if !executable.ends_with("aa-proxy") {
+                continue;
+            }
+            // AAASM-6131: the dedicated proxy is spawned with **no arguments**
+            // — `ProxyGuard::build_command` (`aa-cli/src/commands/proxy/
+            // guard.rs`) passes everything through the environment and never
+            // calls `.arg()`. Immediately *before* spawning it,
+            // `ProxyGuard::spawn_with_binary` runs an identity probe
+            // (`probe()`, `aa-cli/src/commands/proxy/build_identity.rs`) which
+            // spawns `<same aa-proxy path> --version` as another direct child
+            // of the same `aasm`, waits for it with `try_wait()` — thereby
+            // *reaping* it — and only then forks the long-running proxy.
+            //
+            // So for a few milliseconds there are two `aa-proxy`-named
+            // children of `aasm`, and the earlier one is transient and gets
+            // fully reaped. A scan that accepted either could return the
+            // probe's pid, and every later assertion would then be about a
+            // pid that no longer exists:
+            //
+            //   * scenario E SIGKILLs it and `kill(2)` fails with `ESRCH`
+            //     while the real proxy is still listening (AAASM-6131, main
+            //     run 5668 — reproduced locally under CPU saturation with the
+            //     real proxy alive at a pid 5 higher than the captured one);
+            //   * scenarios A and the SIGTERM path assert the captured pid is
+            //     *gone*, which an already-reaped probe pid satisfies for
+            //     free — a false pass that would let a genuinely leaked
+            //     dedicated proxy through unnoticed.
+            //
+            // Requiring an argument-free argv is what tells the two apart, and
+            // it is the launcher's own invariant rather than a heuristic about
+            // timing: widening the poll window cannot fix a scan that cannot
+            // distinguish its target in the first place.
+            if cols.next().is_some() {
+                continue;
+            }
+            return Some(pid);
         }
         None
     }
