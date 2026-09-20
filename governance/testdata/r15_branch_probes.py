@@ -63,9 +63,44 @@ def run(module, doc, use_git=True):
 EXPECTED_BRANCHES = 4
 
 
+def unpinned_r15_fixtures() -> list[str]:
+    """R15 fixtures that would float when the next release is published.
+
+    AAASM-6125's recurrence guard, and a REFUSAL rather than a counted check —
+    the same shape as `real_manifest_probes.py`'s dirty-manifest refusal, so it
+    costs the harness no denominator while the invariant holds and turns it red
+    the moment it does not.
+
+    The invariant: no R15 fixture may resolve its comparison ref from the
+    repository's tag history. R15 is the only rule that consults
+    `newest_release_tag()`, so it is the only rule whose fixtures can be
+    silenced by publishing a tag — and they were, for 11 consecutive runs on
+    `main`, when `v0.0.1-rc.7` turned out to carry both discriminator paths.
+    Pinning them was the fix; a pin a future edit can quietly drop is not one,
+    because the drop is invisible until the release AFTER it.
+    """
+    floating = []
+    for fixture in sorted(HERE.glob("*-r15-*.yaml")):
+        doc = yaml.safe_load(fixture.read_text(encoding="utf-8")) or {}
+        if not (doc.get("meta") or {}).get("release_scope_ref"):
+            floating.append(fixture.name)
+    return floating
+
+
 def main() -> int:
     module = load_validator()
     real_git = module.git
+
+    floating = unpinned_r15_fixtures()
+    if floating:
+        print(
+            f"  FAIL  R15 fixtures with no meta.release_scope_ref: {floating}. Each would "
+            "compare against whatever `v*` tag is newest at run time, so publishing a "
+            "release can silence it — AAASM-6125, 11 red runs on main. Pin the ref the "
+            "fixture's own header reasons about."
+        )
+        print("HARNESS_COUNTS passed=0 failed=1")
+        return 1
     failures: list[str] = []
     ran: list[str] = []
 
