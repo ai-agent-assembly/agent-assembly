@@ -9,10 +9,12 @@ Three assertions, each able to fail on its own:
 1. Under the fixed-delay control, the startup dimension must detect the injected
    delay to within CONTROL_TOLERANCE and must classify RED. A harness that calls
    a 500 ms injected slowdown GREEN cannot detect a real one.
-2. Under that same control, the *startup-corrected* steady-state ratio must stay
-   GREEN. A fixed per-invocation cost must not leak into the steady-state
-   number. This is what makes "startup and steady state are reported separately"
-   a measured property rather than a claim.
+2. Under that same control, the *startup-corrected* steady-state ratio must be
+   1.0 to within CONTROL_TOLERANCE. A fixed per-invocation cost must not leak
+   into the steady-state number. This is what makes "startup and steady state
+   are reported separately" a measured property rather than a claim. The
+   expected value is the control's, not P4's GREEN boundary: a pre-registered
+   product-decision threshold is not a test oracle (AAASM-6128).
 3. Under the repeat control, the steady-state ratio must be the injected factor
    to within CONTROL_TOLERANCE and must classify RED.
 
@@ -165,19 +167,30 @@ def run(
             }
         )
     else:
+        measured_delay_ratio = float(p_steady_delay["value"])
         checks.append(
             {
                 "id": 2,
                 "name": "startup cost does not leak into steady state",
-                "passed": p_steady_delay["grade"] == "GREEN",
-                "expected": {"grade": "GREEN", "ratio": 1.0},
+                # Scored against this control's own expected value — a ratio of
+                # 1.0 — to within CONTROL_TOLERANCE, the same shape as
+                # assertions 1 and 3. It deliberately does NOT assert P4's
+                # grade: green_max is a pre-registered *product-decision*
+                # boundary, and borrowing it here gave this assertion a
+                # zero-width acceptance band around a quantity that is pure
+                # noise about 1.0, so shared-runner jitter alone failed a
+                # blocking merge gate (AAASM-6128). The grade is still recorded
+                # below, as an observation rather than as the oracle.
+                "passed": _within(measured_delay_ratio, 1.0, CONTROL_TOLERANCE),
+                "expected": {"ratio": 1.0, "tolerance": CONTROL_TOLERANCE},
                 "measured": {
-                    "ratio": float(p_steady_delay["value"]),
+                    "ratio": measured_delay_ratio,
                     "grade": p_steady_delay["grade"],
                 },
                 "detail": (
                     "a purely fixed per-invocation cost must be absent from the "
-                    "startup-corrected steady-state ratio"
+                    "startup-corrected steady-state ratio, which must therefore "
+                    "stay within CONTROL_TOLERANCE of 1.0"
                 ),
             }
         )
