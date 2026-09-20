@@ -301,6 +301,77 @@ fi
         None
     }
 
+    /// AAASM-6131 regression: [`find_proxy_child_pid`] must return the
+    /// argument-free dedicated proxy, never the `aa-proxy --version` identity
+    /// probe the launcher runs first.
+    ///
+    /// Deterministic, unlike the CPU-saturation race that exposed this on
+    /// `main`: both shapes are stood up as live children of *this* process,
+    /// with the probe-shaped one spawned first so it also holds the lower pid
+    /// and therefore sorts first in `ps` output — which is both the order the
+    /// launcher itself produces and the order under which a first-match scan
+    /// picks the wrong pid. Reverting the argument-free check in
+    /// `find_proxy_child_pid` reddens this test.
+    ///
+    /// Relies on nextest's process-per-test isolation (the runner this repo's
+    /// CI uses) for "no other `aa-proxy`-named child of this process exists".
+    #[test]
+    fn find_proxy_child_pid_ignores_the_version_identity_probe() -> anyhow::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        // A **copy of a real binary** named `aa-proxy`, not a `#!/bin/sh`
+        // script: `ps` reports an interpreted script as `/bin/sh <script>`, so
+        // a script's own name never lands in argv[0] and a fixture built that
+        // way would not model either shape (confirmed the hard way — it made
+        // the scan find nothing at all rather than find the wrong thing).
+        // `/bin/sh` is the one binary POSIX guarantees at a fixed path.
+        //
+        // What the fixture *does* is irrelevant beyond staying observable, so
+        // this needs no real proxy, no CA and no ports.
+        let tmp = tempfile::tempdir()?;
+        let fake = tmp.path().join("aa-proxy");
+        std::fs::copy("/bin/sh", &fake)?;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
+
+        // `Stdio::piped()` on stdin, and the `Child` kept alive below, is what
+        // makes the argument-free shape long-lived: `sh` with no arguments
+        // blocks reading stdin until EOF, and EOF cannot arrive while this test
+        // still owns the write end.
+        let spawn = |args: &[&str]| -> std::io::Result<std::process::Child> {
+            std::process::Command::new(&fake)
+                .args(args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+        };
+
+        // The launcher's probe carries `--version` specifically, but the
+        // property under test is the discriminator itself — *carries any
+        // argument at all* — and `--version` would make `sh` exit immediately
+        // instead of staying observable. `-c sleep 30` exercises the same
+        // check while surviving the scan.
+        let probe_shaped = KillOnDrop(spawn(&["-c", "sleep 30"])?);
+        let dedicated_shaped = KillOnDrop(spawn(&[])?);
+        let probe_pid = probe_shaped.0.id();
+        let dedicated_pid = dedicated_shaped.0.id();
+        assert!(
+            probe_pid < dedicated_pid,
+            "the probe-shaped child must hold the lower pid for this to model the launcher's own \
+             spawn order (probe {probe_pid}, dedicated {dedicated_pid})",
+        );
+
+        assert_eq!(
+            wait_for_pid_alive(std::process::id(), Duration::from_secs(10)),
+            Some(dedicated_pid),
+            "the scan must return the argument-free dedicated proxy ({dedicated_pid}), not the \
+             `--version` identity probe ({probe_pid}) — signalling the probe's pid is what made \
+             AAASM-6131 fail with ESRCH while the real proxy was still listening",
+        );
+
+        Ok(())
+    }
+
     /// Whether `pid` currently exists (`kill -0`) **and is not a zombie**.
     ///
     /// `kill(pid, 0)` succeeds for a zombie too — the process table entry
