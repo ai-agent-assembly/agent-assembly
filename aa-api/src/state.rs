@@ -579,12 +579,17 @@ impl AppState {
         // REST/dashboard surface share this SAME `Arc<AgentRegistry>`, so an
         // SDK-registered agent is immediately visible to the dashboard and
         // persists across restarts (mirrors aa-gateway/src/main.rs).
+        //
+        // AAASM-6146: `tokio::fs` — `local_hardened_at` is an `async fn` and
+        // this directory create sits on the start-up path of a runtime worker.
         if let Some(parent) = registry_db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|source| LocalStateError::PolicyWrite {
-                    path: registry_db_path.clone(),
-                    source,
-                })?;
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|source| LocalStateError::PolicyWrite {
+                        path: registry_db_path.clone(),
+                        source,
+                    })?;
             }
         }
         // Opened as the concrete backend rather than through
@@ -707,10 +712,14 @@ impl AppState {
         let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let pid = std::process::id();
         let storage_dir = std::env::temp_dir().join(format!("aa-api-local-storage-{pid}-{uniq}"));
-        std::fs::create_dir_all(&storage_dir).map_err(|source| LocalStateError::PolicyWrite {
-            path: storage_dir.clone(),
-            source,
-        })?;
+        // AAASM-6146: `tokio::fs`, for the same reason as the registry directory
+        // above — same `async fn`, same runtime worker.
+        tokio::fs::create_dir_all(&storage_dir)
+            .await
+            .map_err(|source| LocalStateError::PolicyWrite {
+                path: storage_dir.clone(),
+                source,
+            })?;
         let db_path = storage_dir.join("local.db");
         // Opened as the concrete backend rather than through
         // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:

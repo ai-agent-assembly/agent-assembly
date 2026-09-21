@@ -384,6 +384,22 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener, SocketError> {
 mod tests {
     use super::*;
 
+    /// A probe that parks the thread it was handed and never answers — the
+    /// stand-in for the Linux `connect()` that `a_probe_that_never_returns_does_
+    /// not_hold_up_the_scan` is written around.
+    ///
+    /// Blocking on purpose, and for exactly the reason [`connects`] documents:
+    /// `reachable_within` runs a probe on a thread it is willing to abandon, and
+    /// the property under test is its response to a probe that never gives that
+    /// thread back. AAASM-6146: a free function rather than a closure in the
+    /// `#[tokio::test]` body, so the sleep visibly belongs to the probe thread
+    /// and not to the test's async task — which is also what `rust:S7488` is
+    /// asking for, and it matches how the sibling tests pass [`connects`].
+    fn never_returns(_: &Path) -> bool {
+        std::thread::sleep(Duration::from_secs(3_600));
+        true
+    }
+
     #[test]
     fn discovery_reports_an_absent_socket_as_runtime_not_running() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -509,14 +525,7 @@ mod tests {
         let _b = bind(&dir.join("devint-second.sock")).expect("bind");
 
         let started = Instant::now();
-        let found = reachable_within(
-            &dir,
-            Duration::from_millis(150),
-            Arc::new(|_: &Path| {
-                std::thread::sleep(Duration::from_secs(3_600));
-                true
-            }),
-        );
+        let found = reachable_within(&dir, Duration::from_millis(150), Arc::new(never_returns));
         let elapsed = started.elapsed();
 
         assert!(

@@ -50,7 +50,7 @@ export function BreakdownPanel({
       <div className="sd-panel__head">
         <h2 className="sd-panel__title">Breakdown</h2>
         <label className="sd-field">
-          Group by
+          <span>Group by</span>
           <select
             data-testid="sd-breakdown-group-by"
             value={groupBy}

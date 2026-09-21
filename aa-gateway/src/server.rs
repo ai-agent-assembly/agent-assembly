@@ -663,8 +663,11 @@ async fn start_db_escalation_scheduler(
     // override pointing at a not-yet-created directory) the connect below
     // fails with exactly the "unable to open database file" error this
     // ticket reports, independent of the nonroot/writability question.
+    //
+    // AAASM-6146: `tokio::fs` — this runs on a runtime worker during server
+    // start-up. The fallback behaviour below is unchanged.
     if let Some(parent) = db_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
             tracing::warn!(
                 error = %e,
                 path = %parent.display(),
@@ -1252,8 +1255,16 @@ pub async fn serve_uds(
 
     tracing::info!(socket = %socket_path.display(), "starting gRPC server on UDS (per-RPC credential auth enforced)");
 
-    if socket_path.exists() {
-        std::fs::remove_file(socket_path)?;
+    // AAASM-6146: one `tokio::fs::remove_file` in place of `exists()`-then-
+    // remove. Besides not parking a runtime worker, the single call closes the
+    // window between the two calls — a stale socket that appeared after the
+    // `exists()` check used to survive and make the `bind` below fail with
+    // `EADDRINUSE`.
+    match tokio::fs::remove_file(socket_path).await {
+        Ok(()) => {}
+        // Nothing to clean up, which is the normal case on a first start.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
     }
 
     let uds = tokio::net::UnixListener::bind(socket_path)?;

@@ -266,7 +266,15 @@ function ApiKeyOnly({
         Account login (email &amp; password) needs a Postgres-backed deployment. This
         instance runs in-memory, so sign in with an API key below.
       </p>
-      <ApiKeyForm onApiKey={onApiKey} onAuthenticated={onAuthenticated} autoFocus />
+      {/*
+        AAASM-6146: no `autoFocus` here. This form is rendered on first paint,
+        immediately below the note that explains *why* account login is
+        unavailable — autofocusing the key field made a screen reader start
+        announcing from the input and skip that explanation entirely, and opened
+        the on-screen keyboard on touch devices before the user had read
+        anything. Default focus order now lets the note be read first.
+      */}
+      <ApiKeyForm onApiKey={onApiKey} onAuthenticated={onAuthenticated} />
     </>
   )
 }
@@ -275,11 +283,9 @@ function ApiKeyOnly({
 function ApiKeyForm({
   onApiKey,
   onAuthenticated,
-  autoFocus = false,
 }: Readonly<{
   onApiKey: (apiKey: string) => Promise<void>
   onAuthenticated: () => void
-  autoFocus?: boolean
 }>) {
   const [apiKey, setApiKey] = useState('')
   const [loading, setLoading] = useState(false)
@@ -310,7 +316,6 @@ function ApiKeyForm({
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="aa_…"
           autoComplete="off"
-          autoFocus={autoFocus}
         />
       </label>
       {error && (

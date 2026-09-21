@@ -241,7 +241,10 @@ pub async fn load_and_validate(
     path: &Path,
     bound_addr: SocketAddr,
 ) -> Result<Option<ChainedUpstreamConfig>, ProxyError> {
-    let contents = std::fs::read_to_string(path).map_err(|e| {
+    // AAASM-6146: `tokio::fs` — `load_and_validate` is an `async fn` called from
+    // `ProxyServer::run` after bind, on a runtime worker. The fail-closed error
+    // mapping is unchanged.
+    let contents = tokio::fs::read_to_string(path).await.map_err(|e| {
         ProxyError::Config(format!(
             "cannot read AA_PROXY_TRUSTED_CONFIG_PATH artifact {}: {e}",
             path.display()

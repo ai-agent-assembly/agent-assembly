@@ -154,9 +154,11 @@ impl SqliteBackend {
     ///   in WAL mode after [`enable_wal`] has exhausted its attempts.
     pub async fn open(config: &SqliteConfig) -> StorageResult<Self> {
         let path = expand_tilde(&config.path);
+        // AAASM-6146: `tokio::fs` — `open` is an `async fn` called from request
+        // and start-up paths on runtime workers. Error mapping is unchanged.
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
                     StorageError::ConnectionFailed(format!(
                         "failed to create parent directory {}: {e}",
                         parent.display()

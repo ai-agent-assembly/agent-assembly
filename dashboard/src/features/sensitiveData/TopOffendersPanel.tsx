@@ -60,7 +60,7 @@ export function TopOffendersPanel({
       <div className="sd-panel__head">
         <h2 className="sd-panel__title">Top offenders</h2>
         <label className="sd-field">
-          Rank by
+          <span>Rank by</span>
           <select
             data-testid="sd-offenders-dimension"
             value={dimension}

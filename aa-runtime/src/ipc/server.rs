@@ -216,7 +216,11 @@ impl IpcServer {
         }
 
         // Clean up socket file on shutdown.
-        if let Err(e) = std::fs::remove_file(&socket_path) {
+        //
+        // AAASM-6146: `tokio::fs` — same reason as the DI-API accept loop: this
+        // is the tail of an `async fn` running on a runtime worker. Still
+        // best-effort.
+        if let Err(e) = tokio::fs::remove_file(&socket_path).await {
             tracing::warn!(error = %e, "failed to remove socket file on shutdown");
         }
 
