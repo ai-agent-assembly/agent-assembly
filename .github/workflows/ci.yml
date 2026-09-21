@@ -1186,7 +1186,7 @@ jobs:
           cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
           cargo llvm-cov --no-run --lcov --output-path lcov.info
       - name: Upload to Codecov
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: ./lcov.info
           name: Rust unit tests
@@ -2481,7 +2481,7 @@ jobs:
           # (AAASM-3803 Option C), so this is a non-critical safety margin.
           retention-days: 14
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@0b35c9ecc4f0529d0eb674914510c22f85b196b4 # v7.1.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           files: dashboard/coverage/lcov.info
           name: Dashboard (TypeScript)
