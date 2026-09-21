@@ -99,7 +99,21 @@ jobs:
               - 'governance/**'
               - 'schemas/capability-manifest/**'
               - 'scripts/validate_capability_manifest.py'
-              - '.github/workflows/capability-manifest.yml'
+              # AAASM-6144. The whole directory, not just this workflow file,
+              # because rule R17 reads it twice and asserts both readings:
+              #   1. `len(workflows)` — the file count, which any add, rename or
+              #      delete under here moves. This is what went red on `main` at
+              #      3faf2224e after the 19th workflow landed on a PR whose
+              #      manifest job was skipped.
+              #   2. `publishing` — CHANNEL_PUBLISH_MARKERS regex-matched against
+              #      the concatenated *text* of every workflow file. So editing
+              #      the body of one is enough to change an asserted value, and
+              #      a new `ghcr.io/` or `gh release create` step in any workflow
+              #      is a hard R17 failure if the manifest does not survey that
+              #      channel. A per-file entry could never cover that.
+              # This glob is a superset of the `capability-manifest.yml` entry it
+              # replaces, so nothing previously selected stops being selected.
+              - '.github/workflows/**'
               # AAASM-5678. Rule R16 compares the manifest against these two, so
               # they are gate INPUTS and not merely referenced documents. A PR
               # that edits the seed alone is exactly how the manifest and the

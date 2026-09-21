@@ -78,7 +78,15 @@ coverage:
       - governance/**
       - schemas/capability-manifest/**
       - scripts/validate_capability_manifest.py
-      - .github/workflows/capability-manifest.yml
+      # AAASM-6144. The whole directory, not just this gate's own workflow file.
+      # Rule R17 reads `.github/workflows/` twice and asserts both readings: the
+      # file count, and the publish channels found by regex over the concatenated
+      # text of every workflow file. So a workflow this gate does not own is still
+      # governance-bearing for it — adding the 19th file moved the count, and a new
+      # `ghcr.io/` or `gh release create` step in any workflow changes the channel
+      # set. The single-file entry understated the declaration for the same reason
+      # it understated the router, and C5 compares the two verbatim.
+      - .github/workflows/**
       - verification-reports/AAASM-5527-capability-coverage-matrix.yaml
       - verification-reports/AAASM-5527-capability-coverage-matrix-and-threat-model.md
       # AAASM-5677 review R2: the consistency guard for the two artifacts
