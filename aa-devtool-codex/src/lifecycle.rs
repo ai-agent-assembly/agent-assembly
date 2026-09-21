@@ -187,7 +187,7 @@ impl CodexIntegration {
     ///
     /// Re-derived at apply time rather than carried in the plan: the digest
     /// the user reviewed is what the executor checks against.
-    pub fn step_content(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, AdapterError> {
+    pub async fn step_content(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, AdapterError> {
         let mut rendered = BTreeMap::new();
         for step in &plan.steps {
             match &step.action {
@@ -195,7 +195,7 @@ impl CodexIntegration {
                     rendered.insert(step.id.clone(), managed_settings_toml(plan.profile)?);
                 }
                 StepAction::MaterialiseTrustMaterial { .. } => {
-                    rendered.insert(step.id.clone(), self.read_ca_pem()?);
+                    rendered.insert(step.id.clone(), self.read_ca_pem().await?);
                 }
                 _ => {}
             }
@@ -203,13 +203,17 @@ impl CodexIntegration {
         Ok(rendered)
     }
 
-    fn read_ca_pem(&self) -> Result<String, AdapterError> {
+    async fn read_ca_pem(&self) -> Result<String, AdapterError> {
         let path = self.paths.ca_source().ok_or_else(|| {
             AdapterError::SettingsGenerationFailed(
                 "the Agent Assembly proxy certificate authority has not been created on this host".to_string(),
             )
         })?;
-        std::fs::read_to_string(path).map_err(AdapterError::SettingsApplyFailed)
+        // AAASM-6093: `tokio::fs` — `step_content`, this helper's only caller,
+        // is reached from `ClaudeCodeSteps`/`CodexSteps::render`, an `async fn`.
+        tokio::fs::read_to_string(path)
+            .await
+            .map_err(AdapterError::SettingsApplyFailed)
     }
 
     fn detected_version(&self) -> Option<ToolVersion> {
@@ -385,7 +389,7 @@ impl DevToolIntegration for CodexIntegration {
             //    3: Codex fails closed on an unreadable/unparseable CA bundle
             //    before any network traffic (custom_ca.rs), so the file has to
             //    exist before CODEX_CA_CERTIFICATE points at it.
-            let pem = self.read_ca_pem()?;
+            let pem = self.read_ca_pem().await?;
             plan = plan.with_step(
                 IntegrationStep::new(
                     STEP_PROXY_CA,

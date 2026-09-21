@@ -172,36 +172,43 @@ impl CopilotAdapter {
 
     /// Read and parse the VS Code user-settings JSON file. Returns `{}` when
     /// the file does not exist or cannot be parsed.
-    fn read_settings(&self) -> Result<(PathBuf, serde_json::Value), AdapterError> {
+    async fn read_settings(&self) -> Result<(PathBuf, serde_json::Value), AdapterError> {
         let path = self.resolve_settings_path().ok_or_else(|| {
             AdapterError::SettingsGenerationFailed("could not resolve VS Code settings path".to_string())
         })?;
-        let value = if path.exists() {
-            let raw = std::fs::read_to_string(&path)?;
+        // AAASM-6093: one `tokio::fs::read_to_string` in place of
+        // `exists()`-then-read. Besides not blocking the executor, the single
+        // call closes the window in which the file could appear or vanish
+        // between the two — a file created after the `exists()` check used to
+        // be read as absent, and `{}` is the value that overwrites everything.
+        let value = match tokio::fs::read_to_string(&path).await {
             // AAASM-6091: a parse failure must refuse, not default to `{}` —
             // that would silently drop every existing VS Code user setting
             // the next time governance keys are applied on top of it.
-            serde_json::from_str(&raw).map_err(|e| {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
                 AdapterError::SettingsApplyFailed(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("{} is not valid JSON, refusing to overwrite it: {e}", path.display()),
                 ))
-            })?
-        } else {
-            serde_json::json!({})
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            // Any other read failure — a permission denial, a directory in the
+            // file's place — still refuses, exactly as the `?` here did before.
+            Err(e) => return Err(e.into()),
         };
         Ok((path, value))
     }
 
     /// Write `value` to `path` atomically (create parent dirs if needed).
-    fn write_settings(path: &Path, value: &serde_json::Value) -> Result<(), AdapterError> {
+    async fn write_settings(path: &Path, value: &serde_json::Value) -> Result<(), AdapterError> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
-        std::fs::write(
+        tokio::fs::write(
             path,
             serde_json::to_string_pretty(value).map_err(|e| AdapterError::Serde(e.to_string()))?,
         )
+        .await
         .map_err(AdapterError::SettingsApplyFailed)
     }
 }
@@ -341,7 +348,7 @@ impl DevToolAdapter for CopilotAdapter {
     ///
     /// [`generate_managed_settings`]: Self::generate_managed_settings
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
-        let (path, mut existing) = self.read_settings()?;
+        let (path, mut existing) = self.read_settings().await?;
         let incoming: serde_json::Value =
             serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
         if let (Some(obj), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) {
@@ -349,7 +356,7 @@ impl DevToolAdapter for CopilotAdapter {
                 obj.insert(k.clone(), v.clone());
             }
         }
-        Self::write_settings(&path, &existing)
+        Self::write_settings(&path, &existing).await
     }
 
     fn build_launch_command(
@@ -376,10 +383,17 @@ impl DevToolAdapter for CopilotAdapter {
             Some(p) => p,
             None => return Ok(vec![]),
         };
-        if !path.exists() {
-            return Ok(vec![]);
-        }
-        let raw = std::fs::read_to_string(&path)?;
+        // AAASM-6093: `exists()`-then-read collapsed into one non-blocking read.
+        // The doc comment above already treats a missing file as an empty list,
+        // so the `NotFound` arm is that same contract expressed once instead of
+        // twice — and a file that appears between the two calls is no longer
+        // reported as absent.
+        let raw = match tokio::fs::read_to_string(&path).await {
+            Ok(raw) => raw,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            // Any other read failure still propagates, as the `?` here did.
+            Err(e) => return Err(e.into()),
+        };
         let settings: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
         let Some(servers) = settings.get(VSCODE_MCP_SERVERS_KEY).and_then(|v| v.as_object()) else {
             return Ok(vec![]);
@@ -409,7 +423,7 @@ impl DevToolAdapter for CopilotAdapter {
     ///
     /// Changes are written back atomically. Other user settings are preserved.
     async fn apply_mcp_governance(&self, allowed: &[String], denied: &[String]) -> Result<(), AdapterError> {
-        let (path, mut settings) = self.read_settings()?;
+        let (path, mut settings) = self.read_settings().await?;
 
         if let Some(obj) = settings.get_mut(VSCODE_MCP_SERVERS_KEY).and_then(|v| v.as_object_mut()) {
             for name in denied {
@@ -424,7 +438,7 @@ impl DevToolAdapter for CopilotAdapter {
             settings["chat.mcp.requireApproval"] = serde_json::json!("always");
         }
 
-        Self::write_settings(&path, &settings)
+        Self::write_settings(&path, &settings).await
     }
 
     fn governance_level(&self) -> GovernanceLevel {

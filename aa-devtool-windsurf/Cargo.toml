@@ -12,6 +12,10 @@ aa-devtool-contract = { path = "../aa-devtool-contract" }
 async-trait  = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+# AAASM-6093: the DevToolAdapter methods are `async fn`, so their file I/O must
+# not block the executor thread. `fs` is the only feature needed here — the
+# runtime itself is the caller's.
+tokio        = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

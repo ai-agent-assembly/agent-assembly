@@ -317,9 +317,14 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
         // keys onto the existing document instead, same pattern as the other
         // adapters' `apply_settings`. A parse failure refuses rather than
         // being treated as an empty document.
-        let existing: serde_json::Value = if self.admin_settings_path.exists() {
-            let raw = std::fs::read_to_string(&self.admin_settings_path)?;
-            serde_json::from_str(&raw).map_err(|e| {
+        //
+        // AAASM-6093: `tokio::fs`, because this is an `async fn` and a blocking
+        // read parks the executor thread. Attempting the read and matching
+        // `NotFound` also removes the `exists()`-then-read window: the previous
+        // form could see the file, have it removed, and then fail the read as if
+        // the document were malformed rather than absent.
+        let existing: serde_json::Value = match tokio::fs::read_to_string(&self.admin_settings_path).await {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
                 AdapterError::SettingsApplyFailed(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!(
@@ -327,9 +332,11 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
                         self.admin_settings_path.display()
                     ),
                 ))
-            })?
-        } else {
-            serde_json::json!({})
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            // Any other read failure — a permission denial, a directory in the
+            // file's place — still refuses, exactly as the `?` here did before.
+            Err(e) => return Err(e.into()),
         };
         let incoming: serde_json::Value =
             serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
@@ -343,10 +350,12 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
         }
 
         if let Some(parent) = self.admin_settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         let serialized = serde_json::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
-        std::fs::write(&self.admin_settings_path, serialized).map_err(AdapterError::SettingsApplyFailed)?;
+        tokio::fs::write(&self.admin_settings_path, serialized)
+            .await
+            .map_err(AdapterError::SettingsApplyFailed)?;
         Ok(())
     }
 
@@ -385,7 +394,7 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
     }
 
     async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
-        let raw = std::fs::read_to_string(&self.mcp_config_path)?;
+        let raw = tokio::fs::read_to_string(&self.mcp_config_path).await?;
         let parsed: WindsurfMcpSettings =
             serde_json::from_str(&raw).map_err(|e| AdapterError::McpConfigFailed(format!("parse failed: {e}")))?;
         Ok(parsed
@@ -410,26 +419,30 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
         // touch only `mcp.disabled_servers`, the one field this method owns —
         // same pattern `apply_settings` above already uses. A parse failure
         // now refuses rather than being treated as empty.
-        let mut existing: serde_json::Value = if self.admin_settings_path.exists() {
-            let raw = std::fs::read_to_string(&self.admin_settings_path)?;
-            serde_json::from_str(&raw).map_err(|e| {
+        // AAASM-6093: `tokio::fs` with a `NotFound` arm, for the same two reasons
+        // as `apply_settings` above — non-blocking in an `async fn`, and no
+        // `exists()`-then-read window.
+        let mut existing: serde_json::Value = match tokio::fs::read_to_string(&self.admin_settings_path).await {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|e| {
                 AdapterError::McpConfigFailed(format!(
                     "{} is not valid JSON, refusing to overwrite it: {e}",
                     self.admin_settings_path.display()
                 ))
-            })?
-        } else {
-            serde_json::json!({})
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            Err(e) => return Err(e.into()),
         };
 
         // Read configured MCP server names from mcp_config_path if it exists.
-        let configured: Vec<String> = if self.mcp_config_path.exists() {
-            let raw = std::fs::read_to_string(&self.mcp_config_path)?;
-            serde_json::from_str::<WindsurfMcpSettings>(&raw)
+        // A malformed document here is deliberately tolerated as "no configured
+        // servers", unchanged from before; only absence and read failure are
+        // distinguished.
+        let configured: Vec<String> = match tokio::fs::read_to_string(&self.mcp_config_path).await {
+            Ok(raw) => serde_json::from_str::<WindsurfMcpSettings>(&raw)
                 .map(|s| s.mcp_servers.into_keys().collect())
-                .unwrap_or_default()
-        } else {
-            vec![]
+                .unwrap_or_default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+            Err(e) => return Err(e.into()),
         };
 
         // Build disabled list: explicit denied + configured servers not in allowed.
@@ -454,11 +467,12 @@ impl DevToolAdapter for WindsurfCascadeAdapter {
 
         // Write back.
         if let Some(parent) = self.admin_settings_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         let serialized =
             serde_json::to_string_pretty(&existing).map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
-        std::fs::write(&self.admin_settings_path, serialized)
+        tokio::fs::write(&self.admin_settings_path, serialized)
+            .await
             .map_err(|e| AdapterError::McpConfigFailed(e.to_string()))?;
         Ok(())
     }
