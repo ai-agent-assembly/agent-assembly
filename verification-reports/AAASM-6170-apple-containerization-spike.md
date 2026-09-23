@@ -38,15 +38,23 @@ compatibility would remove this repo's single largest self-inflicted gap
 (AAASM-5849 — the guest has no general toolchain) at the framework level
 instead of by hand-curating `GUEST_RESIDENT_PROGRAMS`, and it runs on the same
 underlying Virtualization.framework this repo already trusts and is already
-entitled for. The case against defaulting to it today is equally real: it
-multiplies per-run VM overhead in a way this repo's own resource-ceiling work
-(AAASM-6165) has not yet budgeted for, its sub-second-boot and per-container
-isolation claims are Apple marketing claims this spike could not measure on
-real hardware, and — the fact most likely to gate a PoC before it starts —
-this repo has never documented a minimum macOS *version* for the VZ backend
-(only an Apple Silicon *architecture* floor), so adopting a framework whose
-own minimum OS requirement is unusually recent is a policy decision this
-ticket does not have standing to make unilaterally. See
+entitled for. The case against defaulting to it today is equally real, on
+three grounds, none of which is "it is definitely slower or heavier than
+today's backend" (this spike's own steady-state analysis below shows the
+per-container overhead risk is *conditional* on a multi-container agent
+workflow design AASM does not currently have, not a fact about today's
+one-process-per-run usage): its sub-second-boot and per-container isolation
+claims are Apple marketing claims this spike could not measure on real
+hardware (and this repo's own two boot-time figures for the *existing*
+backend do not even agree with each other — see
+["Startup cost"](#startup-cost)); a future multi-container workflow design
+would need AAASM-6165's resource-ceiling work to budget for N-guest
+multiplication before it could be recommended; and — the fact most likely to
+gate a PoC before it starts — this repo has never documented a minimum
+macOS *version* for the VZ backend (only an Apple Silicon *architecture*
+floor), so adopting a framework whose own minimum OS requirement is
+unusually recent is a policy decision this ticket does not have standing to
+make unilaterally. See
 ["Packaging/distribution"](#packaging-distribution-macos-version-floor) below
 for exactly what is and is not documented today.
 
@@ -127,14 +135,21 @@ at `remote/main@77cbbc8db`:
   (`verification-reports/AAASM-5534-host-wide-mediation-rebaseline.md:287-288`).
   Any network mediation this product does on macOS happens at the host
   process/proxy layer (`aa-proxy`), entirely outside this guest boundary.
-- **Boot cost, as measured on the one host this Epic has qualified against:**
+- **Boot cost, as measured on the one host this Epic has qualified against —
+  and the two cited numbers do not agree with each other.**
+  `aa-isolation-macos-vm/src/lib.rs`'s module docs state
   `tests/real_hardware.rs`'s full round trip (boot, connect, launch, exit,
-  teardown) measures at **~0.3s**, per `aa-isolation-macos-vm/src/lib.rs`'s
-  own module docs. This is a real, cited, single-host measurement — not
-  vendor marketing — and it is already in the same sub-second range Apple
-  claims for Containerization's own per-container boot. Any startup-cost
-  comparison below has to be read against this number, not against a naive
-  assumption that the existing backend boots slowly.
+  teardown) measures at **~0.3s**. But `vmm.rs`'s own `GUEST_CONNECT_TIMEOUT`
+  constant documents itself as "generous relative to every real boot this
+  Epic has measured (**low single-digit seconds**)" — a different number, in
+  the same crate, for what is plausibly the same underlying boot. This
+  report could not reconcile the two from source alone (they may be
+  measuring different spans — a probe's internal round trip versus a full
+  cold boot-to-connect — or one may predate the per-boot-copy fix in
+  AAASM-5854/5870); both are cited here rather than silently picking the
+  more favorable one. Any startup-cost comparison below is read against a
+  **sub-second-to-low-single-digit-second range**, not a single confirmed
+  figure.
 - **Apple Silicon only; no Intel build exists.** Documented in
   `docs/src/quick-start/requirements.md:97` and
   `docs/src/security/execution-isolation.md:201,295` — "guest kernel/helper
@@ -209,17 +224,20 @@ rather than from a performance number that needs a stopwatch to confirm.
 ### Startup cost
 
 **[Partially vendor-claimed, partially measured against this repo's own
-number.]** Apple's public claim is sub-second boot per container. This
-repo's *own, real-hardware-measured* number for the existing backend's full
-boot-connect-launch-exit-teardown round trip is **~0.3s** on the one host
-this Epic qualified against (`aa-isolation-macos-vm/src/lib.rs` module docs).
-These are not directly comparable measurements — different hosts, different
-guest images, different definitions of "boot" — but they are close enough in
-order of magnitude that startup cost is **not** a strong differentiator
-either way without a same-host, same-workload comparison. **Not verified**:
-whether Containerization's claimed number includes OCI image resolution/pull
-time (which the existing backend has no equivalent of, since its rootfs is a
-pre-built local artifact) or only measures a warm-cached boot.
+numbers — and this repo's own numbers disagree with each other.]** Apple's
+public claim is sub-second boot per container. This repo's own real-hardware
+evidence for the existing backend spans two different, unreconciled figures
+(see above): `~0.3s` for a full round trip per `lib.rs`'s module docs, versus
+"low single-digit seconds" per `vmm.rs`'s own documented basis for its
+30-second connect timeout. Until that internal discrepancy is resolved (by
+whoever runs the real PoC below, ideally on the same host and the same
+definition of "boot"), this report cannot responsibly claim startup cost is
+or is not a differentiator — the honest range spans both "already as fast as
+Apple's claim" and "several times slower," depending on which of this
+repo's own numbers is current. **Not verified**: whether Containerization's
+claimed number includes OCI image resolution/pull time (which the existing
+backend has no equivalent of, since its rootfs is a pre-built local
+artifact) or only measures a warm-cached boot.
 
 ### Steady-state overhead
 
@@ -451,7 +469,7 @@ was, independent of any security or compatibility finding above.
 | Platform/version/architecture limitations are explicit | Delivered — see ["Packaging/distribution"](#packaging-distribution-macos-version-floor) and ["Platform restrictions"](#platform-restrictions); the macOS-version-floor gap is the headline finding |
 | Existing AASM security properties are mapped property-by-property, not assumed equivalent | Delivered per-dimension above; no property is asserted equivalent without a stated basis, and several (attestation, network, evidence) are explicitly *not* improved by Containerization alone |
 | If viable, minimal experimental vertical slice runs existing boundary tests on real compatible hardware | **Not attempted this pass** — no qualifying hardware/OS/framework installation was available; this is the PoC this spike recommends as a *follow-up*, not something this spike itself could execute |
-| Startup/concurrency/compatibility measurements are recorded | Startup: partially (this repo's own ~0.3s number is real; Containerization's sub-second claim is not independently measured). Concurrency: not measured for Containerization; this repo's own AAASM-5870 serialization constraint is recorded. Compatibility: OCI compatibility is architectural, not benchmarked |
+| Startup/concurrency/compatibility measurements are recorded | Startup: partially — this repo's own two boot-time figures (`~0.3s` and "low single-digit seconds") are cited but not reconciled with each other, and Containerization's sub-second claim is not independently measured against either. Concurrency: not measured for Containerization; this repo's own AAASM-5870 serialization constraint is recorded. Compatibility: OCI compatibility is architectural, not benchmarked |
 | Go / Conditional Go / No-Go decision exists | **Conditional Go** — see [Verdict](#verdict) |
 | Existing macOS backend remains default unless a separate qualified migration decision is made | This spike does not change any default and recommends none change as a result of it |
 
@@ -465,8 +483,11 @@ re-derive it:
    sets in response to this spike's finding that none currently exists.
 2. Real boot-time and steady-state memory measurement for a single
    Containerization-backed launch, same host class this Epic already
-   qualified the existing backend on, for a true apples-to-apples number
-   against the existing ~0.3s figure.
+   qualified the existing backend on, for a true apples-to-apples number —
+   this should also resolve the existing backend's own unreconciled
+   `~0.3s` vs. "low single-digit seconds" boot-time figures (see
+   ["Startup cost"](#startup-cost)) so the comparison has one confirmed
+   baseline instead of two disagreeing ones.
 3. Whether concurrent Containerization container starts hit any analogue of
    AAASM-5870's `VZVirtualMachine.start()` race, or whether Apple's own
    daemon already serializes/queues internally — this determines whether a
