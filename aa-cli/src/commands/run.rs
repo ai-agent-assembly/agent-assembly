@@ -802,16 +802,45 @@ mod plan {
             command: &std::process::Command,
             credentials: CredentialPosture,
         ) -> Option<ExecutionSpec> {
-            let program = command.get_program().to_str()?.to_string();
-            let args: Vec<String> = command
-                .get_args()
-                .map(|arg| arg.to_str().map(str::to_string))
-                .collect::<Option<_>>()?;
+            // Held so the assembly below can destructure it exhaustively.
+            // `&std::process::Command` can't itself be destructured (its
+            // fields are private, so the total move AAASM-5777 used for the
+            // unconfined path has no equivalent here), and `ExecutionSpec`'s
+            // fields are private to `aa_isolation` too, so a struct literal
+            // can't stand in for it from this crate either. Naming every
+            // field of `BoundLaunchFields` in the `let BoundLaunchFields {
+            // .. } = fields` below is what turns a field added here without
+            // also being consumed there into a compile error (`E0027`)
+            // rather than a silent drop -- the same defect class AAASM-5777
+            // closed for `spawn_and_wait`, adapted to this projection's
+            // shape.
+            struct BoundLaunchFields {
+                program: String,
+                args: Vec<String>,
+                working_dir: Option<std::path::PathBuf>,
+                credentials: CredentialPosture,
+            }
+
+            let fields = BoundLaunchFields {
+                program: command.get_program().to_str()?.to_string(),
+                args: command
+                    .get_args()
+                    .map(|arg| arg.to_str().map(str::to_string))
+                    .collect::<Option<_>>()?,
+                working_dir: command.get_current_dir().map(std::path::Path::to_path_buf),
+                credentials,
+            };
+            let BoundLaunchFields {
+                program,
+                args,
+                working_dir,
+                credentials,
+            } = fields;
 
             let mut spec = ExecutionSpec::new(program, identity.identity_ref(&handle.agent_id))
                 .with_args(args)
                 .with_credentials(credentials);
-            if let Some(dir) = command.get_current_dir() {
+            if let Some(dir) = working_dir {
                 spec = spec.with_working_dir(dir);
             }
             Some(spec)
@@ -7271,6 +7300,29 @@ mod tests {
             spec.program(),
             bound.command().get_program().to_string_lossy(),
             "the spec must name the same program the launch will spawn"
+        );
+    }
+
+    /// AAASM-6038: `base_spec` projects `working_dir` off the bound command
+    /// exactly like `program`, `args` and `credentials` — but it is the one
+    /// field applied conditionally (`if let Some(dir) = working_dir`) rather
+    /// than passed straight into a builder call, which made it the field
+    /// most likely to be lost on the pre-fix builder chain.
+    /// AAASM-5706 found the equivalent gap for `spawn_and_wait`'s child
+    /// process; this is the confined path's analogous control.
+    #[test]
+    fn the_execution_spec_carries_the_working_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut args = planning_args("claude");
+        args.workdir = Some(dir.path().to_path_buf());
+        let mut resolved = preview_plan(&StubEnvContributing, &args);
+        let bound = resolved.bind(&stub_handle(None));
+
+        let spec = bound.spec().expect("spec");
+        assert_eq!(
+            spec.working_dir(),
+            Some(dir.path()),
+            "the spec must carry the same working directory the bound command will start in"
         );
     }
 
