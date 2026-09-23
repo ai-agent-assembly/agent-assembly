@@ -210,3 +210,4 @@
 # Research
 
 - [AAASM-5269 - Local-First Sensitive-Data Provider Architecture](research/AAASM-5269-sensitive-data-provider-architecture.md)
+- [AAASM-6169 - Firecracker microVM Backend Spike](research/AAASM-6169-firecracker-backend-spike.md)
