@@ -43,7 +43,7 @@ use aa_isolation::{
     permit_only_selector, CapabilityDomain, ControlRequirement, EnforcementEvidence, EvidenceKind, ExecutionSpec,
     IdentityRef, IsolationBackend, RequirementScope, SupportLevel, CLOUD_METADATA_ENDPOINTS,
 };
-use aa_isolation_native::{launch, CompletedRun, NativeBackend, REQUIRED_ABI_VERSION};
+use aa_isolation_native::{launch, CompletedRun, NativeBackend, OPTIONAL_IOCTL_DEV_ABI_VERSION, REQUIRED_ABI_VERSION};
 
 // Only for `AttackFamily`, so `measured` below can tag every record with the
 // family it belongs to (AAASM-5805) — the same format
@@ -1444,6 +1444,136 @@ fn truncate_interpreter() -> Option<&'static str> {
             .map(|out| out.status.success())
             .unwrap_or(false)
     })
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-6173: the opportunistic device-ioctl right.
+// ---------------------------------------------------------------------------
+
+/// [`require_confining_backend`], narrowed to hosts this ticket's
+/// opportunistic right actually reaches: below `OPTIONAL_IOCTL_DEV_ABI_VERSION`
+/// this backend never requests the ioctl restriction at all, and declining
+/// visibly here is the same discipline `truncate_interpreter`'s absence
+/// already gets in this file — a scenario that cannot reach its own
+/// precondition proves nothing about the code under test either way.
+fn require_confining_backend_with_ioctl_dev(scenario: &str) -> Option<NativeBackend> {
+    let backend = require_confining_backend(scenario)?;
+    let host = backend.host()?;
+    let measured = host.abi_floor().measured();
+    if !measured.is_some_and(|v| v >= OPTIONAL_IOCTL_DEV_ABI_VERSION) {
+        return decline(
+            scenario,
+            Measurement::UnsupportedPlatform,
+            &format!(
+                "this scenario measures the opportunistic ioctl(2) restriction, which this backend \
+                 only requests at Landlock ABI v{OPTIONAL_IOCTL_DEV_ABI_VERSION}+; this host measured \
+                 {}",
+                measured
+                    .map(|v| format!("v{v}"))
+                    .unwrap_or_else(|| "no Landlock ABI".to_string())
+            ),
+        );
+    }
+    Some(backend)
+}
+
+/// **AAASM-6173.** `ioctl(2)` on a device file must be denied when the path it
+/// was reached through carries no write grant — the marginal restriction this
+/// ticket adds on top of the v3 floor's read/write/truncate rights, none of
+/// which say anything about `ioctl(2)`.
+///
+/// The control is the identical call against the same device file, reached
+/// through a directory that *is* write-granted: it succeeds, so a failure on
+/// the forbidden path is the boundary and not an interpreter that could not
+/// call `ioctl(2)` at all, or a device that rejects this specific call
+/// outright.
+///
+/// # What is genuinely unmeasured about this scenario
+///
+/// This crate cannot create its own device nodes without root, so `/dev/null`
+/// stands in. `FIONREAD` was chosen as a call every readable file descriptor
+/// is expected to answer (regular files, pipes, sockets, and most character
+/// devices) without needing a device-specific ioctl vocabulary — but that
+/// expectation about `/dev/null` specifically has not been exercised against
+/// a real ABI v5+ Linux kernel as part of this change; only `cargo check` has
+/// run here (this host is macOS). If `/dev/null` rejects `FIONREAD` with
+/// `ENOTTY` rather than Landlock denying it, the **control** assertion below
+/// fails loudly rather than the scenario passing by coincidence — this test
+/// is built to fail rather than silently prove nothing if that assumption is
+/// wrong.
+#[test]
+fn ioctl_on_a_device_file_outside_the_write_grant_is_denied() {
+    const SCENARIO: &str = "native adversarial: ioctl(2) on a device file outside the write grant is denied";
+    let Some(backend) = require_confining_backend_with_ioctl_dev(SCENARIO) else {
+        return;
+    };
+    let Some(interpreter) = truncate_interpreter() else {
+        decline::<()>(
+            SCENARIO,
+            Measurement::ToolAbsent,
+            "no interpreter on PATH can call ioctl(2) via fcntl.ioctl, and no POSIX shell builtin can — \
+             the standalone syscall was not exercised on this host",
+        );
+        return;
+    };
+
+    const DEVICE: &str = "/dev/null";
+    if !Path::new(DEVICE).exists() {
+        decline::<()>(
+            SCENARIO,
+            Measurement::ToolAbsent,
+            "/dev/null does not exist on this host",
+        );
+        return;
+    }
+
+    // FIONREAD (0x541B on every architecture this backend's syscall filter
+    // supports, from `asm-generic/ioctls.h`), via `fcntl.ioctl` so the call
+    // needs no ctypes plumbing for the pointee.
+    let script =
+        format!("import fcntl,struct; f=open({DEVICE:?},'r'); print(fcntl.ioctl(f, 0x541B, struct.pack('i', 0)))");
+    let ioctl_succeeded = |completed: &CompletedRun| completed.status.success() && !completed.stdout.trim().is_empty();
+
+    // Control: /dev additionally granted for write, so the write-bundled
+    // IoctlDev right reaches /dev/null.
+    let (control, _) = run(
+        &backend,
+        &spec_with(
+            interpreter,
+            &script,
+            Vec::new(),
+            vec![permit_only_selector("/dev")],
+            true,
+        ),
+    );
+    assert_the_program_ran(SCENARIO, &control);
+    assert!(
+        ioctl_succeeded(&control),
+        "[{SCENARIO}] the control ioctl(2), on a device file inside a write grant, did not succeed, so \
+         the assertion below proves nothing. stdout: {:?} stderr: {:?}",
+        control.stdout,
+        control.stderr
+    );
+
+    // Test: /dev only reaches this program through the read-only baseline
+    // grant every scenario in this file carries (`system_reads`) — no write
+    // grant is added, so the opportunistic ioctl right is withheld.
+    let (test, _) = run(&backend, &spec_with(interpreter, &script, Vec::new(), Vec::new(), true));
+    assert_the_program_ran(SCENARIO, &test);
+    assert!(
+        !ioctl_succeeded(&test),
+        "[{SCENARIO}] ioctl(2) on {DEVICE} succeeded through a path with no write grant — the \
+         opportunistic device-ioctl right this backend requests at ABI v{OPTIONAL_IOCTL_DEV_ABI_VERSION}+ \
+         was not enforced. stdout: {:?} stderr: {:?}",
+        test.stdout,
+        test.stderr
+    );
+    measured(
+        SCENARIO,
+        AttackFamily::ForbiddenFilesystemWrite,
+        "ioctl(2) succeeded on a device file reached through a write grant and failed on the same file \
+         reached through the read-only baseline grant alone",
+    );
 }
 
 // ---------------------------------------------------------------------------
