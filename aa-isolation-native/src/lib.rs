@@ -51,6 +51,16 @@
 //! required requirement for one **refuses the launch** rather than planning
 //! successfully against a control that is not installed.
 //!
+//! **AAASM-6173** re-baselined this crate against current Landlock versions
+//! and found one opportunistic strengthening worth adopting within the
+//! existing write domain — the device-ioctl right at ABI v5, measured per
+//! host and never a hard requirement (see [`rules::OPTIONAL_IOCTL_DEV_ABI_VERSION`])
+//! — and two it deliberately did not: Landlock's network restriction is
+//! port-only and cannot express this crate's host-shaped `NetworkEgress`
+//! policy source, and pathname/abstract Unix-domain-socket restriction needs
+//! an ABI not yet present on any released kernel. See [`rules::REQUIRED_ABI`]'s
+//! own documentation for the full matrix and the evidence behind each line.
+//!
 //! The syscall filter is a [`SupportLevel::Partial`](aa_isolation::SupportLevel::Partial)
 //! domain, not a `Full` one: it permits a startup baseline beyond what policy
 //! named, so that its own `execve` of the confined program is not killed by
@@ -108,5 +118,5 @@ pub use launch::{Grants, LauncherArgv, SyscallFilter, EXIT_LAUNCH_REFUSED, FAILU
 pub use lower::LoweringGap;
 pub use probe::{ConfinementProbe, Observation};
 pub use proc_scope::{ProcListing, ScopedGrants, OWN_PROC};
-pub use rules::{RulePlan, REQUIRED_ABI_VERSION, REQUIRED_KERNEL_RELEASE};
+pub use rules::{RulePlan, OPTIONAL_IOCTL_DEV_ABI_VERSION, REQUIRED_ABI_VERSION, REQUIRED_KERNEL_RELEASE};
 pub use seccomp::{FilterProgram, STARTUP_BASELINE};
