@@ -93,6 +93,7 @@ pub fn discover(facts: &HostFacts, probe: &ConfinementProbe, degraded: &[String]
         credential(),
         name_resolution(),
         syscall(),
+        workspace_transaction(),
     ];
     BackendCapabilities::new(
         BackendAvailability::Available,
@@ -416,6 +417,19 @@ fn syscall() -> CapabilityReport {
          complement is unbounded, so no denied list expresses one — the domain is reported unsupported \
          rather than partially supported so that a permitted-set requirement is refused instead of \
          being met by a control that does not implement it",
+    )
+}
+
+/// AAASM-6162: this backend implements no staged/transactional workspace of
+/// its own — a run either has the write access this mechanism grants it, or
+/// it does not, with no COW layer in between. Reported unsupported rather
+/// than silently omitted, so a `WorkspaceTransaction` requirement is refused
+/// by this backend instead of appearing to have no opinion.
+fn workspace_transaction() -> CapabilityReport {
+    CapabilityReport::unsupported(
+        CapabilityDomain::WorkspaceTransaction,
+        "the mechanism grants direct write access under its ruleset; it has no staged/copy-on-write \
+         layer, so it cannot stage a mutation for a separate commit/discard decision",
     )
 }
 
