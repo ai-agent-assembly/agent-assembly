@@ -32,7 +32,7 @@
 //!
 //! - [`materialize`] copies content, never hard-links it — a hardlink shares
 //!   an inode with the base, so a write through the staged path would mutate
-//!   the base before any commit decision. [`commit::apply`] additionally
+//!   the base before any commit decision. [`commit::commit`] additionally
 //!   refuses any staged entry whose inode matches a base entry's, as a second
 //!   line of defense against a materialization bug.
 //! - [`commit::commit`] re-measures the base immediately before touching
