@@ -179,7 +179,9 @@ pub mod descriptor;
 pub mod evidence;
 pub mod lowering;
 pub mod plan;
+pub mod planner;
 pub mod report;
+pub mod requirements;
 pub mod spec;
 
 #[cfg(feature = "mock-backend")]
@@ -210,11 +212,13 @@ pub use plan::{
     negotiate, AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, Lowering, PlanRefusal,
     PlannedRequirement, Provenance, RefusalReason, RequirementOutcome,
 };
+pub use planner::{select, select_pinned, Candidate, Selection};
 pub use report::{
     BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainProjection, EvidenceBasis,
     IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef, TargetRef,
     UnmeasuredReason, REPORT_SCHEMA,
 };
+pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
     RequirementPosture, RequirementScope, ResourceLimits,
