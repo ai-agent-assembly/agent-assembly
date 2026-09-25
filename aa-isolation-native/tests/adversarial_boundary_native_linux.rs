@@ -43,7 +43,7 @@ use aa_isolation::{
     permit_only_selector, CapabilityDomain, ControlRequirement, EnforcementEvidence, EvidenceKind, ExecutionSpec,
     IdentityRef, IsolationBackend, RequirementScope, SupportLevel, CLOUD_METADATA_ENDPOINTS,
 };
-use aa_isolation_native::{launch, CompletedRun, NativeBackend, OPTIONAL_IOCTL_DEV_ABI_VERSION, REQUIRED_ABI_VERSION};
+use aa_isolation_native::{launch, CompletedRun, NativeBackend, REQUIRED_ABI_VERSION};
 
 // Only for `AttackFamily`, so `measured` below can tag every record with the
 // family it belongs to (AAASM-5805) — the same format
@@ -1448,155 +1448,21 @@ fn truncate_interpreter() -> Option<&'static str> {
 
 // ---------------------------------------------------------------------------
 // AAASM-6173: the opportunistic device-ioctl right.
+//
+// No scenario here. Two candidate device/ioctl pairs were tried against real
+// ABI v5+ Linux CI (`/dev/null`+`FIONREAD`, both directions of the intended
+// denial/control shape) and both measured `/dev/null` rejecting the ioctl
+// with ENOTTY regardless of grant — a fact about that device's driver
+// (`drivers/char/mem.c`'s `null_fops` implements no `ioctl` handler at all),
+// not a Landlock decision, so no control existed that this crate could use
+// to prove the IoctlDev right without root (to create a device node this
+// crate does not need `/dev/null` to stand in for). This ticket's AC does
+// not require device-ioctl coverage — see AAASM-6173's scope list (filesystem
+// ABI, TCP, pathname IPC, UDP, thread inheritance, seccomp interaction); the
+// opportunistic IoctlDev request the backend already makes at ABI v5+ stays
+// unmeasured by this crate's adversarial suite pending a device this
+// environment can actually exercise without root.
 // ---------------------------------------------------------------------------
-
-/// [`require_confining_backend`], narrowed to hosts this ticket's
-/// opportunistic right actually reaches: below `OPTIONAL_IOCTL_DEV_ABI_VERSION`
-/// this backend never requests the ioctl restriction at all, and declining
-/// visibly here is the same discipline `truncate_interpreter`'s absence
-/// already gets in this file — a scenario that cannot reach its own
-/// precondition proves nothing about the code under test either way.
-fn require_confining_backend_with_ioctl_dev(scenario: &str) -> Option<NativeBackend> {
-    let backend = require_confining_backend(scenario)?;
-    let host = backend.host()?;
-    let measured = host.abi_floor().measured();
-    if !measured.is_some_and(|v| v >= OPTIONAL_IOCTL_DEV_ABI_VERSION) {
-        return decline(
-            scenario,
-            Measurement::UnsupportedPlatform,
-            &format!(
-                "this scenario measures the opportunistic ioctl(2) restriction, which this backend \
-                 only requests at Landlock ABI v{OPTIONAL_IOCTL_DEV_ABI_VERSION}+; this host measured \
-                 {}",
-                measured
-                    .map(|v| format!("v{v}"))
-                    .unwrap_or_else(|| "no Landlock ABI".to_string())
-            ),
-        );
-    }
-    Some(backend)
-}
-
-/// **AAASM-6173.** `ioctl(2)` on a device file must be denied when the path it
-/// was reached through carries no write grant — the marginal restriction this
-/// ticket adds on top of the v3 floor's read/write/truncate rights, none of
-/// which say anything about `ioctl(2)`.
-///
-/// The control is the identical call against the same device file, reached
-/// through a directory that *is* write-granted: it succeeds, so a failure on
-/// the forbidden path is the boundary and not an interpreter that could not
-/// call `ioctl(2)` at all, or a device that rejects this specific call
-/// outright.
-///
-/// # What is genuinely unmeasured about this scenario
-///
-/// This crate cannot create its own device nodes without root, so `/dev/null`
-/// stands in. `FIONREAD` was the first candidate tried, on the expectation
-/// that it is answered by every readable file descriptor — that expectation
-/// was wrong: real ABI v5+ Linux CI measured `/dev/null` rejecting `FIONREAD`
-/// with `ENOTTY` even through a write grant, i.e. before Landlock's IoctlDev
-/// right is ever consulted (`drivers/char/mem.c`'s `null_fops` implements no
-/// `ioctl`, and `FIONREAD` is not one of the handful of commands
-/// `fs/ioctl.c`'s `do_vfs_ioctl` answers generically without reaching the
-/// device). That is a fact about `/dev/null`'s own capabilities, not a
-/// Landlock decision, so the control below distinguishes it from every other
-/// failure shape and declines rather than asserting a false positive or
-/// negative about the right this scenario exists to measure.
-#[test]
-fn ioctl_on_a_device_file_outside_the_write_grant_is_denied() {
-    const SCENARIO: &str = "native adversarial: ioctl(2) on a device file outside the write grant is denied";
-    let Some(backend) = require_confining_backend_with_ioctl_dev(SCENARIO) else {
-        return;
-    };
-    let Some(interpreter) = truncate_interpreter() else {
-        decline::<()>(
-            SCENARIO,
-            Measurement::ToolAbsent,
-            "no interpreter on PATH can call ioctl(2) via fcntl.ioctl, and no POSIX shell builtin can — \
-             the standalone syscall was not exercised on this host",
-        );
-        return;
-    };
-
-    const DEVICE: &str = "/dev/null";
-    if !Path::new(DEVICE).exists() {
-        decline::<()>(
-            SCENARIO,
-            Measurement::ToolAbsent,
-            "/dev/null does not exist on this host",
-        );
-        return;
-    }
-
-    // FIONREAD (0x541B on every architecture this backend's syscall filter
-    // supports, from `asm-generic/ioctls.h`), via `fcntl.ioctl` so the call
-    // needs no ctypes plumbing for the pointee.
-    let script =
-        format!("import fcntl,struct; f=open({DEVICE:?},'r'); print(fcntl.ioctl(f, 0x541B, struct.pack('i', 0)))");
-    let ioctl_succeeded = |completed: &CompletedRun| completed.status.success() && !completed.stdout.trim().is_empty();
-
-    // Control: /dev additionally granted for write, so the write-bundled
-    // IoctlDev right reaches /dev/null.
-    let (control, _) = run(
-        &backend,
-        &spec_with(
-            interpreter,
-            &script,
-            Vec::new(),
-            vec![permit_only_selector("/dev")],
-            true,
-        ),
-    );
-    assert_the_program_ran(SCENARIO, &control);
-    if !ioctl_succeeded(&control) {
-        // ENOTTY ("Inappropriate ioctl for device") means the device itself
-        // has no handler for this command — measured on real ABI v5+ Linux
-        // CI against /dev/null specifically, independent of any write grant.
-        // That is a fact about the device, not about Landlock, so it is
-        // reported as an honest decline rather than a false pass or fail
-        // about the right this scenario exists to measure. Any other control
-        // failure is a genuine unexplained shape and still fails loudly.
-        if control.stderr.contains("Errno 25") || control.stderr.contains("Inappropriate ioctl for device") {
-            decline::<()>(
-                SCENARIO,
-                Measurement::ToolAbsent,
-                &format!(
-                    "{DEVICE} does not support FIONREAD at all (ENOTTY) even through a write grant on this \
-                     host's kernel — this is a device capability, not a Landlock decision, so the \
-                     opportunistic ioctl(2) right this scenario targets cannot be measured through this \
-                     call. stdout: {:?} stderr: {:?}",
-                    control.stdout, control.stderr
-                ),
-            );
-            return;
-        }
-        panic!(
-            "[{SCENARIO}] the control ioctl(2), on a device file inside a write grant, did not succeed for \
-             an unrecognised reason, so the assertion below proves nothing. stdout: {:?} stderr: {:?}",
-            control.stdout, control.stderr
-        );
-    }
-
-    // Test: /dev only reaches this program through the read-only baseline
-    // grant every scenario in this file carries (`system_reads`) — no write
-    // grant is added, so the opportunistic ioctl right is withheld.
-    let (test, _) = run(&backend, &spec_with(interpreter, &script, Vec::new(), Vec::new(), true));
-    assert_the_program_ran(SCENARIO, &test);
-    assert!(
-        !ioctl_succeeded(&test),
-        "[{SCENARIO}] ioctl(2) on {DEVICE} succeeded through a path with no write grant — the \
-         opportunistic device-ioctl right this backend requests at ABI v{OPTIONAL_IOCTL_DEV_ABI_VERSION}+ \
-         was not enforced. stdout: {:?} stderr: {:?}",
-        test.stdout,
-        test.stderr
-    );
-    measured(
-        SCENARIO,
-        AttackFamily::ForbiddenFilesystemWrite,
-        "ioctl(2) succeeded on a device file reached through a write grant and failed on the same file \
-         reached through the read-only baseline grant alone",
-    );
-}
 
 // ---------------------------------------------------------------------------
 // AAASM-5803: the syscall filter.
