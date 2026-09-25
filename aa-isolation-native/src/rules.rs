@@ -147,10 +147,41 @@ pub fn plan(grants: &Grants) -> RulePlan {
 ///   kernel does not handle is a right the kernel allows; there is no
 ///   configuration of a v2 host that closes this.
 ///
-/// Higher versions add capability this backend does not claim (`IOCTL_DEV` at
-/// v5, abstract-socket and signal scoping at v6, audit control at v7), so they
-/// are not part of the floor — they appear as stated limitations on the
-/// capability report instead.
+/// Higher versions add capability beyond this floor. **AAASM-6173** (Epic
+/// AAASM-6159, "Agent Execution Runtime 2.0") re-baselined this backend
+/// against the Landlock versions available when it shipped (rc.7) against
+/// what is available now, and recorded the result here rather than only in a
+/// ticket, so a future re-baseline has a starting matrix instead of a blank
+/// page:
+///
+/// * **`IOCTL_DEV` at v5 (Linux 6.10) is now requested opportunistically.**
+///   [`install`] measures the host's ABI itself, in the launcher process, and
+///   only asks the kernel to handle it when the host has already been
+///   measured to support it — never a hard requirement, so a host below v5 is
+///   unaffected and this floor does not move. See
+///   [`OPTIONAL_IOCTL_DEV_ABI_VERSION`].
+/// * **Network egress (TCP bind/connect) arrives at v4 (Linux 6.7), and is
+///   deliberately NOT adopted.** Landlock's network restriction is
+///   **port-only** — it cannot express a host or a domain. This crate's own
+///   `NetworkEgress` policy source (`network.allowlist`) is host-shaped (see
+///   `aa_isolation::lowering`'s coverage table: "Host globs only; no port, no
+///   protocol"). Installing a port-only rule and reporting `NetworkEgress` as
+///   supported would claim a granularity of confinement this mechanism does
+///   not provide — exactly the overclaim ADR 0035 forbids — so this domain
+///   stays `Unsupported` here rather than standing in for a shape it does not
+///   match.
+/// * **Abstract Unix-domain-socket and signal scoping arrive at v6 (Linux
+///   6.12), and pathname Unix-domain-socket restriction
+///   (`AccessFs::ResolveUnix`) arrives at v9 (Linux 7.1) in the pinned
+///   binding crate's own ABI table — not present on any released kernel as
+///   of this re-baseline.** `CapabilityDomain::Ipc` has no policy source at
+///   all today (`aa_isolation::lowering`: "Not expressible"), so there is no
+///   requirement this crate could lower onto either mechanism even once a
+///   kernel carries it; wiring one in without a policy-schema change would be
+///   exactly the "extending the schema" decision that module's documentation
+///   reserves for its own ADR.
+/// * Audit control arrives at v7 (Linux 6.15) and is not attached to any
+///   claim this backend makes.
 #[cfg(target_os = "linux")]
 pub const REQUIRED_ABI: landlock::ABI = landlock::ABI::V3;
 
@@ -161,6 +192,28 @@ pub const REQUIRED_ABI_VERSION: u32 = 3;
 /// The kernel release that first carried [`REQUIRED_ABI_VERSION`], for an
 /// operator who has a `uname -r` and not an ABI number.
 pub const REQUIRED_KERNEL_RELEASE: &str = "6.2";
+
+/// The Landlock ABI version at which this backend opportunistically requests
+/// the device-ioctl right (`AccessFs::IoctlDev`), and why it is optional
+/// rather than part of [`REQUIRED_ABI_VERSION`].
+///
+/// **AAASM-6173.** Unlike the floor, this is never a hard requirement:
+/// [`install`] measures the host's own ABI (via `crate::host::measure_abi`,
+/// the same raw kernel query `crate::host::HostFacts` uses for the floor —
+/// never the landlock binding's own internal query, which `crate::host`'s
+/// module documentation explains this crate avoids for exactly this reason:
+/// building an access set from a runtime-detected ABI would make the same
+/// policy mean different things on two hosts) and only asks the kernel to
+/// handle [`landlock::AccessFs::IoctlDev`] when the host has already been
+/// measured to support it. A host below this version keeps exactly the
+/// [`REQUIRED_ABI`] boundary it had before AAASM-6173 — nothing about the
+/// filesystem claim narrows, and no host that worked before this change stops
+/// working.
+pub const OPTIONAL_IOCTL_DEV_ABI_VERSION: u32 = 5;
+
+/// [`OPTIONAL_IOCTL_DEV_ABI_VERSION`] as the binding crate's own type.
+#[cfg(target_os = "linux")]
+pub const OPTIONAL_IOCTL_DEV_ABI: landlock::ABI = landlock::ABI::V5;
 
 /// What installing a plan produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +258,16 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
         RulesetCreatedAttr, RulesetStatus,
     };
 
+    // AAASM-6173. Measured in this process, independently of anything the
+    // supervisor's own `HostFacts` established — the launcher never assumes a
+    // fact about the host that it has not established for itself, the same
+    // rule every other step here already follows. A host below
+    // `OPTIONAL_IOCTL_DEV_ABI_VERSION` requests nothing extra below and keeps
+    // exactly the v3 boundary this function has always installed.
+    let ioctl_dev_available = crate::host::measure_abi()
+        .measured()
+        .is_some_and(|measured| measured >= OPTIONAL_IOCTL_DEV_ABI_VERSION);
+
     let handled = AccessFs::from_all(REQUIRED_ABI);
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::HardRequirement)
@@ -214,9 +277,40 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
                 "the kernel cannot handle the access rights this backend's filesystem claim requires \
                  (Landlock ABI v{REQUIRED_ABI_VERSION}, Linux {REQUIRED_KERNEL_RELEASE} or newer): {e}"
             )
-        })?
+        })?;
+    if ioctl_dev_available {
+        // A hard requirement here is safe, not merely convenient: the
+        // measurement immediately above is the reason this bit is being
+        // requested at all, so the kernel that reported it has already
+        // demonstrated it will accept the request. `map_err` still exists for
+        // the case that proves wrong — a broken measurement refuses the
+        // launch rather than installing a boundary that silently omits the
+        // right it reports.
+        ruleset = ruleset
+            .set_compatibility(CompatLevel::HardRequirement)
+            .handle_access(AccessFs::IoctlDev)
+            .map_err(|e| {
+                format!(
+                    "this host measured Landlock ABI v{OPTIONAL_IOCTL_DEV_ABI_VERSION}+ but the kernel did \
+                     not accept the ioctl(2) restriction it was just measured to support: {e}"
+                )
+            })?;
+    }
+    let mut ruleset = ruleset
         .create()
         .map_err(|e| format!("the Landlock ruleset could not be created: {e}"))?;
+
+    // AAASM-6173: the mask used to strip directory-only rights from a rule
+    // tied to a regular file (see `file_safe`) has to agree with whatever was
+    // actually requested above, or a device file's rule would ask the kernel
+    // for a bit that was never declared handled and `add_rule` would reject
+    // it outright — turning the opportunistic case into a launch failure
+    // instead of the strictly-additive one this is meant to be.
+    let file_safe_abi = if ioctl_dev_available {
+        OPTIONAL_IOCTL_DEV_ABI
+    } else {
+        REQUIRED_ABI
+    };
 
     for rule in &plan.rules {
         let mut access: BitFlags<AccessFs> = BitFlags::EMPTY;
@@ -225,6 +319,15 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
         }
         if rule.verbs.write {
             access |= AccessFs::from_write(REQUIRED_ABI);
+            if ioctl_dev_available {
+                // Bundled with the write right, not the read one: the pinned
+                // binding crate's own `AccessFs::from_write` is what adds
+                // `IoctlDev` at v5 (verified against the upstream source
+                // before this ticket pinned the behavior on it), so a
+                // write-permitted path becomes ioctl(2)-permitted; a
+                // read-only path does not.
+                access |= AccessFs::IoctlDev;
+            }
         }
         // Opened with `O_PATH | O_CLOEXEC` by the binding, so the descriptor
         // cannot be read through and cannot survive the `execve` below into the
@@ -239,7 +342,7 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
         let is_directory = std::fs::metadata(&rule.path)
             .map(|meta| meta.is_dir())
             .map_err(|e| format!("the permitted path `{}` could not be inspected: {e}", rule.path))?;
-        let access = file_safe(access, is_directory);
+        let access = file_safe(access, is_directory, file_safe_abi);
         if access.is_empty() {
             return Err(format!(
                 "the rule for `{}` would carry no right at all once the directory-only rights were \
@@ -303,16 +406,26 @@ pub fn install(plan: &RulePlan) -> Result<Installed, String> {
 ///
 /// Removing the directory-only bits is not a widening: they are meaningless on a
 /// file, and the file rights that remain are the ones the requirement asked for.
+///
+/// `mask_abi` is AAASM-6173: the caller passes the ABI that matches what it
+/// actually asked the kernel to handle (`REQUIRED_ABI`, or
+/// `OPTIONAL_IOCTL_DEV_ABI` when the opportunistic right was requested) —
+/// never a value this function infers on its own — because a file-safety mask
+/// narrower than what was requested would strip a right `install` is about to
+/// ask the kernel for, and one wider would let a bit through that was never
+/// declared handled, which the kernel rejects outright (see `install`'s own
+/// comment on why the two must agree).
 #[cfg(target_os = "linux")]
 fn file_safe(
     access: landlock::BitFlags<landlock::AccessFs>,
     is_directory: bool,
+    mask_abi: landlock::ABI,
 ) -> landlock::BitFlags<landlock::AccessFs> {
     use landlock::AccessFs;
     if is_directory {
         access
     } else {
-        access & AccessFs::from_file(REQUIRED_ABI)
+        access & AccessFs::from_file(mask_abi)
     }
 }
 
@@ -333,10 +446,10 @@ mod tests {
             AccessFs::from_write(REQUIRED_ABI),
             AccessFs::from_all(REQUIRED_ABI),
         ] {
-            let on_directory = file_safe(requested, true);
+            let on_directory = file_safe(requested, true, REQUIRED_ABI);
             assert_eq!(on_directory, requested, "a directory rule was narrowed");
 
-            let on_file = file_safe(requested, false);
+            let on_file = file_safe(requested, false, REQUIRED_ABI);
             assert!(on_file.contains(requested & AccessFs::from_file(REQUIRED_ABI)));
             assert!(
                 requested.contains(on_file),
@@ -353,6 +466,34 @@ mod tests {
         // asks for, so the assertion above is removing something rather than
         // observing an absence that was always there.
         assert!(AccessFs::from_read(REQUIRED_ABI).contains(AccessFs::ReadDir));
+    }
+
+    /// **AAASM-6173.** The opportunistic `IoctlDev` right must survive
+    /// `file_safe` on a non-directory when the caller passes the
+    /// opportunistic mask — the property the REQUIRED_ABI-only mask used
+    /// before this ticket could not have, since `IoctlDev` is not part of
+    /// `AccessFs::from_file(REQUIRED_ABI)` at all. The negative control is
+    /// the identical bit under the v3 mask: it must be stripped, proving the
+    /// mask argument is what changed the outcome rather than `file_safe`
+    /// always keeping every bit on a file.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn ioctl_dev_survives_file_safe_only_under_the_opportunistic_mask() {
+        use landlock::AccessFs;
+
+        let requested = AccessFs::from_write(REQUIRED_ABI) | AccessFs::IoctlDev;
+
+        let under_v3 = file_safe(requested, false, REQUIRED_ABI);
+        assert!(
+            !under_v3.contains(AccessFs::IoctlDev),
+            "the v3 mask kept a bit v3 does not define: {under_v3:?}"
+        );
+
+        let under_opportunistic = file_safe(requested, false, OPTIONAL_IOCTL_DEV_ABI);
+        assert!(
+            under_opportunistic.contains(AccessFs::IoctlDev),
+            "the opportunistic mask stripped the one bit it exists to keep: {under_opportunistic:?}"
+        );
     }
 
     fn grants(read: &[&str], write: &[&str]) -> Grants {

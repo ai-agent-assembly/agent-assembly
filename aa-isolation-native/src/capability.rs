@@ -239,17 +239,41 @@ fn filesystem_write(facts: &HostFacts, probe: &ConfinementProbe) -> CapabilityRe
          filesystem-write domain cannot ask for one and not the others, and neither can this backend"
             .to_string(),
     );
-    limitations.push(format!(
-        "the boundary is built against Landlock ABI v{}, so the device-ioctl right added at a later ABI \
-         is NOT handled: `ioctl(2)` on a device file the read grant makes reachable is unrestricted here. \
-         This host reported {}",
-        crate::rules::REQUIRED_ABI_VERSION,
-        facts
-            .abi_floor()
-            .measured()
-            .map(|v| format!("ABI v{v}"))
-            .unwrap_or_else(|| "no Landlock at all".to_string()),
-    ));
+    // AAASM-6173: which of these two sentences applies is a fact about this
+    // host, measured the same way every other ABI-gated statement on this
+    // report is — `facts.abi_floor()`, not an assumption. `crate::rules::install`
+    // re-measures independently in the launcher process; this report states
+    // what the supervisor's own measurement of the same kernel already found.
+    let ioctl_dev_handled = facts
+        .abi_floor()
+        .measured()
+        .is_some_and(|measured| measured >= crate::rules::OPTIONAL_IOCTL_DEV_ABI_VERSION);
+    limitations.push(if ioctl_dev_handled {
+        format!(
+            "this host measured Landlock ABI v{measured} (>= v{floor}), so the device-ioctl right is \
+             opportunistically requested and installed alongside the write grant: `ioctl(2)` on a \
+             device file within a permitted write path is confined here, in addition to the v{required} \
+             filesystem claim this boundary is built against. Requested only once this host is \
+             measured to support it, never folded into the fixed floor, so this does not raise the \
+             floor a lower-ABI host must meet",
+            measured = facts.abi_floor().measured().unwrap_or_default(),
+            floor = crate::rules::OPTIONAL_IOCTL_DEV_ABI_VERSION,
+            required = crate::rules::REQUIRED_ABI_VERSION,
+        )
+    } else {
+        format!(
+            "the boundary is built against Landlock ABI v{}, so the device-ioctl right (added at v{}) \
+             is NOT handled: `ioctl(2)` on a device file within the write grant is unrestricted here. \
+             This host reported {}",
+            crate::rules::REQUIRED_ABI_VERSION,
+            crate::rules::OPTIONAL_IOCTL_DEV_ABI_VERSION,
+            facts
+                .abi_floor()
+                .measured()
+                .map(|v| format!("ABI v{v}"))
+                .unwrap_or_else(|| "no Landlock at all".to_string()),
+        )
+    });
     CapabilityReport::new(
         CapabilityDomain::FilesystemWrite,
         Mediation::Enforce,
@@ -606,6 +630,34 @@ mod tests {
     /// stated on the report an operator reads, not only in a comment.
     #[test]
     fn the_unhandled_device_ioctl_right_is_a_stated_limitation() {
+        // AAASM-6173: `facts()` reports ABI v5 (the opportunistic floor
+        // itself), so a host below it is built explicitly here rather than
+        // reused, to keep this test measuring the "not handled" branch it
+        // names rather than drifting onto the "handled" one below it.
+        let below_floor = HostFacts::for_test("/nonexistent/aa-isolation-launch", AbiFloor::Met { measured: 3 });
+        let capabilities = discover(&below_floor, &denied_everything());
+        let report = capabilities
+            .report_for(CapabilityDomain::FilesystemWrite)
+            .expect("reported");
+        let SupportLevel::Partial { limitations } = report.support() else {
+            panic!("{report:?}");
+        };
+        assert!(
+            limitations
+                .iter()
+                .any(|l| l.contains("ioctl(2)") && l.contains("NOT handled")),
+            "{limitations:?}"
+        );
+    }
+
+    /// **AAASM-6173, the control for the test above.** The identical report
+    /// on a host measured at the opportunistic floor (`facts()` reports ABI
+    /// v5) must say the device-ioctl right IS handled, not the "NOT handled"
+    /// sentence the sub-floor host gets. Without this pair, the assertion
+    /// above could pass because the wording never changes rather than
+    /// because the measurement gates it.
+    #[test]
+    fn the_device_ioctl_right_is_a_stated_capability_once_the_host_meets_the_opportunistic_floor() {
         let capabilities = discover(&facts(), &denied_everything());
         let report = capabilities
             .report_for(CapabilityDomain::FilesystemWrite)
@@ -613,6 +665,15 @@ mod tests {
         let SupportLevel::Partial { limitations } = report.support() else {
             panic!("{report:?}");
         };
-        assert!(limitations.iter().any(|l| l.contains("ioctl(2)")), "{limitations:?}");
+        assert!(
+            limitations
+                .iter()
+                .any(|l| l.contains("ioctl(2)") && l.contains("opportunistically requested")),
+            "{limitations:?}"
+        );
+        assert!(
+            !limitations.iter().any(|l| l.contains("NOT handled")),
+            "the below-floor sentence leaked into a report from a host that meets the floor: {limitations:?}"
+        );
     }
 }

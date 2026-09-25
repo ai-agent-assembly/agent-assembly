@@ -444,8 +444,16 @@ fn measure_syscall_filter() -> SyscallFilterSupport {
 /// different things on two hosts). This crate does not do that: the access set
 /// is fixed at [`crate::rules::REQUIRED_ABI`], and this number is used only to
 /// decide *whether* to run and to say so in evidence.
+/// `pub(crate)` since AAASM-6173: [`crate::rules::install`] calls this again,
+/// in the launcher process, to decide — independently of anything the
+/// supervisor measured — whether the optional `IOCTL_DEV` right
+/// ([`crate::rules::OPTIONAL_IOCTL_DEV_ABI_VERSION`]) can be requested here.
+/// Re-measuring rather than threading the supervisor's [`HostFacts`] across
+/// the process boundary keeps the same rule every other step in the launcher
+/// already follows: this binary establishes what it needs to know for itself
+/// rather than trusting a fact handed to it by a different process.
 #[cfg(target_os = "linux")]
-fn measure_abi() -> AbiFloor {
+pub(crate) fn measure_abi() -> AbiFloor {
     // `LANDLOCK_CREATE_RULESET_VERSION`, from `linux/landlock.h`. Passing it
     // with a null attribute pointer and a zero size asks for the supported ABI
     // version and creates nothing — it is the query form of the syscall, not a
@@ -479,7 +487,7 @@ fn measure_abi() -> AbiFloor {
 /// checks the platform first; present so the module compiles everywhere and so
 /// the answer off Linux is "no Landlock" rather than a value.
 #[cfg(not(target_os = "linux"))]
-fn measure_abi() -> AbiFloor {
+pub(crate) fn measure_abi() -> AbiFloor {
     AbiFloor::NoLandlock
 }
 

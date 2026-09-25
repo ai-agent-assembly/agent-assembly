@@ -1447,6 +1447,24 @@ fn truncate_interpreter() -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
+// AAASM-6173: the opportunistic device-ioctl right.
+//
+// No scenario here. Two candidate device/ioctl pairs were tried against real
+// ABI v5+ Linux CI (`/dev/null`+`FIONREAD`, both directions of the intended
+// denial/control shape) and both measured `/dev/null` rejecting the ioctl
+// with ENOTTY regardless of grant — a fact about that device's driver
+// (`drivers/char/mem.c`'s `null_fops` implements no `ioctl` handler at all),
+// not a Landlock decision, so no control existed that this crate could use
+// to prove the IoctlDev right without root (to create a device node this
+// crate does not need `/dev/null` to stand in for). This ticket's AC does
+// not require device-ioctl coverage — see AAASM-6173's scope list (filesystem
+// ABI, TCP, pathname IPC, UDP, thread inheritance, seccomp interaction); the
+// opportunistic IoctlDev request the backend already makes at ABI v5+ stays
+// unmeasured by this crate's adversarial suite pending a device this
+// environment can actually exercise without root.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // AAASM-5803: the syscall filter.
 // ---------------------------------------------------------------------------
 
