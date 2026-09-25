@@ -53,5 +53,15 @@ mock-backend = []
 aa-isolation = { path = ".", features = ["mock-backend", "serde"] }
 serde_json = { workspace = true }
 
+[target.'cfg(unix)'.dev-dependencies]
+# AAASM-6165, and only for `tests/wall_clock_deadline.rs`: `kill(2)` (whole
+# process-group form, and the liveness-check form) and
+# `CommandExt::process_group`'s underlying signal numbers. The crate's own
+# `[dependencies]` stay free of this — see `src/lib.rs`, "spawns no process and
+# names no operating-system facility" — this is a dev-only addition to prove
+# `deadline::supervise_wall_clock` against a real, adversarial process tree; it
+# never reaches a shipped build.
+libc = { workspace = true }
+
 [lints]
 workspace = true

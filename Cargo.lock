@@ -469,6 +469,7 @@ dependencies = [
  "aa-core",
  "aa-isolation",
  "aa-security",
+ "libc",
  "serde",
  "serde_json",
 ]
