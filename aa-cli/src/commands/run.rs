@@ -246,7 +246,8 @@ mod plan {
 
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::{
-        CredentialPosture, ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
+        authority_gate, effective_authority_for_report, CapabilityLease, CredentialPosture, DomainAuthoritySummary,
+        ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
     };
     use aa_policy::resolve as run_policy;
 
@@ -749,6 +750,12 @@ mod plan {
         /// there is nothing here for `--dry-run`/live parity to disagree about
         /// on an explicit or default selection.
         selection: Option<aa_isolation::BackendSelection>,
+        /// Capability leases this launch carries as explicit authority
+        /// (AAASM-6160, ADR 0038). Empty for every launch today — no policy
+        /// path issues one yet — but threaded through `base_spec` so a future
+        /// source of leases has one call site to populate rather than a new
+        /// one to wire.
+        leases: Vec<CapabilityLease>,
     }
 
     impl IsolationPlan {
@@ -819,6 +826,7 @@ mod plan {
                 args: Vec<String>,
                 working_dir: Option<std::path::PathBuf>,
                 credentials: CredentialPosture,
+                leases: Vec<CapabilityLease>,
             }
 
             let fields = BoundLaunchFields {
@@ -829,12 +837,14 @@ mod plan {
                     .collect::<Option<_>>()?,
                 working_dir: command.get_current_dir().map(std::path::Path::to_path_buf),
                 credentials,
+                leases: self.leases.clone(),
             };
             let BoundLaunchFields {
                 program,
                 args,
                 working_dir,
                 credentials,
+                leases,
             } = fields;
 
             let mut spec = ExecutionSpec::new(program, identity.identity_ref(&handle.agent_id))
@@ -842,6 +852,9 @@ mod plan {
                 .with_credentials(credentials);
             if let Some(dir) = working_dir {
                 spec = spec.with_working_dir(dir);
+            }
+            for lease in leases {
+                spec = spec.with_lease(lease);
             }
             Some(spec)
         }
@@ -969,10 +982,35 @@ mod plan {
                 }
             };
 
+            // AAASM-6160/ADR 0038: `authority_gate` asks a question `negotiate`
+            // never asks — was this run explicitly authorized to touch a
+            // domain at all — and it must run *before* any backend is
+            // consulted, so a domain with no covering grant is refused before
+            // backend capability (possession) is ever in the picture. `now`
+            // is read once, here, rather than threaded from a caller: this is
+            // the one live call site, as opposed to this crate's own tests,
+            // which inject a fixed instant to keep expiry/not-yet-valid
+            // decisions deterministic.
+            let now = std::time::SystemTime::now();
+            if let Err(refusal) = authority_gate(&spec, now) {
+                let authority = effective_authority_for_report(&spec);
+                let report = self.with_selection(
+                    IsolationReport::authority_refused(session, &spec, &refusal)
+                        .with_policy(lowering)
+                        .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                );
+                return (Some(spec), report, Boundary::Refused(refusal.to_string()));
+            }
+
             backend.set_child_environment(child_env.clone());
             match backend.plan(&spec) {
                 Ok(plan) => {
-                    let report = self.with_selection(IsolationReport::from_plan(session, &plan).with_policy(lowering));
+                    let authority = effective_authority_for_report(&spec);
+                    let report = self.with_selection(
+                        IsolationReport::from_plan(session, &plan)
+                            .with_policy(lowering)
+                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                    );
                     (Some(spec), report, Boundary::Negotiated(Box::new(plan)))
                 }
                 Err(refusal) => {
@@ -1543,6 +1581,7 @@ mod plan {
                             .to_string(),
                     ),
                     selection: None,
+                    leases: Vec::new(),
                 });
             }
 
@@ -1618,6 +1657,7 @@ mod plan {
                     backend: None,
                     absent: Some(format!("no backend answers to the id `{other}` in this build")),
                     selection: None,
+                    leases: Vec::new(),
                 });
             }
         };
@@ -1641,6 +1681,7 @@ mod plan {
                      this host: {reason}"
                 )),
                 selection: None,
+                leases: Vec::new(),
             });
         }
 
@@ -1649,6 +1690,7 @@ mod plan {
             backend: Some(backend),
             absent: None,
             selection: None,
+            leases: Vec::new(),
         })
     }
 
@@ -1704,6 +1746,7 @@ mod plan {
                 )),
                 absent: None,
                 selection: None,
+                leases: Vec::new(),
             });
         };
 
@@ -1755,6 +1798,7 @@ mod plan {
                             mode: aa_isolation::SelectionMode::Automatic,
                             considered,
                         }),
+                        leases: Vec::new(),
                     });
                 }
                 Err(refusal) => {
@@ -1798,6 +1842,7 @@ mod plan {
                 mode: aa_isolation::SelectionMode::Automatic,
                 considered,
             }),
+            leases: Vec::new(),
         })
     }
 
