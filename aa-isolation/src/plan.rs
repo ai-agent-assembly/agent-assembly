@@ -180,6 +180,28 @@ pub enum RefusalReason {
         /// The precondition.
         requirement: String,
     },
+    /// The capability meets every axis this module's [`evaluate`] checks, but
+    /// falls below a
+    /// [`RuntimeRequirements`](crate::requirements::RuntimeRequirements)-stated
+    /// evidence/attestation minimum on an axis `evaluate` does not read at
+    /// all: [`FailurePosture`](crate::capability::FailurePosture) and
+    /// [`SupportLevel`](crate::capability::SupportLevel).
+    ///
+    /// Produced only by [`crate::planner`], never by [`negotiate`] itself —
+    /// see that module's documentation for why the two axes are independent
+    /// of [`CapabilityReport::can_prevent`](crate::capability::CapabilityReport::can_prevent).
+    EvidenceQualityBelowMinimum {
+        /// The domain the requirement named.
+        domain: CapabilityDomain,
+        /// The failure-posture floor that was stated, if any.
+        required_failure_posture: Option<crate::capability::FailurePosture>,
+        /// Whether full (non-partial) support was required.
+        required_full_support: bool,
+        /// What the backend actually reported.
+        actual_failure_posture: crate::capability::FailurePosture,
+        /// What the backend actually reported.
+        actual_support: crate::capability::SupportLevel,
+    },
 }
 
 impl RefusalReason {
@@ -197,7 +219,8 @@ impl RefusalReason {
             | Self::DecisionNotSynchronous { domain, .. }
             | Self::NoEvidenceProduced { domain }
             | Self::DescendantCoverageInsufficient { domain, .. }
-            | Self::PrerequisiteUnsatisfied { domain, .. } => Some(*domain),
+            | Self::PrerequisiteUnsatisfied { domain, .. }
+            | Self::EvidenceQualityBelowMinimum { domain, .. } => Some(*domain),
         }
     }
 }
@@ -337,6 +360,22 @@ pub struct PlanRefusal {
 }
 
 impl PlanRefusal {
+    /// Build a refusal directly from an unmet-requirement list, for a caller
+    /// outside this module that decides a backend cannot satisfy a
+    /// requirement through a check [`negotiate`] itself does not perform.
+    ///
+    /// Currently only [`crate::planner`]'s evidence-minimum bar uses this —
+    /// see that module's `evaluate_candidate`. `negotiate` itself never calls
+    /// it; every refusal it produces still goes through its own construction
+    /// inline.
+    pub(crate) fn from_unmet(backend: BackendIdentity, unmet: Vec<(ControlRequirement, RefusalReason)>) -> Self {
+        Self {
+            backend,
+            backend_unavailable: None,
+            unmet,
+        }
+    }
+
     /// Which backend refused.
     pub fn backend(&self) -> &BackendIdentity {
         &self.backend
