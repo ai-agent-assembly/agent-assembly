@@ -1250,6 +1250,7 @@ fn refusal_token(reason: &RefusalReason) -> &'static str {
         RefusalReason::NoEvidenceProduced { .. } => "no_evidence_produced",
         RefusalReason::DescendantCoverageInsufficient { .. } => "descendant_coverage_insufficient",
         RefusalReason::PrerequisiteUnsatisfied { .. } => "prerequisite_unsatisfied",
+        RefusalReason::EvidenceQualityBelowMinimum { .. } => "evidence_quality_below_minimum",
     }
 }
 
@@ -1297,6 +1298,36 @@ fn refusal_detail(reason: &RefusalReason) -> String {
             "`{domain}` depends on a host precondition that is not known to hold: {}",
             sanitize(requirement)
         ),
+        RefusalReason::EvidenceQualityBelowMinimum {
+            domain,
+            required_failure_posture,
+            required_full_support,
+            actual_failure_posture,
+            actual_support,
+        } => {
+            let mut parts = Vec::new();
+            if let Some(required) = required_failure_posture {
+                parts.push(format!(
+                    "failure posture `{}` does not meet the required minimum `{}`",
+                    actual_failure_posture.as_manifest_str(),
+                    required.as_manifest_str()
+                ));
+            }
+            if *required_full_support && !matches!(actual_support, crate::capability::SupportLevel::Full) {
+                parts.push(format!(
+                    "support is not `full` ({})",
+                    match actual_support {
+                        crate::capability::SupportLevel::Partial { .. } => "partial, with stated limitations",
+                        crate::capability::SupportLevel::Unsupported { .. } => "unsupported",
+                        crate::capability::SupportLevel::Full => "full",
+                    }
+                ));
+            }
+            format!(
+                "`{domain}` falls below the stated evidence/attestation minimum: {}",
+                parts.join("; ")
+            )
+        }
     }
 }
 
