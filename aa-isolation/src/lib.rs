@@ -181,6 +181,7 @@ pub mod lowering;
 pub mod plan;
 pub mod report;
 pub mod spec;
+pub mod tx;
 
 #[cfg(feature = "mock-backend")]
 pub mod mock;
@@ -218,4 +219,8 @@ pub use report::{
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
     RequirementPosture, RequirementScope, ResourceLimits,
+};
+pub use tx::{
+    BaseManifest, ChangeEntry, ChangeSet, CommitOutcome, CommitRefusal, EntryKind, ManifestEntry, TransactionId,
+    TransactionStatus, WorkspaceDigest,
 };
