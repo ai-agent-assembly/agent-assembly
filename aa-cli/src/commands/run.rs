@@ -3257,6 +3257,15 @@ async fn run_confined(
     plan: aa_isolation::EnforcementPlan,
     report: aa_isolation::IsolationReport,
 ) -> Result<i32> {
+    // AAASM-6165: a wall-clock ceiling is enforced here, at the one place every
+    // backend's run passes through, rather than inside any one backend — see
+    // `aa_isolation::deadline`'s module documentation for why that is
+    // backend-neutral and why it can never be reported as a `Resource`
+    // *prevention* claim (it is a kill after the process has already run past
+    // the ceiling, which is detection, not prevention).
+    let wall_clock_ceiling = aa_isolation::deadline::requested_wall_clock_ceiling(plan.spec());
+    let launch_started = std::time::Instant::now();
+
     let prepared = backend
         .prepare(plan)
         .map_err(|e| anyhow::anyhow!("refusing to launch: the execution boundary could not be established — {e}"))?;
@@ -3276,6 +3285,15 @@ async fn run_confined(
     };
     tokio::pin!(waiter);
 
+    // A ceiling that never fires in practice when policy stated none, so the
+    // `select!` shape below is identical whether or not a ceiling was
+    // requested — ten years is safely within `Instant`'s range and this task
+    // never outlives the process it is supervising.
+    let deadline_duration = wall_clock_ceiling.unwrap_or(std::time::Duration::from_secs(60 * 60 * 24 * 365 * 10));
+    let deadline = tokio::time::sleep(deadline_duration);
+    tokio::pin!(deadline);
+    let mut deadline_termination: Option<Result<(), aa_isolation::SpawnError>> = None;
+
     #[cfg(unix)]
     let disposition = {
         let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
@@ -3290,13 +3308,29 @@ async fn run_confined(
                 // a clean shutdown look like a launcher failure.
                 _ = sigterm.recv() => forward_termination(backend.as_ref(), &handle),
                 _ = sigint.recv() => forward_termination(backend.as_ref(), &handle),
+                () = &mut deadline, if wall_clock_ceiling.is_some() && deadline_termination.is_none() => {
+                    deadline_termination = Some(backend.terminate(&handle, aa_isolation::TerminationRequest::Immediate));
+                    if let Some(Err(e)) = &deadline_termination {
+                        eprintln!(
+                            "warning: the wall-clock ceiling was exceeded, and the termination request could not \
+                             be delivered: {e}"
+                        );
+                    }
+                }
                 joined = &mut waiter => break joined,
             }
         }
     };
 
     #[cfg(not(unix))]
-    let disposition = waiter.await;
+    let disposition = loop {
+        tokio::select! {
+            () = &mut deadline, if wall_clock_ceiling.is_some() && deadline_termination.is_none() => {
+                deadline_termination = Some(backend.terminate(&handle, aa_isolation::TerminationRequest::Immediate));
+            }
+            joined = &mut waiter => break joined,
+        }
+    };
 
     let disposition = disposition
         .map_err(|e| anyhow::anyhow!("the thread waiting on the confined launch failed: {e}"))?
@@ -3322,7 +3356,24 @@ async fn run_confined(
     // joined to the plan. `with_evidence` may only *lower* a posture, and this
     // backend records no per-decision channel, so nothing here can turn "the
     // program ran" into "a control decided".
-    let evidence = backend.evidence(&handle);
+    let mut evidence = backend.evidence(&handle);
+    if let Some(ceiling) = wall_clock_ceiling {
+        // Backend-neutral by construction: this record comes from the deadline
+        // supervised above, not from `backend.evidence`, because no backend
+        // was asked to enforce the ceiling — `aasm run` was.
+        let outcome = match deadline_termination {
+            Some(termination) => aa_isolation::deadline::WallClockOutcome::DeadlineExceeded {
+                ceiling,
+                termination,
+                final_disposition: Some(disposition.clone()),
+            },
+            None => aa_isolation::deadline::WallClockOutcome::Completed {
+                disposition: disposition.clone(),
+                elapsed: launch_started.elapsed(),
+            },
+        };
+        evidence.record(outcome.evidence_record());
+    }
     eprint!("{}", isolation_machine_block(&report.with_evidence(&evidence)));
 
     // The launcher's exit code has always been the launched program's, with `1`
