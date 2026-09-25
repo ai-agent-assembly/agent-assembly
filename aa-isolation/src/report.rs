@@ -491,6 +491,70 @@ pub struct DomainProjection {
     pub residual_policy_gaps: Vec<String>,
 }
 
+/// One domain's requested-vs-achieved lease/effective-authority truth
+/// (AAASM-6160).
+///
+/// Kept apart from [`DomainProjection`] rather than folded into it: a
+/// [`DomainProjection`] answers "what will the execution boundary do", which
+/// is a backend-capability question, while this answers "was this run
+/// actually authorized to ask" — the question [`crate::authority::authority_gate`]
+/// exists to check, independent of any backend. Rendered without secret
+/// material by construction: [`lease_id`](Self::lease_id) and
+/// [`detail`](Self::detail) both come from
+/// [`crate::lease::CapabilityLease::id`] and this crate's own state
+/// vocabulary, never from a lease's basis reason or scope selectors, which is
+/// what keeps this type safe to print into `--dry-run` output and audit
+/// records unmodified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DomainAuthoritySummary {
+    /// The domain this summary describes.
+    pub domain: CapabilityDomain,
+    /// Whether [`crate::authority::EffectiveAuthority`] granted this domain at
+    /// all.
+    pub granted: bool,
+    /// A stable lowercase token for the [`crate::authority::AuthorityState`]
+    /// this domain resolved to (`denied`, `leased`, or
+    /// `compatibility_residual`).
+    ///
+    /// `String` rather than `&'static str`: this type derives `Deserialize`
+    /// under the `serde` feature, and a borrowed `'static` field cannot be
+    /// deserialized generically.
+    pub state_token: String,
+    /// The issuing lease's identifier, when this domain's authority came from
+    /// a lease.
+    pub lease_id: Option<String>,
+}
+
+impl DomainAuthoritySummary {
+    /// Summarize what `authority` recorded for `domain`.
+    pub fn new(domain: CapabilityDomain, state: &crate::authority::AuthorityState) -> Self {
+        Self {
+            domain,
+            granted: state.is_granted(),
+            state_token: state.as_str().to_string(),
+            lease_id: match state {
+                crate::authority::AuthorityState::Leased(lease) => Some(lease.id().to_string()),
+                _ => None,
+            },
+        }
+    }
+
+    /// Summarize every domain an [`ExecutionSpec`]'s own requirements name,
+    /// against `authority`.
+    ///
+    /// Scoped to requested domains rather than to all of
+    /// [`CapabilityDomain::ALL`]: a domain the spec never mentions has nothing
+    /// requested-vs-achieved to report, and listing it here would read as a
+    /// claim about a domain this run never touched.
+    pub fn for_requirements(spec: &ExecutionSpec, authority: &crate::authority::EffectiveAuthority) -> Vec<Self> {
+        spec.requirements()
+            .iter()
+            .map(|r| Self::new(r.domain(), authority.state(r.domain())))
+            .collect()
+    }
+}
+
 /// The posture a report may state about a run.
 ///
 /// [`NoBoundary`](Self::NoBoundary) exists because the alternative was to report
@@ -660,6 +724,12 @@ pub struct IsolationReport {
     backend_unavailable: Option<String>,
     negotiated: Negotiated,
     selection: Option<BackendSelection>,
+    /// Requested-vs-achieved lease/effective-authority truth (AAASM-6160).
+    /// Empty unless [`with_lease_authority`](Self::with_lease_authority) or
+    /// [`authority_refused`](Self::authority_refused) populated it — additive
+    /// to [`REPORT_SCHEMA`], never a replacement for the per-domain
+    /// [`DomainProjection`] table this report already carries.
+    lease_authority: Vec<DomainAuthoritySummary>,
 }
 
 impl IsolationReport {
@@ -711,6 +781,7 @@ impl IsolationReport {
             backend_unavailable: None,
             negotiated: Negotiated::Absent { reason: reason.into() },
             selection: None,
+            lease_authority: Vec::new(),
         }
     }
 
@@ -791,6 +862,7 @@ impl IsolationReport {
             backend_unavailable: None,
             negotiated,
             selection: None,
+            lease_authority: Vec::new(),
         }
     }
 
@@ -866,7 +938,114 @@ impl IsolationReport {
             backend_unavailable: refusal.backend_unavailable().map(str::to_string),
             negotiated: Negotiated::Refused,
             selection: None,
+            lease_authority: Vec::new(),
         }
+    }
+
+    /// A report for a launch refused by [`crate::authority::authority_gate`],
+    /// before `negotiate` — and therefore before any backend — was ever
+    /// consulted.
+    ///
+    /// Mirrors [`from_refusal`](Self::from_refusal)'s shape: `spec` is
+    /// required because the refusal only names the domain that failed, and
+    /// every other requested domain must be distinguishable from one nobody
+    /// asked about. `backend` is always `None` here — unlike a
+    /// [`PlanRefusal`], an authority-gate refusal happens before backend
+    /// selection is consulted for capability purposes, so there is nothing
+    /// backend-specific to attribute this refusal to.
+    pub fn authority_refused(
+        session: SessionRef,
+        spec: &ExecutionSpec,
+        refusal: &crate::authority::AuthorityRefusal,
+    ) -> Self {
+        let refused_domain = refusal.domain();
+        let domains = CapabilityDomain::ALL
+            .iter()
+            .map(|&domain| {
+                let requested = spec.requirements().iter().find(|r| r.domain() == domain);
+                let (state, claim) = if Some(domain) == refused_domain {
+                    (
+                        ControlState::Unsupported {
+                            reason: RefusalReason::AuthorityNotGranted {
+                                domain,
+                                detail: refusal.to_string(),
+                            },
+                        },
+                        ClaimTerm::Unsupported,
+                    )
+                } else {
+                    match requested {
+                        Some(_) => (
+                            ControlState::Unmeasured {
+                                reason: UnmeasuredReason::Inconclusive {
+                                    detail: "the launch was refused by the authority gate before this \
+                                             requirement's own outcome was ever negotiated"
+                                        .to_string(),
+                                },
+                            },
+                            ClaimTerm::Unmeasured,
+                        ),
+                        None => (
+                            ControlState::Unmeasured {
+                                reason: UnmeasuredReason::NoControlRequested,
+                            },
+                            ClaimTerm::Unmeasured,
+                        ),
+                    }
+                };
+                DomainProjection {
+                    domain,
+                    requested: requested.map_or(RequestedControl::NotDerived, RequestedControl::of),
+                    state,
+                    claim,
+                    evidence: EvidenceBasis::None,
+                    residual_policy_gaps: Vec::new(),
+                }
+            })
+            .collect();
+
+        Self {
+            stage: ReportStage::PreLaunch,
+            session,
+            identity: spec.identity().clone(),
+            target: TargetRef::of(spec),
+            backend: None,
+            requested: spec.requirements().to_vec(),
+            domains,
+            credentials: spec.credentials().clone(),
+            descriptors: None,
+            unmapped_policy: Vec::new(),
+            refusals: refused_domain
+                .into_iter()
+                .map(|domain| {
+                    (
+                        domain,
+                        RefusalReason::AuthorityNotGranted {
+                            domain,
+                            detail: refusal.to_string(),
+                        },
+                    )
+                })
+                .collect(),
+            backend_unavailable: None,
+            negotiated: Negotiated::Refused,
+            selection: None,
+            lease_authority: Vec::new(),
+        }
+    }
+
+    /// Attach the requested-vs-achieved lease/effective-authority truth
+    /// (AAASM-6160): what [`crate::authority::EffectiveAuthority`] actually
+    /// recorded for every domain the spec requires, independent of whether
+    /// the gate ultimately refused.
+    ///
+    /// Additive only, like [`with_descriptors`](Self::with_descriptors) and
+    /// [`with_policy`](Self::with_policy) — it does not change
+    /// [`REPORT_SCHEMA`], and calling it twice replaces the prior list rather
+    /// than merging, since a report is built once from one coherent source.
+    pub fn with_lease_authority(mut self, summaries: Vec<DomainAuthoritySummary>) -> Self {
+        self.lease_authority = summaries;
+        self
     }
 
     /// Attach the policy lowering the requirement set came from.
@@ -1251,6 +1430,7 @@ fn refusal_token(reason: &RefusalReason) -> &'static str {
         RefusalReason::DescendantCoverageInsufficient { .. } => "descendant_coverage_insufficient",
         RefusalReason::PrerequisiteUnsatisfied { .. } => "prerequisite_unsatisfied",
         RefusalReason::EvidenceQualityBelowMinimum { .. } => "evidence_quality_below_minimum",
+        RefusalReason::AuthorityNotGranted { .. } => "authority_not_granted",
     }
 }
 
@@ -1326,6 +1506,12 @@ fn refusal_detail(reason: &RefusalReason) -> String {
             format!(
                 "`{domain}` falls below the stated evidence/attestation minimum: {}",
                 parts.join("; ")
+            )
+        }
+        RefusalReason::AuthorityNotGranted { domain, detail } => {
+            format!(
+                "`{domain}` has no explicit grant or valid lease authorizing it: {}",
+                sanitize(detail)
             )
         }
     }
@@ -1428,6 +1614,7 @@ impl IsolationReport {
         self.render_refusals(&mut out);
         self.render_policy_gaps(&mut out);
         self.render_authority(&mut out);
+        self.render_lease_authority(&mut out);
         self.render_unmeasured(&mut out);
         out
     }
@@ -1747,6 +1934,32 @@ impl IsolationReport {
                 "  inherited descriptors: <no inventory taken> — nothing enumerated what the child \
                  inherits, which is not the same as nothing being inherited.\n",
             ),
+        }
+    }
+
+    /// Requested-vs-achieved lease/effective-authority truth (AAASM-6160).
+    ///
+    /// Silent (no header at all) when nothing attached a summary, so an
+    /// ordinary report from before this ticket, and one for a launch that
+    /// never exercises the lease system, renders byte-identically to what it
+    /// did before this field existed.
+    fn render_lease_authority(&self, out: &mut String) {
+        if self.lease_authority.is_empty() {
+            return;
+        }
+        out.push_str("\nlease / effective-authority truth (AAASM-6160):\n");
+        for summary in &self.lease_authority {
+            out.push_str(&format!(
+                "  {} [{}] granted={}{}\n",
+                summary.domain.as_str(),
+                summary.state_token,
+                summary.granted,
+                summary
+                    .lease_id
+                    .as_deref()
+                    .map(|id| format!(" lease_id={}", sanitize(id)))
+                    .unwrap_or_default()
+            ));
         }
     }
 

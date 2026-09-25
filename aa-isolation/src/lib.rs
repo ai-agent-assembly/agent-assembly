@@ -227,9 +227,9 @@ pub use plan::{
 };
 pub use planner::{select, select_pinned, Candidate, Selection};
 pub use report::{
-    BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainProjection, EvidenceBasis,
-    IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef, TargetRef,
-    UnmeasuredReason, REPORT_SCHEMA,
+    BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainAuthoritySummary, DomainProjection,
+    EvidenceBasis, IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef,
+    TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
 pub use spec::{
