@@ -178,6 +178,7 @@ pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
 pub mod evidence;
+pub mod lease;
 pub mod lowering;
 pub mod plan;
 pub mod planner;
@@ -207,6 +208,10 @@ pub use descriptor::{
     DescriptorDisposition, DescriptorInventory, InheritedDescriptor, InventoryCompleteness, STANDARD_DESCRIPTORS,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
+pub use lease::{
+    CapabilityLease, DelegationDenied, DelegationRule, LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder,
+    ScopeOrdering, UndefinedScopeOrder, LEASE_SCHEMA_VERSION,
+};
 pub use lowering::{
     lower_policy, permit_only_selector, permitted_selector, DomainCoverage, DomainLowering, LoweringOptions,
     NoRequirementsLowered, PolicyLowering, ScopeGranularity, PERMIT_ONLY_SELECTOR,
