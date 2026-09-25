@@ -27,6 +27,13 @@ model:
   planned, achieved and unmeasured controls separately; backend availability is never
   evidence of enforcement by itself.
 
+> **Cross-reference — AAASM-6160 (2026-09)**:
+> [ADR 0038](0038-capability-leases-and-explicit-authority-contract.md) extends this
+> ADR's `ControlRequirement`/`negotiate` contract with a question this ADR does not
+> ask — *was a run ever explicitly authorized to touch a domain at all*, independent
+> of whether the selected backend can mechanically enforce it. It cross-references
+> rather than amends: nothing decided here is reversed.
+
 The existing [`aa-sandbox`](../../../aa-sandbox/README.md) remains the WebAssembly/WASI
 sandbox for **individual WASM-marked tool executions**. This ADR defines a different
 boundary: confinement and supervision of the **agent's native process and descendants**.
