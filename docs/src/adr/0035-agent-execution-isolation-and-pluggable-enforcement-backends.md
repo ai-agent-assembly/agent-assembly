@@ -406,6 +406,105 @@ above. No other recorded text in this ADR changes.
 
 ---
 
+## Amendment — AAASM-6167 (2026-09-25): selection generalizes from backend ids to a `RuntimeRequirements` property set
+
+**Scope of this amendment: it moves the AAASM-5808 eligibility walk from a CLI-specific,
+name-branching implementation into a backend-neutral mechanism `aa-isolation` owns, and adds
+an independent evidence-quality floor on top of it. It reverses no prior decision: the
+walk's algorithm — decide eligibility per candidate via `plan()`/`negotiate()`, select the
+first eligible candidate in a fixed order, refuse naming every candidate and why — is
+unchanged.**
+
+### Why an amendment rather than a new ADR
+
+The AAASM-5808 amendment recorded the selection algorithm while it lived in
+`aa-cli/src/commands/run.rs::auto_select`, branching on each backend's crate-level
+`BACKEND_ID` to construct a concrete `SelectedBackend`. That was adequate while `aasm auto`
+was the only caller and the only requirement vocabulary was "the launch's lowered policy
+requirements." Runtime 2.0 (Epic AAASM-6159) needs the same decision reachable from a
+policy or operator statement of runtime *properties* — not backend names — and needs new
+backend candidates (AAASM-6168/6169/6170's gVisor, Firecracker and Apple Containerization
+spikes) addable without a new match arm in `aa-cli`. Both are the same generalization this
+ADR already anticipated: [decision 8](#8-linux-process-isolation-is-the-first-implementation-target-sandlock-is-the-first-candidate-backend)
+and the commercial/performance constraints above already frame backends as pluggable and
+their properties as measured, not named.
+
+### What this amendment actually ships, and what remains a follow-up
+
+`aa-isolation::planner::select` is a new, independent implementation of the walk this ADR
+already names, living in the crate that owns `negotiate()` rather than in `aa-cli`: it
+takes a `aa_isolation::RuntimeRequirements` (a versioned, backend-neutral property set —
+confinement domains, resource ceilings, an evidence/attestation floor, an allowed
+`PlatformBoundary` set) and a caller-built, declared-order list of `aa_isolation::Candidate
+{ identity, capabilities }` — data, not `dyn IsolationBackend` objects, since `aa-isolation`
+cannot depend on any backend crate. Eligibility for each candidate is decided by exactly one
+call into `negotiate()` — the same "single decision point" this ADR already establishes —
+so no per-domain refusal rule changes, proven by a mutation test and by a positive control
+against `aa-isolation-macos-vm`'s own real capability-reporting logic (not a `MockBackend`).
+
+**`aa-cli/src/commands/run.rs::auto_select` has not yet been switched over to call it.**
+That function still implements the identical algorithm inline, branching on each concrete
+`SelectedBackend` variant the way the AAASM-5808 amendment described. Rewiring it to build
+`Candidate`s from its already-discovered backends and delegate the evaluation decision to
+`aa-isolation::planner::select` — leaving only the construction site, which must still name
+concrete backend types somewhere, since Rust has no plugin loader — is left as follow-up
+work, because it touches the CLI's tested `--dry-run`/live-parity surface
+(`aa-cli/tests/run_isolation.rs`) and was judged higher-risk to rush than to land separately
+once verified end-to-end. Until that follow-up lands, "without special-case CLI branching"
+is true of the *new* mechanism this amendment adds, not yet of the one path that currently
+calls it.
+
+### The evidence-minimum bar: a second, independent gate
+
+`negotiate()`'s prevention check reads exactly three axes on a `CapabilityReport` —
+`Mediation`, `DecisionTiming`, `Synchrony` — established by
+[decision 4](#4-capability-negotiation-happens-before-the-untrusted-process-starts). It has
+never read `FailurePosture` or `SupportLevel`, and this amendment does not add either read
+to it. Instead, `RuntimeRequirements::EvidenceMinimum` states an independent floor on those
+two axes, and `aa-isolation::planner` checks it directly against a candidate's
+`BackendCapabilities` *after* `negotiate()` already accepted the candidate — never instead
+of, and never in a way that can turn an unmet `negotiate()` requirement into an accepted
+one. A candidate that is `Enforce`/`Pre`/`Sync` on a domain (and therefore
+`can_prevent()`s it) can still be `FailurePosture::FailOpenSilent`, or
+`SupportLevel::Partial` with stated gaps, on that same domain; this amendment's floor is how
+a caller excludes such a candidate anyway. An unreported domain — `report_for` returning
+`None` — fails any stated evidence minimum for the same "unknown is not interpreted as
+supported" reason a missing capability report already refuses a `negotiate()` prevention
+requirement.
+
+### Tie-break remains declared order, not a performance score
+
+The ticket's design language ("performance among security-equivalent candidates") does not
+change the mechanism here: this workspace has no measured performance data for the new
+candidate backends the AAASM-6168/6169/6170 spikes describe — those PRs are unmerged
+capability-and-tradeoff writeups, not shipped `IsolationBackend` implementors with real
+benchmark numbers — so encoding a numeric ranking now would be a policy input this ADR
+cannot yet stand behind. `aa-isolation::planner::select` therefore keeps exactly the
+AAASM-5808 tie-break: the first candidate in the caller's declared order that is eligible
+wins. `aa-cli`'s own `CANDIDATES` list, unchanged by this amendment, still produces the
+identical selection it did before this generalization for every requirement set expressible
+today.
+
+### Named runtime classes remain out of scope
+
+The ticket also raised whether a named, user-facing "runtime class" (a documented bundle of
+properties) should exist alongside `RuntimeRequirements`. None is introduced by this
+amendment. `RuntimeRequirements` is the property mechanism only; a class built from it,
+were one added later, must satisfy this ADR's existing "no new backend-specific vocabulary
+in user-facing intent" constraint and must never document a stronger guarantee than the
+explicit properties it bundles — deferred entirely rather than shipped provisionally.
+
+### Consequence for existing text
+
+The AAASM-5808 amendment's description of the algorithm as living in
+`aa-cli/src/commands/run.rs::auto_select` still describes where the algorithm executes
+today. This amendment records that the identical algorithm now also exists, independently
+implemented and tested, in `aa-isolation::planner::select`, and that switching
+`auto_select`'s evaluation path over to it is tracked follow-up work rather than something
+this amendment claims is already done. No other recorded text in this ADR changes.
+
+---
+
 ## Context
 
 Agent Assembly already owns the governance semantics above execution: agent identity and
