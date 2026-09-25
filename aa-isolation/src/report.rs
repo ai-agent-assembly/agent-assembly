@@ -2443,7 +2443,7 @@ mod tests {
         let machine = parse(&report);
 
         assert_eq!(machine["schema"], REPORT_SCHEMA);
-        assert_eq!(machine["domain_count"], "9");
+        assert_eq!(machine["domain_count"], "10");
         assert_eq!(machine["backend_id"], "reference");
         assert_eq!(machine["backend_version"], "1.2.3");
         assert_eq!(machine["backend_source"], "workspace");
