@@ -3,7 +3,7 @@
 **Ticket**: [AAASM-6169](https://lightning-dust-mite.atlassian.net/browse/AAASM-6169)
 **Epic**: [AAASM-6159](https://lightning-dust-mite.atlassian.net/browse/AAASM-6159) — Agent Execution Runtime 2.0
 **Consumed by**: [AAASM-6167](https://lightning-dust-mite.atlassian.net/browse/AAASM-6167) — evidence-aware runtime classes / property-based backend selection
-**Related**: [AAASM-6162](https://lightning-dust-mite.atlassian.net/browse/AAASM-6162) (transactional COW workspaces), [AAASM-6163](https://lightning-dust-mite.atlassian.net/browse/AAASM-6163) (egress broker), [AAASM-5849](https://lightning-dust-mite.atlassian.net/browse/AAASM-5849)/[AAASM-5869](https://lightning-dust-mite.atlassian.net/browse/AAASM-5869)/[AAASM-5870](https://lightning-dust-mite.atlassian.net/browse/AAASM-5870) (existing macOS VM backend), [ADR 0035](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
+**Related**: [AAASM-6162](https://lightning-dust-mite.atlassian.net/browse/AAASM-6162) (transactional COW workspaces), [AAASM-6163](https://lightning-dust-mite.atlassian.net/browse/AAASM-6163) (egress broker), [AAASM-5849](https://lightning-dust-mite.atlassian.net/browse/AAASM-5849)/[AAASM-5869](https://lightning-dust-mite.atlassian.net/browse/AAASM-5869)/[AAASM-5870](https://lightning-dust-mite.atlassian.net/browse/AAASM-5870) (existing macOS VM backend), [Core ADR 0035](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
 **Surveyed against**: branch `v0.0.1/AAASM-6169/docs/firecracker_backend_spike` @ `77cbbc8db`
 **Date**: 2026-09-24
 **Prototype**: none. No Linux/KVM host was available in this session (host is macOS/Apple Silicon, which cannot run KVM — Firecracker is Linux/KVM-only, §4.15 below). Per the ticket's own instruction, no hardware evidence is fabricated from an unsupported host. This report is architecture/desk research plus one internal code comparison (the existing macOS VM backend), not a benchmark.
@@ -64,7 +64,7 @@ Required by `.claude/skills/adr-governance/SKILL.md` Step 4.
 ```
 ### Existing Decision Summary
 - Applicable ADRs / recorded decisions:
-  - ADR 0035 — Agent Execution Isolation & Pluggable Enforcement Backends. The
+  - Core ADR 0035 — Agent Execution Isolation & Pluggable Enforcement Backends. The
     governing decision for this whole spike. Decision 2 fixes the IsolationBackend
     contract (capabilities/plan/prepare/spawn/wait_for_exit/terminate/evidence) as
     backend-neutral; decision 3 says isolation class is not backend identity —
@@ -82,7 +82,7 @@ Required by `.claude/skills/adr-governance/SKILL.md` Step 4.
     new backend, Firecracker included, must fit: implement `IsolationBackend`,
     report capabilities truthfully, and let `negotiate()`/`plan()` decide
     eligibility rather than a hand-written comparison.
-  - ADR 0033 §6 — canonical claim vocabulary (Denied before execution / Observed
+  - Core ADR 0033 §6 — canonical claim vocabulary (Denied before execution / Observed
     / Detected / Unsupported / Degraded / Unmeasured / Experimental / Planned).
     Any Firecracker evidence claim must use these terms, not new ones.
   - AAASM-6162 (open, To Do) — transactional COW workspaces; explicitly lists
@@ -94,7 +94,7 @@ Required by `.claude/skills/adr-governance/SKILL.md` Step 4.
     selector this spike's conclusion is an input to.
 - Prior decisions that bear on this change: all of the above. No decision here is
   being reversed, amended, or superseded — this is pure research feeding two open
-  tickets (6162, 6167) and confirming a still-dormant ADR 0035 trigger has not yet
+  tickets (6162, 6167) and confirming a still-dormant Core ADR 0035 trigger has not yet
   fired.
 - Conflicts with what this change would do: none. This branch adds one Markdown
   file (plus a one-line SUMMARY.md index entry) and touches no Rust source, no
@@ -103,7 +103,7 @@ Required by `.claude/skills/adr-governance/SKILL.md` Step 4.
   design; §5 states a verdict but commits nothing.
 - Proposed ADR action: **none**. If AAASM-6162 or AAASM-6167 later decide to build
   a Firecracker backend for a Linux hosted-runtime target, that decision belongs
-  in a dedicated ADR (most likely an ADR 0035 amendment, following the AAASM-5801/
+  in a dedicated ADR (most likely an Core ADR 0035 amendment, following the AAASM-5801/
   5808 pattern), not this spike.
 ```
 
@@ -127,11 +127,11 @@ same conclusion the AAASM-5801 amendment reached for the native Linux backend.
 Three backends currently implement it: `aa-isolation-sandlock`, `aa-isolation-native`
 (Landlock+seccomp), `aa-isolation-macos-vm` (Apple Virtualization.framework). `--isolation
 auto` walks them in a fixed order and picks the first whose `plan()` accepts the spec
-(ADR 0035, AAASM-5808 amendment). A Firecracker backend would be a fourth entry in
+(Core ADR 0035, AAASM-5808 amendment). A Firecracker backend would be a fourth entry in
 that same walk, competing on the same `CapabilityDomain` vocabulary
 (`aa-isolation/src/capability.rs:43-64`: `FilesystemRead`, `FilesystemWrite`,
 `NetworkEgress`, `NameResolution`, `Syscall`, `ProcessCreation`, `Ipc`, `Credential`,
-plus resource ceilings) — not a new vocabulary of its own, per ADR 0035 decision 3.
+plus resource ceilings) — not a new vocabulary of its own, per Core ADR 0035 decision 3.
 
 ## 3. The existing macOS VM backend — the closest internal comparison
 
@@ -255,7 +255,7 @@ model is the tradeoff: no GPU passthrough by default (no `vfio`/PCI passthrough
 in the standard device model), limited emulated devices (virtio-net, virtio-block,
 serial console, a handful of others — deliberately not a general-purpose VMM).
 For a coding-agent workload (compilers, test runners, git, package managers,
-network sessions — see ADR 0035's own "performance and compatibility constraint"
+network sessions — see Core ADR 0035's own "performance and compatibility constraint"
 section, `adr/0035-....md:452-459`) this is likely acceptable; it is not
 acceptable for any workload class that needs a GPU or unusual host devices.
 **Unverified locally**: whether any current or planned `aa-devtool-*` adapter
@@ -314,7 +314,7 @@ policy-governed egress broker would have to mediate at the **host** side of
 that TAP device (or via a netns the microVM's TAP lives in) rather than inside
 the guest — structurally the same integration point `aa-proxy`'s MitM approach
 already assumes for the macOS VM backend's guest traffic (transport mediation
-sits outside the confined process tree, ADR 0035 §5's rule applied to network
+sits outside the confined process tree, Core ADR 0035 §5's rule applied to network
 rather than filesystem). No new broker architecture is implied; Firecracker
 would be one more attachment point for the same broker, not a reason to change
 its design. **Unverified locally**: whether Firecracker's TAP-based networking
@@ -409,7 +409,7 @@ codebase today for any backend.
 Covered under §4.7 (network) for the egress broker specifically. No additional
 integration point beyond what §4.7 already states — `aa-proxy` and the future
 AAASM-6163 broker operate at the host/netns boundary regardless of which VMM is
-underneath, per ADR 0035 §5's supervisor-stays-outside-the-boundary rule
+underneath, per Core ADR 0035 §5's supervisor-stays-outside-the-boundary rule
 applied uniformly across backends.
 
 ### 4.12 Attestation/evidence ability
@@ -420,8 +420,8 @@ which is a host-platform concern, not something Firecracker adds). Any
 `EnforcementEvidence` a Firecracker backend reports would follow the same
 pattern the existing backends already use — the backend states what
 `CapabilityDomain`s it enforces, observes, or cannot represent, mapped onto
-ADR 0033 §6's terms — with **no new evidence primitive** available from
-Firecracker itself that the existing backends lack. Per ADR 0035 §4's rule,
+Core ADR 0033 §6's terms — with **no new evidence primitive** available from
+Firecracker itself that the existing backends lack. Per Core ADR 0035 §4's rule,
 a Firecracker backend's *hardware-virtualization* boundary would likely
 support a **Denied before execution** claim for filesystem/network/syscall
 domains more completely than `aasm-native`'s Landlock+seccomp does today (a
@@ -462,7 +462,7 @@ AAASM-6168 spike addresses, out of scope here).
 ### 4.14 Licensing/supply-chain
 
 Firecracker is Apache-2.0, AWS-maintained, and an active OSS project with
-years of production use at AWS (Lambda, Fargate). This satisfies ADR 0035
+years of production use at AWS (Lambda, Fargate). This satisfies Core ADR 0035
 decision 11's permissive-license preference cleanly — no worse a fit than
 Sandlock's own licensing posture, and better than a copyleft alternative would
 be. Supply-chain considerations: it is a single well-known upstream (fewer
@@ -494,10 +494,10 @@ split rather than singular.
 
 Beyond the guest-image packaging burden (§4.13) and the supply-chain tracking
 (§4.14), a Firecracker backend adds: a new `IsolationBackend` implementor to
-keep in step with ADR 0035's negotiation contract (moderate — the trait is
+keep in step with Core ADR 0035's negotiation contract (moderate — the trait is
 already backend-neutral, per §2 above); a new guest-side integration surface
 (likely reusing `aa-isolation-vm-proto` rather than inventing a new protocol,
-per §4.8); new adversarial/conformance test coverage per ADR 0035's validation
+per §4.8); new adversarial/conformance test coverage per Core ADR 0035's validation
 requirements (`adr/0035-....md:813-824` — every backend needs conformance,
 adversarial, compatibility and performance evidence, with negative controls);
 and — if snapshot/restore is actually used per §4.10 — a wholly new state-
@@ -552,7 +552,7 @@ Conditions, in priority order:
 4. **If a vertical slice is ever built, it must implement `IsolationBackend`
    using `ExecutionSpec`/`RuntimeRequirements` exactly as the existing three
    backends do** — no new capability vocabulary, no backend-named policy
-   surface, per ADR 0035 decision 3. This spike's own survey (§2) confirms the
+   surface, per Core ADR 0035 decision 3. This spike's own survey (§2) confirms the
    trait needs no change to accept it.
 
 **No hosted-production claim is made from this spike.** No PoC was built, no
@@ -569,7 +569,7 @@ production backend delivery.
 | Item | Why not assessed here | How to assess |
 |---|---|---|
 | Actual Firecracker boot/restore latency on real hardware | No Linux/KVM host in this session | Provision a bare-metal or nested-virtualization-enabled cloud Linux host with `/dev/kvm`; run Firecracker's own `getting-started` guide against a guest image built with this product's actual toolchain requirements |
-| Jailer's real security effectiveness for this product's launch pattern | Requires adversarial testing against a running jailer, not documentation reading | Real-hardware adversarial suite, mirroring the pattern ADR 0035's validation requirements already mandate for every backend (`adr/0035-....md:813-824`) |
+| Jailer's real security effectiveness for this product's launch pattern | Requires adversarial testing against a running jailer, not documentation reading | Real-hardware adversarial suite, mirroring the pattern Core ADR 0035's validation requirements already mandate for every backend (`adr/0035-....md:813-824`) |
 | Concurrent-microVM resource density at realistic fleet size | No infrastructure to run N concurrent microVMs | `wrk`-style N-instance harness once hardware exists, same shape as the AAASM-5269 spike's own "unmeasured, with a plan" table |
 | Firecracker CVE/patch history and update cadence | Not performed in this desk-research pass | A dedicated supply-chain review before any ADR proposing to ship it |
 | Whether AAASM-6162's eventual concrete transaction contract is actually satisfied by virtio-block COW | AAASM-6162 has no design yet — it is still To Do | Re-run this comparison once AAASM-6162 has a concrete contract |
