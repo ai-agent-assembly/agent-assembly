@@ -174,6 +174,7 @@
 pub mod ambient;
 pub mod backend;
 pub mod capability;
+pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
 pub mod evidence;
@@ -199,6 +200,7 @@ pub use capability::{
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
 };
+pub use deadline::{requested_wall_clock_ceiling, supervise_wall_clock, WallClockOutcome};
 pub use descendant::{authority_widening, covers_ordinary_descendants, is_same_or_narrower, AuthorityWidening};
 pub use descriptor::{
     DescriptorDisposition, DescriptorInventory, InheritedDescriptor, InventoryCompleteness, STANDARD_DESCRIPTORS,
