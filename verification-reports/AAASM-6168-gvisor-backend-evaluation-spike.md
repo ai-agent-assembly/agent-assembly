@@ -30,7 +30,7 @@ and stronger host-kernel mediation than the native Landlock/seccomp backend.
 **CONDITIONAL GO** — worth a scoped follow-up prototype ticket under
 `aa-isolation`, gated on the measurements this document could not make without
 a Linux host. Not a GO, because nothing below is measured against a real
-coding-agent workload; not a NO-GO, because ADR 0035 already names gVisor as
+coding-agent workload; not a NO-GO, because Core ADR 0035 already names gVisor as
 exactly this kind of candidate and nothing found here contradicts that. See
 [Conclusion](#conclusion--go--conditional-go--no-go) for the full call.
 
@@ -113,8 +113,8 @@ this backend's shape: `PlatformBoundary::UserspaceKernel`
 (`aa-isolation/src/capability.rs:367-374`), distinct from
 `SharedHostKernel` (native/Sandlock today) and `GuestKernel` (the macOS VM
 backend). No new enum variant is needed to represent gVisor honestly in this
-contract — that is itself evidence the ADR 0035 authors designed this
-vocabulary with gVisor specifically in mind (ADR 0035 names it by name at
+contract — that is itself evidence the Core ADR 0035 authors designed this
+vocabulary with gVisor specifically in mind (Core ADR 0035 names it by name at
 lines 436, 459, 546, 732, 836).
 
 ## Threat boundary and host-kernel exposure
@@ -142,7 +142,7 @@ surface reaching the real kernel. This is the architectural claim gVisor
 makes for itself: a materially smaller trusted-kernel-code-path than a
 directly-scheduled process, without the cost of a second kernel. It is *not*
 the same guarantee as Firecracker/microVM-style hardware-enforced memory
-isolation, and ADR 0035 (line 459) already states this distinction correctly:
+isolation, and Core ADR 0035 (line 459) already states this distinction correctly:
 *"a process sandbox shares more host-kernel attack surface than a userspace
 kernel or VM"* — gVisor sits in the middle of that spectrum, not at either
 end.
@@ -238,7 +238,7 @@ motivating case for its `directfs`/overlay optimizations (trusted host file
 descriptors passed through for known-safe directories, bypassing the Gofer
 round-trip for those paths) — but whether that optimization is compatible
 with this codebase's filesystem-scope policy model (`aa-isolation`'s
-per-path allow-list, ADR 0035's AAASM-5751 amendment) is itself an open
+per-path allow-list, Core ADR 0035's AAASM-5751 amendment) is itself an open
 question a prototype would need to answer, not this document.
 
 ## Filesystem semantics
@@ -280,7 +280,7 @@ something the proxy alone cannot do, because it depends on the agent process
 honoring `HTTP_PROXY`/`HTTPS_PROXY` and trusting the injected CA. Composing
 the two (proxy for content-aware policy, gVisor Netstack for "nothing leaves
 this sandbox except through the proxy, at all") is architecturally sound and
-consistent with ADR 0035's explicit statement that mechanisms compose rather
+consistent with Core ADR 0035's explicit statement that mechanisms compose rather
 than substitute. `hostinet` mode — passing network syscalls straight to the
 host stack for performance — forfeits this specific advantage; see
 [Threat boundary](#threat-boundary-and-host-kernel-exposure).
@@ -288,7 +288,7 @@ host stack for performance — forfeits this specific advantage; see
 **No credential-broker or egress-broker crate currently exists in this
 workspace to integrate against** — a `git grep` across `remote/main` for
 `CredentialBroker`/`EgressBroker`-shaped types found none; the broker
-concepts this ticket asks about are ADR-level design intent (ADR 0035's E5,
+concepts this ticket asks about are ADR-level design intent (Core ADR 0035's E5,
 Epic AAASM-6159's "Authority" pillar) rather than a landed interface. This
 document therefore cannot describe a concrete integration point beyond the
 architectural one above, and says so rather than inventing an interface that
@@ -336,7 +336,7 @@ pillar and the (not-yet-built, per this session's `git grep`) AAASM-6162
 transactional-workspace design need. A gVisor backend gets, for free, the
 same kind of isolated-scratch-writable-layer behavior any OCI container
 runtime gets — it does not get the AASM-specific commit/discard/approve
-semantics ADR 0035's "Transaction" pillar describes. Concretely: this
+semantics Core ADR 0035's "Transaction" pillar describes. Concretely: this
 codebase would still need to build (or adopt, if one already exists
 elsewhere in the workspace by the time AAASM-6162 lands) its own COW
 workspace layer — most plausibly as a host-side overlay or snapshot
@@ -349,7 +349,7 @@ other backend would, not replace the need for it.
 Covered under [Network integration](#network-integration) above for egress.
 For **credential** brokerage specifically: gVisor has no native concept of
 "inject this credential at the moment of use rather than as an ambient
-environment variable" — that is entirely an AASM-side design (ADR 0035's E5,
+environment variable" — that is entirely an AASM-side design (Core ADR 0035's E5,
 `Credential` capability domain, `aa-isolation/src/capability.rs:59-61`,
 already scoped as *"the authority the child inherits: environment secrets,
 tokens, open descriptors and sockets that carry credentials"*). A gVisor
@@ -397,16 +397,16 @@ Distributing it alongside `aasm` would follow the same pattern
 executable: pin an exact release, verify its checksum/digest (the same
 digest-verification discipline `metadata/isolation-backends.json` already
 applies to the pinned Sandlock release), and record provenance/SBOM data per
-ADR 0035's stated supply-chain expectation for third-party backends. No new
+Core ADR 0035's stated supply-chain expectation for third-party backends. No new
 distribution mechanism needs inventing; the existing one needs extending to
 a second binary.
 
 ## Licensing/supply-chain
 
 gVisor is **Apache License 2.0**, Google-maintained, and an active project —
-this matches ADR 0035's explicitly stated backend-licensing preference
+this matches Core ADR 0035's explicitly stated backend-licensing preference
 ("permissive licenses (for example Apache-2.0/MIT/BSD)... explicit
-third-party notices, provenance and SBOM data," ADR 0035 line 445) exactly.
+third-party notices, provenance and SBOM data," Core ADR 0035 line 445) exactly.
 No copyleft or unusual service-term concern applies. The remaining supply-
 chain work is mechanical: `cargo deny`-equivalent tracking for the vendored
 binary (not a Cargo dependency, so outside `cargo deny`'s own scope — this
@@ -464,7 +464,7 @@ changes the shape of the comparison the ticket asks for.
 executions** — a compiled WASI module, with wasmtime's fuel-based CPU budget
 and memory-store limit giving strong, cheap, portable (Linux **and** macOS,
 no root required) confinement for exactly the tool calls that can be compiled
-to WASM. ADR 0035 is explicit that this is a *different boundary* from
+to WASM. Core ADR 0035 is explicit that this is a *different boundary* from
 whole-agent process isolation and the two "must never share a name or claim
 merely because both use the word 'sandbox'." `aa-isolation` (this ticket's
 actual target) confines the **whole agent process tree** — arbitrary native
