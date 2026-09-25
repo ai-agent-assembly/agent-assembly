@@ -267,6 +267,7 @@ fn a_domain_policy_cannot_express_never_becomes_a_prevented_domain() {
                 CapabilityDomain::Ipc,
                 CapabilityDomain::Credential,
                 CapabilityDomain::Resource,
+                CapabilityDomain::WorkspaceTransaction,
             ],
         );
     }
@@ -288,7 +289,7 @@ fn a_policy_expressing_nothing_cannot_reach_a_ready_plan() {
     let refusal = lowering
         .apply_to(ExecutionSpec::new("python", IdentityRef::root("agent-1")))
         .expect_err("an empty lowering must not produce a spec");
-    assert_eq!(refusal.unrepresentable().count(), 4);
+    assert_eq!(refusal.unrepresentable().count(), 5);
 }
 
 // ---------------------------------------------------------------------------

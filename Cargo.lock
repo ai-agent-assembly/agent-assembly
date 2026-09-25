@@ -764,6 +764,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "aa-workspace-tx"
+version = "0.0.1-rc.7"
+dependencies = [
+ "aa-isolation",
+ "hex",
+ "libc",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

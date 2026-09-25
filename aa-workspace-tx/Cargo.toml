@@ -1,0 +1,29 @@
+[package]
+name = "aa-workspace-tx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Materialized, staged, drift-checked workspace transaction mechanism implementing aa-isolation's CapabilityDomain::WorkspaceTransaction contract (AAASM-6162)"
+# Same rationale as aa-isolation: the only intended consumer is aa-cli's
+# `aasm run` launch path, which `.ci/strip-for-publish.sh` deletes from the
+# published tarball, and the contract this crate implements is still being
+# reshaped by Epic AAASM-6159. See aa-isolation/src/lib.rs "Packaging".
+publish = false
+
+[dependencies]
+# The backend-neutral contract this crate implements (TransactionId,
+# BaseManifest, ChangeSet, CommitRefusal, ...). This crate supplies the
+# mechanism; aa-isolation stays pure data + negotiation, per its own
+# "no mechanism vocabulary" invariant.
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

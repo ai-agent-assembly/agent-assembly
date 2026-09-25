@@ -7089,7 +7089,7 @@ mod tests {
         );
         assert!(section.contains("\nschema=aasm.isolation.report/1\n"), "{section}");
         assert!(section.contains("\nposture=no_boundary\n"), "{section}");
-        assert!(section.contains("\ndomain_count=9\n"), "{section}");
+        assert!(section.contains("\ndomain_count=10\n"), "{section}");
         assert!(section.contains("\nbackend_selected=false\n"), "{section}");
         for domain in aa_isolation::CapabilityDomain::ALL {
             assert!(

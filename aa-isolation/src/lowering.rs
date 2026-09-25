@@ -61,8 +61,9 @@
 //! | [`Ipc`](CapabilityDomain::Ipc) | — | Not expressible |
 //! | [`Credential`](CapabilityDomain::Credential) | — | Not expressible |
 //! | [`Resource`](CapabilityDomain::Resource) | — | Not expressible |
+//! | [`WorkspaceTransaction`](CapabilityDomain::WorkspaceTransaction) | — | Not expressible |
 //!
-//! The last four are **accepted, measured risk**, not dead domains: the ADR
+//! The last five are **accepted, measured risk**, not dead domains: the ADR
 //! 0035 AAASM-5751 amendment records that a backend can enforce three of them
 //! today and no operator can ask it to. They stay
 //! [`DomainCoverage::PolicyCannotExpress`] and carry no coverage claim.
@@ -417,6 +418,7 @@ pub fn lower_policy(policy: &PolicyDocument, options: &LoweringOptions) -> Polic
             CapabilityDomain::Ipc => (unrepresentable(IPC_GAP), None, Vec::new()),
             CapabilityDomain::Credential => (unrepresentable(CREDENTIAL_GAP), None, Vec::new()),
             CapabilityDomain::Resource => (unrepresentable(RESOURCE_GAP), None, Vec::new()),
+            CapabilityDomain::WorkspaceTransaction => (unrepresentable(WORKSPACE_TRANSACTION_GAP), None, Vec::new()),
         };
 
         if let Some(scope) = scope {
@@ -817,6 +819,9 @@ const CREDENTIAL_GAP: &str = "no policy node expresses ambient authority. data.c
      the environment variables, descriptors, sockets or tokens a child inherits (ADR 0035 §9)";
 const RESOURCE_GAP: &str = "no policy node expresses a numeric ceiling. budget is USD spend, not CPU, \
      memory, PID count, wall clock, file size or open descriptors";
+const WORKSPACE_TRANSACTION_GAP: &str = "no policy node expresses staged-commit workspace transaction \
+     semantics. filesystem.deny governs individual writes, not whether an already-written staged \
+     change set may be folded back onto its base";
 
 fn not_stated(node: &str, schema_default: &str) -> DomainCoverage {
     DomainCoverage::NotStated {
@@ -1375,6 +1380,7 @@ mod tests {
             CapabilityDomain::Ipc,
             CapabilityDomain::Credential,
             CapabilityDomain::Resource,
+            CapabilityDomain::WorkspaceTransaction,
         ] {
             assert!(
                 requirement_for(&lowering, domain).is_none(),
@@ -1390,7 +1396,7 @@ mod tests {
             };
             assert!(!detail.is_empty(), "{domain} states no reason");
         }
-        assert_eq!(lowering.unrepresentable().count(), 4);
+        assert_eq!(lowering.unrepresentable().count(), 5);
     }
 
     /// AAASM-5751 — a domain stops reporting a gap **only** when the schema
@@ -1445,8 +1451,8 @@ mod tests {
                 "{domain} stopped reporting"
             );
         }
-        assert_eq!(before.unrepresentable().count(), 4);
-        assert_eq!(after.unrepresentable().count(), 4);
+        assert_eq!(before.unrepresentable().count(), 5);
+        assert_eq!(after.unrepresentable().count(), 5);
 
         // And no requirement was fabricated for any of them.
         for domain in unreachable {
@@ -1498,7 +1504,7 @@ mod tests {
         let refusal = lower(&empty())
             .apply_to(spec.clone())
             .expect_err("a policy expressing no restriction must not yield a spec");
-        assert_eq!(refusal.unrepresentable().count(), 4);
+        assert_eq!(refusal.unrepresentable().count(), 5);
         assert!(refusal.to_string().contains("no execution requirement"));
 
         // The control: one expressible restriction and the same call succeeds,

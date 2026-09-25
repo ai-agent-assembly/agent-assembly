@@ -181,12 +181,17 @@ fn removing_the_path_node_yields_no_requirement_and_no_silent_allow() {
         CapabilityDomain::Ipc,
         CapabilityDomain::Credential,
         CapabilityDomain::Resource,
+        // AAASM-6162: WorkspaceTransaction has no policy-schema node yet
+        // either — `aa_isolation::lowering`'s own coverage table lists it
+        // "Not expressible", same bucket as the four above, until a future
+        // ticket lowers a workspace-transaction policy node onto it.
+        CapabilityDomain::WorkspaceTransaction,
     ] {
         assert_eq!(coverage(&lowering, domain).as_str(), "policy_cannot_express");
         assert_eq!(coverage(&lower_yaml(SCOPED), domain).as_str(), "policy_cannot_express");
     }
-    assert_eq!(lowering.unrepresentable().count(), 4);
-    assert_eq!(lower_yaml(SCOPED).unrepresentable().count(), 4);
+    assert_eq!(lowering.unrepresentable().count(), 5);
+    assert_eq!(lower_yaml(SCOPED).unrepresentable().count(), 5);
 }
 
 /// A document whose only enforcement statement is a path scope must still

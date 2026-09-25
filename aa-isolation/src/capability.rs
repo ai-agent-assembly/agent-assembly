@@ -62,6 +62,19 @@ pub enum CapabilityDomain {
     /// Numeric ceilings: memory, CPU, process count, wall clock, file size,
     /// open descriptors.
     Resource,
+    /// Staged, drift-checked, all-or-nothing materialization of a working
+    /// directory's changes onto its base (AAASM-6162).
+    ///
+    /// Distinct from [`FilesystemWrite`](Self::FilesystemWrite): that domain is
+    /// about *whether a write may happen at all*, decided per-syscall, on the
+    /// live tree. This domain is about *whether an already-permitted set of
+    /// writes, made against a staged copy, may be folded back onto the base*
+    /// -- decided once, offline, after the writing process has exited. A
+    /// backend can enforce one without the other: `aa-isolation-native`
+    /// enforces `FilesystemWrite` per syscall and has no transactional commit
+    /// step at all, while `aa-workspace-tx` never mediates an individual
+    /// syscall and enforces only at commit time.
+    WorkspaceTransaction,
 }
 
 impl CapabilityDomain {
@@ -80,6 +93,7 @@ impl CapabilityDomain {
         Self::Ipc,
         Self::Credential,
         Self::Resource,
+        Self::WorkspaceTransaction,
     ];
 
     /// A stable lowercase identifier for reports and logs.
@@ -94,6 +108,7 @@ impl CapabilityDomain {
             Self::Ipc => "ipc",
             Self::Credential => "credential",
             Self::Resource => "resource",
+            Self::WorkspaceTransaction => "workspace_transaction",
         }
     }
 }
@@ -735,10 +750,11 @@ mod tests {
                 | CapabilityDomain::ProcessCreation
                 | CapabilityDomain::Ipc
                 | CapabilityDomain::Credential
-                | CapabilityDomain::Resource => 1,
+                | CapabilityDomain::Resource
+                | CapabilityDomain::WorkspaceTransaction => 1,
             })
             .sum::<usize>();
-        assert_eq!(count, 9, "CapabilityDomain::ALL is missing a variant");
+        assert_eq!(count, 10, "CapabilityDomain::ALL is missing a variant");
         assert_eq!(CapabilityDomain::ALL.len(), count);
 
         // No duplicates, which would make `unreported_domains` over-count.

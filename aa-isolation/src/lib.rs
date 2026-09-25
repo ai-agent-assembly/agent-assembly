@@ -184,6 +184,7 @@ pub mod planner;
 pub mod report;
 pub mod requirements;
 pub mod spec;
+pub mod tx;
 
 #[cfg(feature = "mock-backend")]
 pub mod mock;
@@ -224,4 +225,8 @@ pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENT
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
     RequirementPosture, RequirementScope, ResourceLimits,
+};
+pub use tx::{
+    BaseManifest, ChangeEntry, ChangeSet, CommitOutcome, CommitRefusal, EntryKind, ManifestEntry, TransactionId,
+    TransactionStatus, WorkspaceDigest,
 };
