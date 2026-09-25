@@ -172,6 +172,7 @@
 #![warn(missing_docs)]
 
 pub mod ambient;
+pub mod authority;
 pub mod backend;
 pub mod capability;
 pub mod deadline;
@@ -193,6 +194,10 @@ pub mod mock;
 pub use ambient::{
     classify_env_name, is_supervisor_credential, AmbientAuthorityKind, ClassifiedName, CompatibilityException,
     EnvironmentPlan, EnvironmentPlanner, CLOUD_METADATA_ENDPOINTS,
+};
+pub use authority::{
+    authority_gate, effective_authority_for_report, AuthorityBuildError, AuthorityRefusal, AuthorityState,
+    AuthorityWitness, EffectiveAuthority,
 };
 pub use backend::{
     ExecutionHandle, ExitDisposition, IsolationBackend, PreparedExecution, SpawnError, TerminationRequest,
