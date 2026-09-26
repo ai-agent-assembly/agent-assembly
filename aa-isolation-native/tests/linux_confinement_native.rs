@@ -1253,14 +1253,17 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
     // Admission proof: the attenuated child gates cleanly against its parent.
     authority_gate(&child_spec, &ancestry, now).expect("the attenuated child must gate cleanly against its parent");
 
-    // Control: the un-attenuated sibling spec — a hand-built lease claiming
-    // the grandparent's wider grant directly, never derived from it — is
-    // refused by the gate.
+    // Control: the un-attenuated sibling spec — a hand-built lease claiming a
+    // path entirely outside the parent's own grant, never derived from it —
+    // is refused by the gate. (A hand-built lease claiming exactly the
+    // parent's own scope would be legitimate — `Equal` is within bounds — so
+    // the control must genuinely exceed the parent, not merely fail to be a
+    // recorded derivation.)
     let sibling_lease = CapabilityLease::new(
         LeaseId::new("attenuation-sibling-lease"),
         child_identity.clone(),
         CapabilityDomain::FilesystemWrite,
-        RequirementScope::Selectors(vec![permit_only_selector(&permitted.to_string_lossy())]),
+        RequirementScope::Selectors(vec![permit_only_selector(&scratch.forbidden().to_string_lossy())]),
         now,
         far_future,
         LeaseBasis::new(IdentityRef::root("agent-under-test"), "hand-built, not derived"),
@@ -1268,7 +1271,7 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
     let sibling_spec = ExecutionSpec::new("/bin/sh", child_identity)
         .with_requirement(
             ControlRequirement::prevent(CapabilityDomain::FilesystemWrite).with_scope(RequirementScope::Selectors(
-                vec![permit_only_selector(&permitted.to_string_lossy())],
+                vec![permit_only_selector(&scratch.forbidden().to_string_lossy())],
             )),
         )
         .with_lease(sibling_lease);
@@ -1276,8 +1279,7 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
     assert!(
         matches!(
             &sibling_result,
-            Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
-                if *domain == CapabilityDomain::FilesystemWrite
+            Err(AuthorityRefusal::ChildExceedsParent { domain }) if *domain == CapabilityDomain::FilesystemWrite
         ),
         "the un-attenuated sibling spec must be refused by the gate, not admitted: {sibling_result:?}"
     );
