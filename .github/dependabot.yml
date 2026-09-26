@@ -64,6 +64,25 @@ updates:
       - dependency-name: "time"
         versions: ["0.3.48"]
 
+  # ── cargo-fuzz target (separate resolution root) ──────────────────────────
+  # aa-sandbox/fuzz declares its own [workspace] and is listed under the root
+  # Cargo.toml `workspace.exclude` (AAASM-3622), so the "/" entry above does
+  # not reach it — a separate resolution root needs its own entry. Without one
+  # its Cargo.lock went untouched from June until it could no longer satisfy
+  # its manifest at all: it pinned wasmtime 46 against `wasmtime = "49"`, so
+  # `cargo metadata --locked` failed outright. See AAASM-6181.
+  #
+  # No CI job builds this target, so Dependabot is the only thing that will
+  # notice the next time it drifts.
+  - package-ecosystem: "cargo"
+    directory: "/aa-sandbox/fuzz"
+    schedule:
+      interval: "daily"
+    labels: ["dependencies", "rust", "fuzzing"]
+    commit-message:
+      prefix: "⬆"
+    open-pull-requests-limit: 5
+
   # ── Dashboard (pnpm) ─────────────────────────────────────────────────────
   # React + TypeScript frontend scaffold located in dashboard/, managed with
   # pnpm (packageManager: pnpm@10.9.0 declared in dashboard/package.json).
