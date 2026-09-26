@@ -92,7 +92,7 @@ impl EffectiveMode {
 /// is dead on the `CheckAction` hot path today (both production callers
 /// hardcode a `PolicyDefaultMode`), and wiring it without routing through the
 /// same gate would create a second, ungated `Observe` source
-/// (`// KNOWN GAP (HORO-TBD-G4)`).
+/// (`// KNOWN GAP (HORO-1491)`).
 ///
 /// Both inputs are `Copy` so this is a cheap pure function callable from the
 /// `CheckAction` hot path without locks or allocations.

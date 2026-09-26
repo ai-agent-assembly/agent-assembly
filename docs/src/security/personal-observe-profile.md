@@ -151,7 +151,7 @@ deployment is unmanaged. See docs/src/security/personal-observe-profile.md#known
 refusing to start: observation.profile = personal_observe is not implemented by aa-gateway.
 This key is honoured only by the local single-process aa-api-server entrypoint. aa-gateway will
 not silently ignore it, because ignoring it would leave you believing personal-observe is active
-when enforcement is in fact live. Unset the key to run aa-gateway. Tracking: HORO-TBD-G5.
+when enforcement is in fact live. Unset the key to run aa-gateway. Tracking: HORO-1492.
 ```
 
 When granted, the following line is logged at `WARN` (not `INFO`, so it
@@ -196,18 +196,18 @@ is never proof that a host is unmanaged. Concretely, it cannot see:
 
 | Gap | Description | Tracking |
 |---|---|---|
-| G1 | MDM / host-management channels (macOS configuration profiles, Jamf, Intune, group policy). | HORO-TBD-G1 |
-| G2 | EDR / sidecar / eBPF / kernel-level interception, or a transparent enforcing proxy on the egress path. | HORO-TBD-G2 |
-| G3 | Org policy delivered out-of-band — a managed policy file dropped into `$AA_POLICY` by a fleet tool is indistinguishable from a user-authored one. | HORO-TBD-G3 |
-| G4 | `PolicyDocument.enforcement_mode` is dead on the `CheckAction` hot path today; it must not be wired without routing through this same gate. | HORO-TBD-G4 |
-| G5 | `aa-gateway` does not implement personal-observe; it refuses instead. Whether to implement it there is undecided. | HORO-TBD-G5 |
-| G6 | Signals are checked at **boot only**. A management channel that appears after boot is not re-detected — there is no runtime re-check. | HORO-TBD-G6 |
-| G7 | `AgentRecord.enforcement_mode` is a `pub` field; this gate and the registry write-side guard close the primitive and the rehydrate path, but a direct field assignment inside `aa-gateway` remains structurally possible. | HORO-TBD-G7 |
+| G1 | MDM / host-management channels (macOS configuration profiles, Jamf, Intune, group policy). | HORO-1488 |
+| G2 | EDR / sidecar / eBPF / kernel-level interception, or a transparent enforcing proxy on the egress path. | HORO-1489 |
+| G3 | Org policy delivered out-of-band — a managed policy file dropped into `$AA_POLICY` by a fleet tool is indistinguishable from a user-authored one. | HORO-1490 |
+| G4 | `PolicyDocument.enforcement_mode` is dead on the `CheckAction` hot path today; it must not be wired without routing through this same gate. | HORO-1491 |
+| G5 | `aa-gateway` does not implement personal-observe; it refuses instead. Whether to implement it there is undecided. | HORO-1492 |
+| G6 | Signals are checked at **boot only**. A management channel that appears after boot is not re-detected — there is no runtime re-check. | HORO-1493 |
+| G7 | `AgentRecord.enforcement_mode` is a `pub` field; this gate and the registry write-side guard close the primitive and the rehydrate path, but a direct field assignment inside `aa-gateway` remains structurally possible. | HORO-1494 |
 
 (A pre-existing, separate defect — the local audit hash chain being rooted
 under a temp directory and reseeded on every restart — was found and fixed
 as part of this same ticket; see [Durable audit location](#durable-audit-location-and-what-is-recorded)
-below. It is tracked for traceability as HORO-TBD-G8, since any chain written
+below. It is tracked for traceability as HORO-1495, since any chain written
 before this fix is permanently forked and unverifiable across that boundary,
 but it is not a personal-observe coverage gap.)
 

@@ -139,46 +139,46 @@ impl std::error::Error for PersonalObserveRefusal {}
 ///
 /// # Known gaps (HORO-1369 sub-tasks; see the docs page for detail)
 ///
-/// // KNOWN GAP (HORO-TBD-G1): cannot see MDM / host-management channels
+/// // KNOWN GAP (HORO-1488): cannot see MDM / host-management channels
 /// (macOS configuration profiles, Jamf, Intune, group policy). Undetected.
 ///
-/// // KNOWN GAP (HORO-TBD-G2): cannot see EDR / sidecar / eBPF / kernel-level
+/// // KNOWN GAP (HORO-1489): cannot see EDR / sidecar / eBPF / kernel-level
 /// interception, nor a transparent enforcing proxy on the egress path.
 /// Undetected.
 ///
-/// // KNOWN GAP (HORO-TBD-G3): cannot see org policy delivered out-of-band —
+/// // KNOWN GAP (HORO-1490): cannot see org policy delivered out-of-band —
 /// a managed policy file dropped into `$AA_POLICY` by a fleet tool is
 /// indistinguishable from a user-authored one.
 ///
-/// // KNOWN GAP (HORO-TBD-G4): `PolicyDocument.enforcement_mode` is dead on
+/// // KNOWN GAP (HORO-1491): `PolicyDocument.enforcement_mode` is dead on
 /// the `CheckAction` hot path (both production callers hardcode `Enforce`).
 /// It must NOT be wired without routing through this same gate.
 ///
-/// // KNOWN GAP (HORO-TBD-G5): `aa-gateway` does not implement
+/// // KNOWN GAP (HORO-1492): `aa-gateway` does not implement
 /// personal-observe; it refuses at boot instead (see `aa-gateway/src/main.rs`).
 ///
-/// // KNOWN GAP (HORO-TBD-G6): every signal here is checked at **boot only**.
+/// // KNOWN GAP (HORO-1493): every signal here is checked at **boot only**.
 /// A management channel that appears after boot is not re-detected — there
 /// is no runtime re-check.
 ///
-/// // KNOWN GAP (HORO-TBD-G7): `AgentRecord.enforcement_mode` is a `pub`
+/// // KNOWN GAP (HORO-1494): `AgentRecord.enforcement_mode` is a `pub`
 /// field; this gate and the registry write-side guard
 /// (`set_enforcement_mode_persisted`) close the primitive and the rehydrate
 /// path, but a direct field assignment inside `aa-gateway` remains possible.
 ///
-/// // KNOWN GAP (HORO-TBD-G8): (pre-existing defect, not caused by this
+/// // KNOWN GAP (HORO-1495): (pre-existing defect, not caused by this
 /// ticket) prior to HORO-1375, aa-api's local audit hash chain reseeded to
 /// zero every boot — any chain written before this fix is permanently forked
 /// and cannot be verified end-to-end across that boundary.
-// KNOWN GAP (HORO-TBD-G1): cannot see MDM / host-management channels.
-// KNOWN GAP (HORO-TBD-G2): cannot see EDR / sidecar / eBPF / kernel-level interception.
-// KNOWN GAP (HORO-TBD-G3): cannot see org policy delivered out-of-band.
-// KNOWN GAP (HORO-TBD-G4): PolicyDocument.enforcement_mode stays dead on the CheckAction path.
-// KNOWN GAP (HORO-TBD-G5): aa-gateway does not implement personal-observe; it refuses.
-// KNOWN GAP (HORO-TBD-G6): signals are checked at boot only; no runtime re-check.
-// KNOWN GAP (HORO-TBD-G7): AgentRecord.enforcement_mode is a pub field; direct assignment
+// KNOWN GAP (HORO-1488): cannot see MDM / host-management channels.
+// KNOWN GAP (HORO-1489): cannot see EDR / sidecar / eBPF / kernel-level interception.
+// KNOWN GAP (HORO-1490): cannot see org policy delivered out-of-band.
+// KNOWN GAP (HORO-1491): PolicyDocument.enforcement_mode stays dead on the CheckAction path.
+// KNOWN GAP (HORO-1492): aa-gateway does not implement personal-observe; it refuses.
+// KNOWN GAP (HORO-1493): signals are checked at boot only; no runtime re-check.
+// KNOWN GAP (HORO-1494): AgentRecord.enforcement_mode is a pub field; direct assignment
 // inside aa-gateway remains possible even after this gate + the registry write-side guard.
-// KNOWN GAP (HORO-TBD-G8): pre-existing defect (not caused here) — any local audit chain
+// KNOWN GAP (HORO-1495): pre-existing defect (not caused here) — any local audit chain
 // written before this ticket's durability fix is permanently forked and unverifiable.
 pub fn authorize_personal_observe(
     dep: PersonalObserveDeployment<'_>,

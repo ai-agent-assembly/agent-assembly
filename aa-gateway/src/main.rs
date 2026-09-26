@@ -158,7 +158,7 @@ fn refuse_personal_observe_in_gateway(cfg: &aa_core::config::GatewayConfig) -> R
              aa-gateway. This key is honoured only by the local single-process aa-api-server \
              entrypoint. aa-gateway will not silently ignore it, because ignoring it would leave \
              you believing personal-observe is active when enforcement is in fact live. Unset \
-             the key to run aa-gateway. Tracking: HORO-TBD-G5."
+             the key to run aa-gateway. Tracking: HORO-1492."
                 .into(),
         );
     }
