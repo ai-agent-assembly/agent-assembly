@@ -144,6 +144,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+/// Refuse to boot `aa-gateway` under `observation.profile = personal_observe`
+/// (HORO-1375 §6.3/§6.5). personal-observe is honoured only by the local
+/// single-process `aa-api-server` entrypoint; silently ignoring the key here
+/// would leave an operator believing it applies to `aa-gateway` when
+/// enforcement is in fact live and unaffected. Called from all three
+/// `GatewayConfig::load()` sites in this file (`run_local`, `run_legacy_grpc`,
+/// `run_remote`) — this covers every `aa-gateway` boot path.
+fn refuse_personal_observe_in_gateway(cfg: &aa_core::config::GatewayConfig) -> Result<(), Box<dyn std::error::Error>> {
+    if cfg.observation.profile == aa_core::config::ObservationProfile::PersonalObserve {
+        return Err(
+            "refusing to start: observation.profile = personal_observe is not implemented by \
+             aa-gateway. This key is honoured only by the local single-process aa-api-server \
+             entrypoint. aa-gateway will not silently ignore it, because ignoring it would leave \
+             you believing personal-observe is active when enforcement is in fact live. Unset \
+             the key to run aa-gateway. Tracking: HORO-TBD-G5."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// Local Dev Mode entry: load `GatewayConfig` (YAML + env overrides),
 /// boot the lightweight in-process control plane via
 /// [`aa_gateway::local_mode::start_local`], and block on
@@ -155,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// reflects those overrides by the time we hit `start_local`.
 async fn run_local() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = aa_core::config::GatewayConfig::load()?;
+    refuse_personal_observe_in_gateway(&cfg)?;
     let handle = aa_gateway::local_mode::start_local(&cfg.local).await?;
     aa_gateway::local_mode::run_until_shutdown(handle).await?;
     Ok(())
@@ -184,6 +206,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // is present) so legacy callers get persistence without changing
     // their CLI invocation.
     let cfg = aa_core::config::GatewayConfig::load()?;
+    refuse_personal_observe_in_gateway(&cfg)?;
     // Opened as the concrete backend rather than through
     // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
     // `ApprovalStore` (AAASM-5657) is a *separate* trait `SqliteBackend`
@@ -322,6 +345,7 @@ async fn run_legacy_grpc(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 /// SIGINT triggers graceful drain.
 async fn run_remote() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = aa_core::config::GatewayConfig::load()?;
+    refuse_personal_observe_in_gateway(&cfg)?;
     aa_gateway::remote_mode::start_remote(&cfg.remote).await?;
     Ok(())
 }
