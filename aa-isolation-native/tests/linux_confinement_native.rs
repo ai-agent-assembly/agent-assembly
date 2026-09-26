@@ -33,8 +33,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aa_isolation::{
-    permit_only_selector, CapabilityDomain, ControlRequirement, DescendantRequirement, EnforcementEvidence,
-    EvidenceKind, ExecutionHandle, ExecutionSpec, IdentityRef, IsolationBackend, RequirementScope, SupportLevel,
+    authority_gate, permit_only_selector, Ancestry, AuthorityRefusal, CapabilityDomain, CapabilityLease,
+    ChildLeaseRequest, ControlRequirement, DelegationRule, DescendantRequirement, EnforcementEvidence, EvidenceKind,
+    ExecutionHandle, ExecutionSpec, IdentityRef, InheritanceMode, IsolationBackend, LeaseBasis, LeaseId,
+    ParentAuthority, PathPrefixOrder, RequirementScope, SupportLevel,
 };
 use aa_isolation_native::{CompletedRun, NativeBackend, REQUIRED_ABI_VERSION};
 
@@ -1151,6 +1153,156 @@ fn a_sub_agent_launch_the_machinery_admits_is_confined_by_this_backend() {
         "a sub-agent spec `is_same_or_narrower` admitted was confined at grandchild depth — the write \
          inside its grant happened and the write outside it did not — while the same spec re-delegating \
          a credential its ancestor removed was reported as CredentialWidened",
+    );
+}
+
+/// **AC (AAASM-6161): nested child/grandchild attenuation is proven with a
+/// real side-effect negative control.** A child lease attenuated to a
+/// subdirectory of its parent's grant confines a grandchild write to that
+/// subdirectory — proven by an actual denied write outside it, not merely by
+/// `authority_gate`'s own verdict, which this scenario also checks separately
+/// so the two halves (decision, effect) cannot be confused for one another.
+///
+/// Three controls, all in this scenario:
+///
+/// * the write inside the child's own narrowed grant, which happens — so the
+///   denial below is the boundary and not a shell that never ran;
+/// * the un-attenuated sibling spec — a hand-built lease claiming the
+///   grandparent's wider grant directly, never derived from it — which
+///   `authority_gate` refuses, so the admission of the narrowed child is a
+///   decision and not a gate that says yes to everything;
+/// * the grandchild depth, so what is measured is the tree and not the one
+///   process the launcher `execve`d.
+#[test]
+fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narrowed_grant() {
+    const SCENARIO: &str =
+        "native: a grandchild of an attenuated sub-agent cannot write outside the child's narrowed grant";
+    let Some(backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+    let scratch = Scratch::new("attenuation");
+    let permitted = scratch.permitted();
+    let narrowed = permitted.join("a");
+    std::fs::create_dir_all(&narrowed).expect("scenario's own directory");
+    let inside = narrowed.join("inside");
+    let outside = permitted.join("b");
+
+    let now = std::time::SystemTime::now();
+    let far_future = now + Duration::from_secs(3_600);
+
+    // The grandparent's own lease: delegable, over the whole `permitted` tree.
+    let parent_lease = CapabilityLease::new(
+        LeaseId::new("attenuation-parent-lease"),
+        IdentityRef::root("agent-under-test"),
+        CapabilityDomain::FilesystemWrite,
+        RequirementScope::Selectors(vec![permit_only_selector(&permitted.to_string_lossy())]),
+        now,
+        far_future,
+        LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+    )
+    .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+
+    let parent_spec =
+        ExecutionSpec::new("/bin/sh", IdentityRef::root("agent-under-test")).with_lease(parent_lease.clone());
+    let parent_witness =
+        authority_gate(&parent_spec, &Ancestry::Root, now).expect("the parent's own lease must gate cleanly");
+    let ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
+        &parent_spec,
+        &parent_witness,
+    )));
+
+    // The child: attenuated to `permitted/a` only.
+    let child_identity = IdentityRef::root("sub-agent").with_ancestor("agent-under-test");
+    let child_lease = parent_lease
+        .derive_child(
+            ChildLeaseRequest {
+                child_id: LeaseId::new("attenuation-child-lease"),
+                child_subject: child_identity.clone(),
+                child_scope: RequirementScope::Selectors(vec![permit_only_selector(&narrowed.to_string_lossy())]),
+                child_expires_at: far_future,
+                mode: InheritanceMode::Narrower,
+                child_delegation: DelegationRule::NotDelegable,
+                child_limits: None,
+            },
+            &PathPrefixOrder,
+            now,
+        )
+        .expect("a narrower child scope over a subdirectory must derive");
+
+    let script = as_grandchild(&format!(
+        "printf x > {} ; printf x > {}",
+        shell_word(&inside.to_string_lossy()),
+        shell_word(&outside.to_string_lossy())
+    ));
+
+    let child_spec = ExecutionSpec::new("/bin/sh", child_identity.clone())
+        .with_args(["-c", &script])
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemRead)
+                .with_scope(RequirementScope::Selectors(system_reads())),
+        )
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)
+                .with_descendants(DescendantRequirement::ProcessTree)
+                .with_scope(RequirementScope::Selectors(vec![permit_only_selector(
+                    &narrowed.to_string_lossy(),
+                )])),
+        )
+        .with_lease(child_lease);
+
+    // Admission proof: the attenuated child gates cleanly against its parent.
+    authority_gate(&child_spec, &ancestry, now).expect("the attenuated child must gate cleanly against its parent");
+
+    // Control: the un-attenuated sibling spec — a hand-built lease claiming
+    // the grandparent's wider grant directly, never derived from it — is
+    // refused by the gate.
+    let sibling_lease = CapabilityLease::new(
+        LeaseId::new("attenuation-sibling-lease"),
+        child_identity.clone(),
+        CapabilityDomain::FilesystemWrite,
+        RequirementScope::Selectors(vec![permit_only_selector(&permitted.to_string_lossy())]),
+        now,
+        far_future,
+        LeaseBasis::new(IdentityRef::root("agent-under-test"), "hand-built, not derived"),
+    );
+    let sibling_spec = ExecutionSpec::new("/bin/sh", child_identity)
+        .with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::FilesystemWrite).with_scope(RequirementScope::Selectors(
+                vec![permit_only_selector(&permitted.to_string_lossy())],
+            )),
+        )
+        .with_lease(sibling_lease);
+    let sibling_result = authority_gate(&sibling_spec, &ancestry, now);
+    assert!(
+        matches!(
+            &sibling_result,
+            Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
+                if *domain == CapabilityDomain::FilesystemWrite
+        ),
+        "the un-attenuated sibling spec must be refused by the gate, not admitted: {sibling_result:?}"
+    );
+
+    // And now the real boundary, on the launch the gate admitted: the same
+    // `ControlRequirement`-driven spec, run through this backend.
+    let (completed, _) = run(&backend, &child_spec);
+    assert_the_program_ran(SCENARIO, &completed);
+    assert!(
+        inside.exists(),
+        "the grandchild's write inside the child's own narrowed grant did not happen, so the assertion \
+         below proves nothing. stderr: {:?}",
+        completed.stderr
+    );
+    assert!(
+        !outside.exists(),
+        "a grandchild of an attenuated sub-agent wrote outside the child's narrowed grant, into \
+         authority the grandparent held but the child gave up: {} exists",
+        outside.display()
+    );
+    measured(
+        SCENARIO,
+        "a child lease attenuated to a subdirectory of its parent's grant confined a grandchild write \
+         to that subdirectory, while the gate separately refused an un-attenuated sibling claim over \
+         the parent's wider grant",
     );
 }
 
