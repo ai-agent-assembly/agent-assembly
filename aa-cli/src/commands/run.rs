@@ -245,6 +245,7 @@ mod plan {
     use uuid::Uuid;
 
     use aa_core::{DevToolAdapter, DevToolInfo};
+    use aa_isolation::credential_broker::{credential_gate, CredentialAuthority, CredentialContract};
     use aa_isolation::{
         authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
         CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, IdentityRef, IsolationBackend,
@@ -812,6 +813,11 @@ mod plan {
         /// threaded through `resolve_boundary` so a future source has one
         /// call site to populate, exactly as `leases` and `ancestry` do.
         egress: aa_isolation::EgressContract,
+        /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
+        /// amendment). [`CredentialContract::not_required`] for every launch
+        /// today — no policy path issues a stronger contract yet — but
+        /// threaded through `resolve_boundary` exactly as `egress` is.
+        credential_contract: CredentialContract,
     }
 
     impl IsolationPlan {
@@ -1101,6 +1107,53 @@ mod plan {
                 return (Some(spec), report, Boundary::Refused(detail));
             }
 
+            // AAASM-6164/ADR 0038 amendment: the credential-brokerage contract's
+            // gate runs immediately after `egress_gate`, before any backend is
+            // consulted — a launch requiring brokered credentials this run's
+            // mediating component (or explicit authority) cannot actually
+            // provide, or whose posture shows a "secretless" name still
+            // reaching the child, is refused before backend capability is in
+            // the picture. `self.credential_contract` is
+            // `CredentialContract::not_required()` for every launch today, so
+            // this is inert until a policy source issues a stronger contract.
+            let credential_authority = CredentialAuthority::from_gated_spec(&spec, &witness);
+            let credential_scope = spec
+                .requirements()
+                .iter()
+                .find(|r| r.domain() == CapabilityDomain::Credential)
+                .map(|r| r.scope().clone())
+                .unwrap_or(RequirementScope::Whole);
+            let credential_broker = crate::commands::run_credential_broker::report_for_launch(
+                network.endpoint(),
+                network.no_proxy(),
+                parse_llm_only_env(),
+                &mitm_hosts_env(),
+                &crate::commands::run_credential_broker::provider_key_hosts_env(),
+                network_fail_open_env(),
+            );
+            if let Err(refusal) = credential_gate(
+                &self.credential_contract,
+                &credential_broker,
+                &credential_authority,
+                &credentials,
+                &credential_scope,
+            ) {
+                let authority = effective_authority_for_report(&spec);
+                let detail = format!("the launch is refused: {refusal}");
+                let mut report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&spec),
+                    credentials,
+                    detail.clone(),
+                );
+                report = report.with_policy(lowering);
+                report = report.with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority));
+                report = report.with_credential_brokerage(credential_broker.services().to_vec());
+                report = self.with_selection(report);
+                return (Some(spec), report, Boundary::Refused(detail));
+            }
+
             backend.set_child_environment(child_env.clone());
             match backend.plan(&spec) {
                 Ok(plan) => {
@@ -1108,7 +1161,8 @@ mod plan {
                     let report = self.with_selection(
                         IsolationReport::from_plan(session, &plan)
                             .with_policy(lowering)
-                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority))
+                            .with_credential_brokerage(credential_broker.services().to_vec()),
                     );
                     (Some(spec), report, Boundary::Negotiated(Box::new(plan)))
                 }
@@ -1703,6 +1757,7 @@ mod plan {
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
+                    credential_contract: CredentialContract::not_required(),
                 });
             }
 
@@ -1781,6 +1836,7 @@ mod plan {
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
+                    credential_contract: CredentialContract::not_required(),
                 });
             }
         };
@@ -1807,6 +1863,7 @@ mod plan {
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
+                credential_contract: CredentialContract::not_required(),
             });
         }
 
@@ -1818,6 +1875,7 @@ mod plan {
             leases: Vec::new(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
+            credential_contract: CredentialContract::not_required(),
         })
     }
 
@@ -1876,6 +1934,7 @@ mod plan {
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
+                credential_contract: CredentialContract::not_required(),
             });
         };
 
@@ -1930,6 +1989,7 @@ mod plan {
                         leases: Vec::new(),
                         ancestry: Ancestry::Root,
                         egress: aa_isolation::EgressContract::not_required(),
+                        credential_contract: CredentialContract::not_required(),
                     });
                 }
                 Err(refusal) => {
@@ -1976,6 +2036,7 @@ mod plan {
             leases: Vec::new(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
+            credential_contract: CredentialContract::not_required(),
         })
     }
 
