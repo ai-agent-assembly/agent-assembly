@@ -38,7 +38,7 @@
 use std::time::SystemTime;
 
 use crate::capability::CapabilityDomain;
-use crate::spec::{IdentityRef, RequirementScope};
+use crate::spec::{IdentityRef, RequirementScope, ResourceLimits};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -238,15 +238,116 @@ pub enum DelegationDenied {
     ///
     /// Fails closed by design: an incomparable scope pair is treated
     /// identically to a wider one. [`UndefinedScopeOrder`] — the only
-    /// [`ScopeOrder`] this ticket ships — returns
-    /// [`ScopeOrdering::Incomparable`] for every pair, which is why no spec in
-    /// this crate can delegate a lease today; AAASM-6161 is the ticket that
-    /// gives a real comparator the chance to return
+    /// [`ScopeOrder`] AAASM-6160 shipped — returns
+    /// [`ScopeOrdering::Incomparable`] for every pair; AAASM-6161's
+    /// `crate::scope_order` module supplies real comparators that can return
     /// [`ScopeOrdering::Narrower`] or [`ScopeOrdering::Equal`] instead.
     Incomparable,
     /// The child's scope was proven [`ScopeOrdering::Wider`] than the
     /// parent's.
     Wider,
+    /// [`InheritanceMode::None`] was requested — a caller asking for no
+    /// inheritance should not call `derive_child` at all, but the request is
+    /// still refused explicitly rather than silently producing a lease.
+    ModeForbidsInheritance,
+    /// [`InheritanceMode::IndependentlyApproved`] was requested from
+    /// `derive_child` itself. That mode names an independently *issued*
+    /// lease, not something a *derivation* can produce — see
+    /// `crate::attenuation::ParentAuthority` and the escalation check in
+    /// `crate::authority::authority_gate` for where that path is validated
+    /// instead.
+    NotADerivation,
+    /// [`InheritanceMode::Same`] was requested, but the scope comparator did
+    /// not return [`ScopeOrdering::Equal`].
+    ModeRequiresEqualScope,
+    /// The requested child [`DelegationRule`] exceeds the parent's own —
+    /// a child cannot be granted the right to delegate more freely than the
+    /// lease it was derived from.
+    DelegationRightsExceedParent,
+    /// A requested quantitative ceiling exceeds the parent lease's own
+    /// ceiling for that field.
+    LimitsExceedParent {
+        /// The `ResourceLimits` field name that exceeded its parent's ceiling.
+        field: String,
+    },
+    /// The parent lease's tracked [`RevocationState`] was not active at the
+    /// instant a [`crate::attenuation::DelegationLedger`] attempted the
+    /// derivation — the concurrent-revocation race's losing outcome.
+    ParentRevoked,
+}
+
+/// How a child lease relates to its parent's authority — the four modes
+/// AAASM-6161's acceptance criteria name, as a closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum InheritanceMode {
+    /// The child inherits nothing from this parent lease.
+    None,
+    /// The child's scope must be proven identical to the parent's.
+    Same,
+    /// The child's scope must be proven strictly narrower than, or equal to,
+    /// the parent's.
+    Narrower,
+    /// The child's authority for this domain did not come from narrowing the
+    /// parent's lease at all — it was independently issued and approved. Not
+    /// a valid `mode` for [`CapabilityLease::derive_child`] itself; see that
+    /// method's documentation.
+    IndependentlyApproved,
+}
+
+/// Where a child capability came from — the machine-readable half of the
+/// "evidence can explain every child capability's provenance" acceptance
+/// criterion.
+///
+/// Kept apart from [`LeaseBasis::reason`]: `reason` is prose for an operator,
+/// and overloading it to also be the thing `authority_gate` parses would make
+/// a wording change into a security regression. This struct is the
+/// grep-able, structurally-checked path instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct DelegationProvenance {
+    /// The parent lease this child was derived from.
+    pub parent_lease: LeaseId,
+    /// The parent lease's own subject, at derivation time.
+    pub parent_subject: IdentityRef,
+    /// How this child relates to the parent's scope.
+    pub inheritance_mode: InheritanceMode,
+    /// The [`DelegationRule`] this child lease was actually issued with, at
+    /// derivation time — recorded separately from
+    /// [`CapabilityLease::delegation`] precisely so a later, out-of-band
+    /// `with_delegation` call on the returned value can be caught:
+    /// `crate::authority::authority_gate`'s provenance-integrity check
+    /// compares this recorded value against the child's *current*
+    /// `delegation()`, and the two can only differ if something widened the
+    /// field after `derive_child` returned it.
+    pub parent_delegation: DelegationRule,
+    /// The parent's [`RevocationState`] generation observed at derivation
+    /// time — the field a concurrent revocation is checked against.
+    pub parent_generation: u64,
+}
+
+/// Everything a caller supplies to derive a child lease from a parent one.
+///
+/// A struct rather than positional arguments: `derive_child`'s previous
+/// 7-positional-argument shape made it easy to pass two `SystemTime`s or two
+/// `LeaseId`s in the wrong order, and every field here is security-relevant.
+pub struct ChildLeaseRequest {
+    /// The child lease's own identifier.
+    pub child_id: LeaseId,
+    /// Who the child lease is for.
+    pub child_subject: IdentityRef,
+    /// What within the domain the child lease covers.
+    pub child_scope: RequirementScope,
+    /// When the child lease should stop being honored, before capping.
+    pub child_expires_at: SystemTime,
+    /// How the child's scope should relate to the parent's.
+    pub mode: InheritanceMode,
+    /// Whether the child lease may itself be further delegated.
+    pub child_delegation: DelegationRule,
+    /// Quantitative ceilings the child lease should carry, when the domain
+    /// has them.
+    pub child_limits: Option<ResourceLimits>,
 }
 
 /// A backend-neutral, versioned grant of one [`CapabilityDomain`] to one
@@ -275,6 +376,7 @@ pub struct CapabilityLease {
     delegation: DelegationRule,
     revocation: RevocationState,
     basis: LeaseBasis,
+    provenance: Option<DelegationProvenance>,
 }
 
 impl CapabilityLease {
@@ -309,6 +411,7 @@ impl CapabilityLease {
             delegation: DelegationRule::NotDelegable,
             revocation: RevocationState::Active { generation: 0 },
             basis,
+            provenance: None,
         }
     }
 
@@ -412,6 +515,32 @@ impl CapabilityLease {
         &self.basis
     }
 
+    /// Where this lease's capability came from, when it was derived from a
+    /// parent lease rather than issued at the root. `None` for a root-issued
+    /// lease.
+    pub fn provenance(&self) -> Option<&DelegationProvenance> {
+        self.provenance.as_ref()
+    }
+
+    /// Overwrite the recorded provenance generation with the value a
+    /// [`crate::attenuation::DelegationLedger`] observed under its own lock at
+    /// derivation time.
+    ///
+    /// `derive_child` stamps `provenance.parent_generation` from the `parent`
+    /// argument's own [`RevocationState`], which is a snapshot that can be
+    /// stale by the time a concurrent revocation lands. The ledger is the
+    /// authoritative live view of a parent's generation, so it corrects the
+    /// snapshot after derivation succeeds, inside the same critical section
+    /// that read it — never outside this crate, which is why this stays
+    /// `pub(crate)` rather than a public builder a caller could use to
+    /// forge provenance.
+    pub(crate) fn with_provenance_generation(mut self, generation: u64) -> Self {
+        if let Some(provenance) = self.provenance.as_mut() {
+            provenance.parent_generation = generation;
+        }
+        self
+    }
+
     /// Check this lease against `now`, without inspecting what it is being
     /// checked *for*.
     ///
@@ -471,55 +600,113 @@ impl CapabilityLease {
         }
     }
 
-    /// Derive a putative lease for a child launch, narrowed by `child_scope`.
+    /// Derive a putative lease for a child launch, narrowed per `request`.
     ///
-    /// This is the delegation *hook*, not the delegation *policy* — AAASM-6161
-    /// is the ticket that supplies a [`ScopeOrder`] able to return anything
-    /// other than [`ScopeOrdering::Incomparable`] for a real domain. Passing
-    /// [`UndefinedScopeOrder`] here (the only implementation this ticket
-    /// ships) means every call fails with
-    /// [`DelegationDenied::Incomparable`], by design: a hook that already knew
-    /// how to compare scopes would not need a follow-up ticket to plug real
-    /// comparators into.
+    /// This is where AAASM-6160's delegation *hook* becomes a real delegation
+    /// *check* (AAASM-6161): `order` decides whether `request.child_scope` is
+    /// provably no wider than this lease's own scope, and every other field on
+    /// `request` is checked for its own monotonicity property before a child
+    /// lease is produced at all. Checked in order:
     ///
-    /// The child's `expires_at` is capped at this lease's own `expires_at` —
-    /// delegation can only narrow a lifetime, never extend it, independent of
-    /// whatever `child_expires_at` a caller asks for.
+    /// 1. This lease's own [`DelegationRule`] permits delegation at all.
+    /// 2. `request.mode` is not [`InheritanceMode::None`] (nothing to derive)
+    ///    or [`InheritanceMode::IndependentlyApproved`] (that mode names a
+    ///    lease this method cannot produce — see
+    ///    `crate::attenuation::ParentAuthority` instead).
+    /// 3. `order.compare` proves the scope relationship `request.mode` claims.
+    /// 4. `request.child_delegation` does not exceed this lease's own
+    ///    [`DelegationRule`] — a child can never be granted broader delegation
+    ///    rights than the lease it was derived from carries.
+    /// 5. `request.child_limits`, when present, does not exceed this lease's
+    ///    own limits on any field (see [`limits_narrower_or_equal`]).
+    ///
+    /// The child's `expires_at` is capped at this lease's own `expires_at`,
+    /// and its `not_before` is floored at `max(issued_at, self.not_before)` —
+    /// delegation can only narrow a lifetime on both ends, never extend it in
+    /// either direction, independent of whatever `request.child_expires_at` or
+    /// `issued_at` a caller asks for.
     ///
     /// # Errors
     ///
-    /// [`DelegationDenied`] when this lease forbids delegation, or when `order`
-    /// cannot prove the child's scope is no wider than this lease's own.
+    /// [`DelegationDenied`] naming the first check above that failed.
     pub fn derive_child(
         &self,
-        child_id: LeaseId,
-        child_subject: IdentityRef,
-        child_scope: RequirementScope,
-        child_expires_at: SystemTime,
+        request: ChildLeaseRequest,
         order: &dyn ScopeOrder,
         issued_at: SystemTime,
     ) -> Result<CapabilityLease, DelegationDenied> {
         if self.delegation != DelegationRule::DelegableWithNarrowerScope {
             return Err(DelegationDenied::NotDelegable);
         }
-        match order.compare(&self.scope, &child_scope) {
-            ScopeOrdering::Narrower | ScopeOrdering::Equal => {}
+        if request.mode == InheritanceMode::None {
+            return Err(DelegationDenied::ModeForbidsInheritance);
+        }
+        if request.mode == InheritanceMode::IndependentlyApproved {
+            return Err(DelegationDenied::NotADerivation);
+        }
+
+        let ordering = order.compare(&self.scope, &request.child_scope);
+        match ordering {
             ScopeOrdering::Wider => return Err(DelegationDenied::Wider),
             ScopeOrdering::Incomparable => return Err(DelegationDenied::Incomparable),
+            ScopeOrdering::Equal => {}
+            ScopeOrdering::Narrower => {
+                if request.mode == InheritanceMode::Same {
+                    return Err(DelegationDenied::ModeRequiresEqualScope);
+                }
+            }
         }
-        let capped_expiry = core::cmp::min(child_expires_at, self.expires_at);
-        Ok(CapabilityLease::new(
-            child_id,
-            child_subject,
-            self.domain,
-            child_scope,
+
+        if request.child_delegation == DelegationRule::DelegableWithNarrowerScope
+            && self.delegation != DelegationRule::DelegableWithNarrowerScope
+        {
+            return Err(DelegationDenied::DelegationRightsExceedParent);
+        }
+
+        if let Some(child_limits) = &request.child_limits {
+            let parent_limits = self.limits.unwrap_or_default();
+            if !limits_narrower_or_equal(&parent_limits, child_limits) {
+                let field = first_exceeding_limit_field(&parent_limits, child_limits)
+                    .unwrap_or("unknown")
+                    .to_string();
+                return Err(DelegationDenied::LimitsExceedParent { field });
+            }
+        }
+
+        let capped_expiry = core::cmp::min(request.child_expires_at, self.expires_at);
+        let floored_not_before = core::cmp::max(issued_at, self.not_before);
+
+        Ok(CapabilityLease {
+            id: request.child_id,
+            schema_version: LEASE_SCHEMA_VERSION,
+            subject: request.child_subject,
+            domain: self.domain,
+            scope: request.child_scope,
             issued_at,
-            capped_expiry,
-            LeaseBasis::new(
+            not_before: floored_not_before,
+            expires_at: capped_expiry,
+            limits: request.child_limits,
+            delegation: request.child_delegation,
+            revocation: RevocationState::Active { generation: 0 },
+            basis: LeaseBasis::new(
                 self.basis.issuer.clone(),
                 format!("delegated from lease `{}`: {}", self.id, self.basis.reason),
             ),
-        ))
+            provenance: Some(DelegationProvenance {
+                parent_lease: self.id.clone(),
+                parent_subject: self.subject.clone(),
+                inheritance_mode: request.mode,
+                parent_delegation: request.child_delegation,
+                parent_generation: revocation_generation(&self.revocation),
+            }),
+        })
+    }
+}
+
+/// The generation number carried by either [`RevocationState`] variant.
+pub(crate) fn revocation_generation(state: &RevocationState) -> u64 {
+    match state {
+        RevocationState::Active { generation } | RevocationState::Revoked { generation, .. } => *generation,
     }
 }
 
@@ -530,7 +717,7 @@ impl CapabilityLease {
 /// lease and no looser. A ceiling the lease leaves unset is read as
 /// unbounded for that one field, matching [`crate::spec::ResourceLimits`]'s
 /// own "`None` means policy stated no ceiling" reading.
-fn limits_cover(granted: &crate::spec::ResourceLimits, wanted: &crate::spec::ResourceLimits) -> bool {
+pub(crate) fn limits_cover(granted: &crate::spec::ResourceLimits, wanted: &crate::spec::ResourceLimits) -> bool {
     fn field_covers(granted: Option<u64>, wanted: Option<u64>) -> bool {
         match (granted, wanted) {
             (_, None) => true,
@@ -551,6 +738,78 @@ fn limits_cover(granted: &crate::spec::ResourceLimits, wanted: &crate::spec::Res
         && field_covers(granted.max_wall_clock_seconds, wanted.max_wall_clock_seconds)
         && field_covers(granted.max_file_size_bytes, wanted.max_file_size_bytes)
         && field_covers32(granted.max_open_files, wanted.max_open_files)
+}
+
+/// Whether every ceiling `child` states is within `parent`'s — the
+/// delegation-narrowing question, which is **not** the same question
+/// [`limits_cover`] answers.
+///
+/// [`limits_cover`] exists for `covers()`: "does a lease's own grant satisfy
+/// what a *requirement* asked for", where a field the requirement never
+/// mentions (`wanted: None`) is vacuously satisfied regardless of what the
+/// lease states. Delegation narrowing asks the opposite question about the
+/// *child*'s own field: a field the child leaves unbounded (`child: None`) is
+/// not "the child didn't ask", it is "the child lease itself carries no
+/// ceiling for this resource at all" — which is *wider* than any bounded
+/// parent ceiling, not narrower. Reusing [`limits_cover`] here would silently
+/// admit a child that removed a ceiling its parent enforced.
+pub(crate) fn limits_narrower_or_equal(
+    parent: &crate::spec::ResourceLimits,
+    child: &crate::spec::ResourceLimits,
+) -> bool {
+    fn covers(parent: Option<u64>, child: Option<u64>) -> bool {
+        match (parent, child) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(p), Some(c)) => c <= p,
+        }
+    }
+    fn covers32(parent: Option<u32>, child: Option<u32>) -> bool {
+        match (parent, child) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(p), Some(c)) => c <= p,
+        }
+    }
+    covers(parent.max_memory_bytes, child.max_memory_bytes)
+        && covers(parent.max_cpu_seconds, child.max_cpu_seconds)
+        && covers32(parent.max_pids, child.max_pids)
+        && covers(parent.max_wall_clock_seconds, child.max_wall_clock_seconds)
+        && covers(parent.max_file_size_bytes, child.max_file_size_bytes)
+        && covers32(parent.max_open_files, child.max_open_files)
+}
+
+/// The name of the first `ResourceLimits` field where `child` exceeds
+/// `parent`, for [`DelegationDenied::LimitsExceedParent`]'s error detail.
+fn first_exceeding_limit_field(
+    parent: &crate::spec::ResourceLimits,
+    child: &crate::spec::ResourceLimits,
+) -> Option<&'static str> {
+    fn exceeds(parent: Option<u64>, child: Option<u64>) -> bool {
+        matches!((parent, child), (Some(_), None)) || matches!((parent, child), (Some(p), Some(c)) if c > p)
+    }
+    fn exceeds32(parent: Option<u32>, child: Option<u32>) -> bool {
+        matches!((parent, child), (Some(_), None)) || matches!((parent, child), (Some(p), Some(c)) if c > p)
+    }
+    if exceeds(parent.max_memory_bytes, child.max_memory_bytes) {
+        return Some("max_memory_bytes");
+    }
+    if exceeds(parent.max_cpu_seconds, child.max_cpu_seconds) {
+        return Some("max_cpu_seconds");
+    }
+    if exceeds32(parent.max_pids, child.max_pids) {
+        return Some("max_pids");
+    }
+    if exceeds(parent.max_wall_clock_seconds, child.max_wall_clock_seconds) {
+        return Some("max_wall_clock_seconds");
+    }
+    if exceeds(parent.max_file_size_bytes, child.max_file_size_bytes) {
+        return Some("max_file_size_bytes");
+    }
+    if exceeds32(parent.max_open_files, child.max_open_files) {
+        return Some("max_open_files");
+    }
+    None
 }
 
 /// The result of comparing a parent lease's scope against a candidate child
@@ -686,14 +945,23 @@ mod tests {
 
     /// The default comparator ships fully closed: delegation must never
     /// succeed until AAASM-6161 supplies a real one.
+    fn base_request(child_scope: RequirementScope) -> ChildLeaseRequest {
+        ChildLeaseRequest {
+            child_id: LeaseId::new("lease-1-child"),
+            child_subject: IdentityRef::root("agent-a").with_ancestor("agent-a"),
+            child_scope,
+            child_expires_at: t(1_800),
+            mode: InheritanceMode::Narrower,
+            child_delegation: DelegationRule::NotDelegable,
+            child_limits: None,
+        }
+    }
+
     #[test]
     fn undefined_scope_order_refuses_every_delegation() {
         let parent = lease().with_delegation(DelegationRule::DelegableWithNarrowerScope);
         let result = parent.derive_child(
-            LeaseId::new("lease-1-child"),
-            IdentityRef::root("agent-a").with_ancestor("agent-a"),
-            RequirementScope::Selectors(vec!["/workspace/sub".to_string()]),
-            t(1_800),
+            base_request(RequirementScope::Selectors(vec!["/workspace/sub".to_string()])),
             &UndefinedScopeOrder,
             t(1_100),
         );
@@ -704,13 +972,147 @@ mod tests {
     fn not_delegable_lease_refuses_before_consulting_the_scope_order() {
         let parent = lease(); // default NotDelegable
         let result = parent.derive_child(
-            LeaseId::new("lease-1-child"),
-            IdentityRef::root("agent-a").with_ancestor("agent-a"),
-            RequirementScope::Selectors(vec!["/workspace".to_string()]),
-            t(1_800),
+            base_request(RequirementScope::Selectors(vec!["/workspace".to_string()])),
             &UndefinedScopeOrder,
             t(1_100),
         );
         assert_eq!(result, Err(DelegationDenied::NotDelegable));
+    }
+
+    fn delegable_path_lease() -> CapabilityLease {
+        CapabilityLease::new(
+            LeaseId::new("path-lease"),
+            IdentityRef::root("agent-a"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            t(1_000),
+            t(2_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        )
+        .with_delegation(DelegationRule::DelegableWithNarrowerScope)
+    }
+
+    /// AAASM-6161: `InheritanceMode::None` is refused explicitly rather than
+    /// silently producing a lease — a caller with nothing to inherit should
+    /// not call this method at all, and if it does, it gets a named reason.
+    #[test]
+    fn mode_none_is_refused_explicitly() {
+        let parent = delegable_path_lease();
+        let mut request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        request.mode = InheritanceMode::None;
+        assert_eq!(
+            parent.derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100)),
+            Err(DelegationDenied::ModeForbidsInheritance)
+        );
+    }
+
+    /// `InheritanceMode::IndependentlyApproved` names a lease this method
+    /// cannot produce — it is validated at the gate instead.
+    #[test]
+    fn mode_independently_approved_is_not_a_derivation() {
+        let parent = delegable_path_lease();
+        let mut request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        request.mode = InheritanceMode::IndependentlyApproved;
+        assert_eq!(
+            parent.derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100)),
+            Err(DelegationDenied::NotADerivation)
+        );
+    }
+
+    /// `InheritanceMode::Same` demands an exactly-equal scope; a strictly
+    /// narrower one is refused under that mode even though it would succeed
+    /// under `Narrower`.
+    #[test]
+    fn mode_same_requires_an_equal_scope() {
+        let parent = delegable_path_lease();
+        let mut request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        request.mode = InheritanceMode::Same;
+        assert_eq!(
+            parent.derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100)),
+            Err(DelegationDenied::ModeRequiresEqualScope)
+        );
+
+        let mut equal_request = base_request(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+        equal_request.mode = InheritanceMode::Same;
+        assert!(parent
+            .derive_child(equal_request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .is_ok());
+    }
+
+    /// A child's `expires_at` is capped at the parent's, even when a caller
+    /// asks for later.
+    #[test]
+    fn derive_child_caps_expiry_at_the_parents_own() {
+        let parent = delegable_path_lease();
+        let mut request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        request.child_expires_at = t(9_999);
+        let child = parent
+            .derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .expect("a narrower child must derive");
+        assert_eq!(child.expires_at(), t(2_000));
+    }
+
+    /// AAASM-6161: a child's `not_before` is floored at
+    /// `max(issued_at, parent.not_before)` — closing the gap where a child
+    /// derived with an early `issued_at` could become valid before its
+    /// parent does.
+    #[test]
+    fn derive_child_floors_not_before_at_the_parents_own() {
+        let parent = delegable_path_lease().with_not_before(t(1_500));
+        let request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        let child = parent
+            .derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .expect("a narrower child must derive");
+        assert_eq!(child.not_before(), t(1_500));
+    }
+
+    /// A requested quantitative ceiling that exceeds the parent's own is
+    /// refused, naming the field that exceeded.
+    #[test]
+    fn derive_child_refuses_a_limit_exceeding_the_parents_own() {
+        let parent = delegable_path_lease().with_limits(crate::spec::ResourceLimits {
+            max_memory_bytes: Some(1_000),
+            ..Default::default()
+        });
+        let mut request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        request.child_limits = Some(crate::spec::ResourceLimits {
+            max_memory_bytes: Some(2_000),
+            ..Default::default()
+        });
+        assert_eq!(
+            parent.derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100)),
+            Err(DelegationDenied::LimitsExceedParent {
+                field: "max_memory_bytes".to_string()
+            })
+        );
+    }
+
+    /// Every derived child carries [`DelegationProvenance`] naming the parent
+    /// lease it came from — the "evidence can explain every child capability"
+    /// acceptance criterion, pinned at the type that carries it.
+    #[test]
+    fn derive_child_records_provenance_naming_the_parent_lease() {
+        let parent = delegable_path_lease();
+        let request = base_request(RequirementScope::Selectors(vec![
+            "permit-only:/workspace/sub".to_string()
+        ]));
+        let child = parent
+            .derive_child(request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .expect("a narrower child must derive");
+        let provenance = child.provenance().expect("a derived child always carries provenance");
+        assert_eq!(provenance.parent_lease, *parent.id());
+        assert_eq!(provenance.inheritance_mode, InheritanceMode::Narrower);
     }
 }

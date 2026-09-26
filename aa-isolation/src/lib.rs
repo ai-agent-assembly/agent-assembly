@@ -84,6 +84,7 @@
 //! | [`ambient`] | A credential *removed* from the child, and one that **could not be** removed |
 //! | [`descriptor`] | A descriptor known absent, and one nothing enumerated |
 //! | [`descendant`] | A sub-agent launch that narrows authority, and one that widens it |
+//! | [`attenuation`] | A child launch whose authority the parent actually held, and one that recovered authority the parent did not |
 //!
 //! The first is the load-bearing one. [`CredentialPosture`] has always had the
 //! three-way split; what [`EnvironmentPlanner`] adds is that a posture built
@@ -172,6 +173,7 @@
 #![warn(missing_docs)]
 
 pub mod ambient;
+pub mod attenuation;
 pub mod authority;
 pub mod backend;
 pub mod capability;
@@ -185,6 +187,7 @@ pub mod plan;
 pub mod planner;
 pub mod report;
 pub mod requirements;
+pub mod scope_order;
 pub mod spec;
 pub mod tx;
 
@@ -195,6 +198,7 @@ pub use ambient::{
     classify_env_name, is_supervisor_credential, AmbientAuthorityKind, ClassifiedName, CompatibilityException,
     EnvironmentPlan, EnvironmentPlanner, CLOUD_METADATA_ENDPOINTS,
 };
+pub use attenuation::{Ancestry, DelegationLedger, ParentAuthority};
 pub use authority::{
     authority_gate, effective_authority_for_report, AuthorityBuildError, AuthorityRefusal, AuthorityState,
     AuthorityWitness, EffectiveAuthority,
@@ -214,8 +218,9 @@ pub use descriptor::{
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
 pub use lease::{
-    CapabilityLease, DelegationDenied, DelegationRule, LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder,
-    ScopeOrdering, UndefinedScopeOrder, LEASE_SCHEMA_VERSION,
+    CapabilityLease, ChildLeaseRequest, DelegationDenied, DelegationProvenance, DelegationRule, InheritanceMode,
+    LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder, ScopeOrdering, UndefinedScopeOrder,
+    LEASE_SCHEMA_VERSION,
 };
 pub use lowering::{
     lower_policy, permit_only_selector, permitted_selector, DomainCoverage, DomainLowering, LoweringOptions,
@@ -232,6 +237,7 @@ pub use report::{
     TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
+pub use scope_order::{order_for, ExactTokenOrder, HostPatternOrder, PathPrefixOrder, ResourceCeilingOrder};
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
     RequirementPosture, RequirementScope, ResourceLimits,

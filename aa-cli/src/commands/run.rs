@@ -246,8 +246,8 @@ mod plan {
 
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::{
-        authority_gate, effective_authority_for_report, CapabilityLease, CredentialPosture, DomainAuthoritySummary,
-        ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
+        authority_gate, effective_authority_for_report, Ancestry, CapabilityLease, CredentialPosture,
+        DomainAuthoritySummary, ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
     };
     use aa_policy::resolve as run_policy;
 
@@ -756,6 +756,14 @@ mod plan {
         /// source of leases has one call site to populate rather than a new
         /// one to wire.
         leases: Vec<CapabilityLease>,
+        /// This launch's position in an execution ancestry (AAASM-6161, ADR
+        /// 0038 amendment). `Ancestry::Root` for every launch today — no
+        /// policy path resolves a parent's authority yet, so `--root-agent`
+        /// setting lineage does not by itself make this launch lease-aware
+        /// attenuation-checked (see `crate::authority::attenuation_applies`)
+        /// — but threaded through so a future source of resolved parent
+        /// authority has one call site to populate.
+        ancestry: Ancestry,
     }
 
     impl IsolationPlan {
@@ -992,7 +1000,7 @@ mod plan {
             // which inject a fixed instant to keep expiry/not-yet-valid
             // decisions deterministic.
             let now = std::time::SystemTime::now();
-            if let Err(refusal) = authority_gate(&spec, now) {
+            if let Err(refusal) = authority_gate(&spec, &self.ancestry, now) {
                 let authority = effective_authority_for_report(&spec);
                 let report = self.with_selection(
                     IsolationReport::authority_refused(session, &spec, &refusal)
@@ -1582,6 +1590,7 @@ mod plan {
                     ),
                     selection: None,
                     leases: Vec::new(),
+                    ancestry: Ancestry::Root,
                 });
             }
 
@@ -1658,6 +1667,7 @@ mod plan {
                     absent: Some(format!("no backend answers to the id `{other}` in this build")),
                     selection: None,
                     leases: Vec::new(),
+                    ancestry: Ancestry::Root,
                 });
             }
         };
@@ -1682,6 +1692,7 @@ mod plan {
                 )),
                 selection: None,
                 leases: Vec::new(),
+                ancestry: Ancestry::Root,
             });
         }
 
@@ -1691,6 +1702,7 @@ mod plan {
             absent: None,
             selection: None,
             leases: Vec::new(),
+            ancestry: Ancestry::Root,
         })
     }
 
@@ -1747,6 +1759,7 @@ mod plan {
                 absent: None,
                 selection: None,
                 leases: Vec::new(),
+                ancestry: Ancestry::Root,
             });
         };
 
@@ -1799,6 +1812,7 @@ mod plan {
                             considered,
                         }),
                         leases: Vec::new(),
+                        ancestry: Ancestry::Root,
                     });
                 }
                 Err(refusal) => {
@@ -1843,6 +1857,7 @@ mod plan {
                 considered,
             }),
             leases: Vec::new(),
+            ancestry: Ancestry::Root,
         })
     }
 
