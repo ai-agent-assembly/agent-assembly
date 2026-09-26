@@ -1047,3 +1047,740 @@ pub fn mediation_depth_record(report: &EgressBrokerReport) -> EvidenceRecord {
         format!("this run's egress mediation depth: {}", report.depth().as_str()),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+    use crate::attenuation::Ancestry;
+    use crate::authority::authority_gate;
+    use crate::lease::{CapabilityLease, LeaseBasis, LeaseId};
+    use crate::lowering::permit_only_selector;
+    use crate::spec::ControlRequirement;
+
+    fn t(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn identity() -> IdentityRef {
+        IdentityRef::root("agent-under-test")
+    }
+
+    fn base_spec() -> ExecutionSpec {
+        ExecutionSpec::new("echo", identity())
+    }
+
+    fn lease_for(domain: CapabilityDomain, scope: RequirementScope) -> CapabilityLease {
+        CapabilityLease::new(
+            LeaseId::new("lease-under-test"),
+            identity(),
+            domain,
+            scope,
+            t(1_000),
+            t(2_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        )
+    }
+
+    /// Builds an [`EgressAuthority`] from a spec, going through the real
+    /// `authority_gate` — the only production path to a witness.
+    fn egress_authority_for(spec: &ExecutionSpec) -> EgressAuthority {
+        let witness = authority_gate(spec, &Ancestry::Root, t(1_500)).expect("spec authorized in this fixture");
+        EgressAuthority::from_gated_spec(spec, &witness)
+    }
+
+    fn selectors(names: &[&str]) -> RequirementScope {
+        RequirementScope::Selectors(names.iter().map(|n| permit_only_selector(n)).collect())
+    }
+
+    fn available_broker() -> EgressBrokerReport {
+        EgressBrokerReport::new(
+            MediationDepth::DestinationOnly,
+            MediationDepthScope::EveryDestination,
+            FailurePosture::FailClosed,
+        )
+        .with_range_handling(true, "test fixture refuses restricted ranges")
+    }
+
+    // ---- Positive controls -------------------------------------------------
+
+    #[test]
+    fn not_required_admits_with_no_broker_at_all() {
+        // rc.7 compatibility: `NotRequired` never consults the broker.
+        let contract = EgressContract::not_required();
+        let broker = EgressBrokerReport::unavailable("no broker in this deployment");
+        let spec = base_spec();
+        let authority = egress_authority_for(&spec);
+        assert!(egress_gate(&contract, &broker, &authority, &RequirementScope::Whole).is_ok());
+    }
+
+    #[test]
+    fn routable_destination_with_covering_grant_and_available_broker_is_admitted() {
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(egress_gate(&contract, &broker, &authority, &scope).is_ok());
+    }
+
+    #[test]
+    fn a_literal_destination_needs_no_name_resolution_grant() {
+        let scope = selectors(&["93.184.216.34"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()));
+        let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        // No NameResolution lease attached at all — this must still succeed.
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(egress_gate(&contract, &broker, &authority, &scope).is_ok());
+    }
+
+    // ---- Allowed vs denied host, paired ------------------------------------
+
+    #[test]
+    fn uncovered_destination_is_refused_covered_is_admitted() {
+        let granted = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(granted.clone()))
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, granted.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+
+        let uncovered = selectors(&["evil.example.com"]);
+        assert_eq!(
+            egress_gate(&contract, &broker, &authority, &uncovered),
+            Err(EgressRefusal::EgressScopeNotCoveredByGrant)
+        );
+        // Control: the exact granted scope is admitted.
+        assert!(egress_gate(&contract, &broker, &authority, &granted).is_ok());
+    }
+
+    #[test]
+    fn destination_permitted_by_scope_bare_suffix_vs_leftmost_wildcard() {
+        let wildcard = RequirementScope::Selectors(vec![permit_only_selector("*.example.com")]);
+        assert!(destination_permitted_by_scope("api.example.com", &wildcard).is_ok());
+        // The bare suffix itself is not covered by a leftmost wildcard.
+        assert!(destination_permitted_by_scope("example.com", &wildcard).is_err());
+    }
+
+    #[test]
+    fn destination_permitted_by_scope_rejects_attacker_crafted_suffix() {
+        let wildcard = RequirementScope::Selectors(vec![permit_only_selector("*.example.com")]);
+        assert!(destination_permitted_by_scope("evilexample.com", &wildcard).is_err());
+        assert!(destination_permitted_by_scope("api.evil-example.com", &wildcard).is_err());
+    }
+
+    #[test]
+    fn destination_permitted_by_scope_empty_scope_refuses_fail_closed() {
+        let empty = RequirementScope::Selectors(Vec::new());
+        assert_eq!(
+            destination_permitted_by_scope("api.example.com", &empty),
+            Err(EgressRefusal::EgressScopeNotCoveredByGrant)
+        );
+    }
+
+    #[test]
+    fn destination_permitted_by_scope_non_permit_only_selector_refuses() {
+        let bad = RequirementScope::Selectors(vec!["api.example.com".to_string()]);
+        assert_eq!(
+            destination_permitted_by_scope("api.example.com", &bad),
+            Err(EgressRefusal::SelectorGrammarUninterpretable)
+        );
+    }
+
+    // ---- Restricted ranges --------------------------------------------------
+
+    #[test]
+    fn loopback_destination_is_refused_routable_control_is_admitted() {
+        let loopback = selectors(&["127.0.0.1"]);
+        let spec = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(loopback.clone()),
+        );
+        let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, loopback.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &loopback),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+
+        // Control: the same shape with a routable literal is admitted.
+        let routable = selectors(&["93.184.216.34"]);
+        let spec2 = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(routable.clone()),
+        );
+        let spec2 = spec2.with_lease(lease_for(CapabilityDomain::NetworkEgress, routable.clone()));
+        let authority2 = egress_authority_for(&spec2);
+        assert!(egress_gate(&contract, &broker, &authority2, &routable).is_ok());
+    }
+
+    #[test]
+    fn rfc1918_cgnat_and_link_local_are_restricted() {
+        for literal in ["10.0.0.5", "100.64.0.1", "169.254.1.1"] {
+            match classify_destination(literal) {
+                DestinationClass::RestrictedAddress { .. } => {}
+                other => panic!("{literal} should classify as restricted, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn metadata_endpoint_destination_reports_the_specific_endpoint() {
+        match classify_destination("169.254.169.254") {
+            DestinationClass::RestrictedAddress {
+                known_metadata_endpoint,
+                ..
+            } => assert_eq!(known_metadata_endpoint, Some("169.254.169.254")),
+            other => panic!("expected a restricted metadata address, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn metadata_endpoint_match_anchors_and_does_not_match_a_longer_numeric_prefix() {
+        assert_eq!(metadata_endpoint_match("169.254.169.254"), Some("169.254.169.254"));
+        assert_eq!(metadata_endpoint_match("169.254.169.254:80"), Some("169.254.169.254"));
+        assert_eq!(
+            metadata_endpoint_match("169.254.169.254/latest"),
+            Some("169.254.169.254")
+        );
+        // Anchoring edge case: a longer numeric prefix must not match.
+        assert_eq!(metadata_endpoint_match("169.254.169.2540"), None);
+        assert_eq!(metadata_endpoint_match("10.0.0.1"), None);
+    }
+
+    #[test]
+    fn refuse_all_except_admits_only_the_named_literal() {
+        let metadata = selectors(&["169.254.169.254"]);
+        let spec = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(metadata.clone()),
+        );
+        let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, metadata.clone()));
+        let authority = egress_authority_for(&spec);
+        let broker = available_broker();
+
+        let refuse_all = EgressContract::broker_required();
+        assert!(matches!(
+            egress_gate(&refuse_all, &broker, &authority, &metadata),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+
+        let excepted = EgressContract::broker_required().with_range_policy(RangePolicy::RefuseAllExcept {
+            permitted_literals: vec!["169.254.169.254".to_string()],
+        });
+        assert!(egress_gate(&excepted, &broker, &authority, &metadata).is_ok());
+
+        // Control: a *different* restricted literal is still refused under
+        // the same exception list.
+        let other_restricted = selectors(&["127.0.0.1"]);
+        let spec2 = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(other_restricted.clone()),
+        );
+        let spec2 = spec2.with_lease(lease_for(CapabilityDomain::NetworkEgress, other_restricted.clone()));
+        let authority2 = egress_authority_for(&spec2);
+        assert!(matches!(
+            egress_gate(&excepted, &broker, &authority2, &other_restricted),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+    }
+
+    // ---- IPv6 / normalization ------------------------------------------------
+
+    #[test]
+    fn ipv4_mapped_v6_loopback_is_restricted() {
+        assert!(matches!(
+            classify_destination("::ffff:127.0.0.1"),
+            DestinationClass::RestrictedAddress { .. }
+        ));
+    }
+
+    #[test]
+    fn nat64_and_6to4_encodings_are_restricted() {
+        // NAT64 well-known prefix embedding a private v4 address.
+        assert!(matches!(
+            classify_destination("64:ff9b::a00:1"),
+            DestinationClass::RestrictedAddress { .. }
+        ));
+    }
+
+    #[test]
+    fn bracketed_ipv6_with_port_normalizes_before_classification() {
+        let normalized = aa_core::net::strip_host_port("[::1]:443");
+        assert!(matches!(
+            classify_destination(normalized),
+            DestinationClass::RestrictedAddress { .. }
+        ));
+    }
+
+    #[test]
+    fn trailing_dot_and_uppercase_host_normalizes_to_a_name() {
+        let normalized = aa_core::net::canonical_host("EVIL.COM.");
+        assert_eq!(normalized, "evil.com");
+        assert!(matches!(classify_destination(&normalized), DestinationClass::Name(_)));
+    }
+
+    // ---- Direct-IP bypass ----------------------------------------------------
+
+    #[test]
+    fn hostname_only_grant_does_not_admit_the_same_destinations_raw_ip() {
+        let hostname_scope = selectors(&["api.example.com"]);
+        assert!(destination_permitted_by_scope("api.example.com", &hostname_scope).is_ok());
+        // The raw IP literal for the same destination is not admitted by a
+        // hostname-only grant.
+        assert!(destination_permitted_by_scope("93.184.216.34", &hostname_scope).is_err());
+    }
+
+    // ---- DNS / multi-answer / rebinding ---------------------------------------
+
+    #[test]
+    fn egress_grant_without_name_resolution_grant_refuses_a_name() {
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()));
+        // Only a NetworkEgress lease, no NameResolution lease.
+        let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert_eq!(
+            egress_gate(&contract, &broker, &authority, &scope),
+            Err(EgressRefusal::NoNameResolutionGrant)
+        );
+
+        // Control: adding the NameResolution grant admits, changing nothing else.
+        let spec2 = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority2 = egress_authority_for(&spec2);
+        assert!(egress_gate(&contract, &broker, &authority2, &scope).is_ok());
+    }
+
+    #[test]
+    fn multi_answer_resolution_keeps_only_routable_answers() {
+        let answers: Vec<IpAddr> = vec!["93.184.216.34".parse().unwrap(), "127.0.0.1".parse().unwrap()];
+        let (routable, restricted) = partition_resolved_answers(&answers);
+        assert_eq!(routable.len(), 1);
+        assert_eq!(restricted.len(), 1);
+        assert!(check_resolved_answers(&answers).is_ok());
+    }
+
+    #[test]
+    fn all_restricted_answers_refuses() {
+        let answers: Vec<IpAddr> = vec!["127.0.0.1".parse().unwrap(), "10.0.0.1".parse().unwrap()];
+        assert_eq!(
+            check_resolved_answers(&answers),
+            Err(EgressRefusal::ResolutionYieldedNoRoutableAnswer)
+        );
+    }
+
+    #[test]
+    fn a_rebinding_shaped_answer_flip_is_caught_independently_of_the_initial_grant() {
+        // The first resolution is all-routable; a later resolution for the
+        // same name returns only restricted answers (a rebinding attempt).
+        // Each call is independent — the initial grant check does not cache
+        // the first result and skip re-checking the second.
+        let first: Vec<IpAddr> = vec!["93.184.216.34".parse().unwrap()];
+        let second: Vec<IpAddr> = vec!["169.254.169.254".parse().unwrap()];
+        assert!(check_resolved_answers(&first).is_ok());
+        assert_eq!(
+            check_resolved_answers(&second),
+            Err(EgressRefusal::ResolutionYieldedNoRoutableAnswer)
+        );
+    }
+
+    // ---- Broker availability / fail-open ---------------------------------------
+
+    #[test]
+    fn unavailable_broker_refuses_and_names_the_reason() {
+        let contract = EgressContract::broker_required();
+        let broker = EgressBrokerReport::unavailable("no dedicated proxy is bound for this launch");
+        let spec = base_spec();
+        let authority = egress_authority_for(&spec);
+        assert_eq!(
+            egress_gate(&contract, &broker, &authority, &RequirementScope::Whole),
+            Err(EgressRefusal::BrokerRequiredButUnavailable {
+                reason: "no dedicated proxy is bound for this launch".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_fail_open_broker_is_refused_for_a_required_path_control_fail_closed_admits() {
+        let contract = EgressContract::broker_required();
+        // A compatibility-residual grant (a requirement, no lease) so the
+        // control admits on the egress-grant check too — this test is about
+        // failure posture, not the grant.
+        let spec = base_spec().with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress));
+        let authority = egress_authority_for(&spec);
+
+        let fail_open = EgressBrokerReport::new(
+            MediationDepth::DestinationOnly,
+            MediationDepthScope::EveryDestination,
+            FailurePosture::FailOpen,
+        )
+        .with_range_handling(true, "refuses restricted ranges");
+        assert_eq!(
+            egress_gate(&contract, &fail_open, &authority, &RequirementScope::Whole),
+            Err(EgressRefusal::BrokerRequiredButFailsOpen {
+                posture: FailurePosture::FailOpen,
+            })
+        );
+
+        // Control: identical report except FailClosed is admitted — the core
+        // "no silent fallback" property.
+        let fail_closed = EgressBrokerReport::new(
+            MediationDepth::DestinationOnly,
+            MediationDepthScope::EveryDestination,
+            FailurePosture::FailClosed,
+        )
+        .with_range_handling(true, "refuses restricted ranges");
+        assert!(egress_gate(&contract, &fail_closed, &authority, &RequirementScope::Whole).is_ok());
+    }
+
+    #[test]
+    fn a_broker_that_does_not_refuse_restricted_ranges_is_refused() {
+        let contract = EgressContract::broker_required();
+        let broker = EgressBrokerReport::new(
+            MediationDepth::DestinationOnly,
+            MediationDepthScope::EveryDestination,
+            FailurePosture::FailClosed,
+        ); // default: does not refuse restricted ranges
+        let spec = base_spec();
+        let authority = egress_authority_for(&spec);
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &RequirementScope::Whole),
+            Err(EgressRefusal::RestrictedRangesNotRefused { .. })
+        ));
+    }
+
+    // ---- Mediation depth / L7 reuse ---------------------------------------------
+
+    #[test]
+    fn payload_aware_required_against_destination_only_broker_is_refused() {
+        let contract = EgressContract::broker_required().with_required_depth(MediationDepth::PayloadAware {
+            protocols: vec!["http/1.1".to_string()],
+        });
+        let broker = available_broker(); // DestinationOnly
+        let spec = base_spec();
+        let authority = egress_authority_for(&spec);
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &RequirementScope::Whole),
+            Err(EgressRefusal::MediationDepthInsufficient { .. })
+        ));
+    }
+
+    #[test]
+    fn payload_aware_required_against_out_of_scope_broker_is_refused_named_destination_is_admitted() {
+        let contract = EgressContract::broker_required().with_required_depth(MediationDepth::PayloadAware {
+            protocols: vec!["http/1.1".to_string()],
+        });
+        let broker = EgressBrokerReport::new(
+            MediationDepth::PayloadAware {
+                protocols: vec!["http/1.1".to_string()],
+            },
+            MediationDepthScope::NamedDestinationsOnly {
+                patterns: vec!["api.openai.com".to_string()],
+            },
+            FailurePosture::FailClosed,
+        )
+        .with_range_handling(true, "refuses restricted ranges");
+
+        let out_of_scope = selectors(&["evil.example.com"]);
+        let spec = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(out_of_scope.clone()),
+        );
+        let spec = spec
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, out_of_scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority = egress_authority_for(&spec);
+        assert_eq!(
+            egress_gate(&contract, &broker, &authority, &out_of_scope),
+            Err(EgressRefusal::MediationDepthOutOfScope {
+                scope: broker.depth_scope().clone(),
+            })
+        );
+
+        // Control: a destination inside the named scope is admitted.
+        let in_scope = selectors(&["api.openai.com"]);
+        let spec2 = base_spec().with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(in_scope.clone()),
+        );
+        let spec2 = spec2
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, in_scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority2 = egress_authority_for(&spec2);
+        assert!(egress_gate(&contract, &broker, &authority2, &in_scope).is_ok());
+    }
+
+    #[test]
+    fn destination_only_broker_never_supports_a_payload_aware_claim_even_when_it_can_prevent() {
+        let report = crate::capability::CapabilityReport::new(
+            CapabilityDomain::NetworkEgress,
+            crate::capability::Mediation::Enforce,
+            crate::capability::DecisionTiming::Pre,
+            crate::capability::Synchrony::Sync,
+        );
+        assert!(report.can_prevent());
+        assert_eq!(
+            report.claim_ceiling(),
+            aa_core::attestation::ClaimTerm::DeniedBeforeExecution
+        );
+
+        let destination_only = available_broker();
+        assert!(!destination_only.supports_payload_aware_claim());
+
+        let payload_aware = EgressBrokerReport::new(
+            MediationDepth::PayloadAware {
+                protocols: vec!["http/1.1".to_string()],
+            },
+            MediationDepthScope::EveryDestination,
+            FailurePosture::FailClosed,
+        );
+        assert!(payload_aware.supports_payload_aware_claim());
+    }
+
+    #[test]
+    fn prevention_evidence_sentence_is_derived_from_depth() {
+        let destination_only = destination_prevention_record(&MediationDepth::DestinationOnly, "refused 10.0.0.1");
+        assert!(destination_only.detail.contains("no request payload was parsed"));
+
+        let payload_aware = destination_prevention_record(
+            &MediationDepth::PayloadAware {
+                protocols: vec!["http/1.1".to_string()],
+            },
+            "refused evil.example.com",
+        );
+        assert!(!payload_aware.detail.contains("no request payload was parsed"));
+    }
+
+    // ---- Ceilings ------------------------------------------------------------
+
+    #[test]
+    fn stated_ceiling_against_unsupported_broker_refuses_and_names_the_field() {
+        let ceilings = EgressCeilings {
+            max_egress_bytes: Some(1_000_000),
+            ..EgressCeilings::default()
+        };
+        let broker = available_broker();
+        assert_eq!(
+            check_ceilings(&ceilings, &broker),
+            Err(EgressRefusal::CeilingStatedButUnsupported {
+                field: "max_egress_bytes",
+                reason: "no quantitative egress accounting exists in this deployment".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn no_stated_ceiling_admits_a_broker_with_no_ceiling_support() {
+        let broker = available_broker();
+        assert!(check_ceilings(&EgressCeilings::default(), &broker).is_ok());
+    }
+
+    // ---- Identity / lease binding ---------------------------------------------
+
+    #[test]
+    fn egress_authority_reads_network_egress_and_name_resolution_leases_separately() {
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority = egress_authority_for(&spec);
+        assert!(authority.egress_lease().is_some());
+        assert!(authority.name_resolution_lease().is_some());
+        assert_ne!(
+            authority.egress_lease().unwrap().scope(),
+            authority.name_resolution_lease().unwrap().scope()
+        );
+    }
+
+    #[test]
+    fn a_lease_scoped_to_one_host_does_not_authorize_another() {
+        let scoped = selectors(&["api.example.com"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scoped.clone()));
+        let authority = egress_authority_for(&spec);
+        let other = selectors(&["other.example.com"]);
+        assert_eq!(
+            check_egress_grant(&authority, &other),
+            Err(EgressRefusal::EgressScopeNotCoveredByGrant)
+        );
+        assert!(check_egress_grant(&authority, &scoped).is_ok());
+    }
+
+    #[test]
+    fn compatibility_residual_spec_still_grants_the_domain() {
+        // No leases at all, but a requirement names the domain — the rc.7
+        // compatibility residual.
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()));
+        let authority = egress_authority_for(&spec);
+        assert!(check_egress_grant(&authority, &scope).is_ok());
+    }
+
+    /// Every `EgressRefusal` variant is reachable from the composer — an
+    /// exhaustive sweep so no variant becomes dead code nothing can produce.
+    #[test]
+    fn every_egress_refusal_variant_is_reachable_from_the_composer() {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut record = |label: &'static str, result: Result<EgressWitness, EgressRefusal>| {
+            if result.is_err() {
+                seen.insert(label);
+            }
+        };
+
+        let scope = selectors(&["api.example.com"]);
+        let spec_with_grant = base_spec()
+            .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+        let authority_with_grant = egress_authority_for(&spec_with_grant);
+        let no_grant_authority = egress_authority_for(&base_spec());
+
+        let contract = EgressContract::broker_required();
+        let available = available_broker();
+
+        record(
+            "BrokerRequiredButUnavailable",
+            egress_gate(
+                &contract,
+                &EgressBrokerReport::unavailable("x"),
+                &no_grant_authority,
+                &RequirementScope::Whole,
+            ),
+        );
+        record(
+            "BrokerRequiredButFailsOpen",
+            egress_gate(
+                &contract,
+                &EgressBrokerReport::new(
+                    MediationDepth::DestinationOnly,
+                    MediationDepthScope::EveryDestination,
+                    FailurePosture::FailOpen,
+                )
+                .with_range_handling(true, "x"),
+                &no_grant_authority,
+                &RequirementScope::Whole,
+            ),
+        );
+        let payload_required = EgressContract::broker_required().with_required_depth(MediationDepth::PayloadAware {
+            protocols: vec!["http/1.1".to_string()],
+        });
+        record(
+            "MediationDepthInsufficient",
+            egress_gate(
+                &payload_required,
+                &available,
+                &no_grant_authority,
+                &RequirementScope::Whole,
+            ),
+        );
+        let scoped_payload_broker = EgressBrokerReport::new(
+            MediationDepth::PayloadAware {
+                protocols: vec!["http/1.1".to_string()],
+            },
+            MediationDepthScope::NamedDestinationsOnly {
+                patterns: vec!["api.openai.com".to_string()],
+            },
+            FailurePosture::FailClosed,
+        )
+        .with_range_handling(true, "x");
+        record(
+            "MediationDepthOutOfScope",
+            egress_gate(&payload_required, &scoped_payload_broker, &authority_with_grant, &scope),
+        );
+        record(
+            "RestrictedRangesNotRefused",
+            egress_gate(
+                &contract,
+                &EgressBrokerReport::new(
+                    MediationDepth::DestinationOnly,
+                    MediationDepthScope::EveryDestination,
+                    FailurePosture::FailClosed,
+                ),
+                &no_grant_authority,
+                &RequirementScope::Whole,
+            ),
+        );
+        let restricted_scope = selectors(&["127.0.0.1"]);
+        let restricted_spec =
+            base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, restricted_scope.clone()));
+        let restricted_authority = egress_authority_for(&restricted_spec);
+        record(
+            "RestrictedDestination",
+            egress_gate(&contract, &available, &restricted_authority, &restricted_scope),
+        );
+        record(
+            "NoEgressGrant",
+            egress_gate(&contract, &available, &no_grant_authority, &scope),
+        );
+        let egress_only_spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let egress_only_authority = egress_authority_for(&egress_only_spec);
+        let name_scope = selectors(&["api.example.com"]);
+        record(
+            "NoNameResolutionGrant",
+            egress_gate(&contract, &available, &egress_only_authority, &name_scope),
+        );
+        record(
+            "EgressScopeNotCoveredByGrant",
+            egress_gate(
+                &contract,
+                &available,
+                &authority_with_grant,
+                &selectors(&["other.example.com"]),
+            ),
+        );
+        record(
+            "SelectorGrammarUninterpretable",
+            egress_gate(
+                &contract,
+                &available,
+                &authority_with_grant,
+                &RequirementScope::Selectors(vec!["no-prefix".to_string()]),
+            ),
+        );
+        // `ResolutionYieldedNoRoutableAnswer` is reachable via `check_resolved_answers`
+        // directly, not through `egress_gate` (no DNS answer set is a parameter
+        // of the composer) — recorded separately from the sweep below.
+        assert_eq!(
+            check_resolved_answers(&["127.0.0.1".parse().unwrap()]),
+            Err(EgressRefusal::ResolutionYieldedNoRoutableAnswer)
+        );
+        let ceiling_contract = EgressContract::broker_required().with_ceilings(EgressCeilings {
+            max_egress_bytes: Some(1),
+            ..EgressCeilings::default()
+        });
+        record(
+            "CeilingStatedButUnsupported",
+            egress_gate(&ceiling_contract, &available, &authority_with_grant, &scope),
+        );
+
+        let expected: std::collections::BTreeSet<&'static str> = [
+            "BrokerRequiredButUnavailable",
+            "BrokerRequiredButFailsOpen",
+            "MediationDepthInsufficient",
+            "MediationDepthOutOfScope",
+            "RestrictedRangesNotRefused",
+            "RestrictedDestination",
+            "NoEgressGrant",
+            "NoNameResolutionGrant",
+            "EgressScopeNotCoveredByGrant",
+            "SelectorGrammarUninterpretable",
+            "CeilingStatedButUnsupported",
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            seen, expected,
+            "every EgressRefusal variant reachable via egress_gate must fire in this sweep"
+        );
+    }
+}
