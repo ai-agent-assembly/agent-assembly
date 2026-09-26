@@ -60,6 +60,7 @@
 use std::collections::BTreeMap;
 
 use crate::capability::{CapabilityDomain, FailurePosture, PlatformBoundary};
+use crate::egress::EgressContract;
 use crate::spec::{ControlRequirement, ExecutionSpec, IdentityRef, ResourceLimits};
 
 #[cfg(feature = "serde")]
@@ -161,6 +162,7 @@ pub struct RuntimeRequirements {
     min_evidence: BTreeMap<CapabilityDomain, EvidenceMinimum>,
     allowed_platform_boundaries: Option<Vec<PlatformBoundary>>,
     transactional_workspace_required: bool,
+    egress_contract: Option<EgressContract>,
 }
 
 impl RuntimeRequirements {
@@ -267,6 +269,26 @@ impl RuntimeRequirements {
     /// for why this is not yet checked against any candidate.
     pub fn transactional_workspace_required(&self) -> bool {
         self.transactional_workspace_required
+    }
+
+    /// State this launch's egress contract (AAASM-6163).
+    pub fn with_egress_contract(mut self, contract: EgressContract) -> Self {
+        self.egress_contract = Some(contract);
+        self
+    }
+
+    /// This launch's egress contract, when one was stated.
+    ///
+    /// **Not yet evaluated by [`crate::planner::select`].** No
+    /// [`crate::capability::BackendCapabilities`] reports an egress-broker
+    /// property, so there is no per-candidate eligibility check this could
+    /// feed — it is evaluated once, at `resolve_boundary`, alongside
+    /// `authority_gate` via [`crate::egress::egress_gate`], not in candidate
+    /// selection. `None` for every launch today, matching
+    /// [`crate::egress::EgressContract::not_required`]'s own rc.7-compatible
+    /// default.
+    pub fn egress_contract(&self) -> Option<&EgressContract> {
+        self.egress_contract.as_ref()
     }
 
     /// A throwaway [`ExecutionSpec`] carrying nothing but this requirement
