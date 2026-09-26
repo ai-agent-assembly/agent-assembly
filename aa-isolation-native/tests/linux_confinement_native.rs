@@ -1202,8 +1202,27 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
     )
     .with_delegation(DelegationRule::DelegableWithNarrowerScope);
 
-    let parent_spec =
-        ExecutionSpec::new("/bin/sh", IdentityRef::root("agent-under-test")).with_lease(parent_lease.clone());
+    // This scenario's `ControlRequirement`s also carry the read-only baseline
+    // every launch in this file needs (`system_reads()`), and once a spec
+    // carries any lease at all it leaves the rc.7 compatibility residual
+    // spec-wide (ADR 0038 §3) — so that baseline needs its own lease here too,
+    // or the gate refuses `FilesystemRead` for want of a grant, not for
+    // anything this scenario is actually testing. Same scope on both sides
+    // (`InheritanceMode::Same`): the baseline is not narrowed at this depth.
+    let parent_read_lease = CapabilityLease::new(
+        LeaseId::new("attenuation-parent-read-lease"),
+        IdentityRef::root("agent-under-test"),
+        CapabilityDomain::FilesystemRead,
+        RequirementScope::Selectors(system_reads()),
+        now,
+        far_future,
+        LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+    )
+    .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+
+    let parent_spec = ExecutionSpec::new("/bin/sh", IdentityRef::root("agent-under-test"))
+        .with_lease(parent_lease.clone())
+        .with_lease(parent_read_lease.clone());
     let parent_witness =
         authority_gate(&parent_spec, &Ancestry::Root, now).expect("the parent's own lease must gate cleanly");
     let ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
@@ -1229,6 +1248,22 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
         )
         .expect("a narrower child scope over a subdirectory must derive");
 
+    let child_read_lease = parent_read_lease
+        .derive_child(
+            ChildLeaseRequest {
+                child_id: LeaseId::new("attenuation-child-read-lease"),
+                child_subject: child_identity.clone(),
+                child_scope: RequirementScope::Selectors(system_reads()),
+                child_expires_at: far_future,
+                mode: InheritanceMode::Same,
+                child_delegation: DelegationRule::NotDelegable,
+                child_limits: None,
+            },
+            &PathPrefixOrder,
+            now,
+        )
+        .expect("the read baseline at an identical scope must derive under InheritanceMode::Same");
+
     let script = as_grandchild(&format!(
         "printf x > {} ; printf x > {}",
         shell_word(&inside.to_string_lossy()),
@@ -1248,7 +1283,8 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
                     &narrowed.to_string_lossy(),
                 )])),
         )
-        .with_lease(child_lease);
+        .with_lease(child_lease)
+        .with_lease(child_read_lease);
 
     // Admission proof: the attenuated child gates cleanly against its parent.
     authority_gate(&child_spec, &ancestry, now).expect("the attenuated child must gate cleanly against its parent");
