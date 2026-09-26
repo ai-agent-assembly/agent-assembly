@@ -9,8 +9,8 @@ description = "WebAssembly/WASI sandbox runtime for Agent Assembly tool executio
 [dependencies]
 aa-core       = { path = "../aa-core", version = "0.0.1-rc.7" }
 thiserror     = { workspace = true }
-wasmtime      = "48"
-wasmtime-wasi = "48"
+wasmtime      = "49"
+wasmtime-wasi = "49"
 
 [dev-dependencies]
 tempfile = { workspace = true }
