@@ -2,7 +2,7 @@
 
 **Status**: Proposed
 **Date**: 2026-09
-**Ticket**: [AAASM-6160](https://lightning-dust-mite.atlassian.net/browse/AAASM-6160), [AAASM-6161](https://lightning-dust-mite.atlassian.net/browse/AAASM-6161) (Epic [AAASM-6159](https://lightning-dust-mite.atlassian.net/browse/AAASM-6159), *Agent Execution Runtime 2.0*)
+**Ticket**: [AAASM-6160](https://lightning-dust-mite.atlassian.net/browse/AAASM-6160), [AAASM-6161](https://lightning-dust-mite.atlassian.net/browse/AAASM-6161), [AAASM-6163](https://lightning-dust-mite.atlassian.net/browse/AAASM-6163) (Epic [AAASM-6159](https://lightning-dust-mite.atlassian.net/browse/AAASM-6159), *Agent Execution Runtime 2.0*)
 
 This ADR cross-references and amends nothing in
 [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md); it
@@ -317,6 +317,91 @@ test remains byte-identical.
 - No lease sourcing from the policy schema (already deferred by §4 above).
 - No crypto identity binding (AAASM-5533, unchanged by this amendment).
 - No change to `aa-isolation/src/descendant.rs` — see finding 3 above.
+
+## Amendment (AAASM-6163): the identity-bound, policy-governed egress contract
+
+AAASM-6163 asked for "an identity-bound policy-governed egress broker for isolated
+runs". Reading the merged AAASM-6160/6161 code and `aa-proxy` as they actually stand
+today (not as first sketched) found that a broker-like mediation mechanism already
+exists and is substantial: `aa-proxy/src/proxy/mod.rs`'s CONNECT-time SSRF literal
+guard, operator denylist, gateway-authoritative `policy.network` check, in-tunnel
+re-check (defeats a `Host`-header bypass) and DNS-rebinding defense (re-validates
+every resolved answer, not just the first). This amendment does not rebuild that
+mechanism. It binds a launch's *requirement* of it to this run's explicit authority,
+and makes the mismatch between what a launch requires and what the mechanism
+truthfully provides a pre-launch refusal instead of a silent fallback.
+
+### 14. `CapabilityDomain::NetworkEgress` and `CapabilityDomain::NameResolution`, not a new domain
+
+The egress contract (`aa-isolation/src/egress.rs`) binds to the existing pair of
+domains `authority.rs` already carries in `EffectiveAuthority`/`AuthorityState`,
+rather than introducing a third. `CapabilityDomain::ALL` is hand-maintained with a
+count assertion checked at multiple sites across the workspace; a same-campaign
+predecessor ticket (AAASM-6162) already paid the cost of adding a domain and
+touching every one of those sites, and this amendment does not repeat that for a
+property (egress mediation) the two existing domains already name.
+
+### 15. Witness-gated `EgressAuthority`/`EgressWitness`, the same mechanism as §8/§2
+
+`EgressAuthority::from_gated_spec` is constructible only from an `ExecutionSpec` plus
+an `AuthorityWitness` — the same single-private-field, no-other-public-constructor
+pattern §2's `AuthorityWitness` and §8's `ParentAuthority::from_gated_spec` already
+use. A call site that requires an `EgressAuthority` cannot be satisfied by a direct
+socket that never went through `authority_gate`, because nothing outside
+`aa-isolation` can produce the witness the constructor requires. `egress_gate` itself
+returns its own `EgressWitness` under the identical rule, so a caller downstream of
+it (there is none yet, by design — see "What this amendment does not decide" below)
+would have the same unforgeable proof.
+
+### 16. `MediationDepth` lives on the egress report, not as a new `ClaimTerm` or a `CapabilityReport` field
+
+`CapabilityReport::can_prevent`/`claim_ceiling` read only mediation, timing and
+synchrony — no axis distinguishes a destination-only (L3/L4) refusal from a
+payload-aware (L7) one. A destination-only guard that refuses before dialling is
+`Enforce`/`Pre`/`Sync` exactly like a payload-aware one, so a report built from
+either reads identically strong to a caller that only reads those two methods. This
+amendment adds `MediationDepth`/`MediationDepthScope` to `EgressBrokerReport`
+specifically, not to `CapabilityReport` (which would need the same axis added to
+every domain's report, most of which have no payload to be aware of) and not as a
+new `ClaimTerm` (`aa_core::attestation::ClaimTerm` and `EvidenceKind` are policed by
+`scripts/check_claim_vocabulary.py`, and no existing term names this axis).
+`EgressBrokerReport::supports_payload_aware_claim` is the one predicate a caller must
+check before reading a destination-only prevention as evidence of payload-aware
+mediation — false for every `MediationDepth::DestinationOnly` report regardless of
+anything else, including a `FailClosed`, fully-available broker.
+
+### 17. Ceilings stated and reported unsupported, never silently ignored
+
+`EgressCeilings` states a quantitative connection/byte/rate ceiling; no accounting
+mechanism for any of them exists in `aa-proxy` today. `check_ceilings` refuses a
+launch whose contract states a ceiling against a broker report whose
+`ceiling_support` is `SupportLevel::Unsupported` — the AC's "enforced where claimed,
+or reported unsupported" arm satisfied by refusing rather than by pretending an
+unenforced number was honored.
+
+### What this amendment does not decide
+
+- **`aa-proxy` still evaluates every egress decision under the synthetic,
+  unregistered `PROXY_AGENT_ID` at Global policy tier.** `aa-proxy/src/network_enforce.rs`
+  already states this and rules out threading a real credentialed agent identity
+  into that per-connection path as a materially new trust boundary, out of scope for
+  this ticket. `EgressAuthority` is a **pre-launch** decision in `aa-isolation` — "is
+  this run authorized for brokered egress at this scope" — checked once, before any
+  backend is consulted; it is not a per-connection identity on the proxy path, and
+  nothing in this amendment changes what identity `aa-proxy` itself reasons under.
+  This is the residual most likely to be misread later, so it is stated plainly here
+  rather than left implicit.
+- No quantitative connection/byte/rate *enforcement* — see §17. Only the truthful
+  statement and the refusal-on-mismatch exist after this amendment.
+- No credential injection (a separate ticket) — no type in `aa-isolation/src/egress.rs`
+  holds or names credential material.
+- No lease sourcing from the policy schema — already deferred by §4. Every real
+  launch today constructs `EgressContract::not_required()`, so this amendment ships
+  inert: `RUNTIME_REQUIREMENTS_SCHEMA` and `REPORT_SCHEMA` are unbumped, and every
+  pre-existing golden-output test remains byte-identical.
+- No second network-enforcement mechanism — see [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)'s
+  own cross-reference note for this ticket, added alongside its existing
+  network-enforcement bullet.
 
 ## Consequences
 
