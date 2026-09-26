@@ -43,6 +43,7 @@ const HEALTHY: GatewayHealth = {
   active_connections: 0,
   pipeline_lag_ms: 0,
   checks: { storage: 'ok', policy_engine: 'ok' },
+  observation_profile: 'standard',
 }
 
 const DEGRADED: GatewayHealth = {

@@ -27,6 +27,7 @@ const HEALTHY = {
   active_connections: 0,
   pipeline_lag_ms: 0,
   checks: { storage: 'ok' },
+  observation_profile: 'standard',
 }
 
 const FILLED_STATE: WizardState = {
