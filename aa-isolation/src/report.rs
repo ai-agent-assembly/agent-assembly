@@ -524,19 +524,58 @@ pub struct DomainAuthoritySummary {
     /// The issuing lease's identifier, when this domain's authority came from
     /// a lease.
     pub lease_id: Option<String>,
+    /// The lease this domain's own lease was derived from, when it carries
+    /// [`crate::lease::DelegationProvenance`] (AAASM-6161). `None` for a
+    /// root-issued lease or a domain with no lease at all.
+    pub derived_from_lease_id: Option<String>,
+    /// A stable lowercase token for
+    /// [`crate::lease::DelegationProvenance::inheritance_mode`], when this
+    /// domain's lease carries provenance.
+    pub inheritance_mode: Option<String>,
+    /// Whether this domain's authority came from narrowing a parent lease, or
+    /// from an independent policy/approval grant — `"parent_delegation"` or
+    /// `"independent_approval"`. `None` when this domain carries no lease, or
+    /// a root-issued one with nothing to attribute.
+    pub issuer_kind: Option<String>,
 }
 
 impl DomainAuthoritySummary {
     /// Summarize what `authority` recorded for `domain`.
     pub fn new(domain: CapabilityDomain, state: &crate::authority::AuthorityState) -> Self {
+        let lease = match state {
+            crate::authority::AuthorityState::Leased(lease) => Some(lease.as_ref()),
+            _ => None,
+        };
         Self {
             domain,
             granted: state.is_granted(),
             state_token: state.as_str().to_string(),
-            lease_id: match state {
-                crate::authority::AuthorityState::Leased(lease) => Some(lease.id().to_string()),
-                _ => None,
-            },
+            lease_id: lease.map(|lease| lease.id().to_string()),
+            derived_from_lease_id: lease
+                .and_then(|lease| lease.provenance())
+                .map(|provenance| provenance.parent_lease.to_string()),
+            inheritance_mode: lease.and_then(|lease| lease.provenance()).map(|provenance| {
+                match provenance.inheritance_mode {
+                    crate::lease::InheritanceMode::None => "none",
+                    crate::lease::InheritanceMode::Same => "same",
+                    crate::lease::InheritanceMode::Narrower => "narrower",
+                    crate::lease::InheritanceMode::IndependentlyApproved => "independently_approved",
+                }
+                .to_string()
+            }),
+            issuer_kind: lease.and_then(|lease| {
+                if lease.provenance().is_some() {
+                    Some("parent_delegation".to_string())
+                } else if lease.basis().approval_ref.is_some() || lease.basis().policy_rule.is_some() {
+                    // No provenance, but the basis carries an attributable
+                    // reference — an independently-issued grant rather than a
+                    // narrowing of some parent lease.
+                    Some("independent_approval".to_string())
+                } else {
+                    // A bare root-issued lease with nothing to attribute.
+                    None
+                }
+            }),
         }
     }
 
@@ -1950,7 +1989,7 @@ impl IsolationReport {
         out.push_str("\nlease / effective-authority truth (AAASM-6160):\n");
         for summary in &self.lease_authority {
             out.push_str(&format!(
-                "  {} [{}] granted={}{}\n",
+                "  {} [{}] granted={}{}{}{}{}\n",
                 summary.domain.as_str(),
                 summary.state_token,
                 summary.granted,
@@ -1958,7 +1997,22 @@ impl IsolationReport {
                     .lease_id
                     .as_deref()
                     .map(|id| format!(" lease_id={}", sanitize(id)))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                summary
+                    .derived_from_lease_id
+                    .as_deref()
+                    .map(|id| format!(" derived_from={}", sanitize(id)))
+                    .unwrap_or_default(),
+                summary
+                    .inheritance_mode
+                    .as_deref()
+                    .map(|mode| format!(" inheritance_mode={}", sanitize(mode)))
+                    .unwrap_or_default(),
+                summary
+                    .issuer_kind
+                    .as_deref()
+                    .map(|kind| format!(" issuer_kind={}", sanitize(kind)))
+                    .unwrap_or_default(),
             ));
         }
     }
