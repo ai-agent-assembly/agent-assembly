@@ -15,7 +15,7 @@ use aa_isolation::{EgressBrokerReport, FailurePosture, MediationDepth, Mediation
 /// does not depend on `aa-proxy`, so it cannot import that list directly (see
 /// this ticket's publish-graph note: `aa-proxy` publishes, `aa-isolation`
 /// does not, and this adapter is the one place that boundary is crossed).
-const BUILT_IN_LLM_HOSTS: &[&str] = &[
+pub(super) const BUILT_IN_LLM_HOSTS: &[&str] = &[
     "api.openai.com",
     "api.anthropic.com",
     "generativelanguage.googleapis.com",
