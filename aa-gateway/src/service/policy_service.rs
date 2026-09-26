@@ -32,7 +32,8 @@ use crate::approval::escalation::EscalationScheduler;
 use crate::approval::router::ApprovalRouter;
 use crate::approval::routing_config::RoutingConfigStore;
 use crate::engine::{
-    resolve_enforcement_mode, transform_for_observe_mode, DenyAction, EvaluationResult, PolicyEngine, ShadowEvent,
+    resolve_enforcement_mode, transform_for_observe_mode, DenyAction, EvaluationResult, PolicyDefaultMode,
+    PolicyEngine, ShadowEvent,
 };
 use crate::iam::VerifiedCaller;
 use crate::ops::{OpsRegistry, SharedOpControlPublisher};
@@ -126,6 +127,13 @@ pub struct PolicyServiceImpl {
     /// broadcast. `None` disables detection — the default for unit tests and
     /// any caller that does not opt in via [`with_anomaly_detection`].
     anomaly: Option<AnomalyHook>,
+    /// The policy-default slot `resolve_enforcement_mode` falls back to for
+    /// an agent with no per-agent override (HORO-1375). Defaults to
+    /// [`PolicyDefaultMode::enforce`] — every existing deployment is
+    /// unaffected. Only [`with_policy_default_mode`](Self::with_policy_default_mode)
+    /// changes it, and only ever to a value built from a
+    /// `PersonalObserveGrant`.
+    policy_default_mode: PolicyDefaultMode,
 }
 
 impl PolicyServiceImpl {
@@ -153,6 +161,7 @@ impl PolicyServiceImpl {
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
+            policy_default_mode: PolicyDefaultMode::enforce(),
         }
     }
 
@@ -180,6 +189,7 @@ impl PolicyServiceImpl {
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
+            policy_default_mode: PolicyDefaultMode::enforce(),
         }
     }
 
@@ -209,6 +219,7 @@ impl PolicyServiceImpl {
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
+            policy_default_mode: PolicyDefaultMode::enforce(),
         }
     }
 
@@ -243,6 +254,7 @@ impl PolicyServiceImpl {
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
+            policy_default_mode: PolicyDefaultMode::enforce(),
         }
     }
 
@@ -262,6 +274,21 @@ impl PolicyServiceImpl {
     /// `routing_status` on the in-flight approval queue entry (AC2 / AC3).
     pub fn with_router(mut self, router: Arc<ApprovalRouter>) -> Self {
         self.router = Some(router);
+        self
+    }
+
+    /// Set the policy-default slot `resolve_enforcement_mode` falls back to
+    /// for an agent with no per-agent override (HORO-1375).
+    ///
+    /// Only `aa-api/src/server.rs::serve_local` ever passes a non-default
+    /// value here, and only a `PolicyDefaultMode::personal_observe(&grant)`
+    /// built from a grant minted by
+    /// `aa_core::observation::authorize_personal_observe` — i.e. only after
+    /// the personal-observe boot gate has run and found no enterprise
+    /// coupling signal. Every other caller keeps the `PolicyDefaultMode::enforce()`
+    /// default every constructor above sets.
+    pub fn with_policy_default_mode(mut self, policy_default_mode: PolicyDefaultMode) -> Self {
+        self.policy_default_mode = policy_default_mode;
         self
     }
 
@@ -1984,7 +2011,7 @@ impl PolicyService for PolicyServiceImpl {
         // has been rewritten to Allow and the shadow metadata flows into
         // record_audit so the audit log captures the would-be decision.
         let agent_override = self.lookup_agent_enforcement_override(&req);
-        let effective_mode = resolve_enforcement_mode(agent_override, aa_core::EnforcementMode::Enforce);
+        let effective_mode = resolve_enforcement_mode(agent_override, self.policy_default_mode);
         let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
         let deny_action = eval.deny_action;
 
@@ -2127,7 +2154,7 @@ impl PolicyService for PolicyServiceImpl {
             // applied per-request inside the batch so each request honours its
             // agent's mode independently.
             let agent_override = self.lookup_agent_enforcement_override(req);
-            let effective_mode = resolve_enforcement_mode(agent_override, aa_core::EnforcementMode::Enforce);
+            let effective_mode = resolve_enforcement_mode(agent_override, self.policy_default_mode);
             let (eval, shadow_event) = transform_for_observe_mode(eval, effective_mode);
             let deny_action = eval.deny_action;
 

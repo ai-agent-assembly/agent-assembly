@@ -5,11 +5,13 @@
 pub mod cache;
 pub mod decision;
 pub mod detection;
+pub mod effective_mode;
 pub(crate) mod rate_limit;
 pub mod scope_index;
 pub mod sensitive_data;
 pub(crate) mod watcher;
 
+pub use effective_mode::{resolve_enforcement_mode, EffectiveMode, PolicyDefaultMode};
 pub use scope_index::PolicyId;
 
 use arc_swap::ArcSwap;
@@ -223,22 +225,6 @@ pub struct ShadowEvent {
     pub reason: String,
 }
 
-/// Resolve the effective enforcement mode for a given agent + policy document.
-///
-/// Lookup order (first match wins):
-///
-/// 1. The agent's per-record override (set via `RegisterRequest.enforcement_mode`).
-/// 2. The policy document's `enforcement_mode` field.
-///
-/// Both inputs are `Copy` so this is a cheap pure function callable from the
-/// `CheckAction` hot path without locks or allocations.
-pub fn resolve_enforcement_mode(
-    agent_override: Option<aa_core::EnforcementMode>,
-    policy_default: aa_core::EnforcementMode,
-) -> aa_core::EnforcementMode {
-    agent_override.unwrap_or(policy_default)
-}
-
 /// Transform an [`EvaluationResult`] according to the active enforcement mode.
 ///
 /// In `Enforce` mode: returns the input unchanged with `None` shadow event.
@@ -253,11 +239,18 @@ pub fn resolve_enforcement_mode(
 /// Disabled is intended for hermetic test harnesses; production policy
 /// engines should not run with `Disabled` and `transform_for_observe_mode`
 /// makes no effort to mask its decisions.
+///
+/// `mode` is an [`EffectiveMode`](effective_mode::EffectiveMode), not a bare
+/// `aa_core::EnforcementMode` (HORO-1375 §4.1): the only way to produce one is
+/// [`resolve_enforcement_mode`], which always consults the 72h-capped
+/// per-agent override column first. This closes off
+/// `transform_for_observe_mode(eval, EnforcementMode::Observe)` as a direct,
+/// ungated call.
 pub fn transform_for_observe_mode(
     result: EvaluationResult,
-    mode: aa_core::EnforcementMode,
+    mode: effective_mode::EffectiveMode,
 ) -> (EvaluationResult, Option<ShadowEvent>) {
-    if mode != aa_core::EnforcementMode::Observe {
+    if mode.get() != aa_core::EnforcementMode::Observe {
         return (result, None);
     }
 
@@ -2708,6 +2701,26 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// Build an `EffectiveMode` of `Observe` for tests exercising
+    /// `transform_for_observe_mode` directly. `resolve_enforcement_mode` is
+    /// the only constructor; an agent override always wins, so `Some(Observe)`
+    /// with any policy default deterministically yields `Observe` without a
+    /// personal-observe grant.
+    fn observe_mode() -> effective_mode::EffectiveMode {
+        resolve_enforcement_mode(
+            Some(aa_core::EnforcementMode::Observe),
+            effective_mode::PolicyDefaultMode::enforce(),
+        )
+    }
+
+    /// Same as [`observe_mode`] but for `Enforce`.
+    fn enforce_mode() -> effective_mode::EffectiveMode {
+        resolve_enforcement_mode(
+            Some(aa_core::EnforcementMode::Enforce),
+            effective_mode::PolicyDefaultMode::enforce(),
+        )
+    }
 
     fn make_ctx() -> AgentContext {
         AgentContext {
@@ -5957,7 +5970,7 @@ mod tests {
         // must NOT fabricate a shadow event for it (otherwise audit log
         // sandbox-event volume would be 1:1 with all traffic, not 1:1 with
         // would-be violations).
-        let (out, shadow) = transform_for_observe_mode(allow_result(), aa_core::EnforcementMode::Observe);
+        let (out, shadow) = transform_for_observe_mode(allow_result(), observe_mode());
         assert_eq!(out.decision, PolicyResult::Allow);
         assert!(shadow.is_none(), "no shadow event for Allow decisions");
     }
@@ -5982,7 +5995,7 @@ mod tests {
         // Backward-compat guard: pre-feature behaviour for every existing
         // caller must be 100% preserved when enforcement_mode = Enforce.
         let original = deny_result("tool denied by policy");
-        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Enforce);
+        let (out, shadow) = transform_for_observe_mode(original, enforce_mode());
         match out.decision {
             PolicyResult::Deny { reason } => assert_eq!(reason, "tool denied by policy"),
             other => panic!("Enforce mode must preserve Deny; got {other:?}"),
@@ -6005,7 +6018,7 @@ mod tests {
             policy_scope: None,
             narrowed: false,
         };
-        let (out, shadow) = transform_for_observe_mode(pending, aa_core::EnforcementMode::Observe);
+        let (out, shadow) = transform_for_observe_mode(pending, observe_mode());
         assert_eq!(out.decision, PolicyResult::Allow);
         let shadow = shadow.expect("shadow event for RequiresApproval in Observe mode");
         assert_eq!(shadow.shadow_decision, "pending");
@@ -6017,7 +6030,7 @@ mod tests {
         // Allow, the deny_action side-effect is dropped, and a ShadowEvent
         // with shadow_decision = "deny" is produced for the audit sink.
         let original = deny_result("tool denied by policy");
-        let (out, shadow) = transform_for_observe_mode(original, aa_core::EnforcementMode::Observe);
+        let (out, shadow) = transform_for_observe_mode(original, observe_mode());
         assert_eq!(out.decision, PolicyResult::Allow);
         assert!(out.deny_action.is_none(), "deny side-effect must be dropped");
         let shadow = shadow.expect("shadow event for Deny in Observe mode");
@@ -6029,34 +6042,55 @@ mod tests {
 
     #[test]
     fn resolve_isolates_two_agents_under_the_same_policy() {
-        // AAASM-1557 AC: two agents share a policy, one registers in Observe,
-        // the other inherits the policy default (Enforce) — each must resolve
-        // to its own mode independently. Regression guard for any future
-        // refactor that accidentally shares state across resolve() calls.
-        let policy = aa_core::EnforcementMode::Enforce; // trusted-team policy
+        // AAASM-1557 AC: two agents share a policy default (Enforce), one
+        // registers an explicit Observe override, the other inherits the
+        // default — each must resolve to its own mode independently.
+        // Regression guard for any future refactor that accidentally shares
+        // state across resolve() calls.
+        //
+        // HORO-1375: `policy` is now a `PolicyDefaultMode`, not a bare
+        // `aa_core::EnforcementMode` — see `effective_mode.rs`. `resolved`
+        // values are `EffectiveMode`s; `.get()` unwraps for comparison.
+        let policy = PolicyDefaultMode::enforce(); // trusted-team policy default
         let trusted_agent = resolve_enforcement_mode(None, policy);
         let experimental_agent = resolve_enforcement_mode(Some(aa_core::EnforcementMode::Observe), policy);
-        assert_eq!(trusted_agent, aa_core::EnforcementMode::Enforce);
-        assert_eq!(experimental_agent, aa_core::EnforcementMode::Observe);
+        assert_eq!(trusted_agent.get(), aa_core::EnforcementMode::Enforce);
+        assert_eq!(experimental_agent.get(), aa_core::EnforcementMode::Observe);
+    }
+
+    /// Legitimately mint a personal-observe `PolicyDefaultMode` via the real
+    /// boot gate, for tests below that need a realistic non-`enforce()`
+    /// policy default. HORO-1375 narrowed `PolicyDefaultMode` to only two
+    /// constructible values; a bare `Observe`/`Disabled` policy default is no
+    /// longer representable at all, by design (a bare `Disabled` default was
+    /// never a real production shape either).
+    fn personal_observe_policy_default_for_tests() -> PolicyDefaultMode {
+        let mut cfg = aa_core::config::GatewayConfig::default();
+        cfg.observation.profile = aa_core::config::ObservationProfile::PersonalObserve;
+        let dep = aa_core::observation::PersonalObserveDeployment {
+            config: &cfg,
+            bind_addr: "127.0.0.1:7700".parse().unwrap(),
+            auth_is_off: false,
+        };
+        match aa_core::observation::authorize_personal_observe(dep, |_| None).unwrap() {
+            aa_core::observation::PersonalObserveOutcome::Granted(grant) => PolicyDefaultMode::personal_observe(&grant),
+            aa_core::observation::PersonalObserveOutcome::NotRequested => panic!("expected Granted"),
+        }
     }
 
     #[test]
     fn resolve_prefers_agent_override_over_policy_default() {
         // Per-agent override is the whole point of this subtask — it must
-        // win over the policy-level default. Covers all four override values
-        // crossed with each policy default, so a regression that swaps the
-        // priority would be caught by at least one assertion.
+        // win over the policy-level default, for every override value,
+        // crossed with each realistic policy default.
+        let personal_observe = personal_observe_policy_default_for_tests();
         for agent in [
             aa_core::EnforcementMode::Enforce,
             aa_core::EnforcementMode::Observe,
             aa_core::EnforcementMode::Disabled,
         ] {
-            for policy in [
-                aa_core::EnforcementMode::Enforce,
-                aa_core::EnforcementMode::Observe,
-                aa_core::EnforcementMode::Disabled,
-            ] {
-                assert_eq!(resolve_enforcement_mode(Some(agent), policy), agent);
+            for policy in [PolicyDefaultMode::enforce(), personal_observe] {
+                assert_eq!(resolve_enforcement_mode(Some(agent), policy).get(), agent);
             }
         }
     }
@@ -6064,12 +6098,14 @@ mod tests {
     #[test]
     fn resolve_falls_back_to_policy_default_when_agent_override_is_none() {
         // An agent that registered without setting enforcement_mode inherits
-        // the policy document's posture. Most production agents take this path.
-        let resolved = resolve_enforcement_mode(None, aa_core::EnforcementMode::Observe);
-        assert_eq!(resolved, aa_core::EnforcementMode::Observe);
+        // the policy-default posture. Most production agents take this path.
+        let resolved = resolve_enforcement_mode(None, PolicyDefaultMode::enforce());
+        assert_eq!(resolved.get(), aa_core::EnforcementMode::Enforce);
 
-        let resolved = resolve_enforcement_mode(None, aa_core::EnforcementMode::Enforce);
-        assert_eq!(resolved, aa_core::EnforcementMode::Enforce);
+        // Under personal-observe, the SAME `None` case resolves to Observe —
+        // the profile's entire effect (HORO-1375).
+        let resolved = resolve_enforcement_mode(None, personal_observe_policy_default_for_tests());
+        assert_eq!(resolved.get(), aa_core::EnforcementMode::Observe);
     }
 
     // ── AAASM-3138: budget tenancy keyed by registered owner ────────────────
