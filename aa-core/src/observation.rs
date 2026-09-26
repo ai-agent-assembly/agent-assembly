@@ -62,7 +62,7 @@ pub struct PersonalObserveGrant {
 impl PersonalObserveGrant {
     /// Number of named coupling signals the gate checked before minting this
     /// grant. A public accessor for the *count* (not the list) so callers —
-    /// e.g. the ACTIVE boot log — can report "checked <N> named signals"
+    /// e.g. the ACTIVE boot log — can report "checked `<N>` named signals"
     /// without exposing a way to reconstruct a grant from the list.
     pub fn checked_signal_count(&self) -> usize {
         self.checked_signals.len()
