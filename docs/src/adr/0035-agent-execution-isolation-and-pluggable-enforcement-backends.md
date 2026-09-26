@@ -764,6 +764,17 @@ secret-hardening work remains authoritative for its implementation. Until then, 
 must distinguish credentials intentionally delegated to the child from ambient authority
 that could not yet be removed.
 
+> **Cross-reference — AAASM-6164 (2026-09)**: [ADR 0038](0038-capability-leases-and-explicit-authority-contract.md)'s
+> AAASM-6164 amendment adds a contract/truthful-report pair over `aa-proxy`'s existing
+> egress credential-injection mechanism (`aa-proxy/src/credentials.rs`,
+> AAASM-3578/AAASM-5926) — a launch's requirement of brokered credentials, checked
+> against what that mechanism truthfully covers, and a default (no-escape-hatch)
+> withholding of a brokered provider credential's env name from the child at `aasm run`
+> when the mechanism actually covers it. The injection mechanism named here is
+> unchanged; this is the "credentials intentionally delegated ... from ambient
+> authority that could not yet be removed" distinction this paragraph already
+> anticipated, applied to the one case a real brokerage mechanism now closes.
+
 ### 10. Evidence is first-class output of execution
 
 A successful process spawn is not evidence that every desired control was enforced.
