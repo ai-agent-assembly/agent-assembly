@@ -643,11 +643,17 @@ fn check_attenuation(
         }
     };
 
-    if violation.is_some() {
-        return if child_lease
-            .basis()
-            .is_independently_attributable(child_identity, parent.identity())
-        {
+    if let Some(refusal) = violation {
+        let basis = child_lease.basis();
+        let attempted_attribution = basis.approval_ref.is_some() || basis.policy_rule.is_some();
+        return if !attempted_attribution {
+            // Nothing about this lease claims independent attribution at
+            // all — this is not an escalation attempt, it is simply a
+            // child that exceeds its parent, and the specific violation
+            // already computed above is the more actionable answer than a
+            // generic "not independently approved".
+            Err(refusal)
+        } else if basis.is_independently_attributable(child_identity, parent.identity()) {
             // An independent issuer explicitly granted authority beyond what
             // the parent held — this is escalation, not attenuation, and it
             // is authorized. Provenance-integrity checks below are about a
@@ -655,6 +661,9 @@ fn check_attenuation(
             // grant is not, so they do not apply here.
             Ok(())
         } else {
+            // Attribution was attempted, but the issuer is the parent's own
+            // subject or the child's own — self-approval, refused under the
+            // specific name for that failure rather than the generic one.
             Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
         };
     }
@@ -1074,7 +1083,7 @@ mod tests {
             );
             assert_eq!(
                 authority_gate(&child_spec, &ancestry, t(1_500)),
-                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                Err(AuthorityRefusal::ChildExceedsParent {
                     domain: CapabilityDomain::FilesystemRead
                 })
             );
@@ -1102,7 +1111,7 @@ mod tests {
                 .with_lease(network_lease);
             assert_eq!(
                 authority_gate(&child_spec, &ancestry, t(1_500)),
-                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                Err(AuthorityRefusal::ChildExceedsParent {
                     domain: CapabilityDomain::NetworkEgress
                 })
             );
@@ -1131,7 +1140,7 @@ mod tests {
             );
             assert_eq!(
                 authority_gate(&child_spec, &ancestry, t(1_500)),
-                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                Err(AuthorityRefusal::ChildExtendsExpiry {
                     domain: CapabilityDomain::FilesystemRead
                 })
             );
@@ -1168,7 +1177,7 @@ mod tests {
             );
             assert_eq!(
                 authority_gate(&child_spec, &ancestry, t(1_500)),
-                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                Err(AuthorityRefusal::ChildExceedsLimits {
                     domain: CapabilityDomain::FilesystemRead
                 })
             );
@@ -1374,7 +1383,7 @@ mod tests {
                 .with_lease(escaping_grandchild_lease);
             assert_eq!(
                 authority_gate(&escaping_spec, &child_ancestry, t(1_500)),
-                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                Err(AuthorityRefusal::ChildExceedsParent {
                     domain: CapabilityDomain::FilesystemRead
                 })
             );
@@ -1502,7 +1511,10 @@ mod tests {
                 crate::lease::LeaseId::new("parent-cred-lease"),
                 parent_identity(),
                 CapabilityDomain::Credential,
-                RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
+                RequirementScope::Selectors(vec![
+                    "permit-only:API_TOKEN".to_string(),
+                    "permit-only:DB_PASSWORD".to_string(),
+                ]),
                 t(1_000),
                 t(5_000),
                 crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
@@ -1514,7 +1526,7 @@ mod tests {
                     child_subject: child_identity(),
                     child_scope: RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
                     child_expires_at: t(2_000),
-                    mode: InheritanceMode::Same,
+                    mode: InheritanceMode::Narrower,
                     child_delegation: DelegationRule::NotDelegable,
                     child_limits: None,
                 },
@@ -1524,7 +1536,8 @@ mod tests {
             assert_eq!(denied, Err(crate::lease::DelegationDenied::NotDelegable));
 
             // Control: the same parent, explicitly delegable, with a
-            // narrower name set, succeeds.
+            // genuinely narrower name set (one of the two names, not both),
+            // succeeds.
             let delegable_parent = parent_cred_lease.with_delegation(DelegationRule::DelegableWithNarrowerScope);
             let allowed = delegable_parent.derive_child(
                 ChildLeaseRequest {
@@ -1532,7 +1545,7 @@ mod tests {
                     child_subject: child_identity(),
                     child_scope: RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
                     child_expires_at: t(2_000),
-                    mode: InheritanceMode::Same,
+                    mode: InheritanceMode::Narrower,
                     child_delegation: DelegationRule::NotDelegable,
                     child_limits: None,
                 },
