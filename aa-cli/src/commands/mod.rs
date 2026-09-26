@@ -35,6 +35,7 @@ pub mod trusted_upstream_path;
 // strip-for-publish:begin devtool
 pub mod run;
 pub mod run_audit;
+pub mod run_egress_broker;
 pub mod run_no_proxy_guard;
 pub mod run_registration;
 // strip-for-publish:end devtool
