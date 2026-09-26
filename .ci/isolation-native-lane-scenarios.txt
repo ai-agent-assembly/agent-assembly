@@ -25,7 +25,8 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 18 from aa-isolation-native/tests/linux_confinement_native.rs, 18
+# As written: 19 from aa-isolation-native/tests/linux_confinement_native.rs (AAASM-6161
+# added 1: a grandchild-of-an-attenuated-sub-agent scenario), 18
 # from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
 # aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
 # 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
@@ -79,6 +80,7 @@ native adversarial: only a decision record promotes a claim
 native adversarial: required prevention refused by every backend that cannot enforce it
 native adversarial: the launcher refuses a command line it cannot fully honour
 native adversarial: the launcher refuses a syscall filter it cannot fully honour
+native: a grandchild of an attenuated sub-agent cannot write outside the child's narrowed grant
 native: a nested write grant keeps the read granted above it
 native: a permitted syscall still succeeds under an installed filter
 native: a sub-agent launch the AAASM-5709 machinery admits is confined here
