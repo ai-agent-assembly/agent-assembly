@@ -172,12 +172,14 @@
 #![warn(missing_docs)]
 
 pub mod ambient;
+pub mod authority;
 pub mod backend;
 pub mod capability;
 pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
 pub mod evidence;
+pub mod lease;
 pub mod lowering;
 pub mod plan;
 pub mod planner;
@@ -193,6 +195,10 @@ pub use ambient::{
     classify_env_name, is_supervisor_credential, AmbientAuthorityKind, ClassifiedName, CompatibilityException,
     EnvironmentPlan, EnvironmentPlanner, CLOUD_METADATA_ENDPOINTS,
 };
+pub use authority::{
+    authority_gate, effective_authority_for_report, AuthorityBuildError, AuthorityRefusal, AuthorityState,
+    AuthorityWitness, EffectiveAuthority,
+};
 pub use backend::{
     ExecutionHandle, ExitDisposition, IsolationBackend, PreparedExecution, SpawnError, TerminationRequest,
 };
@@ -207,6 +213,10 @@ pub use descriptor::{
     DescriptorDisposition, DescriptorInventory, InheritedDescriptor, InventoryCompleteness, STANDARD_DESCRIPTORS,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
+pub use lease::{
+    CapabilityLease, DelegationDenied, DelegationRule, LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder,
+    ScopeOrdering, UndefinedScopeOrder, LEASE_SCHEMA_VERSION,
+};
 pub use lowering::{
     lower_policy, permit_only_selector, permitted_selector, DomainCoverage, DomainLowering, LoweringOptions,
     NoRequirementsLowered, PolicyLowering, ScopeGranularity, PERMIT_ONLY_SELECTOR,
@@ -217,9 +227,9 @@ pub use plan::{
 };
 pub use planner::{select, select_pinned, Candidate, Selection};
 pub use report::{
-    BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainProjection, EvidenceBasis,
-    IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef, TargetRef,
-    UnmeasuredReason, REPORT_SCHEMA,
+    BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainAuthoritySummary, DomainProjection,
+    EvidenceBasis, IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef,
+    TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
 pub use spec::{

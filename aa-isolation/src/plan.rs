@@ -202,6 +202,25 @@ pub enum RefusalReason {
         /// What the backend actually reported.
         actual_support: crate::capability::SupportLevel,
     },
+    /// [`crate::authority::authority_gate`] refused this domain before
+    /// `negotiate` ever ran, because no explicit grant or valid lease
+    /// authorized it.
+    ///
+    /// Distinct from every other variant here, which all describe a mismatch
+    /// between what policy asked for and what the *backend* can mechanically
+    /// do. This one is never produced by [`evaluate`] or by [`negotiate`]
+    /// itself — it exists so a caller that composes `authority_gate` ahead of
+    /// `negotiate` (as `aa-cli`'s `IsolationPlan::resolve_boundary` does) can
+    /// render an authority-gate refusal through the same
+    /// [`crate::report::IsolationReport`] machinery every other refusal uses,
+    /// via [`crate::report::IsolationReport::authority_refused`], rather than
+    /// inventing a second reporting path for one refusal source.
+    AuthorityNotGranted {
+        /// The domain with no explicit grant or valid lease.
+        domain: CapabilityDomain,
+        /// Why, in words an operator can act on.
+        detail: String,
+    },
 }
 
 impl RefusalReason {
@@ -220,7 +239,8 @@ impl RefusalReason {
             | Self::NoEvidenceProduced { domain }
             | Self::DescendantCoverageInsufficient { domain, .. }
             | Self::PrerequisiteUnsatisfied { domain, .. }
-            | Self::EvidenceQualityBelowMinimum { domain, .. } => Some(*domain),
+            | Self::EvidenceQualityBelowMinimum { domain, .. }
+            | Self::AuthorityNotGranted { domain, .. } => Some(*domain),
         }
     }
 }
