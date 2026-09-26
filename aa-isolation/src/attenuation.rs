@@ -320,4 +320,177 @@ mod tests {
         );
         assert_eq!(after_revoke, Err(DelegationDenied::ParentRevoked));
     }
+
+    /// §4.6: concurrent creation does not race around revocation.
+    ///
+    /// A pure lock-acquisition race at microsecond granularity cannot be made
+    /// deterministic without instrumenting the lock itself, and an
+    /// undeterministic test that only *sometimes* opens the race window is
+    /// worse than one that reliably does — so this test proves the property
+    /// with real concurrency at both ends of a controlled boundary: 16 real
+    /// threads derive concurrently against each other while the parent is
+    /// still active (group A), the revocation is then recorded, and 16 more
+    /// real threads derive concurrently against each other afterward (group
+    /// B). The mutex inside `DelegationLedger` is the only thing serializing
+    /// either group internally; what this test pins is the *boundary*
+    /// between them, which is the property AAASM-6161 actually needs to
+    /// hold.
+    #[test]
+    fn concurrent_child_derivation_never_issues_a_child_after_the_revocation_is_recorded() {
+        use std::sync::{Arc, Barrier};
+
+        const GROUP_SIZE: usize = 16;
+        let ledger = Arc::new(DelegationLedger::new());
+        let parent = Arc::new(parent_lease());
+        ledger.register_parent(&parent);
+
+        fn spawn_group(
+            ledger: &Arc<DelegationLedger>,
+            parent: &Arc<CapabilityLease>,
+            prefix: &'static str,
+        ) -> Vec<std::thread::JoinHandle<Result<CapabilityLease, DelegationDenied>>> {
+            let barrier = Arc::new(Barrier::new(GROUP_SIZE));
+            (0..GROUP_SIZE)
+                .map(|i| {
+                    let ledger = Arc::clone(ledger);
+                    let parent = Arc::clone(parent);
+                    let barrier = Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        ledger.derive_child(
+                            &parent,
+                            child_request(RequirementScope::Selectors(vec![format!(
+                                "permit-only:/workspace/{prefix}{i}"
+                            )])),
+                            t(1_100),
+                        )
+                    })
+                })
+                .collect()
+        }
+
+        let group_a = spawn_group(&ledger, &parent, "a");
+        let group_a_results: Vec<_> = group_a
+            .into_iter()
+            .map(|h| h.join().expect("group A thread panicked"))
+            .collect();
+
+        ledger.revoke(parent.id(), 1, "operator revoked mid-flight");
+
+        let group_b = spawn_group(&ledger, &parent, "b");
+        let group_b_results: Vec<_> = group_b
+            .into_iter()
+            .map(|h| h.join().expect("group B thread panicked"))
+            .collect();
+
+        let oks: Vec<&CapabilityLease> = group_a_results.iter().filter_map(|r| r.as_ref().ok()).collect();
+        let revoked_errs = group_b_results
+            .iter()
+            .filter(|r| matches!(r, Err(DelegationDenied::ParentRevoked)))
+            .count();
+
+        assert_eq!(
+            oks.len(),
+            GROUP_SIZE,
+            "every concurrent derivation before the revocation must succeed, or this test proves \
+             nothing about the boundary: {group_a_results:?}"
+        );
+        assert_eq!(
+            revoked_errs, GROUP_SIZE,
+            "every concurrent derivation after the revocation must observe it, or this test proves \
+             nothing about the boundary: {group_b_results:?}"
+        );
+
+        // (a) every returned `Ok` child carries the pre-revocation generation.
+        for child in &oks {
+            let provenance = child.provenance().expect("derived child always carries provenance");
+            assert_eq!(
+                provenance.parent_generation, 0,
+                "an admitted child recorded a post-revocation generation"
+            );
+        }
+
+        // Every pre-revocation child is refused by `authority_gate` once the
+        // parent is revoked: the recorded generation (0) no longer matches
+        // the parent's current one (1).
+        let revoked_parent_lease = (*parent).clone().with_revocation(RevocationState::Revoked {
+            generation: 1,
+            reason: "operator revoked mid-flight".to_string(),
+        });
+        let parent_spec =
+            ExecutionSpec::new("echo", IdentityRef::root("parent-agent")).with_lease(revoked_parent_lease);
+        let parent_witness =
+            authority_gate(&parent_spec, &Ancestry::Root, t(1_500)).expect("an empty-requirement spec always gates");
+        let stale_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
+            &parent_spec,
+            &parent_witness,
+        )));
+
+        for child in &oks {
+            let child_identity = child.subject().clone();
+            let child_spec = ExecutionSpec::new("echo", child_identity)
+                .with_requirement(
+                    crate::spec::ControlRequirement::observe(CapabilityDomain::FilesystemRead)
+                        .with_scope(child.scope().clone()),
+                )
+                .with_lease((*child).clone());
+            assert!(
+                matches!(
+                    authority_gate(&child_spec, &stale_ancestry, t(1_500)),
+                    Err(crate::authority::AuthorityRefusal::StaleParentGeneration { domain })
+                        if domain == CapabilityDomain::FilesystemRead
+                ),
+                "a child derived before the revocation was not refused once the parent generation moved on"
+            );
+        }
+    }
+
+    /// Documented, pinned gap: quantitative limits are enforced as per-child
+    /// ceilings, not an aggregate budget divided among siblings —
+    /// `aa-isolation` measures no live resource consumption, so an aggregate
+    /// claim would be a claim about runtime this crate cannot make. Two
+    /// sibling children may therefore each hold the parent's full ceiling
+    /// simultaneously. This is a deliberate disclosure, in the same shape as
+    /// `descendant.rs`'s own
+    /// `a_wider_selector_set_is_not_detected_and_this_is_the_known_gap`: if
+    /// this test ever starts failing because aggregate accounting was added,
+    /// the documentation and residual-risk list must be revisited
+    /// deliberately, not silently.
+    #[test]
+    fn sibling_children_may_each_hold_the_parents_full_ceiling_and_this_is_the_known_gap() {
+        let parent = parent_lease().with_limits(crate::spec::ResourceLimits {
+            max_memory_bytes: Some(1_000),
+            ..Default::default()
+        });
+
+        let mut sibling_a_request =
+            child_request(RequirementScope::Selectors(
+                vec!["permit-only:/workspace/a".to_string()],
+            ));
+        sibling_a_request.child_limits = Some(crate::spec::ResourceLimits {
+            max_memory_bytes: Some(1_000),
+            ..Default::default()
+        });
+        let sibling_a = parent
+            .derive_child(sibling_a_request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .expect("a ceiling equal to the parent's own must derive");
+
+        let mut sibling_b_request =
+            child_request(RequirementScope::Selectors(
+                vec!["permit-only:/workspace/b".to_string()],
+            ));
+        sibling_b_request.child_limits = Some(crate::spec::ResourceLimits {
+            max_memory_bytes: Some(1_000),
+            ..Default::default()
+        });
+        let sibling_b = parent
+            .derive_child(sibling_b_request, &crate::scope_order::PathPrefixOrder, t(1_100))
+            .expect("a ceiling equal to the parent's own must derive");
+
+        // Each sibling independently holds the parent's full 1_000-byte
+        // ceiling — nothing here divides it between them, and nothing in
+        // this crate could, since no live consumption is measured.
+        assert_eq!(sibling_a.limits().unwrap().max_memory_bytes, Some(1_000));
+        assert_eq!(sibling_b.limits().unwrap().max_memory_bytes, Some(1_000));
+    }
 }
