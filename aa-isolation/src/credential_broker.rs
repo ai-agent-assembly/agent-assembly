@@ -875,3 +875,389 @@ pub fn residual_exposure_record(service: &BrokeredService) -> EvidenceRecord {
         detail,
     )
 }
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+    use crate::attenuation::Ancestry;
+    use crate::authority::authority_gate;
+    use crate::evidence::EnforcementEvidence;
+    use crate::lease::{LeaseBasis, LeaseId};
+    use crate::lowering::permit_only_selector;
+    use crate::plan::{BackendIdentity, LaunchPosture, Provenance};
+    use crate::spec::{ControlRequirement, CredentialPosture};
+
+    fn test_backend_identity() -> BackendIdentity {
+        BackendIdentity {
+            id: "test-backend".to_string(),
+            version: "0".to_string(),
+            provenance: Provenance {
+                source: "test".to_string(),
+                license: "Apache-2.0".to_string(),
+                modified: false,
+            },
+        }
+    }
+
+    fn t(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    fn identity() -> IdentityRef {
+        IdentityRef::root("agent-under-test")
+    }
+
+    fn base_spec() -> ExecutionSpec {
+        ExecutionSpec::new("claude", identity())
+    }
+
+    fn lease_for(domain: CapabilityDomain, scope: RequirementScope) -> CapabilityLease {
+        CapabilityLease::new(
+            LeaseId::new("lease-under-test"),
+            identity(),
+            domain,
+            scope,
+            t(1_000),
+            t(2_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        )
+    }
+
+    fn credential_authority_for(spec: &ExecutionSpec) -> CredentialAuthority {
+        let witness = authority_gate(spec, &Ancestry::Root, t(1_500)).expect("spec authorized in this fixture");
+        CredentialAuthority::from_gated_spec(spec, &witness)
+    }
+
+    fn selectors(names: &[&str]) -> RequirementScope {
+        RequirementScope::Selectors(names.iter().map(|n| permit_only_selector(n)).collect())
+    }
+
+    fn broker_performs_request(service: &str, env_name: &str) -> BrokeredService {
+        BrokeredService {
+            service: service.to_string(),
+            env_names: vec![env_name.to_string()],
+            mode: BrokerageMode::BrokerPerformsRequest {
+                mechanism_detail: "x-api-key injected at CONNECT-mediated egress".to_string(),
+            },
+        }
+    }
+
+    fn raw_fallback(service: &str, env_name: &str, justification: &str) -> BrokeredService {
+        BrokeredService {
+            service: service.to_string(),
+            env_names: vec![env_name.to_string()],
+            mode: BrokerageMode::RawInjectionFallback {
+                justification: justification.to_string(),
+                tracked_by: None,
+            },
+        }
+    }
+
+    fn available_broker() -> CredentialBrokerReport {
+        CredentialBrokerReport::new(FailurePosture::FailClosed)
+            .with_service(broker_performs_request("api.anthropic.com", "ANTHROPIC_API_KEY"))
+    }
+
+    fn matching_posture() -> CredentialPosture {
+        CredentialPosture {
+            removed: vec!["ANTHROPIC_API_KEY".to_string()],
+            delegated: Vec::new(),
+            ambient_unremoved: Vec::new(),
+        }
+    }
+
+    // ---- Positive controls -------------------------------------------------
+
+    #[test]
+    fn not_required_admits_with_no_broker_authority_or_posture_at_all() {
+        let contract = CredentialContract::not_required();
+        let broker = CredentialBrokerReport::unavailable("no broker in this deployment");
+        let spec = base_spec();
+        let authority = credential_authority_for(&spec);
+        let posture = CredentialPosture::default();
+        assert!(credential_gate(&contract, &broker, &authority, &posture, &RequirementScope::Whole).is_ok());
+    }
+
+    #[test]
+    fn broker_performs_request_with_covering_grant_and_matching_posture_is_admitted() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let broker = available_broker();
+        let posture = matching_posture();
+        assert!(credential_gate(&contract, &broker, &authority, &posture, &scope).is_ok());
+    }
+
+    // ---- Falsification: brokered-but-still-reaches-the-child ---------------
+
+    #[test]
+    fn secretless_service_whose_name_still_reaches_the_child_is_refused_matching_posture_is_admitted() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let broker = available_broker();
+
+        let leaking = CredentialPosture {
+            removed: Vec::new(),
+            delegated: Vec::new(),
+            ambient_unremoved: vec!["ANTHROPIC_API_KEY".to_string()],
+        };
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &leaking, &scope),
+            Err(CredentialRefusal::BrokeredCredentialStillReachesChild {
+                name: "ANTHROPIC_API_KEY".to_string(),
+                service: "api.anthropic.com".to_string(),
+            })
+        );
+
+        // Control: the identical launch, with the name actually withheld, is
+        // admitted.
+        let withheld = matching_posture();
+        assert!(credential_gate(&contract, &broker, &authority, &withheld, &scope).is_ok());
+    }
+
+    // ---- Raw fallback: default Refuse, paired with PermittedWhenJustified --
+
+    #[test]
+    fn raw_fallback_is_refused_by_default_permitted_when_justified_admits() {
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let broker = CredentialBrokerReport::new(FailurePosture::FailClosed).with_service(raw_fallback(
+            "api.example.com",
+            "EXAMPLE_API_KEY",
+            "no supported broker mechanism for this provider yet",
+        ));
+        let posture = CredentialPosture {
+            removed: Vec::new(),
+            delegated: vec!["EXAMPLE_API_KEY".to_string()],
+            ambient_unremoved: Vec::new(),
+        };
+
+        let refusing = CredentialContract::broker_required();
+        assert_eq!(
+            credential_gate(&refusing, &broker, &authority, &posture, &scope),
+            Err(CredentialRefusal::RawFallbackNotPermitted {
+                service: "api.example.com".to_string(),
+            })
+        );
+
+        let permitting =
+            CredentialContract::broker_required().with_raw_fallback(RawFallbackPolicy::PermittedWhenJustified);
+        assert!(credential_gate(&permitting, &broker, &authority, &posture, &scope).is_ok());
+    }
+
+    #[test]
+    fn permitted_when_justified_still_refuses_an_empty_justification() {
+        let scope = selectors(&["api.example.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let broker = CredentialBrokerReport::new(FailurePosture::FailClosed).with_service(raw_fallback(
+            "api.example.com",
+            "EXAMPLE_API_KEY",
+            "",
+        ));
+        let posture = CredentialPosture {
+            removed: Vec::new(),
+            delegated: vec!["EXAMPLE_API_KEY".to_string()],
+            ambient_unremoved: Vec::new(),
+        };
+        let contract =
+            CredentialContract::broker_required().with_raw_fallback(RawFallbackPolicy::PermittedWhenJustified);
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &posture, &scope),
+            Err(CredentialRefusal::RawFallbackUnjustified {
+                service: "api.example.com".to_string(),
+            })
+        );
+    }
+
+    // ---- Required mode: mode 2 has no implementation ------------------------
+
+    #[test]
+    fn run_bound_ephemeral_only_refuses_when_no_service_offers_it() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let broker = available_broker();
+        let contract = CredentialContract::broker_required().with_required_mode(RequiredMode::RunBoundEphemeralOnly);
+        assert!(matches!(
+            credential_gate(&contract, &broker, &authority, &matching_posture(), &scope),
+            Err(CredentialRefusal::ModeInsufficient { .. })
+        ));
+
+        // Control: `AnySecretlessMode` against the identical broker admits.
+        let any_secretless = CredentialContract::broker_required();
+        assert!(credential_gate(&any_secretless, &broker, &authority, &matching_posture(), &scope).is_ok());
+    }
+
+    #[test]
+    fn no_service_at_all_is_refused() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let broker = CredentialBrokerReport::new(FailurePosture::FailClosed);
+        let contract = CredentialContract::broker_required();
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &CredentialPosture::default(), &scope),
+            Err(CredentialRefusal::NoServiceBrokered)
+        );
+    }
+
+    // ---- Grant coverage, paired --------------------------------------------
+
+    #[test]
+    fn uncovered_scope_is_refused_covered_scope_is_admitted() {
+        let granted = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(granted.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, granted.clone()));
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let broker = available_broker();
+        let posture = matching_posture();
+
+        let uncovered = selectors(&["evil.example.com"]);
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &posture, &uncovered),
+            Err(CredentialRefusal::CredentialScopeNotCoveredByGrant)
+        );
+        assert!(credential_gate(&contract, &broker, &authority, &posture, &granted).is_ok());
+    }
+
+    #[test]
+    fn no_lease_at_all_is_refused() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec(); // no requirement, no lease attached
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let broker = available_broker();
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &matching_posture(), &scope),
+            Err(CredentialRefusal::NoCredentialGrant)
+        );
+    }
+
+    // ---- Broker availability / failure posture, paired ----------------------
+
+    #[test]
+    fn unavailable_broker_is_refused_available_broker_is_admitted() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let posture = matching_posture();
+
+        let unavailable = CredentialBrokerReport::unavailable("no dedicated proxy is bound for this launch");
+        assert!(matches!(
+            credential_gate(&contract, &unavailable, &authority, &posture, &scope),
+            Err(CredentialRefusal::BrokerRequiredButUnavailable { .. })
+        ));
+
+        let available = available_broker();
+        assert!(credential_gate(&contract, &available, &authority, &posture, &scope).is_ok());
+    }
+
+    #[test]
+    fn fail_open_broker_is_refused_when_brokerage_is_required() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let contract = CredentialContract::broker_required();
+        let broker = CredentialBrokerReport::new(FailurePosture::FailOpen)
+            .with_service(broker_performs_request("api.anthropic.com", "ANTHROPIC_API_KEY"));
+        assert_eq!(
+            credential_gate(&contract, &broker, &authority, &matching_posture(), &scope),
+            Err(CredentialRefusal::BrokerRequiredButFailsOpen {
+                posture: FailurePosture::FailOpen
+            })
+        );
+    }
+
+    // ---- Ceilings -------------------------------------------------------------
+
+    #[test]
+    fn stated_ceiling_against_unsupported_broker_is_refused_unstated_is_admitted() {
+        let scope = selectors(&["api.anthropic.com"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::Credential).with_scope(scope.clone()))
+            .with_lease(lease_for(CapabilityDomain::Credential, scope.clone()));
+        let authority = credential_authority_for(&spec);
+        let broker = available_broker();
+        let posture = matching_posture();
+
+        let with_ceiling = CredentialContract::broker_required().with_ceilings(CredentialCeilings {
+            max_uses: Some(1),
+            max_bytes: None,
+        });
+        assert!(matches!(
+            credential_gate(&with_ceiling, &broker, &authority, &posture, &scope),
+            Err(CredentialRefusal::CeilingStatedButUnsupported { .. })
+        ));
+
+        let without_ceiling = CredentialContract::broker_required();
+        assert!(credential_gate(&without_ceiling, &broker, &authority, &posture, &scope).is_ok());
+    }
+
+    // ---- Evidence: residual exposure never raises claim_for ------------------
+
+    #[test]
+    fn residual_exposure_alone_leaves_claim_for_unmeasured() {
+        let service = raw_fallback(
+            "api.example.com",
+            "EXAMPLE_API_KEY",
+            "no supported broker mechanism yet",
+        );
+        let mut evidence = EnforcementEvidence::new(test_backend_identity(), LaunchPosture::Ready);
+        evidence.record(residual_exposure_record(&service));
+        assert_eq!(evidence.claim_for(CapabilityDomain::Credential), ClaimTerm::Unmeasured);
+        assert!(!evidence.supports_prevention_claim(CapabilityDomain::Credential));
+    }
+
+    #[test]
+    fn brokerage_mode_record_never_asserts_coverage_either() {
+        let service = broker_performs_request("api.anthropic.com", "ANTHROPIC_API_KEY");
+        let mut evidence = EnforcementEvidence::new(test_backend_identity(), LaunchPosture::Ready);
+        evidence.record(brokerage_mode_record(&service));
+        assert_eq!(evidence.claim_for(CapabilityDomain::Credential), ClaimTerm::Unmeasured);
+    }
+
+    // ---- BrokerageMode::is_secretless, paired --------------------------------
+
+    #[test]
+    fn raw_injection_fallback_is_not_secretless_the_other_two_modes_are() {
+        assert!(!BrokerageMode::RawInjectionFallback {
+            justification: String::new(),
+            tracked_by: None,
+        }
+        .is_secretless());
+        assert!(BrokerageMode::BrokerPerformsRequest {
+            mechanism_detail: String::new(),
+        }
+        .is_secretless());
+        assert!(BrokerageMode::EphemeralScopedCredential {
+            issuer_detail: String::new(),
+            expires_in_seconds: 60,
+        }
+        .is_secretless());
+    }
+}
