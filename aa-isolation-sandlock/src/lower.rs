@@ -24,7 +24,8 @@
 //! flag that "approximately" means the requirement.
 
 use aa_isolation::{
-    permitted_selector, CapabilityDomain, ControlRequirement, ExecutionSpec, RequirementScope, ResourceLimits,
+    egress::metadata_endpoint_match, permitted_selector, CapabilityDomain, ControlRequirement, ExecutionSpec,
+    RequirementScope, ResourceLimits,
 };
 
 /// The subcommand that runs a confined program.
@@ -558,20 +559,17 @@ pub fn reachable_metadata_endpoints(spec: &ExecutionSpec) -> Vec<&'static str> {
         .flatten()
         .filter_map(|s| permitted_selector(s))
         .collect();
+    // AAASM-6163: the anchoring rule (exact, or `<endpoint>:` / `<endpoint>/`
+    // prefix) is now the one canonical implementation in
+    // `aa_isolation::egress::metadata_endpoint_match`, so this delegates
+    // rather than keeping a second copy that could drift from it.
     aa_isolation::CLOUD_METADATA_ENDPOINTS
         .iter()
         .copied()
         .filter(|endpoint| {
-            permitted.iter().any(|destination| {
-                *destination == *endpoint
-                    // A destination is conventionally `host:port` or a URL
-                    // authority; both keep the address as a prefix ending at a
-                    // separator, so anchoring on one avoids matching an
-                    // unrelated address that merely starts with these digits.
-                    || destination
-                        .strip_prefix(endpoint)
-                        .is_some_and(|rest| rest.starts_with(':') || rest.starts_with('/'))
-            })
+            permitted
+                .iter()
+                .any(|destination| metadata_endpoint_match(destination) == Some(*endpoint))
         })
         .collect()
 }
