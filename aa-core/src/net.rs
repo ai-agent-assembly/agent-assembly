@@ -93,9 +93,93 @@ pub fn blocked_ip_literal(host: &str) -> Option<bool> {
     host.parse::<IpAddr>().ok().map(is_blocked_ip)
 }
 
+/// Strip an optional `:port` suffix from a host, correctly handling a bracketed
+/// IPv6 literal (AAASM-4829, moved from `aa-proxy` under AAASM-6163 so the
+/// egress contract in `aa-isolation` can canonicalize a destination without a
+/// dependency on `aa-proxy`).
+///
+/// A bare `host.split(':').next()` mangles IPv6 literals: `[::1]:443` becomes
+/// `[`, which both lets a CONNECT-time SSRF check miss the real address (it can
+/// no longer `parse::<IpAddr>()`) and over-blocks legitimate IPv6 under a
+/// denylist. This unwraps the brackets and drops the port so the returned value
+/// is the real literal (`::1`).
+///
+/// Rules:
+/// - `[<ipv6>]:port` / `[<ipv6>]` → `<ipv6>` (brackets and port removed).
+/// - `host:port` (single `:`) → `host`.
+/// - a bare, unbracketed IPv6 literal (multiple `:`, no brackets) is returned
+///   whole — an IPv6 address requires brackets to carry a port, so every colon
+///   is part of the address.
+/// - anything else is returned unchanged (trimmed).
+///
+/// `no_std`-clean: no allocation, borrows from `host`.
+pub fn strip_host_port(host: &str) -> &str {
+    let host = host.trim();
+    if let Some(rest) = host.strip_prefix('[') {
+        // Bracketed IPv6 literal — take the text up to the closing bracket,
+        // discarding any `:port` that follows it. A malformed value with no
+        // closing bracket falls back to the un-bracketed remainder.
+        return match rest.find(']') {
+            Some(end) => &rest[..end],
+            None => rest,
+        };
+    }
+    match host.rfind(':') {
+        // More than one colon and no brackets → bare IPv6 literal, no port.
+        Some(idx) if host[..idx].contains(':') => host,
+        Some(idx) => &host[..idx],
+        None => host,
+    }
+}
+
+/// Canonicalize a host for denylist/allowlist comparison: strip the port
+/// (bracket-aware), a single trailing dot, and lowercase (AAASM-3983, moved
+/// from `aa-proxy` under AAASM-6163).
+#[cfg(feature = "alloc")]
+pub fn canonical_host(host: &str) -> alloc::string::String {
+    let no_port = strip_host_port(host);
+    let no_dot = no_port.strip_suffix('.').unwrap_or(no_port);
+    no_dot.to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn canonical_host_strips_port_trailing_dot_and_case() {
+        // AAASM-3983: port, single trailing dot, and case are all normalised.
+        assert_eq!(canonical_host("EVIL.COM"), "evil.com");
+        assert_eq!(canonical_host("evil.com."), "evil.com");
+        assert_eq!(canonical_host("Evil.Com.:443"), "evil.com");
+        assert_eq!(canonical_host("evil.com"), "evil.com");
+    }
+
+    #[test]
+    fn strip_host_port_handles_bracketed_ipv6() {
+        // AAASM-4829: a bracketed IPv6 literal must yield the real address, not
+        // the mangled `[` that `split(':')` produced.
+        assert_eq!(strip_host_port("[::1]:443"), "::1");
+        assert_eq!(strip_host_port("[::1]"), "::1");
+        assert_eq!(strip_host_port("[2001:db8::1]:8443"), "2001:db8::1");
+        // Bare (unbracketed) IPv6 literal has no port — every colon is address.
+        assert_eq!(strip_host_port("::1"), "::1");
+        assert_eq!(strip_host_port("2001:db8::1"), "2001:db8::1");
+        // IPv4 / DNS host:port and bare hosts behave as before.
+        assert_eq!(strip_host_port("1.2.3.4:80"), "1.2.3.4");
+        assert_eq!(strip_host_port("api.openai.com:443"), "api.openai.com");
+        assert_eq!(strip_host_port("api.openai.com"), "api.openai.com");
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn canonical_host_preserves_bracketed_ipv6_literal() {
+        // AAASM-4829: the previous `split(':')` mangled `[::1]:443` into `[`,
+        // breaking both denylist compares and the SSRF check.
+        assert_eq!(canonical_host("[::1]:443"), "::1");
+        assert_eq!(canonical_host("[2001:DB8::1]:8443"), "2001:db8::1");
+    }
 
     #[test]
     fn metadata_endpoint_is_blocked() {
