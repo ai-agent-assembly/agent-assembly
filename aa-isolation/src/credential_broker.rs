@@ -660,6 +660,19 @@ pub fn check_broker_available(
 
 /// Whether at least one of `broker`'s services meets `contract`'s
 /// [`RequiredMode`]. A no-op under [`BrokeragePosture::NotRequired`].
+///
+/// [`RequiredMode::AnySecretlessMode`] is satisfied by **any** reported
+/// service, [`BrokerageMode::RawInjectionFallback`] included — deliberately.
+/// Whether a raw fallback is actually *acceptable* is [`check_raw_fallback`]'s
+/// job (the contract's own [`RawFallbackPolicy`]), and whether the posture
+/// this run actually achieved matches what a secretless service claims is
+/// [`check_posture_matches_brokerage`]'s job. Making this check also reject a
+/// raw-only broker would refuse it with `ModeInsufficient` regardless of
+/// [`RawFallbackPolicy::PermittedWhenJustified`] — reading "any secretless
+/// mode is required" as "raw can never be admitted even when explicitly
+/// permitted", which collapses the two independent axes §20 (ADR 0038)
+/// documents into one and makes the raw-fallback policy unreachable for a
+/// broker that offers nothing else.
 pub fn check_required_mode(
     contract: &CredentialContract,
     broker: &CredentialBrokerReport,
@@ -670,10 +683,13 @@ pub fn check_required_mode(
     if broker.services().is_empty() {
         return Err(CredentialRefusal::NoServiceBrokered);
     }
-    let satisfied = broker.services().iter().any(|s| match contract.required_mode() {
-        RequiredMode::AnySecretlessMode => s.mode.is_secretless(),
-        RequiredMode::RunBoundEphemeralOnly => matches!(s.mode, BrokerageMode::EphemeralScopedCredential { .. }),
-    });
+    let satisfied = match contract.required_mode() {
+        RequiredMode::AnySecretlessMode => true,
+        RequiredMode::RunBoundEphemeralOnly => broker
+            .services()
+            .iter()
+            .any(|s| matches!(s.mode, BrokerageMode::EphemeralScopedCredential { .. })),
+    };
     if satisfied {
         Ok(())
     } else {
