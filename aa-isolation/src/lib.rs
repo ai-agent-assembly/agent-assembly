@@ -99,6 +99,24 @@
 //! so a caller can refuse, degrade or record — the same three outcomes
 //! [`negotiate`] already offers, reached from a different input.
 //!
+//! # Egress contract (AAASM-6163)
+//!
+//! [`egress`] is the AAASM-6160/AAASM-6161 pattern (a witness-gated authority
+//! type, constructible only from a spec plus the gate's own witness) applied to
+//! a third pair of domains: [`capability::CapabilityDomain::NetworkEgress`] and
+//! [`capability::CapabilityDomain::NameResolution`]. It does not add a fourth
+//! interception mechanism — `aa-proxy`'s CONNECT-time SSRF guard, gateway
+//! egress check and DNS-rebinding defense are the mechanism, unchanged.
+//! [`egress::EgressContract`] states what a launch requires of it,
+//! [`egress::EgressBrokerReport`] states what that mechanism truthfully
+//! provides, and [`egress::egress_gate`] refuses before any backend is
+//! consulted when the two do not match — closing the "required brokered
+//! egress silently falls back to direct network" gap without claiming a new
+//! trust boundary [`egress`]'s own module documentation does not also state.
+//! Core ADR 0038's amendment for this ticket documents the one residual this
+//! crate does not close: `aa-proxy` still evaluates every egress decision
+//! under a synthetic, unregistered identity at Global policy tier.
+//!
 //! # Reused vocabulary, and one deliberate rename
 //!
 //! Evidence terms are [`aa_core::attestation::ClaimTerm`] verbatim — this crate
@@ -180,6 +198,7 @@ pub mod capability;
 pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
+pub mod egress;
 pub mod evidence;
 pub mod lease;
 pub mod lowering;
@@ -215,6 +234,14 @@ pub use deadline::{requested_wall_clock_ceiling, supervise_wall_clock, WallClock
 pub use descendant::{authority_widening, covers_ordinary_descendants, is_same_or_narrower, AuthorityWidening};
 pub use descriptor::{
     DescriptorDisposition, DescriptorInventory, InheritedDescriptor, InventoryCompleteness, STANDARD_DESCRIPTORS,
+};
+pub use egress::{
+    check_broker_available, check_ceilings, check_egress_grant, check_mediation_depth, check_mediation_depth_scope,
+    check_name_resolution_grant, check_range_policy, check_resolved_answers, classify_destination,
+    destination_permitted_by_scope, destination_prevention_record, egress_gate, mediation_depth_record,
+    metadata_endpoint_match, partition_resolved_answers, BrokerAvailability, DestinationClass, EgressAuthority,
+    EgressBrokerReport, EgressCeilings, EgressContract, EgressPosture, EgressRefusal, EgressWitness, MediationDepth,
+    MediationDepthScope, RangePolicy, EGRESS_CONTRACT_SCHEMA,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
 pub use lease::{
