@@ -629,6 +629,20 @@ Stated positively so it can be quoted:
 
 ---
 
+## A separate mechanism: the gateway's personal-observe deployment profile
+
+Everything above governs the Claude Code launch-env protection this page is
+about. A different, gateway-side mechanism — `observation.profile =
+personal_observe` (HORO-1375) — lets a **local, personal** deployment default
+un-overridden agents to `Observe` (audited, not enforced) instead of
+`Enforce`. It has its own best-effort enterprise-coupling gate and its own
+named coverage gaps (G1-G7), which are the gateway-side analogue of the
+"known bypasses" theme on this page. See
+[Personal-observe deployment profile](../security/personal-observe-profile.md#known-coverage-gaps)
+for the full gap table — do not conflate the two mechanisms' gaps.
+
+---
+
 ## References
 
 * [Onboarding a Developer Integration](onboarding.md)

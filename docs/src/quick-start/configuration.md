@@ -246,6 +246,23 @@ than warning. [Sensitive-data
 projection](../operations/sensitive-data-projection.md) is the operator contract
 for both, and for reverting.
 
+### Personal-observe deployment profile (`aa-api-server`, local mode only)
+
+The local single-process `aa-api-server` entrypoint reads one more key, in
+`~/.aasm/config.yaml`:
+
+```yaml
+observation:
+  profile: personal_observe   # default: standard
+```
+
+or the equivalent env override, `AASM_OBSERVATION_PROFILE=personal_observe`.
+It changes the fallback enforcement mode for an agent with no per-agent
+override from `Enforce` to `Observe` (audited, not enforced), and refuses to
+start on a deployment that looks enterprise-managed. See [Personal-observe
+deployment profile](../security/personal-observe-profile.md) for the full
+contract, boot-refusal signal list, and known coverage gaps.
+
 ## Output format
 
 Most list/get commands accept `--output table|json|yaml` (default `table`). Use
