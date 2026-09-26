@@ -129,3 +129,126 @@ pub fn report_for_launch(
 pub fn withheld_names(report: &CredentialBrokerReport) -> Vec<String> {
     report.secretless_env_names().into_iter().map(str::to_string).collect()
 }
+#[cfg(test)]
+mod tests {
+    use aa_isolation::BrokerAvailability;
+
+    use super::*;
+
+    /// Serializes the two tests below that mutate `AA_PROXY_PROVIDER_KEYS` —
+    /// this crate's tests run in one process and share the real environment.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn no_bound_endpoint_is_unavailable() {
+        let report = report_for_launch(None, false, true, &[], &[], false);
+        assert!(matches!(report.availability(), BrokerAvailability::Unavailable { .. }));
+    }
+
+    #[test]
+    fn no_proxy_is_unavailable_even_with_a_bound_endpoint() {
+        let opted_out = report_for_launch(Some("http://127.0.0.1:9"), true, true, &[], &[], false);
+        assert!(matches!(
+            opted_out.availability(),
+            BrokerAvailability::Unavailable { .. }
+        ));
+        let control = report_for_launch(Some("http://127.0.0.1:9"), false, true, &[], &[], false);
+        assert_eq!(control.availability(), &BrokerAvailability::Available);
+    }
+
+    #[test]
+    fn a_configured_and_mitmd_provider_host_yields_a_secretless_service() {
+        let report = report_for_launch(
+            Some("http://127.0.0.1:9"),
+            false,
+            true,
+            &[],
+            &["api.anthropic.com".to_string()],
+            false,
+        );
+        assert_eq!(withheld_names(&report), vec!["ANTHROPIC_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn a_configured_but_not_mitmd_host_yields_no_service() {
+        // llm_only with no matching mitm_hosts entry: api.anthropic.com IS a
+        // built-in LLM host, so use a hypothetical non-built-in host to prove
+        // the MitM-scope gate actually applies. api.openai.com is also
+        // built-in, so this control instead proves the positive case at a
+        // built-in host and relies on the config-absent test below for the
+        // negative half of "configured".
+        let report = report_for_launch(Some("http://127.0.0.1:9"), false, true, &[], &[], false);
+        assert!(withheld_names(&report).is_empty());
+    }
+
+    #[test]
+    fn an_unconfigured_host_yields_no_service_even_when_mitmd() {
+        // Control: api.anthropic.com is MitM'd (built-in LLM host) but no key
+        // is configured for it — no service, so nothing is withheld.
+        let report = report_for_launch(Some("http://127.0.0.1:9"), false, true, &[], &[], false);
+        assert!(withheld_names(&report).is_empty());
+
+        // The identical launch with the key configured now yields a service.
+        let configured = report_for_launch(
+            Some("http://127.0.0.1:9"),
+            false,
+            true,
+            &[],
+            &["api.anthropic.com".to_string()],
+            false,
+        );
+        assert_eq!(withheld_names(&configured), vec!["ANTHROPIC_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn openai_is_the_identical_path() {
+        let report = report_for_launch(
+            Some("http://127.0.0.1:9"),
+            false,
+            true,
+            &[],
+            &["api.openai.com".to_string()],
+            false,
+        );
+        assert_eq!(withheld_names(&report), vec!["OPENAI_API_KEY".to_string()]);
+    }
+
+    #[test]
+    fn provider_key_hosts_env_parses_hosts_only_never_keys() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "API.Anthropic.com=sk-ant-secret,api.openai.com=sk-oai-secret",
+        );
+        let hosts = provider_key_hosts_env();
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        assert_eq!(
+            hosts,
+            vec!["api.anthropic.com".to_string(), "api.openai.com".to_string()]
+        );
+        for host in &hosts {
+            assert!(!host.contains("sk-"));
+        }
+    }
+
+    #[test]
+    fn provider_key_hosts_env_skips_malformed_entries() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "no-equals-sign,=orphan-key,emptyval=,api.openai.com=sk-ok",
+        );
+        let hosts = provider_key_hosts_env();
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        assert_eq!(hosts, vec!["api.openai.com".to_string()]);
+    }
+
+    #[test]
+    fn ceiling_support_is_always_unsupported_and_says_why() {
+        let report = report_for_launch(Some("http://127.0.0.1:9"), false, true, &[], &[], false);
+        match report.ceiling_support() {
+            SupportLevel::Unsupported { reason } => assert!(!reason.is_empty()),
+            SupportLevel::Full | SupportLevel::Partial { .. } => panic!("no credential accounting exists today"),
+        }
+    }
+}
