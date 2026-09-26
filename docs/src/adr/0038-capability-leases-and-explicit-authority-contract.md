@@ -247,6 +247,19 @@ builder would read stronger than the caller meant, the same failure
 to the one place a widened field can be caught against a value the widening call
 cannot also rewrite.
 
+**One deliberate deviation from the original design sketch, worth stating plainly:**
+`DelegationProvenance::parent_delegation` records the `DelegationRule` the *child*
+was actually issued with at derivation (`request.child_delegation`), not the parent
+lease's own `delegation` field verbatim. The two coincide in most cases, but only the
+former makes the re-widening check reachable at all: since `derive_child` requires
+the parent's own rule to already be `DelegableWithNarrowerScope` (the enum's
+maximum value) before it will produce anything, recording the *parent's* value as
+the ceiling would make "current `delegation()` exceeds the recorded ceiling"
+unsatisfiable by construction — there would be no value greater than the maximum to
+exceed it with. Recording what the child itself was issued with is what makes
+`a_derived_lease_re_widened_via_with_delegation_is_refused_at_the_gate` a real,
+passing falsification test rather than a dead branch.
+
 ### 10. Escalation requires independent attribution
 
 A child lease that is wider than, or absent from, its parent's authority is refused
