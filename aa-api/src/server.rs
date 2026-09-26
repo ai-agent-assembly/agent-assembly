@@ -193,7 +193,11 @@ pub async fn serve_local(
     // AAASM-4447: back the registry with the durable `~/.aasm/local.db` shared
     // with `aa-gateway` (not the hermetic temp DB `local_hardened` defaults to),
     // so agents survive restart and match the gateway's legacy-grpc store.
-    let state = AppState::local_hardened_at(auth, crate::state::resolve_local_registry_db_path()).await?;
+    //
+    // HORO-1375: `local_hardened_at` now also roots the audit hash chain in
+    // durable, non-tmp storage (see `LocalDurablePaths::resolve()`) rather
+    // than reseeding it to zero on every boot.
+    let state = AppState::local_hardened_at(auth, crate::state::LocalDurablePaths::resolve()?).await?;
     let config = ApiConfig {
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
