@@ -185,6 +185,7 @@ pub mod plan;
 pub mod planner;
 pub mod report;
 pub mod requirements;
+pub mod scope_order;
 pub mod spec;
 pub mod tx;
 
@@ -232,6 +233,7 @@ pub use report::{
     TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
+pub use scope_order::{order_for, ExactTokenOrder, HostPatternOrder, PathPrefixOrder, ResourceCeilingOrder};
 pub use spec::{
     ControlRequirement, CredentialPosture, DescendantRequirement, ExecutionSpec, IdentityRef, RequirementIntent,
     RequirementPosture, RequirementScope, ResourceLimits,
