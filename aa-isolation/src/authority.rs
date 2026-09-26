@@ -63,9 +63,12 @@
 
 use std::time::SystemTime;
 
+use crate::attenuation::{Ancestry, ParentAuthority};
 use crate::capability::CapabilityDomain;
-use crate::lease::{CapabilityLease, LeaseInvalid};
-use crate::spec::{ExecutionSpec, RequirementScope};
+use crate::lease::{
+    limits_narrower_or_equal, revocation_generation, CapabilityLease, DelegationRule, LeaseInvalid, ScopeOrdering,
+};
+use crate::spec::{ExecutionSpec, IdentityRef, RequirementScope};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -269,16 +272,110 @@ pub enum AuthorityRefusal {
     },
     /// [`EffectiveAuthority::from_spec`] could not be built at all.
     Malformed(AuthorityBuildError),
+    /// The spec claims lineage (a non-empty `IdentityRef.lineage`) but
+    /// `authority_gate` was not handed a resolved
+    /// [`crate::attenuation::ParentAuthority`] for it.
+    ///
+    /// The fail-closed answer to "we could not resolve the claimed parent" —
+    /// never read as "no parent, proceed unattenuated". See
+    /// [`crate::attenuation::Ancestry`].
+    AncestryUnresolved {
+        /// The ancestor agent id the spec's lineage names.
+        claimed_ancestor: String,
+        /// Why resolution failed.
+        detail: String,
+    },
+    /// The resolved parent's own agent id does not appear anywhere in the
+    /// spec's own lineage.
+    AncestryMismatch {
+        /// The resolved parent's agent id.
+        claimed_ancestor: String,
+    },
+    /// A child lease claims authority for `domain` that its parent never held,
+    /// or claims a scope its parent's lease for that domain does not cover —
+    /// and no independently-attributable grant authorizes the difference.
+    ChildExceedsParent {
+        /// The domain whose child lease exceeds its parent's.
+        domain: CapabilityDomain,
+    },
+    /// The per-domain [`crate::lease::ScopeOrder`] could not compare the
+    /// parent's and child's scope for `domain`, and no independently-attributable
+    /// grant authorizes the child's claim.
+    ///
+    /// Fails closed identically to [`ChildExceedsParent`](Self::ChildExceedsParent)
+    /// — kept as a distinct variant because an operator's next action differs:
+    /// this means the scope grammar could not be interpreted at all, not that
+    /// it was interpreted and found too broad.
+    AttenuationIncomparable {
+        /// The domain whose scopes could not be compared.
+        domain: CapabilityDomain,
+    },
+    /// A child lease's `expires_at` is later than its parent's, and no
+    /// independently-attributable grant authorizes the extension.
+    ChildExtendsExpiry {
+        /// The domain whose child lease extends expiry.
+        domain: CapabilityDomain,
+    },
+    /// A child lease's quantitative ceiling exceeds its parent's, and no
+    /// independently-attributable grant authorizes the increase.
+    ChildExceedsLimits {
+        /// The domain whose child lease exceeds a quantitative ceiling.
+        domain: CapabilityDomain,
+    },
+    /// The child lease's recorded [`crate::lease::DelegationProvenance::parent_lease`]
+    /// does not name the parent lease actually held for this domain.
+    ProvenanceMismatch {
+        /// The domain whose provenance does not match.
+        domain: CapabilityDomain,
+    },
+    /// The child lease's current [`crate::lease::CapabilityLease::delegation`]
+    /// exceeds the [`crate::lease::DelegationProvenance::parent_delegation`]
+    /// recorded for it at derivation — the re-widening-after-derivation hole
+    /// a public `with_delegation` call could otherwise reopen.
+    DelegationRightsExceedParent {
+        /// The domain whose delegation rights were widened after derivation.
+        domain: CapabilityDomain,
+    },
+    /// The child lease's recorded
+    /// [`crate::lease::DelegationProvenance::parent_generation`] does not
+    /// match the parent lease's current revocation generation — the
+    /// concurrent-revocation catch on the read side.
+    StaleParentGeneration {
+        /// The domain whose provenance generation is stale.
+        domain: CapabilityDomain,
+    },
+    /// A child lease that is wider than, or absent from, its parent's
+    /// authority is not backed by an independently-attributable
+    /// policy/approval grant.
+    EscalationNotIndependentlyApproved {
+        /// The domain whose escalation was not independently approved.
+        domain: CapabilityDomain,
+    },
 }
 
 impl AuthorityRefusal {
     /// The domain this refusal concerns, when it names one.
+    ///
+    /// `None` for the two ancestry-level refusals
+    /// ([`AncestryUnresolved`](Self::AncestryUnresolved),
+    /// [`AncestryMismatch`](Self::AncestryMismatch)): both are spec-wide facts
+    /// about the launch's claimed lineage, decided before any domain is
+    /// walked, so neither one is about a specific domain.
     pub fn domain(&self) -> Option<CapabilityDomain> {
         match self {
             Self::NoExplicitGrant { domain }
             | Self::LeaseInvalid { domain, .. }
-            | Self::LeaseScopeInsufficient { domain } => Some(*domain),
+            | Self::LeaseScopeInsufficient { domain }
+            | Self::ChildExceedsParent { domain }
+            | Self::AttenuationIncomparable { domain }
+            | Self::ChildExtendsExpiry { domain }
+            | Self::ChildExceedsLimits { domain }
+            | Self::ProvenanceMismatch { domain }
+            | Self::DelegationRightsExceedParent { domain }
+            | Self::StaleParentGeneration { domain }
+            | Self::EscalationNotIndependentlyApproved { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
+            Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
         }
     }
 }
@@ -296,6 +393,70 @@ impl core::fmt::Display for AuthorityRefusal {
                 write!(f, "the lease for domain `{domain}` does not cover the requested scope")
             }
             Self::Malformed(err) => write!(f, "{err}"),
+            Self::AncestryUnresolved {
+                claimed_ancestor,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "spec claims ancestor `{claimed_ancestor}` but its authority could not be resolved: {detail}"
+                )
+            }
+            Self::AncestryMismatch { claimed_ancestor } => {
+                write!(
+                    f,
+                    "resolved parent `{claimed_ancestor}` does not appear in this spec's own lineage"
+                )
+            }
+            Self::ChildExceedsParent { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` claims authority its parent never held"
+                )
+            }
+            Self::AttenuationIncomparable { domain } => {
+                write!(
+                    f,
+                    "the child and parent scopes for domain `{domain}` could not be compared"
+                )
+            }
+            Self::ChildExtendsExpiry { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` expires later than its parent's"
+                )
+            }
+            Self::ChildExceedsLimits { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` exceeds its parent's quantitative ceiling"
+                )
+            }
+            Self::ProvenanceMismatch { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` names a parent lease other than the one actually held"
+                )
+            }
+            Self::DelegationRightsExceedParent { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` was widened past its recorded delegation ceiling"
+                )
+            }
+            Self::StaleParentGeneration { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` was derived from a stale parent generation"
+                )
+            }
+            Self::EscalationNotIndependentlyApproved { domain } => {
+                write!(
+                    f,
+                    "the child lease for domain `{domain}` exceeds its parent's authority with no \
+                     independently-attributable approval"
+                )
+            }
         }
     }
 }
@@ -341,8 +502,57 @@ fn covered(state: &AuthorityState, domain: CapabilityDomain, scope: &Requirement
 /// fails it does not reach `negotiate`, so there is no downstream reader that
 /// benefits from a complete list the way `PlanRefusal`'s reader (an operator
 /// deciding what to change) does.
-pub fn authority_gate(spec: &ExecutionSpec, now: SystemTime) -> Result<AuthorityWitness, AuthorityRefusal> {
+///
+/// # Ancestry (AAASM-6161)
+///
+/// `ancestry` is the parameter that lets this function ask a second,
+/// independent question once `spec` claims lineage: not just "was this
+/// authorized" but "was this authorized *by the parent that stands behind
+/// it*". See [`attenuation_applies`] for exactly when that question is asked,
+/// and `crate::attenuation` for why an unresolved claimed parent is refused
+/// rather than treated as no parent at all.
+pub fn authority_gate(
+    spec: &ExecutionSpec,
+    ancestry: &Ancestry,
+    now: SystemTime,
+) -> Result<AuthorityWitness, AuthorityRefusal> {
     let authority = EffectiveAuthority::from_spec(spec).map_err(AuthorityRefusal::Malformed)?;
+
+    let parent = if attenuation_applies(spec, ancestry) {
+        match ancestry {
+            Ancestry::Parent(parent) => Some(parent.as_ref()),
+            Ancestry::Root => {
+                return Err(AuthorityRefusal::AncestryUnresolved {
+                    claimed_ancestor: spec.identity().lineage.last().cloned().unwrap_or_default(),
+                    detail: "this spec claims lineage but no parent authority was resolved for it".to_string(),
+                });
+            }
+            Ancestry::UnresolvedParent {
+                claimed_ancestor,
+                detail,
+            } => {
+                return Err(AuthorityRefusal::AncestryUnresolved {
+                    claimed_ancestor: claimed_ancestor.clone(),
+                    detail: detail.clone(),
+                });
+            }
+        }
+    } else {
+        None
+    };
+
+    if let Some(parent) = parent {
+        if !spec
+            .identity()
+            .lineage
+            .iter()
+            .any(|ancestor| ancestor == &parent.identity().agent_id)
+        {
+            return Err(AuthorityRefusal::AncestryMismatch {
+                claimed_ancestor: parent.identity().agent_id.clone(),
+            });
+        }
+    }
 
     for requirement in spec.requirements() {
         let domain = requirement.domain();
@@ -353,9 +563,117 @@ pub fn authority_gate(spec: &ExecutionSpec, now: SystemTime) -> Result<Authority
             }
         }
         covered(state, domain, requirement.scope())?;
+
+        if let Some(parent) = parent {
+            check_attenuation(parent, domain, state, spec.identity())?;
+        }
     }
 
     Ok(AuthorityWitness(()))
+}
+
+/// Whether ancestry attenuation applies to `spec` at all.
+///
+/// Both conditions must hold: a spec with no claimed lineage has nothing to
+/// attenuate against, and a spec that never opted into the lease system
+/// ([`EffectiveAuthority::is_lease_aware`]) is still on the rc.7
+/// compatibility residual, where an ancestry question was never asked before
+/// this ticket and must not start being asked now. In particular,
+/// `aasm run --root-agent` sets lineage today but no policy path issues a
+/// lease yet, so this predicate is false for every real launch until a
+/// lease-issuing policy source exists — see `aa-cli`'s `IsolationPlan` for
+/// where that residual is documented.
+fn attenuation_applies(spec: &ExecutionSpec, _ancestry: &Ancestry) -> bool {
+    !spec.identity().lineage.is_empty() && EffectiveAuthority::is_lease_aware(spec)
+}
+
+/// A stable numeric rank for [`DelegationRule`], used only to compare a
+/// child's *current* rule against the ceiling recorded in its
+/// [`crate::lease::DelegationProvenance`] — [`DelegationRule`] intentionally
+/// carries no [`Ord`] impl of its own since a two-value enum has no ordering
+/// question outside this one check.
+fn delegation_rank(rule: DelegationRule) -> u8 {
+    match rule {
+        DelegationRule::NotDelegable => 0,
+        DelegationRule::DelegableWithNarrowerScope => 1,
+    }
+}
+
+/// Check one domain's leased child authority against its parent's, per
+/// AAASM-6161's monotonic-attenuation invariant.
+///
+/// Returns `Ok(())` immediately for any [`AuthorityState`] other than
+/// [`AuthorityState::Leased`] — [`AuthorityState::Denied`] was already refused
+/// by [`covered`], and [`AuthorityState::CompatibilityResidual`] carries no
+/// lease for ancestry to attenuate.
+fn check_attenuation(
+    parent: &ParentAuthority,
+    domain: CapabilityDomain,
+    state: &AuthorityState,
+    child_identity: &IdentityRef,
+) -> Result<(), AuthorityRefusal> {
+    let AuthorityState::Leased(child_lease) = state else {
+        return Ok(());
+    };
+    let parent_lease = parent.lease_for(domain);
+
+    // The first bullet a child's claim actually violates, if any. `None`
+    // means the child is provably within the ceiling its parent granted.
+    let violation = match parent_lease {
+        None => Some(AuthorityRefusal::ChildExceedsParent { domain }),
+        Some(parent_lease) => {
+            match crate::scope_order::order_for(domain).compare(parent_lease.scope(), child_lease.scope()) {
+                ScopeOrdering::Wider => Some(AuthorityRefusal::ChildExceedsParent { domain }),
+                ScopeOrdering::Incomparable => Some(AuthorityRefusal::AttenuationIncomparable { domain }),
+                ScopeOrdering::Narrower | ScopeOrdering::Equal => {
+                    if child_lease.expires_at() > parent_lease.expires_at() {
+                        Some(AuthorityRefusal::ChildExtendsExpiry { domain })
+                    } else if let Some(child_limits) = child_lease.limits() {
+                        let parent_limits = parent_lease.limits().copied().unwrap_or_default();
+                        if limits_narrower_or_equal(&parent_limits, child_limits) {
+                            None
+                        } else {
+                            Some(AuthorityRefusal::ChildExceedsLimits { domain })
+                        }
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+    };
+
+    if violation.is_some() {
+        return if child_lease
+            .basis()
+            .is_independently_attributable(child_identity, parent.identity())
+        {
+            // An independent issuer explicitly granted authority beyond what
+            // the parent held — this is escalation, not attenuation, and it
+            // is authorized. Provenance-integrity checks below are about a
+            // claimed *derivation* from this parent, which an independent
+            // grant is not, so they do not apply here.
+            Ok(())
+        } else {
+            Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
+        };
+    }
+
+    // Provenance integrity: only meaningful for a child that claims to be a
+    // derivation of the parent's own lease for this domain.
+    if let (Some(parent_lease), Some(provenance)) = (parent_lease, child_lease.provenance()) {
+        if provenance.parent_lease != *parent_lease.id() {
+            return Err(AuthorityRefusal::ProvenanceMismatch { domain });
+        }
+        if delegation_rank(child_lease.delegation()) > delegation_rank(provenance.parent_delegation) {
+            return Err(AuthorityRefusal::DelegationRightsExceedParent { domain });
+        }
+        if provenance.parent_generation != revocation_generation(parent_lease.revocation()) {
+            return Err(AuthorityRefusal::StaleParentGeneration { domain });
+        }
+    }
+
+    Ok(())
 }
 
 /// Build the authority a spec actually carries, for reporting purposes only.
@@ -430,7 +748,7 @@ mod tests {
                 RequirementScope::Selectors(vec!["/workspace".to_string()]),
             ),
         );
-        assert!(authority_gate(&spec, t(1_500)).is_ok());
+        assert!(authority_gate(&spec, &Ancestry::Root, t(1_500)).is_ok());
     }
 
     /// Falsification target 2a: an expired lease denies.
@@ -441,7 +759,7 @@ mod tests {
             spec,
             lease_for(CapabilityDomain::FilesystemRead, RequirementScope::Whole),
         );
-        let result = authority_gate(&spec, t(2_500));
+        let result = authority_gate(&spec, &Ancestry::Root, t(2_500));
         assert_eq!(
             result,
             Err(AuthorityRefusal::LeaseInvalid {
@@ -462,7 +780,7 @@ mod tests {
             },
         );
         let spec = attach_lease(spec, revoked);
-        let result = authority_gate(&spec, t(1_500));
+        let result = authority_gate(&spec, &Ancestry::Root, t(1_500));
         assert!(
             matches!(result, Err(AuthorityRefusal::LeaseInvalid { domain, .. }) if domain == CapabilityDomain::NetworkEgress)
         );
@@ -483,7 +801,7 @@ mod tests {
             ),
         );
         assert_eq!(
-            authority_gate(&spec, t(1_500)),
+            authority_gate(&spec, &Ancestry::Root, t(1_500)),
             Err(AuthorityRefusal::LeaseScopeInsufficient {
                 domain: CapabilityDomain::FilesystemRead
             })
@@ -534,7 +852,7 @@ mod tests {
         );
 
         assert_eq!(
-            authority_gate(&spec, t(1_500)),
+            authority_gate(&spec, &Ancestry::Root, t(1_500)),
             Err(AuthorityRefusal::NoExplicitGrant {
                 domain: CapabilityDomain::Credential
             }),
@@ -550,7 +868,7 @@ mod tests {
         let stale = lease_for(CapabilityDomain::FilesystemRead, RequirementScope::Whole)
             .with_schema_version(crate::lease::LEASE_SCHEMA_VERSION + 1);
         let spec = attach_lease(spec, stale);
-        let result = authority_gate(&spec, t(1_500));
+        let result = authority_gate(&spec, &Ancestry::Root, t(1_500));
         assert!(matches!(
             result,
             Err(AuthorityRefusal::LeaseInvalid {
@@ -570,7 +888,7 @@ mod tests {
             .with_requirement(ControlRequirement::prevent(CapabilityDomain::FilesystemWrite))
             .with_requirement(ControlRequirement::observe(CapabilityDomain::NetworkEgress));
         assert!(!EffectiveAuthority::is_lease_aware(&spec));
-        assert!(authority_gate(&spec, t(1_500)).is_ok());
+        assert!(authority_gate(&spec, &Ancestry::Root, t(1_500)).is_ok());
     }
 
     /// The same legacy spec, spot-checked: attach one lease anywhere and the
@@ -580,7 +898,7 @@ mod tests {
     #[test]
     fn adding_any_lease_switches_the_whole_spec_out_of_the_legacy_path() {
         let spec = base_spec().with_requirement(ControlRequirement::prevent(CapabilityDomain::FilesystemWrite));
-        assert!(authority_gate(&spec, t(1_500)).is_ok());
+        assert!(authority_gate(&spec, &Ancestry::Root, t(1_500)).is_ok());
 
         let spec = attach_lease(
             spec,
@@ -588,7 +906,7 @@ mod tests {
         );
         assert!(EffectiveAuthority::is_lease_aware(&spec));
         assert_eq!(
-            authority_gate(&spec, t(1_500)),
+            authority_gate(&spec, &Ancestry::Root, t(1_500)),
             Err(AuthorityRefusal::NoExplicitGrant {
                 domain: CapabilityDomain::FilesystemWrite
             })
@@ -617,7 +935,7 @@ mod tests {
             spec,
             lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
         );
-        assert!(authority_gate(&spec, t(1_500)).is_ok());
+        assert!(authority_gate(&spec, &Ancestry::Root, t(1_500)).is_ok());
     }
 
     #[test]
@@ -632,7 +950,7 @@ mod tests {
             lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
         );
         assert_eq!(
-            authority_gate(&spec, t(1_500)),
+            authority_gate(&spec, &Ancestry::Root, t(1_500)),
             Err(AuthorityRefusal::Malformed(AuthorityBuildError::DuplicateLeaseDomain(
                 CapabilityDomain::NetworkEgress
             )))
@@ -647,7 +965,7 @@ mod tests {
     #[test]
     fn authority_gate_is_the_only_source_of_a_witness() {
         let spec = base_spec();
-        let witness = authority_gate(&spec, t(1_500));
+        let witness = authority_gate(&spec, &Ancestry::Root, t(1_500));
         assert!(witness.is_ok());
     }
 
@@ -655,5 +973,573 @@ mod tests {
     /// on the test's own vocabulary — exercises the real builder.
     fn attach_lease(spec: ExecutionSpec, lease: CapabilityLease) -> ExecutionSpec {
         spec.with_lease(lease)
+    }
+
+    // -----------------------------------------------------------------
+    // AAASM-6161: monotonic capability attenuation across ancestry.
+    // -----------------------------------------------------------------
+
+    mod attenuation_tests {
+        use super::*;
+        use crate::attenuation::ParentAuthority;
+        use crate::lease::{ChildLeaseRequest, DelegationRule, InheritanceMode};
+        use crate::scope_order::PathPrefixOrder;
+
+        fn parent_identity() -> IdentityRef {
+            IdentityRef::root("parent-agent")
+        }
+
+        fn child_identity() -> IdentityRef {
+            IdentityRef::root("child-agent").with_ancestor("parent-agent")
+        }
+
+        /// A parent spec carrying one delegable `FilesystemRead` lease over
+        /// `/workspace`, already gated so a real [`AuthorityWitness`] backs
+        /// the returned [`ParentAuthority`].
+        fn gated_parent(lease: CapabilityLease) -> ParentAuthority {
+            let spec = ExecutionSpec::new("echo", parent_identity()).with_lease(lease);
+            let witness = authority_gate(&spec, &Ancestry::Root, t(1_500)).expect("parent must gate cleanly");
+            ParentAuthority::from_gated_spec(&spec, &witness)
+        }
+
+        fn parent_fs_lease(scope: RequirementScope) -> CapabilityLease {
+            CapabilityLease::new(
+                crate::lease::LeaseId::new("parent-fs-lease"),
+                parent_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope,
+                t(1_000),
+                t(5_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+            )
+            .with_delegation(DelegationRule::DelegableWithNarrowerScope)
+        }
+
+        fn child_spec_with_lease(lease: CapabilityLease, scope: RequirementScope) -> ExecutionSpec {
+            ExecutionSpec::new("echo", child_identity())
+                .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(scope))
+                .with_lease(lease)
+        }
+
+        /// Positive control (§4.2): without this passing, every negative test
+        /// below would be equally well satisfied by a gate that refuses
+        /// everything.
+        #[test]
+        fn a_narrower_child_is_derived_and_passes_the_gate() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("a narrower child scope must derive");
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            let child_spec = child_spec_with_lease(
+                child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+            );
+            assert!(authority_gate(&child_spec, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// §4.3: a child requesting a path outside its parent's grant is
+        /// refused, even though the lease is otherwise well-formed.
+        #[test]
+        fn a_child_requesting_a_path_outside_its_parents_grant_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let wider_child_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let child_spec = child_spec_with_lease(
+                wider_child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]),
+            );
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+        }
+
+        /// A child claiming a domain its parent's authority never covered at
+        /// all — not merely a narrower/wider scope of the same domain.
+        #[test]
+        fn a_child_requesting_a_domain_its_parent_never_held_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let network_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-net-lease"),
+                child_identity(),
+                CapabilityDomain::NetworkEgress,
+                RequirementScope::Whole,
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let child_spec = ExecutionSpec::new("echo", child_identity())
+                .with_requirement(ControlRequirement::observe(CapabilityDomain::NetworkEgress))
+                .with_lease(network_lease);
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::NetworkEgress
+                })
+            );
+        }
+
+        /// A child cannot extend its own expiry beyond its parent's, even
+        /// when its scope is otherwise identical.
+        #[test]
+        fn a_child_cannot_extend_expiry_beyond_its_parent() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let overextended_child = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                t(1_000),
+                t(9_999),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let child_spec = child_spec_with_lease(
+                overextended_child,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            );
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+        }
+
+        /// A child cannot raise a quantitative ceiling above its parent's.
+        #[test]
+        fn a_child_cannot_raise_a_quantitative_ceiling_above_its_parent() {
+            let mut parent_lease =
+                parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            parent_lease = parent_lease.with_limits(crate::spec::ResourceLimits {
+                max_memory_bytes: Some(1_000),
+                ..Default::default()
+            });
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let mut over_limit_child = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            over_limit_child = over_limit_child.with_limits(crate::spec::ResourceLimits {
+                max_memory_bytes: Some(2_000),
+                ..Default::default()
+            });
+            let child_spec = child_spec_with_lease(
+                over_limit_child,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            );
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+        }
+
+        /// Falsification target for the `with_delegation` re-widening hole:
+        /// a derived child's delegation flag, widened after derivation via
+        /// the public builder, is caught at the gate even though the lease's
+        /// scope and expiry are both perfectly in-bounds.
+        #[test]
+        fn a_derived_lease_re_widened_via_with_delegation_is_refused_at_the_gate() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let derived = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("a narrower child scope must derive");
+            // Re-widen the delegation flag after derivation, via the public
+            // builder — this is the exact hole the gate must close.
+            let widened = derived.with_delegation(DelegationRule::DelegableWithNarrowerScope);
+
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            let child_spec = child_spec_with_lease(
+                widened,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+            );
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::DelegationRightsExceedParent {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+        }
+
+        /// §4.4: unknown parent is not unrestricted — a spec claiming
+        /// lineage with no resolved parent is refused, and the identical
+        /// spec with a resolved parent passes, proving the refusal is about
+        /// the ancestry and not the requirement shape.
+        #[test]
+        fn a_lease_aware_spec_claiming_lineage_with_no_resolved_parent_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("a narrower child scope must derive");
+            let child_spec = child_spec_with_lease(
+                child_lease.clone(),
+                RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+            );
+
+            assert_eq!(
+                authority_gate(&child_spec, &Ancestry::Root, t(1_500)),
+                Err(AuthorityRefusal::AncestryUnresolved {
+                    claimed_ancestor: "parent-agent".to_string(),
+                    detail: "this spec claims lineage but no parent authority was resolved for it".to_string(),
+                })
+            );
+
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            assert!(authority_gate(&child_spec, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// A resolved parent whose agent id is absent from the child's own
+        /// lineage is refused.
+        #[test]
+        fn a_parent_whose_agent_id_is_absent_from_the_childs_lineage_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease.clone());
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: IdentityRef::root("child-agent").with_ancestor("someone-else"),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("a narrower child scope must derive");
+            let child_spec = ExecutionSpec::new("echo", IdentityRef::root("child-agent").with_ancestor("someone-else"))
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(
+                        RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
+                    ),
+                )
+                .with_lease(child_lease);
+
+            assert_eq!(
+                authority_gate(&child_spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::AncestryMismatch {
+                    claimed_ancestor: "parent-agent".to_string()
+                })
+            );
+        }
+
+        /// A root launch and a legacy no-lease spec are both unaffected by
+        /// ancestry attenuation — the rc.7 compatibility regression.
+        #[test]
+        fn a_root_launch_and_a_legacy_no_lease_spec_are_unaffected() {
+            let root_spec =
+                base_spec().with_requirement(ControlRequirement::prevent(CapabilityDomain::FilesystemWrite));
+            assert!(!attenuation_applies(&root_spec, &Ancestry::Root));
+            assert!(authority_gate(&root_spec, &Ancestry::Root, t(1_500)).is_ok());
+
+            let legacy_spec = ExecutionSpec::new("echo", child_identity())
+                .with_requirement(ControlRequirement::prevent(CapabilityDomain::FilesystemWrite));
+            assert!(!EffectiveAuthority::is_lease_aware(&legacy_spec));
+            assert!(!attenuation_applies(&legacy_spec, &Ancestry::Root));
+            assert!(authority_gate(&legacy_spec, &Ancestry::Root, t(1_500)).is_ok());
+        }
+
+        /// §4.5: a grandchild cannot recover authority removed at the child
+        /// level — nested attenuation is monotonic by construction because a
+        /// grandchild's `ParentAuthority` is built from the child's own
+        /// already-attenuated spec and witness, never from the grandparent's.
+        #[test]
+        fn a_grandchild_cannot_recover_authority_removed_at_the_child_level() {
+            let grandparent_lease =
+                parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let grandparent = gated_parent(grandparent_lease.clone());
+            let grandparent_ancestry = Ancestry::Parent(Box::new(grandparent));
+
+            // Child attenuates to `/workspace/a`.
+            let child_lease = grandparent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::DelegableWithNarrowerScope,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("a narrower child scope must derive");
+            let child_spec = child_spec_with_lease(
+                child_lease.clone(),
+                RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]),
+            );
+            let child_witness = authority_gate(&child_spec, &grandparent_ancestry, t(1_500))
+                .expect("child must gate against grandparent");
+            let child_as_parent = ParentAuthority::from_gated_spec(&child_spec, &child_witness);
+            let child_ancestry = Ancestry::Parent(Box::new(child_as_parent));
+
+            // Lineage names the whole ancestor chain, outermost first — both
+            // the grandparent and the child — so the mismatch check passes
+            // whichever ancestry (the child's or the grandparent's directly,
+            // per control (ii) below) this spec is gated against.
+            let grandchild_identity = IdentityRef::root("grandchild-agent")
+                .with_ancestor("parent-agent")
+                .with_ancestor("child-agent");
+
+            // The grandchild asking for authority the grandparent granted
+            // but the child attenuated away — `/workspace/b` is within the
+            // grandparent's grant but outside the child's own narrower one.
+            let escaping_grandchild_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("grandchild-fs-lease"),
+                grandchild_identity.clone(),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/b".to_string()]),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let escaping_spec = ExecutionSpec::new("echo", grandchild_identity.clone())
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(
+                        RequirementScope::Selectors(vec!["permit-only:/workspace/b".to_string()]),
+                    ),
+                )
+                .with_lease(escaping_grandchild_lease);
+            assert_eq!(
+                authority_gate(&escaping_spec, &child_ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // Control (i): a grandchild asking for a path still inside the
+            // child's own narrower grant succeeds — the chain is not
+            // refuse-everything.
+            let inbound_grandchild_lease = child_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("grandchild-fs-lease-ok"),
+                        child_subject: grandchild_identity.clone(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a/deep".to_string()]),
+                        child_expires_at: t(3_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_200),
+                )
+                .expect("a narrower grandchild scope must derive");
+            let inbound_spec = ExecutionSpec::new("echo", grandchild_identity.clone())
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(
+                        RequirementScope::Selectors(vec!["permit-only:/workspace/a/deep".to_string()]),
+                    ),
+                )
+                .with_lease(inbound_grandchild_lease);
+            assert!(authority_gate(&inbound_spec, &child_ancestry, t(1_500)).is_ok());
+
+            // Control (ii): the identical `/workspace/b` request, built
+            // against the *grandparent's* witness directly, succeeds — the
+            // refusal above comes from the child's attenuated ceiling, not
+            // from the request's shape.
+            let against_grandparent_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("grandchild-fs-lease-b"),
+                grandchild_identity.clone(),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/b".to_string()]),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let against_grandparent_spec = ExecutionSpec::new("echo", grandchild_identity)
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(
+                        RequirementScope::Selectors(vec!["permit-only:/workspace/b".to_string()]),
+                    ),
+                )
+                .with_lease(against_grandparent_lease);
+            assert!(authority_gate(&against_grandparent_spec, &grandparent_ancestry, t(1_500)).is_ok());
+        }
+
+        /// §4.7: a wider child lease is refused unless an independent issuer
+        /// approved it — three bases in one test so the admission is a
+        /// decision, not an accident of matching strings.
+        #[test]
+        fn a_wider_child_lease_is_refused_unless_an_independent_issuer_approved_it() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
+
+            // (i) issuer == parent subject: refused.
+            let issuer_is_parent = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-i"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(parent_identity(), "self-approved by parent")
+                    .with_approval_ref("approval-1"),
+            );
+            let spec_i = child_spec_with_lease(issuer_is_parent, wider_scope.clone());
+            assert_eq!(
+                authority_gate(&spec_i, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // (ii) issuer == child subject: refused (no self-approval).
+            let issuer_is_child = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-ii"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(child_identity(), "self-approved by child")
+                    .with_approval_ref("approval-2"),
+            );
+            let spec_ii = child_spec_with_lease(issuer_is_child, wider_scope.clone());
+            assert_eq!(
+                authority_gate(&spec_ii, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // (iii) a third-party issuer with an approval reference: admitted.
+            let issuer_is_third_party = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-iii"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "explicit break-glass approval")
+                    .with_approval_ref("approval-3"),
+            );
+            let spec_iii = child_spec_with_lease(issuer_is_third_party, wider_scope);
+            assert!(authority_gate(&spec_iii, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// §4.3: a child cannot reuse a parent credential lease unless
+        /// delegation permits it — the default-`NotDelegable` control on the
+        /// `Credential` domain family.
+        #[test]
+        fn a_child_cannot_reuse_a_parent_credential_lease_unless_delegation_permits_it() {
+            let parent_cred_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("parent-cred-lease"),
+                parent_identity(),
+                CapabilityDomain::Credential,
+                RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
+                t(1_000),
+                t(5_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+            );
+            // Default `NotDelegable`.
+            let denied = parent_cred_lease.derive_child(
+                ChildLeaseRequest {
+                    child_id: crate::lease::LeaseId::new("child-cred-lease"),
+                    child_subject: child_identity(),
+                    child_scope: RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
+                    child_expires_at: t(2_000),
+                    mode: InheritanceMode::Same,
+                    child_delegation: DelegationRule::NotDelegable,
+                    child_limits: None,
+                },
+                &crate::scope_order::ExactTokenOrder,
+                t(1_100),
+            );
+            assert_eq!(denied, Err(crate::lease::DelegationDenied::NotDelegable));
+
+            // Control: the same parent, explicitly delegable, with a
+            // narrower name set, succeeds.
+            let delegable_parent = parent_cred_lease.with_delegation(DelegationRule::DelegableWithNarrowerScope);
+            let allowed = delegable_parent.derive_child(
+                ChildLeaseRequest {
+                    child_id: crate::lease::LeaseId::new("child-cred-lease-2"),
+                    child_subject: child_identity(),
+                    child_scope: RequirementScope::Selectors(vec!["permit-only:API_TOKEN".to_string()]),
+                    child_expires_at: t(2_000),
+                    mode: InheritanceMode::Same,
+                    child_delegation: DelegationRule::NotDelegable,
+                    child_limits: None,
+                },
+                &crate::scope_order::ExactTokenOrder,
+                t(1_100),
+            );
+            assert!(allowed.is_ok());
+        }
     }
 }
