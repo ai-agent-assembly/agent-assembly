@@ -186,9 +186,19 @@ async fn personal_observe_deny_is_audited_dry_run_and_survives_a_restart() {
     while std::time::Instant::now() < deadline {
         if let Ok(raw) = tokio::fs::read_to_string(&chain_path).await {
             for line in raw.lines().filter(|l| !l.is_empty()) {
-                let v: serde_json::Value = serde_json::from_str(line).unwrap();
-                if v.get("dry_run") == Some(&serde_json::Value::Bool(true)) {
-                    found = Some(v);
+                let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+                // `AuditEntry.payload` is a JSON-ENCODED STRING field (see
+                // `aa-core/src/audit.rs`'s `AuditEntry` struct), not a nested
+                // object — the dry_run/shadow_decision fields set by
+                // `record_audit` live inside that string, one parse deeper.
+                let Some(payload_str) = entry.get("payload").and_then(|p| p.as_str()) else {
+                    continue;
+                };
+                let Ok(payload) = serde_json::from_str::<serde_json::Value>(payload_str) else {
+                    continue;
+                };
+                if payload.get("dry_run") == Some(&serde_json::Value::Bool(true)) {
+                    found = Some(payload);
                     break;
                 }
             }

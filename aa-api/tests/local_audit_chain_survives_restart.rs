@@ -148,10 +148,13 @@ async fn audit_chain_resumes_hash_and_seq_across_a_simulated_restart() {
     );
     let last_before: serde_json::Value = serde_json::from_str(lines_before.last().unwrap()).unwrap();
     let last_seq_before = last_before["seq"].as_u64().expect("seq field");
-    let last_hash_before = last_before["entry_hash"]
-        .as_str()
-        .expect("entry_hash field")
-        .to_string();
+    // `entry_hash` is a `[u8; 32]`, which serde serializes as a JSON array of
+    // numbers, not a hex string — compare the raw `Value`, not `.as_str()`.
+    let last_hash_before = last_before["entry_hash"].clone();
+    assert!(
+        last_hash_before.is_array(),
+        "entry_hash must serialize as a JSON array of 32 numbers, got: {last_hash_before:?}"
+    );
 
     // Drop state #1 entirely — simulating process exit. `tmp` (the
     // directory) is NOT dropped, so the durable files survive.
@@ -204,8 +207,7 @@ async fn audit_chain_resumes_hash_and_seq_across_a_simulated_restart() {
     // pre-restart entry -> the first post-restart entry).
     let entry_2: serde_json::Value = serde_json::from_str(lines_after[2]).unwrap();
     assert_eq!(
-        entry_2["previous_hash"].as_str().unwrap(),
-        last_hash_before,
+        entry_2["previous_hash"], last_hash_before,
         "the first post-restart entry's previous_hash must chain onto the last pre-restart entry_hash"
     );
 
