@@ -60,7 +60,13 @@
 //! credential in place of the operator's own is a different mechanism with a
 //! different trust boundary, and this module deliberately does not build one:
 //! its whole vocabulary is *which names reach the child*, never *what a name is
-//! worth*.
+//! worth*. [`crate::credential_broker`] is the module that now does that
+//! (AAASM-6164) — it states what a launch requires of credential brokerage and
+//! gates on whether the available mechanism (`aa-proxy`'s existing egress
+//! credential injection, unchanged by that ticket) actually satisfies it. This
+//! module still owns the name-only removal/delegation classification that
+//! feeds [`CredentialPosture`]; [`crate::credential_broker`] reads that
+//! posture, it does not replace it.
 //!
 //! # Why AASM's own variables are singled out
 //!
