@@ -3865,17 +3865,31 @@ capabilities:
   known_bypasses:
   - only the MitM'd hosts
   - the operator must set the env var
-  - aasm run still hands the child the whole parent environment (C5)
+  - 'AAASM-6164: for a brokered provider name specifically (host MitM''d for this launch AND
+    a key configured for that exact host — currently ANTHROPIC_API_KEY/OPENAI_API_KEY), `aasm
+    run` now withholds it from the child by default (aa-cli/src/commands/run.rs
+    effective_child_env withheld-names pass) and gates the launch on
+    aa_isolation::credential_broker::credential_gate''s posture-matches-brokerage check. The
+    C5 whole-environment-inheritance bypass still applies to every OTHER credential-shaped
+    name — this closes it only for the exact names a real brokerage mechanism covers.'
   - the agent can egress on any path in D3
   evidence:
   - kind: test_unlocated
     describes: aa-proxy/src/credentials.rs:307-322 unit tests
   - kind: gap
     reason: GAP — no end-to-end test proves the substitution reaches upstream
+  - kind: test_unlocated
+    describes: 'AAASM-6164 (unreleased at this manifest''s pinned evidence_tree, rc.7):
+      aa-isolation/src/credential_broker.rs unit tests;
+      aa-isolation-native/tests/linux_confinement_native.rs and
+      adversarial_boundary_native_linux.rs negative-control scenarios (Linux only).
+      Re-cite as `kind: test` with a `path` once a release''s evidence_tree includes them.'
   evidence_runs_on_main: standing
   evidence_quality: unit_only
   target_level: a bounded version of the 'never enters the agent' claim IS defensible, with
     all four conditions named
+  tickets:
+  - AAASM-6164
   notes: DISTINCT from C3. AAASM-5528 E4 correctly found the DispatchTool secrets path dead;
     this is a second, separately-named mechanism that ships and works. Conflating them under
     'credential injection' is what produced the W16/W17 over-claims.
