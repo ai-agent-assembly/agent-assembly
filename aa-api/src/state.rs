@@ -182,6 +182,14 @@ pub struct AppState {
     /// §9, AAASM-5359). Always present: an export that cannot be attributed
     /// must not happen, so there is no `None` for the handler to fall through.
     pub sensitive_data_export_log: Arc<dyn crate::routes::sensitive_data::ExportAccessLog>,
+    /// The active observation-profile posture (HORO-1375). `Standard` for
+    /// every wiring except [`local_hardened_at`](Self::local_hardened_at)
+    /// under `serve_local`, which sets it to `PersonalObserve` only after the
+    /// boot gate (`aa_core::observation::authorize_personal_observe`) has
+    /// granted it. Read by the posture-reporting projections (topology /
+    /// capability / agent-config / health) so they report the effective mode
+    /// truthfully instead of the raw per-agent override alone.
+    pub observation_profile: aa_core::config::ObservationProfile,
 }
 
 impl AppState {
@@ -601,6 +609,7 @@ impl AppState {
             // than an empty window.
             sensitive_data: None,
             sensitive_data_export_log: crate::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         })
     }
 

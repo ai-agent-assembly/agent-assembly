@@ -90,6 +90,47 @@ pub fn check_local_api_bind_addr(addr: std::net::SocketAddr, auth: &LocalAuth) -
     ))
 }
 
+/// Early, banner-ordering personal-observe boot check for `aa-api-server`
+/// (HORO-1375 §6.3) — same reasoning as [`check_local_api_bind_addr`] and the
+/// AAASM-4572 API-key format gate: called BEFORE the "serving…" banner so a
+/// refusal never follows a false-positive readiness announcement.
+///
+/// This is NOT the source of truth: [`crate::serve_local`] re-runs
+/// [`aa_core::observation::authorize_personal_observe`] itself immediately
+/// before minting the grant it actually uses, mirroring how
+/// `AppState::local_hardened_at` re-validates the API key rather than
+/// trusting this early check's banner-ordering pass.
+pub fn check_personal_observe(addr: std::net::SocketAddr, auth: &LocalAuth) -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = load_config_or_default();
+    aa_core::observation::authorize_personal_observe(
+        aa_core::observation::PersonalObserveDeployment {
+            config: &cfg,
+            bind_addr: addr,
+            auth_is_off: matches!(auth, LocalAuth::Off),
+        },
+        |k| std::env::var(k).ok(),
+    )?;
+    Ok(())
+}
+
+/// Load `GatewayConfig`, falling back to `GatewayConfig::default()` (with
+/// `expand_paths()` applied) on any load error — mirrors
+/// `crate::state::resolve_local_registry_db_path`'s existing fallback so a
+/// missing or malformed `~/.aasm/config.yaml` degrades to defaults instead of
+/// refusing to start (HORO-1375: this must not become a NEW refusal path for
+/// every pre-existing Standard-profile deployment).
+fn load_config_or_default() -> aa_core::config::GatewayConfig {
+    match aa_core::config::GatewayConfig::load() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!(error = %e, "gateway config load failed — using default config");
+            let mut cfg = aa_core::config::GatewayConfig::default();
+            cfg.expand_paths();
+            cfg
+        }
+    }
+}
+
 /// Max accepted gRPC decode size (4 MiB). Parity with `aa-gateway`'s legacy-grpc
 /// services (`aa-gateway/src/server.rs`): the registration endpoint is
 /// attacker-influenceable, so the response/request buffer is bounded explicitly
@@ -190,14 +231,50 @@ pub async fn serve_local(
     addr: std::net::SocketAddr,
     auth: crate::state::LocalAuth,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // AAASM-4447: back the registry with the durable `~/.aasm/local.db` shared
-    // with `aa-gateway` (not the hermetic temp DB `local_hardened` defaults to),
-    // so agents survive restart and match the gateway's legacy-grpc store.
+    // HORO-1375 §6.3 — resolve `GatewayConfig` here as the SOURCE OF TRUTH for
+    // the personal-observe boot gate, mirroring how `local_hardened_at` below
+    // re-validates the API key as the source of truth rather than trusting
+    // the banner-ordering check in `aa-api-server.rs`. Layer 1
+    // (`GatewayConfig::validate`, run inside `GatewayConfig::load()`) is only
+    // advisory; THIS call — Layer 2 — is authoritative.
     //
-    // HORO-1375: `local_hardened_at` now also roots the audit hash chain in
-    // durable, non-tmp storage (see `LocalDurablePaths::resolve()`) rather
-    // than reseeding it to zero on every boot.
-    let state = AppState::local_hardened_at(auth, crate::state::LocalDurablePaths::resolve()?).await?;
+    // `load_config_or_default` — not a bare `GatewayConfig::load()?` — so a
+    // pre-existing Standard-profile deployment with a malformed
+    // `~/.aasm/config.yaml` keeps booting on defaults exactly as it did
+    // before this ticket (via `resolve_local_registry_db_path`'s identical
+    // fallback), instead of a config-parse error newly refusing to start.
+    // This cannot open a weakening path: an unparseable file can never read
+    // as `observation.profile = personal_observe`, so it always lands on
+    // `ObservationProfile::default() == Standard` -> `NotRequested` -> inert.
+    let cfg = load_config_or_default();
+    let personal_observe_outcome = aa_core::observation::authorize_personal_observe(
+        aa_core::observation::PersonalObserveDeployment {
+            config: &cfg,
+            bind_addr: addr,
+            auth_is_off: matches!(auth, crate::state::LocalAuth::Off),
+        },
+        |k| std::env::var(k).ok(),
+    )?;
+    let (policy_default_mode, observation_profile, personal_observe_checked_signals) = match &personal_observe_outcome {
+        aa_core::observation::PersonalObserveOutcome::NotRequested => (
+            aa_gateway::engine::PolicyDefaultMode::enforce(),
+            aa_core::config::ObservationProfile::Standard,
+            None,
+        ),
+        aa_core::observation::PersonalObserveOutcome::Granted(grant) => (
+            aa_gateway::engine::PolicyDefaultMode::personal_observe(grant),
+            aa_core::config::ObservationProfile::PersonalObserve,
+            Some(grant.checked_signal_count()),
+        ),
+    };
+
+    // AAASM-4447: back the registry with the durable `~/.aasm/local.db` shared
+    // with `aa-gateway` (not the hermetic temp paths `local_hardened` defaults
+    // to), so agents survive restart and match the gateway's legacy-grpc
+    // store. HORO-1375 §5: the audit + retention backend is durable too, via
+    // `LocalDurablePaths::resolve()`.
+    let mut state = AppState::local_hardened_at(auth, crate::state::LocalDurablePaths::resolve()?).await?;
+    state.observation_profile = observation_profile;
     let config = ApiConfig {
         bind_addr: addr,
         auth: (*state.auth_config).clone(),
@@ -272,7 +349,15 @@ pub async fn serve_local(
     let telemetry_addr = resolve_telemetry_addr()?;
 
     let rest = run_server_with_spa(config, state, spa_dist.as_deref());
-    let grpc = serve_local_grpc(grpc_addr, registry, policy_engine, approval_queue, audit_chain);
+    let grpc = serve_local_grpc(
+        grpc_addr,
+        registry,
+        policy_engine,
+        approval_queue,
+        audit_chain,
+        policy_default_mode,
+        personal_observe_checked_signals,
+    );
     let telemetry = serve_local_telemetry_grpc(telemetry_addr, secret_tx);
     tokio::try_join!(rest, grpc, telemetry)?;
     Ok(())
@@ -283,22 +368,55 @@ pub async fn serve_local(
 /// interceptor (AAASM-4447 / AAASM-4460 / AAASM-4461 / AAASM-5006).
 ///
 /// `addr` must be a loopback address ([`LOCAL_GRPC_ADDR`]); the caller controls
-/// that. If the port is already in use (e.g. an `aa-gateway` process is already
-/// serving it — in which case that process already serves both registration
-/// and policy enforcement) the bind failure is downgraded to a warning and
-/// this returns `Ok(())` so the REST surface still comes up — the process
-/// degrades to REST-only rather than failing to start. Any other bind error
-/// propagates.
+/// that.
+///
+/// `personal_observe_checked_signals` is `Some(count)` only when the
+/// personal-observe boot gate granted this deployment (HORO-1375 §6.3);
+/// `None` for every Standard-profile deployment.
+///
+/// * Standard profile (`None`): if the port is already in use (e.g. an
+///   `aa-gateway` process is already serving it — in which case that process
+///   already serves both registration and policy enforcement) the bind
+///   failure is downgraded to a warning and this returns `Ok(())` so the REST
+///   surface still comes up — the process degrades to REST-only. Unchanged
+///   from every deployment before this ticket.
+/// * personal-observe (`Some(_)`): an `AddrInUse` bind failure instead
+///   PROPAGATES — refusing to start. Downgrading here would mean the process
+///   already logged (or is about to log) "personal-observe profile ACTIVE"
+///   while the OTHER process holding the port — not this one — is the one
+///   actually enforcing policy, and it is not running personal-observe. That
+///   is the inverse misrepresentation the founder's "never represented as
+///   proven safe" constraint forbids, in the ordinary co-located-gateway
+///   case, not an exotic one.
+///
+/// The ACTIVE boot log (when granted) is emitted only AFTER a successful
+/// bind — never before — so a refusal under personal-observe never has an
+/// ACTIVE line preceding it (test AC-3 N8 / AC-6.6).
+///
+/// Any other bind error always propagates, in both profiles.
 async fn serve_local_grpc(
     addr: std::net::SocketAddr,
     registry: Arc<AgentRegistry>,
     policy_engine: Arc<aa_gateway::PolicyEngine>,
     approval_queue: Arc<aa_runtime::approval::ApprovalQueue>,
     audit_chain: Option<Arc<aa_gateway::audit::AuditChain>>,
+    policy_default_mode: aa_gateway::engine::PolicyDefaultMode,
+    personal_observe_checked_signals: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            if personal_observe_checked_signals.is_some() {
+                return Err(format!(
+                    "refusing to start with observation.profile = personal_observe: the \
+                     agent-plane gRPC port\n{addr} is already held by another process (likely an \
+                     aa-gateway). That process —\nnot this one — is performing policy \
+                     enforcement, and it is not running personal-observe.\nStarting anyway would \
+                     report personal-observe as active while denies are live-enforced.\nStop the \
+                     other process, or remove observation.profile to start REST-only."
+                )
+                .into());
+            }
             tracing::warn!(
                 target: "aa_api::serve_local",
                 %addr,
@@ -315,12 +433,33 @@ async fn serve_local_grpc(
         %addr,
         "aa-api local gRPC AgentLifecycleService + PolicyService listening (loopback-only)"
     );
+    if let Some(checked) = personal_observe_checked_signals {
+        // HORO-1375 §6.6 — verbatim, load-bearing wording. Emitted only after
+        // the successful bind above (see doc comment). `tracing::warn!`, not
+        // `info!`, so it survives default filters.
+        tracing::warn!(
+            target: "aa_api::serve_local",
+            checked_signals = checked,
+            "personal-observe profile ACTIVE (HORO-1375): agents with NO per-agent \
+             enforcement_mode override now default to Observe — policy denies are AUDITED, NOT \
+             ENFORCED. Unchanged and still authoritative: any per-agent enforcement_mode \
+             override (including an enterprise temporary shadow window, which remains capped at \
+             <=72h and still auto-reverts to Enforce) takes precedence over this default. \
+             personal-observe itself does NOT time-expire.\nThe enterprise-coupling detector \
+             that permitted this boot is BEST-EFFORT, NOT UNIVERSAL: it checked only {checked} \
+             named signals and CANNOT observe management channels it does not know about \
+             (MDM/EDR host agents, sidecar or eBPF interception, proxy-level enforcement, \
+             out-of-band org policy). An undetected channel is an UNKNOWN, never a proven-safe \
+             result. Known gaps: docs/src/security/personal-observe-profile.md#known-coverage-gaps"
+        );
+    }
     serve_agent_plane_grpc(
         listener,
         registry,
         policy_engine,
         approval_queue,
         audit_chain,
+        policy_default_mode,
         crate::shutdown::shutdown_signal(),
     )
     .await
@@ -419,6 +558,7 @@ pub async fn serve_agent_plane_grpc(
     policy_engine: Arc<aa_gateway::PolicyEngine>,
     approval_queue: Arc<aa_runtime::approval::ApprovalQueue>,
     audit_chain: Option<Arc<aa_gateway::audit::AuditChain>>,
+    policy_default_mode: aa_gateway::engine::PolicyDefaultMode,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tenancy_mode = aa_gateway::service::TenancyMode::from_env();
@@ -443,7 +583,8 @@ pub async fn serve_agent_plane_grpc(
                 Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 [0u8; 32],
             )
-            .with_shared_chain(chain);
+            .with_shared_chain(chain)
+            .with_policy_default_mode(policy_default_mode);
             router.add_service(InterceptedService::new(
                 PolicyServiceServer::new(policy_svc).max_decoding_message_size(MAX_DECODING_MESSAGE_SIZE),
                 enrich,
@@ -683,5 +824,85 @@ mod tests {
         // The common case this must not gate: AA_API_ADDR generally isn't
         // restricted, only the auth-off combination is.
         assert!(check_local_api_bind_addr(addr("0.0.0.0:7700"), &api_key_auth()).is_ok());
+    }
+
+    // ── HORO-1375 AC-3 N8: gRPC-port-contention behaviour differs by profile ──
+
+    /// personal-observe active + the agent-plane port pre-bound by a decoy
+    /// listener => `serve_local_grpc` returns `Err` (does not start) and NO
+    /// "personal-observe profile ACTIVE" line is emitted (the log call sits
+    /// strictly after the successful-bind branch in the source, so a refusal
+    /// physically cannot reach it).
+    #[tokio::test]
+    async fn n8_personal_observe_refuses_on_grpc_port_contention() {
+        // Bind an ephemeral loopback port and hold it as the "decoy" —
+        // standing in for a co-located `aa-gateway` already on :50051,
+        // without depending on that literal port (CI-safe).
+        let decoy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let contended_addr = decoy.local_addr().unwrap();
+
+        let registry = Arc::new(AgentRegistry::new());
+        let policy_engine = Arc::new(aa_gateway::engine::PolicyEngine::for_testing());
+        let approval_queue = aa_runtime::approval::ApprovalQueue::new();
+
+        let result = serve_local_grpc(
+            contended_addr,
+            registry,
+            policy_engine,
+            approval_queue,
+            None,
+            aa_gateway::engine::PolicyDefaultMode::enforce(), // value is irrelevant to the refusal path
+            Some(18),                                         // Some(_) => personal-observe active
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "personal-observe must refuse to start on gRPC port contention, not degrade to REST-only"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("personal_observe"), "refusal must name the profile: {msg}");
+        // The "no ACTIVE line precedes a refusal" half of N8 is a STRUCTURAL
+        // guarantee, not something this test observes directly: the
+        // `tracing::warn!` ACTIVE log call in `serve_local_grpc`'s source sits
+        // strictly after the successful-bind branch (see that function's doc
+        // comment), so the `Err` return above is reached without the ACTIVE
+        // log statement ever executing — there is no code path that could run
+        // both. Asserting on `msg` here would be vacuous (the refusal string
+        // never contains the ACTIVE line's text regardless of ordering); a
+        // real ordering assertion would need a test-scoped `tracing`
+        // subscriber capturing emitted events, which is more machinery than
+        // this file's existing test style uses. Not asserted at runtime here.
+        //
+        // The decoy listener is still alive/held throughout — proves the
+        // contention was real, not a race where the port freed itself.
+        drop(decoy);
+    }
+
+    /// Same contention scenario under the `Standard` profile: existing
+    /// behaviour (downgrade to REST-only, `Ok(())`) is completely untouched.
+    #[tokio::test]
+    async fn n8_standard_profile_still_downgrades_on_grpc_port_contention() {
+        let decoy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let contended_addr = decoy.local_addr().unwrap();
+
+        let registry = Arc::new(AgentRegistry::new());
+        let policy_engine = Arc::new(aa_gateway::engine::PolicyEngine::for_testing());
+        let approval_queue = aa_runtime::approval::ApprovalQueue::new();
+
+        let result = serve_local_grpc(
+            contended_addr,
+            registry,
+            policy_engine,
+            approval_queue,
+            None,
+            aa_gateway::engine::PolicyDefaultMode::enforce(),
+            None, // Standard profile
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "Standard profile must still downgrade to REST-only, not refuse"
+        );
+        drop(decoy);
     }
 }

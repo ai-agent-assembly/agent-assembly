@@ -68,6 +68,7 @@ async fn served_grpc_listener_is_bound_to_loopback() {
         policy_engine,
         approval_queue,
         None,
+        aa_gateway::engine::PolicyDefaultMode::enforce(),
         pending::<()>(),
     );
     let probe = async {

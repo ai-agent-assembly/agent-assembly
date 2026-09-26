@@ -76,6 +76,7 @@ async fn grpc_registered_agent_is_visible_via_rest() {
         policy_engine,
         approval_queue,
         audit_chain,
+        aa_gateway::engine::PolicyDefaultMode::enforce(),
         pending::<()>(),
     );
 

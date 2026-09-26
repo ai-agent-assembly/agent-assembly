@@ -154,6 +154,7 @@ async fn local_mode_grpc_check_action_returns_a_real_policy_verdict() {
         policy_engine,
         approval_queue,
         audit_chain,
+        aa_gateway::engine::PolicyDefaultMode::enforce(),
         pending::<()>(),
     );
 
