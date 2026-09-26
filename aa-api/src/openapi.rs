@@ -215,6 +215,7 @@ use crate::routes::{
         agents::DailyBurnPointResponse,
         agents::SubtreeBurnResponse,
         agents::EnforcementModeLabel,
+        agents::EnforcementModeSource,
         agents::AgentConfigPolicyRef,
         agents::DeniedResourceShare,
         agents::AgentConfigRecommendation,

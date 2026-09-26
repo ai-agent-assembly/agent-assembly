@@ -182,6 +182,14 @@ pub struct AppState {
     /// §9, AAASM-5359). Always present: an export that cannot be attributed
     /// must not happen, so there is no `None` for the handler to fall through.
     pub sensitive_data_export_log: Arc<dyn crate::routes::sensitive_data::ExportAccessLog>,
+    /// The active observation-profile posture (HORO-1375). `Standard` for
+    /// every wiring except [`local_hardened_at`](Self::local_hardened_at)
+    /// under `serve_local`, which sets it to `PersonalObserve` only after the
+    /// boot gate (`aa_core::observation::authorize_personal_observe`) has
+    /// granted it. Read by the posture-reporting projections (topology /
+    /// capability / agent-config / health) so they report the effective mode
+    /// truthfully instead of the raw per-agent override alone.
+    pub observation_profile: aa_core::config::ObservationProfile,
 }
 
 impl AppState {
@@ -227,6 +235,17 @@ pub enum LocalStateError {
     /// `AA_RATE_LIMIT_RPM` was set to an invalid (non-`u32`) value.
     #[error("invalid AA_RATE_LIMIT_RPM: {0}")]
     RateLimit(String),
+    /// [`LocalDurablePaths::resolve`] could not resolve a durable governance
+    /// audit directory (HORO-1375 §5.1): neither `AA_AUDIT_DIR` nor a system
+    /// data directory could be resolved. Never falls back to a temp path —
+    /// silently forking the audit trail across restarts is a worse outcome
+    /// than refusing to start (AAASM-5959).
+    #[error(
+        "no durable governance audit directory is known on this host: neither AA_AUDIT_DIR nor \
+         a system data directory could be resolved. Set AA_AUDIT_DIR to the directory the audit \
+         trail must be written to."
+    )]
+    NoDurableAuditDir,
 }
 
 /// Resolved authentication posture for the local single-process entrypoint
@@ -268,6 +287,90 @@ impl LocalAuth {
                 let key = crate::auth::api_key::ApiKey::generate().as_str().to_string();
                 (LocalAuth::ApiKey { key }, true)
             }
+        }
+    }
+}
+
+/// Durable filesystem paths [`AppState::local_hardened_at`] backs the
+/// registry and the audit + retention backend with (HORO-1375 §5).
+///
+/// Introduced to fix a defect where the shipped `aa-api-server` entrypoint's
+/// local audit hash chain was rooted under `std::env::temp_dir()` and
+/// reseeded to `[0u8; 32]` / `seq = 0` on every boot — silently forking the
+/// audit trail from itself across every restart, the exact failure
+/// AAASM-5959 argued against for the gateway's own audit sink. `resolve()`
+/// roots the same three concerns in `~/.aasm/` (the audit JSONL directory is
+/// shared with `aa-gateway`'s own `default_audit_dir()` — see
+/// `audit_jsonl_dir`'s docs below for why that widening is intentional).
+#[derive(Debug, Clone)]
+pub struct LocalDurablePaths {
+    /// Durable SQLite file backing the agent registry + approval queue.
+    /// Default `~/.aasm/local.db` — the same file `aa-gateway`'s own
+    /// `main.rs` opens, which is the actual bridge between the two
+    /// processes' registries/queues.
+    pub registry_db: std::path::PathBuf,
+    /// Durable directory the local governance-audit JSONL hash chain is
+    /// written to and resumed from. Resolved via
+    /// `aa_gateway::server::default_audit_dir()` — the SAME directory
+    /// `aa-gateway`'s own `setup_audit` writes `{agent}-{session}.jsonl`
+    /// files to. This is a deliberate unification, not an accident: because
+    /// `AuditReader` globs every `*.jsonl` in its directory,
+    /// `/api/v1/audit/*` now also surfaces gateway-written entries from the
+    /// same host — one governance trail per host, not a silently forked one.
+    pub audit_jsonl_dir: std::path::PathBuf,
+    /// Durable SQLite file backing the audit-storage dual-sink write +
+    /// retention engine. Default `~/.aasm/audit.db`. Kept a SEPARATE file
+    /// from `registry_db` so this does not alter SQLite lock/contention
+    /// behaviour for the registry.
+    pub audit_db: std::path::PathBuf,
+}
+
+impl LocalDurablePaths {
+    /// Production resolution for the shipped `aa-api-server` entrypoint.
+    ///
+    /// `registry_db` / `audit_db` come from [`GatewayConfig`](aa_core::config::GatewayConfig)
+    /// (falling back to `GatewayConfig::default()` with `expand_paths()` on a
+    /// load error, mirroring [`resolve_local_registry_db_path`]'s existing
+    /// fallback so a missing/invalid `~/.aasm/config.yaml` still starts).
+    /// `audit_jsonl_dir` comes from `aa_gateway::server::default_audit_dir()`
+    /// and returns [`LocalStateError::NoDurableAuditDir`] — **never** a temp
+    /// path — when neither `AA_AUDIT_DIR` nor a system data directory
+    /// resolves.
+    pub fn resolve() -> Result<Self, LocalStateError> {
+        let cfg = match aa_core::config::GatewayConfig::load() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "gateway config load failed — using default local durable paths"
+                );
+                let mut cfg = aa_core::config::GatewayConfig::default();
+                cfg.expand_paths();
+                cfg
+            }
+        };
+        let audit_jsonl_dir = aa_gateway::server::default_audit_dir().ok_or(LocalStateError::NoDurableAuditDir)?;
+        Ok(Self {
+            registry_db: cfg.local.storage_path,
+            audit_jsonl_dir,
+            audit_db: cfg.local.audit_storage_path,
+        })
+    }
+
+    /// Hermetic per-process temp paths, for tests only. Mirrors the shape of
+    /// the pre-HORO-1375 hermetic default: a unique per-process-and-call temp
+    /// directory so concurrent tests/processes never collide or read a
+    /// developer's real `~/.aasm/` files.
+    pub fn hermetic_temp() -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let uniq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        let root = std::env::temp_dir().join(format!("aa-api-local-hermetic-{pid}-{uniq}"));
+        Self {
+            registry_db: root.join("registry").join("local.db"),
+            audit_jsonl_dir: root.join("audit-jsonl"),
+            audit_db: root.join("audit").join("audit.db"),
         }
     }
 }
@@ -506,6 +609,7 @@ impl AppState {
             // than an empty window.
             sensitive_data: None,
             sensitive_data_export_log: crate::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         })
     }
 
@@ -541,31 +645,18 @@ impl AppState {
     /// instead binds the durable `~/.aasm/local.db` shared with `aa-gateway` via
     /// [`resolve_local_registry_db_path`].
     pub async fn local_hardened(auth: LocalAuth) -> Result<Self, LocalStateError> {
-        use std::sync::atomic::AtomicUsize;
-
-        // Hermetic default: a unique per-process temp registry DB so concurrent
-        // tests / processes do not collide or read a developer's real
-        // `~/.aasm/local.db`.
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let pid = std::process::id();
-        let registry_db_path = std::env::temp_dir()
-            .join(format!("aa-api-local-registry-{pid}-{uniq}"))
-            .join("local.db");
-        Self::local_hardened_at(auth, registry_db_path).await
+        Self::local_hardened_at(auth, LocalDurablePaths::hermetic_temp()).await
     }
 
     /// Same as [`local_hardened`](Self::local_hardened) but backs the agent
-    /// registry with the durable SQLite database at `registry_db_path`
-    /// (AAASM-4447 / AAASM-4459).
+    /// registry, and the audit + retention backend, with the durable paths in
+    /// `paths` (AAASM-4447 / AAASM-4459, durability-hardened HORO-1375 §5).
     ///
-    /// Split out so the shipped entrypoint can bind the production
-    /// `~/.aasm/local.db` while tests supply a hermetic per-test path.
-    pub async fn local_hardened_at(
-        auth: LocalAuth,
-        registry_db_path: std::path::PathBuf,
-    ) -> Result<Self, LocalStateError> {
-        use std::sync::atomic::AtomicUsize;
+    /// Split out so the shipped entrypoint can bind the production durable
+    /// paths ([`LocalDurablePaths::resolve`]) while tests supply hermetic
+    /// per-test paths ([`LocalDurablePaths::hermetic_temp`]).
+    pub async fn local_hardened_at(auth: LocalAuth, paths: LocalDurablePaths) -> Result<Self, LocalStateError> {
+        let registry_db_path = paths.registry_db;
 
         // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
         // Built *before* the base wiring (AAASM-5102): `local_in_memory` attaches
@@ -706,21 +797,22 @@ impl AppState {
             }
         }
 
-        // --- Audit + retention: open a local SQLite backend and wire the
-        // dual-sink writer + retention engine over it. ---
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let uniq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let pid = std::process::id();
-        let storage_dir = std::env::temp_dir().join(format!("aa-api-local-storage-{pid}-{uniq}"));
-        // AAASM-6146: `tokio::fs`, for the same reason as the registry directory
-        // above — same `async fn`, same runtime worker.
-        tokio::fs::create_dir_all(&storage_dir)
-            .await
-            .map_err(|source| LocalStateError::PolicyWrite {
-                path: storage_dir.clone(),
-                source,
-            })?;
-        let db_path = storage_dir.join("local.db");
+        // --- Audit + retention: open the audit-storage SQLite backend and wire
+        // the dual-sink writer + retention engine over it (HORO-1375 §5 —
+        // rooted in `paths.audit_db` / `paths.audit_jsonl_dir`, which are
+        // durable `~/.aasm/` paths under `LocalDurablePaths::resolve()` and
+        // hermetic per-process temp paths under `hermetic_temp()`). ---
+        let db_path = paths.audit_db;
+        if let Some(parent) = db_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .map_err(|source| LocalStateError::PolicyWrite {
+                        path: db_path.clone(),
+                        source,
+                    })?;
+            }
+        }
         // Opened as the concrete backend rather than through
         // `open_sqlite_backend`, which erases to `Arc<dyn StorageBackend>`:
         // `SensitiveDataProjection` is a *separate* trait a backend opts into
@@ -751,27 +843,47 @@ impl AppState {
         }
         state.sensitive_data = Some(sqlite.clone());
 
-        // Audit writer (dual-sink) over a dedicated JSONL directory; the reader
+        // Audit writer (dual-sink) over the durable JSONL directory; the reader
         // points at the same directory so reads see what the writer persists.
-        let audit_jsonl_dir = storage_dir.join("audit");
+        //
+        // AAASM-6020 / HORO-1375 §5.3 — resume the shared hash chain from the
+        // last persisted entry in this SAME directory/file the gateway's own
+        // `setup_audit` writes to (`aa_gateway::server::default_audit_dir` /
+        // `audit_file_path`, made `pub` for this), rather than reseeding to
+        // zero every boot. This is the fix for the defect where aa-api's local
+        // audit chain silently forked from itself on every restart.
+        tokio::fs::create_dir_all(&paths.audit_jsonl_dir)
+            .await
+            .map_err(|source| LocalStateError::PolicyWrite {
+                path: paths.audit_jsonl_dir.clone(),
+                source,
+            })?;
+        let chain_path = aa_gateway::server::audit_file_path(&paths.audit_jsonl_dir, "local", "local");
+        let initial_hash = aa_gateway::audit::AuditWriter::read_last_hash(&chain_path)
+            .await
+            .map_err(|e| LocalStateError::Audit(format!("{e}")))?
+            .unwrap_or([0u8; 32]);
+        let initial_seq = aa_gateway::audit::AuditWriter::read_last_seq(&chain_path)
+            .await
+            .map_err(|e| LocalStateError::Audit(format!("{e}")))?
+            .map_or(0, |last| last + 1);
+
         let (audit_tx, audit_rx) = mpsc::channel::<AuditEntry>(4096);
-        let writer = aa_gateway::audit::AuditWriter::new(audit_jsonl_dir.clone(), "local", "local", audit_rx)
+        let writer = aa_gateway::audit::AuditWriter::new(paths.audit_jsonl_dir.clone(), "local", "local", audit_rx)
             .await
             .map_err(|e| LocalStateError::Audit(format!("{e}")))?
             .with_storage(storage.clone());
         tokio::spawn(writer.run());
-        // AAASM-6020: seed a fresh chain head — this is a fresh per-process
-        // temp directory (`audit_jsonl_dir` above), so there is no prior file
-        // to resume `last_hash`/`seq` from (unlike aa-gateway's own server
-        // wiring, which does resume via `AuditWriter::read_last_hash` /
-        // `read_last_seq` against a durable, restart-surviving directory).
         state.audit_chain = Some(Arc::new(aa_gateway::audit::AuditChain::new(
             audit_tx,
+            // Drops counter — fresh per process; correct as-is, this is not
+            // part of the resumed state (matches the original bug report:
+            // only the 3rd/4th `AuditChain::new` arguments were wrong).
             Arc::new(AtomicU64::new(0)),
-            [0u8; 32],
-            0,
+            initial_hash,
+            initial_seq,
         )));
-        state.audit_reader = Arc::new(AuditReader::new(audit_jsonl_dir));
+        state.audit_reader = Arc::new(AuditReader::new(paths.audit_jsonl_dir));
 
         // Retention engine over the same backend, using aa-core's validated
         // default policy (daily 03:00 UTC). Constructed directly — the admin

@@ -613,14 +613,23 @@ fn project_status(status: &aa_gateway::registry::AgentStatus) -> AgentStatus {
 }
 
 /// Map the agent's registered enforcement-mode override onto the matrix's
-/// two-value view. `Disabled` and "no override declared" both yield `None` —
-/// neither is representable as enforce-or-shadow, and the effective mode for the
-/// latter is decided per policy document, not per agent.
-fn project_mode(mode: Option<aa_core::EnforcementMode>) -> Option<AgentMode> {
-    match mode {
-        Some(aa_core::EnforcementMode::Enforce) => Some(AgentMode::Enforce),
-        Some(aa_core::EnforcementMode::Observe) => Some(AgentMode::Shadow),
-        _ => None,
+/// two-value view. `Disabled` always yields `None` — it is not representable
+/// as enforce-or-shadow. "No override declared" (`None`) yields `None` under
+/// the `Standard` profile (the effective mode is then the server-wide
+/// `Enforce` default, not per-agent) but `Some(AgentMode::Shadow)` under the
+/// `PersonalObserve` profile (HORO-1375) — that IS the profile's effect on
+/// the policy default, and reporting `None` there would repeat the same
+/// posture-reporting lie `topology::agent_mode` was fixed for.
+fn project_mode(
+    mode: Option<aa_core::EnforcementMode>,
+    profile: aa_core::config::ObservationProfile,
+) -> Option<AgentMode> {
+    match (mode, profile) {
+        (Some(aa_core::EnforcementMode::Enforce), _) => Some(AgentMode::Enforce),
+        (Some(aa_core::EnforcementMode::Observe), _) => Some(AgentMode::Shadow),
+        (Some(aa_core::EnforcementMode::Disabled), _) => None,
+        (None, aa_core::config::ObservationProfile::PersonalObserve) => Some(AgentMode::Shadow),
+        (None, aa_core::config::ObservationProfile::Standard) => None,
     }
 }
 
@@ -710,7 +719,7 @@ fn project_matrix(
             framework: record.framework.clone(),
             owner: record.team_id.clone().or_else(|| record.org_id.clone()),
             trust: None,
-            mode: project_mode(record.enforcement_mode),
+            mode: project_mode(record.enforcement_mode, state.observation_profile),
             status: project_status(&record.status),
             last_seen: record.last_heartbeat.to_rfc3339(),
             flagged,

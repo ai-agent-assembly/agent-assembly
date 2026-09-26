@@ -107,10 +107,29 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
     let (enforcement_mode, enforcement_mode_expires_at) = if expired {
         (None, None)
     } else {
-        (
-            EnforcementMode::from_wire(&enforcement_mode),
-            enforcement_mode_expires_at,
-        )
+        let parsed = EnforcementMode::from_wire(&enforcement_mode);
+        // HORO-1375 §4.2 — a persisted ("observe", NULL expiry) row is
+        // corrupt or legacy: `set_enforcement_mode_persisted` now refuses to
+        // ever write that shape (`RegistryError::UncappedShadowWindow`), so a
+        // row like this on disk predates that guard or was written by
+        // another path. Rehydrating it as `Some(Observe)` would resurrect an
+        // uncapped, un-revertible shadow window. Fail closed to
+        // `Some(Enforce)` instead — NOT `None`: under a personal-observe
+        // deployment profile `None` itself resolves to `Observe`
+        // (HORO-1375), so falling through to `None` here would silently
+        // re-create the exact uncapped-Observe outcome this guard exists to
+        // prevent.
+        if matches!(parsed, Some(EnforcementMode::Observe)) && enforcement_mode_expires_at.is_none() {
+            tracing::warn!(
+                agent_id = ?agent_id,
+                "rehydrated agent_registry row has enforcement_mode = observe with no expiry \
+                 (corrupt or legacy row); fail-closed to enforce rather than resurrect an \
+                 uncapped shadow window"
+            );
+            (Some(EnforcementMode::Enforce), None)
+        } else {
+            (parsed, enforcement_mode_expires_at)
+        }
     };
 
     RuntimeAgentRecord {
@@ -237,21 +256,28 @@ mod tests {
     fn enforcement_mode_survives_a_restart() {
         // AAASM-5288 — a non-default per-agent override must be durably written
         // and read back on rehydrate, not reset to the in-memory default.
+        //
+        // HORO-1375: uses `Disabled`, not `Observe`, as the non-default
+        // example. An `Observe` override with no expiry is now a corrupt/
+        // legacy shape `storage_to_runtime` fail-closes to `Enforce` (see
+        // `n7_uncapped_observe_row_rehydrates_fail_closed_to_enforce` below);
+        // this test's purpose — an ordinary non-default override round-trips
+        // unchanged — is unaffected by that guard when the mode is `Disabled`.
         let id = [3u8; 16];
         let mut rec = sample_runtime(id);
-        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode = Some(EnforcementMode::Disabled);
 
         // Simulate the restart: runtime → storage (write-through) → runtime
         // (rehydrate on boot).
         let stored = runtime_to_storage(&rec);
         assert_eq!(
-            stored.enforcement_mode, "observe",
+            stored.enforcement_mode, "disabled",
             "override must reach the durable column"
         );
         let restored = storage_to_runtime(stored);
         assert_eq!(
             restored.enforcement_mode,
-            Some(EnforcementMode::Observe),
+            Some(EnforcementMode::Disabled),
             "override must survive the restart round-trip"
         );
     }
@@ -296,5 +322,31 @@ mod tests {
         let restored = storage_to_runtime(runtime_to_storage(&rec));
         assert_eq!(restored.enforcement_mode, Some(EnforcementMode::Observe));
         assert_eq!(restored.enforcement_mode_expires_at, Some(deadline));
+    }
+
+    /// HORO-1375 AC-3 N7 — a persisted `("observe", NULL expiry)` row (corrupt
+    /// or legacy — `set_enforcement_mode_persisted` now refuses to ever write
+    /// this shape) rehydrates FAIL-CLOSED to `Some(Enforce)`, never `None`
+    /// (which would itself resolve to `Observe` under the personal-observe
+    /// profile — the exact outcome this guard exists to prevent) and never
+    /// left as the uncapped `Some(Observe)` it was stored as.
+    #[test]
+    fn n7_uncapped_observe_row_rehydrates_fail_closed_to_enforce() {
+        let id = [6u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.enforcement_mode = Some(EnforcementMode::Observe);
+        rec.enforcement_mode_expires_at = None;
+
+        let stored = runtime_to_storage(&rec);
+        assert_eq!(stored.enforcement_mode, "observe");
+        assert!(stored.enforcement_mode_expires_at.is_none());
+
+        let restored = storage_to_runtime(stored);
+        assert_eq!(
+            restored.enforcement_mode,
+            Some(EnforcementMode::Enforce),
+            "an uncapped Observe row must fail closed to Enforce, not None and not Observe"
+        );
+        assert_eq!(restored.enforcement_mode_expires_at, None);
     }
 }

@@ -28,6 +28,11 @@ pub struct HealthResponse {
     pub pipeline_lag_ms: u64,
     /// Per-subsystem health status. Each value is `"ok"` or `"degraded"`.
     pub checks: BTreeMap<String, String>,
+    /// The active observation-profile posture (HORO-1375) — `"standard"` or
+    /// `"personal_observe"` — so an operator can see the profile in effect
+    /// without reading startup logs. Matches the YAML/env wire value
+    /// (`observation.profile` / `AASM_OBSERVATION_PROFILE`).
+    pub observation_profile: String,
 }
 
 /// Probe each downstream subsystem and return its health status string.
@@ -103,6 +108,10 @@ pub async fn health(Extension(state): Extension<AppState>) -> impl IntoResponse 
             active_connections,
             pipeline_lag_ms: 0,
             checks,
+            observation_profile: match state.observation_profile {
+                aa_core::config::ObservationProfile::Standard => "standard".to_string(),
+                aa_core::config::ObservationProfile::PersonalObserve => "personal_observe".to_string(),
+            },
         }),
     )
 }
