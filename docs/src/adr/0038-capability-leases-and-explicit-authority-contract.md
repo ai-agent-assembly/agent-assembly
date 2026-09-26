@@ -403,6 +403,142 @@ unenforced number was honored.
   own cross-reference note for this ticket, added alongside its existing
   network-enforcement bullet.
 
+## Amendment (AAASM-6164): the identity-bound credential-brokerage contract
+
+AAASM-6164 asked for "a secretless-by-default credential broker for governed runs".
+Reading `aa-proxy` and `aa-cli/src/commands/run.rs` as they actually stand today
+found the same shape §14's egress amendment found: a broker mechanism already
+exists and works. `aa-proxy/src/credentials.rs`'s `CredentialStore` already MitMs a
+provider host, strips the agent's own `Authorization`/`x-api-key` header and
+appends the operator's real key at egress (AAASM-3578/AAASM-5926) — the source
+secret never enters the agent through that path. The actual defect: `aasm run`'s
+`inheritable_ambient_env` still copies the operator's whole environment, including
+that same provider key, into the child anyway, so the strong mechanism sits right
+next to a launch path that undermines it. `governance/capability-manifest.yaml`
+capability C2's own `known_bypasses` already named this. This amendment does not
+add a fourth credential mechanism. It binds a launch's *requirement* of brokerage
+to this run's explicit authority, and makes a launch that would otherwise still
+hand the child a name a real brokerage mechanism covers a pre-launch refusal.
+
+### 18. `CapabilityDomain::Credential`, not a new domain
+
+`aa-isolation/src/credential_broker.rs` binds to `CapabilityDomain::Credential`,
+which `capability.rs` already carries (ADR 0035 §9's "the authority the child
+inherits"). No domain is added, for the same reason §14 gave for egress: adding one
+means touching every hand-maintained `CapabilityDomain::ALL` call site across the
+workspace, for a property an existing domain already names.
+
+### 19. Witness-gated `CredentialAuthority`/`CredentialWitness`, the same mechanism as §8/§15
+
+`CredentialAuthority::from_gated_spec` is constructible only from an
+`ExecutionSpec` plus an `AuthorityWitness` — the identical single-private-field,
+no-other-public-constructor pattern §2, §8 and §15 already use. `credential_gate`
+itself returns its own `CredentialWitness` under the same rule.
+
+### 20. Two-value requirement axis, three-value achieved axis — not a forbidden third "preferred" value
+
+`BrokeragePosture` has exactly two values (`NotRequired`/`BrokerRequired`), for the
+same reason `EgressPosture` does (§ "Two-value posture, deliberately" in
+`egress.rs`'s own module documentation): a third, "broker preferred, raw secret
+acceptable as a fallback", would *be* the silent raw-credential exposure this
+contract exists to forbid, wearing the shape of a middle ground.
+
+`BrokerageMode`, by contrast, is a three-value **achieved** fact, and the three
+values are not ranked against each other: `BrokerPerformsRequest` (the source
+secret never enters the child — what `aa-proxy` already does), a future
+`EphemeralScopedCredential` (a different, run-bound, expiring value reaches the
+child instead), and `RawInjectionFallback` (the source secret itself reaches the
+child). These are different *mechanisms*, not different qualities of one
+mechanism, so `RequiredMode::AnySecretlessMode` is a set-membership floor, not a
+comparison on an `Ord`. Adding a third *requirement*-axis value would collapse
+back into the same silent-fallback failure the two-value posture already refuses;
+keeping the *achieved*-axis three-valued is what lets a contract require "any
+secretless mechanism" without pretending the two secretless mechanisms are the
+same one.
+
+### 21. Raw fallback: default `Refuse`, admitted only when justified, recorded as `ClaimTerm::Degraded`
+
+`RawFallbackPolicy::default()` is `Refuse` — mirrors `RangePolicy::default()`
+(§17's sibling discipline in `egress.rs`): a launch that never states otherwise
+cannot silently accept residual exposure. `RawFallbackPolicy::PermittedWhenJustified`
+is the only opt-in, and `check_raw_fallback` still refuses an empty justification
+under it — "permitted when justified" is not satisfied by an unstated reason.
+`residual_exposure_record` files the admitted residual as `EvidenceKind::Installed`
++ `ClaimTerm::Degraded`. `Degraded` is not among `ClaimTerm::asserts_coverage`'s six
+terms and ranks lowest in `aa-isolation/src/evidence.rs`'s internal ordering, so
+this record can never raise `EnforcementEvidence::claim_for` for
+`CapabilityDomain::Credential` — the residual is visible in the report without
+ever being misread as coverage.
+
+### 22. Conditional withholding at `aasm run`: the four conditions, and why unconditional removal would break tools rather than secure them
+
+`aa-cli/src/commands/run.rs`'s `effective_child_env` now withholds a brokered
+provider credential's env name from the child by default, with **no operator
+env-var escape hatch**, when — and only when — all four hold: a dedicated proxy is
+bound for this launch, `--no-proxy` was not passed, the host is actually MitM'd
+under this launch's `llm_only`/`mitm_hosts` scope, and a provider key is
+configured for that exact host (`AA_PROXY_PROVIDER_KEYS`). Withholding
+unconditionally — for every credential-shaped name regardless of whether a
+mechanism actually covers it — would not be stricter, it would be wrong: a tool
+whose own provider key is for a host this launch does not MitM would simply lose
+its credential with nothing else providing it, which is a broken launch, not a
+secured one. The four-condition test is what keeps withholding tied to an actual
+brokerage mechanism rather than to a name pattern. An operator whose tool needs a
+key for a non-MitM'd host already has a coherent control: remove that host from
+`AA_PROXY_PROVIDER_KEYS`.
+
+### 23. Ceilings stated and reported unsupported, never silently ignored
+
+`CredentialCeilings` states a quantitative use/byte ceiling; no per-run accounting
+mechanism for either exists today. `check_ceilings` refuses a launch whose
+contract states one against a broker report whose `ceiling_support` is
+`SupportLevel::Unsupported` — the identical discipline §17 already established for
+egress, applied here.
+
+### What this amendment does not decide
+
+- **`SecretsService.DispatchTool`'s fate is untouched and stays AAASM-5631's own
+  decision.** `proto/secrets.proto`'s `SecretsService.DispatchTool` and
+  `aa-api/src/routes/dispatch.rs` remain dead code — both production constructions
+  still instantiate a fresh, empty `InMemorySecretsStore` and no route registers
+  anything into it. Nothing in `aa-proxy/`, `proto/secrets.proto`,
+  `aa-api/src/routes/dispatch.rs`, `aa-gateway/src/secrets.rs` or any
+  `aa-storage*` credential store changed for this amendment. "No child-facing
+  credential-*request* channel exists" is held structurally, by adding nothing,
+  not by asserting it.
+- **Mode 2 (`BrokerageMode::EphemeralScopedCredential`) has vocabulary, not a
+  mechanism.** No OSS minting path for a run-bound ephemeral credential exists
+  anywhere in this repository. `check_required_mode` refuses, rather than
+  silently passing, when a contract requires `RequiredMode::RunBoundEphemeralOnly`
+  and no reported service offers it — see §20.
+- **Per-request/per-connection proxy identity attribution is unchanged.**
+  `aa-proxy/src/network_enforce.rs` still evaluates every decision under the
+  synthetic `PROXY_AGENT_ID` at Global policy tier, exactly as this document's
+  "What this amendment does not decide" for AAASM-6163 already states for egress.
+  Authority here is launch-level only: this
+  run's own `IdentityRef` and credential lease subject, never a per-request
+  identity on the proxy path.
+- **No revocation-latency claim.** `RevocationState`'s own existing documentation
+  already reserves that ground for the lease system generally; this amendment adds
+  nothing to it. "Measurable" here means the gate-level expiry/revocation
+  fail-closed path `authority_gate`'s existing `lease.validate_at` already
+  provides, plus `aa-proxy`'s own pre-existing `CredentialStore` TTL/rotate unit
+  tests, unmodified and still passing.
+- **No identity-verification claim.** `IdentityRef` remains *asserted*, not
+  *verified* — the same AAASM-5533 residual every other amendment in this document
+  already carries forward, unaffected here.
+- **No secrets-vault/storage backend.** `aa_core::storage::CredentialStore`/
+  `MemoryCredentialStore`/`PgCredentialStore` are untouched — explicitly out of
+  this ticket's own acceptance criteria.
+- No lease sourcing from the policy schema — already deferred by §4, applied here
+  identically to §"No lease sourcing" for egress. Every real launch today
+  constructs `CredentialContract::not_required()`, so this amendment ships inert:
+  `RUNTIME_REQUIREMENTS_SCHEMA` and `REPORT_SCHEMA` are unbumped (both additive
+  fields default empty/`not_required`), and every pre-existing golden-output test
+  remains byte-identical except where a real launch's env now omits a brokered
+  provider key it previously inherited — see §22's one genuinely user-visible
+  behavior change.
+
 ## Consequences
 
 - A spec that opts into the lease system gets a strictly stronger guarantee than rc.7
