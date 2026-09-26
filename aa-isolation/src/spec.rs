@@ -7,6 +7,7 @@
 //! the plan and the evidence, never here.
 
 use crate::capability::CapabilityDomain;
+use crate::lease::CapabilityLease;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -351,6 +352,7 @@ pub struct ExecutionSpec {
     identity: IdentityRef,
     requirements: Vec<ControlRequirement>,
     credentials: CredentialPosture,
+    leases: Vec<CapabilityLease>,
 }
 
 impl ExecutionSpec {
@@ -363,6 +365,7 @@ impl ExecutionSpec {
             identity,
             requirements: Vec::new(),
             credentials: CredentialPosture::default(),
+            leases: Vec::new(),
         }
     }
 
@@ -391,6 +394,19 @@ impl ExecutionSpec {
     /// Set how inherited authority is treated.
     pub fn with_credentials(mut self, credentials: CredentialPosture) -> Self {
         self.credentials = credentials;
+        self
+    }
+
+    /// Attach a [`CapabilityLease`] this spec carries as explicit authority
+    /// (AAASM-6160, ADR 0038).
+    ///
+    /// The moment any lease is attached, `crate::authority::authority_gate`
+    /// stops reading this spec's own [`ControlRequirement`]s as an implicit
+    /// grant for *any* domain — see that module's documentation for exactly
+    /// why "the spec asked for it" and "the spec is authorized for it" are
+    /// different claims once a caller has opted into the lease system at all.
+    pub fn with_lease(mut self, lease: CapabilityLease) -> Self {
+        self.leases.push(lease);
         self
     }
 
@@ -423,6 +439,11 @@ impl ExecutionSpec {
     /// How inherited authority is treated.
     pub fn credentials(&self) -> &CredentialPosture {
         &self.credentials
+    }
+
+    /// Every [`CapabilityLease`] this spec carries, in attachment order.
+    pub fn leases(&self) -> &[CapabilityLease] {
+        &self.leases
     }
 
     /// Requirements whose failure must refuse the launch.
