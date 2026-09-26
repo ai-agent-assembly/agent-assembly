@@ -76,19 +76,26 @@ impl From<&AgentStatus> for AgentNodeStatus {
 /// | `Some(Enforce)`          | `enforce`  |
 /// | `Some(Observe)`          | `shadow`   |
 /// | `Some(Disabled)`         | `off`      |
-/// | `None` (no override)     | `enforce`  |
+/// | `None` (no override), `Standard` profile        | `enforce`  |
+/// | `None` (no override), `PersonalObserve` profile | `shadow`   |
 ///
-/// `None` means no per-agent override — the resolver falls through to the policy
-/// default and finally to the server-wide `Enforce` default
-/// (`AgentRecord::enforcement_mode` doc), so `enforce` is the honest badge, not
-/// "unknown". Expiry needs no handling here: an already-expired shadow window is
+/// `None` means no per-agent override — the resolver falls through to the
+/// policy default, which is the server-wide `Enforce` default for every
+/// deployment EXCEPT one running the `personal_observe` profile (HORO-1375),
+/// where the policy default is `Observe`. `enforce` was the honest badge
+/// pre-HORO-1375 because that was the *only* policy default that existed; a
+/// badge that always said `enforce` for `None` under personal-observe would
+/// now be the exact "posture reporting lie" this ticket exists to close.
+/// Expiry needs no handling here: an already-expired shadow window is
 /// resolved to the base mode (`enforcement_mode = None`) in the registry
 /// (AAASM-5288), so reading the resolved field is correct.
-pub(crate) fn agent_mode(record: &AgentRecord) -> String {
-    match record.enforcement_mode {
-        Some(aa_core::EnforcementMode::Observe) => "shadow",
-        Some(aa_core::EnforcementMode::Disabled) => "off",
-        Some(aa_core::EnforcementMode::Enforce) | None => "enforce",
+pub(crate) fn agent_mode(record: &AgentRecord, profile: aa_core::config::ObservationProfile) -> String {
+    match (record.enforcement_mode, profile) {
+        (Some(aa_core::EnforcementMode::Observe), _) => "shadow",
+        (Some(aa_core::EnforcementMode::Disabled), _) => "off",
+        (Some(aa_core::EnforcementMode::Enforce), _) => "enforce",
+        (None, aa_core::config::ObservationProfile::PersonalObserve) => "shadow",
+        (None, aa_core::config::ObservationProfile::Standard) => "enforce",
     }
     .to_owned()
 }
@@ -384,7 +391,14 @@ impl From<&AgentRecord> for AgentNode {
             status: AgentNodeStatus::from(&r.status),
             team_id: r.team_id.clone(),
             governance_level: None,
-            mode: agent_mode(r),
+            // HORO-1375: `From<&AgentRecord>` has no access to `AppState`, so
+            // this defaults to the `Standard`-profile mapping (unaffected —
+            // it's what every deployment pre-HORO-1375 already got). Every
+            // call site that has a `state: &AppState` in scope overwrites
+            // `node.mode` immediately after with
+            // `agent_mode(record, state.observation_profile)` so a
+            // personal-observe deployment's badge is truthful.
+            mode: agent_mode(r, aa_core::config::ObservationProfile::Standard),
             // Left `false` here: the record no longer carries a violation counter
             // (AAASM-5103 removed it). The topology handlers enrich `flagged` from
             // the per-agent audit aggregate so every topology surface flags the
@@ -842,18 +856,53 @@ mod tests {
         let mut record = make_record();
 
         record.enforcement_mode = Some(EnforcementMode::Enforce);
-        assert_eq!(agent_mode(&record), "enforce");
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
+            "enforce"
+        );
         record.enforcement_mode = Some(EnforcementMode::Observe);
-        assert_eq!(agent_mode(&record), "shadow");
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
+            "shadow"
+        );
         record.enforcement_mode = Some(EnforcementMode::Disabled);
-        assert_eq!(agent_mode(&record), "off");
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
+            "off"
+        );
 
         // `None` = no per-agent override → the server-wide `Enforce` default,
         // the honest base mode (not "unknown"). An expired shadow window is
         // already resolved to `None` in the registry (AAASM-5288), so this same
         // branch covers it.
         record.enforcement_mode = None;
-        assert_eq!(agent_mode(&record), "enforce");
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
+            "enforce"
+        );
+    }
+
+    /// HORO-1375 — under the personal-observe profile, `None` (no per-agent
+    /// override) must report `shadow`, not `enforce`: that IS the profile's
+    /// effect on the policy default. An explicit per-agent override still
+    /// always wins regardless of profile.
+    #[test]
+    fn agent_mode_reports_shadow_for_none_under_personal_observe_profile() {
+        use aa_core::EnforcementMode;
+        let mut record = make_record();
+
+        record.enforcement_mode = None;
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::PersonalObserve),
+            "shadow"
+        );
+
+        // An explicit override still wins over the profile.
+        record.enforcement_mode = Some(EnforcementMode::Enforce);
+        assert_eq!(
+            agent_mode(&record, aa_core::config::ObservationProfile::PersonalObserve),
+            "enforce"
+        );
     }
 
     /// AAASM-5289 — the divergence test that is the point of the ticket: when the
@@ -870,7 +919,7 @@ mod tests {
         record.metadata.insert("mode".to_string(), "enforce".to_string());
         record.enforcement_mode = Some(EnforcementMode::Observe);
         assert_eq!(
-            agent_mode(&record),
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
             "shadow",
             "badge must follow the canonical enforcement_mode, not metadata.mode"
         );
@@ -879,7 +928,7 @@ mod tests {
         record.metadata.insert("mode".to_string(), "shadow".to_string());
         record.enforcement_mode = Some(EnforcementMode::Enforce);
         assert_eq!(
-            agent_mode(&record),
+            agent_mode(&record, aa_core::config::ObservationProfile::Standard),
             "enforce",
             "a stale metadata.mode must not claim shadow while enforcement is on"
         );
