@@ -290,6 +290,11 @@ Epic — a measured floor per host, not a guessed one recorded now and corrected
   IP/host allowlist semantics, so it would not replace the proxy layer even where
   available — it would only add a second, differently-shaped network control. Not
   attempted here.
+  > **Cross-reference — AAASM-6163 (2026-09)**: [ADR 0038](0038-capability-leases-and-explicit-authority-contract.md)'s
+  > AAASM-6163 amendment adds a contract/truthful-report pair over this same `aa-proxy`
+  > mechanism — a launch's requirement of brokered egress, checked against what the
+  > proxy layer truthfully provides — not a second network control. The mechanism named
+  > here is unchanged.
 - **A stronger per-action prevention evidence claim than Sandlock already makes.**
   `EnforcementEvidence::supports_prevention_claim` stays `false` for this backend's first
   version, matching Sandlock's own honest answer: the kernel delivers a seccomp/Landlock
