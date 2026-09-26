@@ -2,7 +2,7 @@
 
 **Status**: Proposed
 **Date**: 2026-09
-**Ticket**: [AAASM-6160](https://lightning-dust-mite.atlassian.net/browse/AAASM-6160) (Epic [AAASM-6159](https://lightning-dust-mite.atlassian.net/browse/AAASM-6159), *Agent Execution Runtime 2.0*)
+**Ticket**: [AAASM-6160](https://lightning-dust-mite.atlassian.net/browse/AAASM-6160), [AAASM-6161](https://lightning-dust-mite.atlassian.net/browse/AAASM-6161) (Epic [AAASM-6159](https://lightning-dust-mite.atlassian.net/browse/AAASM-6159), *Agent Execution Runtime 2.0*)
 
 This ADR cross-references and amends nothing in
 [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md); it
@@ -141,11 +141,14 @@ test — is byte-identical to before this ticket.
 
 - **No crypto identity binding.** `IdentityRef` stays asserted-only. AAASM-5533 owns
   when and how that changes.
-- **No real per-domain scope comparator.** AAASM-6161.
+- ~~No real per-domain scope comparator.~~ **Decided by the AAASM-6161 amendment
+  below.**
 - **No revocation-latency claim.** `RevocationState` records a generation counter a
   lease issuer can bump; nothing here measures or bounds how quickly a revocation
   reaches every holder of a cached lease value. No text in `aa-isolation/src/lease.rs`
-  or `authority.rs` may claim otherwise.
+  or `authority.rs` may claim otherwise. AAASM-6161's `DelegationLedger` serializes
+  *observation* of a revocation against a concurrent derivation — it still makes no
+  claim about how fast a revocation *propagates* to a holder that is not asking.
 - **No new policy DSL.** Leases are attached to an `ExecutionSpec` programmatically in
   this ticket. Exposing lease issuance through the policy schema is future work, listed
   in the ticket's own scope note as deferred rather than ruled out.
@@ -153,6 +156,154 @@ test — is byte-identical to before this ticket.
   reuses `CapabilityDomain` entirely as it stood before it, so none of `aa-isolation`'s,
   `aa-isolation-sandlock`'s, or `aa-integration-tests`'s existing
   `CapabilityDomain::ALL` totality call sites need updating.
+
+## Amendment (AAASM-6161): monotonic capability attenuation across ancestry
+
+AAASM-6161 fills the hole this ADR reserved above and answers the question §4
+explicitly deferred: once a real per-domain comparator exists, does a child launch's
+lease actually stay inside the ceiling its parent held? Three findings from reading
+the AAASM-6160 code as merged, rather than as designed, shaped the answer:
+
+1. **`derive_child`/`ScopeOrder` had zero production call sites.** Every reference
+   was inside this crate's own tests. "Logical sub-agent delegation" was not a new
+   concept this ticket introduces — `IdentityRef.lineage` (asserted, populated from
+   `aasm run --root-agent`) and the gateway registry's `parent_agent_id`/`depth`
+   model (measured, backend-held) already existed — but nothing carried a parent's
+   *effective authority* into a child launch. This amendment makes ancestry a
+   **parameter of the existing authority decision point**, not a new launcher.
+2. **The comparators this ticket needed already existed elsewhere.** Filesystem
+   containment is `aa_security::policy::filesystem::PathScope` (`from_paths`,
+   `permits`, `intersect`); host-pattern containment is
+   `aa_core::policy::is_host_allowed_by_egress_allowlist`. Both are reused rather
+   than reimplemented, so this comparator can never silently disagree with
+   `aa-proxy`/`aa-gateway`/the eBPF probes about the same question.
+3. **`aa-isolation/src/descendant.rs` is a separate, already-settled residual-risk
+   disclosure and is not touched by this amendment.** Adding scope comparison to
+   `authority_widening` would have broken its own
+   `a_wider_selector_set_is_not_detected_and_this_is_the_known_gap` regression test,
+   which is a different ticket's decision to revisit, not this one's.
+
+### 7. Real per-domain `ScopeOrder` comparators (`aa-isolation/src/scope_order.rs`)
+
+`order_for(domain)` is a domain-total, exhaustively-matched registry: `PathPrefixOrder`
+(filesystem, delegating to `PathScope`), `HostPatternOrder` (network/DNS, delegating to
+the canonical egress matcher for literal hosts and a direct wildcard-containment rule
+for a wildcard child pattern — a wildcard is never fed to the host matcher as if it were
+a hostname), `ExactTokenOrder` (syscalls/credential names, exact-set containment), and
+`ResourceCeilingOrder` (numeric ceilings). `ProcessCreation`, `Ipc` and
+`WorkspaceTransaction` — the three domains lowering only ever emits `RequirementScope::Whole`
+for — get `UndefinedScopeOrder`: there is nothing to narrow, so `Incomparable` is the
+honest answer, not a comparator pretending to reason about a scope shape that never
+occurs. Every comparator fails closed (`Incomparable`) the moment any selector on either
+side does not carry the `permit-only:` grammar `crate::lowering::permitted_selector`
+checks for — a selector without that prefix is reachable in practice, and a fallback to
+raw-string prefix matching would reintroduce the exact widening bug `PathScope` exists
+to prevent.
+
+### 8. `Ancestry` and witness-gated `ParentAuthority` (`aa-isolation/src/attenuation.rs`)
+
+`authority_gate` gains a second parameter, `ancestry: &Ancestry`, with three states:
+`Root` (no parent), `Parent(Box<ParentAuthority>)` (a resolved parent), and
+`UnresolvedParent { .. }` (a claimed-but-unresolved parent). The third state exists
+because "we could not resolve the claimed parent" must be distinguishable from "there
+is no parent" — collapsing them into `Root` would read a claimed-but-unverified
+ancestry as license to launch with full, unattenuated authority, which is the fail-open
+outcome this amendment exists to rule out.
+
+`ParentAuthority::from_gated_spec(spec, witness)` is constructible only from a spec and
+an `AuthorityWitness` — and `AuthorityWitness`'s only constructor is inside
+`authority_gate` itself. This is the whole mechanism behind nested attenuation being
+monotonic *by construction*, not merely by convention: a grandchild's `ParentAuthority`
+is built from the **child's own** already-attenuated spec and witness, never from the
+grandparent's, so the ceiling a grandchild is checked against can only ever have
+shrunk on the way down the tree.
+
+`attenuation_applies(spec, ancestry)` gates when the new checks run at all: both a
+non-empty `IdentityRef.lineage` *and* `EffectiveAuthority::is_lease_aware(spec)` must
+hold. `aasm run --root-agent` sets lineage today, but no policy path issues a lease yet
+— so this predicate is false for every real launch until a lease-issuing policy source
+exists, and `--root-agent`'s CLI behavior is unchanged by this amendment. This is
+stated explicitly so a reader does not infer the CLI has started attenuating.
+
+### 9. Delegation provenance and the `with_delegation` re-widening hole
+(`aa-isolation/src/lease.rs`)
+
+`CapabilityLease::derive_child` now takes a `ChildLeaseRequest` (replacing its previous
+seven positional arguments) and attaches a `DelegationProvenance` to every lease it
+produces: the parent lease's id and subject, the `InheritanceMode` used, the
+`DelegationRule` the child was actually issued with, and the parent's revocation
+generation observed at derivation. `derive_child` also now floors a child's
+`not_before` at `max(issued_at, parent.not_before)` — closing a gap where a child
+derived with an early `issued_at` could become valid before its own parent does, the
+same direction `expires_at` capping already closed for the other end of the window.
+
+`authority_gate`'s provenance-integrity check compares a child lease's *current*
+`delegation()` against the `DelegationRule` recorded in its own provenance at
+derivation time. This is what closes the hole a public, non-clamping
+`derive_child(...).with_delegation(DelegableWithNarrowerScope)` call could otherwise
+reopen: the builder itself is deliberately not made to clamp (a silently-clamping
+builder would read stronger than the caller meant, the same failure
+`CapabilityLease::new`'s own builder discipline exists to prevent), so the check moves
+to the one place a widened field can be caught against a value the widening call
+cannot also rewrite.
+
+### 10. Escalation requires independent attribution
+
+A child lease that is wider than, or absent from, its parent's authority is refused
+(`AuthorityRefusal::EscalationNotIndependentlyApproved`) unless
+`LeaseBasis::is_independently_attributable` holds: the basis carries an
+`approval_ref` or `policy_rule`, **and** its issuer is neither the child's own subject
+nor the parent's. A parent cannot self-approve its child's escalation, and a child
+cannot self-approve its own, regardless of how the reference string is worded — both
+are ruled out by identity comparison, not by trusting the string's content.
+
+### 11. `DelegationLedger`: the one shared mutable state a concurrent derivation touches
+
+`CapabilityLease` values are otherwise immutable and travel by clone; the one
+exception is revocation. `DelegationLedger` serializes a parent lease's revocation
+generation under one lock, so two racing calls to `derive_child` agree on whether a
+revocation had already taken effect before either produced a child — every returned
+child records the generation observed **inside** the critical section, and a parent
+found revoked inside that same section yields `DelegationDenied::ParentRevoked`, never
+a child lease.
+
+### 12. Quantitative limits stay per-child, not aggregate — the pinned, documented gap
+
+`aa-isolation` measures no live resource consumption, so an aggregate sibling budget
+would be a claim about runtime the crate cannot make. Limits are enforced as
+per-child ceilings against the parent's own ceiling
+(`crate::lease::limits_narrower_or_equal` — deliberately **not** a reuse of
+`limits_cover`, which answers a different question: whether a lease's own grant
+satisfies what a *requirement* asked for, where a field the requirement never
+mentions is vacuously satisfied. Delegation narrowing asks the opposite question of
+the *child*'s own field — a child that states no ceiling at all is wider than any
+bounded parent ceiling, not narrower — so reusing `limits_cover` here would have
+silently admitted a child that dropped a ceiling its parent enforced). Because limits
+are per-child, sibling children may each hold the parent's full ceiling simultaneously;
+this is a known, pinned gap
+(`sibling_children_may_each_hold_the_parents_full_ceiling_and_this_is_the_known_gap`),
+in the same shape as `descendant.rs`'s own
+`a_wider_selector_set_is_not_detected_and_this_is_the_known_gap` — a deliberate
+disclosure to be revisited if aggregate accounting is ever implemented, not an
+oversight.
+
+### 13. Reporting stays additive (`aa-isolation/src/report.rs`)
+
+`DomainAuthoritySummary` gains three fields — `derived_from_lease_id`,
+`inheritance_mode`, `issuer_kind` — populated from a lease's own
+`DelegationProvenance` when it carries one. `REPORT_SCHEMA` is **not** bumped: every
+existing report renders every new field as empty, so every pre-existing golden-output
+test remains byte-identical.
+
+### What this amendment does not decide
+
+- No cross-process parent-authority handoff. Serializing a `ParentAuthority` from one
+  `aasm run` into a child `aasm run`'s process requires a wire contract this ticket
+  does not add (`EffectiveAuthority` carries no `serde` derive today); the `Ancestry`
+  parameter is the seam a future ticket populates.
+- No lease sourcing from the policy schema (already deferred by §4 above).
+- No crypto identity binding (AAASM-5533, unchanged by this amendment).
+- No change to `aa-isolation/src/descendant.rs` — see finding 3 above.
 
 ## Consequences
 
