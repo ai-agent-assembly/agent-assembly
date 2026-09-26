@@ -799,6 +799,15 @@ impl GatewayConfig {
         if r.warm_days < 1 {
             return Err(ConfigError::WarmDaysMustBePositive);
         }
+        // HORO-1375 §6.1 — Layer 1 (advisory only; see module docs on
+        // `ConfigError::PersonalObserveEnterpriseCoupled` and
+        // `aa_core::observation` for why this is not the authoritative gate).
+        if self.observation.profile == ObservationProfile::PersonalObserve {
+            let signals = crate::observation::config_only_coupling_signals(self);
+            if !signals.is_empty() {
+                return Err(ConfigError::PersonalObserveEnterpriseCoupled { signals });
+            }
+        }
         Ok(())
     }
 }
@@ -1380,5 +1389,85 @@ agent:
         cfg.mode = DeploymentMode::Remote;
         cfg.storage.backend = StorageBackendType::Postgres;
         cfg.validate().expect("Standard profile must never trip the gate");
+    }
+
+    #[test]
+    fn n1_validate_personal_observe_each_signal_individually_refuses() {
+        type Setter = fn(&mut GatewayConfig);
+        let cases: &[(&str, Setter)] = &[
+            ("mode: remote", |cfg| cfg.mode = DeploymentMode::Remote),
+            ("storage.backend: postgres", |cfg| {
+                cfg.storage.backend = StorageBackendType::Postgres
+            }),
+            ("remote.database_url set", |cfg| {
+                cfg.remote.database_url = Some("postgres://x".into())
+            }),
+            ("remote.redis_url / storage.redis.enabled", |cfg| {
+                cfg.remote.redis_url = Some("redis://x".into())
+            }),
+            ("remote.redis_url / storage.redis.enabled", |cfg| {
+                cfg.storage.redis.enabled = true
+            }),
+            ("remote.tls configured", |cfg| {
+                cfg.remote.tls = Some(TlsConfig {
+                    cert_file: "cert.pem".into(),
+                    key_file: "key.pem".into(),
+                })
+            }),
+            ("agent.api_key set", |cfg| cfg.agent.api_key = Some("k".into())),
+            ("agent.gateway_url is not loopback", |cfg| {
+                cfg.agent.gateway_url = "http://example.com:7391".into()
+            }),
+            ("local.host is not loopback", |cfg| {
+                cfg.local.host = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))
+            }),
+            ("audit archive destination configured", |cfg| {
+                cfg.storage.retention.cold_action = ColdAction::Archive;
+                cfg.storage.retention.archive_url = Some("s3://x".into());
+            }),
+        ];
+        for (signal, setter) in cases {
+            let mut cfg = GatewayConfig::default();
+            cfg.observation.profile = ObservationProfile::PersonalObserve;
+            setter(&mut cfg);
+            let err = cfg
+                .validate()
+                .expect_err(&format!("signal '{signal}' must trip GatewayConfig::validate()"));
+            match err {
+                ConfigError::PersonalObserveEnterpriseCoupled { signals } => {
+                    assert!(signals.contains(signal), "expected signal '{signal}' in {signals:?}");
+                }
+                other => panic!("expected PersonalObserveEnterpriseCoupled for '{signal}', got {other:?}"),
+            }
+        }
+    }
+
+    // ── HORO-1375 AC-3 N10: the three call sites that swallow
+    // GatewayConfig::load()'s ConfigError still reach Layer 2's
+    // authoritative refusal — Layer 2 does not consult or depend on
+    // validate()'s (possibly-discarded) result at all. ──────────────────
+
+    #[test]
+    fn n10_layer2_refuses_independent_of_a_validate_error_being_discarded() {
+        // A config that ALSO fails validate() for an unrelated reason
+        // (warm_days == 0) — simulating a caller that discarded that error
+        // entirely, as `aa-api/src/state.rs::resolve_local_registry_db_path`
+        // and the two `aa-gateway/src/server.rs` challenge-store call sites
+        // do. Layer 2 (`authorize_personal_observe`) must still refuse on
+        // its own signals, proving it is authoritative on its own, not
+        // merely a re-run of Layer 1's already-discarded verdict.
+        let mut cfg = GatewayConfig::default();
+        cfg.observation.profile = ObservationProfile::PersonalObserve;
+        cfg.storage.retention.warm_days = 0; // unrelated validate() failure
+        cfg.mode = DeploymentMode::Remote; // the coupling signal Layer 2 must catch
+        assert!(cfg.validate().is_err(), "sanity: validate() does fail here");
+
+        let dep = crate::observation::PersonalObserveDeployment {
+            config: &cfg,
+            bind_addr: "127.0.0.1:7700".parse().unwrap(),
+            auth_is_off: false,
+        };
+        let err = crate::observation::authorize_personal_observe(dep, |_| None).expect_err("Layer 2 must refuse");
+        assert!(err.signals.contains(&"mode: remote"));
     }
 }
