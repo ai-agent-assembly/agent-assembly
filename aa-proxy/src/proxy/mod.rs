@@ -2594,46 +2594,12 @@ fn plain_http_body_is_chunked(headers: &[String]) -> bool {
 /// a `denied_hosts` entry or the LLM-only MitM path by varying only case or a
 /// trailing dot. Canonicalising once — strip the port, strip a single trailing
 /// dot, lowercase — closes that bypass. The result carries no port.
-fn canonical_host(host: &str) -> String {
-    let no_port = strip_host_port(host);
-    let no_dot = no_port.strip_suffix('.').unwrap_or(no_port);
-    no_dot.to_ascii_lowercase()
-}
-
-/// Strip an optional `:port` suffix from a host, correctly handling a bracketed
-/// IPv6 literal (AAASM-4829).
-///
-/// A bare `host.split(':').next()` mangles IPv6 literals: `[::1]:443` becomes
-/// `[`, which both lets the CONNECT-time `ssrf::blocked_ip_literal` check miss
-/// the real address (it can no longer `parse::<IpAddr>()`) and over-blocks
-/// legitimate IPv6 under a denylist. This unwraps the brackets and drops the
-/// port so the returned value is the real literal (`::1`).
-///
-/// Rules:
-/// - `[<ipv6>]:port` / `[<ipv6>]` → `<ipv6>` (brackets and port removed).
-/// - `host:port` (single `:`) → `host`.
-/// - a bare, unbracketed IPv6 literal (multiple `:`, no brackets) is returned
-///   whole — an IPv6 address requires brackets to carry a port, so every colon
-///   is part of the address.
-/// - anything else is returned unchanged (trimmed).
-fn strip_host_port(host: &str) -> &str {
-    let host = host.trim();
-    if let Some(rest) = host.strip_prefix('[') {
-        // Bracketed IPv6 literal — take the text up to the closing bracket,
-        // discarding any `:port` that follows it. A malformed value with no
-        // closing bracket falls back to the un-bracketed remainder.
-        return match rest.find(']') {
-            Some(end) => &rest[..end],
-            None => rest,
-        };
-    }
-    match host.rfind(':') {
-        // More than one colon and no brackets → bare IPv6 literal, no port.
-        Some(idx) if host[..idx].contains(':') => host,
-        Some(idx) => &host[..idx],
-        None => host,
-    }
-}
+// AAASM-6163: `canonical_host`/`strip_host_port` moved to `aa_core::net`, the
+// shared home for cross-mechanism destination normalization (it already holds
+// `is_blocked_ip` for the same reason), so `aa-isolation`'s egress contract can
+// canonicalize a destination without depending on `aa-proxy`. Re-exported here
+// under their original names so every call site in this module is unchanged.
+use aa_core::net::{canonical_host, strip_host_port};
 
 /// The port on a CONNECT authority (e.g. `host:port`, `[ipv6]:port`),
 /// bracket-aware like [`strip_host_port`] (AAASM-5922, ADR 0036 F7/N1).
@@ -2941,14 +2907,10 @@ mod tests {
         assert_eq!(server.connect_deny_reason("1.1.1.1"), None);
     }
 
-    #[test]
-    fn canonical_host_strips_port_trailing_dot_and_case() {
-        // AAASM-3983: port, single trailing dot, and case are all normalised.
-        assert_eq!(canonical_host("EVIL.COM"), "evil.com");
-        assert_eq!(canonical_host("evil.com."), "evil.com");
-        assert_eq!(canonical_host("Evil.Com.:443"), "evil.com");
-        assert_eq!(canonical_host("evil.com"), "evil.com");
-    }
+    // AAASM-6163: `canonical_host_strips_port_trailing_dot_and_case`,
+    // `strip_host_port_handles_bracketed_ipv6` and
+    // `canonical_host_preserves_bracketed_ipv6_literal` moved to
+    // `aa_core::net`'s own test module along with the functions they pin.
 
     #[test]
     fn plain_http_content_length_fails_closed_on_unparseable_value() {
@@ -2962,30 +2924,6 @@ mod tests {
         );
         assert!(plain_http_content_length(&["Content-Length: abc\r\n".to_string()]).is_err());
         assert!(plain_http_content_length(&["Content-Length: -1\r\n".to_string()]).is_err());
-    }
-
-    #[test]
-    fn strip_host_port_handles_bracketed_ipv6() {
-        // AAASM-4829: a bracketed IPv6 literal must yield the real address, not
-        // the mangled `[` that `split(':')` produced.
-        assert_eq!(strip_host_port("[::1]:443"), "::1");
-        assert_eq!(strip_host_port("[::1]"), "::1");
-        assert_eq!(strip_host_port("[2001:db8::1]:8443"), "2001:db8::1");
-        // Bare (unbracketed) IPv6 literal has no port — every colon is address.
-        assert_eq!(strip_host_port("::1"), "::1");
-        assert_eq!(strip_host_port("2001:db8::1"), "2001:db8::1");
-        // IPv4 / DNS host:port and bare hosts behave as before.
-        assert_eq!(strip_host_port("1.2.3.4:80"), "1.2.3.4");
-        assert_eq!(strip_host_port("api.openai.com:443"), "api.openai.com");
-        assert_eq!(strip_host_port("api.openai.com"), "api.openai.com");
-    }
-
-    #[test]
-    fn canonical_host_preserves_bracketed_ipv6_literal() {
-        // AAASM-4829: the previous `split(':')` mangled `[::1]:443` into `[`,
-        // breaking both denylist compares and the SSRF check.
-        assert_eq!(canonical_host("[::1]:443"), "::1");
-        assert_eq!(canonical_host("[2001:DB8::1]:8443"), "2001:db8::1");
     }
 
     /// AAASM-5922 (ADR 0036 F7/N1): the D-D match must use the port the

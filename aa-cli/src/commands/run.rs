@@ -246,8 +246,9 @@ mod plan {
 
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::{
-        authority_gate, effective_authority_for_report, Ancestry, CapabilityLease, CredentialPosture,
-        DomainAuthoritySummary, ExecutionSpec, IdentityRef, IsolationBackend, IsolationReport, SessionRef, TargetRef,
+        authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
+        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, IdentityRef, IsolationBackend,
+        IsolationReport, RequirementScope, SessionRef, TargetRef,
     };
     use aa_policy::resolve as run_policy;
 
@@ -496,6 +497,47 @@ mod plan {
         pub(super) fn no_proxy(&self) -> bool {
             self.no_proxy
         }
+    }
+
+    /// Read the same `AA_PROXY_LLM_ONLY` env var `aa_proxy::config::ProxyConfig`
+    /// reads for the spawned dedicated proxy (AAASM-6163). Not threaded through
+    /// [`ProxyGuardOptions`][super::ProxyGuardOptions] because the spawned
+    /// proxy inherits this process's environment directly; read here, at the
+    /// one call site that needs it as a typed value, so
+    /// [`super::run_egress_broker::report_for_launch`] stays a pure function of
+    /// its parameters.
+    fn parse_llm_only_env() -> bool {
+        match std::env::var("AA_PROXY_LLM_ONLY") {
+            Ok(val) => val != "0" && val.to_lowercase() != "false",
+            Err(_) => true,
+        }
+    }
+
+    /// Mirrors `aa_proxy::config`'s `AA_PROXY_MITM_HOSTS` parsing.
+    fn mitm_hosts_env() -> Vec<String> {
+        match std::env::var("AA_PROXY_MITM_HOSTS") {
+            Ok(val) if !val.is_empty() => val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Mirrors `aa_proxy::config`'s `AA_PROXY_NETWORK_FAIL_OPEN` parsing.
+    fn network_fail_open_env() -> bool {
+        match std::env::var("AA_PROXY_NETWORK_FAIL_OPEN") {
+            Ok(val) => val == "1" || val.to_lowercase() == "true",
+            Err(_) => false,
+        }
+    }
+
+    /// Whether a gateway endpoint is configured for the spawned proxy —
+    /// mirrors the presence check `aa_proxy::config`'s own
+    /// `AA_PROXY_GATEWAY_ENDPOINT` resolution performs.
+    fn gateway_configured_env() -> bool {
+        std::env::var("AA_PROXY_GATEWAY_ENDPOINT").is_ok_and(|v| !v.is_empty())
     }
 
     /// The effective policy this session runs under.
@@ -764,6 +806,12 @@ mod plan {
         /// — but threaded through so a future source of resolved parent
         /// authority has one call site to populate.
         ancestry: Ancestry,
+        /// This launch's egress contract (AAASM-6163, ADR 0038 amendment).
+        /// [`aa_isolation::EgressContract::not_required`] for every launch
+        /// today — no policy path issues a stronger contract yet — but
+        /// threaded through `resolve_boundary` so a future source has one
+        /// call site to populate, exactly as `leases` and `ancestry` do.
+        egress: aa_isolation::EgressContract,
     }
 
     impl IsolationPlan {
@@ -888,6 +936,7 @@ mod plan {
             command: &std::process::Command,
             child_env: &std::collections::BTreeMap<String, String>,
             credentials: CredentialPosture,
+            network: &NetworkPlan,
         ) -> (Option<ExecutionSpec>, IsolationReport, Boundary) {
             let session = SessionRef::new(&handle.session_id, &handle.trace_id);
             let identity_ref = identity.identity_ref(&handle.agent_id);
@@ -1000,14 +1049,56 @@ mod plan {
             // which inject a fixed instant to keep expiry/not-yet-valid
             // decisions deterministic.
             let now = std::time::SystemTime::now();
-            if let Err(refusal) = authority_gate(&spec, &self.ancestry, now) {
+            let witness = match authority_gate(&spec, &self.ancestry, now) {
+                Ok(witness) => witness,
+                Err(refusal) => {
+                    let authority = effective_authority_for_report(&spec);
+                    let report = self.with_selection(
+                        IsolationReport::authority_refused(session, &spec, &refusal)
+                            .with_policy(lowering)
+                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                    );
+                    return (Some(spec), report, Boundary::Refused(refusal.to_string()));
+                }
+            };
+
+            // AAASM-6163/ADR 0038 amendment: the egress contract's gate runs
+            // immediately after `authority_gate` — it needs the witness — and
+            // before any backend is consulted, so a launch requiring brokered
+            // egress this run's mediating component (or explicit authority)
+            // cannot actually provide is refused before backend capability is
+            // in the picture, exactly as `authority_gate` itself is. `self.egress`
+            // is `EgressContract::not_required()` for every launch today, so this
+            // is inert until a policy source issues a stronger contract.
+            let egress_authority = EgressAuthority::from_gated_spec(&spec, &witness);
+            let egress_scope = spec
+                .requirements()
+                .iter()
+                .find(|r| r.domain() == CapabilityDomain::NetworkEgress)
+                .map(|r| r.scope().clone())
+                .unwrap_or(RequirementScope::Whole);
+            let broker = crate::commands::run_egress_broker::report_for_launch(
+                network.endpoint(),
+                network.no_proxy(),
+                parse_llm_only_env(),
+                &mitm_hosts_env(),
+                network_fail_open_env(),
+                gateway_configured_env(),
+            );
+            if let Err(refusal) = egress_gate(&self.egress, &broker, &egress_authority, &egress_scope) {
                 let authority = effective_authority_for_report(&spec);
-                let report = self.with_selection(
-                    IsolationReport::authority_refused(session, &spec, &refusal)
-                        .with_policy(lowering)
-                        .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                let detail = format!("the launch is refused: {refusal}");
+                let mut report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&spec),
+                    credentials,
+                    detail.clone(),
                 );
-                return (Some(spec), report, Boundary::Refused(refusal.to_string()));
+                report = report.with_policy(lowering);
+                report = report.with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority));
+                report = self.with_selection(report);
+                return (Some(spec), report, Boundary::Refused(detail));
             }
 
             backend.set_child_environment(child_env.clone());
@@ -1274,9 +1365,14 @@ mod plan {
             // removals already applied. Handing over the pre-merge map would put
             // a different environment inside the boundary than the one every
             // other surface reports.
-            let (spec, isolation, boundary) =
-                self.isolation
-                    .resolve_boundary(&self.identity, handle, &command, &effective, credentials);
+            let (spec, isolation, boundary) = self.isolation.resolve_boundary(
+                &self.identity,
+                handle,
+                &command,
+                &effective,
+                credentials,
+                &self.network,
+            );
 
             BoundLaunch {
                 command,
@@ -1591,6 +1687,7 @@ mod plan {
                     selection: None,
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
+                    egress: aa_isolation::EgressContract::not_required(),
                 });
             }
 
@@ -1668,6 +1765,7 @@ mod plan {
                     selection: None,
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
+                    egress: aa_isolation::EgressContract::not_required(),
                 });
             }
         };
@@ -1693,6 +1791,7 @@ mod plan {
                 selection: None,
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
+                egress: aa_isolation::EgressContract::not_required(),
             });
         }
 
@@ -1703,6 +1802,7 @@ mod plan {
             selection: None,
             leases: Vec::new(),
             ancestry: Ancestry::Root,
+            egress: aa_isolation::EgressContract::not_required(),
         })
     }
 
@@ -1760,6 +1860,7 @@ mod plan {
                 selection: None,
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
+                egress: aa_isolation::EgressContract::not_required(),
             });
         };
 
@@ -1813,6 +1914,7 @@ mod plan {
                         }),
                         leases: Vec::new(),
                         ancestry: Ancestry::Root,
+                        egress: aa_isolation::EgressContract::not_required(),
                     });
                 }
                 Err(refusal) => {
@@ -1858,6 +1960,7 @@ mod plan {
             }),
             leases: Vec::new(),
             ancestry: Ancestry::Root,
+            egress: aa_isolation::EgressContract::not_required(),
         })
     }
 
