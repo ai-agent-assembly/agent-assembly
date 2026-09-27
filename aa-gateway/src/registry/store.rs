@@ -1060,6 +1060,11 @@ impl AgentRegistry {
     /// HTTP handler owns the direction-asymmetric authz and 72h bound; this is
     /// the durable write primitive only.
     ///
+    /// **The one write-side invariant this method DOES enforce (HORO-1375
+    /// §4.2):** a stored `Some(Observe)` (or `Some(Disabled)`) override must
+    /// always carry an expiry, or the shadow-expiry reconciler can never
+    /// revert it — see [`RegistryError::UncappedShadowWindow`].
+    ///
     /// Returns [`RegistryError::NotFound`] if the agent is not registered.
     pub async fn set_enforcement_mode_persisted(
         &self,
@@ -1067,6 +1072,19 @@ impl AgentRegistry {
         mode: Option<aa_core::EnforcementMode>,
         expires_at: Option<DateTime<Utc>>,
     ) -> Result<(), RegistryError> {
+        // HORO-1375 §4.2 — reject an uncapped Observe/Disabled write BEFORE any
+        // mutation. A stored Observe override with no expiry is structurally
+        // invisible to `agents_with_expired_shadow` (it requires
+        // `enforcement_mode_expires_at.is_some()`), so it would never be
+        // auto-reverted — a permanent, uncapped weaken. Checked ahead of the
+        // `NotFound` lookup below so the rejection is unconditional on the
+        // shape of the write, not on whether the agent happens to exist.
+        if expires_at.is_none() {
+            if let Some(mode @ (aa_core::EnforcementMode::Observe | aa_core::EnforcementMode::Disabled)) = mode {
+                return Err(RegistryError::UncappedShadowWindow { mode });
+            }
+        }
+
         // Mutate in-memory first, capturing the prior values so a failed storage
         // write can be rolled back. The updated clone is what we persist, so the
         // durable row matches the in-memory record exactly.
@@ -1406,6 +1424,61 @@ mod tree_tests {
             .await
             .expect_err("an unregistered agent must be NotFound");
         assert!(matches!(err, RegistryError::NotFound(_)));
+    }
+
+    /// HORO-1375 AC-3 N6 — an uncapped `Observe` (or `Disabled`) write with no
+    /// expiry is rejected BEFORE any mutation; the record is left completely
+    /// unchanged, not partially mutated.
+    #[tokio::test]
+    async fn n6_set_enforcement_mode_persisted_rejects_uncapped_observe_with_no_mutation() {
+        let reg = AgentRegistry::new();
+        let id = [9u8; 16];
+        reg.register(make_record(id, None, Some("teamA"), 0)).unwrap();
+
+        // Seed a known-good prior state so we can assert it is UNCHANGED.
+        let deadline = Utc::now() + chrono::Duration::hours(1);
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Observe), Some(deadline))
+            .await
+            .expect("capped Observe write succeeds");
+
+        let err = reg
+            .set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Observe), None)
+            .await
+            .expect_err("uncapped Observe (no expiry) must be rejected");
+        assert!(matches!(
+            err,
+            RegistryError::UncappedShadowWindow {
+                mode: aa_core::EnforcementMode::Observe
+            }
+        ));
+        // UNCHANGED — no partial mutation from the rejected write.
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(rec.enforcement_mode, Some(aa_core::EnforcementMode::Observe));
+        assert_eq!(rec.enforcement_mode_expires_at, Some(deadline));
+
+        // Disabled is rejected too, for symmetry.
+        let err = reg
+            .set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Disabled), None)
+            .await
+            .expect_err("uncapped Disabled (no expiry) must be rejected");
+        assert!(matches!(
+            err,
+            RegistryError::UncappedShadowWindow {
+                mode: aa_core::EnforcementMode::Disabled
+            }
+        ));
+        let rec = reg.get(&id).unwrap();
+        assert_eq!(
+            rec.enforcement_mode,
+            Some(aa_core::EnforcementMode::Observe),
+            "still unchanged"
+        );
+
+        // Sanity: Enforce with no expiry (the ordinary strengthen / revert
+        // shape the shadow-expiry reconciler uses) is NOT rejected.
+        reg.set_enforcement_mode_persisted(&id, Some(aa_core::EnforcementMode::Enforce), None)
+            .await
+            .expect("Enforce with no expiry must still be accepted");
     }
 
     #[test]

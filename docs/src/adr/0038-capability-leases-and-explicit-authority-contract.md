@@ -137,6 +137,13 @@ gate-level refusal. `REPORT_SCHEMA` is not bumped: both are purely additive fiel
 that render nothing when unset, so an existing report — and every existing golden-output
 test — is byte-identical to before this ticket.
 
+**Cross-reference (AAASM-6166):** the durable execution receipt this ticket's
+sibling amendment adds to [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
+applies this section's own rule to a persisted artifact rather than introducing a
+new one — a receipt's `LeaseBinding` records a lease's id and a digest of its
+redaction-safe projection, never the lease's basis reason or its scope selectors.
+No field of `aa-cli/src/commands/execution_receipt` holds either.
+
 ## What this ADR does not decide
 
 - **No crypto identity binding.** `IdentityRef` stays asserted-only. AAASM-5533 owns
@@ -402,6 +409,279 @@ unenforced number was honored.
 - No second network-enforcement mechanism — see [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)'s
   own cross-reference note for this ticket, added alongside its existing
   network-enforcement bullet.
+
+## Amendment (AAASM-6164): the identity-bound credential-brokerage contract
+
+AAASM-6164 asked for "a secretless-by-default credential broker for governed runs".
+Reading `aa-proxy` and `aa-cli/src/commands/run.rs` as they actually stand today
+found the same shape §14's egress amendment found: a broker mechanism already
+exists and works. `aa-proxy/src/credentials.rs`'s `CredentialStore` already MitMs a
+provider host, strips the agent's own `Authorization`/`x-api-key` header and
+appends the operator's real key at egress (AAASM-3578/AAASM-5926) — the source
+secret never enters the agent through that path. The actual defect: `aasm run`'s
+`inheritable_ambient_env` still copies the operator's whole environment, including
+that same provider key, into the child anyway, so the strong mechanism sits right
+next to a launch path that undermines it. `governance/capability-manifest.yaml`
+capability C2's own `known_bypasses` already named this. This amendment does not
+add a fourth credential mechanism. It binds a launch's *requirement* of brokerage
+to this run's explicit authority, and makes a launch that would otherwise still
+hand the child a name a real brokerage mechanism covers a pre-launch refusal.
+
+### 18. `CapabilityDomain::Credential`, not a new domain
+
+`aa-isolation/src/credential_broker.rs` binds to `CapabilityDomain::Credential`,
+which `capability.rs` already carries (ADR 0035 §9's "the authority the child
+inherits"). No domain is added, for the same reason §14 gave for egress: adding one
+means touching every hand-maintained `CapabilityDomain::ALL` call site across the
+workspace, for a property an existing domain already names.
+
+### 19. Witness-gated `CredentialAuthority`/`CredentialWitness`, the same mechanism as §8/§15
+
+`CredentialAuthority::from_gated_spec` is constructible only from an
+`ExecutionSpec` plus an `AuthorityWitness` — the identical single-private-field,
+no-other-public-constructor pattern §2, §8 and §15 already use. `credential_gate`
+itself returns its own `CredentialWitness` under the same rule.
+
+### 20. Two-value requirement axis, three-value achieved axis — not a forbidden third "preferred" value
+
+`BrokeragePosture` has exactly two values (`NotRequired`/`BrokerRequired`), for the
+same reason `EgressPosture` does (§ "Two-value posture, deliberately" in
+`egress.rs`'s own module documentation): a third, "broker preferred, raw secret
+acceptable as a fallback", would *be* the silent raw-credential exposure this
+contract exists to forbid, wearing the shape of a middle ground.
+
+`BrokerageMode`, by contrast, is a three-value **achieved** fact, and the three
+values are not ranked against each other: `BrokerPerformsRequest` (the source
+secret never enters the child — what `aa-proxy` already does), a future
+`EphemeralScopedCredential` (a different, run-bound, expiring value reaches the
+child instead), and `RawInjectionFallback` (the source secret itself reaches the
+child). These are different *mechanisms*, not different qualities of one
+mechanism, so `RequiredMode::AnySecretlessMode` is a set-membership floor, not a
+comparison on an `Ord`. Adding a third *requirement*-axis value would collapse
+back into the same silent-fallback failure the two-value posture already refuses;
+keeping the *achieved*-axis three-valued is what lets a contract require "any
+secretless mechanism" without pretending the two secretless mechanisms are the
+same one.
+
+### 21. Raw fallback: default `Refuse`, admitted only when justified, recorded as `ClaimTerm::Degraded`
+
+`RawFallbackPolicy::default()` is `Refuse` — mirrors `RangePolicy::default()`
+(§17's sibling discipline in `egress.rs`): a launch that never states otherwise
+cannot silently accept residual exposure. `RawFallbackPolicy::PermittedWhenJustified`
+is the only opt-in, and `check_raw_fallback` still refuses an empty justification
+under it — "permitted when justified" is not satisfied by an unstated reason.
+`residual_exposure_record` files the admitted residual as `EvidenceKind::Installed`
++ `ClaimTerm::Degraded`. `Degraded` is not among `ClaimTerm::asserts_coverage`'s six
+terms and ranks lowest in `aa-isolation/src/evidence.rs`'s internal ordering, so
+this record can never raise `EnforcementEvidence::claim_for` for
+`CapabilityDomain::Credential` — the residual is visible in the report without
+ever being misread as coverage.
+
+### 22. Conditional withholding at `aasm run`: the four conditions, and why unconditional removal would break tools rather than secure them
+
+`aa-cli/src/commands/run.rs`'s `effective_child_env` now withholds a brokered
+provider credential's env name from the child by default, with **no operator
+env-var escape hatch**, when — and only when — all four hold: a dedicated proxy is
+bound for this launch, `--no-proxy` was not passed, the host is actually MitM'd
+under this launch's `llm_only`/`mitm_hosts` scope, and a provider key is
+configured for that exact host (`AA_PROXY_PROVIDER_KEYS`). Withholding
+unconditionally — for every credential-shaped name regardless of whether a
+mechanism actually covers it — would not be stricter, it would be wrong: a tool
+whose own provider key is for a host this launch does not MitM would simply lose
+its credential with nothing else providing it, which is a broken launch, not a
+secured one. The four-condition test is what keeps withholding tied to an actual
+brokerage mechanism rather than to a name pattern. An operator whose tool needs a
+key for a non-MitM'd host already has a coherent control: remove that host from
+`AA_PROXY_PROVIDER_KEYS`.
+
+### 23. Ceilings stated and reported unsupported, never silently ignored
+
+`CredentialCeilings` states a quantitative use/byte ceiling; no per-run accounting
+mechanism for either exists today. `check_ceilings` refuses a launch whose
+contract states one against a broker report whose `ceiling_support` is
+`SupportLevel::Unsupported` — the identical discipline §17 already established for
+egress, applied here.
+
+### What this amendment does not decide
+
+- **Cross-process credential recovery from a supervisor's own `/proc` entry is not
+  measured — a stated gap, not a discharged property.** This backend's own
+  sibling scenario `another_processs_environ_is_outside_a_scoped_proc_grant`
+  already records that a Yama host refuses a descendant reading an ancestor's
+  `environ` unconditionally, before any backend is consulted. An attempted
+  cross-process arm for this amendment's own negative control — a confined child
+  reading its supervisor's `/proc/<pid>/environ` — ran into the identical wall:
+  its own mandatory unscoped control (no backend, `/proc` granted whole) failed
+  for the same ptrace-direction reason on every real CI runner, so the scenario
+  could never attribute the denial to this backend and always declined. It was
+  removed rather than shipped declining, per the `isolation-backend-native-linux`
+  lane's own "fail on any decline" discipline (a decline there is a broken lane,
+  not an honest opt-out). The negative control this amendment's AC actually needs
+  — that a brokered credential's source name is absent from the child's own
+  environment, descriptors and `/proc/self` — is still measured, by
+  `linux_confinement_native.rs`'s sibling scenario, with a paired raw-fallback
+  positive control. Whether a confined process can ever recover a credential from
+  a *different* process's `/proc` entry on a Yama host remains open and is not
+  this backend's property to close.
+- **`SecretsService.DispatchTool`'s fate is untouched and stays AAASM-5631's own
+  decision.** `proto/secrets.proto`'s `SecretsService.DispatchTool` and
+  `aa-api/src/routes/dispatch.rs` remain dead code — both production constructions
+  still instantiate a fresh, empty `InMemorySecretsStore` and no route registers
+  anything into it. Nothing in `aa-proxy/`, `proto/secrets.proto`,
+  `aa-api/src/routes/dispatch.rs`, `aa-gateway/src/secrets.rs` or any
+  `aa-storage*` credential store changed for this amendment. "No child-facing
+  credential-*request* channel exists" is held structurally, by adding nothing,
+  not by asserting it.
+- **Mode 2 (`BrokerageMode::EphemeralScopedCredential`) has vocabulary, not a
+  mechanism.** No OSS minting path for a run-bound ephemeral credential exists
+  anywhere in this repository. `check_required_mode` refuses, rather than
+  silently passing, when a contract requires `RequiredMode::RunBoundEphemeralOnly`
+  and no reported service offers it — see §20.
+- **Per-request/per-connection proxy identity attribution is unchanged.**
+  `aa-proxy/src/network_enforce.rs` still evaluates every decision under the
+  synthetic `PROXY_AGENT_ID` at Global policy tier, exactly as this document's
+  "What this amendment does not decide" for AAASM-6163 already states for egress.
+  Authority here is launch-level only: this
+  run's own `IdentityRef` and credential lease subject, never a per-request
+  identity on the proxy path.
+- **No revocation-latency claim.** `RevocationState`'s own existing documentation
+  already reserves that ground for the lease system generally; this amendment adds
+  nothing to it. "Measurable" here means the gate-level expiry/revocation
+  fail-closed path `authority_gate`'s existing `lease.validate_at` already
+  provides, plus `aa-proxy`'s own pre-existing `CredentialStore` TTL/rotate unit
+  tests, unmodified and still passing.
+- **No identity-verification claim.** `IdentityRef` remains *asserted*, not
+  *verified* — the same AAASM-5533 residual every other amendment in this document
+  already carries forward, unaffected here.
+- **No secrets-vault/storage backend.** `aa_core::storage::CredentialStore`/
+  `MemoryCredentialStore`/`PgCredentialStore` are untouched — explicitly out of
+  this ticket's own acceptance criteria.
+- No lease sourcing from the policy schema — already deferred by §4, applied here
+  identically to §"No lease sourcing" for egress. Every real launch today
+  constructs `CredentialContract::not_required()`, so this amendment ships inert:
+  `RUNTIME_REQUIREMENTS_SCHEMA` and `REPORT_SCHEMA` are unbumped (both additive
+  fields default empty/`not_required`), and every pre-existing golden-output test
+  remains byte-identical except where a real launch's env now omits a brokered
+  provider key it previously inherited — see §22's one genuinely user-visible
+  behavior change.
+
+## Amendment (AAASM-6171): the typed host-capability broker for native Xcode/Simulator operations
+
+AAASM-6171 asked for "a typed host-capability broker for Xcode, Simulator, signing
+and other native host operations". The ticket's own Context paragraph assumed the
+macOS VM backend gives a strong host-confinement boundary this broker could punch
+narrow holes through. Reading the actual code found that assumption false on four
+independent counts: the macOS VM's own guest is **Linux**, not macOS
+(`aa-isolation-macos-vm/src/lib.rs` delegates to `aa-isolation-native`/Landlock
+inside a Virtualization.framework Linux guest), so `xcodebuild`/`simctl`/`codesign`
+could never run inside it regardless of completeness; that backend reports
+`Unavailable` on essentially every host today (AAASM-5840 tracks artifact-shipping
+separately); there is no guest-initiated request channel at all
+(`aa_isolation_vm_proto::Message` carries only host→guest launch variants); and no
+OS confinement backend exists on macOS at all (`aa-isolation-native`/
+`aa-isolation-sandlock` are both Linux-only; `auto_select` refuses on macOS). The
+accepted resolution, settled before implementation rather than during it: ship the
+broker as a **supervisor-side mediation boundary with no OS confinement underneath
+it on macOS today**, and record that plainly rather than implying a sandbox this
+build does not have. See "What this amendment does not decide" below for the full
+list of what stays out.
+
+### 24. Composite domain binding — `ProcessCreation` (lease-bearing) plus `FilesystemRead`/`FilesystemWrite`/`Credential` (non-lease-bearing), not a new domain
+
+`aa-isolation/src/host_capability.rs` binds to `CapabilityDomain::ProcessCreation`
+as `HostCapabilityAuthority`'s single lease-bearing state — spawning
+`xcodebuild`/`simctl` *is* process creation — and separately checks
+`FilesystemRead`/`FilesystemWrite`-shaped path scoping and a `Credential`-shaped
+signing-identity reference, without introducing a fourth new domain. Same
+reasoning as §14/§18: `CapabilityDomain::ALL`'s own test keeps the array in sync
+with the enum, but every other reader of `ALL` (~80 call sites across this
+workspace, by grep) would need re-auditing for a new variant, and
+`execution_receipt::validate`'s own domain-count check would invalidate every
+already-stored receipt. A composite binding over existing domains costs neither.
+
+### 25. Witness-gated `HostCapabilityAuthority`/`HostCapabilityWitness`, the same mechanism as §8/§15/§19
+
+`HostCapabilityAuthority::from_gated_spec` is constructible only from an
+`ExecutionSpec` plus an `AuthorityWitness` — the identical pattern §8, §15 and §19
+already use. `host_capability_gate` returns its own `HostCapabilityWitness` under
+the same rule, and `aa-cli`'s `perform()` is the only function in that crate
+permitted to spawn a `Command` for a `HostOperation` — it requires that witness as
+a parameter to do so, so no call site can reach a real host process without
+having passed the gate first.
+
+### 26. The closed `HostOperation` enum plus typed-field validation is the actual privilege boundary — and why an argv array alone does not close argument injection
+
+`HostOperation` is `#[non_exhaustive]` but deliberately carries no `Exec { command:
+String }` variant, and none may ever be added — that absence, not a sandbox, is
+what keeps this module from becoming a generic host-shell-execution surface. Each
+variant's fields are validated newtypes (`SchemeName`, `ConfigurationName`,
+`SimulatorUdid`, `SigningIdentityRef`) and a closed `Destination` enum, and
+`to_argv` is the one function anywhere in this codebase that turns a
+`HostOperation` into a host process argv.
+
+Using `std::process::Command`'s argv array (never `sh -c`) already rules out shell
+metacharacter injection. It does **not** rule out *argument* injection, and this
+was verified empirically rather than assumed: `xcodebuild -scheme X -destination
+'...' -derivedDataPath D SWIFT_ACTIVE_COMPILATION_CONDITIONS=INJECTED build` is a
+real, legal `xcodebuild` invocation, and the trailing `KEY=value` element is
+honored as a build-setting override — a bare positional argv element, reachable
+the moment any validated field's raw value is allowed to contain `=` or start with
+`-`. `ArgumentRejected::ContainsEquals`/`LeadingDash` close exactly this vector;
+`aa-integration-tests`' positive control
+(`positive_control_raw_key_value_argument_would_take_effect_if_not_blocked`)
+deliberately bypasses the newtypes to prove the vector is real, rather than only
+asserting the newtypes reject it.
+
+### What this amendment does not decide
+
+- **No guest→host IPC channel.** This broker's front door is a new `aasm host` CLI
+  subcommand — the same shape as `aasm sandbox`/`aasm proxy` — invoked by the
+  operator or by `aasm run`'s own launch pipeline, never a socket a confined child
+  calls into. Building an actual guest-initiated request channel would require
+  changes to `aa-isolation-vm-proto`'s `Message` enum and the Swift VM helper that
+  this ticket does not make; that is separate, much larger, currently-unstarted
+  infrastructure (AAASM-5840, AAASM-6170).
+- **No new socket, daemon, crate, or dependency.** `aa-isolation`'s existing
+  witness-gated-authority pattern and `aa-cli`'s existing subcommand shape are
+  reused as-is.
+- **No privilege-separated broker process.** There is no setuid/entitlement/XPC
+  privilege separation anywhere in this repository relevant to this ticket. The
+  broker runs as the caller's own UID — required, since `xcodebuild` needs that
+  UID's own Xcode/DerivedData access — and "least host privilege practical" is
+  satisfied by `env_clear()` plus a fixed three-variable environment
+  (`PATH`/`HOME`/`DEVELOPER_DIR`), a null stdin, an argv from `to_argv` only, and
+  no shell invocation ever. This is a mediation boundary, not a privilege drop —
+  claiming otherwise would overstate what this build does, in the same way
+  AAASM-5528 already named as an incident class for this repository's public copy.
+- **No `codesign` invoker.** `HostOperation::Codesign` and `CodesignRequest` exist
+  as vocabulary — `check_invoker_exists` always refuses this kind via
+  `NoInvokerForOperation`. Automating `security unlock-keychain` to make a real
+  invoker work would put a keychain secret on the agent's own path, which this
+  repository's secret-handling policy forbids; the vocabulary exists so a future,
+  deliberately-designed invoker has a typed request to extend rather than a new
+  one to invent. Mirrors §"Mode 2 has vocabulary, not a mechanism" in the AAASM-6164
+  amendment above.
+- **No claim that a macOS OS-confinement backend exists.** `aa-isolation-native`/
+  `aa-isolation-sandlock` remain Linux-only; `auto_select` still refuses on macOS.
+  This is the real, current state of this repository — this ticket does not
+  introduce that gap and does not claim to close it.
+- **No `simctl boot`/`install`/`launch`.** A real simulator boot is minutes of wall
+  clock; only `SimulatorList` (device discovery) ships with a real invoker.
+- **TOCTOU symlink races are not closed.** `scoped_path` canonicalizes and checks
+  at call time only; a symlink swapped between that check and the actual host
+  invocation is not prevented — macOS has no `openat2(RESOLVE_BENEATH)`
+  equivalent, and `xcodebuild` reopens paths itself after the check returns.
+- **The `--lease-file` format is not cryptographically bound.** `aasm host`'s
+  minimal hand-parsed JSON lease projection carries no seal or signature — the
+  same residual class AAASM-6166's execution-receipt seal already documents for
+  its own content digest (tamper-since-write detection, not proof of origin).
+- **No OS confinement boundary exists on macOS today, full stop.** This broker is
+  the *only* mediation standing between a governed launch and a real `xcodebuild`
+  invocation on this platform. A determined unconfined agent can invoke
+  `xcodebuild`/`simctl` directly, entirely outside this broker, on every macOS host
+  this repository runs on today — see `governance/capability-manifest.yaml`'s
+  `known_bypasses` entry for this capability, which states this in exactly these
+  terms rather than as an implied assumption.
 
 ## Consequences
 

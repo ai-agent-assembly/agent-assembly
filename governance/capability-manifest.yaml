@@ -171,6 +171,7 @@ meta:
       - C6
       - H5
       - H8
+      - H9
       - I1
       - I2
       - L1
@@ -1618,6 +1619,83 @@ capabilities:
   target_level: gateway_protected is unreachable by this path — it needs a core-side adjudication
   tickets:
   - AAASM-5298
+- id: H9
+  domain: host_action
+  capability: Typed host-capability broker for native Xcode/Simulator operations
+  owner:
+    repository: agent-assembly
+    component: aa-isolation
+  framework_or_tool:
+  - aasm_host
+  language:
+  - not_applicable
+  platform:
+  - macos
+  launch_path: aasm host xcode build|list, aasm host simulator list
+  preconditions:
+  - kind: env
+    name: DEVELOPER_DIR
+    required_value: an installed Xcode toolchain (measured via xcode-select -p)
+  transport: not_applicable
+  interception_component: aa_isolation::host_capability::host_capability_gate ->
+    aa-cli/src/commands/run_host_capability.rs::perform, the only function in aa-cli
+    permitted to spawn a Command for a HostOperation (requires a HostCapabilityWitness
+    only the gate can construct)
+  identity_source: ExecutionSpec::identity (asserted, not verified)
+  policy_context:
+  - HostCapabilityContract
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: unmeasured
+  protection_state: integrated
+  protection_state_scope: typed_mediation_only
+  governance_level_ceiling: not_measured
+  boundary_class: B6
+  released_channels:
+  - github_release
+  - homebrew
+  - install_script
+  - crates_io
+  released_platforms:
+  - linux_x86_64
+  - linux_aarch64
+  - macos
+  buildable: unmeasured
+  default_state: 'off'
+  reachability: shipped
+  known_bypasses:
+  - 'no OS confinement boundary exists on macOS today; this broker is the only mediation,
+    and a determined unconfined agent can invoke xcodebuild/simctl directly without going
+    through this broker at all'
+  - 'HostCapabilityContract::not_required() for every launch today — no policy path issues
+    a stronger contract yet, so this gate is inert until one does'
+  - codesign has vocabulary but no invoker (NoInvokerForOperation) — no signing-identity
+    material is ever handled by this broker
+  - simctl boot/install/launch are out of scope — only device discovery (SimulatorList) has
+    a real invoker
+  - no privilege separation — the broker runs as the caller's own UID, same as the caller
+    would have running xcodebuild directly
+  evidence:
+  - kind: test_unlocated
+    describes: 'AAASM-6171 (unreleased at this manifest''s pinned evidence_tree):
+      aa-isolation/src/host_capability.rs unit tests (argument-injection, path-escape,
+      lease-expiry, denied-authority, broker-unavailable, evidence-domain-sweep negative
+      controls); aa-cli/src/commands/run_host_capability.rs host-gated tests including a
+      real end-to-end SwiftPM build and a positive control proving the KEY=value
+      build-setting-override injection vector is real. Re-cite as `kind: test` with a
+      `path` once a release''s evidence_tree includes them.'
+  evidence_runs_on_main: standing
+  evidence_quality: unit_only
+  target_level: host_enforced is unreachable — no OS confinement backend exists on macOS;
+    this capability's ceiling is integrated (typed mediation only) until AAASM-5840/AAASM-6170
+    close the underlying OS-confinement gap this ADR 0038 amendment names explicitly
+  tickets:
+  - AAASM-6171
+  notes: Supervisor-side mediation boundary only, by deliberate design (see ADR 0038
+    AAASM-6171 amendment §24-26) — not a sandbox, not a privilege drop, not a guest-initiated
+    IPC channel.
 - id: N1
   domain: network
   capability: CONNECT-time egress allow/deny
@@ -3865,17 +3943,31 @@ capabilities:
   known_bypasses:
   - only the MitM'd hosts
   - the operator must set the env var
-  - aasm run still hands the child the whole parent environment (C5)
+  - 'AAASM-6164: for a brokered provider name specifically (host MitM''d for this launch AND
+    a key configured for that exact host — currently ANTHROPIC_API_KEY/OPENAI_API_KEY), `aasm
+    run` now withholds it from the child by default (aa-cli/src/commands/run.rs
+    effective_child_env withheld-names pass) and gates the launch on
+    aa_isolation::credential_broker::credential_gate''s posture-matches-brokerage check. The
+    C5 whole-environment-inheritance bypass still applies to every OTHER credential-shaped
+    name — this closes it only for the exact names a real brokerage mechanism covers.'
   - the agent can egress on any path in D3
   evidence:
   - kind: test_unlocated
     describes: aa-proxy/src/credentials.rs:307-322 unit tests
   - kind: gap
     reason: GAP — no end-to-end test proves the substitution reaches upstream
+  - kind: test_unlocated
+    describes: 'AAASM-6164 (unreleased at this manifest''s pinned evidence_tree, rc.7):
+      aa-isolation/src/credential_broker.rs unit tests;
+      aa-isolation-native/tests/linux_confinement_native.rs and
+      adversarial_boundary_native_linux.rs negative-control scenarios (Linux only).
+      Re-cite as `kind: test` with a `path` once a release''s evidence_tree includes them.'
   evidence_runs_on_main: standing
   evidence_quality: unit_only
   target_level: a bounded version of the 'never enters the agent' claim IS defensible, with
     all four conditions named
+  tickets:
+  - AAASM-6164
   notes: DISTINCT from C3. AAASM-5528 E4 correctly found the DispatchTool secrets path dead;
     this is a second, separately-named mechanism that ships and works. Conflating them under
     'credential injection' is what produced the W16/W17 over-claims.

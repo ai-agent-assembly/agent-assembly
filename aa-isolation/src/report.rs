@@ -81,8 +81,10 @@
 use aa_core::attestation::ClaimTerm;
 
 use crate::capability::{CapabilityDomain, DecisionTiming, DescendantCoverage};
+use crate::credential_broker::BrokeredService;
 use crate::descriptor::DescriptorInventory;
 use crate::evidence::{EnforcementEvidence, EvidenceKind};
+use crate::host_capability::OperationKind;
 use crate::lowering::{DomainCoverage, PolicyLowering};
 use crate::plan::{
     AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, PlanRefusal, RefusalReason, RequirementOutcome,
@@ -769,6 +771,34 @@ pub struct IsolationReport {
     /// to [`REPORT_SCHEMA`], never a replacement for the per-domain
     /// [`DomainProjection`] table this report already carries.
     lease_authority: Vec<DomainAuthoritySummary>,
+    /// This launch's credential brokerage, per covered service (AAASM-6164).
+    /// Empty unless [`with_credential_brokerage`](Self::with_credential_brokerage)
+    /// populated it — additive, rendered alongside [`Self::credentials`] in
+    /// the residual-ambient-authority block. Names and modes only; no
+    /// credential value is ever carried here.
+    credential_brokerage: Vec<BrokeredService>,
+    /// This launch's host-capability brokerage, per performed or refused
+    /// operation (AAASM-6171). Empty unless [`with_host_capability`](Self::with_host_capability)
+    /// populated it — additive, same discipline as [`Self::credential_brokerage`].
+    host_capability: Vec<HostCapabilityBinding>,
+}
+
+/// One performed-or-refused host-capability operation, as recorded on
+/// [`IsolationReport`] (AAASM-6171). Names and outcome only — never a path,
+/// scheme, or credential value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct HostCapabilityBinding {
+    /// The operation kind this binding concerns.
+    pub kind: OperationKind,
+    /// Whether the operation actually ran (`true`) or was refused before any
+    /// host process existed (`false`).
+    pub achieved: bool,
+    /// The process exit code, when the operation ran.
+    pub exit_code: Option<i32>,
+    /// A refusal's stable variant name, when the operation was refused.
+    /// Never the refusal's own detail text (which may carry a path).
+    pub refusal_kind: Option<String>,
 }
 
 impl IsolationReport {
@@ -821,6 +851,8 @@ impl IsolationReport {
             negotiated: Negotiated::Absent { reason: reason.into() },
             selection: None,
             lease_authority: Vec::new(),
+            credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -902,6 +934,8 @@ impl IsolationReport {
             negotiated,
             selection: None,
             lease_authority: Vec::new(),
+            credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -978,6 +1012,8 @@ impl IsolationReport {
             negotiated: Negotiated::Refused,
             selection: None,
             lease_authority: Vec::new(),
+            credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -1070,6 +1106,8 @@ impl IsolationReport {
             negotiated: Negotiated::Refused,
             selection: None,
             lease_authority: Vec::new(),
+            credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -1085,6 +1123,43 @@ impl IsolationReport {
     pub fn with_lease_authority(mut self, summaries: Vec<DomainAuthoritySummary>) -> Self {
         self.lease_authority = summaries;
         self
+    }
+
+    /// Attach this launch's credential brokerage, per covered service
+    /// (AAASM-6164).
+    ///
+    /// Additive only, exactly like [`with_lease_authority`](Self::with_lease_authority)
+    /// — it does not change [`REPORT_SCHEMA`], and calling it twice replaces
+    /// the prior list. Rendered in the residual-ambient-authority block
+    /// alongside [`Self::credentials`], names and modes only.
+    pub fn with_credential_brokerage(mut self, services: Vec<BrokeredService>) -> Self {
+        self.credential_brokerage = services;
+        self
+    }
+
+    /// This launch's credential brokerage, per covered service (AAASM-6164).
+    /// Empty unless [`with_credential_brokerage`](Self::with_credential_brokerage)
+    /// populated it.
+    pub fn credential_brokerage(&self) -> &[BrokeredService] {
+        &self.credential_brokerage
+    }
+
+    /// Attach this launch's host-capability brokerage, per performed or
+    /// refused operation (AAASM-6171).
+    ///
+    /// Additive only, exactly like [`with_credential_brokerage`](Self::with_credential_brokerage)
+    /// — does not change [`REPORT_SCHEMA`], and calling it twice replaces the
+    /// prior list.
+    pub fn with_host_capability(mut self, operations: Vec<HostCapabilityBinding>) -> Self {
+        self.host_capability = operations;
+        self
+    }
+
+    /// This launch's host-capability brokerage, per performed or refused
+    /// operation (AAASM-6171). Empty unless
+    /// [`with_host_capability`](Self::with_host_capability) populated it.
+    pub fn host_capability(&self) -> &[HostCapabilityBinding] {
+        &self.host_capability
     }
 
     /// Attach the policy lowering the requirement set came from.
@@ -1973,6 +2048,22 @@ impl IsolationReport {
                 "  inherited descriptors: <no inventory taken> — nothing enumerated what the child \
                  inherits, which is not the same as nothing being inherited.\n",
             ),
+        }
+        if !self.credential_brokerage.is_empty() {
+            out.push_str("  credential brokerage (AAASM-6164; names and modes only, never a value):\n");
+            for service in &self.credential_brokerage {
+                out.push_str(&format!(
+                    "    {} -> {} ({})\n",
+                    sanitize(&service.service),
+                    service
+                        .env_names
+                        .iter()
+                        .map(|n| sanitize(n))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    service.mode.as_str()
+                ));
+            }
         }
     }
 

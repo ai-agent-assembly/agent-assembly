@@ -117,6 +117,24 @@
 //! crate does not close: `aa-proxy` still evaluates every egress decision
 //! under a synthetic, unregistered identity at Global policy tier.
 //!
+//! # Credential brokerage (AAASM-6164)
+//!
+//! [`credential_broker`] is the same witness-gated-authority pattern applied a
+//! third time, to [`capability::CapabilityDomain::Credential`]. It does not add
+//! a new mechanism either: `aa-proxy`'s existing egress credential injection
+//! (`aa-proxy/src/credentials.rs`, `aa-proxy/src/proxy/http.rs`) already
+//! performs Mode 1 brokerage for at least one real provider — MitM'ing
+//! `api.anthropic.com` and injecting the operator's real key while the agent's
+//! own header is stripped — and that mechanism is unchanged. What
+//! [`credential_broker::CredentialContract`]/[`credential_broker::CredentialBrokerReport`]/
+//! [`credential_broker::credential_gate`] add is the missing binding: a launch
+//! can now state that it requires a brokered credential, and the gate refuses
+//! before spawn when the operator's own provider key would still reach the
+//! child anyway (via ambient environment inheritance) despite the broker
+//! already being available for that host — closing the gap
+//! `governance/capability-manifest.yaml` capability C2's `known_bypasses`
+//! already named.
+//!
 //! # Reused vocabulary, and one deliberate rename
 //!
 //! Evidence terms are [`aa_core::attestation::ClaimTerm`] verbatim — this crate
@@ -195,11 +213,13 @@ pub mod attenuation;
 pub mod authority;
 pub mod backend;
 pub mod capability;
+pub mod credential_broker;
 pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
 pub mod egress;
 pub mod evidence;
+pub mod host_capability;
 pub mod lease;
 pub mod lowering;
 pub mod plan;
@@ -230,6 +250,14 @@ pub use capability::{
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
 };
+pub use credential_broker::{
+    brokerage_mode_record, check_broker_available as check_credential_broker_available,
+    check_ceilings as check_credential_ceilings, check_credential_grant, check_posture_matches_brokerage,
+    check_raw_fallback, check_required_mode, credential_gate, residual_exposure_record, BrokerageMode,
+    BrokeragePosture, BrokeredService, CredentialAuthority, CredentialBrokerReport, CredentialCeilings,
+    CredentialContract, CredentialRefusal, CredentialWitness, RawFallbackPolicy, RequiredMode,
+    CREDENTIAL_CONTRACT_SCHEMA,
+};
 pub use deadline::{requested_wall_clock_ceiling, supervise_wall_clock, WallClockOutcome};
 pub use descendant::{authority_widening, covers_ordinary_descendants, is_same_or_narrower, AuthorityWidening};
 pub use descriptor::{
@@ -244,6 +272,17 @@ pub use egress::{
     MediationDepthScope, RangePolicy, EGRESS_CONTRACT_SCHEMA,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
+pub use host_capability::{
+    achieved_record, brokered_operation_record, check_arguments as check_host_capability_arguments,
+    check_broker_available as check_host_capability_broker_available, check_invoker_exists, check_lease_validity,
+    check_operation_permitted, check_output_ceiling, check_paths_scoped, check_process_creation_grant,
+    host_capability_gate, refusal_record as host_capability_refusal_record, scoped_path, to_argv, ArgumentRejected,
+    BrokeredOperation, BuildAction, CodesignRequest, ConfigurationName, Destination, HostArgv, HostCapabilityAuthority,
+    HostCapabilityBrokerReport, HostCapabilityContract, HostCapabilityPosture, HostCapabilityRefusal,
+    HostCapabilityWitness, HostOperation, OperationKind, OutputCeiling, PathRejected, SchemeName, SigningIdentityRef,
+    SimulatorListRequest, SimulatorUdid, ToolchainFact, XcodeBuildRequest, XcodeContainer, XcodeListRequest,
+    HOST_CAPABILITY_CONTRACT_SCHEMA, MAX_ARGUMENT_LEN,
+};
 pub use lease::{
     CapabilityLease, ChildLeaseRequest, DelegationDenied, DelegationProvenance, DelegationRule, InheritanceMode,
     LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder, ScopeOrdering, UndefinedScopeOrder,
@@ -260,8 +299,8 @@ pub use plan::{
 pub use planner::{select, select_pinned, Candidate, Selection};
 pub use report::{
     BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainAuthoritySummary, DomainProjection,
-    EvidenceBasis, IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef,
-    TargetRef, UnmeasuredReason, REPORT_SCHEMA,
+    EvidenceBasis, HostCapabilityBinding, IsolationReport, ReportStage, ReportedPosture, RequestedControl,
+    SelectionMode, SessionRef, TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
 pub use scope_order::{order_for, ExactTokenOrder, HostPatternOrder, PathPrefixOrder, ResourceCeilingOrder};

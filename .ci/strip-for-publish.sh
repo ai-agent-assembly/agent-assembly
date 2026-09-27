@@ -89,11 +89,39 @@ MARKED_FILES=(
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-6166: execution receipts. `mod.rs` only re-exports these; each
+    # file consumes `run.rs`'s own types (`ReceiptContext` borrows
+    # `aa_isolation::ExecutionSpec`/`IsolationReport` that `run.rs` alone
+    # constructs) or `run.rs`'s `ReceiptInputs`, so the whole module goes with
+    # `run.rs` rather than being left behind with no caller.
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/mod.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/text.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/canonical.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/schema.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/validate.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/host.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/project.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/store.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/execution_receipt/verify.rs"
+    "${REPO_ROOT}/aa-cli/tests/receipt_verify.rs"
+    "${REPO_ROOT}/aa-integration-tests/tests/cli_run_execution_receipt.rs"
     # AAASM-6163: the egress-contract adapter `run.rs` calls at
     # `resolve_boundary`. Only ever used from the module above, so it goes
     # with it rather than being left behind importing `aa-isolation` with no
     # caller.
     "${REPO_ROOT}/aa-cli/src/commands/run_egress_broker.rs"
+    # AAASM-6164: the credential-brokerage adapter `run.rs` calls at
+    # `resolve_boundary`, same reason as `run_egress_broker.rs` above — only
+    # ever used from `run.rs`, consumes `aa-isolation` (publish = false), so it
+    # goes with `run.rs` rather than being left behind importing a held-back dep.
+    "${REPO_ROOT}/aa-cli/src/commands/run_credential_broker.rs"
+    # AAASM-6171: the host-capability broker adapter and `aasm host` front
+    # door. Both consume `aa-isolation` (publish = false) and are only ever
+    # reached from the `devtool`-region `run.rs`/CLI wiring above, so they go
+    # with it rather than being left behind importing a held-back dep — this
+    # exact class of omission broke CI on AAASM-6164.
+    "${REPO_ROOT}/aa-cli/src/commands/run_host_capability.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/host.rs"
     # AAASM-5323: `aasm run`'s gateway registration. Consumes `aa-sdk-client`
     # (publish = false), stripped from aa-cli/Cargo.toml by the `sdkclient`
     # region, so the module that imports it has to go with the dep.

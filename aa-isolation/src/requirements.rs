@@ -60,6 +60,7 @@
 use std::collections::BTreeMap;
 
 use crate::capability::{CapabilityDomain, FailurePosture, PlatformBoundary};
+use crate::credential_broker::CredentialContract;
 use crate::egress::EgressContract;
 use crate::spec::{ControlRequirement, ExecutionSpec, IdentityRef, ResourceLimits};
 
@@ -163,6 +164,7 @@ pub struct RuntimeRequirements {
     allowed_platform_boundaries: Option<Vec<PlatformBoundary>>,
     transactional_workspace_required: bool,
     egress_contract: Option<EgressContract>,
+    credential_contract: Option<CredentialContract>,
 }
 
 impl RuntimeRequirements {
@@ -289,6 +291,27 @@ impl RuntimeRequirements {
     /// default.
     pub fn egress_contract(&self) -> Option<&EgressContract> {
         self.egress_contract.as_ref()
+    }
+
+    /// State this launch's credential-brokerage contract (AAASM-6164).
+    pub fn with_credential_contract(mut self, contract: CredentialContract) -> Self {
+        self.credential_contract = Some(contract);
+        self
+    }
+
+    /// This launch's credential-brokerage contract, when one was stated.
+    ///
+    /// **Not yet evaluated by [`crate::planner::select`].** No
+    /// [`crate::capability::BackendCapabilities`] reports a credential-broker
+    /// property, so there is no per-candidate eligibility check this could
+    /// feed — like [`Self::egress_contract`], it is evaluated once, at
+    /// `resolve_boundary`, alongside `authority_gate`/`egress_gate` via
+    /// [`crate::credential_broker::credential_gate`], not in candidate
+    /// selection. `None` for every launch today, matching
+    /// [`crate::credential_broker::CredentialContract::not_required`]'s own
+    /// rc.7/rc.8-compatible default.
+    pub fn credential_contract(&self) -> Option<&CredentialContract> {
+        self.credential_contract.as_ref()
     }
 
     /// A throwaway [`ExecutionSpec`] carrying nothing but this requirement

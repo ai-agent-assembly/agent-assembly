@@ -27,6 +27,7 @@ const HEALTHY: GatewayHealth = {
   active_connections: 2,
   pipeline_lag_ms: 0,
   checks: { storage: 'ok', policy_engine: 'ok' },
+  observation_profile: 'standard',
 }
 
 /** What a gateway with a broken storage backend actually answers. */

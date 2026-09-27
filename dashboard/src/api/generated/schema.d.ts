@@ -2794,7 +2794,25 @@ export interface components {
         AgentConfigResponse: {
             /** @description Hex-encoded agent UUID. */
             agent_id: string;
+            /**
+             * @description The enforcement mode actually in effect for this agent on the
+             *     `CheckAction` path (HORO-1375 §7) — ALWAYS populated, unlike
+             *     `enforcement_mode` above. Mirrors
+             *     `aa_gateway::engine::resolve_enforcement_mode`: the per-agent override
+             *     always wins; absent that, the server-wide default, which is `Observe`
+             *     under the `personal_observe` deployment profile and `Enforce`
+             *     otherwise.
+             */
+            effective_enforcement_mode: components["schemas"]["EnforcementModeLabel"];
             enforcement_mode?: null | components["schemas"]["EnforcementModeLabel"];
+            /**
+             * @description Which of the two inputs `effective_enforcement_mode` came from
+             *     (HORO-1375 §7): `agent_override` when the agent declares one,
+             *     `personal_observe_profile` when it does not and the deployment is
+             *     running the personal-observe profile, or `server_default` (the
+             *     ordinary `Enforce` default) otherwise.
+             */
+            enforcement_mode_source: components["schemas"]["EnforcementModeSource"];
             /** @description The policy documents in the agent's effective cascade, broadest → narrowest. */
             policies: components["schemas"]["AgentConfigPolicyRef"][];
             recommendation?: null | components["schemas"]["AgentConfigRecommendation"];
@@ -4411,6 +4429,13 @@ export interface components {
             previous_mode?: null | components["schemas"]["EnforcementModeLabel"];
         };
         /**
+         * @description Wire vocabulary for [`AgentConfigResponse::enforcement_mode_source`]
+         *     (HORO-1375 §7) — which input `effective_enforcement_mode` was resolved
+         *     from.
+         * @enum {string}
+         */
+        EnforcementModeSource: "agent_override" | "personal_observe_profile" | "server_default";
+        /**
          * @description Target enforcement mode a `POST /api/v1/agents/{id}/enforcement-mode` request
          *     may ask for (AAASM-5097 / ADR 0021).
          *
@@ -4628,6 +4653,13 @@ export interface components {
             checks: {
                 [key: string]: string;
             };
+            /**
+             * @description The active observation-profile posture (HORO-1375) — `"standard"` or
+             *     `"personal_observe"` — so an operator can see the profile in effect
+             *     without reading startup logs. Matches the YAML/env wire value
+             *     (`observation.profile` / `AASM_OBSERVATION_PROFILE`).
+             */
+            observation_profile: string;
             /**
              * Format: int64
              * @description Pipeline processing lag in milliseconds (placeholder, always 0 for now).
