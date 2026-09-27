@@ -4235,6 +4235,13 @@ jobs:
       - timescaledb-tests
       - migration-drift-check
       - deny
+      # AAASM-6188: blocks, like `deny` above. It asserts a property — each
+      # excluded workspace resolves and compiles against its own committed
+      # lockfile — and the gap it closes is precisely that of a job nobody had
+      # to satisfy: five Dependabot bumps merged as green having compiled
+      # nothing, and one lockfile drifted until cargo would not resolve it.
+      # Advisory here would reproduce the original condition exactly.
+      - excluded-workspaces
       # AAASM-5714: blocks, like `deny`. It asserts a distribution-boundary
       # property (no unreviewed license reaches a channel), not a metric, so an
       # advisory version of it would be a report nobody acts on.
