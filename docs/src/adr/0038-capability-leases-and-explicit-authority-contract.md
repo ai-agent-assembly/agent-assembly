@@ -565,6 +565,124 @@ egress, applied here.
   provider key it previously inherited — see §22's one genuinely user-visible
   behavior change.
 
+## Amendment (AAASM-6171): the typed host-capability broker for native Xcode/Simulator operations
+
+AAASM-6171 asked for "a typed host-capability broker for Xcode, Simulator, signing
+and other native host operations". The ticket's own Context paragraph assumed the
+macOS VM backend gives a strong host-confinement boundary this broker could punch
+narrow holes through. Reading the actual code found that assumption false on four
+independent counts: the macOS VM's own guest is **Linux**, not macOS
+(`aa-isolation-macos-vm/src/lib.rs` delegates to `aa-isolation-native`/Landlock
+inside a Virtualization.framework Linux guest), so `xcodebuild`/`simctl`/`codesign`
+could never run inside it regardless of completeness; that backend reports
+`Unavailable` on essentially every host today (AAASM-5840 tracks artifact-shipping
+separately); there is no guest-initiated request channel at all
+(`aa_isolation_vm_proto::Message` carries only host→guest launch variants); and no
+OS confinement backend exists on macOS at all (`aa-isolation-native`/
+`aa-isolation-sandlock` are both Linux-only; `auto_select` refuses on macOS). The
+accepted resolution, settled before implementation rather than during it: ship the
+broker as a **supervisor-side mediation boundary with no OS confinement underneath
+it on macOS today**, and record that plainly rather than implying a sandbox this
+build does not have. See "What this amendment does not decide" below for the full
+list of what stays out.
+
+### 24. Composite domain binding — `ProcessCreation` (lease-bearing) plus `FilesystemRead`/`FilesystemWrite`/`Credential` (non-lease-bearing), not a new domain
+
+`aa-isolation/src/host_capability.rs` binds to `CapabilityDomain::ProcessCreation`
+as `HostCapabilityAuthority`'s single lease-bearing state — spawning
+`xcodebuild`/`simctl` *is* process creation — and separately checks
+`FilesystemRead`/`FilesystemWrite`-shaped path scoping and a `Credential`-shaped
+signing-identity reference, without introducing a fourth new domain. Same
+reasoning as §14/§18: `CapabilityDomain::ALL`'s own test keeps the array in sync
+with the enum, but every other reader of `ALL` (~80 call sites across this
+workspace, by grep) would need re-auditing for a new variant, and
+`execution_receipt::validate`'s own domain-count check would invalidate every
+already-stored receipt. A composite binding over existing domains costs neither.
+
+### 25. Witness-gated `HostCapabilityAuthority`/`HostCapabilityWitness`, the same mechanism as §8/§15/§19
+
+`HostCapabilityAuthority::from_gated_spec` is constructible only from an
+`ExecutionSpec` plus an `AuthorityWitness` — the identical pattern §8, §15 and §19
+already use. `host_capability_gate` returns its own `HostCapabilityWitness` under
+the same rule, and `aa-cli`'s `perform()` is the only function in that crate
+permitted to spawn a `Command` for a `HostOperation` — it requires that witness as
+a parameter to do so, so no call site can reach a real host process without
+having passed the gate first.
+
+### 26. The closed `HostOperation` enum plus typed-field validation is the actual privilege boundary — and why an argv array alone does not close argument injection
+
+`HostOperation` is `#[non_exhaustive]` but deliberately carries no `Exec { command:
+String }` variant, and none may ever be added — that absence, not a sandbox, is
+what keeps this module from becoming a generic host-shell-execution surface. Each
+variant's fields are validated newtypes (`SchemeName`, `ConfigurationName`,
+`SimulatorUdid`, `SigningIdentityRef`) and a closed `Destination` enum, and
+`to_argv` is the one function anywhere in this codebase that turns a
+`HostOperation` into a host process argv.
+
+Using `std::process::Command`'s argv array (never `sh -c`) already rules out shell
+metacharacter injection. It does **not** rule out *argument* injection, and this
+was verified empirically rather than assumed: `xcodebuild -scheme X -destination
+'...' -derivedDataPath D SWIFT_ACTIVE_COMPILATION_CONDITIONS=INJECTED build` is a
+real, legal `xcodebuild` invocation, and the trailing `KEY=value` element is
+honored as a build-setting override — a bare positional argv element, reachable
+the moment any validated field's raw value is allowed to contain `=` or start with
+`-`. `ArgumentRejected::ContainsEquals`/`LeadingDash` close exactly this vector;
+`aa-integration-tests`' positive control
+(`positive_control_raw_key_value_argument_would_take_effect_if_not_blocked`)
+deliberately bypasses the newtypes to prove the vector is real, rather than only
+asserting the newtypes reject it.
+
+### What this amendment does not decide
+
+- **No guest→host IPC channel.** This broker's front door is a new `aasm host` CLI
+  subcommand — the same shape as `aasm sandbox`/`aasm proxy` — invoked by the
+  operator or by `aasm run`'s own launch pipeline, never a socket a confined child
+  calls into. Building an actual guest-initiated request channel would require
+  changes to `aa-isolation-vm-proto`'s `Message` enum and the Swift VM helper that
+  this ticket does not make; that is separate, much larger, currently-unstarted
+  infrastructure (AAASM-5840, AAASM-6170).
+- **No new socket, daemon, crate, or dependency.** `aa-isolation`'s existing
+  witness-gated-authority pattern and `aa-cli`'s existing subcommand shape are
+  reused as-is.
+- **No privilege-separated broker process.** There is no setuid/entitlement/XPC
+  privilege separation anywhere in this repository relevant to this ticket. The
+  broker runs as the caller's own UID — required, since `xcodebuild` needs that
+  UID's own Xcode/DerivedData access — and "least host privilege practical" is
+  satisfied by `env_clear()` plus a fixed three-variable environment
+  (`PATH`/`HOME`/`DEVELOPER_DIR`), a null stdin, an argv from `to_argv` only, and
+  no shell invocation ever. This is a mediation boundary, not a privilege drop —
+  claiming otherwise would overstate what this build does, in the same way
+  AAASM-5528 already named as an incident class for this repository's public copy.
+- **No `codesign` invoker.** `HostOperation::Codesign` and `CodesignRequest` exist
+  as vocabulary — `check_invoker_exists` always refuses this kind via
+  `NoInvokerForOperation`. Automating `security unlock-keychain` to make a real
+  invoker work would put a keychain secret on the agent's own path, which this
+  repository's secret-handling policy forbids; the vocabulary exists so a future,
+  deliberately-designed invoker has a typed request to extend rather than a new
+  one to invent. Mirrors §"Mode 2 has vocabulary, not a mechanism" in the AAASM-6164
+  amendment above.
+- **No claim that a macOS OS-confinement backend exists.** `aa-isolation-native`/
+  `aa-isolation-sandlock` remain Linux-only; `auto_select` still refuses on macOS.
+  This is the real, current state of this repository — this ticket does not
+  introduce that gap and does not claim to close it.
+- **No `simctl boot`/`install`/`launch`.** A real simulator boot is minutes of wall
+  clock; only `SimulatorList` (device discovery) ships with a real invoker.
+- **TOCTOU symlink races are not closed.** `scoped_path` canonicalizes and checks
+  at call time only; a symlink swapped between that check and the actual host
+  invocation is not prevented — macOS has no `openat2(RESOLVE_BENEATH)`
+  equivalent, and `xcodebuild` reopens paths itself after the check returns.
+- **The `--lease-file` format is not cryptographically bound.** `aasm host`'s
+  minimal hand-parsed JSON lease projection carries no seal or signature — the
+  same residual class AAASM-6166's execution-receipt seal already documents for
+  its own content digest (tamper-since-write detection, not proof of origin).
+- **No OS confinement boundary exists on macOS today, full stop.** This broker is
+  the *only* mediation standing between a governed launch and a real `xcodebuild`
+  invocation on this platform. A determined unconfined agent can invoke
+  `xcodebuild`/`simctl` directly, entirely outside this broker, on every macOS host
+  this repository runs on today — see `governance/capability-manifest.yaml`'s
+  `known_bypasses` entry for this capability, which states this in exactly these
+  terms rather than as an implied assumption.
+
 ## Consequences
 
 - A spec that opts into the lease system gets a strictly stronger guarantee than rc.7
