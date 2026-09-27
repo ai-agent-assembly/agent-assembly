@@ -146,6 +146,19 @@ async fn a_linux_native_confined_launch_writes_a_receipt_with_a_measured_kernel_
         &state_dir,
         &["--isolation", "process", "--isolation-backend", "aasm-native"],
     )?;
+    // Name the launcher instead of relying on one being found beside `aasm`.
+    // The backend resolves it from the environment, the executable's own
+    // directory, or `PATH` — and the second of those is an accident of the
+    // debug build layout, not something this test arranged. In CI's Coverage
+    // lane `aasm` is moved to `$RUNNER_TEMP/aasm-bin/` and `target/debug` is
+    // deleted to reclaim disk, so all three lookups came up empty and the
+    // launch this test's assertions depend on refused outright, while the Test
+    // lane (which leaves `target/debug` in place) passed. The backend under
+    // test is unchanged; what changes is that the test now supplies its input.
+    cmd.env(
+        "AA_ISOLATION_LAUNCHER",
+        proxy_trust_support::aa_isolation_launch_binary(),
+    );
     let out = cmd.output()?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
