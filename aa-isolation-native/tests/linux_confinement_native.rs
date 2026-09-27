@@ -929,7 +929,17 @@ fn a_brokered_provider_credential_is_absent_from_the_childs_environment_descript
     // scenario -- AAASM-6164's own rule is that a test must never carry a
     // real credential value.
     const CREDENTIAL_SENTINEL: &str = "aa-native-brokered-credential-sentinel-f4e1";
-    let script = format!("env; echo ---ENVIRON---; grep -c {CREDENTIAL_SENTINEL} /proc/self/environ || true");
+    // `< /proc/self/environ`, not `grep ... /proc/self/environ`: the latter
+    // forks `grep` to do its own `open()`, and `grep` is a *descendant* of the
+    // launched shell -- by the time it calls `open("/proc/self/environ")`,
+    // "self" resolves to grep's own, never-granted PID (AAASM-5532/6041's
+    // documented gap: a Landlock `/proc/self` rule is bound to the top-level
+    // launched process's PID at launch time, not to whichever process later
+    // resolves the magic symlink). Redirecting into the shell's own stdin has
+    // the shell itself perform the `open()` -- in the process that actually
+    // holds the grant -- before forking grep, which only ever reads the
+    // already-open fd 0.
+    let script = format!("env; echo ---ENVIRON---; grep -c {CREDENTIAL_SENTINEL} < /proc/self/environ || true");
 
     // The withheld case: exactly the posture
     // `run_credential_broker::withheld_names` produces for a brokered
