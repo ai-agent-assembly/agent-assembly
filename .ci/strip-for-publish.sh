@@ -115,6 +115,13 @@ DELETED_FILES=(
     # ever used from `run.rs`, consumes `aa-isolation` (publish = false), so it
     # goes with `run.rs` rather than being left behind importing a held-back dep.
     "${REPO_ROOT}/aa-cli/src/commands/run_credential_broker.rs"
+    # AAASM-6171: the host-capability broker adapter and `aasm host` front
+    # door. Both consume `aa-isolation` (publish = false) and are only ever
+    # reached from the `devtool`-region `run.rs`/CLI wiring above, so they go
+    # with it rather than being left behind importing a held-back dep — this
+    # exact class of omission broke CI on AAASM-6164.
+    "${REPO_ROOT}/aa-cli/src/commands/run_host_capability.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/host.rs"
     # AAASM-5323: `aasm run`'s gateway registration. Consumes `aa-sdk-client`
     # (publish = false), stripped from aa-cli/Cargo.toml by the `sdkclient`
     # region, so the module that imports it has to go with the dep.
