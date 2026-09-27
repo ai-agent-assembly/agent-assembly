@@ -34,6 +34,7 @@
 - [aasm gateway](cli/gateway.md)
 - [aasm proxy](cli/proxy.md)
 - [aasm run](cli/run.md)
+- [aasm receipt](cli/receipt.md)
 - [aasm integrations](cli/integrations.md)
 - [aasm start / stop](cli/start-stop.md)
 - [aasm sandbox](cli/sandbox.md)
