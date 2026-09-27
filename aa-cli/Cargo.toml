@@ -155,6 +155,13 @@ uuid           = { workspace = true, features = ["serde", "v4"] }
 # DI-API server over a real socket, using the same DevToolIntegration fixture
 # aa-runtime's own tests use — a second copy would drift from it.
 aa-runtime     = { path = "../aa-runtime", features = ["test-fixtures"] }
+# AAASM-6166: the execution-receipt tests exercise `host::facts` against a
+# backend whose capabilities are set by the test rather than by the host —
+# `aa-isolation::mock::MockBackend` is exactly that, gated behind the
+# non-default `mock-backend` feature so a release build cannot select it.
+# Cargo unions this feature into test builds only; it never reaches the
+# `aasm` binary itself.
+aa-isolation   = { path = "../aa-isolation", features = ["mock-backend"] }
 assert_cmd     = { workspace = true }
 tokio-util     = { workspace = true, features = ["rt"] }
 wiremock       = "0.6"

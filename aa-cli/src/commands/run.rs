@@ -13,6 +13,7 @@ use tokio::signal::unix::SignalKind;
 
 use aa_core::{DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel};
 
+use crate::commands::execution_receipt;
 use crate::commands::proxy::guard::{ProxyGuard, ProxyGuardOptions};
 use crate::commands::proxy::launch_state;
 use crate::commands::run_env_sanitize::{self, PROXY_EXCLUSION_VARS, PROXY_ROUTING_VARS};
@@ -3444,10 +3445,20 @@ fn describe_refusal_reason(reason: &aa_isolation::RefusalReason) -> String {
 /// handle, waits on a thread it owns, and forwards a termination request through
 /// the backend — it never acquires a descriptor into, or a process id inside,
 /// the confined tree.
+/// What `run_confined` needs to emit an execution receipt (AAASM-6166) that
+/// `resolve_boundary` already constructed before this function was called —
+/// threaded through rather than reconstructed, so a receipt and the report it
+/// sits beside can never name a different session or a different policy.
+pub(super) struct ReceiptInputs {
+    pub(super) session: aa_isolation::SessionRef,
+    pub(super) policy: run_policy::PolicyResolution,
+}
+
 async fn run_confined(
     backend: std::sync::Arc<dyn aa_isolation::IsolationBackend>,
     plan: aa_isolation::EnforcementPlan,
     report: aa_isolation::IsolationReport,
+    receipt_inputs: ReceiptInputs,
 ) -> Result<i32> {
     // AAASM-6165: a wall-clock ceiling is enforced here, at the one place every
     // backend's run passes through, rather than inside any one backend — see
@@ -3457,6 +3468,12 @@ async fn run_confined(
     // the ceiling, which is detection, not prevention).
     let wall_clock_ceiling = aa_isolation::deadline::requested_wall_clock_ceiling(plan.spec());
     let launch_started = std::time::Instant::now();
+    // AAASM-6166: captured before `plan` moves into `backend.prepare(plan)` —
+    // the receipt needs the spec that was actually launched, and this is the
+    // last point that owns it by value rather than by the borrow `report`
+    // already carries a lossy projection of.
+    let receipt_spec = plan.spec().clone();
+    let started_at = std::time::SystemTime::now();
 
     let prepared = backend
         .prepare(plan)
@@ -3485,6 +3502,12 @@ async fn run_confined(
     let deadline = tokio::time::sleep(deadline_duration);
     tokio::pin!(deadline);
     let mut deadline_termination: Option<Result<(), aa_isolation::SpawnError>> = None;
+    // AAASM-6166: recorded so the receipt's termination record is a fact the
+    // supervisor observed, not an inference from the exit code alone —
+    // `SelfExited` and a forwarded operator signal are not mutually
+    // exclusive (the loop forwards and keeps waiting), so this has to be
+    // tracked independently rather than derived after the fact.
+    let mut operator_requested = false;
 
     #[cfg(unix)]
     let disposition = {
@@ -3498,8 +3521,8 @@ async fn run_confined(
                 // A failure to deliver is reported and not fatal: the child may
                 // already be exiting, and turning that into an error would make
                 // a clean shutdown look like a launcher failure.
-                _ = sigterm.recv() => forward_termination(backend.as_ref(), &handle),
-                _ = sigint.recv() => forward_termination(backend.as_ref(), &handle),
+                _ = sigterm.recv() => { operator_requested = true; forward_termination(backend.as_ref(), &handle) },
+                _ = sigint.recv() => { operator_requested = true; forward_termination(backend.as_ref(), &handle) },
                 () = &mut deadline, if wall_clock_ceiling.is_some() && deadline_termination.is_none() => {
                     deadline_termination = Some(backend.terminate(&handle, aa_isolation::TerminationRequest::Immediate));
                     if let Some(Err(e)) = &deadline_termination {
@@ -3549,6 +3572,16 @@ async fn run_confined(
     // backend records no per-decision channel, so nothing here can turn "the
     // program ran" into "a control decided".
     let mut evidence = backend.evidence(&handle);
+    // AAASM-6166: captured before `deadline_termination` moves into
+    // `WallClockOutcome::DeadlineExceeded` below — the receipt needs the same
+    // delivered/detail facts that record carries, and a `Result` is not
+    // `Copy`.
+    let deadline_fired = deadline_termination.is_some();
+    let deadline_delivered = matches!(deadline_termination, Some(Ok(())));
+    let deadline_detail = match &deadline_termination {
+        Some(Err(e)) => Some(e.to_string()),
+        _ => None,
+    };
     if let Some(ceiling) = wall_clock_ceiling {
         // Backend-neutral by construction: this record comes from the deadline
         // supervised above, not from `backend.evidence`, because no backend
@@ -3566,7 +3599,47 @@ async fn run_confined(
         };
         evidence.record(outcome.evidence_record());
     }
-    eprint!("{}", isolation_machine_block(&report.with_evidence(&evidence)));
+    let ended_at = std::time::SystemTime::now();
+    let final_report = report.with_evidence(&evidence);
+    eprint!("{}", isolation_machine_block(&final_report));
+
+    // AAASM-6166: never fail the run because a receipt could not be written —
+    // the child already ran, and its exit code is the launcher's existing
+    // contract, which predates execution receipts entirely and must not be
+    // able to regress because of them.
+    let termination = if let (Some(ceiling), true) = (wall_clock_ceiling, deadline_fired) {
+        execution_receipt::TerminationInput::WallClockCeilingExceeded {
+            ceiling_secs: ceiling.as_secs(),
+            termination_delivered: deadline_delivered,
+            detail: deadline_detail,
+        }
+    } else if operator_requested {
+        execution_receipt::TerminationInput::OperatorRequested { forwarded: true }
+    } else {
+        execution_receipt::TerminationInput::SelfExited
+    };
+
+    let receipt_ctx = execution_receipt::ReceiptContext {
+        session: &receipt_inputs.session,
+        spec: &receipt_spec,
+        report: &final_report,
+        evidence: &evidence,
+        backend: backend.as_ref(),
+        policy: &receipt_inputs.policy,
+        started_at,
+        ended_at,
+        disposition: &disposition,
+        termination,
+    };
+    match execution_receipt::body_for_run(&receipt_ctx).and_then(execution_receipt::ReceiptEnvelope::seal) {
+        Ok(envelope) => {
+            match execution_receipt::ReceiptStore::default_location().and_then(|store| store.write(&envelope)) {
+                Ok(path) => eprintln!("execution receipt: {}", path.display()),
+                Err(e) => eprintln!("warning: the execution receipt could not be written: {e}"),
+            }
+        }
+        Err(e) => eprintln!("warning: the execution receipt could not be assembled: {e}"),
+    }
 
     // The launcher's exit code has always been the launched program's, with `1`
     // where no code was observable. That contract predates isolation and is not
@@ -3838,6 +3911,15 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         anyhow::bail!("failed to build launch command: {e}");
     }
 
+    // AAASM-6166: captured before `resolved`/`bound` are consumed below. Mirrors
+    // the same two values `IsolationPlan::resolve_boundary` built this report
+    // from (`SessionRef::new(&handle.session_id, &handle.trace_id)` at that call
+    // site, and `ResolvedRunPlan::policy().resolution()`) — reconstructed here
+    // from the same `handle` rather than threaded out of `resolve_boundary`
+    // itself, since nothing between there and here exposes it.
+    let receipt_session = aa_isolation::SessionRef::new(handle.session_id.clone(), handle.trace_id.clone());
+    let receipt_policy = resolved.policy().resolution().clone();
+
     let backend = resolved.take_backend();
     let (cmd, child_env, boundary, isolation) = bound.into_execution_parts();
     let code = match boundary {
@@ -3846,7 +3928,11 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         // established and then failed.
         plan::Boundary::Negotiated(plan) => {
             let backend = backend.expect("a negotiated plan is only produced by a selected backend");
-            run_confined(backend.into_arc(), *plan, isolation).await?
+            let receipt_inputs = ReceiptInputs {
+                session: receipt_session,
+                policy: receipt_policy,
+            };
+            run_confined(backend.into_arc(), *plan, isolation, receipt_inputs).await?
         }
         // Unchanged from every `aasm run` before `--isolation` existed.
         plan::Boundary::Absent => spawn_and_wait(cmd, &child_env, args.no_proxy).await?,
