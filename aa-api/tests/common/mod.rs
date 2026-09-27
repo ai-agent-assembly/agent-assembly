@@ -205,6 +205,7 @@ spec:
         // build their own state with a real SQLite projection attached.
         sensitive_data: None,
         sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+        observation_profile: aa_core::config::ObservationProfile::Standard,
     }
 }
 

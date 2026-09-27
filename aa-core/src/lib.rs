@@ -45,6 +45,8 @@ pub mod integration;
 #[cfg(feature = "alloc")]
 pub mod llm;
 pub mod net;
+#[cfg(feature = "std")]
+pub mod observation;
 pub mod policy;
 pub mod risk_tier;
 #[cfg(feature = "std")]

@@ -254,6 +254,10 @@ pub struct TreeParams {
 
 const MAX_TREE_DEPTH: u32 = 10;
 
+// HORO-1375 added `profile` (needed so the mode badge doesn't lie under
+// personal-observe), pushing this recursive helper to 8 parameters. A struct
+// wrapper would cost more churn than it buys for one internal, non-pub fn.
+#[allow(clippy::too_many_arguments)]
 fn build_tree(
     registry: &AgentRegistry,
     caller: &AuthenticatedCaller,
@@ -262,6 +266,7 @@ fn build_tree(
     status_filter: Option<&str>,
     show_budget: bool,
     violations: &AgentViolationCounts,
+    profile: aa_core::config::ObservationProfile,
 ) -> Option<AgentTree> {
     let record = registry.get(agent_id)?;
     // AAASM-4819 — the handler authorizes only the root; `children_of` recursion
@@ -292,6 +297,7 @@ fn build_tree(
                     status_filter,
                     show_budget,
                     violations,
+                    profile,
                 )
             })
             .collect()
@@ -301,7 +307,7 @@ fn build_tree(
     // Derive the badge fields before moving the record's owned fields into the
     // struct literal below (`agent_mode` borrows `record`). `flagged` comes from
     // the per-agent audit aggregate (AAASM-5103), not the record.
-    let mode = agent_mode(&record);
+    let mode = agent_mode(&record, profile);
     let flagged = violations.is_flagged(agent_id);
     Some(AgentTree {
         id: format_id(agent_id),
@@ -537,6 +543,10 @@ fn project_graph_nodes(records: &[AgentRecord], state: &AppState, violations: &A
         .iter()
         .map(|record| {
             let mut node = AgentNode::from(record);
+            // HORO-1375 — `From<&AgentRecord>` cannot see `state.observation_profile`;
+            // recompute the badge with it so a personal-observe deployment reports
+            // `shadow`, not `enforce`, for an agent with no per-agent override.
+            node.mode = crate::models::topology::agent_mode(record, state.observation_profile);
             // AAASM-5103 — flag from the audit aggregate (count > 0), the same
             // source every other topology surface uses, so the graph and the
             // Fleet page can never disagree about a given agent.
@@ -735,6 +745,7 @@ pub async fn get_overview(
         .filter(|r| r.depth == 0 && team_of(r).is_none())
         .map(|r| {
             let mut node = AgentNode::from(*r);
+            node.mode = crate::models::topology::agent_mode(r, state.observation_profile);
             node.flagged = violations.is_flagged(&r.agent_id);
             if show_budget {
                 node.governance_level = Some(format!("{:?}", r.governance_level));
@@ -839,6 +850,7 @@ pub async fn get_tree(
         params.status.as_deref(),
         show_budget,
         &violations,
+        state.observation_profile,
     )
     .ok_or_else(|| {
         ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {root_id}"))
@@ -927,6 +939,7 @@ pub async fn get_team(
         })
         .map(|r| {
             let mut node = AgentNode::from(&r);
+            node.mode = crate::models::topology::agent_mode(&r, state.observation_profile);
             node.flagged = violations.is_flagged(&r.agent_id);
             if show_budget {
                 node.governance_level = Some(format!("{:?}", r.governance_level));

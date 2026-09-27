@@ -969,6 +969,7 @@ spec:
             // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
             sensitive_data: None,
             sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         },
         audit_dir,
         alert_store_handle,
@@ -1123,6 +1124,7 @@ spec:
             // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
             sensitive_data: None,
             sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         },
         audit_dir,
         alert_store_handle,
@@ -1278,6 +1280,7 @@ spec:
             // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
             sensitive_data: None,
             sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         },
         audit_dir,
         alert_store_handle,
@@ -1425,6 +1428,7 @@ spec:
             // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
             sensitive_data: None,
             sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         },
         audit_dir,
         alert_store_handle,
@@ -1565,6 +1569,7 @@ fn build_test_state_empty_policy() -> anyhow::Result<(AppState, PathBuf, Arc<InM
             // aa-api/tests/sensitive_data_analytics.rs, against a real SQLite one.
             sensitive_data: None,
             sensitive_data_export_log: aa_api::routes::sensitive_data::default_export_access_log(),
+            observation_profile: aa_core::config::ObservationProfile::Standard,
         },
         audit_dir,
         alert_store_handle,

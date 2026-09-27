@@ -40,6 +40,20 @@ pub enum RegistryError {
         /// Which field failed validation ("team_id" or "org_id").
         field: &'static str,
     },
+    /// HORO-1375 §4.2 — a caller attempted to persist an `Observe` (or
+    /// `Disabled`) override with no expiry. A stored `Observe` override must
+    /// always carry an expiry, or the shadow-expiry reconciler
+    /// (`agents_with_expired_shadow`, which requires
+    /// `enforcement_mode_expires_at.is_some()`) can never revert it — the
+    /// resulting record would be a permanent, uncapped weaken invisible to
+    /// the 72h auto-revert path. `Disabled` is rejected too, for symmetry:
+    /// it is test-only per `aa_core::policy::EnforcementMode`'s own docs, and
+    /// carries no expiry semantics either.
+    #[error("refusing to persist an uncapped {mode:?} override with no expiry — a shadow window must always carry an expiry or it can never be auto-reverted")]
+    UncappedShadowWindow {
+        /// The mode that was rejected (`Observe` or `Disabled`).
+        mode: aa_core::EnforcementMode,
+    },
 }
 
 /// Error returned when agent lineage validation fails during registration.

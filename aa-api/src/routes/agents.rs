@@ -1994,6 +1994,43 @@ fn project_config_mode(mode: Option<aa_core::EnforcementMode>) -> Option<Enforce
     }
 }
 
+/// Resolve the ALWAYS-populated effective enforcement mode + its source, for
+/// [`AgentConfigResponse::effective_enforcement_mode`] /
+/// [`AgentConfigResponse::enforcement_mode_source`] (HORO-1375 §7).
+///
+/// Unlike [`project_config_mode`] (which reports only the raw per-agent
+/// override, omitted when absent, kept unchanged for API compatibility), this
+/// mirrors the SAME resolution `aa_gateway::engine::resolve_enforcement_mode`
+/// actually performs on the `CheckAction` hot path: the per-agent override
+/// always wins; a `None` override falls through to the server-wide default,
+/// which is `Enforce` under the `Standard` profile and `Observe` under
+/// `PersonalObserve` (HORO-1375's entire effect).
+fn project_effective_config_mode(
+    mode: Option<aa_core::EnforcementMode>,
+    profile: aa_core::config::ObservationProfile,
+) -> (EnforcementModeLabel, EnforcementModeSource) {
+    match mode {
+        Some(aa_core::EnforcementMode::Enforce) => {
+            (EnforcementModeLabel::Enforce, EnforcementModeSource::AgentOverride)
+        }
+        Some(aa_core::EnforcementMode::Observe) => {
+            (EnforcementModeLabel::Observe, EnforcementModeSource::AgentOverride)
+        }
+        Some(aa_core::EnforcementMode::Disabled) => {
+            (EnforcementModeLabel::Disabled, EnforcementModeSource::AgentOverride)
+        }
+        None => match profile {
+            aa_core::config::ObservationProfile::PersonalObserve => (
+                EnforcementModeLabel::Observe,
+                EnforcementModeSource::PersonalObserveProfile,
+            ),
+            aa_core::config::ObservationProfile::Standard => {
+                (EnforcementModeLabel::Enforce, EnforcementModeSource::ServerDefault)
+            }
+        },
+    }
+}
+
 /// Project the agent's effective policy cascade into config policy refs,
 /// broadest → narrowest, deduplicated on `(scope, name)`.
 ///
@@ -2176,12 +2213,16 @@ pub async fn get_agent_config(
         .await
         .unwrap_or_default();
     let recommendation = build_denial_recommendation(&denials);
+    let (effective_enforcement_mode, enforcement_mode_source) =
+        project_effective_config_mode(record.enforcement_mode, state.observation_profile);
 
     Ok((
         StatusCode::OK,
         Json(AgentConfigResponse {
             agent_id: hex::encode(agent_id_bytes),
             enforcement_mode: project_config_mode(record.enforcement_mode),
+            effective_enforcement_mode,
+            enforcement_mode_source,
             policies,
             recommendation,
         }),
@@ -2201,6 +2242,22 @@ pub enum EnforcementModeLabel {
     Enforce,
     Observe,
     Disabled,
+}
+
+/// Wire vocabulary for [`AgentConfigResponse::enforcement_mode_source`]
+/// (HORO-1375 §7) — which input `effective_enforcement_mode` was resolved
+/// from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementModeSource {
+    /// The agent declares an explicit `enforcement_mode` override.
+    AgentOverride,
+    /// The agent declares no override and the deployment is running the
+    /// `personal_observe` profile (HORO-1375) — its only effect.
+    PersonalObserveProfile,
+    /// The agent declares no override and the deployment is running the
+    /// ordinary `Standard` profile — the pre-HORO-1375 `Enforce` default.
+    ServerDefault,
 }
 
 /// One policy document in the agent's effective cascade.
@@ -2283,6 +2340,20 @@ pub struct AgentConfigResponse {
     /// never fabricates a posture the agent did not set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enforcement_mode: Option<EnforcementModeLabel>,
+    /// The enforcement mode actually in effect for this agent on the
+    /// `CheckAction` path (HORO-1375 §7) — ALWAYS populated, unlike
+    /// `enforcement_mode` above. Mirrors
+    /// `aa_gateway::engine::resolve_enforcement_mode`: the per-agent override
+    /// always wins; absent that, the server-wide default, which is `Observe`
+    /// under the `personal_observe` deployment profile and `Enforce`
+    /// otherwise.
+    pub effective_enforcement_mode: EnforcementModeLabel,
+    /// Which of the two inputs `effective_enforcement_mode` came from
+    /// (HORO-1375 §7): `agent_override` when the agent declares one,
+    /// `personal_observe_profile` when it does not and the deployment is
+    /// running the personal-observe profile, or `server_default` (the
+    /// ordinary `Enforce` default) otherwise.
+    pub enforcement_mode_source: EnforcementModeSource,
     /// The policy documents in the agent's effective cascade, broadest → narrowest.
     pub policies: Vec<AgentConfigPolicyRef>,
     /// Qualitative posture recommendation, or `None` (omitted) when the agent has
@@ -2791,6 +2862,39 @@ mod tests {
         assert_eq!(project_config_mode(None), None);
     }
 
+    /// HORO-1375 §7 — `effective_enforcement_mode` is ALWAYS populated, and its
+    /// source correctly attributes a `None` override to the active profile.
+    #[test]
+    fn project_effective_config_mode_always_populated_and_correctly_sourced() {
+        use aa_core::config::ObservationProfile;
+        use aa_core::EnforcementMode as M;
+
+        // An explicit override always wins, regardless of profile.
+        assert_eq!(
+            project_effective_config_mode(Some(M::Observe), ObservationProfile::Standard),
+            (EnforcementModeLabel::Observe, EnforcementModeSource::AgentOverride)
+        );
+        assert_eq!(
+            project_effective_config_mode(Some(M::Enforce), ObservationProfile::PersonalObserve),
+            (EnforcementModeLabel::Enforce, EnforcementModeSource::AgentOverride)
+        );
+
+        // No override: Standard profile falls through to the Enforce default.
+        assert_eq!(
+            project_effective_config_mode(None, ObservationProfile::Standard),
+            (EnforcementModeLabel::Enforce, EnforcementModeSource::ServerDefault)
+        );
+        // No override: PersonalObserve profile falls through to Observe — the
+        // profile's only effect.
+        assert_eq!(
+            project_effective_config_mode(None, ObservationProfile::PersonalObserve),
+            (
+                EnforcementModeLabel::Observe,
+                EnforcementModeSource::PersonalObserveProfile
+            )
+        );
+    }
+
     /// ADR-0022 validation requirement: undefined config keys are absent from the
     /// serialized response, not `null`. `fail_open` / `rate_limit` /
     /// `observability` / `issuer` have no per-agent source, so they must never
@@ -2801,6 +2905,8 @@ mod tests {
         let resp = AgentConfigResponse {
             agent_id: "ab".repeat(16),
             enforcement_mode: None,
+            effective_enforcement_mode: EnforcementModeLabel::Enforce,
+            enforcement_mode_source: EnforcementModeSource::ServerDefault,
             policies: Vec::new(),
             recommendation: None,
         };

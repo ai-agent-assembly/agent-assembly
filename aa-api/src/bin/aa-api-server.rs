@@ -67,6 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // format gate above.
     aa_api::check_local_api_bind_addr(addr, &auth)?;
 
+    // HORO-1375 §6.3: same false-positive-readiness reasoning as the checks
+    // above — refuse before the banner, not after, when personal-observe was
+    // requested on a deployment that looks enterprise-managed. `serve_local`
+    // re-runs this as the authoritative source of truth.
+    aa_api::check_personal_observe(addr, &auth)?;
+
     match &auth {
         LocalAuth::Off => {
             eprintln!(

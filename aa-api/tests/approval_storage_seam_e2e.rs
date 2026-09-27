@@ -55,7 +55,12 @@ async fn the_rest_surface_sees_and_can_decide_a_row_it_never_saw_submitted() {
             .expect("seed insert should succeed");
     }
 
-    let state = AppState::local_hardened_at(LocalAuth::Off, registry_db_path.clone())
+    let paths = aa_api::state::LocalDurablePaths {
+        registry_db: registry_db_path.clone(),
+        audit_jsonl_dir: tmp.path().join("audit-jsonl"),
+        audit_db: tmp.path().join("audit.db"),
+    };
+    let state = AppState::local_hardened_at(LocalAuth::Off, paths)
         .await
         .expect("local_hardened_at should build");
     let app = aa_api::server::build_app(state);

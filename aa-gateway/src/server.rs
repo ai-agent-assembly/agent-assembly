@@ -60,7 +60,11 @@ const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 ///
 /// `None` when neither yields a directory, which makes the gateway refuse to
 /// start rather than audit to a relative path — see [`audit_dir_from`].
-fn default_audit_dir() -> Option<PathBuf> {
+///
+/// `pub` (HORO-1375 §5.1) so `aa-api`'s local single-process entrypoint can
+/// root its own audit JSONL directory at the SAME durable directory this
+/// resolves to — a deliberate unification, not two forkable trails.
+pub fn default_audit_dir() -> Option<PathBuf> {
     audit_dir_from(non_empty_env("AA_AUDIT_DIR"), dirs::data_dir())
 }
 
@@ -121,7 +125,9 @@ fn audit_dir_from(override_dir: Option<PathBuf>, data_dir: Option<PathBuf>) -> O
 }
 
 /// Resolve the JSONL path for the given agent/session pair.
-fn audit_file_path(audit_dir: &Path, agent_id: &str, session_id: &str) -> PathBuf {
+///
+/// `pub` (HORO-1375 §5.1) — see [`default_audit_dir`].
+pub fn audit_file_path(audit_dir: &Path, agent_id: &str, session_id: &str) -> PathBuf {
     audit_dir.join(format!("{agent_id}-{session_id}.jsonl"))
 }
 

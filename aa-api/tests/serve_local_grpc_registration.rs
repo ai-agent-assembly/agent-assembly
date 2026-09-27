@@ -44,11 +44,15 @@ async fn grpc_registered_agent_is_visible_via_rest() {
     // A hermetic per-test durable registry DB — never the developer's real
     // `~/.aasm/local.db`.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let db_path = tmp.path().join("local.db");
+    let paths = aa_api::state::LocalDurablePaths {
+        registry_db: tmp.path().join("local.db"),
+        audit_jsonl_dir: tmp.path().join("audit-jsonl"),
+        audit_db: tmp.path().join("audit.db"),
+    };
 
     // Auth off so the bypass caller is admin and can list team-less agents
     // (the SDK registers without a team).
-    let state = aa_api::AppState::local_hardened_at(aa_api::LocalAuth::Off, db_path)
+    let state = aa_api::AppState::local_hardened_at(aa_api::LocalAuth::Off, paths)
         .await
         .expect("local_hardened_at must construct");
     let registry = std::sync::Arc::clone(&state.agent_registry);
@@ -72,6 +76,7 @@ async fn grpc_registered_agent_is_visible_via_rest() {
         policy_engine,
         approval_queue,
         audit_chain,
+        aa_gateway::engine::PolicyDefaultMode::enforce(),
         pending::<()>(),
     );
 
