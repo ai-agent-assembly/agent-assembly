@@ -15,7 +15,10 @@
 //! and [`canonical::Digest`]/[`canonical::canonical_json`] (the canonical
 //! serialization a digest is taken over).
 pub mod canonical;
+pub mod host;
+pub mod schema;
 pub mod text;
 
 pub use canonical::{CanonicalError, Digest, CANONICAL_FORM};
+pub use schema::{ReceiptBody, ReceiptEnvelope, ReceiptSeal, ReceiptSealKind, RECEIPT_SCHEMA};
 pub use text::{FieldName, ReceiptText};
