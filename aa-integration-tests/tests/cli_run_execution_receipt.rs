@@ -76,8 +76,24 @@ fn build_launch(
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
 
+    // The governed launch starts its own dedicated `aa-proxy` (AAASM-5863) and
+    // refuses outright when it cannot resolve one. Unlike the confinement
+    // launcher there is no environment override to name it with:
+    // `aa_core::binary_resolve::resolve_binary("aa-proxy")` looks beside the
+    // running executable, then on `PATH`, then in `~/.cargo/bin`. The first of
+    // those is the same accident of the debug build layout described on
+    // `aa_isolation_launch_binary`, and the Coverage lane breaks it the same way
+    // — so use the second, which is a lookup production genuinely offers: a
+    // real, freshly built `aa-proxy` first on the child's `PATH`, exactly the
+    // arrangement `cli_proxy_remote_bind_refusal.rs` makes for the same reason.
+    let dedicated_proxy_bin = proxy_trust_support::aa_proxy_binary();
+    let dedicated_proxy_dir = dedicated_proxy_bin
+        .parent()
+        .expect("the built binary has a parent directory");
+
     let mut cmd = Command::new(proxy.aasm());
     cmd.current_dir(root)
+        .env("PATH", proxy_trust_support::prefixed_path(dedicated_proxy_dir)?)
         .env("HOME", &home)
         .env("AASM_STATE_DIR", state_dir)
         .env("AA_CA_DIR", root.join("ca"))
