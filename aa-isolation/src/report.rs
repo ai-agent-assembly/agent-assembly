@@ -84,6 +84,7 @@ use crate::capability::{CapabilityDomain, DecisionTiming, DescendantCoverage};
 use crate::credential_broker::BrokeredService;
 use crate::descriptor::DescriptorInventory;
 use crate::evidence::{EnforcementEvidence, EvidenceKind};
+use crate::host_capability::OperationKind;
 use crate::lowering::{DomainCoverage, PolicyLowering};
 use crate::plan::{
     AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, PlanRefusal, RefusalReason, RequirementOutcome,
@@ -776,6 +777,28 @@ pub struct IsolationReport {
     /// the residual-ambient-authority block. Names and modes only; no
     /// credential value is ever carried here.
     credential_brokerage: Vec<BrokeredService>,
+    /// This launch's host-capability brokerage, per performed or refused
+    /// operation (AAASM-6171). Empty unless [`with_host_capability`](Self::with_host_capability)
+    /// populated it — additive, same discipline as [`Self::credential_brokerage`].
+    host_capability: Vec<HostCapabilityBinding>,
+}
+
+/// One performed-or-refused host-capability operation, as recorded on
+/// [`IsolationReport`] (AAASM-6171). Names and outcome only — never a path,
+/// scheme, or credential value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct HostCapabilityBinding {
+    /// The operation kind this binding concerns.
+    pub kind: OperationKind,
+    /// Whether the operation actually ran (`true`) or was refused before any
+    /// host process existed (`false`).
+    pub achieved: bool,
+    /// The process exit code, when the operation ran.
+    pub exit_code: Option<i32>,
+    /// A refusal's stable variant name, when the operation was refused.
+    /// Never the refusal's own detail text (which may carry a path).
+    pub refusal_kind: Option<String>,
 }
 
 impl IsolationReport {
@@ -829,6 +852,7 @@ impl IsolationReport {
             selection: None,
             lease_authority: Vec::new(),
             credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -911,6 +935,7 @@ impl IsolationReport {
             selection: None,
             lease_authority: Vec::new(),
             credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -988,6 +1013,7 @@ impl IsolationReport {
             selection: None,
             lease_authority: Vec::new(),
             credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -1081,6 +1107,7 @@ impl IsolationReport {
             selection: None,
             lease_authority: Vec::new(),
             credential_brokerage: Vec::new(),
+            host_capability: Vec::new(),
         }
     }
 
@@ -1115,6 +1142,24 @@ impl IsolationReport {
     /// populated it.
     pub fn credential_brokerage(&self) -> &[BrokeredService] {
         &self.credential_brokerage
+    }
+
+    /// Attach this launch's host-capability brokerage, per performed or
+    /// refused operation (AAASM-6171).
+    ///
+    /// Additive only, exactly like [`with_credential_brokerage`](Self::with_credential_brokerage)
+    /// — does not change [`REPORT_SCHEMA`], and calling it twice replaces the
+    /// prior list.
+    pub fn with_host_capability(mut self, operations: Vec<HostCapabilityBinding>) -> Self {
+        self.host_capability = operations;
+        self
+    }
+
+    /// This launch's host-capability brokerage, per performed or refused
+    /// operation (AAASM-6171). Empty unless
+    /// [`with_host_capability`](Self::with_host_capability) populated it.
+    pub fn host_capability(&self) -> &[HostCapabilityBinding] {
+        &self.host_capability
     }
 
     /// Attach the policy lowering the requirement set came from.
