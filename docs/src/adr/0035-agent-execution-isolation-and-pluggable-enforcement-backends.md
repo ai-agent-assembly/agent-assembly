@@ -517,6 +517,182 @@ this amendment claims is already done. No other recorded text in this ADR change
 
 ---
 
+## Amendment — AAASM-6166 (2026-09-27): execution receipts bind policy, spec, backend and evidence into one durable, sealed artifact
+
+**Scope of this amendment: it adds a versioned, local, sealed record of one run's isolation
+posture — a durable projection of exactly the facts §10 already requires a report to carry,
+written once at the end of a confined launch. It reverses no prior decision, adds no new
+claim vocabulary, and changes no `IsolationReport`/`EnforcementEvidence` type. Parent Epic
+AAASM-6159 ("Agent Execution Runtime 2.0").**
+
+### Why this belongs here rather than in a new ADR
+
+§10 of this ADR ("Evidence is first-class output of execution") already states the property
+this amendment implements durably: a run's evidence must be joinable back to the plan it
+executed, and `IsolationReport`/`EnforcementEvidence` are the in-memory types that carry it.
+`report.rs`'s own module documentation already cites this ADR as its authority. An execution
+receipt is that same joined fact set, written to disk once, at the one place — the end of
+`run_confined` — where the plan, the achieved boundary and the runtime evidence are all in
+scope simultaneously. Nothing about the receipt's *content* is new; what is new is that it
+persists past process exit, and persisting it durably is what "signed execution receipts" in
+the parent Epic's own Goal line asks for.
+
+### The seal is a content digest, never a signature — and this is final for this ticket
+
+The Epic's Goal line says "cryptographically binds... signed execution receipts." This
+amendment implements the seal as `sha256` over a canonical JSON rendering of the receipt's
+body — a **content digest**, not a signature and not a MAC — and the word "signed" appears
+nowhere in the implementation's types, CLI output, or documentation except in a sentence
+stating what the seal is not. This mirrors `aa_core::integration::store`'s own receipts,
+whose module documentation already states the identical position for a different artifact:
+"Integrity is corruption detection, not tamper prevention... not a MAC."
+
+The reasoning is structural, not a matter of preference: a real signature needs a private key
+the *writer* holds and a verifier that does **not** share the writer's host UID — otherwise an
+attacker capable of rewriting the receipt is, by construction, also capable of reading
+whatever key would have signed it, and a signature would add nothing an unkeyed digest does
+not already provide. `aasm run` writes its own receipts on the same host, under the same UID,
+that would hold any such key. The only place a signature buys something real is a SaaS
+ingestion path — a separate host holding a key the local writer never sees — which is
+explicitly out of scope for this local-first design. An HMAC was considered for the same
+reason and rejected on the same ground: the key would sit next to the receipt it protects.
+
+`ReceiptSealKind` is `#[non_exhaustive]` with exactly one variant
+(`ContentDigestSha256`) so that a future kind — were a SaaS verification path ever built — is
+additive to the schema rather than a redesign, without this ticket deciding what that kind
+would be.
+
+### What a holding seal establishes, and what it does not
+
+A holding seal establishes that the receipt's body has not changed since it was written, and
+that the canonical form the digest was computed over is the one this build reads. It does
+**not** establish origin (see above), the verified identity of the agent the run is
+attributed to (`asserted_identity` is named that way deliberately —
+`aa_isolation::spec::IdentityRef` already documents that a caller-supplied identity reference
+is asserted, never authenticated, by anything in this crate, and nothing in this amendment
+closes that residual), or that any property the receipt records as unmeasured actually held.
+
+One boundary is worth stating precisely rather than leaving implicit: the seal digests the
+receipt's **body** only. The envelope's schema identifier and the seal's own metadata
+(`sealed_by`, `sealed_at_unix_secs`, `canonical_form`) sit outside the digest and are freely
+mutable without producing a mismatch. This is benign under the implementation shipped here —
+mutating the schema string produces an independent `UnknownSchema` validation defect, and only
+one canonical form exists today — but it is a real property of the design, not a theoretical
+one, and `aasm receipt verify` closes the practical gap by always running both the seal check
+and the validation rules below, reporting failure if either one fails. A pinned test
+(`mutating_the_envelope_schema_holds_the_seal_but_is_still_a_defect`) asserts this boundary as
+a fact rather than leaving it as a claim in this document alone.
+
+### Missing evidence cannot validate as a stronger state — a checked predicate, not a convention
+
+The parent Epic's Design Constraints already state the target property: "Receipt signature
+proves integrity/origin, not properties that were never measured." This amendment implements
+it as eight checked rules (R0–R7, `aa-cli/src/commands/execution_receipt/validate.rs`) run at
+construction *and* at verification time — the latter is what makes the property hold against
+a hand-edited receipt, not merely against `aasm run`'s own honest construction path. In
+summary: every one of the ten `CapabilityDomain`s must be present (R0); a claim that asserts
+coverage needs at least runtime evidence behind it, never setup-only (R1); the one prevention
+term additionally needs a `Decision`-grade record, and the receipt's own `prevention_supported`
+flag must agree with that grade rather than being asserted independently (R2/R2b); a domain
+carrying a degraded condition cannot also carry a prevention claim (R3); no domain may claim
+coverage when no execution backend ran at all (R4); a state that itself asserts nothing
+(`unmeasured`/`unsupported`) cannot carry a coverage-asserting claim (R5); every withheld field
+must be recorded, never silently dropped (R6); and the recorded timeline must not be inverted
+(R7). `aasm receipt verify` reports the seal and these rules as two independent results,
+never collapsed into one pass/fail — a freshly, correctly resealed receipt that overclaims
+still fails on the rules alone, which is the case the parent Epic's Design Constraints are
+actually worried about.
+
+No new `ClaimTerm`, `EvidenceKind`, `AttestationBasis`, or `CapabilityDomain` variant was
+added to implement this — the existing ADR 0033 §6 vocabulary and `report.rs`'s
+`EvidenceBasis`/`ControlState` ladders already say everything R0–R7 need to check.
+`scripts/check_claim_vocabulary.py` passes on the new module and documentation unchanged.
+
+One narrow addition was necessary: `host::FactBasis`, for a host or build *fact*
+(architecture, kernel release) that carries no protection claim at all — kernel release is not
+a control's state, so grading it with `aa_core::attestation::AttestationBasis` (which exists
+specifically to grade protection components toward `claim_ceiling`) would misfit a
+safety-critical vocabulary onto a fact that has nothing to do with enforcement. `FactBasis`'s
+unmeasured arm reuses `aa_isolation::UnmeasuredReason`'s token vocabulary rather than
+duplicating it a third time.
+
+### Redaction is structural, and the credential screen is the second line
+
+No field of a receipt's body holds an argument value, an environment variable's value, a
+lease's basis reason, or a scope selector — those travel as digests (`argv_digest`,
+`working_dir_digest`, a lease's own redaction-safe projection digest) and counts
+(`arg_count`, `scope_selector_count`). This is the primary guarantee, and it holds regardless
+of the credential screen below: even if `contains_credential_material` matched nothing, the
+value was never in the digest input or the stored field to begin with. The few fields that do
+carry operator-visible free text (a policy source path, an `Inconclusive` detail sentence, a
+degraded-condition detail) are screened through
+`aa_core::integration::fingerprint::contains_credential_material` and withheld — recorded as
+withheld in `withheld_fields`, never partially redacted, never silently dropped — on a match.
+That screen is a floor, not a proof, exactly as `aa-core`'s own documentation for it already
+states; this amendment does not claim otherwise.
+
+### Why `aa-isolation` gains no `serde` feature, and the resulting residual
+
+`aa-cli/Cargo.toml` keeps `aa-isolation` dependency free of the `serde` feature. `aa-isolation`'s
+own `lib.rs` documents enabling that feature as "a decision to expose a wire contract" the
+crate is not ready to make while several sibling tickets are still reshaping these types, and
+`ExecutionSpec::working_dir` is a `PathBuf` whose default `Serialize` impl fails on non-UTF-8
+content — unlike the rest of a launch's argv, which is already checked for UTF-8 at the CLI
+boundary, nothing upstream of this amendment checks the working directory the same way. The
+receipt module therefore projects each real `aa-isolation` type into a private, redaction-safe
+mirror struct (`SpecProjection`, `LeaseProjection`) before serializing anything, computing the
+working-directory digest from the path's raw bytes rather than through `Serialize` at all.
+
+The residual this does not close, stated plainly rather than hidden behind the mirror-struct
+technique: a field *added* to `ExecutionSpec` or `CapabilityLease` later is not part of a
+receipt's digest until someone adds it to the corresponding projection here. The mirror
+struct's exhaustive destructure (the same `BoundLaunchFields`/E0027 technique
+`run.rs::IsolationPlan::base_spec` already uses) only turns a field being *dropped* from this
+module's own local extraction into a compile error — it cannot, and does not claim to, catch a
+field that was never extracted from the upstream type in the first place.
+
+### Measured versus asserted, by platform — naming the difference precisely
+
+A receipt's `host` facts distinguish three bases: `Measured` (probed on this specific run —
+e.g. `/proc/sys/kernel/osrelease` on a Linux-native or sandlock-confined launch),
+`Asserted` (a build-time constant, or a backend's own documented claim about a component it
+does not probe — e.g. `aa-isolation-macos-vm`'s guest architecture, stated in that backend's
+own source rather than measured at runtime), and `Unmeasured` (nothing established a value).
+The field carrying the compile-time architecture constant is named `build_target_arch`, never
+`host_arch` — conflating the two is exactly the class of overclaim the AAASM-5528 incident
+this campaign exists to prevent already recorded, applied here to a new artifact rather than
+relitigated. A macOS-hosted VM launch's kernel-release fact is `Unmeasured`, honestly, because
+the guest kernel — not the host's — is what actually executed the confined process.
+
+### What this amendment does not decide
+
+- **No SaaS ingestion or verification service.** Verification is local-only, via `aasm
+  receipt verify` and the equivalent library call.
+- **No signature, key, PKI, or MAC.** See above; `ReceiptSealKind` leaves room for a future
+  kind without deciding what it is.
+- **No replay or forensic reconstruction of a run from its receipt.** Tracked separately
+  under AAASM-6172.
+- **`runtime_image` is `None` on every backend today.** No backend computes a digest of its
+  guest/runtime image; this amendment does not hash one on every launch and does not touch
+  `IsolationBackend`. The field exists in the schema so a future backend that does compute one
+  has somewhere to put it.
+- **`workspace` is `None` today.** `aa-workspace-tx` has zero consumers
+  (`grep -rln aa-workspace-tx --include=Cargo.toml .`) — this amendment types the field
+  against that crate's existing vocabulary so wiring it later is a projection, not a redesign,
+  but builds no workspace-diffing subsystem.
+- **No receipt for a launch refused before it starts.** `authority_gate`/`egress_gate`/
+  negotiation refusals return before `run_confined` and are already reported synchronously by
+  `isolation_machine_block` — there is nothing an execution receipt could truthfully describe
+  about a program that never started inside a boundary. What happened to a run that never
+  started is AAASM-6172's question, not this amendment's.
+- **No retention or garbage collection.** One `0600` file is written per confined run; growth
+  is accepted and stated, not managed, for this ticket.
+- **No change to `aa-isolation`, `aa-proxy`, `aa-core`, or ADR 0033.** ADR 0033 remains
+  AAASM-5654's territory, still `To Do` at the time of this amendment.
+- **No new dependency.**
+
+---
+
 ## Context
 
 Agent Assembly already owns the governance semantics above execution: agent identity and
