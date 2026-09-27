@@ -137,6 +137,13 @@ gate-level refusal. `REPORT_SCHEMA` is not bumped: both are purely additive fiel
 that render nothing when unset, so an existing report — and every existing golden-output
 test — is byte-identical to before this ticket.
 
+**Cross-reference (AAASM-6166):** the durable execution receipt this ticket's
+sibling amendment adds to [ADR 0035](0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
+applies this section's own rule to a persisted artifact rather than introducing a
+new one — a receipt's `LeaseBinding` records a lease's id and a digest of its
+redaction-safe projection, never the lease's basis reason or its scope selectors.
+No field of `aa-cli/src/commands/execution_receipt` holds either.
+
 ## What this ADR does not decide
 
 - **No crypto identity binding.** `IdentityRef` stays asserted-only. AAASM-5533 owns
