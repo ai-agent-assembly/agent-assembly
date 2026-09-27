@@ -515,7 +515,7 @@ mod tests {
             &broker,
             &authority,
             &list_op,
-            &[fixture_dir.clone()],
+            std::slice::from_ref(&fixture_dir),
             &[],
             &scope,
             &[],
