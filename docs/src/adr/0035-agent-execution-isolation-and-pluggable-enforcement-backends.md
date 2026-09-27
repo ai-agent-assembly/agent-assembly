@@ -951,6 +951,16 @@ that could not yet be removed.
 > authority that could not yet be removed" distinction this paragraph already
 > anticipated, applied to the one case a real brokerage mechanism now closes.
 
+> **Cross-reference — AAASM-6171 (2026-09)**: [ADR 0038](0038-capability-leases-and-explicit-authority-contract.md)'s
+> AAASM-6171 amendment adds a typed host-capability broker (Xcode/Simulator native
+> operations) as a supervisor-side mediation boundary, not a new backend
+> implementation of this ADR's `IsolationBackend` trait. It binds to this ADR's own
+> `CapabilityDomain::ProcessCreation` (plus `FilesystemRead`/`FilesystemWrite`/
+> `Credential`) rather than adding a domain, and states plainly — because it is
+> true, not because this ticket introduces it — that no OS confinement backend
+> exists on macOS today: the broker is the only mediation between a governed
+> launch and a real `xcodebuild`/`simctl` invocation on that platform.
+
 ### 10. Evidence is first-class output of execution
 
 A successful process spawn is not evidence that every desired control was enforced.
