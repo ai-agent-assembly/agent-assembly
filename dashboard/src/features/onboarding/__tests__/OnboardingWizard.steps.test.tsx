@@ -173,8 +173,18 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     await screen.findByTestId('onboarding-install-absent')
 
-    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
-    expect(last.state.gatewayHealthy).toBe(false)
+    // AAASM-6197: the call count is asserted first, and it is load-bearing.
+    // `EMPTY_STATE.gatewayHealthy` is already `false`, so reading only the last
+    // snapshot lets the *mount* snapshot satisfy this test whether or not the
+    // probe ever reported anything — measured happening once in 1000 runs.
+    // `patchState` always returns a fresh object, so the failing probe emits a
+    // second snapshot even though the value is unchanged; requiring one is what
+    // makes this assert the probe's finding rather than the initial state.
+    await waitFor(() => {
+      expect(onPersist.mock.calls.length).toBeGreaterThan(1)
+      const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
+      expect(last.state.gatewayHealthy).toBe(false)
+    })
     expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
   })
 
