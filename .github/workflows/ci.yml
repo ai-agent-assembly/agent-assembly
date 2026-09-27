@@ -358,8 +358,13 @@ jobs:
               - '.github/workflows/ci.yml'
             # AAASM-2599: fine-grained filters so single-purpose validators run
             # only when their own inputs change (each is a strict subset of the
-            # broad `rust` set above, so this can never lose coverage). Always
-            # include this workflow so editing CI re-runs everything.
+            # broad `rust` set above, so this can never lose *compilation*
+            # coverage). AAASM-6193: that subset argument does not extend to a
+            # gate whose verdict compares a committed artifact against freshly
+            # generated output — such a filter must also list every input the
+            # generator reads, the workspace manifest and lock included, or the
+            # artifact goes stale with the gate skipped. Always include this
+            # workflow so editing CI re-runs everything.
             proto:
               - 'proto/**/*.proto'
               - 'aa-proto/**/*.rs'
@@ -372,6 +377,18 @@ jobs:
             openapi:
               - 'aa-api/**/*.rs'
               - 'aa-api/**/Cargo.toml'
+              # AAASM-6193: the workspace manifest and lock. This gate's verdict
+              # is `utoipa`'s output, so the resolved `utoipa` version is one of
+              # its inputs — and a workspace dependency bump edits these two
+              # files and nothing else. Without them, #2529 (`utoipa` 5.5.0 to
+              # 6.0.0, the crate that generates the spec) merged with this job
+              # skipped and `ci-success` counted the skip as a pass. Version 6
+              # orders the null variant of a `oneOf` last, so the committed spec
+              # silently went stale at 22 sites and the red then landed on the
+              # next pull request that happened to touch `aa-api/` — the gate
+              # blaming an innocent change for drift it did not introduce.
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
               - '.github/workflows/ci.yml'
