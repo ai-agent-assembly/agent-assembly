@@ -81,10 +81,20 @@ jobs:
     # invisible state this ticket exists to eliminate; a step ceiling firing
     # reports `failure`, which is red and blocks.
     #
-    #   step ceilings          81  = 6 protobuf + 6 cache restore + 4 pnpm
-    #                               + 18 pre-build aasm + 9 pre-build api
-    #                               + 10 pre-build test binaries (AAASM-6033)
+    #   step ceilings          96  = 6 protobuf + 6 cache restore + 4 pnpm
+    #                               + 24 pre-build aasm + 12 pre-build api
+    #                               + 16 pre-build test binaries (AAASM-6033)
     #                               + 28 tests
+    #                               AAASM-6191 raised the three pre-build
+    #                               ceilings from 18/9/10; the sum was 81. Each
+    #                               of those three was calibrated on runs that
+    #                               restored a cache, and a cold restore is a
+    #                               different distribution that this lane meets
+    #                               regularly — see the note above each step.
+    #                               The three numbers come from a 19-run cold
+    #                               census, not from one run each; the census
+    #                               and its method are described above
+    #                               `Pre-build aasm` below.
     #   un-ceilinged steps      2  = 4 checkouts, 6 toolchain/setup actions, a
     #                               symlink, and the non-cache post steps.
     #                               Measured at 58s total in run 32946949070; 2
@@ -93,7 +103,7 @@ jobs:
     #                               on each would cost more noise than it buys.
     #   cold cache save         2  = measured 44s, rounded up. See below.
     #                          ---
-    #   worst bounded run      85  = the longest run in which every step still
+    #   worst bounded run     100  = the longest run in which every step still
     #                               fires its own ceiling first
     #   strictness margin       1  = the ceiling must be strictly ABOVE that sum,
     #                               not equal to it. At equality the two fire in
@@ -101,7 +111,7 @@ jobs:
     #                               tie, which is the `cancelled` outcome this
     #                               whole file exists to make impossible.
     #                          ---
-    #                           86
+    #                          101
     #
     # The cache save is the one contributor that *cannot* be ceilinged: it is a
     # post step, and post steps do not accept `timeout-minutes`. It is therefore
@@ -122,7 +132,7 @@ jobs:
     #
     # Do not lower this below the sum above without lowering the step ceilings
     # too, and do not add an un-ceilinged step that can do unbounded work.
-    timeout-minutes: 86
+    timeout-minutes: 101
     strategy:
       fail-fast: false
       matrix:
@@ -272,13 +282,52 @@ jobs:
       # observed value. The job's healthy runs sat at 77-90% of budget (3-7 min
       # of slack) and that is precisely why it tipped over as soon as anything
       # was added, so these are deliberately looser than that.
+      # AAASM-6191: the three ceilings below are set from a census of the last 40
+      # runs of this workflow rather than from one run each, because a single
+      # observation cannot distinguish "cold" from "slow runner" and those are
+      # different problems with different numbers. Method, so it can be redone:
+      # list this workflow's runs, take the `Integration tests (macos-latest)`
+      # job from each, and split them on the `Swatinem/rust-cache` restore step's
+      # own duration. That duration is the discriminator and it is bimodal — a
+      # restore of ~1s is the log line `Cache is not found` (nothing came back,
+      # so the run is COLD), and 21-58s is a hit that unpacks `Cache Size:
+      # ~1064 MB`. It reads backwards at first glance: the *faster* cache step is
+      # the cold one.
+      #
+      # 40 runs split 19 cold / 21 warm. Per-step seconds, cold:
+      #
+      #   step                          n     min    median    max
+      #   Pre-build aasm (this step)    19    455     584      930
+      #   Pre-build aa-api-server       19    194     293      457
+      #   Pre-build test binaries       13    314     365      496   completed
+      #                                  6          killed at the 10-min ceiling
+      #
+      # Warm, for contrast: 35-409 / 38-305 / 124-466, and **no** warm run has
+      # ever been killed at a pre-build ceiling. This is a cold-path problem
+      # only, and it is not rare: 6 of 19 cold runs (31%) died here, on five
+      # different branches, `main` twice.
+      #
+      # The work is constant, which is what makes the spread interpretable: every
+      # one of the 19 cold runs compiled the same 217 crates (218 where a bump
+      # added one, 225 for utoipa-swagger-ui). So the 2.0x spread within the cold
+      # column is runner speed on identical work, not a growing build.
       - name: Pre-build aasm, aa-gateway, aa-runtime binaries (AAASM-2340, AAASM-5977)
-        # Worst measured 12.0 min (244458b7f, cold cache under the ratchet);
-        # 2.7 min warm. 18 = 1.5x worst. aa-cli already depends on both
-        # aa-gateway and aa-runtime by path, so this step already compiled
-        # their libs — building the two extra bins here adds two main.rs
-        # compiles plus two links, not two fresh dependency trees.
-        timeout-minutes: 18
+        # Worst measured 15.5 min (930s, job 108416074979, cold cache — a 1.0s
+        # restore, i.e. nothing restored at all); 35s warm. 24 = 1.55x worst.
+        #
+        # AAASM-6191 first proposed 19 here, from a worst of 748s. The census
+        # above found 930s, so 19 would have been 1.23x — thinner than this
+        # file's 1.5x convention and only 210s of headroom over an observed run.
+        # This step, not the test-binary pre-build below, carries the largest
+        # absolute cold duration in the job, so it is the one most likely to fire
+        # next. Correcting it upward is the same evidence that corrects the step
+        # below downward.
+        #
+        # aa-cli already depends on both aa-gateway and aa-runtime by path, so
+        # this step already compiled their libs — building the two extra bins
+        # here adds two main.rs compiles plus two links, not two fresh
+        # dependency trees.
+        timeout-minutes: 24
         # Compiling aa-cli (which pulls wasmtime via aa-sandbox) once serially
         # before nextest skips per-test `cargo run -p aa-cli` overhead — under
         # --test-threads=1 every test paid that overhead in sequence, which is
@@ -294,8 +343,11 @@ jobs:
         run: cargo build --quiet -p aa-cli --bin aasm -p aa-gateway --bin aa-gateway -p aa-runtime --bin aa-runtime
 
       - name: Pre-build aa-api-server binary (AAASM-5908)
-        # Worst measured 5.4 min (244458b7f). 9 = 1.67x worst.
-        timeout-minutes: 9
+        # Worst measured 7.6 min (457s, job 108512991618, cold cache); 39s warm.
+        # 12 = 1.57x worst. AAASM-6191 raised this from 9, which was 1.67x an
+        # earlier 5.4 min worst and 85% of the cold figure above — thin enough
+        # that this step was next in line to fire on a cold run.
+        timeout-minutes: 12
         # Same rationale as the aasm pre-build above, for the same reason:
         # `common::api_server::ApiServerProcess::resolve_binary` invokes
         # `cargo build -p aa-api --bin aa-api-server` the first time any test
@@ -309,13 +361,66 @@ jobs:
         run: cargo build --quiet -p aa-api --bin aa-api-server
 
       - name: Pre-build aa-integration-tests test binaries (AAASM-6033)
-        # Worst measured 6m08s (run 34053091032, macOS). 10 = ~1.5x worst.
+        # AAASM-6191: 16, raised from 10. This step is where the ticket's six red
+        # runs died, so it is the one whose number needed evidence rather than
+        # inference — and the census above supplies it.
+        #
+        # Cold, this step completed 13 times: 314s min, 365s median, 496s max
+        # (fastest job 108523489268, slowest 108529861985). It was killed at the
+        # 10-min ceiling 6 times: 601s, 613s x5. Warm it is 124-466s. The 10 was
+        # 1.5x a worst measured 6m08s (run 34053091032) drawn entirely from runs
+        # that restored a cache.
+        #
+        # 16 = 1.5x 613s (920s = 15.3 min, rounded up), the same 1.5x convention
+        # the rest of this file uses. It is 1.5x a *censored* figure, not a
+        # completed one — see the honest caveat at the end of this note.
+        #
+        # What the six kills actually were, from their logs rather than from
+        # their durations. Splitting the step at its last `Compiling` line gives
+        # phase A, resolving and compiling the 217-crate dependency graph, and
+        # phase B, compiling and linking aa-integration-tests' own test binaries:
+        #
+        #                       phase A        phase B
+        #   13 that completed   218-344s        96-177s
+        #    6 that were killed 356-460s      >=153-257s  (truncated)
+        #
+        # Every one of the six reached `Compiling aa-integration-tests` — the
+        # final crate — before dying, so none was killed mid-dependency-graph;
+        # all six died linking test binaries. And phase A separates the two
+        # groups completely: every run that finished had phase A <= 344s, every
+        # run that died had phase A >= 356s. Disjoint, with no overlap in 19
+        # observations. A cold run whose dependency graph passes ~350s cannot
+        # finish phase B inside 600s.
+        #
+        # That disjointness is why the earlier estimate here was wrong in both
+        # directions. It read the three surviving kill durations as evidence that
+        # cold costs 12-19 min, extrapolating from a 10-core local box; in fact
+        # the fastest cold runner did the entire step in 314s, and the spread is
+        # runner speed on identical work (217 crates every time), not cold cost.
+        # Scaling a local measurement by a cold-vs-warm ratio conflated the two.
+        #
+        # Cold is not an outlier here: the repository sits at GitHub's 10 GB cache
+        # ceiling (9.95 GiB across 3378 entries, read 2026-09-27), this lane's own
+        # entry is 1.04 GiB and exists once, on refs/heads/main, and any PR that
+        # touches Cargo.lock changes the rust-cache key regardless. AAASM-5958
+        # (these pre-builds duplicate the test step's build graph) is the durable
+        # way to make the cold case cheap; this ticket only stops it lying.
+        #
+        # The one number in this file still resting on a censored observation.
+        # The six kills are right-censored at 600s, so the true cold worst case
+        # is known only to exceed 613s; 16 is 1.5x that lower bound, which is not
+        # the same guarantee as 1.5x a completed run. Ratchet it to 1.5x the
+        # measurement once a cold run with phase A >= 356s completes here, the
+        # way the cache-save line in the job ceiling note above was replaced by
+        # its 44s observation. Do not ratchet it against a warm run: no warm run
+        # has ever been killed at a pre-build ceiling, so a warm pass says
+        # nothing about this ceiling at all.
         #
         # `cargo nextest run` compiles the test binaries as its first act, and
         # under the timed step below that compile competed with the 28-minute
         # ceiling meant for actually *running* tests. Moving it here is a pure
         # relocation, not new work — `--no-run` builds and immediately exits.
-        timeout-minutes: 10
+        timeout-minutes: 16
         run: cargo nextest run -p aa-integration-tests --profile evidence --no-run
 
       - name: Run integration tests
