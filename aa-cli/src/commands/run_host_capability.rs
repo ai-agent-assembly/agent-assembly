@@ -306,7 +306,16 @@ fn current_dir_for(op: &HostOperation) -> Option<PathBuf> {
 /// package reports schemes under a `"workspace"` JSON key (empirically
 /// confirmed on this build's toolchain); an `.xcodeproj` reports under a
 /// `"project"` key. Both are handled.
-pub fn known_schemes(container_root: &Path) -> Result<Vec<String>, HostCapabilityRefusal> {
+///
+/// Takes `_witness` for the same reason [`perform`] does: this function spawns
+/// a real `xcodebuild` process against a caller-supplied `container_root`, so
+/// it must not be reachable except behind `host_capability_gate` admitting a
+/// [`HostOperation::XcodeList`] for that path — never called directly on raw
+/// CLI input.
+pub fn known_schemes(
+    container_root: &Path,
+    _witness: &HostCapabilityWitness,
+) -> Result<Vec<String>, HostCapabilityRefusal> {
     let dd = developer_dir().map_err(|reason| HostCapabilityRefusal::ToolchainUnavailable { reason })?;
     let env = broker_environment(&dd);
     let resolved = resolve_program(OperationKind::XcodeList, &env["PATH"])?;
@@ -355,7 +364,11 @@ pub fn known_schemes(container_root: &Path) -> Result<Vec<String>, HostCapabilit
 }
 
 /// Parse `simctl list devices available -j` for known device UDIDs.
-pub fn known_devices() -> Result<Vec<String>, HostCapabilityRefusal> {
+///
+/// Takes `_witness` for the same reason [`known_schemes`] does — this spawns a
+/// real `simctl` process and must only run behind a gated
+/// [`HostOperation::SimulatorList`].
+pub fn known_devices(_witness: &HostCapabilityWitness) -> Result<Vec<String>, HostCapabilityRefusal> {
     let dd = developer_dir().map_err(|reason| HostCapabilityRefusal::ToolchainUnavailable { reason })?;
     let env = broker_environment(&dd);
     let resolved = resolve_program(OperationKind::SimulatorList, &env["PATH"])?;
@@ -468,7 +481,7 @@ mod tests {
         // exercises the same path a real `aasm host xcode build` invocation
         // does.
         let contract = aa_isolation::HostCapabilityContract::broker_required()
-            .with_permitted_operations(vec![OperationKind::XcodeBuild]);
+            .with_permitted_operations(vec![OperationKind::XcodeBuild, OperationKind::XcodeList]);
         let broker = report_for_launch();
 
         let identity = aa_isolation::IdentityRef::root("hc-fixture-test");
@@ -492,7 +505,27 @@ mod tests {
             .expect("spec authorized in this fixture");
         let authority = aa_isolation::HostCapabilityAuthority::from_gated_spec(&spec, &witness);
 
-        let known = known_schemes(&fixture_dir).expect("known_schemes should succeed against the fixture");
+        // `known_schemes` is only callable behind a real, gated `XcodeList`
+        // witness (this test's own point: the allowlist lookup must be gated
+        // exactly like any other host operation, not called ungated on raw
+        // caller input) — obtain one the same way `host.rs::gated_list` does.
+        let list_op = aa_isolation::HostOperation::XcodeList(aa_isolation::XcodeListRequest::new(fixture_dir.clone()));
+        let list_witness = aa_isolation::host_capability_gate(
+            &contract,
+            &broker,
+            &authority,
+            &list_op,
+            &[fixture_dir.clone()],
+            &[],
+            &scope,
+            &[],
+            &[],
+            std::time::SystemTime::now(),
+        )
+        .expect("XcodeList should be admitted for this fixture's contract");
+
+        let known =
+            known_schemes(&fixture_dir, &list_witness).expect("known_schemes should succeed against the fixture");
         assert!(known.contains(&"HCFixture".to_string()), "known schemes: {known:?}");
 
         let host_witness = aa_isolation::host_capability_gate(
