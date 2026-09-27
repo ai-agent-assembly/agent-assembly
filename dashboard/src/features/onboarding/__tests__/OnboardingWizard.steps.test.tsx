@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
@@ -236,7 +236,19 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
 
     await screen.findByTestId('onboarding-enroll-empty')
-    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
-    expect(last.state.enrolled).toBe(false)
+    // AAASM-6197: this test's name asserts an *absence*, so it asserts one.
+    // Reading the last snapshot could not distinguish "never patched" from
+    // "patched, not yet persisted": nothing patches `enrolled` on this path, so
+    // the last snapshot is the mount snapshot in 1000 of 1000 runs, and
+    // `EMPTY_STATE.enrolled` is already `false`.
+    //
+    // The flush is not a sleep. A wrong patch would reach `onPersist` from the
+    // passive effect belonging to the commit that rendered the node awaited
+    // above, and `act` drains exactly those, so the absence is asserted after
+    // the only point at which it could have been violated.
+    await act(async () => {})
+    expect(onPersist).not.toHaveBeenCalledWith(
+      expect.objectContaining({ state: expect.objectContaining({ enrolled: true }) }),
+    )
   })
 })
