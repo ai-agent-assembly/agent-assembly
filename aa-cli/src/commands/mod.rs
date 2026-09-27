@@ -99,6 +99,8 @@ pub enum Commands {
     Integrations(integrations::IntegrationsArgs),
     /// Launch an AI dev tool (claude, codex, copilot, windsurf) with governance wiring.
     Run(run::RunArgs),
+    /// Verify a locally-stored execution receipt (AAASM-6166).
+    Receipt(execution_receipt::ReceiptArgs),
     // strip-for-publish:end devtool
     /// Run a WebAssembly tool inside the Agent Assembly sandbox (filesystem + CPU + memory + wall-clock isolation).
     Sandbox(sandbox::SandboxArgs),
@@ -144,6 +146,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         // strip-for-publish:begin devtool
         Commands::Integrations(args) => integrations::dispatch(args, output),
         Commands::Run(args) => run::dispatch(args, ctx, output),
+        Commands::Receipt(args) => execution_receipt::dispatch(args),
         // strip-for-publish:end devtool
         Commands::Sandbox(args) => sandbox::dispatch(args),
         // strip-for-publish:begin devtool
