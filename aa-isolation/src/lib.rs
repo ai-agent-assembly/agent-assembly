@@ -219,6 +219,7 @@ pub mod descendant;
 pub mod descriptor;
 pub mod egress;
 pub mod evidence;
+pub mod host_capability;
 pub mod lease;
 pub mod lowering;
 pub mod plan;
@@ -271,6 +272,17 @@ pub use egress::{
     MediationDepthScope, RangePolicy, EGRESS_CONTRACT_SCHEMA,
 };
 pub use evidence::{EnforcementEvidence, EvidenceKind, EvidenceRecord};
+pub use host_capability::{
+    achieved_record, brokered_operation_record, check_arguments as check_host_capability_arguments,
+    check_broker_available as check_host_capability_broker_available, check_invoker_exists, check_lease_validity,
+    check_operation_permitted, check_output_ceiling, check_paths_scoped, check_process_creation_grant,
+    host_capability_gate, refusal_record as host_capability_refusal_record, scoped_path, to_argv, ArgumentRejected,
+    BrokeredOperation, BuildAction, CodesignRequest, ConfigurationName, Destination, HostArgv, HostCapabilityAuthority,
+    HostCapabilityBrokerReport, HostCapabilityContract, HostCapabilityPosture, HostCapabilityRefusal,
+    HostCapabilityWitness, HostOperation, OperationKind, OutputCeiling, PathRejected, SchemeName, SigningIdentityRef,
+    SimulatorListRequest, SimulatorUdid, ToolchainFact, XcodeBuildRequest, XcodeContainer, XcodeListRequest,
+    HOST_CAPABILITY_CONTRACT_SCHEMA, MAX_ARGUMENT_LEN,
+};
 pub use lease::{
     CapabilityLease, ChildLeaseRequest, DelegationDenied, DelegationProvenance, DelegationRule, InheritanceMode,
     LeaseBasis, LeaseId, LeaseInvalid, RevocationState, ScopeOrder, ScopeOrdering, UndefinedScopeOrder,
@@ -287,8 +299,8 @@ pub use plan::{
 pub use planner::{select, select_pinned, Candidate, Selection};
 pub use report::{
     BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainAuthoritySummary, DomainProjection,
-    EvidenceBasis, IsolationReport, ReportStage, ReportedPosture, RequestedControl, SelectionMode, SessionRef,
-    TargetRef, UnmeasuredReason, REPORT_SCHEMA,
+    EvidenceBasis, HostCapabilityBinding, IsolationReport, ReportStage, ReportedPosture, RequestedControl,
+    SelectionMode, SessionRef, TargetRef, UnmeasuredReason, REPORT_SCHEMA,
 };
 pub use requirements::{EvidenceMinimum, RuntimeRequirements, RUNTIME_REQUIREMENTS_SCHEMA};
 pub use scope_order::{order_for, ExactTokenOrder, HostPatternOrder, PathPrefixOrder, ResourceCeilingOrder};

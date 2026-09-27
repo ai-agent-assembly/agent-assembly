@@ -239,6 +239,7 @@ mod tests {
             domains: Vec::new(),
             credentials: CredentialNames::default(),
             workspace: None,
+            host_capability: None,
             execution: ExecutionOutcome {
                 started_at_unix_secs: 1_700_000_000,
                 ended_at_unix_secs: 1_700_000_001,

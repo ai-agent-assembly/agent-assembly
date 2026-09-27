@@ -34,10 +34,12 @@ pub mod proxy;
 pub mod run_env_sanitize;
 pub mod trusted_upstream_path;
 // strip-for-publish:begin devtool
+pub mod host;
 pub mod run;
 pub mod run_audit;
 pub mod run_credential_broker;
 pub mod run_egress_broker;
+pub mod run_host_capability;
 pub mod run_no_proxy_guard;
 pub mod run_registration;
 // strip-for-publish:end devtool
@@ -102,6 +104,8 @@ pub enum Commands {
     Run(run::RunArgs),
     /// Verify a locally-stored execution receipt (AAASM-6166).
     Receipt(execution_receipt::ReceiptArgs),
+    /// Broker a typed native host operation (Xcode, Simulator) (AAASM-6171).
+    Host(host::HostArgs),
     // strip-for-publish:end devtool
     /// Run a WebAssembly tool inside the Agent Assembly sandbox (filesystem + CPU + memory + wall-clock isolation).
     Sandbox(sandbox::SandboxArgs),
@@ -148,6 +152,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         Commands::Integrations(args) => integrations::dispatch(args, output),
         Commands::Run(args) => run::dispatch(args, ctx, output),
         Commands::Receipt(args) => execution_receipt::dispatch(args),
+        Commands::Host(args) => host::dispatch(args),
         // strip-for-publish:end devtool
         Commands::Sandbox(args) => sandbox::dispatch(args),
         // strip-for-publish:begin devtool
