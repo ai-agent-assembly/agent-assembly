@@ -497,6 +497,25 @@ egress, applied here.
 
 ### What this amendment does not decide
 
+- **Cross-process credential recovery from a supervisor's own `/proc` entry is not
+  measured — a stated gap, not a discharged property.** This backend's own
+  sibling scenario `another_processs_environ_is_outside_a_scoped_proc_grant`
+  already records that a Yama host refuses a descendant reading an ancestor's
+  `environ` unconditionally, before any backend is consulted. An attempted
+  cross-process arm for this amendment's own negative control — a confined child
+  reading its supervisor's `/proc/<pid>/environ` — ran into the identical wall:
+  its own mandatory unscoped control (no backend, `/proc` granted whole) failed
+  for the same ptrace-direction reason on every real CI runner, so the scenario
+  could never attribute the denial to this backend and always declined. It was
+  removed rather than shipped declining, per the `isolation-backend-native-linux`
+  lane's own "fail on any decline" discipline (a decline there is a broken lane,
+  not an honest opt-out). The negative control this amendment's AC actually needs
+  — that a brokered credential's source name is absent from the child's own
+  environment, descriptors and `/proc/self` — is still measured, by
+  `linux_confinement_native.rs`'s sibling scenario, with a paired raw-fallback
+  positive control. Whether a confined process can ever recover a credential from
+  a *different* process's `/proc` entry on a Yama host remains open and is not
+  this backend's property to close.
 - **`SecretsService.DispatchTool`'s fate is untouched and stays AAASM-5631's own
   decision.** `proto/secrets.proto`'s `SecretsService.DispatchTool` and
   `aa-api/src/routes/dispatch.rs` remain dead code — both production constructions
