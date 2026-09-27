@@ -131,6 +131,28 @@ pub fn codex_tls_client_binary() -> PathBuf {
     build_example("aa-integration-tests", "codex_tls_client")
 }
 
+/// Absolute path to a freshly built `aa-isolation-launch` — the `aasm-native`
+/// confinement backend's own launcher.
+///
+/// A caller has to name this explicitly because the backend never receives it
+/// as an argument: `NativeBackend::discover()`
+/// (`aa-isolation-native/src/host.rs`) looks at `AA_ISOLATION_LAUNCHER`, then
+/// beside the running executable, then `PATH`. Beside-the-executable happens to
+/// hold whenever `aasm` is the real `target/debug/aasm`, which is why a test can
+/// pass without ever having said where the launcher is — and then fail in a lane
+/// that moves `aasm` somewhere else, which is precisely what the Coverage job
+/// does (it relocates `aasm` to `$RUNNER_TEMP/aasm-bin/` and deletes
+/// `target/debug` to reclaim disk). Same incidental-sibling defect class as
+/// AAASM-5982, opposite direction.
+///
+/// `AA_ISOLATION_LAUNCHER` is the escape hatch, and it is also the variable the
+/// backend itself reads, so a lane that already exports it is honoured rather
+/// than second-guessed.
+pub fn aa_isolation_launch_binary() -> PathBuf {
+    explicit_binary("AA_ISOLATION_LAUNCHER")
+        .unwrap_or_else(|| build_binary("aa-isolation-native", "aa-isolation-launch"))
+}
+
 /// A copy of [`aasm_binary`] in `dir`, alone — nothing else beside it.
 ///
 /// `resolve_binary` (`aa-cli/src/commands/proxy/start.rs`) checks beside the
