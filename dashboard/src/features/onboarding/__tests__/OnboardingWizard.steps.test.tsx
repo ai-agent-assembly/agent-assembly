@@ -150,8 +150,18 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     await screen.findByTestId('onboarding-install-absent')
 
-    const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
-    expect(last.state.gatewayHealthy).toBe(false)
+    // AAASM-6197: awaited through `waitFor` rather than read once, because the
+    // transcript and the snapshot are two different observables. `setResult`
+    // drives the DOM inside the commit, while `onPersist` fires from a passive
+    // effect, so the node is in the document ~0.1 ms before the snapshot
+    // matching it exists — measured DOM-first in 1000 of 1000 runs. A single
+    // read at the instant `findByTestId` resolves therefore lands on the
+    // *previous* snapshot every so often, and here that snapshot is the healthy
+    // probe's `true`, which is exactly the value this test denies.
+    await waitFor(() => {
+      const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
+      expect(last.state.gatewayHealthy).toBe(false)
+    })
     expect(screen.getByTestId('onboarding-continue')).toBeDisabled()
   })
 
