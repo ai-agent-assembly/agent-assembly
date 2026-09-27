@@ -299,6 +299,7 @@ jobs:
       # AAASM-5375: mirror, glob for glob, actionlint.yml's own internal
       # `changes` router — same reasoning as the satellites above.
       workflow_syntax_gate: ${{ steps.filter.outputs.workflow_syntax_gate }}
+      excluded_workspaces: ${{ steps.filter.outputs.excluded_workspaces }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -340,6 +341,21 @@ jobs:
               - 'scripts/check_detection_egress_closure.py'
               - 'openapi/v1.yaml'
               - '.spectral.yaml'
+              - '.github/workflows/ci.yml'
+            # AAASM-6188: the two Cargo workspaces outside the root one, each
+            # with its own lockfile. `rust` above does not reach them: it lists
+            # `Cargo.lock` unanchored-but-rootward, which matches only the
+            # repository-root lockfile, and `aa-*/**/*.toml` matches a nested
+            # `Cargo.toml` but not a `.lock`. So a Dependabot bump touching only
+            # `aa-sandbox/fuzz/Cargo.lock` matched no filter at all, every Rust
+            # job skipped, and `ci-success` counted the skips as a pass —
+            # measured on #2522, where the live run compiled nothing and still
+            # reported green. Matching the directories wholesale rather than by
+            # extension is the point: whatever file appears in them next is
+            # covered without anyone remembering to add a glob.
+            excluded_workspaces:
+              - 'aa-sandbox/fuzz/**'
+              - 'aa-isolation-macos-vm-poc/guest-init/**'
               - '.github/workflows/ci.yml'
             dashboard:
               - 'dashboard/**/*.ts'
