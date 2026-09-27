@@ -38,15 +38,24 @@ use grpc_gateway_support::GrpcGateway;
 use proxy_trust_support::TrustedProxy;
 
 /// A minimal, always-permitted policy — this file asserts nothing about
-/// policy content, only that some effective policy resolves (AAASM-5349's
-/// precondition for any governed launch to proceed at all).
+/// policy content beyond what's needed to clear AAASM-5349's precondition
+/// that some effective policy resolves before a governed launch proceeds.
+///
+/// Unlike the identically-shaped `tools`-only fixture other integration test
+/// files use, this one also states `filesystem.read.allow`: this file's tests
+/// request a real confinement backend (`--isolation-backend aasm-native`),
+/// and `aa_isolation::lowering::NoRequirementsLowered` refuses a launch whose
+/// effective policy lowers to no capability requirement at all — a `tools`
+/// node alone maps to nothing in `CapabilityDomain::ALL`, so it isn't enough
+/// once a real boundary is actually requested (found via real CI failure:
+/// "the effective policy lowered to no execution requirement").
 fn write_test_policy(dir: &Path, name: &str) -> io::Result<PathBuf> {
     let path = dir.join("policy.yaml");
     std::fs::write(
         &path,
         format!(
             "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: {name}\nspec:\n  tools:\n    \
-             read_file:\n      allow: true\n"
+             read_file:\n      allow: true\n  filesystem:\n    read:\n      allow:\n        - /\n"
         ),
     )?;
     Ok(path)
