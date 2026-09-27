@@ -110,6 +110,11 @@ DELETED_FILES=(
     # with it rather than being left behind importing `aa-isolation` with no
     # caller.
     "${REPO_ROOT}/aa-cli/src/commands/run_egress_broker.rs"
+    # AAASM-6164: the credential-brokerage adapter `run.rs` calls at
+    # `resolve_boundary`, same reason as `run_egress_broker.rs` above — only
+    # ever used from `run.rs`, consumes `aa-isolation` (publish = false), so it
+    # goes with `run.rs` rather than being left behind importing a held-back dep.
+    "${REPO_ROOT}/aa-cli/src/commands/run_credential_broker.rs"
     # AAASM-5323: `aasm run`'s gateway registration. Consumes `aa-sdk-client`
     # (publish = false), stripped from aa-cli/Cargo.toml by the `sdkclient`
     # region, so the module that imports it has to go with the dep.

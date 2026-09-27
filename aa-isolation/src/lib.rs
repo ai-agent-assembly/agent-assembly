@@ -117,6 +117,24 @@
 //! crate does not close: `aa-proxy` still evaluates every egress decision
 //! under a synthetic, unregistered identity at Global policy tier.
 //!
+//! # Credential brokerage (AAASM-6164)
+//!
+//! [`credential_broker`] is the same witness-gated-authority pattern applied a
+//! third time, to [`capability::CapabilityDomain::Credential`]. It does not add
+//! a new mechanism either: `aa-proxy`'s existing egress credential injection
+//! (`aa-proxy/src/credentials.rs`, `aa-proxy/src/proxy/http.rs`) already
+//! performs Mode 1 brokerage for at least one real provider — MitM'ing
+//! `api.anthropic.com` and injecting the operator's real key while the agent's
+//! own header is stripped — and that mechanism is unchanged. What
+//! [`credential_broker::CredentialContract`]/[`credential_broker::CredentialBrokerReport`]/
+//! [`credential_broker::credential_gate`] add is the missing binding: a launch
+//! can now state that it requires a brokered credential, and the gate refuses
+//! before spawn when the operator's own provider key would still reach the
+//! child anyway (via ambient environment inheritance) despite the broker
+//! already being available for that host — closing the gap
+//! `governance/capability-manifest.yaml` capability C2's `known_bypasses`
+//! already named.
+//!
 //! # Reused vocabulary, and one deliberate rename
 //!
 //! Evidence terms are [`aa_core::attestation::ClaimTerm`] verbatim — this crate
@@ -195,6 +213,7 @@ pub mod attenuation;
 pub mod authority;
 pub mod backend;
 pub mod capability;
+pub mod credential_broker;
 pub mod deadline;
 pub mod descendant;
 pub mod descriptor;
@@ -229,6 +248,14 @@ pub use capability::{
     BackendAvailability, BackendCapabilities, CapabilityDomain, CapabilityReport, DecisionTiming, DescendantCoverage,
     DuplicateDomain, FailurePosture, Mediation, PlatformBoundary, Prerequisite, PrerequisiteStatus, SupportLevel,
     Synchrony,
+};
+pub use credential_broker::{
+    brokerage_mode_record, check_broker_available as check_credential_broker_available,
+    check_ceilings as check_credential_ceilings, check_credential_grant, check_posture_matches_brokerage,
+    check_raw_fallback, check_required_mode, credential_gate, residual_exposure_record, BrokerageMode,
+    BrokeragePosture, BrokeredService, CredentialAuthority, CredentialBrokerReport, CredentialCeilings,
+    CredentialContract, CredentialRefusal, CredentialWitness, RawFallbackPolicy, RequiredMode,
+    CREDENTIAL_CONTRACT_SCHEMA,
 };
 pub use deadline::{requested_wall_clock_ceiling, supervise_wall_clock, WallClockOutcome};
 pub use descendant::{authority_widening, covers_ordinary_descendants, is_same_or_narrower, AuthorityWidening};

@@ -246,6 +246,7 @@ mod plan {
     use uuid::Uuid;
 
     use aa_core::{DevToolAdapter, DevToolInfo};
+    use aa_isolation::credential_broker::{credential_gate, CredentialAuthority, CredentialContract};
     use aa_isolation::{
         authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
         CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, IdentityRef, IsolationBackend,
@@ -813,6 +814,11 @@ mod plan {
         /// threaded through `resolve_boundary` so a future source has one
         /// call site to populate, exactly as `leases` and `ancestry` do.
         egress: aa_isolation::EgressContract,
+        /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
+        /// amendment). [`CredentialContract::not_required`] for every launch
+        /// today — no policy path issues a stronger contract yet — but
+        /// threaded through `resolve_boundary` exactly as `egress` is.
+        credential_contract: CredentialContract,
     }
 
     impl IsolationPlan {
@@ -1102,6 +1108,53 @@ mod plan {
                 return (Some(spec), report, Boundary::Refused(detail));
             }
 
+            // AAASM-6164/ADR 0038 amendment: the credential-brokerage contract's
+            // gate runs immediately after `egress_gate`, before any backend is
+            // consulted — a launch requiring brokered credentials this run's
+            // mediating component (or explicit authority) cannot actually
+            // provide, or whose posture shows a "secretless" name still
+            // reaching the child, is refused before backend capability is in
+            // the picture. `self.credential_contract` is
+            // `CredentialContract::not_required()` for every launch today, so
+            // this is inert until a policy source issues a stronger contract.
+            let credential_authority = CredentialAuthority::from_gated_spec(&spec, &witness);
+            let credential_scope = spec
+                .requirements()
+                .iter()
+                .find(|r| r.domain() == CapabilityDomain::Credential)
+                .map(|r| r.scope().clone())
+                .unwrap_or(RequirementScope::Whole);
+            let credential_broker = crate::commands::run_credential_broker::report_for_launch(
+                network.endpoint(),
+                network.no_proxy(),
+                parse_llm_only_env(),
+                &mitm_hosts_env(),
+                &crate::commands::run_credential_broker::provider_key_hosts_env(),
+                network_fail_open_env(),
+            );
+            if let Err(refusal) = credential_gate(
+                &self.credential_contract,
+                &credential_broker,
+                &credential_authority,
+                &credentials,
+                &credential_scope,
+            ) {
+                let authority = effective_authority_for_report(&spec);
+                let detail = format!("the launch is refused: {refusal}");
+                let mut report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&spec),
+                    credentials,
+                    detail.clone(),
+                );
+                report = report.with_policy(lowering);
+                report = report.with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority));
+                report = report.with_credential_brokerage(credential_broker.services().to_vec());
+                report = self.with_selection(report);
+                return (Some(spec), report, Boundary::Refused(detail));
+            }
+
             backend.set_child_environment(child_env.clone());
             match backend.plan(&spec) {
                 Ok(plan) => {
@@ -1109,7 +1162,8 @@ mod plan {
                     let report = self.with_selection(
                         IsolationReport::from_plan(session, &plan)
                             .with_policy(lowering)
-                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority)),
+                            .with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority))
+                            .with_credential_brokerage(credential_broker.services().to_vec()),
                     );
                     (Some(spec), report, Boundary::Negotiated(Box::new(plan)))
                 }
@@ -1352,7 +1406,22 @@ mod plan {
             // two sources would still show as present. `no_proxy` is threaded
             // through so the isolation-boundary path (which never touches
             // `spawn_and_wait`) gets the same D6 sanitization (AAASM-5923/F1).
-            let (effective, removed) = super::effective_child_env(&command, &child_env, self.network.no_proxy());
+            // AAASM-6164: withhold a brokered provider credential (names
+            // only) before `effective`/`removed` are computed, so
+            // `credential_posture`'s `ambient_unremoved` filter and
+            // `resolve_boundary`'s `credential_gate` see the same, already-
+            // withheld environment every other surface reports.
+            let credential_broker_report = crate::commands::run_credential_broker::report_for_launch(
+                self.network.endpoint(),
+                self.network.no_proxy(),
+                parse_llm_only_env(),
+                &mitm_hosts_env(),
+                &crate::commands::run_credential_broker::provider_key_hosts_env(),
+                network_fail_open_env(),
+            );
+            let withheld = crate::commands::run_credential_broker::withheld_names(&credential_broker_report);
+            let (effective, removed) =
+                super::effective_child_env(&command, &child_env, self.network.no_proxy(), &withheld);
             let credentials = credential_posture(&effective, &removed);
 
             // The spec, the canonical projection and the execution decision are
@@ -1689,6 +1758,7 @@ mod plan {
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
+                    credential_contract: CredentialContract::not_required(),
                 });
             }
 
@@ -1767,6 +1837,7 @@ mod plan {
                     leases: Vec::new(),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
+                    credential_contract: CredentialContract::not_required(),
                 });
             }
         };
@@ -1793,6 +1864,7 @@ mod plan {
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
+                credential_contract: CredentialContract::not_required(),
             });
         }
 
@@ -1804,6 +1876,7 @@ mod plan {
             leases: Vec::new(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
+            credential_contract: CredentialContract::not_required(),
         })
     }
 
@@ -1862,6 +1935,7 @@ mod plan {
                 leases: Vec::new(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
+                credential_contract: CredentialContract::not_required(),
             });
         };
 
@@ -1916,6 +1990,7 @@ mod plan {
                         leases: Vec::new(),
                         ancestry: Ancestry::Root,
                         egress: aa_isolation::EgressContract::not_required(),
+                        credential_contract: CredentialContract::not_required(),
                     });
                 }
                 Err(refusal) => {
@@ -1962,6 +2037,7 @@ mod plan {
             leases: Vec::new(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
+            credential_contract: CredentialContract::not_required(),
         })
     }
 
@@ -2945,7 +3021,8 @@ fn format_dry_run_output(
     // Derived through the same merge `spawn_and_wait` applies, so the preview
     // cannot claim a variable the launch would not have — including one the
     // adapter removes, which a naive union of the two sources would still show.
-    let (effective, removed) = effective_child_env(cmd, env, no_proxy);
+    let withheld = withheld_from_isolation_report(isolation);
+    let (effective, removed) = effective_child_env(cmd, env, no_proxy, &withheld);
     // Deny-by-default on values (AAASM-5935). The legend is part of the output
     // rather than documentation, because an operator reading `FOO=<set>` for the
     // first time needs to know it is a withheld value and not a literal one.
@@ -3181,10 +3258,28 @@ async fn deregister_with_gateway(registration: &GovernedRegistration) {
 ///
 /// The adapter is applied **last and therefore wins** on a collision — it is the
 /// layer that knows what the launched tool actually needs.
+/// The env names an already-resolved [`aa_isolation::IsolationReport`]'s
+/// credential brokerage (AAASM-6164) says must be withheld — the secretless
+/// half of [`aa_isolation::IsolationReport::credential_brokerage`], names
+/// only. Used to re-derive `withheld` at a site that holds the report rather
+/// than the launch's network facts (the `--dry-run` env preview and the
+/// unconfined `spawn_and_wait` launch), so both stay in agreement with the
+/// report `resolve_boundary` already computed rather than re-deriving it from
+/// scratch and risking disagreement.
+fn withheld_from_isolation_report(isolation: &aa_isolation::IsolationReport) -> Vec<String> {
+    isolation
+        .credential_brokerage()
+        .iter()
+        .filter(|s| s.mode.is_secretless())
+        .flat_map(|s| s.env_names.iter().cloned())
+        .collect()
+}
+
 fn effective_child_env(
     cmd: &std::process::Command,
     child_env: &HashMap<String, String>,
     no_proxy: bool,
+    withheld: &[String],
 ) -> (BTreeMap<String, String>, Vec<String>) {
     let mut env: BTreeMap<String, String> = child_env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let mut removed = Vec::new();
@@ -3239,6 +3334,18 @@ fn effective_child_env(
         if let Some(v) = trusted_http_proxy {
             env.insert("HTTP_PROXY".to_string(), v);
         }
+    }
+    // AAASM-6164: withhold a brokered provider credential from the child.
+    // Names only, never a value — `withheld` is
+    // `run_credential_broker::withheld_names`'s output, which is itself
+    // derived from env-var *names* [`BROKERED_PROVIDER_ENV_NAMES`] states,
+    // never from anything read out of the environment. Added to `removed`
+    // unconditionally so `credential_posture`'s `ambient_unremoved` filter
+    // (`effective.contains_key(name)`) reports these names as removed, never
+    // as ambient-unremoved or contradictory.
+    for name in withheld {
+        env.remove(name);
+        removed.push(name.clone());
     }
     (env, removed)
 }
@@ -3307,8 +3414,9 @@ async fn spawn_and_wait(
     cmd: std::process::Command,
     child_env: &HashMap<String, String>,
     no_proxy: bool,
+    withheld: &[String],
 ) -> Result<i32> {
-    let (effective, removed) = effective_child_env(&cmd, child_env, no_proxy);
+    let (effective, removed) = effective_child_env(&cmd, child_env, no_proxy, withheld);
     let trusted_https_proxy = effective.get("HTTPS_PROXY").cloned();
     let trusted_http_proxy = effective.get("HTTP_PROXY").cloned();
 
@@ -3935,7 +4043,10 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             run_confined(backend.into_arc(), *plan, isolation, receipt_inputs).await?
         }
         // Unchanged from every `aasm run` before `--isolation` existed.
-        plan::Boundary::Absent => spawn_and_wait(cmd, &child_env, args.no_proxy).await?,
+        plan::Boundary::Absent => {
+            let withheld = withheld_from_isolation_report(&isolation);
+            spawn_and_wait(cmd, &child_env, args.no_proxy, &withheld).await?
+        }
         // Refused above, before the managed settings were written.
         plan::Boundary::Refused(why) => anyhow::bail!("refusing to launch: {why}"),
     };
@@ -4614,7 +4725,7 @@ mod tests {
         let out = tmp.path().join("env.txt");
         let mut cmd = std::process::Command::new("sh");
         cmd.arg("-c").arg(format!("env > {}", out.display()));
-        let code = spawn_and_wait(cmd, child_env, no_proxy)
+        let code = spawn_and_wait(cmd, child_env, no_proxy, &[])
             .await
             .expect("spawn_and_wait must succeed");
         assert_eq!(code, 0, "the env-dumping child must exit successfully");
@@ -4980,7 +5091,7 @@ mod tests {
         cmd.env("HTTPS_PROXY", "http://receipted-proxy:9000");
         cmd.env("HTTP_PROXY", "http://receipted-proxy:9000");
 
-        let code = spawn_and_wait(cmd, &child_env, false)
+        let code = spawn_and_wait(cmd, &child_env, false, &[])
             .await
             .expect("spawn_and_wait must succeed");
         assert_eq!(code, 0);
@@ -5018,7 +5129,7 @@ mod tests {
         cmd.arg("-c").arg("printf aa-stdio-reached");
         cmd.stdout(std::fs::File::create(&out).expect("create redirect target"));
 
-        let code = spawn_and_wait(cmd, &HashMap::new(), true)
+        let code = spawn_and_wait(cmd, &HashMap::new(), true, &[])
             .await
             .expect("spawn_and_wait must succeed");
         assert_eq!(code, 0);
@@ -5595,7 +5706,7 @@ mod tests {
         let cmd = adapter
             .build_launch_command(&[], "agent-1", None, Some("127.0.0.1:8080"))
             .expect("command");
-        let (effective, removed) = effective_child_env(&cmd, &child_env, false);
+        let (effective, removed) = effective_child_env(&cmd, &child_env, false, &[]);
 
         assert_eq!(
             effective.get("NODE_EXTRA_CA_CERTS").map(String::as_str),
@@ -5635,7 +5746,7 @@ mod tests {
         let cmd = adapter
             .build_launch_command(&[], "agent-1", None, None)
             .expect("command");
-        let (effective, _removed) = effective_child_env(&cmd, &child_env, false);
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, false, &[]);
         // ALL_PROXY/NO_PROXY (and lowercase forms of all four names) are never
         // a legitimate injection target — always gone, unconditionally.
         // HTTPS_PROXY/HTTP_PROXY (uppercase) are the one pair step 3 may
@@ -5671,7 +5782,7 @@ mod tests {
         let cmd = adapter
             .build_launch_command(&[], "agent-1", None, None)
             .expect("command");
-        let (effective, _removed) = effective_child_env(&cmd, &child_env, true);
+        let (effective, _removed) = effective_child_env(&cmd, &child_env, true, &[]);
         assert_eq!(
             effective.get("ALL_PROXY").map(String::as_str),
             Some("operators-own-value"),
@@ -7557,7 +7668,7 @@ mod tests {
         let handle = stub_handle(Some("team-a"));
 
         let bound = resolved.bind(&handle);
-        let (effective, removed) = effective_child_env(bound.command(), bound.child_env(), false);
+        let (effective, removed) = effective_child_env(bound.command(), bound.child_env(), false, &[]);
 
         assert_eq!(
             effective.get("AA_AGENT_DID").map(String::as_str),

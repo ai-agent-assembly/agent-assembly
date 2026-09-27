@@ -25,9 +25,22 @@
 # `#` comments and blank lines are stripped, and order does not matter — the
 # lane sorts both sides with `LC_ALL=C sort -u` before diffing.
 #
-# As written: 19 from aa-isolation-native/tests/linux_confinement_native.rs (AAASM-6161
-# added 1: a grandchild-of-an-attenuated-sub-agent scenario), 18
-# from aa-isolation-native/tests/adversarial_boundary_native_linux.rs and 4 from
+# As written: 20 from aa-isolation-native/tests/linux_confinement_native.rs (AAASM-6161
+# added 1: a grandchild-of-an-attenuated-sub-agent scenario; AAASM-6164 added 1 more: a
+# brokered-provider-credential negative control, checking the child's own
+# environment/descriptors/proc), 18
+# from aa-isolation-native/tests/adversarial_boundary_native_linux.rs (AAASM-6164 attempted
+# a cross-process arm of the same negative control — a confined child reading its
+# supervisor's own /proc/<pid>/environ — but removed it: this backend's own sibling
+# scenario `another_processs_environ_is_outside_a_scoped_proc_grant` already documents
+# that Yama's ptrace rules refuse a descendant reading an ancestor's `environ`
+# unconditionally, before any backend is consulted; the mandatory unscoped control this
+# new scenario ran first failed for the identical reason on every real CI runner, so it
+# could never attribute the denial to this backend and always declined — not an honest
+# opt-out on a lane whose "fail on any decline" gate exists precisely to catch a runner
+# that measured nothing. Cross-process credential recovery from a supervisor's `/proc`
+# entry remains a stated, undischarged gap for this backend rather than a measured
+# property; see ADR 0038's AAASM-6164 amendment) and 4 from
 # aa-isolation-native/tests/adversarial_negotiation_native.rs (AAASM-5803 added
 # 3 to the first file and 2 to the second; AAASM-5805 added 4 gap-measurement
 # scenarios to the second file and the third file itself, covering
@@ -80,6 +93,7 @@ native adversarial: only a decision record promotes a claim
 native adversarial: required prevention refused by every backend that cannot enforce it
 native adversarial: the launcher refuses a command line it cannot fully honour
 native adversarial: the launcher refuses a syscall filter it cannot fully honour
+native: a brokered provider credential is absent from the child's environment, descriptors and own /proc
 native: a grandchild of an attenuated sub-agent cannot write outside the child's narrowed grant
 native: a nested write grant keeps the read granted above it
 native: a permitted syscall still succeeds under an installed filter

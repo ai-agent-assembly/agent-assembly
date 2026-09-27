@@ -907,6 +907,127 @@ fn the_child_receives_only_the_environment_the_launch_delegated() {
     );
 }
 
+/// AAASM-6164's negative control: a brokered provider credential's env NAME is
+/// simply absent from the child's environment, from the kernel's own copy of
+/// it (`/proc/self/environ`), and is not accompanied by any extra inherited
+/// descriptor -- proven against real process state, not against a claim.
+///
+/// The control, differing in exactly one variable (whether the name is
+/// delegated): the identical launch with the name present reads the sentinel
+/// back in both places. Without the control, the assertions below would also
+/// pass against a launch that delegated nothing at all.
+#[test]
+fn a_brokered_provider_credential_is_absent_from_the_childs_environment_descriptors_and_own_proc() {
+    const SCENARIO: &str =
+        "native: a brokered provider credential is absent from the child's environment, descriptors and own /proc";
+    let Some(mut backend) = require_confining_backend(SCENARIO) else {
+        return;
+    };
+
+    // A sentinel standing in for a real provider key. Distinct from `SECRET`
+    // above, which this file already uses for an unrelated filesystem
+    // scenario -- AAASM-6164's own rule is that a test must never carry a
+    // real credential value.
+    const CREDENTIAL_SENTINEL: &str = "aa-native-brokered-credential-sentinel-f4e1";
+    // `< /proc/self/environ`, not `grep ... /proc/self/environ`: the latter
+    // forks `grep` to do its own `open()`, and `grep` is a *descendant* of the
+    // launched shell -- by the time it calls `open("/proc/self/environ")`,
+    // "self" resolves to grep's own, never-granted PID (AAASM-5532/6041's
+    // documented gap: a Landlock `/proc/self` rule is bound to the top-level
+    // launched process's PID at launch time, not to whichever process later
+    // resolves the magic symlink). Redirecting into the shell's own stdin has
+    // the shell itself perform the `open()` -- in the process that actually
+    // holds the grant -- before forking grep, which only ever reads the
+    // already-open fd 0.
+    let script = format!("env; echo ---ENVIRON---; grep -c {CREDENTIAL_SENTINEL} < /proc/self/environ || true");
+
+    // The withheld case: exactly the posture
+    // `run_credential_broker::withheld_names` produces for a brokered
+    // provider host -- `ANTHROPIC_API_KEY` is simply not in the map
+    // `set_child_environment` hands the backend, mirroring how
+    // `effective_child_env`'s withheld pass removes it before this same map
+    // is ever built in production.
+    let mut withheld_env = std::collections::BTreeMap::new();
+    withheld_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+    backend.set_child_environment(withheld_env);
+    let (withheld_completed, withheld_evidence) = run(&backend, &shell_spec(&script, Vec::new(), Vec::new()));
+    assert_the_program_ran(SCENARIO, &withheld_completed);
+    assert!(
+        !withheld_completed.stdout.contains(CREDENTIAL_SENTINEL),
+        "the withheld provider credential's value reached `env`: {:?}",
+        withheld_completed.stdout
+    );
+    assert!(
+        !withheld_completed.stdout.contains("ANTHROPIC_API_KEY"),
+        "the withheld provider credential's NAME reached `env`: {:?}",
+        withheld_completed.stdout
+    );
+    let withheld_environ_count: i64 = withheld_completed
+        .stdout
+        .split("---ENVIRON---")
+        .nth(1)
+        .and_then(|s| s.trim().lines().next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert_eq!(
+        withheld_environ_count, 0,
+        "the kernel's own copy of the environment (/proc/self/environ) carried the withheld credential's \
+         sentinel: {:?}",
+        withheld_completed.stdout
+    );
+    // Reuses `aa_isolation::descriptor`'s own inventory vocabulary rather than
+    // a new invented check: a literal `ls /proc/self/fd` inside this script
+    // would also show the shell's own transient directory-listing descriptor,
+    // so the backend's own recorded inventory (already asserted this way by
+    // `inherited_descriptors_do_not_cross_the_boundary` above) is the accurate
+    // mechanism for "nothing beyond the standard set was inherited".
+    assert!(
+        withheld_evidence
+            .records()
+            .iter()
+            .any(|r| r.detail.starts_with("inherited descriptors")),
+        "the descriptor inventory must be recorded on every run: {:?}",
+        withheld_evidence.records()
+    );
+
+    // Control: the identical launch, with the name actually delegated
+    // (`BrokerageMode::RawInjectionFallback`'s own shape -- the source
+    // credential reaches the child) reads the sentinel back in both places.
+    let mut delegated_env = std::collections::BTreeMap::new();
+    delegated_env.insert("PATH".to_string(), "/usr/bin:/bin".to_string());
+    delegated_env.insert("ANTHROPIC_API_KEY".to_string(), CREDENTIAL_SENTINEL.to_string());
+    backend.set_child_environment(delegated_env);
+    let (delegated_completed, _) = run(&backend, &shell_spec(&script, Vec::new(), Vec::new()));
+    assert_the_program_ran(SCENARIO, &delegated_completed);
+    assert!(
+        delegated_completed.stdout.contains(CREDENTIAL_SENTINEL),
+        "the control run did not receive the delegated credential at all, so the absence above proves \
+         nothing: {:?}",
+        delegated_completed.stdout
+    );
+    let delegated_environ_count: i64 = delegated_completed
+        .stdout
+        .split("---ENVIRON---")
+        .nth(1)
+        .and_then(|s| s.trim().lines().next())
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(-1);
+    assert!(
+        delegated_environ_count > 0,
+        "the control run's /proc/self/environ did not carry the delegated credential either, so the \
+         withheld case above proves nothing: {:?}",
+        delegated_completed.stdout
+    );
+
+    measured(
+        SCENARIO,
+        "a brokered provider credential's env name, withheld exactly as `run_credential_broker::withheld_names` \
+         states, was absent from both the child's `env` and the kernel's own /proc/self/environ, while an \
+         identical launch that delegated the same name read it back in both -- proving the withholding is real \
+         rather than a launch that delegated nothing",
+    );
+}
+
 /// **Portable, and the one scenario that needs no kernel.** A backend that cannot
 /// find its launcher must refuse before launch rather than run the program
 /// unconfined.
