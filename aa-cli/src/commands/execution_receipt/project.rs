@@ -180,6 +180,12 @@ pub fn body_for_run(ctx: &ReceiptContext<'_>) -> Result<ReceiptBody, CanonicalEr
         domains,
         credentials,
         workspace: None,
+        // AAASM-6171: `aasm run` never requests a specific `HostOperation` of
+        // its own (`self.host_capability_contract` is `not_required()` for
+        // every launch today) — see `run.rs`'s `resolve_boundary` for the gate
+        // this would be populated from once a policy source issues a
+        // stronger contract.
+        host_capability: None,
         execution,
         degraded,
         withheld_fields,
