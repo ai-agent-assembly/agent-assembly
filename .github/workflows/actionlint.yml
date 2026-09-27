@@ -86,7 +86,28 @@ jobs:
         run: |
           set -euo pipefail
           archive="actionlint_${VERSION}_linux_amd64.tar.gz"
-          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${archive}"
+          # AAASM-6194: retry, matching the sandlock download in ci.yml. This
+          # step runs under `set -euo pipefail`, so one dropped connection
+          # fails a required check before the linter has run at all — which
+          # is what happened on #2538, where curl exited 35
+          # ("Recv failure: Connection reset by peer") while this same
+          # workflow, on the same commit, downloaded the same pinned tarball
+          # cleanly in its parallel standalone run. The red check said
+          # nothing about the code under review.
+          #
+          # `--retry-all-errors` is load-bearing and not redundant with
+          # `--retry`: on its own, `--retry` re-attempts timeouts and
+          # retryable HTTP statuses but NOT connection-level failures, so it
+          # would not have caught exit 35. Measured against a peer that
+          # accepts then resets: bare 1 connection, `--retry 3` 1 connection,
+          # `--retry 3 --retry-all-errors` 4 connections.
+          #
+          # This cannot admit a bad archive: the digest check below is
+          # unchanged and still gates, and the step still fails loudly when
+          # the download genuinely cannot succeed — retrying a lost
+          # connection is not the same as tolerating a wrong one.
+          curl -fsSLO --retry 3 --retry-all-errors --retry-delay 2 \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${archive}"
           echo "${SHA256}  ${archive}" | sha256sum -c -
           tar -xzf "${archive}" actionlint
 
