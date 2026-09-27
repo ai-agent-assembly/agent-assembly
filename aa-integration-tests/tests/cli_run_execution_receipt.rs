@@ -182,7 +182,10 @@ async fn a_linux_native_confined_launch_writes_a_receipt_with_a_measured_kernel_
 
 /// Printed by the macOS test, and grepped for by CI's own log-reading step
 /// (if one is added later) so an unavailable-VM run is visibly distinct from
-/// a silently-skipped one.
+/// a silently-skipped one. Only the macOS test consumes this, so on a
+/// non-macOS build (e.g. this file's Linux CI compile pass) it is dead code
+/// under `clippy -D warnings` unless gated the same way as its one caller.
+#[cfg(target_os = "macos")]
 const MACOS_VM_UNAVAILABLE_MARKER: &str = "AAASM-6166: aasm-macos-vm backend unavailable on this host, not measured";
 
 #[cfg(target_os = "macos")]
