@@ -18,11 +18,13 @@ pub mod canonical;
 pub mod host;
 pub mod project;
 pub mod schema;
+pub mod store;
 pub mod text;
 pub mod validate;
 
 pub use canonical::{CanonicalError, Digest, CANONICAL_FORM};
 pub use project::{body_for_run, ReceiptContext, TerminationInput};
 pub use schema::{ReceiptBody, ReceiptEnvelope, ReceiptSeal, ReceiptSealKind, RECEIPT_SCHEMA};
+pub use store::{ReceiptStore, StoreError};
 pub use text::{FieldName, ReceiptText};
 pub use validate::ReceiptDefect;
