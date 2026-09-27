@@ -21,6 +21,7 @@ pub mod dashboard;
 pub mod gateway;
 pub mod gw_probe;
 // strip-for-publish:begin devtool
+pub mod execution_receipt;
 pub mod integrations;
 // strip-for-publish:end devtool
 pub mod login;
