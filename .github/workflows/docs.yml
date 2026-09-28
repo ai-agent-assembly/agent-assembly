@@ -675,12 +675,25 @@ jobs:
 
           python3 scripts/check_adr_citations.py --diff-base "$BASE_SHA"
 
-  # AAASM-5677: the stable required context for this workflow. `deploy` is
-  # deliberately NOT a need — it only runs off a pull request, and a Pages
-  # deployment failure is an operational problem, not a merge gate.
+  # AAASM-5677: the stable required context for this workflow.
+  #
+  # AAASM-6214 added `deploy` to the needs list. The original reasoning for
+  # leaving it out — "a Pages deployment failure is an operational problem, not
+  # a merge gate" — still holds, and adding it does not change that: `deploy`
+  # runs only off a pull request, so on a PR it concludes `skipped`, which this
+  # aggregate treats as a pass. It can never block a merge.
+  #
+  # What it changes is the push-to-main run, where a deploy that fails or is
+  # skipped previously left this check green, because an aggregate that only
+  # looks for `failure|cancelled` among the jobs it needs says nothing about a
+  # job it does not need. That silence is the same silence that let the deploy
+  # sit skipped for six and a half weeks. Note `skipped` deliberately stays a
+  # pass here: `deploy`'s own condition is fail-closed on
+  # `needs.build.result == 'success'`, so the honest signal for a skipped
+  # `build` is this workflow's `build` entry, not a second red on `deploy`.
   docs-success:
     name: Docs Success
-    needs: [changes, build, verify-commands, version-drift, metadata-drift]
+    needs: [changes, build, verify-commands, version-drift, metadata-drift, deploy]
     if: always()
     runs-on: ubuntu-latest
     steps:
