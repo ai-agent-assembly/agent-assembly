@@ -3231,9 +3231,9 @@ jobs:
           path: .
       # AAASM-3197: main-branch analysis is a FULL snapshot — a partial report
       # wipes the other side's coverage to 0. When the `coverage` job was skipped
-      # or failed, backfill `lcov.info` from a recent successful main CI run so
-      # the snapshot stays complete. PR runs are new-code-decorated and
-      # intentionally left untouched.
+      # or failed, backfill `lcov.info` from the most recent main CI run that
+      # still holds the artifact, so the snapshot stays complete. PR runs are
+      # new-code-decorated and intentionally left untouched.
       #
       # AAASM-6220: this condition used to be `github.event_name == 'push'`,
       # which left the weekly `schedule` run — and `workflow_dispatch` — with no
@@ -3245,22 +3245,49 @@ jobs:
       # from its push run (Red, 124887) and its scheduled run (Green, 8888).
       # The condition is now "every analysis that is a full snapshot", i.e.
       # anything that is not a PR decoration.
-      - name: Backfill Rust coverage (LCOV) from last successful main run
+      - name: Backfill Rust coverage (LCOV) from the last main run that has it
         if: ${{ github.event_name != 'pull_request' && needs.coverage.result != 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          run_id="$(gh run list --workflow ci.yml --branch main \
-            --status success --limit 1 --json databaseId \
-            --jq '.[0].databaseId')"
-          if [ -z "$run_id" ]; then
-            echo "::warning::No prior successful main CI run found; scanning without backfilled Rust LCOV."
-            exit 0
+          # AAASM-6220: pick a donor that demonstrably still has the artifact,
+          # rather than assuming the newest successful run does. The previous
+          # `gh run list --limit 1` resolved to run 34558440699 — 17 days old
+          # and holding zero artifacts — while a run 2.5h earlier still had a
+          # live `rust-coverage-lcov`. The download then failed, and the `||`
+          # below turned that into a warning. Ordering is applied explicitly
+          # here so the choice does not depend on the listing's order.
+          # The listing is captured separately so that a failed lookup reports
+          # itself rather than being reported as "no run has the artifact" — a
+          # `for candidate in $(...)` list discards the substitution's exit
+          # status, so a 502 here would otherwise fall through to the
+          # no-donor branch below and misname the cause.
+          if ! candidates="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=40" \
+            --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id')"; then
+            echo "::error::Could not list successful main CI runs, so no donor artifact can be resolved and this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220)."
+            exit 1
           fi
-          echo "Backfilling rust-coverage-lcov from main run ${run_id}."
-          gh run download "$run_id" --name rust-coverage-lcov --dir . \
-            || echo "::warning::rust-coverage-lcov artifact unavailable on run ${run_id} (expired/absent); scanning without it."
+          donor=""
+          for candidate in ${candidates}; do
+            # `per_page=100` because the default is a 30-item first page: today
+            # a run carries at most 7 artifacts, but a paged-past artifact
+            # would read as "this run has none" — the same silent-incompleteness
+            # shape this whole step exists to remove.
+            live="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate}/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select(.name == "rust-coverage-lcov" and .expired == false)] | length')"
+            if [ "${live}" -gt 0 ]; then
+              donor="${candidate}"
+              break
+            fi
+          done
+          if [ -z "${donor}" ]; then
+            echo "::error::No successful main CI run in the last 40 still holds a non-expired rust-coverage-lcov artifact, so this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220). Land a Rust-touching push on main, or re-run the Coverage job, then re-run this workflow."
+            exit 1
+          fi
+          echo "Backfilling rust-coverage-lcov from main run ${donor}."
+          gh run download "${donor}" --name rust-coverage-lcov --dir .
       # ---- TypeScript coverage ---------------------------------------------
       # AAASM-3803 (Option C): prefer the SAME-RUN `dashboard-test` artifact and
       # only regenerate in-job when that job did not run this build. Same-run
