@@ -43,7 +43,11 @@ describe('formatDelta', () => {
 
   it('uses compact notation for very large negative delta', () => {
     const result = formatDelta(-150) // -150 = -15,000%
-    expect(result).toMatch(/^-?\d+(\.\d)?K%$/) // e.g. -15K%
+    // AAASM-6200: the sign is required, not optional. The previous `-?` let the
+    // unsigned `15K%` satisfy an assertion whose own comment said `-15K%`, which
+    // is how the dropped minus sign survived. An optional group here makes the
+    // site unobserved: the pattern passes under both behaviours.
+    expect(result).toMatch(/^-\d+(\.\d)?K%$/) // e.g. -15K%
   })
 
   // AAASM-6199: this formatter's compact path had no exact-literal assertion —
@@ -53,14 +57,28 @@ describe('formatDelta', () => {
   // engine-dependent: it has no `style: 'currency'`, so `minimumFractionDigits`
   // resolves to 0 on every V8 from 11.3 to 14.6 and these literals hold on all
   // of them. That is why it needs coverage rather than a code change.
-  // Only the positive path is pinned here. The negative compact path drops its
-  // minus sign — `formatDelta(-150)` returns `15K%`, not `-15K%` — so the only
-  // literal that would pass today is the wrong one. Tracked as AAASM-6200 and
-  // fixed there, together with tightening the `-?` regex on line 46.
+  // AAASM-6200 completed this: the negative compact path is now pinned too. It
+  // was left out above because the formatter dropped the minus sign, so the only
+  // literal that would have passed was the wrong one.
   it('formats the compact path to an exact string on any engine', () => {
     expect(formatDelta(100)).toBe('+10K%')
     expect(formatDelta(123.45)).toBe('+12.3K%')
     expect(formatDelta(1234.5)).toBe('+123.5K%')
+  })
+
+  // AAASM-6200: the sign, not the magnitude, is what these assert. The boundary
+  // is the interesting part — it is sharp, and only the compact side was wrong:
+  // -99.9 renders `-9990.0%` and has always been correct, while -100, one step
+  // over the threshold, rendered `10K%`.
+  it('keeps the minus sign on the compact path', () => {
+    expect(formatDelta(-100)).toBe('-10K%')
+    expect(formatDelta(-150)).toBe('-15K%')
+    expect(formatDelta(-1234.5)).toBe('-123.5K%')
+  })
+
+  it('renders the same sign either side of the compact threshold', () => {
+    expect(formatDelta(-99.9)).toBe('-9990.0%')
+    expect(formatDelta(-100)).toBe('-10K%')
   })
 
   it('does not use compact notation below threshold', () => {
