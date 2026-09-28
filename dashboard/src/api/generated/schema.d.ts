@@ -2804,7 +2804,7 @@ export interface components {
              *     otherwise.
              */
             effective_enforcement_mode: components["schemas"]["EnforcementModeLabel"];
-            enforcement_mode?: null | components["schemas"]["EnforcementModeLabel"];
+            enforcement_mode?: components["schemas"]["EnforcementModeLabel"] | null;
             /**
              * @description Which of the two inputs `effective_enforcement_mode` came from
              *     (HORO-1375 §7): `agent_override` when the agent declares one,
@@ -2815,7 +2815,7 @@ export interface components {
             enforcement_mode_source: components["schemas"]["EnforcementModeSource"];
             /** @description The policy documents in the agent's effective cascade, broadest → narrowest. */
             policies: components["schemas"]["AgentConfigPolicyRef"][];
-            recommendation?: null | components["schemas"]["AgentConfigRecommendation"];
+            recommendation?: components["schemas"]["AgentConfigRecommendation"] | null;
         };
         /** @description Per-agent cost entry within the budget summary. */
         AgentCostEntry: {
@@ -2922,7 +2922,7 @@ export interface components {
              *     `resource` column. `null` when the detail carries no resolvable target.
              */
             resource?: string | null;
-            sensitiveDataDisposition?: null | components["schemas"]["SensitiveDataDisposition"];
+            sensitiveDataDisposition?: components["schemas"]["SensitiveDataDisposition"] | null;
             /**
              * Format: int64
              * @description Per-session monotonic sequence of the audit entry. Combined with
@@ -2951,7 +2951,7 @@ export interface components {
              *     so this is the closest recorded source. `null` when unrecorded.
              */
             verb?: string | null;
-            verdict?: null | components["schemas"]["RuntimeVerdict"];
+            verdict?: components["schemas"]["RuntimeVerdict"] | null;
         };
         /** @description Recent per-agent decision stream (AAASM-5058). */
         AgentDecisionsResponse: {
@@ -3072,13 +3072,13 @@ export interface components {
          *     }
          */
         AgentNode: {
-            budget?: null | components["schemas"]["NodeBudget"];
+            budget?: components["schemas"]["NodeBudget"] | null;
             /**
              * Format: int32
              * @description Delegation depth — 0 for root agents.
              */
             depth: number;
-            effective_permissions?: null | components["schemas"]["NodeEffectivePermissions"];
+            effective_permissions?: components["schemas"]["NodeEffectivePermissions"] | null;
             /**
              * @description Whether the agent is policy-flagged — it has recorded at least one
              *     `PolicyViolation` audit event (`count > 0`, AAASM-5103). Drives the
@@ -3353,7 +3353,7 @@ export interface components {
             resolved_at?: string | null;
             /** @description Connector-framework delivery log. Empty for legacy alerts. */
             routing_log: components["schemas"]["RoutingLogEntry"][];
-            ruleSnapshot?: null | components["schemas"]["AlertRule"];
+            ruleSnapshot?: components["schemas"]["AlertRule"] | null;
             /**
              * @description Identifier of the rule that produced the alert, or `null` for
              *     legacy budget/secret alerts.
@@ -3363,7 +3363,7 @@ export interface components {
             rule_name?: string | null;
             /** @description Alert severity level (`info` / `warning` / `critical`). */
             severity: string;
-            silence?: null | components["schemas"]["Silence"];
+            silence?: components["schemas"]["Silence"] | null;
             /**
              * @description Lifecycle status — `"unresolved"` on capture, flipped to
              *     `"resolved"` once `POST /alerts/:id/resolve` has fired.
@@ -3670,10 +3670,10 @@ export interface components {
             expires_at: string;
             /** @description Unique approval request identifier. */
             id: string;
-            quorum?: null | components["schemas"]["QuorumStatus"];
+            quorum?: components["schemas"]["QuorumStatus"] | null;
             /** @description Human-readable reason for the approval request. */
             reason: string;
-            routing_status?: null | components["schemas"]["RoutingStatusInfo"];
+            routing_status?: components["schemas"]["RoutingStatusInfo"] | null;
             /** @description Current status: "pending", "approved", or "rejected". */
             status: string;
             /** @description Team the approval was routed to, if known. */
@@ -3782,7 +3782,7 @@ export interface components {
         };
         /** @description Response for `GET /api/v1/costs/budget-tree`. */
         BudgetTreeResponse: {
-            root?: null | components["schemas"]["BudgetTreeNode"];
+            root?: components["schemas"]["BudgetTreeNode"] | null;
         };
         /**
          * @description One node in the hierarchical call stack rendered beneath an
@@ -3854,7 +3854,7 @@ export interface components {
             id: string;
             /** @description ISO 8601 UTC timestamp of the agent's most recent heartbeat. */
             lastSeen: string;
-            mode?: null | components["schemas"]["AgentMode"];
+            mode?: components["schemas"]["AgentMode"] | null;
             name: string;
             /**
              * @description When `flagged` is `Some(true)`, a human-readable explanation naming the
@@ -4267,7 +4267,7 @@ export interface components {
              *     `null` for WASM-sandbox dispatches.
              */
             resolved_args: unknown;
-            sandbox?: null | components["schemas"]["SandboxDispatchOutcome"];
+            sandbox?: components["schemas"]["SandboxDispatchOutcome"] | null;
         };
         /** @description Paginated list of directed edges for an agent. */
         EdgeListResponse: {
@@ -4394,7 +4394,7 @@ export interface components {
         EnforcementModeLabel: "enforce" | "observe" | "disabled";
         /** @description Request body for `POST /api/v1/agents/:id/enforcement-mode` (AAASM-5097). */
         EnforcementModeRequest: {
-            cascade?: null | components["schemas"]["CascadeConfirmation"];
+            cascade?: components["schemas"]["CascadeConfirmation"] | null;
             /**
              * Format: date-time
              * @description When the shadow window ends. **Required on a weakening (`observe`)
@@ -4426,7 +4426,7 @@ export interface components {
             expires_at?: string | null;
             /** @description The enforcement mode now in force after the change. */
             new_mode: components["schemas"]["EnforcementModeLabel"];
-            previous_mode?: null | components["schemas"]["EnforcementModeLabel"];
+            previous_mode?: components["schemas"]["EnforcementModeLabel"] | null;
         };
         /**
          * @description Wire vocabulary for [`AgentConfigResponse::enforcement_mode_source`]
@@ -5766,7 +5766,7 @@ export interface components {
          *     dashboard Capability Matrix.
          */
         Resource: {
-            group?: null | components["schemas"]["ResourceGroup"];
+            group?: components["schemas"]["ResourceGroup"] | null;
             /**
              * @description Stable identifier — the wire-format [`aa_core::Capability`] family this
              *     column projects (`"filesystem"`, `"terminal"`, `"network_outbound"`) or
@@ -5821,7 +5821,7 @@ export interface components {
              * @description Days a row stays indexed and queryable in the hot tier.
              */
             hot_days: number;
-            last_run?: null | components["schemas"]["RetentionRunStatsDto"];
+            last_run?: components["schemas"]["RetentionRunStatsDto"] | null;
             /**
              * @description Cron schedule (UTC) on which the background task fires. Read-only
              *     — schedule changes still require a gateway restart.
@@ -5998,12 +5998,12 @@ export interface components {
          */
         SampleCall: {
             agent: string;
-            changeType?: null | components["schemas"]["ChangeType"];
+            changeType?: components["schemas"]["ChangeType"] | null;
             currentDecision: components["schemas"]["Decision"];
             detail?: string | null;
             /** @description Free-form explanation for a `false-positive` change classification. */
             fpReason?: string | null;
-            proposedDecision?: null | components["schemas"]["Decision"];
+            proposedDecision?: components["schemas"]["Decision"] | null;
             resource: string;
             ts: string;
             verb: components["schemas"]["Verb"];
@@ -6070,7 +6070,7 @@ export interface components {
             counts: components["schemas"]["SandboxSummaryCounts"];
             /** @description ISO 8601 UTC timestamp when this response was generated. */
             generated_at: string;
-            top_rule?: null | components["schemas"]["SandboxSummaryTopRule"];
+            top_rule?: components["schemas"]["SandboxSummaryTopRule"] | null;
             /**
              * Format: int64
              * @description Time window used for aggregation, in seconds.
@@ -7197,7 +7197,7 @@ export interface components {
          *     All fields are optional — supplying just `enabled` toggles dispatch
          *     without touching the configuration payload.
          */
-        UpdateDestinationRequest: (null | components["schemas"]["DestinationConfig"]) & {
+        UpdateDestinationRequest: (components["schemas"]["DestinationConfig"] | null) & {
             /** @description New enabled flag. */
             enabled?: boolean | null;
             /** @description New display name. */
@@ -8164,7 +8164,7 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Optional kind filter (`webhook`, `slack`, `pagerduty`, `opsgenie`). */
-                kind?: null | components["schemas"]["DestinationKind"];
+                kind?: components["schemas"]["DestinationKind"] | null;
             };
             header?: never;
             path?: never;
