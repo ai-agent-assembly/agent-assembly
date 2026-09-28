@@ -118,7 +118,7 @@ fact is a *derivative* and is governed by
 | **Measured limits and known bypasses** | Core | [Limitations and known bypasses](../devtools/limitations.md) |
 | **Security model and threat model (OSS enforcement path)** | Core | [`docs/src/security/`](../security/overview.md) |
 | **Vulnerability reporting process** | The repository, falling back to the org default | that repository's `SECURITY.md` where it has one (`agent-assembly`, `python-sdk`, `node-sdk` today), otherwise the `.github` repository's org-wide `SECURITY.md`. Arena additionally scopes its own trial-ground policy as a docs page |
-| **System and component architecture** | Core | [`docs/src/architecture/`](../architecture/README.md) |
+| **System and component architecture** | Core | [`docs/src/architecture/`](../architecture/) |
 | **A component's own internal architecture** | That component | e.g. Arena's orchestration pipeline is Arena's; the managed control plane's internals are the private `cloud` repository's |
 | **Policy and protocol semantics** | Core (project policy: the spec stays in this monorepo) | [Policy YAML reference](../policy-reference.md), [Protocol changelog](../protocol/CHANGELOG.md), `proto/` |
 | **Integration steps, per language** | That SDK's docs | `python-sdk`, `node-sdk`, `go-sdk` quick-start and guides |
