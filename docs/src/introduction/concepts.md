@@ -13,18 +13,23 @@ an LLM request, or reaching out over the network. Agents register with the
 **org**, which is the scope at which policy and budget are applied.
 
 Each governed action is described by an **action type** (for example, a tool call
-or an LLM call), a **target** (what it is acting on), and a set of **labels**
-(metadata used by policy rules). This is the unit the runtime makes a decision
-about.
+or an LLM call), a **target** (what it is acting on), and surrounding context —
+the agent's team and org, its governance level, and its place in any delegation
+chain. That bundle is the unit the runtime makes a decision about, and it is what
+the policy sections and any `requires_approval_if` guard are evaluated against.
 
 ## Policy
 
-A **policy** is a declarative document — written in YAML or TOML — that states
-what agents are and are not allowed to do. Rules match on the action type,
-target, and labels of a request and resolve to *allow* or *deny*.
+A **policy** is a declarative document — written in YAML — that states what agents
+are and are not allowed to do. It is **not** a list of match/effect rules: a
+document is a set of independent *sections* (`network`, `schedule`, `budget`,
+`data`, `tools`, `capabilities`, `filesystem`, `syscalls`), and a top-level
+`rules:` key is refused outright rather than loaded as an allow-all. Decisions
+resolve to *allow*, *deny*, or *requires approval*. See
+[Policy](../concepts/policy.md) for the full schema.
 
-Policies are **scoped and they cascade.** Rules can be attached at the `org`,
-`team`, `agent`, and `tool` levels; when an action is evaluated, the gateway
+Policies are **scoped and they cascade.** A document is attached at the `global`,
+`org`, `team`, `agent`, or `tool` level; when an action is evaluated, the gateway
 walks those scopes and merges them with a **most-restrictive-wins** rule, so a
 broad organizational deny cannot be loosened by a narrower scope. Policy is
 evaluated **server-side, in the gateway** — never by the agent or a dashboard —
@@ -36,10 +41,13 @@ evaluation path is documented in [Architecture](../architecture/README.md).
 
 A **budget** caps how much a team may spend on agent activity, primarily the cost
 of LLM calls. The gateway tracks consumption per team against a cost model and
-treats the budget as part of the policy decision: a request that *would* breach
-the budget is downgraded from allow to deny. This makes budget a hard guardrail
-that stops runaway spend in the moment, rather than a billing report that
-arrives after the money is gone.
+treats the budget as part of the policy decision. For an **LLM call** the check is
+pre-emptive: the call is priced and its spend reserved before it runs, and a request
+that *would* breach the cap is downgraded from allow to deny with nothing charged.
+For every **other** governed action the cap is reactive — once a limit is already
+exceeded, whatever comes next is denied. Either way budget is a hard guardrail that
+stops runaway spend in the moment, rather than a billing report that arrives after
+the money is gone. See [Policy](../concepts/policy.md) for the two paths in detail.
 
 ## Audit
 
@@ -69,3 +77,11 @@ With these four in hand — **agents** perform actions, **policy** decides
 allow/deny, **budget** caps spend, and **audit** records each evaluated action —
 [Enforcement mechanisms at a glance](enforcement-mechanisms.md) explains *how*
 the runtime actually sees an agent's actions in order to govern them.
+
+This page is the primer. The **Concepts** chapter is the reference: one page per
+concept, each stating the exact shapes, defaults, and failure modes —
+[Agent](../concepts/agent.md), [Policy](../concepts/policy.md),
+[Approval](../concepts/approval.md), [Audit](../concepts/audit.md),
+[Trace](../concepts/trace.md), [DID](../concepts/did.md), and
+[Connector](../concepts/connector.md). Where the two differ in detail, the
+Concepts page is normative.

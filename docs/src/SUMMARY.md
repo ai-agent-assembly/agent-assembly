@@ -9,6 +9,16 @@
   - [Core concepts](introduction/concepts.md)
   - [Enforcement mechanisms at a glance](introduction/enforcement-mechanisms.md)
 
+# Concepts
+
+- [Agent](concepts/agent.md)
+- [Policy](concepts/policy.md)
+- [Approval](concepts/approval.md)
+- [Audit](concepts/audit.md)
+- [Trace](concepts/trace.md)
+- [DID](concepts/did.md)
+- [Connector](concepts/connector.md)
+
 # Quick Start
 
 - [Requirements](quick-start/requirements.md)
