@@ -81,6 +81,32 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
             )));
         }
 
+        // AAASM-6218: prepare and build in a private copy, never in the
+        // committed fixture.
+        //
+        // nextest gives every test its own process, so all five of these run
+        // `OnceLock::get_or_init` concurrently against the same directory.
+        // `go mod edit` rewrites go.mod in place, and two processes doing that
+        // at once is `go: go.mod changed during editing; not overwriting` —
+        // a window only a few milliseconds wide today, which is why it has
+        // never been observed, and which any further `go mod` step here would
+        // widen into a reproducible flake. A lock would serialize the five
+        // processes; copying removes the shared mutable state instead, so
+        // there is nothing to serialize.
+        //
+        // Two further things fall out of it: the checked-out fixture is no
+        // longer rewritten in place (AAASM-6111's fix had to hand-restore the
+        // committed relative `replace` path afterwards), and `go.sum` stays
+        // byte-stable for `setup-go`'s `cache-dependency-path`.
+        let dir = match private_module_copy(&dir) {
+            Ok(d) => d,
+            Err(reason) => {
+                return Err(DriverUnavailable::BuildBroken(format!(
+                    "could not stage a private copy of the Go driver module: {reason}"
+                )));
+            }
+        };
+
         let replace_arg = format!("-replace=github.com/ai-agent-assembly/go-sdk={go_sdk_path}");
         if let Err(stderr) = run_go(&dir, &["mod", "edit", &replace_arg]) {
             return Err(DriverUnavailable::BuildBroken(format!(
@@ -88,11 +114,11 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
             )));
         }
 
-        let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("go-e2e-driver");
-        let _ = std::fs::create_dir_all(&out_dir);
-        let binary = out_dir.join("sdk_go_driver");
+        // Inside the private copy for the same reason (AAASM-6218): a shared
+        // output path means one process can rewrite the binary while another
+        // is exec'ing it, which surfaces as ETXTBSY rather than as anything
+        // that names the cause.
+        let binary = dir.join("sdk_go_driver");
 
         match run_go(&dir, &["build", "-o", binary.to_str().unwrap(), "."]) {
             Ok(()) => Ok(binary),
@@ -101,6 +127,46 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
             ))),
         }
     })
+}
+
+/// Stage a private, per-process copy of the driver module and return its path.
+///
+/// AAASM-6218. The copy is keyed on the process id so concurrent nextest test
+/// processes cannot collide, and it is removed first so a reused pid cannot
+/// inherit a previous run's state.
+///
+/// The fixture is a flat module (`go.mod`, `go.sum`, `main.go`). A
+/// subdirectory appearing here would be a Go package the copy silently
+/// dropped, and the build would then fail on a missing symbol with no hint
+/// that the cause was the copy — so an unexpected entry is a hard error rather
+/// than something to skip.
+fn private_module_copy(src: &Path) -> Result<PathBuf, String> {
+    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("go-e2e-driver")
+        .join(format!("module-{}", std::process::id()));
+
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("removing {}: {e}", dest.display()))?;
+    }
+    std::fs::create_dir_all(&dest).map_err(|e| format!("creating {}: {e}", dest.display()))?;
+
+    for entry in std::fs::read_dir(src).map_err(|e| format!("reading {}: {e}", src.display()))? {
+        let entry = entry.map_err(|e| format!("reading an entry of {}: {e}", src.display()))?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if !file_type.is_file() {
+            return Err(format!(
+                "{} is not a regular file. The driver fixture is expected to be a flat Go \
+                 module; extend this copy before adding a package there, or the build will \
+                 fail on a missing symbol with no sign that the copy dropped it.",
+                path.display()
+            ));
+        }
+        std::fs::copy(&path, dest.join(entry.file_name())).map_err(|e| format!("copying {}: {e}", path.display()))?;
+    }
+
+    Ok(dest)
 }
 
 /// Run one `go` subcommand in `dir`, returning its stderr on failure.
