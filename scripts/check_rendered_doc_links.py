@@ -22,8 +22,12 @@ applies rendering rules the source-level gate does not model:
     `../../aa-sandbox/README.md`) has its extension rewritten to `.html`;
     the target was never rendered into the book, so it 404s.
 
-AAASM-6213 measured 38 such dangling occurrences across 16 published pages
-resolving to 14 distinct missing targets, none of them visible to any gate.
+Run against main before the repair commits, this check reported 45 dangling
+occurrences across 20 published pages resolving to 21 distinct missing
+targets, none of them visible to any existing gate. AAASM-6213 recorded
+38/16/14: that survey resolved `.html` targets only, so it missed links to
+out-of-book non-HTML files (`.rs`, `.yaml`, `.py`) and to bare directories.
+The larger number is the corrected one.
 
 WHAT THIS SCRIPT CHECKS
 
