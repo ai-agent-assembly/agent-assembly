@@ -124,6 +124,10 @@ pub struct ReceiptBody {
     pub credentials: CredentialNames,
     /// A workspace-transaction binding. `None` today — see `mod.rs`.
     pub workspace: Option<WorkspaceBinding>,
+    /// The host-capability broker binding (AAASM-6171). `None` when no
+    /// host-capability contract applied to this run — every `aasm run`
+    /// launch today, since no policy path issues one yet.
+    pub host_capability: Option<HostCapabilityBinding>,
     /// What the launch actually did.
     pub execution: ExecutionOutcome,
     /// Conditions that weakened some part of this receipt or the run it
@@ -422,6 +426,40 @@ pub struct EvidenceRef {
     pub claim: ReceiptText,
     /// A digest of the record's own detail text, never the text itself.
     pub detail_digest: Digest,
+}
+
+/// The host-capability broker's binding for this receipt (AAASM-6171).
+/// `None` on [`ReceiptBody::host_capability`] when no contract applied to
+/// this run — see that field's own documentation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HostCapabilityBinding {
+    /// `"not_required"` or `"broker_required"`.
+    pub posture: ReceiptText,
+    /// Whether a mediating component was available.
+    pub broker_available: bool,
+    /// Measured toolchain facts, screened (e.g. `"xcodebuild 26.6 (17F113)"`).
+    pub toolchain: Vec<ReceiptText>,
+    /// Requested operation-kind tokens.
+    pub requested: Vec<ReceiptText>,
+    /// Operations that actually ran.
+    pub achieved: Vec<AchievedOperation>,
+    /// Refusal-kind tokens only — never the refusal's detail text, which may
+    /// carry a path or scheme name.
+    pub refused: Vec<ReceiptText>,
+}
+
+/// One operation the host-capability broker actually performed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AchievedOperation {
+    /// The operation-kind token.
+    pub kind: ReceiptText,
+    /// The process exit code, when one was observed.
+    pub exit_code: Option<i32>,
+    /// A digest of the argv actually invoked. **Never** the argv values —
+    /// same discipline as [`SpecBinding::argv_digest`].
+    pub argv_digest: Digest,
+    /// Whether stdout or stderr was truncated at the output ceiling.
+    pub output_truncated: bool,
 }
 
 /// The projection this receipt's per-run digests are taken over — see

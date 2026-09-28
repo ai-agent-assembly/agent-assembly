@@ -247,10 +247,12 @@ mod plan {
 
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::credential_broker::{credential_gate, CredentialAuthority, CredentialContract};
+    use aa_isolation::host_capability::{host_capability_gate, HostCapabilityAuthority, HostCapabilityContract};
     use aa_isolation::{
         authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
-        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, IdentityRef, IsolationBackend,
-        IsolationReport, RequirementScope, SessionRef, TargetRef,
+        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, HostCapabilityBinding,
+        HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope, SessionRef, TargetRef,
+        XcodeListRequest,
     };
     use aa_policy::resolve as run_policy;
 
@@ -819,6 +821,13 @@ mod plan {
         /// today — no policy path issues a stronger contract yet — but
         /// threaded through `resolve_boundary` exactly as `egress` is.
         credential_contract: CredentialContract,
+        /// This launch's host-capability contract (AAASM-6171, ADR 0038
+        /// amendment). [`HostCapabilityContract::not_required`] for every
+        /// launch today — no policy path issues a stronger contract yet, and
+        /// `aasm run` itself never requests a specific `HostOperation` — but
+        /// threaded through `resolve_boundary` exactly as `credential_contract`
+        /// is, so a future source has one call site to populate.
+        host_capability_contract: HostCapabilityContract,
     }
 
     impl IsolationPlan {
@@ -1151,6 +1160,57 @@ mod plan {
                 report = report.with_policy(lowering);
                 report = report.with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority));
                 report = report.with_credential_brokerage(credential_broker.services().to_vec());
+                report = self.with_selection(report);
+                return (Some(spec), report, Boundary::Refused(detail));
+            }
+
+            // AAASM-6171/ADR 0038 amendment: the host-capability broker's gate
+            // runs immediately after `credential_gate`, before any backend is
+            // consulted. `self.host_capability_contract` is
+            // `HostCapabilityContract::not_required()` for every launch
+            // today — `aasm run` never requests a specific `HostOperation` of
+            // its own — so this is inert until a policy source issues a
+            // stronger contract. Because `host_capability_gate`'s own first
+            // line returns immediately under `NotRequired` without consulting
+            // `broker` at all, the (real, subprocess-spawning) toolchain
+            // measurement in `crate::commands::run_host_capability::report_for_launch`
+            // is skipped here; a placeholder `unavailable` report is passed
+            // instead, since it is never read on this path.
+            let host_capability_authority = HostCapabilityAuthority::from_gated_spec(&spec, &witness);
+            let host_capability_broker = aa_isolation::host_capability::HostCapabilityBrokerReport::unavailable(
+                "not measured for this launch: no host-capability contract requires it",
+            );
+            let host_capability_op = HostOperation::XcodeList(XcodeListRequest::new(std::path::PathBuf::new()));
+            if let Err(refusal) = host_capability_gate(
+                &self.host_capability_contract,
+                &host_capability_broker,
+                &host_capability_authority,
+                &host_capability_op,
+                &[],
+                &[],
+                &RequirementScope::Whole,
+                &[],
+                &[],
+                std::time::SystemTime::now(),
+            ) {
+                let authority = effective_authority_for_report(&spec);
+                let detail = format!("the launch is refused: {refusal}");
+                let mut report = IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    TargetRef::of(&spec),
+                    credentials,
+                    detail.clone(),
+                );
+                report = report.with_policy(lowering);
+                report = report.with_lease_authority(DomainAuthoritySummary::for_requirements(&spec, &authority));
+                report = report.with_credential_brokerage(credential_broker.services().to_vec());
+                report = report.with_host_capability(vec![HostCapabilityBinding {
+                    kind: host_capability_op.kind(),
+                    achieved: false,
+                    exit_code: None,
+                    refusal_kind: Some(format!("{refusal:?}")),
+                }]);
                 report = self.with_selection(report);
                 return (Some(spec), report, Boundary::Refused(detail));
             }
@@ -1759,6 +1819,7 @@ mod plan {
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
                     credential_contract: CredentialContract::not_required(),
+                    host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
                 });
             }
 
@@ -1838,6 +1899,7 @@ mod plan {
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
                     credential_contract: CredentialContract::not_required(),
+                    host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
                 });
             }
         };
@@ -1865,6 +1927,7 @@ mod plan {
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
                 credential_contract: CredentialContract::not_required(),
+                host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
             });
         }
 
@@ -1877,6 +1940,7 @@ mod plan {
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
             credential_contract: CredentialContract::not_required(),
+            host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
         })
     }
 
@@ -1936,6 +2000,7 @@ mod plan {
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
                 credential_contract: CredentialContract::not_required(),
+                host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
             });
         };
 
@@ -1991,6 +2056,7 @@ mod plan {
                         ancestry: Ancestry::Root,
                         egress: aa_isolation::EgressContract::not_required(),
                         credential_contract: CredentialContract::not_required(),
+                        host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
                     });
                 }
                 Err(refusal) => {
@@ -2038,6 +2104,7 @@ mod plan {
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
             credential_contract: CredentialContract::not_required(),
+            host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
         })
     }
 

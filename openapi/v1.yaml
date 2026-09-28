@@ -741,8 +741,8 @@ paths:
         required: false
         schema:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/DestinationKind'
+          - type: 'null'
       responses:
         '200':
           description: List of destinations
@@ -5373,7 +5373,6 @@ components:
             otherwise.
         enforcement_mode:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/EnforcementModeLabel'
             description: |-
               The agent's registered enforcement-mode override, sourced from
@@ -5383,6 +5382,7 @@ components:
               per-agent override, in which case the effective mode is decided per policy
               document, not per agent — omitted rather than defaulted so the response
               never fabricates a posture the agent did not set.
+          - type: 'null'
         enforcement_mode_source:
           $ref: '#/components/schemas/EnforcementModeSource'
           description: |-
@@ -5398,13 +5398,13 @@ components:
           description: The policy documents in the agent's effective cascade, broadest → narrowest.
         recommendation:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/AgentConfigRecommendation'
             description: |-
               Qualitative posture recommendation, or `None` (omitted) when the agent has
               too few denials in the window to rank a dominant resource. Qualitative
               only — no quantified improvement estimate (ADR-0022; the `−N%` is blocked
               on AAASM-5094's replay).
+          - type: 'null'
     AgentCostEntry:
       type: object
       description: Per-agent cost entry within the budget summary.
@@ -5549,7 +5549,6 @@ components:
             `resource` column. `null` when the detail carries no resolvable target.
         sensitiveDataDisposition:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/SensitiveDataDisposition'
             description: |-
               What the sensitive-data pipeline did to this action's payload and to the
@@ -5578,6 +5577,7 @@ components:
               scoping unchanged: `authorize_agent_access` gates the whole row, so the
               `approval_*` values it can carry are visible to exactly the callers
               already entitled to the decision record.
+          - type: 'null'
         seq:
           type: integer
           format: int64
@@ -5614,7 +5614,6 @@ components:
             so this is the closest recorded source. `null` when unrecorded.
         verdict:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/RuntimeVerdict'
             description: |-
               The canonical 5-way runtime verdict (`allow` / `narrow` / `scrub` /
@@ -5626,6 +5625,7 @@ components:
               time on the enforcement hot path, which is the ADR-0018-gated follow-up
               (populated once decision-capture lands — ADR 0018 / AAASM-5086 follow-up).
               Wired through now so the column lands without another contract change.
+          - type: 'null'
     AgentDecisionsResponse:
       type: object
       description: Recent per-agent decision stream (AAASM-5058).
@@ -5767,12 +5767,12 @@ components:
       properties:
         budget:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/NodeBudget'
             description: |-
               Per-agent daily budget spend / limit (AAASM-5045), or `null` when this
               projection is built without a budget-tracker lookup. Like `policy_count`,
               only the graph endpoint resolves it; the other endpoints leave it `null`.
+          - type: 'null'
         depth:
           type: integer
           format: int32
@@ -5780,7 +5780,6 @@ components:
           minimum: 0
         effective_permissions:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/NodeEffectivePermissions'
             description: |-
               The agent's policy-inheritance chain and merged capability set
@@ -5789,6 +5788,7 @@ components:
               endpoint resolves it — the list / tree / team endpoints leave it `null`
               so the client renders "no data" rather than an empty-but-authoritative
               chain.
+          - type: 'null'
         flagged:
           type: boolean
           description: |-
@@ -6222,13 +6222,13 @@ components:
           description: Connector-framework delivery log. Empty for legacy alerts.
         ruleSnapshot:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/AlertRule'
             description: |-
               Full [`AlertRule`] snapshot captured at fire time so the
               alert-detail view can render the originating rule even after
               the live rule has been edited or deleted (AAASM-1658). `null`
               for legacy budget/secret alerts.
+          - type: 'null'
         rule_id:
           type:
           - string
@@ -6246,9 +6246,9 @@ components:
           description: Alert severity level (`info` / `warning` / `critical`).
         silence:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Silence'
             description: Active silence record, or `null`.
+          - type: 'null'
         status:
           type: string
           description: |-
@@ -6766,21 +6766,21 @@ components:
           description: Unique approval request identifier.
         quorum:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/QuorumStatus'
             description: |-
               Multi-approver quorum status (AAASM-5095). Present only when the
               approval is a quorum approval; absent for single-target approvals. When
               present the tally reflects real approver responses and is never
               fabricated.
+          - type: 'null'
         reason:
           type: string
           description: Human-readable reason for the approval request.
         routing_status:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/RoutingStatusInfo'
             description: Structured routing metadata. Absent until the router has processed the request.
+          - type: 'null'
         status:
           type: string
           description: 'Current status: "pending", "approved", or "rejected".'
@@ -6944,11 +6944,11 @@ components:
       properties:
         root:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/BudgetTreeNode'
             description: |-
               Org root of the inheritance tree, or `null` when the caller can see no
               tenant (an unscoped non-admin caller) so the client renders an empty state.
+          - type: 'null'
     CallStackNode:
       type: object
       description: |-
@@ -7062,13 +7062,13 @@ components:
           description: ISO 8601 UTC timestamp of the agent's most recent heartbeat.
         mode:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/AgentMode'
             description: |-
               Enforcement posture, from the agent's registered `enforcement_mode`
               override. Absent when the agent declared none (the effective mode is then
               per-policy-document, so there is no single agent-level answer) or when it
               declared `Disabled`, which this two-value view cannot represent.
+          - type: 'null'
         name:
           type: string
         note:
@@ -7763,12 +7763,12 @@ components:
             `null` for WASM-sandbox dispatches.
         sandbox:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/SandboxDispatchOutcome'
             description: |-
               WASM sandbox dispatch verdict, present only when the named tool was
               registered as `ToolKind::Wasm` in `AppState::tool_registry`.
               (AAASM-2033 / F116 ST-W.)
+          - type: 'null'
     EdgeListResponse:
       type: object
       description: Paginated list of directed edges for an agent.
@@ -7969,7 +7969,6 @@ components:
       properties:
         cascade:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/CascadeConfirmation'
             description: |-
               Optional cascade confirmation (AAASM-5340). When present, the toggle is a
@@ -7979,6 +7978,7 @@ components:
               handler recomputes the current subtree and rejects a mismatch (`409`) — a
               TOCTOU / mis-click guard. Absent → the single-agent path (unchanged from
               AAASM-5338).
+          - type: 'null'
         expires_at:
           type:
           - string
@@ -8024,12 +8024,12 @@ components:
           description: The enforcement mode now in force after the change.
         previous_mode:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/EnforcementModeLabel'
             description: |-
               The agent's enforcement mode before the change (`enforce` / `observe` /
               `disabled`), or `null` when it had no per-agent override (inheriting the
               policy default).
+          - type: 'null'
     EnforcementModeSource:
       type: string
       description: |-
@@ -9934,7 +9934,6 @@ components:
       properties:
         group:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/ResourceGroup'
             description: |-
               Coarse group this resource belongs to.
@@ -9944,6 +9943,7 @@ components:
               `terminal_exec` → `infra`). An MCP tool is an operator-supplied string
               with no classification anywhere in the policy model, so its group is
               left absent rather than guessed.
+          - type: 'null'
         id:
           type: string
           description: |-
@@ -10024,11 +10024,11 @@ components:
           minimum: 0
         last_run:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/RetentionRunStatsDto'
             description: |-
               Stats from the most recent successful run. `None` when the engine
               has not yet completed a pass.
+          - type: 'null'
         schedule:
           type: string
           description: |-
@@ -10288,8 +10288,8 @@ components:
           type: string
         changeType:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/ChangeType'
+          - type: 'null'
         currentDecision:
           $ref: '#/components/schemas/Decision'
         detail:
@@ -10303,8 +10303,8 @@ components:
           description: Free-form explanation for a `false-positive` change classification.
         proposedDecision:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/Decision'
+          - type: 'null'
         resource:
           type: string
         ts:
@@ -10396,9 +10396,9 @@ components:
           description: ISO 8601 UTC timestamp when this response was generated.
         top_rule:
           oneOf:
-          - type: 'null'
           - $ref: '#/components/schemas/SandboxSummaryTopRule'
             description: Top-ranked policy rule by shadow-event frequency, when one exists.
+          - type: 'null'
         window_secs:
           type: integer
           format: int64
@@ -12042,11 +12042,11 @@ components:
     UpdateDestinationRequest:
       allOf:
       - oneOf:
-        - type: 'null'
         - $ref: '#/components/schemas/DestinationConfig'
           description: |-
             New discriminated configuration. When supplied it fully replaces
             the existing config and is re-validated.
+        - type: 'null'
       - type: object
         properties:
           enabled:
