@@ -2,7 +2,7 @@
 
 > Reusable contract consumed by `/release-qa-gate` (AAASM-5821), the reusable
 > QA sub-agents (AAASM-5826) and the independent finding-verification protocol
-> (AAASM-5827), and used when writing the [QA sign-off](../../release/qa-signoff/TEMPLATE.md).
+> (AAASM-5827), and used when writing the [QA sign-off](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/release/qa-signoff/TEMPLATE.md).
 > Defines **what counts as sufficient evidence** per surface and **the compact
 > shape** every worker returns, so parallelism saves tokens instead of just
 > multiplying investigation transcripts.

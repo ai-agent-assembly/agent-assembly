@@ -76,7 +76,7 @@ Every release is reviewed for these delta classes (enumerated row-by-row in the
 ## Revision table
 
 One row per **full refresh** (each major). Delta touches are recorded in the
-per-release [sign-off artifact](../../release/security-signoff/) instead, to keep
+per-release [sign-off artifact](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/docs/release/security-signoff) instead, to keep
 this table a clean major-version history.
 
 | Threat-model version | Date | Release tag | Refresh type | Notes |

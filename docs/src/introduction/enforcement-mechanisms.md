@@ -3,10 +3,10 @@
 To govern an action, the runtime first has to *see* it. Agent Assembly can
 observe agent actions through **three independently-deployable mechanisms** —
 the SDK, the sidecar proxy, and eBPF — and routes every observed action to one
-central [gateway](../architecture/README.md) for a decision. This page is a
+central [gateway](../architecture/) for a decision. This page is a
 teaser; the [Security Model](../security/overview.md) covers *why* each
 mechanism is built the way it is and what it defends against, and
-[Architecture](../architecture/README.md) covers *how* each is implemented.
+[Architecture](../architecture/) covers *how* each is implemented.
 
 **A deployment runs whatever subset of these it installs.** They are not fixed
 layers with a guaranteed combined coverage — each reaches a different claim
@@ -99,6 +99,6 @@ deny.
   mechanisms exist, including what each one is and is not trusted to do.
 - [Enforcement paths and their limitations](../security/enforcement-paths-and-limitations.md) —
   the full account of what each mechanism catches and what its precondition is.
-- [Architecture](../architecture/README.md) — the crate-level *how*: the
+- [Architecture](../architecture/) — the crate-level *how*: the
   gateway, the policy engine, the transports, and the full interception data
   flow.

@@ -3,14 +3,14 @@
 To govern an action, Agent Assembly must first *observe* it. It does so through
 **three independently-deployable mechanisms** — the SDK, the sidecar proxy, and
 eBPF — each reaching a different [claim level](../adr/0033-canonical-governance-and-enforcement-architecture.md#6-claim-vocabulary--decision-timing-and-failure-posture-are-part-of-every-claim)
-and routing what it observes to one central [gateway](../architecture/README.md)
+and routing what it observes to one central [gateway](../architecture/)
 for the decision. **They are not ordered layers that compose into a guarantee** —
 a deployment runs whatever subset it installs, an absent mechanism is a reportable
 state rather than a gap the others silently fill, and each mechanism's own
 precondition is part of what it can honestly claim. This page states what each
 mechanism actually does and does not do. For the policy decision itself, see
 [Protection and enforcement](protection-model.md); for how implementation maps
-to crates, see [Architecture](../architecture/README.md).
+to crates, see [Architecture](../architecture/).
 
 ## The latency-vs-authority trade-off
 

@@ -5,7 +5,7 @@ protecting, the **adversaries** who threaten them, and the concrete **threats**
 each control answers. It is specific to Agent Assembly — the system that governs
 AI agents through its [independently-deployable enforcement
 mechanisms](enforcement-paths-and-limitations.md) and a central
-[gateway](../architecture/README.md).
+[gateway](../architecture/).
 
 ## Assets
 

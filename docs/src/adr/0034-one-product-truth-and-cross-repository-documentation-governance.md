@@ -1531,7 +1531,7 @@ assigned by ADR 0033"* — not open assignments.
 
 **Numbers are permanent.** ADR numbers are never reassigned; the retired gaps at
 0005 and 0028 stay empty. That rule is
-[the ADR index](README.md)'s and is cited, not re-decided.
+[the ADR index](./)'s and is cited, not re-decided.
 
 **Revisions.** This ADR is amended in place for non-normative changes — a fixed
 link, a clarified sentence, a corrected line number. A **normative** change adds an

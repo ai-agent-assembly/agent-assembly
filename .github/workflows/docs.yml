@@ -52,6 +52,8 @@ on:
       # AAASM-5684: same "editing the checker must retrigger" reasoning as
       # check_claim_vocabulary.py above.
       - 'scripts/check_adr_citations.py'
+      # AAASM-6213: the rendered-book link gate, same reasoning again.
+      - 'scripts/check_rendered_doc_links.py'
   # Release-driven frozen-version cut (AAASM-2752). Instead of reacting to a
   # raw tag push, the frozen snapshot is cut only after the Release workflow
   # has *succeeded* for that tag. This guarantees we never publish docs for a
@@ -136,6 +138,9 @@ jobs:
               - '**/README.md'
               - 'scripts/check_claim_vocabulary.py'
               - 'scripts/check_adr_citations.py'
+              # AAASM-6213: the rendered-book link gate; a change to the gate
+              # must re-run it, or it is a dead trigger.
+              - 'scripts/check_rendered_doc_links.py'
 
   build:
     name: Build mdBook
@@ -215,6 +220,39 @@ jobs:
 
       - name: Build book
         run: mdbook build docs
+
+      # AAASM-6213: `scripts/check-doc-links.sh` resolves Markdown links against
+      # the WORKING TREE, which is a different property from "this link works for
+      # a reader". mdBook renders `foo/README.md` to `foo/index.html` while
+      # emitting a source link to it verbatim as `foo/README.html`; it renders
+      # only the chapters SUMMARY.md names, silently and with exit 0; and a link
+      # leaving the render root gets an `.html` extension for a page that was
+      # never built. 45 dangling occurrences over 20 published pages were live on
+      # main with every existing gate green. This one crawls the build output, so
+      # it cannot drift from what is actually published.
+      #
+      # Enforced on pull_request and push. Report-only for the release-tag
+      # `workflow_run` build: that checkout is a frozen tagged commit, a defect
+      # in it is unfixable without retagging, and blocking the docs deployment
+      # of a shipped release is the wrong trade for a broken link. The archived
+      # per-tag rebuilds below are untouched for the same reason — this step
+      # reads `docs/book` only.
+      - name: Rendered-book links — selftest, then enforce
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_rendered_doc_links.py --selftest
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            echo "::group::Rendered-link report (non-gating for a frozen release tag)"
+            python3 scripts/check_rendered_doc_links.py docs/book || true
+            echo "::endgroup::"
+            exit 0
+          fi
+
+          # No `|| true`: a dangling link on main is a published 404.
+          python3 scripts/check_rendered_doc_links.py docs/book
 
       # --- Doc versioning (AAASM-2752) ---
       # The Pages site is laid out as per-version subpaths under `_site/`:

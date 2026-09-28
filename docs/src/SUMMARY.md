@@ -218,6 +218,9 @@
   - [0034 - One Product Truth & Cross-Repository Documentation Governance](adr/0034-one-product-truth-and-cross-repository-documentation-governance.md)
   - [0035 - Agent Execution Isolation & Pluggable Enforcement Backends](adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md)
   - [0036 - Trusted Upstream Proxy Endpoint & Declared Enterprise Destinations (v1: explicit-destination chaining only)](adr/0036-upstream-enterprise-proxy-chaining-and-endpoint-trust.md)
+  - [0037 - Release Candidate/Tag Binding & Append-Only Evidence Attempts](adr/0037-release-candidate-tag-binding-and-evidence-attempt-identity.md)
+  - [0038 - Capability Leases & the Explicit-Authority Contract](adr/0038-capability-leases-and-explicit-authority-contract.md)
+  - [0039 - Personal-Observe Deployment Profile](adr/0039-personal-observe-profile.md)
 
 # Research
 
