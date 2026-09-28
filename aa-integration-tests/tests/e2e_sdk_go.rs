@@ -82,15 +82,9 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
         }
 
         let replace_arg = format!("-replace=github.com/ai-agent-assembly/go-sdk={go_sdk_path}");
-        let edit_ok = Command::new("go")
-            .args(["mod", "edit", &replace_arg])
-            .current_dir(&dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !edit_ok {
+        if let Err(stderr) = run_go(&dir, &["mod", "edit", &replace_arg]) {
             return Err(DriverUnavailable::BuildBroken(format!(
-                "`go mod edit -replace=...={go_sdk_path}` failed — `go` is present but the driver module is broken"
+                "`go mod edit -replace=...={go_sdk_path}` failed — `go` is present but the driver module is broken\n{stderr}"
             )));
         }
 
@@ -100,21 +94,36 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
         let _ = std::fs::create_dir_all(&out_dir);
         let binary = out_dir.join("sdk_go_driver");
 
-        let build_ok = Command::new("go")
-            .args(["build", "-o", binary.to_str().unwrap(), "."])
-            .current_dir(&dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-
-        if build_ok {
-            Ok(binary)
-        } else {
-            Err(DriverUnavailable::BuildBroken(
-                "`go build` failed — `go` is present but the driver source does not compile".to_string(),
-            ))
+        match run_go(&dir, &["build", "-o", binary.to_str().unwrap(), "."]) {
+            Ok(()) => Ok(binary),
+            Err(stderr) => Err(DriverUnavailable::BuildBroken(format!(
+                "`go build` failed — `go` is present but the driver source does not compile.\n{stderr}"
+            ))),
         }
     })
+}
+
+/// Run one `go` subcommand in `dir`, returning its stderr on failure.
+///
+/// AAASM-6218: the stderr is the point. This used to discard it and assert a
+/// fixed string, so a `go: updates to go.mod needed` module-graph failure was
+/// reported as "the driver source does not compile" — which sent the first
+/// look straight to `main.go`, twice, in AAASM-6111 and again here. Every
+/// failure arm now carries what `go` actually said.
+fn run_go(dir: &Path, args: &[&str]) -> Result<(), String> {
+    match Command::new("go").args(args).current_dir(dir).output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "`go {}` exited {}:\n{}{}",
+            args.join(" "),
+            out.status
+                .code()
+                .map_or_else(|| "by signal".to_string(), |c| c.to_string()),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        )),
+        Err(e) => Err(format!("`go {}` could not be spawned: {e}", args.join(" "))),
+    }
 }
 
 /// Resolve the driver binary for one test scenario.
