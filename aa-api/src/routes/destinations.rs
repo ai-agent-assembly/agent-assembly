@@ -43,7 +43,12 @@ pub struct DestinationResponse {
     /// Discriminated per-kind configuration (`kind` + `config`).
     #[serde(flatten)]
     pub config: DestinationConfig,
-    /// Whether dispatch is allowed.
+    /// Operator-set enable flag, stored and echoed back verbatim.
+    ///
+    /// AAASM-6216: no code path consults it. `test_destination` gates on
+    /// write scope, tenant ownership and the SSRF egress guard, and never
+    /// on this flag, so `false` does not currently stop a test-fire. See
+    /// AAASM-6217.
     pub enabled: bool,
     /// RFC 3339 creation timestamp.
     pub created_at: String,
@@ -180,7 +185,8 @@ pub struct CreateDestinationRequest {
     /// Discriminated per-kind configuration.
     #[serde(flatten)]
     pub config: DestinationConfig,
-    /// Whether dispatch is enabled on creation (defaults to true).
+    /// Initial value of the stored enable flag (defaults to true).
+    /// AAASM-6216: recorded only — see [`DestinationResponse::enabled`].
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 }
@@ -191,8 +197,10 @@ fn default_enabled() -> bool {
 
 /// Body for `PUT /api/v1/alerts/destinations/{id}`.
 ///
-/// All fields are optional — supplying just `enabled` toggles dispatch
-/// without touching the configuration payload.
+/// All fields are optional — supplying just `enabled` flips the stored
+/// flag without touching the configuration payload. AAASM-6216: that
+/// flag is not consulted by any dispatch path, so the toggle changes what
+/// the API reports and nothing else. See [`DestinationResponse::enabled`].
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct UpdateDestinationRequest {
     /// New display name.
