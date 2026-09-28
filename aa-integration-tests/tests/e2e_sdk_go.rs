@@ -170,14 +170,20 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
 /// processes cannot collide, and it is removed first so a reused pid cannot
 /// inherit a previous run's state.
 ///
+/// `CARGO_TARGET_TMPDIR` — cargo's own scratch directory for integration test
+/// targets — rather than a path under `CARGO_MANIFEST_DIR`: the root
+/// `.gitignore` anchors `/target/` to the workspace root, so
+/// `aa-integration-tests/target/` is *not* ignored, and the copy's `go.mod`
+/// carries an absolute local `replace` path. Writing it somewhere git reports
+/// as untracked puts a workstation path one `git add -A` away from a commit.
+///
 /// The fixture is a flat module (`go.mod`, `go.sum`, `main.go`). A
 /// subdirectory appearing here would be a Go package the copy silently
 /// dropped, and the build would then fail on a missing symbol with no hint
 /// that the cause was the copy — so an unexpected entry is a hard error rather
 /// than something to skip.
 fn private_module_copy(src: &Path) -> Result<PathBuf, String> {
-    let dest = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
+    let dest = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join("go-e2e-driver")
         .join(format!("module-{}", std::process::id()));
 
