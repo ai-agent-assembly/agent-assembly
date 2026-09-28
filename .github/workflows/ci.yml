@@ -3430,7 +3430,7 @@ jobs:
           # version, which find() ignores, so it would buy nothing and then
           # block the save of the version actually in use.
           key: ${{ runner.os }}-${{ runner.arch }}-sonar-scanner-cli-${{ steps.sonar-action-pin.outputs.sha }}
-      - name: Assert a restored scanner CLI is usable by the action
+      - name: Check a restored scanner CLI is usable, and discard it if not
         if: steps.sonar-cli-cache.outputs.cache-hit == 'true'
         run: |
           set -euo pipefail
@@ -3439,11 +3439,6 @@ jobs:
           # sibling `<arch>.complete` marker exists, so the marker — not the
           # directory — is what decides whether the download is skipped.
           #
-          # Hard failure rather than a warning: an exact-key hit means this job
-          # populated the cache for this exact action pin, so a missing marker
-          # means the mitigation is dead while the run still looks healthy. That
-          # silent state is the defect AAASM-6221 is about. It cannot fire on a
-          # cold run, because there is no hit to check.
           # `|| true` because `find` exits non-zero when the root is absent, and
           # under `pipefail` that would abort the step at the assignment — i.e.
           # fail with no message at all, which is worse than the state being
@@ -3452,8 +3447,23 @@ jobs:
           launchers="$({ find "${root}" -maxdepth 4 -path '*/bin/sonar-scanner' -type f 2>/dev/null || true; } | wc -l | tr -d ' ')"
           echo "Restored ${markers} tool-cache completion marker(s) and ${launchers} sonar-scanner launcher(s) under ${root}"
           if [ "${markers}" -eq 0 ] || [ "${launchers}" -eq 0 ]; then
-            echo "::error::Restored a scanner-CLI cache that @actions/tool-cache cannot use, so the scan below would silently re-download from binaries.sonarsource.com. Bust this cache key (AAASM-6221)."
-            exit 1
+            # Warn and discard rather than fail. The tempting design is a hard
+            # error, on the grounds that a dead mitigation should not look
+            # healthy — but an exact-key hit does not re-save, so a cache
+            # poisoned once (tool-cache interrupted between the copy and the
+            # marker) would redden this required check on EVERY subsequent run
+            # until a human edited the key. That is a self-inflicted permanent
+            # red main over a narrow window, strictly worse than the CDN
+            # dependency it diagnoses.
+            #
+            # Removing the tree makes find() miss, so the action downloads and
+            # re-populates exactly as it does today: degraded to the old
+            # behaviour, never broken. The state is not silent either — the
+            # annotation repeats on every run until the key moves, and the real
+            # proof that caching works is the scan log below
+            # ("Using cached Sonar Scanner CLI from:"), not this step.
+            echo "::warning::Restored a scanner-CLI cache that @actions/tool-cache cannot use; discarding it so the scan re-downloads and re-populates. If this repeats, bust the cache key (AAASM-6221)."
+            rm -rf "${root}"
           fi
       - name: SonarCloud scan (attempt 1)
         id: sonar-scan-attempt-1
