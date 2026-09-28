@@ -40,7 +40,10 @@ An agent's lifecycle has three phases:
    Only then does it store an `AgentRecord` and issue the short-lived
    `credential_token` the agent presents on subsequent calls. Proving possession
    of the private key at registration is what stops a caller from claiming
-   someone else's public key.
+   someone else's public key. It is *not* on its own enough to stop a caller
+   claiming someone else's **identity** — the proof says nothing about which key
+   the `agent_id` names — so the gateway separately requires the DID to embed the
+   presented key; see [DID](did.md).
 2. **Operate.** For each governed action the runtime builds an `AgentContext`
    and submits it for a decision. The gateway evaluates [policy](policy.md),
    tracks budget, and records an [audit](audit.md) entry — for both allows and

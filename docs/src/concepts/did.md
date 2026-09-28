@@ -18,15 +18,43 @@ gateway validates that the key is a well-formed Ed25519 verifying key (32 bytes,
 hex-encoded) before storing the agent's `AgentRecord`, and rejects anything
 malformed at the lifecycle boundary.
 
-**The DID is derived, not supplied.** The `agent_id` you configure — for example
-`"quickstart-agent"` — names a *durable local key*: the SDK establishes a keypair
-for it and derives the `did:key` from that key's public half, so asking twice
-returns the same DID. Handing a *provisioned* `did:key` in as the `agent_id` does
-not work and is deliberately refused rather than quietly substituted: the client
-holds no private key for a DID it did not generate, so no possession proof it could
-build would verify. In that case the identity resolves to a visible
-`<no-durable-identity-key>` placeholder — chosen precisely because it is not
-shaped like a DID, so nobody mistakes an unresolved identity for a registered one.
+**Two identifiers, at two different layers.** On the wire the `agent_id` *must
+itself* be a syntactically-valid `did:key`; a plain string is rejected with
+`InvalidArgument: agent_id is not a did:key DID (missing "did:key:" prefix)`.
+What you *configure* is a human-readable identifier — for example
+`"quickstart-agent"` — which also names sockets and tags events. The SDK resolves
+that identifier to the `did:key` it registers under by loading (or, on first use,
+enrolling) a **durable local keypair** for it and encoding that key's public half,
+so asking twice returns the same DID.
+
+**The DID is therefore derived, not chosen.** Since AAASM-5332 the keypair is
+randomly generated and persisted rather than derived from the identifier — before
+that, the private key was computable by anyone who could read an agent id.
+Resolving an identifier to its DID is consequently a fallible, filesystem-touching
+operation instead of a hash; that is the cost of the DID meaning something.
+
+Handing a *provisioned* `did:key` in as the configured identifier is refused
+locally (`ProvisionedDidUnsupported`) rather than passed through. The reason is
+not that a possession proof would fail to verify — it would verify fine against
+the key the client actually holds. It is that the client sends the `public_key`
+of *its own* durable key, and the gateway requires the DID to embed *that* key
+(see the binding check below), so a caller-supplied DID was guaranteed to be
+rejected as `Unauthenticated`. Refusing locally turns a confusing remote
+rejection into an error that names the real problem, and forecloses the worse
+alternative of silently registering under a DID other than the one the operator
+named. Where an identity cannot be resolved it surfaces as a visible
+`<no-durable-identity-key>` placeholder — chosen precisely because it is *not*
+shaped like a DID, so an unresolved identity is never mistaken for a registered one.
+
+**The DID must bind the presented key.** `agent_id` and `public_key` are both
+caller-supplied, and the possession proof only proves the caller holds
+`public_key` — *not* that it is the key the `did:key` names. Without a further
+check an attacker could pair a victim's DID with their own keypair and squat that
+identity, so the gateway decodes the Ed25519 key embedded in the DID and requires
+it to equal the supplied `public_key` (32 bytes, hex-encoded). A malformed DID or
+key is `InvalidArgument`; a well-formed DID embedding a *different* key is
+`Unauthenticated`. This gates every path that issues or consumes a challenge
+nonce, so it cannot be sidestepped by registering in two steps.
 
 In return the gateway issues a short-lived `credential_token`. That token — not
 the public key — is what the agent presents on subsequent calls, and it is the
@@ -43,7 +71,7 @@ sequenceDiagram
     participant G as Gateway
     A->>A: Derive did:key from the durable local keypair
     A->>G: Register (did:key + public_key + possession_proof)
-    G->>G: Validate verifying key (32 bytes), verify proof
+    G->>G: Validate verifying key (32 bytes), bind DID↔public_key, verify proof
     G-->>A: credential_token (short-lived)
     A->>G: Action (agent_id + credential_token)
     G->>G: Match token to registered identity
@@ -69,8 +97,11 @@ in-place swap.
 
 ## Example
 
-A registration carries the DID and its Ed25519 key; the conformance wire-format
-vectors use exactly this shape:
+A registration carries the DID and the Ed25519 key that DID embeds. The
+DID-shaped `agent_id` below is the one used across the conformance vectors; note
+that `public_key` is plain hex, because that is what the binding check decodes —
+the vectors themselves carry a `ed25519:z…` placeholder there, which exercises
+serialization rather than validation and would not pass a real registration:
 
 ```json
 {
@@ -80,7 +111,9 @@ vectors use exactly this shape:
 }
 ```
 
-A delegated sub-agent references its parent the same way:
+A delegated sub-agent references its parent the same way — here with the
+serialization vectors' abbreviated stand-ins, which are *not* well-formed
+multibase DIDs and stand in for two real `did:key:z…` values:
 
 ```json
 {

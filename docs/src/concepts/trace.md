@@ -65,7 +65,7 @@ per-decision record that backs each governed span.
 
 ## Related
 
-- [Audit](audit.md) — the immutable per-decision record behind governed spans.
+- [Audit](audit.md) — the hash-chained per-decision record behind governed spans.
 - [Agent](agent.md) — `session_id` keys a trace to one agent run.
 - [Policy](policy.md) — the source of each span's `decision`.
 - [Observe in the dashboard](../usage-guide/observe-in-dashboard.md) — Live
