@@ -95,8 +95,14 @@ pub struct AlertRule {
     pub evaluation_window_seconds: u32,
     /// Severity propagated to alerts emitted by this rule.
     pub severity: RuleSeverity,
-    /// Destinations the alert is routed to. Non-empty; each id must
-    /// exist in the destination registry.
+    /// Destinations bound to this rule. Non-empty; each id must exist
+    /// in the destination registry (see [`AlertRule::validate`]).
+    ///
+    /// AAASM-6216: binding only. Outbound delivery is not wired up yet —
+    /// the sole production caller of the connector framework is the
+    /// manual test-fire endpoint (`POST /alerts/destinations/{id}/test`),
+    /// so a rule that fires records the ids on the alert and sends
+    /// nothing. See `docs/src/concepts/connector.md`.
     pub destination_ids: Vec<String>,
     /// Window in seconds during which repeat firings are deduplicated.
     pub dedup_window_seconds: u32,
