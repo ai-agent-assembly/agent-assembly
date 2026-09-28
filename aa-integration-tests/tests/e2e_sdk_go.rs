@@ -81,40 +81,156 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
             )));
         }
 
+        // AAASM-6218: prepare and build in a private copy, never in the
+        // committed fixture.
+        //
+        // nextest gives every test its own process, so all five of these run
+        // `OnceLock::get_or_init` concurrently against the same directory.
+        // `go mod edit` rewrites go.mod in place, and two processes doing that
+        // at once is `go: go.mod changed during editing; not overwriting`.
+        // With only `go mod edit` in here the window was a few milliseconds
+        // wide and the collision went unobserved; the `go mod tidy` below
+        // holds go.mod open long enough that it reproduces, and nextest's
+        // retries hide it as a flake. A lock would serialize the five
+        // processes; copying removes the shared mutable state instead, so
+        // there is nothing to serialize.
+        //
+        // Two further things fall out of it: the checked-out fixture is no
+        // longer rewritten in place (AAASM-6111's fix had to hand-restore the
+        // committed relative `replace` path afterwards), and `go.sum` stays
+        // byte-stable for `setup-go`'s `cache-dependency-path`.
+        let dir = match private_module_copy(&dir) {
+            Ok(d) => d,
+            Err(reason) => {
+                return Err(DriverUnavailable::BuildBroken(format!(
+                    "could not stage a private copy of the Go driver module: {reason}"
+                )));
+            }
+        };
+
         let replace_arg = format!("-replace=github.com/ai-agent-assembly/go-sdk={go_sdk_path}");
-        let edit_ok = Command::new("go")
-            .args(["mod", "edit", &replace_arg])
-            .current_dir(&dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !edit_ok {
+        if let Err(stderr) = run_go(&dir, &["mod", "edit", &replace_arg]) {
             return Err(DriverUnavailable::BuildBroken(format!(
-                "`go mod edit -replace=...={go_sdk_path}` failed — `go` is present but the driver module is broken"
+                "`go mod edit -replace=...={go_sdk_path}` failed — `go` is present but the driver module is broken\n{stderr}"
             )));
         }
 
-        let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target")
-            .join("go-e2e-driver");
-        let _ = std::fs::create_dir_all(&out_dir);
-        let binary = out_dir.join("sdk_go_driver");
+        // AAASM-6218: reconcile the module graph against the go-sdk checkout
+        // that is actually present, instead of trusting the committed one.
+        //
+        // This fixture is its own module and reaches the SDK through the
+        // `replace` above. `integration-tests.yml` checks the sibling out with
+        // no `ref:`, i.e. at go-sdk's *floating* default branch, so under
+        // minimal version selection the committed indirect requirements are
+        // correct only for whatever instant of go-sdk main they were tidied
+        // against. The moment a Dependabot bump lands in go-sdk, Go's default
+        // readonly module mode refuses to build here — and the cost falls on
+        // whoever opens the next agent-assembly PR, on a job that is
+        // `pull_request`-only so `main` carries no comparable check.
+        //
+        // That happened three times: AAASM-6026, AAASM-6111, and again via
+        // go-sdk #222 (gRPC-Go 1.84.0), which reddened an OpenAPI
+        // doc-comment PR and aborted 157 unrelated tests. The first two were
+        // closed by re-pinning the versions, which re-creates the same
+        // condition; AAASM-6111 named this fix and it was not built. So the
+        // committed indirect block is treated as a starting point that keeps
+        // the scanned manifest honest, and the resolved graph comes from the
+        // dependency in front of us.
+        //
+        // This does not weaken the signal. `tidy` reconciles go.mod/go.sum
+        // with the import graph; it cannot make broken code compile, so a real
+        // driver defect still fails at `go build` below.
+        if let Err(stderr) = run_go(&dir, &["mod", "tidy"]) {
+            return Err(DriverUnavailable::BuildBroken(format!(
+                "`go mod tidy` failed — the driver module's dependency graph cannot be reconciled \
+                 against the go-sdk checkout at {go_sdk_path}. This is a module-graph problem, \
+                 not a compile error in the driver source.\n{stderr}"
+            )));
+        }
 
-        let build_ok = Command::new("go")
-            .args(["build", "-o", binary.to_str().unwrap(), "."])
-            .current_dir(&dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        // Inside the private copy for the same reason (AAASM-6218): a shared
+        // output path means one process can rewrite the binary while another
+        // is exec'ing it, which surfaces as ETXTBSY rather than as anything
+        // that names the cause.
+        let binary = dir.join("sdk_go_driver");
 
-        if build_ok {
-            Ok(binary)
-        } else {
-            Err(DriverUnavailable::BuildBroken(
-                "`go build` failed — `go` is present but the driver source does not compile".to_string(),
-            ))
+        match run_go(&dir, &["build", "-o", binary.to_str().unwrap(), "."]) {
+            Ok(()) => Ok(binary),
+            Err(stderr) => Err(DriverUnavailable::BuildBroken(format!(
+                "`go build` failed — `go` is present and the module graph reconciled, so the \
+                 driver source does not compile.\n{stderr}"
+            ))),
         }
     })
+}
+
+/// Stage a private, per-process copy of the driver module and return its path.
+///
+/// AAASM-6218. The copy is keyed on the process id so concurrent nextest test
+/// processes cannot collide, and it is removed first so a reused pid cannot
+/// inherit a previous run's state.
+///
+/// `CARGO_TARGET_TMPDIR` — cargo's own scratch directory for integration test
+/// targets — rather than a path under `CARGO_MANIFEST_DIR`: the root
+/// `.gitignore` anchors `/target/` to the workspace root, so
+/// `aa-integration-tests/target/` is *not* ignored, and the copy's `go.mod`
+/// carries an absolute local `replace` path. Writing it somewhere git reports
+/// as untracked puts a workstation path one `git add -A` away from a commit.
+///
+/// The fixture is a flat module (`go.mod`, `go.sum`, `main.go`). A
+/// subdirectory appearing here would be a Go package the copy silently
+/// dropped, and the build would then fail on a missing symbol with no hint
+/// that the cause was the copy — so an unexpected entry is a hard error rather
+/// than something to skip.
+fn private_module_copy(src: &Path) -> Result<PathBuf, String> {
+    let dest = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("go-e2e-driver")
+        .join(format!("module-{}", std::process::id()));
+
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest).map_err(|e| format!("removing {}: {e}", dest.display()))?;
+    }
+    std::fs::create_dir_all(&dest).map_err(|e| format!("creating {}: {e}", dest.display()))?;
+
+    for entry in std::fs::read_dir(src).map_err(|e| format!("reading {}: {e}", src.display()))? {
+        let entry = entry.map_err(|e| format!("reading an entry of {}: {e}", src.display()))?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| format!("stat {}: {e}", path.display()))?;
+        if !file_type.is_file() {
+            return Err(format!(
+                "{} is not a regular file. The driver fixture is expected to be a flat Go \
+                 module; extend this copy before adding a package there, or the build will \
+                 fail on a missing symbol with no sign that the copy dropped it.",
+                path.display()
+            ));
+        }
+        std::fs::copy(&path, dest.join(entry.file_name())).map_err(|e| format!("copying {}: {e}", path.display()))?;
+    }
+
+    Ok(dest)
+}
+
+/// Run one `go` subcommand in `dir`, returning its stderr on failure.
+///
+/// AAASM-6218: the stderr is the point. This used to discard it and assert a
+/// fixed string, so a `go: updates to go.mod needed` module-graph failure was
+/// reported as "the driver source does not compile" — which sent the first
+/// look straight to `main.go`, twice, in AAASM-6111 and again here. Every
+/// failure arm now carries what `go` actually said.
+fn run_go(dir: &Path, args: &[&str]) -> Result<(), String> {
+    match Command::new("go").args(args).current_dir(dir).output() {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => Err(format!(
+            "`go {}` exited {}:\n{}{}",
+            args.join(" "),
+            out.status
+                .code()
+                .map_or_else(|| "by signal".to_string(), |c| c.to_string()),
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        )),
+        Err(e) => Err(format!("`go {}` could not be spawned: {e}", args.join(" "))),
+    }
 }
 
 /// Resolve the driver binary for one test scenario.
