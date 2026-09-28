@@ -448,7 +448,25 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request'
+    # AAASM-6214: `!cancelled()` is required here for the same reason it is
+    # required on `build` — but it rescues only the job that carries it. The
+    # skip of the pull-request-only `changes` router keeps travelling down the
+    # chain: on run 36427089753 `build` carried the guard and succeeded, and
+    # this job, which needs the job that succeeded, was still skipped with
+    # zero steps at the same second `build` finished. AAASM-5677 added the
+    # router and guarded the five jobs it touched; this one was missed, so
+    # from 2026-08-13 the book was built and the Pages artifact uploaded on
+    # every push and nothing published it for six and a half weeks — green
+    # runs throughout, because a skipped job fails nothing.
+    #
+    # `needs.build.result == 'success'` keeps the deploy fail-closed, which
+    # `!cancelled()` alone would not: a failed or skipped `build` must not
+    # publish. That covers the release path too — a `workflow_run` that is not
+    # a release tag push skips `build`, so this stays skipped there.
+    if: >-
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     # Pages deployment needs the elevated scopes; scoped here so the
