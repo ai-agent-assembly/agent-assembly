@@ -113,3 +113,83 @@ fn event_type_enum_variants() {
     assert!(yaml.contains("approval"), "approval variant missing from EventType");
     assert!(yaml.contains("budget"), "budget variant missing from EventType");
 }
+
+/// AAASM-6216: the published spec must not claim alert delivery that the
+/// code does not perform.
+///
+/// Six descriptions used to assert, in the present tense, that alerts are
+/// routed to their destinations, that `routing_log` records real delivery
+/// attempts, and that a destination's `enabled` flag gates dispatch. None
+/// of that is wired up: the only production caller of the connector
+/// framework is the manual test-fire endpoint, the rule evaluator seeds an
+/// empty `routing_log` that nothing appends to, and no code reads
+/// `enabled`.
+///
+/// This test guards both directions, so a regeneration cannot silently
+/// restore the false text and a well-meant reword cannot drop the
+/// qualification.
+#[test]
+fn spec_makes_no_unearned_alert_delivery_claim() {
+    // Serialize as JSON rather than YAML: JSON escapes the newlines that
+    // doc-comment wrapping introduces, so a needle spanning two source
+    // lines is still findable after normalization.
+    let json = serde_json::to_string(&aa_api::ApiDoc::openapi()).unwrap();
+    let spec = json.replace("\\n", " ").split_whitespace().collect::<Vec<_>>().join(" ");
+
+    // --- Claims that must be gone -----------------------------------
+    for false_claim in [
+        "Destinations the alert is routed to",
+        "Destinations the rule routes to",
+        "Connector-framework delivery log",
+        "One delivery attempt by the connector framework for a routed alert",
+        "Identifier of the destination the alert was routed to",
+        "Whether dispatch is allowed",
+        "Whether dispatch is enabled on creation",
+        "supplying just `enabled` toggles dispatch",
+        "suppress further routing",
+    ] {
+        assert!(
+            !spec.contains(false_claim),
+            "AAASM-6216: the spec claims alert delivery that no code performs: {false_claim:?}"
+        );
+    }
+
+    // --- Qualifications that must be present -------------------------
+    // Each is the load-bearing half of a corrected description; losing one
+    // puts the spec back to overclaiming even if the old wording is gone.
+    for qualification in [
+        // AlertRule::destination_ids
+        "Destinations bound to this rule",
+        "Outbound delivery is not wired up yet",
+        // AlertDetailResponse::destination_ids and ::routing_log
+        "Destinations bound to the originating rule",
+        "nothing is delivered to them",
+        "always empty today",
+        // RoutingLogEntry
+        "The shape reserved for one delivery attempt",
+        "no production code constructs this type",
+        // Silence
+        "what a silence does *not* do is hold back outbound notifications",
+        // Destination::enabled and its two request bodies
+        "no code path consults it",
+        "recorded only",
+        "not consulted by any dispatch path",
+    ] {
+        assert!(
+            spec.contains(qualification),
+            "AAASM-6216: a corrected description lost its qualification: {qualification:?}"
+        );
+    }
+
+    // The approval router is real and its routing claims are accurate —
+    // they must survive this sweep untouched (AAASM-6216 AC 3).
+    for kept in [
+        "Team the approval was routed to, if known",
+        "Team the request was routed to, if known",
+    ] {
+        assert!(
+            spec.contains(kept),
+            "AAASM-6216: an accurate approval-routing description was collateral damage: {kept:?}"
+        );
+    }
+}
