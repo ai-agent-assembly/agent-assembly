@@ -34,7 +34,7 @@ model:
 > of whether the selected backend can mechanically enforce it. It cross-references
 > rather than amends: nothing decided here is reversed.
 
-The existing [`aa-sandbox`](../../../aa-sandbox/README.md) remains the WebAssembly/WASI
+The existing [`aa-sandbox`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-sandbox/README.md) remains the WebAssembly/WASI
 sandbox for **individual WASM-marked tool executions**. This ADR defines a different
 boundary: confinement and supervision of the **agent's native process and descendants**.
 The two mechanisms may be composed but must never share a name or claim merely because

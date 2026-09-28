@@ -1,15 +1,15 @@
 # Release QA policy — risk tiers, journey priority, depth and gate rules
 
 > Governance contract for the release-QA half of the release gate (AAASM-5819).
-> Consumed by [`/release-qa-gate`](../../../.claude/skills/release-qa-gate/SKILL.md)
-> (AAASM-5821), the [risk mapper](../../../.claude/skills/release-qa-gate/REFERENCE.md#risk-mapper)
-> (AAASM-5829) and the [QA sign-off](../../release/qa-signoff/TEMPLATE.md)
+> Consumed by [`/release-qa-gate`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-qa-gate/SKILL.md)
+> (AAASM-5821), the [risk mapper](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-qa-gate/REFERENCE.md#risk-mapper)
+> (AAASM-5829) and the [QA sign-off](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/release/qa-signoff/TEMPLATE.md)
 > (AAASM-5822). This page is the **selector policy** — it decides *how much*
 > verification a release needs and *what blocks it*. It is not a second test
 > framework and does not replace
 > [AAASM-4522](https://lightning-dust-mite.atlassian.net/browse/AAASM-4522)'s
 > outside-in journey inventory or the independent
-> [`/release-security-gate`](../../../.claude/skills/release-security-gate/SKILL.md).
+> [`/release-security-gate`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-security-gate/SKILL.md).
 
 ## Why a selector policy
 
@@ -21,9 +21,9 @@ deterministic lookup instead of something the LLM reinvents every run.
 
 ## Feature delta discovery
 
-> Governs [`scripts/qa/build-feature-delta.py`](../../../scripts/qa/build-feature-delta.py)
+> Governs [`scripts/qa/build-feature-delta.py`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/scripts/qa/build-feature-delta.py)
 > (AAASM-5843), which runs between manifest generation and risk mapping (see
-> [`/release-qa-gate`](../../../.claude/skills/release-qa-gate/SKILL.md)'s
+> [`/release-qa-gate`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-qa-gate/SKILL.md)'s
 > run procedure). It answers a different question than risk mapping does:
 > risk mapping classifies *changed paths*; feature delta discovery answers
 > "what product capabilities actually completed in the baseline→candidate
@@ -78,7 +78,7 @@ feature → QA-coverage reconciliation — it is not re-derived per QA worker.
 
 Every changed path/surface is classified LOW, MEDIUM or HIGH. The mapping from
 path to tier is mechanical — see the
-[risk mapper](../../../.claude/skills/release-qa-gate/REFERENCE.md#risk-mapper);
+[risk mapper](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-qa-gate/REFERENCE.md#risk-mapper);
 this section defines what each tier means.
 
 ### HIGH
@@ -162,7 +162,7 @@ policy) rather than silently shrinking scope.
 
 **The registry's release-required set is exempt from this reduction,
 independently of P0/priority** (AAASM-5879). Every
-[registry](../../../qa/golden-journeys.yaml) entry with `release_blocking:
+[registry](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/qa/golden-journeys.yaml) entry with `release_blocking:
 true` and `lifecycle_state != "retired"` — the same set
 `scripts/qa/check-release-evidence.py` gates the tag on, via the shared
 `scripts/qa/registry_digest.required_entries` predicate — must be covered
@@ -187,7 +187,7 @@ per-ticket judgment call, mirroring how [Risk tiers](#risk-tiers) already
 does this for depth.
 
 **Mandatory class**: a `release_blocking: true` + `lifecycle_state:
-automated` [registry](../../../qa/golden-journeys.yaml) entry on the
+automated` [registry](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/qa/golden-journeys.yaml) entry on the
 `security` lane must declare a non-empty `negative_control` field — enforced
 mechanically by `scripts/qa/validate-golden-journeys.py`
 (`AAASM-5877`). A security-blocking claim with no evidence it fails when
@@ -222,11 +222,11 @@ cross-process-evidence, and registry/CI-execution-integrity classes.
 ## Release-evidence status vocabulary (AAASM-5878/5898)
 
 `docs/release/qa-signoff/v<version>.evidence.json` (see [the evidence
-record schema](../../release/qa-verification-manifest-schema.md#evidence-record-aaasm-58785898))
+record schema](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/release/qa-verification-manifest-schema.md#evidence-record-aaasm-58785898))
 — or, for a version's second and later real verification attempts,
 `v<version>.attempt-<N>.evidence.json` (AAASM-6001, Core ADR 0037: a prior
 `BLOCK` attempt's evidence is never overwritten; see
-[`/release-evidence-finalize`](../../../.claude/skills/release-evidence-finalize/SKILL.md)) —
+[`/release-evidence-finalize`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-evidence-finalize/SKILL.md)) —
 records each required journey's result in one fixed 8-token vocabulary:
 `PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE`. It
 exists because this repo already has two other, narrower result

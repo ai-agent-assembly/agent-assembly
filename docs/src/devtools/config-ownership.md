@@ -135,7 +135,7 @@ differently on purpose:
   destructive assumption AAASM-6091 exists to forbid.
 
 A refused step surfaces as an
-[`OwnershipConflict`](../../../aa-core/src/integration/engine.rs) naming the
+[`OwnershipConflict`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/aa-core/src/integration/engine.rs) naming the
 exact step and its managed keys, the artifact path, and the current value of
 those keys (screened through the same credential scanner
 `PriorSettingsState` uses — a value that trips it is withheld and named in

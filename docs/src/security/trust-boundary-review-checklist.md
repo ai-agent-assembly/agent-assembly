@@ -20,7 +20,7 @@ line item per boundary, instead of an unexamined assumption.
 2. For each row, mark **Changed? (Y/N)**, cite the **commit/PR**, and add a
    **reviewer note**.
 3. Any **Y** row must be justified in the release's
-   [sign-off artifact](../../release/security-signoff/) and re-checked against the
+   [sign-off artifact](https://github.com/ai-agent-assembly/agent-assembly/tree/HEAD/docs/release/security-signoff) and re-checked against the
    [release threat model](release-threat-model.md) layer map.
 4. The **guarded NO** row (no wire trust marker) must stay **N**. A **Y** there
    is an automatic BLOCK — it means a release reintroduced an SDK trust marker,
