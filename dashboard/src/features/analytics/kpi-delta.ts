@@ -36,13 +36,20 @@ export function formatDelta(delta: number): string {
     return '—'
   }
 
-  const sign = delta > 0 ? '+' : ''
-  const percent = delta * 100
+  // AAASM-6200: the sign is derived here, once, and both branches below format
+  // the magnitude only. Previously `sign` was '+' or empty but never '-': the
+  // non-compact branch got its minus from `toFixed` rendering a negative number,
+  // while the compact branch passed `Math.abs`, leaving nothing to supply one.
+  // A 15,000% drop therefore rendered as `15K%`, indistinguishable from growth —
+  // and the card's colour encodes desirability rather than direction (see
+  // `isDeltaPositive`), so the sign is the only direction signal there is.
+  const sign = delta > 0 ? '+' : delta < 0 ? '-' : ''
+  const magnitude = Math.abs(delta * 100)
 
   // Use compact notation for very large deltas to prevent overflow
   if (Math.abs(delta) >= LARGE_DELTA_THRESHOLD) {
-    return `${sign}${compactFormatter.format(Math.abs(percent))}%`
+    return `${sign}${compactFormatter.format(magnitude)}%`
   }
 
-  return `${sign}${percent.toFixed(1)}%`
+  return `${sign}${magnitude.toFixed(1)}%`
 }
