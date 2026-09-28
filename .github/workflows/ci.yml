@@ -3251,39 +3251,47 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # AAASM-6220: pick a donor that demonstrably still has the artifact,
-          # rather than assuming the newest successful run does. The previous
-          # `gh run list --limit 1` resolved to run 34558440699 — 17 days old
-          # and holding zero artifacts — while a run 2.5h earlier still had a
-          # live `rust-coverage-lcov`. The download then failed, and the `||`
-          # below turned that into a warning. Ordering is applied explicitly
-          # here so the choice does not depend on the listing's order.
-          # The listing is captured separately so that a failed lookup reports
-          # itself rather than being reported as "no run has the artifact" — a
-          # `for candidate in $(...)` list discards the substitution's exit
-          # status, so a 502 here would otherwise fall through to the
-          # no-donor branch below and misname the cause.
-          if ! candidates="$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=40" \
-            --jq '.workflow_runs | sort_by(.created_at) | reverse | .[].id')"; then
-            echo "::error::Could not list successful main CI runs, so no donor artifact can be resolved and this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220)."
+          # AAASM-6220: ask the artifact index for the donor directly, instead
+          # of walking the run index looking for a run that still holds one.
+          #
+          # The run-index walk was the first attempt at this and it does not
+          # work. `actions/workflows/ci.yml/runs?branch=main&status=success` is
+          # intermittently served from a stale replica: dispatch run
+          # 36475884116 got a page whose newest entries were ~17 days old, so
+          # all 40 candidates were runs whose artifacts had long since expired,
+          # every per-run lookup answered 0, and the step reported "no run
+          # holds one" while artifact 10990110376 (run 36459656109, main) had
+          # been sitting there live since 18:43 that same day. Reproduced
+          # outside CI: the same query returned a page headed by run
+          # 34558440699 — the exact 17-day-old run this step was written to
+          # stop selecting. That also explains the original symptom, which
+          # this ticket recorded as "not fully explained".
+          #
+          # `actions/artifacts?name=` answers the real question in one call:
+          # which artifacts exist and are not expired. Staleness there is
+          # harmless, because a stale page still lists a live donor — an older
+          # donor is still a valid one — whereas a stale run index yields only
+          # donors whose artifacts are gone. Also 1 API call rather than 41.
+          #
+          # Whole-run success is deliberately not required. The property needed
+          # is "this artifact exists and has not expired", which is exactly
+          # what is selected on; a sibling job failing elsewhere in the run
+          # does not make the uploaded LCOV wrong, and requiring success only
+          # narrowed the donor set. Whether the content is usable is asserted
+          # separately, by the both-languages check below.
+          #
+          # per_page=100 against a total that sits near 40: enough headroom
+          # that a live main donor cannot be paged past. `// empty` so an empty
+          # selection is the empty string rather than the literal "null".
+          if ! donor="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=rust-coverage-lcov&per_page=100" \
+            --jq '[.artifacts[] | select(.expired == false and .workflow_run.head_branch == "main")]
+                  | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"; then
+            echo "::error::Could not list rust-coverage-lcov artifacts, so no donor can be resolved and this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220)."
             exit 1
           fi
-          donor=""
-          for candidate in ${candidates}; do
-            # `per_page=100` because the default is a 30-item first page: today
-            # a run carries at most 7 artifacts, but a paged-past artifact
-            # would read as "this run has none" — the same silent-incompleteness
-            # shape this whole step exists to remove.
-            live="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate}/artifacts?per_page=100" \
-              --jq '[.artifacts[] | select(.name == "rust-coverage-lcov" and .expired == false)] | length')"
-            if [ "${live}" -gt 0 ]; then
-              donor="${candidate}"
-              break
-            fi
-          done
           if [ -z "${donor}" ]; then
-            echo "::error::No successful main CI run in the last 40 still holds a non-expired rust-coverage-lcov artifact, so this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220). Land a Rust-touching push on main, or re-run the Coverage job, then re-run this workflow."
+            echo "::error::No non-expired rust-coverage-lcov artifact exists for main, so this analysis cannot be a complete snapshot. Refusing to publish a partial one (AAASM-6220). Land a Rust-touching push on main, or re-run the Coverage job, then re-run this workflow."
             exit 1
           fi
           echo "Backfilling rust-coverage-lcov from main run ${donor}."
