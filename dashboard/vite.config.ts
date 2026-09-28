@@ -1,6 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import pkg from './package.json'
+import { nodeFloorWarning } from './src/nodeFloor'
+
+// AAASM-6198: an unsupported Node used to surface as a pile of unexplained red
+// tests (or, on Node 20, as `ReferenceError: Iterator is not defined` thrown
+// from jsdom's internals). Say so plainly instead. This runs in the process that
+// loads the config — the only one guaranteed to survive a Node too old for the
+// test workers to start — and therefore covers `vitest`, `vite build` and `vite`.
+const floorWarning = nodeFloorWarning(pkg.engines?.node, process.version)
+if (floorWarning !== null) {
+  console.warn(floorWarning)
+}
 
 export default defineConfig({
   // Expose the dashboard's own version so the AppShell brand sub-line
