@@ -65,6 +65,9 @@ jobs:
           filters: |
             workflows:
               - '.github/workflows/**'
+              # The reachability gate below lives outside .github/, and editing
+              # a gate must re-run it.
+              - 'scripts/check_workflow_job_reachability.py'
 
   lint:
     name: actionlint
@@ -113,6 +116,23 @@ jobs:
 
       - name: Validate every workflow file's syntax and expressions
         run: ./actionlint -shellcheck= -pyflakes= -color
+
+      - name: Install PyYAML
+        run: python -m pip install --quiet pyyaml
+
+      # AAASM-6214: actionlint validates each file in isolation and has no
+      # opinion about the job graph, so it is silent on a job that GitHub will
+      # never run. docs.yml's Pages deploy was skipped on 100% of runs for six
+      # and a half weeks with actionlint green throughout: a skipped job fails
+      # nothing, and the `always()` aggregate reported success.
+      #
+      # Self-test first, in this same step, so the gate cannot pass vacuously —
+      # and no error suppression on the enforcing call.
+      - name: Fail if any job is unreachable through its needs chain
+        run: |
+          set -euo pipefail
+          python3 scripts/check_workflow_job_reachability.py --selftest
+          python3 scripts/check_workflow_job_reachability.py
 
   # The stable required context. Named separately from the job it aggregates
   # so renaming an internal job cannot silently drop the branch-protection
