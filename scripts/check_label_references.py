@@ -114,27 +114,78 @@ def _negated(text: str, start: int) -> bool:
     return before.endswith("!")
 
 
-def scan_workflows(root: Path) -> tuple[list[Ref], int]:
-    """Return every label reference under .github/workflows, and files read.
+def blank_comments(text: str) -> str:
+    """Replace YAML comment bodies with spaces, preserving every byte offset.
 
-    Scans raw text rather than parsed YAML on purpose: the failure message has
-    to name a line number a human can open, and GitHub expressions live inside
+    Comments are blanked rather than removed so that line numbers computed from
+    offsets stay correct.
+
+    This exists because the first CI run of this gate failed on its own
+    documentation: the header comment of label-references.yml quotes
+    `contains(labels.*.name, 'benchmark')` to explain the defect, and the
+    corrected ci.yml comment quotes `contains(labels.*.name, 'x')` as an
+    example. Both were matched as live references to labels that do not exist.
+    A gate that cannot tell prose from code produces false failures, and a gate
+    that cries wolf gets switched off — which would leave the real defect
+    unguarded again.
+
+    A `#` only opens a comment when it is at the start of a line or preceded by
+    whitespace, and when it is not inside a quoted scalar. Quote tracking is
+    single-line, which is what YAML permits for the plain and single/double
+    quoted scalars that carry GitHub expressions.
+    """
+    out: list[str] = []
+    for raw in text.split("\n"):
+        quote: str | None = None
+        cut: int | None = None
+        for i, ch in enumerate(raw):
+            if quote:
+                # Inside a double-quoted scalar a backslash escapes the next
+                # character; single-quoted scalars have no escapes at all.
+                if ch == "\\" and quote == '"':
+                    continue
+                if ch == quote:
+                    quote = None
+                continue
+            if ch in "\"'":
+                quote = ch
+                continue
+            if ch == "#" and (i == 0 or raw[i - 1] in " \t"):
+                cut = i
+                break
+        out.append(raw if cut is None else raw[:cut] + " " * (len(raw) - cut))
+    return "\n".join(out)
+
+
+def extract_refs(text: str, rel: str) -> list[Ref]:
+    """Return every label reference in one workflow file's text.
+
+    Scans text rather than parsed YAML on purpose: the failure message has to
+    name a line number a human can open, and GitHub expressions live inside
     scalar strings whose line numbers the safe loader discards.
     """
+    code = blank_comments(text)
+    refs: list[Ref] = []
+    for m in CONTAINS_RE.finditer(code):
+        line = code.count("\n", 0, m.start()) + 1
+        kind = "negated-contains" if _negated(code, m.start()) else "contains"
+        refs.append(Ref(rel, line, m.group(1), kind))
+    for m in EQUALITY_RE.finditer(code):
+        line = code.count("\n", 0, m.start()) + 1
+        refs.append(Ref(rel, line, m.group(2), "equality"))
+    return refs
+
+
+def scan_workflows(root: Path) -> tuple[list[Ref], int]:
+    """Return every label reference under .github/workflows, and files read."""
     refs: list[Ref] = []
     files = sorted(
         p for p in (root / WORKFLOW_DIR).glob("*.y*ml") if p.suffix in (".yml", ".yaml")
     )
     for path in files:
-        text = path.read_text(encoding="utf-8")
-        rel = str(path.relative_to(root))
-        for m in CONTAINS_RE.finditer(text):
-            line = text.count("\n", 0, m.start()) + 1
-            kind = "negated-contains" if _negated(text, m.start()) else "contains"
-            refs.append(Ref(rel, line, m.group(1), kind))
-        for m in EQUALITY_RE.finditer(text):
-            line = text.count("\n", 0, m.start()) + 1
-            refs.append(Ref(rel, line, m.group(2), "equality"))
+        refs.extend(
+            extract_refs(path.read_text(encoding="utf-8"), str(path.relative_to(root)))
+        )
     return refs, len(files)
 
 
@@ -381,6 +432,47 @@ def _selftest(root: Path, verbose: bool) -> int:
     cases.append(("A4 empty label set", (wf_refs, db_refs, set(), files), "A4"))
 
     ok = True
+
+    # Scan-level assertions, run before the evaluator cases. These guard the
+    # other direction: not "does a real problem get caught" but "does prose get
+    # mistaken for code". The gate's first CI run failed on its own header
+    # comment, so this is a regression test for a defect that actually shipped.
+    probe = "\n".join(
+        [
+            "# contains(github.event.pull_request.labels.*.name, 'in-full-line-comment')",
+            "jobs:",
+            "  a:",
+            "    if: contains(github.event.pull_request.labels.*.name, 'live-one')",
+            "    # trailing note: labels.*.name, 'in-indented-comment'",
+            "    name: x  # labels.*.name, 'in-trailing-comment'",
+            # A '#' inside a quoted scalar does not open a comment, so the
+            # reference after it is live code and must still be found.
+            "    env:",
+            "      T: \"issue #12\"",
+            "    if: contains(github.event.pull_request.labels.*.name, 'after-hash-in-string')",
+        ]
+    )
+    found = {r.label for r in extract_refs(probe, "probe.yml")}
+    expected = {"live-one", "after-hash-in-string"}
+    scan_ok = found == expected
+    print(
+        f"  {'ok  ' if scan_ok else 'FAIL'} scan ignores commented references: "
+        f"found {sorted(found)}"
+        + ("" if scan_ok else f" but expected {sorted(expected)}")
+    )
+    ok = ok and scan_ok
+
+    # A live reference must still report the line it is on, not the line of the
+    # comment that was blanked above it.
+    line_ok = next(r.line for r in extract_refs(probe, "probe.yml") if r.label == "live-one") == 4
+    print(
+        f"  {'ok  ' if line_ok else 'FAIL'} blanking a comment preserves line numbers: "
+        f"'live-one' reported on line "
+        f"{next(r.line for r in extract_refs(probe, 'probe.yml') if r.label == 'live-one')}"
+        " (expected 4)"
+    )
+    ok = ok and line_ok
+
     for name, args, expect in cases:
         failures = evaluate(*copy.deepcopy(args))
         codes = {f.split()[0] for f in failures}
@@ -397,8 +489,9 @@ def _selftest(root: Path, verbose: bool) -> int:
         ok = ok and good
 
     print(
-        f"\nselftest: {len(cases)} cases, baseline plus "
-        f"{len(cases) - 1} mutations — {'all as expected' if ok else 'SOME NOT DETECTED'}"
+        f"\nselftest: 2 scan assertions + {len(cases)} evaluator cases (baseline plus "
+        f"{len(cases) - 1} mutations) — "
+        f"{'all as expected' if ok else 'SOME NOT AS EXPECTED'}"
     )
     return 0 if ok else 1
 

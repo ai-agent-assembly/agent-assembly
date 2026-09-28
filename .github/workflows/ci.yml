@@ -252,10 +252,12 @@ on:
     #
     # TWO opt-in labels depend on this trigger, not one. AAASM-6209: this
     # comment previously named only `run-coverage` and would have misled anyone
-    # pruning the list. Both are label-conditioned further down:
+    # pruning the list. Both are label-conditioned further down — named by job
+    # rather than by line, because a line number in a 4400-line file is stale
+    # the moment anyone edits above it:
     #
-    #   run-coverage   SonarCloud (line ~1109) and Coverage (line ~3187)
-    #   run-benchmark  Benchmark (line ~2360)
+    #   run-coverage    the `sonar` and `coverage` jobs
+    #   run-benchmark   the `benchmark` job
     #
     # Both labels must also EXIST. A `contains(labels.*.name, 'x')` against a
     # label nobody created is not an error, it is a constant `false` — the job
