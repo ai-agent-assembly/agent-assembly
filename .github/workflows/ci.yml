@@ -3231,11 +3231,22 @@ jobs:
           path: .
       # AAASM-3197: main-branch analysis is a FULL snapshot — a partial report
       # wipes the other side's coverage to 0. When the `coverage` job was skipped
-      # or failed on a push (non-Rust change), backfill `lcov.info` from the most
-      # recent successful main CI run so the snapshot stays complete. PR runs are
-      # new-code-decorated and intentionally left untouched.
+      # or failed, backfill `lcov.info` from a recent successful main CI run so
+      # the snapshot stays complete. PR runs are new-code-decorated and
+      # intentionally left untouched.
+      #
+      # AAASM-6220: this condition used to be `github.event_name == 'push'`,
+      # which left the weekly `schedule` run — and `workflow_dispatch` — with no
+      # Rust coverage at all. `coverage` is itself push-or-label gated, so it is
+      # skipped on those triggers, and the backfill was skipped alongside it, so
+      # the scan published a dashboard-only snapshot over a correct one. Project
+      # `lines_to_cover` alternated between ~8.9k and ~124k on identical
+      # `ncloc`, and revision 16bbf3a4995c drew opposite quality-gate verdicts
+      # from its push run (Red, 124887) and its scheduled run (Green, 8888).
+      # The condition is now "every analysis that is a full snapshot", i.e.
+      # anything that is not a PR decoration.
       - name: Backfill Rust coverage (LCOV) from last successful main run
-        if: ${{ github.event_name == 'push' && needs.coverage.result != 'success' }}
+        if: ${{ github.event_name != 'pull_request' && needs.coverage.result != 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
