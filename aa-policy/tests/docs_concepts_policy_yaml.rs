@@ -112,9 +112,7 @@ spec:
         actions: [\"fs:write\"]
       effect: require_approval
 ";
-    let errors = PolicyValidator::from_yaml(removed)
-        .err()
-        .expect("a tier/rules document must not validate");
+    let errors = PolicyValidator::from_yaml(removed).expect_err("a tier/rules document must not validate");
     let rendered = format!("{errors:?}");
     assert!(
         rendered.contains("rules"),
