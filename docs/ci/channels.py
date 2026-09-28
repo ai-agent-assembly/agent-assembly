@@ -126,9 +126,17 @@ def compare_versions(a: str, b: str) -> int:
 
 
 def channel_title(cid: str, target: str) -> str:
-    """Build a human-readable channel title for ``cid`` pointing at ``target``."""
+    """Build a human-readable channel title for ``cid`` pointing at ``target``.
+
+    AAASM-6214: the ``latest`` title said ``master`` until the published site
+    was repaired. This repository has no ``master`` branch -- ADR 0016 migrated
+    it to ``main`` -- so the selector named a branch that does not exist. The
+    two call sites below used to hardcode the same string rather than call this
+    function, which is how three copies of one label drifted from reality at
+    once; they now go through here so there is a single place to be wrong.
+    """
     if cid == "latest":
-        return "latest (master)"
+        return "latest (main)"
     if cid == "stable":
         return f"stable ({target})"
     if cid == "pre-release":
@@ -176,7 +184,7 @@ def compute_versions(
     ----------
     version:
         The concrete subpath being published this run (e.g. ``"v0.1.0-rc.1"``)
-        or ``"latest"`` for a master-push cut.
+        or ``"latest"`` for a main-push cut.
     channel:
         The channel being cut: ``"latest"``, ``"stable"`` or ``"pre-release"``.
     prior:
@@ -236,14 +244,15 @@ def compute_versions(
 
     # Always guarantee a latest channel.
     channels.setdefault(
-        "latest", {"id": "latest", "title": "latest (master)", "target": "latest"}
+        "latest",
+        {"id": "latest", "title": channel_title("latest", "latest"), "target": "latest"},
     )
 
     # Apply this cut.
     if channel == "latest":
         channels["latest"] = {
             "id": "latest",
-            "title": "latest (master)",
+            "title": channel_title("latest", "latest"),
             "target": "latest",
         }
     else:

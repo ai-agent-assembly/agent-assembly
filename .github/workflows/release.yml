@@ -458,6 +458,14 @@ jobs:
 
   publish:
     name: Publish GitHub Release
+    # AAASM-6214: behaviour-preserving, and deliberately explicit. Both release
+    # gates this job needs are already `push`-only, so the inherited skip has
+    # always kept this job from running on `pull_request` and
+    # `workflow_dispatch` — every other job downstream of those gates states
+    # that scope in its own condition, and this one relied on the graph to
+    # imply it. Stating it means the reachability gate can tell an intended
+    # skip from the silent kind that killed the docs deploy.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [build, governance-gate, release-evidence-gate]
     permissions:

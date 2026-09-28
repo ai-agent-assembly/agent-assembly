@@ -32,7 +32,7 @@ def _prior(
     archived: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build a prior live manifest seeding the given standing channels."""
-    channels = [{"id": "latest", "title": "latest (master)", "target": "latest"}]
+    channels = [{"id": "latest", "title": "latest (main)", "target": "latest"}]
     if pre_release is not None:
         channels.append(
             {

@@ -45,9 +45,19 @@ protocol_version: "protocol/v1"
 repo_url: "https://github.com/ai-agent-assembly/agent-assembly"
 
 # Canonical published docs site. Served from the `docs.agent-assembly.com`
-# host per ADR-0008 (SaaS host-routing) and root README.md; the GitHub Pages
-# deployment at `ai-agent-assembly.github.io/agent-assembly/` is the upstream
-# mirror the CDN pulls from and MUST NOT be surfaced to readers.
+# host per ADR-0008 (SaaS host-routing) and root README.md, and MUST be the URL
+# surfaced to readers.
+#
+# AAASM-6214: this comment used to claim that the GitHub Pages deployment at
+# `ai-agent-assembly.github.io/agent-assembly/` is "the upstream mirror the CDN
+# pulls from". It is not, and nothing pulls from it. The canonical host is built
+# by `ai-agent-assembly/docs` (`aggregate.yml`), which checks this repository
+# out at `main` and runs mdBook over `core/` itself; see that repo's
+# `modules.json`. The Pages deployment here is an independent per-repo mirror
+# with no downstream consumer, which is precisely why it could stay dead from
+# 2026-08-13 for six and a half weeks without anyone noticing. Do not restore
+# the dependency claim: a false one is worse than none, because it makes an
+# outage look self-announcing when it is silent.
 docs_url: "https://docs.agent-assembly.com/"
 
 # The one-line installer endpoint served by the official website (registry

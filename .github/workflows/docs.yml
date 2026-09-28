@@ -448,7 +448,25 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name != 'pull_request'
+    # AAASM-6214: `!cancelled()` is required here for the same reason it is
+    # required on `build` — but it rescues only the job that carries it. The
+    # skip of the pull-request-only `changes` router keeps travelling down the
+    # chain: on run 36427089753 `build` carried the guard and succeeded, and
+    # this job, which needs the job that succeeded, was still skipped with
+    # zero steps at the same second `build` finished. AAASM-5677 added the
+    # router and guarded the five jobs it touched; this one was missed, so
+    # from 2026-08-13 the book was built and the Pages artifact uploaded on
+    # every push and nothing published it for six and a half weeks — green
+    # runs throughout, because a skipped job fails nothing.
+    #
+    # `needs.build.result == 'success'` keeps the deploy fail-closed, which
+    # `!cancelled()` alone would not: a failed or skipped `build` must not
+    # publish. That covers the release path too — a `workflow_run` that is not
+    # a release tag push skips `build`, so this stays skipped there.
+    if: >-
+      !cancelled() &&
+      needs.build.result == 'success' &&
+      github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     # Pages deployment needs the elevated scopes; scoped here so the
@@ -657,12 +675,25 @@ jobs:
 
           python3 scripts/check_adr_citations.py --diff-base "$BASE_SHA"
 
-  # AAASM-5677: the stable required context for this workflow. `deploy` is
-  # deliberately NOT a need — it only runs off a pull request, and a Pages
-  # deployment failure is an operational problem, not a merge gate.
+  # AAASM-5677: the stable required context for this workflow.
+  #
+  # AAASM-6214 added `deploy` to the needs list. The original reasoning for
+  # leaving it out — "a Pages deployment failure is an operational problem, not
+  # a merge gate" — still holds, and adding it does not change that: `deploy`
+  # runs only off a pull request, so on a PR it concludes `skipped`, which this
+  # aggregate treats as a pass. It can never block a merge.
+  #
+  # What it changes is the push-to-main run, where a deploy that fails or is
+  # skipped previously left this check green, because an aggregate that only
+  # looks for `failure|cancelled` among the jobs it needs says nothing about a
+  # job it does not need. That silence is the same silence that let the deploy
+  # sit skipped for six and a half weeks. Note `skipped` deliberately stays a
+  # pass here: `deploy`'s own condition is fail-closed on
+  # `needs.build.result == 'success'`, so the honest signal for a skipped
+  # `build` is this workflow's `build` entry, not a second red on `deploy`.
   docs-success:
     name: Docs Success
-    needs: [changes, build, verify-commands, version-drift, metadata-drift]
+    needs: [changes, build, verify-commands, version-drift, metadata-drift, deploy]
     if: always()
     runs-on: ubuntu-latest
     steps:
