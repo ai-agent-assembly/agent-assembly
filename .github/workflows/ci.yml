@@ -3394,9 +3394,33 @@ jobs:
       # critical path of a required check, on main and on every PR. On
       # 2026-09-28 the zip answered 403 and took main red at 63a5b127.
       #
-      # Restoring into $RUNNER_TOOL_CACHE is what makes find() hit, so a warm
-      # run issues none of those requests. The `~/.sonar/cache` entry above is
-      # the *analysis* cache and never covered the binary.
+      # Restoring into $RUNNER_TOOL_CACHE is what makes find() hit. The
+      # `~/.sonar/cache` entry above is the *analysis* cache and never covered
+      # the binary.
+      #
+      # MEASURED LIMITATION — this cache does not hit in this repository yet,
+      # and the steps below are dormant rather than protective. The claim worth
+      # testing was "a warm run issues none of those requests", so it was
+      # tested instead of assumed, and it failed: the entry saved at 19:56:53
+      # ("Cache saved with key: Linux-X64-sonar-scanner-cli-ba9859…") was
+      # already gone by 21:22:27 on the same pull request ("Cache not found for
+      # input keys: …"), and the next analysis still logged "Installing Sonar
+      # Scanner CLI 8.1.0.6389 for linux-x64..." with three
+      # binaries.sonarsource.com requests.
+      #
+      # The cause is not this key. The repository's Actions cache sits at
+      # ~9.9 GB against GitHub's 10 GB per-repository ceiling across >4,300
+      # entries, essentially all created within the preceding 24 hours, so
+      # least-recently-used eviction discards an entry this size well before the
+      # next analysis looks for it — and because each open PR gets its own
+      # `refs/pull/N/merge` cache scope, concurrent PRs multiply rather than
+      # share it. That is AAASM-6225 and is not fixable from this file.
+      #
+      # These steps are kept because they are correct, cost only the download
+      # that already happens today when they miss, and begin working the moment
+      # the repository is under quota. What they are NOT is the mitigation for
+      # the 2026-09-28 outage: until AAASM-6225 lands, the widened retry chain
+      # below is the load-bearing part.
       - name: Resolve the pinned scanner action SHA for the cache key
         id: sonar-action-pin
         run: |
@@ -3478,11 +3502,17 @@ jobs:
       # outage was still refusing at the end of it — all three attempts ran
       # inside 13:19:52–13:20:52 and the next successful analysis was 90 minutes
       # later, so the real outage length is unknown and bounded only above by
-      # 90 minutes. No sane retry chain rides that out, which is why the cache
-      # above is the fix and this backoff is only the cold-run fallback:
-      # widening 30/30 to 60/180 buys a 4-minute window instead of a 1-minute
-      # one for the short flakes it can actually absorb. The job sets no
+      # 90 minutes. No retry chain rides that out, so this is not a claim to
+      # have fixed that outage — widening 30/30 to 60/180 buys a 4-minute
+      # window instead of a 1-minute one, which covers the short refusals it
+      # can actually absorb and nothing longer. The job sets no
       # timeout-minutes, so the added wait cannot push it past a ceiling.
+      #
+      # While AAASM-6225 keeps the scanner-CLI cache above evicted, this backoff
+      # is the whole of the mitigation rather than its fallback. Stated plainly:
+      # a long CDN outage can still redden this required check, and the honest
+      # improvement here is a wider transient window plus a log that names the
+      # cause instead of reading as a Sonar-side quality failure.
       - name: Wait before retry (attempt 2)
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         run: |
@@ -3501,7 +3531,7 @@ jobs:
       - name: Wait before retry (attempt 3)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         run: |
-          echo "::warning::SonarCloud scanner failed twice; waiting 180s before the final retry. If all three fail on 'Unexpected HTTP response: 403' while installing the CLI, the scanner-CLI cache above missed — that is AAASM-6221, not a Sonar-side quality problem."
+          echo "::warning::SonarCloud scanner failed twice; waiting 180s before the final retry. If all three fail on 'Unexpected HTTP response: 403' while installing the CLI, the download was refused upstream and the scanner-CLI cache did not hit (expected while AAASM-6225 holds this repository at its Actions cache ceiling) — that is AAASM-6221, not a Sonar-side quality problem."
           sleep 180
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
