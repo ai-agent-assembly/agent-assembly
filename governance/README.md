@@ -284,7 +284,7 @@ code is on the channel and nobody measured the capability against a container.
 The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
-count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 20 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 21 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
 count: [R17] ghcr: 81 rows = 24 carry it + 7 not_applicable + 50 recorded absent + 0 unaccounted
 ```
 
@@ -305,6 +305,13 @@ so the stale count was caught before merge rather than on `main` — the same
 probe, one rung earlier, and no red `main` to pay for it. Worth recording
 because it shows the two mechanisms are not redundant: the router catches what
 it can see, and the `push` backstop exists for everything it cannot.
+
+AAASM-6209 added `label-references.yml` as the 21st, and that pull request
+touched `scripts/` too, so it landed the same way as AAASM-6202: caught by the
+router before merge. Three trips now, two of them pre-merge. Recorded because
+the pattern is the point — every workflow added to this repository moves this
+number, and the only question each time is which of the two mechanisms sees it
+first. Neither is optional.
 
 ## The three questions
 
