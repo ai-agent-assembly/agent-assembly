@@ -76,8 +76,24 @@ fn build_launch(
     let home = root.join("home");
     std::fs::create_dir_all(&home)?;
 
+    // The governed launch starts its own dedicated `aa-proxy` (AAASM-5863) and
+    // refuses outright when it cannot resolve one. Unlike the confinement
+    // launcher there is no environment override to name it with:
+    // `aa_core::binary_resolve::resolve_binary("aa-proxy")` looks beside the
+    // running executable, then on `PATH`, then in `~/.cargo/bin`. The first of
+    // those is the same accident of the debug build layout described on
+    // `aa_isolation_launch_binary`, and the Coverage lane breaks it the same way
+    // — so use the second, which is a lookup production genuinely offers: a
+    // real, freshly built `aa-proxy` first on the child's `PATH`, exactly the
+    // arrangement `cli_proxy_remote_bind_refusal.rs` makes for the same reason.
+    let dedicated_proxy_bin = proxy_trust_support::aa_proxy_binary();
+    let dedicated_proxy_dir = dedicated_proxy_bin
+        .parent()
+        .expect("the built binary has a parent directory");
+
     let mut cmd = Command::new(proxy.aasm());
     cmd.current_dir(root)
+        .env("PATH", proxy_trust_support::prefixed_path(dedicated_proxy_dir)?)
         .env("HOME", &home)
         .env("AASM_STATE_DIR", state_dir)
         .env("AA_CA_DIR", root.join("ca"))
@@ -146,6 +162,19 @@ async fn a_linux_native_confined_launch_writes_a_receipt_with_a_measured_kernel_
         &state_dir,
         &["--isolation", "process", "--isolation-backend", "aasm-native"],
     )?;
+    // Name the launcher instead of relying on one being found beside `aasm`.
+    // The backend resolves it from the environment, the executable's own
+    // directory, or `PATH` — and the second of those is an accident of the
+    // debug build layout, not something this test arranged. In CI's Coverage
+    // lane `aasm` is moved to `$RUNNER_TEMP/aasm-bin/` and `target/debug` is
+    // deleted to reclaim disk, so all three lookups came up empty and the
+    // launch this test's assertions depend on refused outright, while the Test
+    // lane (which leaves `target/debug` in place) passed. The backend under
+    // test is unchanged; what changes is that the test now supplies its input.
+    cmd.env(
+        "AA_ISOLATION_LAUNCHER",
+        proxy_trust_support::aa_isolation_launch_binary(),
+    );
     let out = cmd.output()?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
