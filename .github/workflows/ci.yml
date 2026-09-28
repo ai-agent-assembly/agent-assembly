@@ -3383,6 +3383,78 @@ jobs:
           key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}
           restore-keys: |
             ${{ runner.os }}-sonar-
+      # AAASM-6221: cache the scanner CLI itself, not only the analysis state.
+      #
+      # `sonarqube-scan-action` resolves the CLI through @actions/tool-cache's
+      # find(), which reads $RUNNER_TOOL_CACHE. Hosted runners do not carry that
+      # directory between runs, so find() always missed and every analysis —
+      # including the green ones — re-downloaded the zip from
+      # binaries.sonarsource.com, fetched its detached .asc, and pulled the
+      # signing key from a public keyserver. Three external endpoints on the
+      # critical path of a required check, on main and on every PR. On
+      # 2026-09-28 the zip answered 403 and took main red at 63a5b127.
+      #
+      # Restoring into $RUNNER_TOOL_CACHE is what makes find() hit, so a warm
+      # run issues none of those requests. The `~/.sonar/cache` entry above is
+      # the *analysis* cache and never covered the binary.
+      - name: Resolve the pinned scanner action SHA for the cache key
+        id: sonar-action-pin
+        run: |
+          set -euo pipefail
+          workflow=".github/workflows/ci.yml"
+          # Derived from this workflow rather than written next to the `uses:`
+          # lines. The CLI version is fixed by the action pin, so the key has to
+          # move when the pin moves; a literal SHA here would keep matching
+          # after a Dependabot bump and quietly serve a cache of the previous
+          # CLI while the action downloaded the new one anyway.
+          mapfile -t shas < <(
+            grep -oE 'SonarSource/sonarqube-scan-action@[0-9a-f]{40}' "${workflow}" |
+              cut -d@ -f2 | sort -u
+          )
+          # Fails closed on 0 (the pin became a tag, so there is no version to
+          # key on) and on >1 (the scan attempts drifted apart, so no single key
+          # describes the CLI in use). Either way an unkeyable cache must be an
+          # error, not an empty key silently shared across versions.
+          if [ "${#shas[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one pinned SonarSource/sonarqube-scan-action SHA in ${workflow}, found ${#shas[@]}: ${shas[*]:-none}."
+            exit 1
+          fi
+          echo "sha=${shas[0]}" >> "$GITHUB_OUTPUT"
+          echo "Scanner CLI cache keyed on sonarqube-scan-action@${shas[0]}"
+      - name: Cache the Sonar Scanner CLI
+        id: sonar-cli-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/sonar-scanner-cli
+          # No `restore-keys` on purpose: a near-miss restores a *different* CLI
+          # version, which find() ignores, so it would buy nothing and then
+          # block the save of the version actually in use.
+          key: ${{ runner.os }}-${{ runner.arch }}-sonar-scanner-cli-${{ steps.sonar-action-pin.outputs.sha }}
+      - name: Assert a restored scanner CLI is usable by the action
+        if: steps.sonar-cli-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TOOL_CACHE}/sonar-scanner-cli"
+          # tool-cache's find() returns a version directory only when the
+          # sibling `<arch>.complete` marker exists, so the marker — not the
+          # directory — is what decides whether the download is skipped.
+          #
+          # Hard failure rather than a warning: an exact-key hit means this job
+          # populated the cache for this exact action pin, so a missing marker
+          # means the mitigation is dead while the run still looks healthy. That
+          # silent state is the defect AAASM-6221 is about. It cannot fire on a
+          # cold run, because there is no hit to check.
+          # `|| true` because `find` exits non-zero when the root is absent, and
+          # under `pipefail` that would abort the step at the assignment — i.e.
+          # fail with no message at all, which is worse than the state being
+          # diagnosed. Counting zero and reporting it is the useful outcome.
+          markers="$({ find "${root}" -maxdepth 2 -name '*.complete' -type f 2>/dev/null || true; } | wc -l | tr -d ' ')"
+          launchers="$({ find "${root}" -maxdepth 4 -path '*/bin/sonar-scanner' -type f 2>/dev/null || true; } | wc -l | tr -d ' ')"
+          echo "Restored ${markers} tool-cache completion marker(s) and ${launchers} sonar-scanner launcher(s) under ${root}"
+          if [ "${markers}" -eq 0 ] || [ "${launchers}" -eq 0 ]; then
+            echo "::error::Restored a scanner-CLI cache that @actions/tool-cache cannot use, so the scan below would silently re-download from binaries.sonarsource.com. Bust this cache key (AAASM-6221)."
+            exit 1
+          fi
       - name: SonarCloud scan (attempt 1)
         id: sonar-scan-attempt-1
         continue-on-error: true
