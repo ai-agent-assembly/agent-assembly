@@ -2,7 +2,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
 import type { ReactNode } from 'react'
-import { CostBreakdownPanel } from './CostBreakdownPanel'
+import { CostBreakdownPanel, USD_TICK } from './CostBreakdownPanel'
 import {
   getUniqueSegments,
   computeSegmentTotals,
@@ -138,9 +138,36 @@ describe('formatUsd', () => {
     expect(formatUsd(5e9)).toBe('$5.0B')
   })
 
+  // AAASM-6199: the values that discriminate are the ones whose compact form
+  // lands on a whole number — `$1.0B` differs from `$1B` only in the trailing
+  // zero that V8 below 13.6 supplied on its own. A value like 12.5 renders
+  // identically either way, so asserting one of those proves nothing.
+  it('keeps the trailing zero when the compact value is a whole number', () => {
+    expect(formatUsd(2e9)).toBe('$2.0B')
+    expect(formatUsd(1e9)).toBe('$1.0B')
+  })
+
   it('formats normal finite values with plain currency notation', () => {
     expect(formatUsd(320)).toBe('$320')
     expect(formatUsd(-140)).toBe('-$140')
+  })
+})
+
+// AAASM-6199: the cost axis carries its own compact formatter, distinct from
+// `formatUsd` — it has no finite guard, no clamp and no threshold below which it
+// switches to plain notation, so it cannot be covered by the assertions above.
+// It had no assertion of any kind, which is why it drifted with V8 unnoticed.
+// Asserted through the exported `USD_TICK` rather than the rendered axis because
+// recharts lays axes out on a real layout pass jsdom does not provide.
+describe('USD_TICK — cost axis ticks', () => {
+  it('renders one fraction digit regardless of the host engine', () => {
+    expect(USD_TICK(2000)).toBe('$2.0K')
+    expect(USD_TICK(1e6)).toBe('$1.0M')
+    expect(USD_TICK(0)).toBe('$0.0')
+  })
+
+  it('still rounds to a single fraction digit', () => {
+    expect(USD_TICK(1234)).toBe('$1.2K')
   })
 })
 
