@@ -1,0 +1,106 @@
+# Label References — assert every label CI and Dependabot name actually exists.
+#
+# WHY THIS EXISTS
+# ----------------
+# AAASM-6209: a fleet-wide CI cost-control pass on 2026-06-05/06 gated three
+# expensive lanes behind opt-in pull-request labels and created none of the
+# three labels. The opt-in was impossible to exercise for 114 days. Two of the
+# three lanes have no fallback trigger and did not execute once in that window:
+#
+#     python-sdk    benchmarks.yml    'benchmark'      70 executions, all pre-gate
+#     e2e-private   preview-e2e.yml   'run-e2e'        23 executions, all pre-gate
+#     agent-assembly ci.yml           'run-benchmark'  push+cron intact, PR opt-in dead
+#
+# Nothing was red, and nothing could be. `contains(labels.*.name, 'benchmark')`
+# against a label that does not exist is not an error — it is `false`. The job
+# skips, the run still records as a run, and a skipped job looks exactly like
+# one legitimately filtered out. Counted at run level the python-sdk workflow
+# looked busy: 179 runs, 0 of them doing work.
+#
+# The negated form fails the other way, which is worse, because it fails open.
+# `!contains(labels.*.name, 'dependencies')` is a guard meant to keep a job off
+# Dependabot pull requests; against an absent label it is permanently true and
+# the guard never bites once.
+#
+# AAASM-6210 is the same root cause on the other side of the same directory: 18
+# repositories declared Dependabot labels that existed in none of them.
+# Dependabot does not fail on a name that does not exist — it applies the subset
+# that does and drops the rest, so the omission never appears on the pull
+# request. Six of this repository's nine declared labels were in that state.
+#
+# scripts/check_label_references.py carries the full contract. In short it
+# asserts that every label named in a label-conditioned expression under
+# .github/workflows, and every label declared in .github/dependabot.yml, exists
+# in this repository's live label set; that the scan was non-vacuous; and that
+# the label set was actually readable, because a gate that passes when it cannot
+# see what it checks is the false PASS it exists to prevent.
+#
+# WHY THERE IS NO `paths:` FILTER
+# --------------------------------
+# The regression this guards against is a new label-conditioned job, in any
+# workflow file, naming a label nobody created — or a label being renamed or
+# deleted in the repository settings, which touches no file at all and so can
+# be caught by no paths filter whatsoever. It is one Python file plus PyYAML and
+# finishes in under a second.
+#
+# SCOPE, STATED HONESTLY
+# -----------------------
+# The default workflow token reads its own repository's labels and nothing else,
+# so this gate protects agent-assembly only. The other repositories in the fleet
+# were corrected by hand under AAASM-6209/6210 and remain unguarded against
+# recurrence. Extending the check across repositories needs a cross-repo
+# credential, which is a human decision and deliberately out of scope here.
+#
+# NOTE ON REQUIRED-CHECK STATUS
+# ------------------------------
+# Standalone workflow, matching dashboard-node-version.yml and
+# pnpm-overrides-parity.yml. Making it a required status check is a
+# branch-protection change and is not done here.
+
+name: Label References
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Repository labels are served by the Issues API; this is the least
+  # permission that can list them.
+  issues: read
+
+jobs:
+  label-references:
+    name: CI and Dependabot label references exist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+
+      # The selftest runs first, and runs offline: this gate's value is that it
+      # can fail. It mutates an in-memory copy of the real parsed data once per
+      # assertion — renaming a referenced label, deleting one from the label
+      # set, adding a negated and an equality reference to something absent,
+      # renaming a Dependabot declaration, emptying each of the three scan
+      # inputs, emptying the label set — and requires each to be caught, plus
+      # requires the unmutated data to pass. A gate that has stopped detecting
+      # anything passes everything.
+      - name: Label-reference gate still fails closed
+        run: python3 scripts/check_label_references.py --selftest --verbose
+
+      - name: Every label CI and Dependabot name exists in this repository
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_label_references.py --verbose

@@ -245,11 +245,25 @@ on:
     # AAASM-5203: `types` explicitly lists the three GitHub defaults PLUS
     # `labeled` — specifying `types` at all REPLACES the default set rather
     # than adding to it, so omitting any of the three would silently stop this
-    # workflow firing on it. `labeled` exists so applying `run-coverage`
-    # (SonarCloud/Coverage's opt-in gate, both label-conditioned further down)
+    # workflow firing on it. `labeled` exists so that applying an opt-in label
     # re-evaluates immediately: without it, the label produced no new event
     # and the PR had to be closed/reopened to force a fresh run — the
     # workaround AAASM-5203 was filed over.
+    #
+    # TWO opt-in labels depend on this trigger, not one. AAASM-6209: this
+    # comment previously named only `run-coverage` and would have misled anyone
+    # pruning the list. Both are label-conditioned further down — named by job
+    # rather than by line, because a line number in a 4400-line file is stale
+    # the moment anyone edits above it:
+    #
+    #   run-coverage    the `sonar` and `coverage` jobs
+    #   run-benchmark   the `benchmark` job
+    #
+    # Both labels must also EXIST. A `contains(labels.*.name, 'x')` against a
+    # label nobody created is not an error, it is a constant `false` — the job
+    # skips and CI stays green while the lane does nothing. `run-benchmark` sat
+    # in exactly that state for 114 days (AAASM-6209); label-references.yml now
+    # fails closed on it.
     types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: "0 3 * * 1" # Mondays 03:00 UTC
