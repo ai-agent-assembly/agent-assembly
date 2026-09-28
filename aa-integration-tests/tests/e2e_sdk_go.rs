@@ -87,10 +87,11 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
         // nextest gives every test its own process, so all five of these run
         // `OnceLock::get_or_init` concurrently against the same directory.
         // `go mod edit` rewrites go.mod in place, and two processes doing that
-        // at once is `go: go.mod changed during editing; not overwriting` —
-        // a window only a few milliseconds wide today, which is why it has
-        // never been observed, and which any further `go mod` step here would
-        // widen into a reproducible flake. A lock would serialize the five
+        // at once is `go: go.mod changed during editing; not overwriting`.
+        // With only `go mod edit` in here the window was a few milliseconds
+        // wide and the collision went unobserved; the `go mod tidy` below
+        // holds go.mod open long enough that it reproduces, and nextest's
+        // retries hide it as a flake. A lock would serialize the five
         // processes; copying removes the shared mutable state instead, so
         // there is nothing to serialize.
         //
@@ -114,6 +115,39 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
             )));
         }
 
+        // AAASM-6218: reconcile the module graph against the go-sdk checkout
+        // that is actually present, instead of trusting the committed one.
+        //
+        // This fixture is its own module and reaches the SDK through the
+        // `replace` above. `integration-tests.yml` checks the sibling out with
+        // no `ref:`, i.e. at go-sdk's *floating* default branch, so under
+        // minimal version selection the committed indirect requirements are
+        // correct only for whatever instant of go-sdk main they were tidied
+        // against. The moment a Dependabot bump lands in go-sdk, Go's default
+        // readonly module mode refuses to build here — and the cost falls on
+        // whoever opens the next agent-assembly PR, on a job that is
+        // `pull_request`-only so `main` carries no comparable check.
+        //
+        // That happened three times: AAASM-6026, AAASM-6111, and again via
+        // go-sdk #222 (gRPC-Go 1.84.0), which reddened an OpenAPI
+        // doc-comment PR and aborted 157 unrelated tests. The first two were
+        // closed by re-pinning the versions, which re-creates the same
+        // condition; AAASM-6111 named this fix and it was not built. So the
+        // committed indirect block is treated as a starting point that keeps
+        // the scanned manifest honest, and the resolved graph comes from the
+        // dependency in front of us.
+        //
+        // This does not weaken the signal. `tidy` reconciles go.mod/go.sum
+        // with the import graph; it cannot make broken code compile, so a real
+        // driver defect still fails at `go build` below.
+        if let Err(stderr) = run_go(&dir, &["mod", "tidy"]) {
+            return Err(DriverUnavailable::BuildBroken(format!(
+                "`go mod tidy` failed — the driver module's dependency graph cannot be reconciled \
+                 against the go-sdk checkout at {go_sdk_path}. This is a module-graph problem, \
+                 not a compile error in the driver source.\n{stderr}"
+            )));
+        }
+
         // Inside the private copy for the same reason (AAASM-6218): a shared
         // output path means one process can rewrite the binary while another
         // is exec'ing it, which surfaces as ETXTBSY rather than as anything
@@ -123,7 +157,8 @@ fn go_driver_binary_result() -> &'static Result<PathBuf, DriverUnavailable> {
         match run_go(&dir, &["build", "-o", binary.to_str().unwrap(), "."]) {
             Ok(()) => Ok(binary),
             Err(stderr) => Err(DriverUnavailable::BuildBroken(format!(
-                "`go build` failed — `go` is present but the driver source does not compile.\n{stderr}"
+                "`go build` failed — `go` is present and the module graph reconciled, so the \
+                 driver source does not compile.\n{stderr}"
             ))),
         }
     })
