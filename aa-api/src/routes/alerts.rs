@@ -121,12 +121,16 @@ pub struct AlertDetailResponse {
     /// ISO 8601 timestamp at which the alert was resolved, or `null`
     /// while firing.
     pub resolved_at: Option<String>,
-    /// Destinations the rule routes to. Empty for legacy alerts.
+    /// Destinations bound to the originating rule, copied onto the alert
+    /// at fire time. Empty for legacy alerts. AAASM-6216: nothing is
+    /// delivered to them — see [`AlertRule::destination_ids`].
     pub destination_ids: Vec<String>,
     /// Free-form payload of the triggering event. `null` for legacy
     /// alerts.
     pub event_payload: serde_json::Value,
-    /// Connector-framework delivery log. Empty for legacy alerts.
+    /// Delivery log reserved for the connector framework. AAASM-6216:
+    /// always empty today — no production code appends to it. See
+    /// [`RoutingLogEntry`].
     pub routing_log: Vec<RoutingLogEntry>,
     /// Active silence record, or `null`.
     pub silence: Option<Silence>,
