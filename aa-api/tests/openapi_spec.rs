@@ -117,7 +117,7 @@ fn event_type_enum_variants() {
 /// AAASM-6216: the published spec must not claim alert delivery that the
 /// code does not perform.
 ///
-/// Six descriptions used to assert, in the present tense, that alerts are
+/// Ten descriptions used to assert, in the present tense, that alerts are
 /// routed to their destinations, that `routing_log` records real delivery
 /// attempts, and that a destination's `enabled` flag gates dispatch. None
 /// of that is wired up: the only production caller of the connector
