@@ -285,7 +285,7 @@ The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
 count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 19 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
-count: [R17] ghcr: 80 rows = 24 carry it + 7 not_applicable + 49 recorded absent + 0 unaccounted
+count: [R17] ghcr: 81 rows = 24 carry it + 7 not_applicable + 50 recorded absent + 0 unaccounted
 ```
 
 `workflow files scanned` is a live count of `.github/workflows/*.yml`, so **adding
@@ -536,10 +536,10 @@ Every count is printed on each run and the pair arithmetic is asserted, so a
 population smaller than the one claimed shows up as a sum that does not close:
 
 ```
-count: [R16] ids: 80 in the manifest, 80 in …-matrix.yaml, 80 shared, 0 manifest-only, 0 seed-only
+count: [R16] ids: 81 in the manifest, 81 in …-matrix.yaml, 81 shared, 0 manifest-only, 0 seed-only
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
-count: [R16] seed: 80 ids x 29 fields = 2320 pairs; 1357 agree, 32 diverge, 931 one-side-silent; 0 skipped
-count: [R16] seed_companion: 80 coverage cells read, 0 ragged rows skipped; 80 of 80 shared ids compared, 75 agree, 5 diverge
+count: [R16] seed: 81 ids x 29 fields = 2349 pairs; 1375 agree, 32 diverge, 942 one-side-silent; 0 skipped
+count: [R16] seed_companion: 81 coverage cells read, 0 ragged rows skipped; 81 of 81 shared ids compared, 76 agree, 5 diverge
 count: [R16] divergences: 37 found; declarations claim 37 (row, representation) pair(s) across 4 entries, 37 matched
 ```
 

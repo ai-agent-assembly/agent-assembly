@@ -119,9 +119,59 @@ jobs:
           if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
           cargo build --release --target "$TARGET" "${PKGS[@]}"
 
-      - name: Install Rosetta 2 (x86_64-apple-darwin smoke test)
+      - name: Ensure x86_64 execution is available (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
-        run: softwareupdate --install-rosetta --agree-to-license
+        # The smoke test below executes `aasm --version` for every target, and
+        # every macOS leg of this matrix runs on macos-14, which is arm64. So
+        # the x86_64-apple-darwin leg can only smoke-test its own binary if this
+        # runner can execute x86_64 processes, i.e. if Rosetta 2 is present.
+        #
+        # AAASM-6192: this step used to be a bare
+        # `softwareupdate --install-rosetta --agree-to-license`. That command
+        # exits 1 and prints "Rosetta 2 update is not available" both when the
+        # software-update catalog has nothing to offer at that moment and when
+        # Rosetta is already installed and current — so its exit status carries
+        # no information about whether x86_64 code can run, which is the only
+        # thing this step needs to establish. It asked an installer whether it
+        # did any work and treated "no" as "the capability is missing". On run
+        # 36281174499 (job 108513137812) that failed the whole x86_64 release
+        # leg after a successful 23m26s build, skipping the three steps that
+        # verify the binaries, twenty minutes after the identical step succeeded
+        # on another PR's run (36281153999, job 108513077361).
+        #
+        # So: probe the capability directly, install only if the probe says it
+        # is missing, re-probe, and judge on the probe rather than on the
+        # installer. The installer's exit code is reported and then ignored.
+        #
+        # If x86_64 execution is still unavailable after the attempt this step
+        # FAILS, deliberately: the steps below would otherwise run `aasm
+        # --version` on a binary this host cannot execute, and the only
+        # alternatives to failing here are skipping the smoke test or letting it
+        # pass without executing anything — a release lane reporting green over
+        # a binary it never ran.
+        shell: bash
+        run: |
+          set -uo pipefail
+          # Universal binary, so `arch -x86_64` on it exercises the x86_64 slice
+          # rather than failing for lack of one.
+          probe() { arch -x86_64 /usr/bin/true 2>/dev/null; }
+
+          if probe; then
+            echo "x86_64 execution is already available on this runner"
+            exit 0
+          fi
+
+          echo "x86_64 execution unavailable — attempting to install Rosetta 2"
+          softwareupdate --install-rosetta --agree-to-license \
+            || echo "note: softwareupdate exited $? — this step judges on the probe below, not on that exit code"
+
+          if probe; then
+            echo "x86_64 execution is available after installing Rosetta 2"
+            exit 0
+          fi
+
+          echo "::error::This arm64 runner cannot execute x86_64 processes, even after attempting to install Rosetta 2, so the x86_64-apple-darwin binary cannot be smoke-tested here. Failing rather than shipping a binary that was never executed."
+          exit 1
 
       - name: Smoke-test aasm binary (size + --version)
         shell: bash

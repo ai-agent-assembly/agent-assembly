@@ -328,8 +328,11 @@ fn the_published_schema_is_optional_and_carries_the_eight_spellings() {
         "sensitiveDataDisposition no longer resolves to the disposition schema: {property:?}",
     );
 
-    // The published property is `oneOf: [null, $ref]` — utoipa's rendering of
-    // `Option<T>`. Recorded rather than glossed over, because it means the
+    // The published property is `oneOf: [$ref, null]` — utoipa's rendering of
+    // `Option<T>`. (Version 5 emitted the null branch first; version 6 emits it
+    // last. The assertion below reads neither order, which is why it survived
+    // the upgrade unchanged — AAASM-6193.) Recorded rather than glossed over,
+    // because it means the
     // *contract* tolerates an explicit `null` that the *server* never sends:
     // `skip_serializing_if` omits the key entirely, which
     // `a_row_without_a_disposition_is_byte_identical_to_the_pre_change_response`

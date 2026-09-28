@@ -880,6 +880,40 @@ capabilities:
     target_level: "gateway_protected is unreachable by this path — it needs a core-side adjudication"
     tickets: [AAASM-5298]
 
+  - id: H9
+    domain: host_action
+    capability: Typed host-capability broker for native Xcode/Simulator operations
+    framework_or_tool: [aasm_host]
+    language: not_applicable
+    platform: [macos]
+    launch_path: "aasm host xcode build|list, aasm host simulator list"
+    transport: not_applicable
+    interception_component: "aa_isolation::host_capability::host_capability_gate -> aa-cli/src/commands/run_host_capability.rs::perform, the only function in aa-cli permitted to spawn a Command for a HostOperation"
+    identity_source: "ExecutionSpec::identity (asserted, not verified)"
+    policy_context: [HostCapabilityContract]
+    decision_timing: pre
+    observe_or_enforce: enforce
+    sync_or_best_effort: sync
+    failure_posture: fail_closed
+    default_state: off
+    released_channels: [github_release, homebrew, install_script, crates_io]
+    released_platforms: [linux_x86_64, linux_aarch64, macos]
+    reachability: shipped
+    boundary_class: B6
+    coverage: unmeasured
+    known_bypasses:
+      - "no OS confinement boundary exists on macOS today; this broker is the only mediation, and a determined unconfined agent can invoke xcodebuild/simctl directly without going through this broker at all"
+      - "HostCapabilityContract::not_required() for every launch today — no policy path issues a stronger contract yet, so this gate is inert until one does"
+      - "codesign has vocabulary but no invoker (NoInvokerForOperation) — no signing-identity material is ever handled by this broker"
+      - "simctl boot/install/launch are out of scope — only device discovery (SimulatorList) has a real invoker"
+      - "no privilege separation — the broker runs as the caller's own UID, same as the caller would have running xcodebuild directly"
+    evidence: ["AAASM-6171 (unreleased at this manifest's pinned evidence_tree): aa-isolation/src/host_capability.rs unit tests; aa-cli/src/commands/run_host_capability.rs host-gated tests including a real end-to-end SwiftPM build and a positive control proving the KEY=value build-setting-override injection vector is real"]
+    evidence_runs_on_main: standing
+    current_level: integrated
+    current_level_scope: typed_mediation_only   # no OS confinement backend exists on macOS
+    target_level: "host_enforced is unreachable — no OS confinement backend exists on macOS; this capability's ceiling is integrated until AAASM-5840/AAASM-6170 close the underlying OS-confinement gap"
+    tickets: [AAASM-6171]
+
   # ───────────────────────────────────────────────────────────────────────────
   # D3 · Network egress
   # ───────────────────────────────────────────────────────────────────────────
