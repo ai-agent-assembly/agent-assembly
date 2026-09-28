@@ -252,9 +252,9 @@ implements it (see `_map_journey_status`).
 | A known, accepted, currently-failing case with a tracked reason | `XFAIL` |
 | Evidence a later checker (not this subtask) proves invalidated by a post-PASS change | `STALE` |
 
-**From the sign-off's own tables** — the ["Selected journeys" table](qa-signoff/TEMPLATE.md#selected-journeys)
+**From the sign-off's own tables** — the ["Selected journeys" table](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/release/qa-signoff/TEMPLATE.md#selected-journeys)
 `Result` column (per-journey, what `build-release-evidence.py` actually
-parses) and the ["Lane results" table](qa-signoff/TEMPLATE.md#lane-results)
+parses) and the ["Lane results" table](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/docs/release/qa-signoff/TEMPLATE.md#lane-results)
 (per-lane, six lanes, summary only — not itself parsed into a journey
 status):
 
