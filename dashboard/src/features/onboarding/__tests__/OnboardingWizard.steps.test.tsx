@@ -150,14 +150,20 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     await screen.findByTestId('onboarding-install-absent')
 
-    // AAASM-6197: awaited through `waitFor` rather than read once, because the
-    // transcript and the snapshot are two different observables. `setResult`
-    // drives the DOM inside the commit, while `onPersist` fires from a passive
-    // effect, so the node is in the document ~0.1 ms before the snapshot
-    // matching it exists — measured DOM-first in 1000 of 1000 runs. A single
-    // read at the instant `findByTestId` resolves therefore lands on the
-    // *previous* snapshot every so often, and here that snapshot is the healthy
-    // probe's `true`, which is exactly the value this test denies.
+    // AAASM-6197: awaited through `waitFor` rather than read once. This line is
+    // the one that actually flaked, twice, in unrelated pull requests:
+    // `AssertionError: expected true to be false`, 1 failed of 3601.
+    //
+    // The transcript and the snapshot are two different observables. `setResult`
+    // drives the DOM inside the commit; `onPersist` fires from a passive effect
+    // that React flushes later, so a single read can land on the *previous*
+    // snapshot — here the healthy probe's `true`, exactly the value this test
+    // denies. The reason that is rare rather than constant is that Testing
+    // Library's async helpers are `act`-wrapped and normally drain that effect
+    // before the `await` resolves: instrumented locally, the snapshot was
+    // already fresh in 300 of 300 runs. So the race is narrow and cannot be
+    // reproduced on demand here — `waitFor` removes the dependence on that
+    // drain happening rather than papering over a measured ordering.
     await waitFor(() => {
       const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
       expect(last.state.gatewayHealthy).toBe(false)
@@ -173,13 +179,19 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-install-verify'))
     await screen.findByTestId('onboarding-install-absent')
 
-    // AAASM-6197: the call count is asserted first, and it is load-bearing.
-    // `EMPTY_STATE.gatewayHealthy` is already `false`, so reading only the last
-    // snapshot lets the *mount* snapshot satisfy this test whether or not the
-    // probe ever reported anything — measured happening once in 1000 runs.
-    // `patchState` always returns a fresh object, so the failing probe emits a
-    // second snapshot even though the value is unchanged; requiring one is what
-    // makes this assert the probe's finding rather than the initial state.
+    // AAASM-6197: the call count is asserted first, and it is load-bearing —
+    // demonstrated by mutation rather than argued. `EMPTY_STATE.gatewayHealthy`
+    // is already `false`, so the value assertion alone is satisfied by the
+    // *mount* snapshot whether or not the probe ever reported anything. Reduce
+    // `Step2InstallSdk`'s `onProbed` to report only success — a plausible
+    // one-directional-reporting regression — and the value-only form passed in
+    // 0 of 15 runs' worth of detection, while this form failed in 15 of 15.
+    //
+    // `patchState` returns `{ ...prev, ...patch }`, a fresh object, so a failing
+    // probe emits a second snapshot even though the value is unchanged;
+    // requiring one is what makes this assert the probe's finding. Note this is
+    // an anti-vacuity guard, not a flake fix: on the unmutated path the count is
+    // already 2 at the read point in 300 of 300 runs.
     await waitFor(() => {
       expect(onPersist.mock.calls.length).toBeGreaterThan(1)
       const last = onPersist.mock.calls.at(-1)?.[0] as { state: WizardState }
@@ -236,11 +248,16 @@ describe('OnboardingWizard step → state patching', () => {
     fireEvent.click(screen.getByTestId('onboarding-enroll-start'))
 
     await screen.findByTestId('onboarding-enroll-empty')
-    // AAASM-6197: this test's name asserts an *absence*, so it asserts one.
-    // Reading the last snapshot could not distinguish "never patched" from
-    // "patched, not yet persisted": nothing patches `enrolled` on this path, so
-    // the last snapshot is the mount snapshot in 1000 of 1000 runs, and
-    // `EMPTY_STATE.enrolled` is already `false`.
+    // AAASM-6197: this test's name asserts an *absence*, so it asserts one
+    // rather than re-reading a field `EMPTY_STATE` already sets to `false`. On
+    // the clean path the last snapshot is the mount snapshot in 300 of 300 runs
+    // measured, so the old form was reading the initial state, not a finding.
+    //
+    // Stated honestly: this is a clarity and ordering change, not a demonstrated
+    // detection gain. Two mutations that wrongly patch `enrolled` on the empty
+    // path — `hasAgents` accepting a known zero, and dropping the `hasAgents`
+    // guard on the reporting effect — are caught by either form, 10 of 10 runs
+    // each. No regression was found that the old assertion misses.
     //
     // The flush is not a sleep. A wrong patch would reach `onPersist` from the
     // passive effect belonging to the commit that rendered the node awaited
