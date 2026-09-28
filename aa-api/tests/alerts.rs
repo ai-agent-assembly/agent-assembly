@@ -533,9 +533,14 @@ async fn dedup_refire_after_window_creates_new_alert_with_fresh_routing() {
         json["dedup_window_expires_at"].is_string(),
         "fresh window must populate dedup_window_expires_at",
     );
+    // AAASM-6216: this proves the copy-through, not that anything routes.
+    // The seed came from `test_rule_seed()`, which pre-populates
+    // `routing_log` itself; the rule evaluator seeds `Vec::new()` and no
+    // production code ever appends. What must hold is that a post-expiry
+    // re-fire carries the seeded log forward rather than dropping it.
     assert!(
         !json["routing_log"].as_array().unwrap().is_empty(),
-        "fresh fire must carry routing_log seeded by the rule engine",
+        "post-expiry re-fire must carry the seeded routing_log through",
     );
 }
 
