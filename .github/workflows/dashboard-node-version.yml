@@ -1,0 +1,81 @@
+# Dashboard Node Version — assert the lanes that build the dashboard read .nvmrc.
+#
+# WHY THIS EXISTS
+# ----------------
+# AAASM-6202: the dashboard's Node version was written down twelve times across
+# ci.yml, release.yml and release-completeness.yml. Ten said 22 and two said 20
+# — and the two were `release.yml`'s `packaged-artifact-gate` and
+# `release-completeness.yml`'s `packaged-artifacts`, the gates that exist to
+# prove the real dashboard bundle ships. `publish-crates`, which declares that
+# gate as a hard `needs:` precondition, built the same bundle on 22. So the
+# artifact asserted to ship was produced on a Node version no dashboard test
+# lane runs.
+#
+# Nothing was red. `vite build` exits 0 on Node 20; pnpm's engine check is
+# warn-only absent `engine-strict`, which is set nowhere here. The lanes stayed
+# green while printing their own non-compliance:
+#
+#     WARN  Unsupported engine: wanted: {"node":">=22"} (current: v20.19.6)
+#     [dashboard] Node v20.19.6 is below the supported floor ">=22" ...
+#
+# Twelve declarations of one fact can drift; one cannot. dashboard/.nvmrc
+# (AAASM-6198) is that one, every lane now reads it via `node-version-file`,
+# and this job is what keeps them reading it. scripts/check_dashboard_node_version.py
+# carries the full contract; in short it asserts that every actions/setup-node
+# in a job running Node tooling in dashboard/ resolves from dashboard/.nvmrc
+# with no competing literal, that .nvmrc is resolvable, and that the scan found
+# something rather than passing over an empty set.
+#
+# WHY THERE IS NO `paths:` FILTER
+# --------------------------------
+# The regression this guards against is a new workflow — or a new job in an
+# existing one — building the dashboard with a literal of its own. A paths
+# filter would have to predict which file that lands in, and the whole point is
+# that it can be any of them. It is one Python file plus PyYAML and finishes in
+# under a second.
+#
+# NOTE ON REQUIRED-CHECK STATUS
+# ------------------------------
+# Standalone workflow, matching pnpm-overrides-parity.yml. Making it a required
+# status check is a branch-protection change and is not done here.
+
+name: Dashboard Node Version
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  node-version-source:
+    name: dashboard Node version source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml
+
+      # The selftest runs first: this gate's value is that it can fail. It
+      # mutates an in-memory copy of the real parsed workflows once per
+      # assertion — reintroducing the Node 20 literal, leaving a literal beside
+      # the file, pointing at the wrong file, dropping setup-node entirely,
+      # emptying the scan — and requires each to be caught. A gate that has
+      # stopped detecting anything passes everything.
+      - name: Version-source gate still fails closed
+        run: python3 scripts/check_dashboard_node_version.py --selftest
+
+      - name: Every dashboard lane reads its Node version from .nvmrc
+        run: python3 scripts/check_dashboard_node_version.py --verbose
