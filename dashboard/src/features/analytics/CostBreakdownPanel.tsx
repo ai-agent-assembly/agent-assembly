@@ -21,11 +21,17 @@ import {
 } from './costBreakdownUtils'
 import { GROUP_BY_OPTIONS, decodeCostBy } from './costBreakdown'
 
-const USD_TICK = (value: number) =>
+// AAASM-6199: minimum declared so axis ticks read the same on every V8 — see
+// the note on USD_COMPACT_FORMAT in costBreakdownUtils.ts. Exported only so a
+// test can assert the tick string directly: recharts lays out axes on a real
+// layout pass that jsdom does not provide, the same reason `BurnTooltip` is
+// exported in components/SubtreeBurnChart.tsx.
+export const USD_TICK = (value: number) =>
   new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     notation: 'compact',
+    minimumFractionDigits: 1,
     maximumFractionDigits: 1,
   }).format(value)
 

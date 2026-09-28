@@ -179,11 +179,14 @@ export function transform(data: SubtreeBurn | undefined): {
   return { rows, childIds: sortedChildIds, childName, childColor }
 }
 
+// AAASM-6199: minimum declared so tooltip amounts read the same on every V8 —
+// see the note on USD_COMPACT_FORMAT in features/analytics/costBreakdownUtils.ts.
 function formatUsd(value: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
     notation: 'compact',
+    minimumFractionDigits: 1,
     maximumFractionDigits: 1,
   }).format(value)
 }

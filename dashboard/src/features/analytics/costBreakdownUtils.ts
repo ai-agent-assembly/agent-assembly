@@ -54,10 +54,21 @@ const USD_FORMAT = new Intl.NumberFormat('en-US', {
 // formatDelta finite-guard.
 const USD_COMPACT_THRESHOLD = 1e9
 
+// AAASM-6199: `minimumFractionDigits` is declared rather than left to the
+// engine. ECMA 402's SetNumberFormatDigitOptions says a maximum supplied
+// without a minimum yields a minimum of 0; V8 below 13.6 instead let the
+// currency default stand at 1, so this exact options object resolved
+// `minimumFractionDigits` to 1 on Node 22 and to 0 on Node 24+, rendering
+// `$1.0T` and `$1T` respectively. Measured: the drift is specific to
+// `style: 'currency'` — a compact formatter without it resolves 0 on every V8
+// from 11.3 to 14.6. The one-decimal form is the intended presentation and is
+// asserted by literal below, so it is stated here rather than inherited from
+// whichever V8 the runner happens to ship.
 const USD_COMPACT_FORMAT = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
   notation: 'compact',
+  minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 })
 

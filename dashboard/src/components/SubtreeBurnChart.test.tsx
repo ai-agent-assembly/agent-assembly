@@ -165,13 +165,34 @@ describe('SubtreeBurnChart — tooltip content', () => {
     expect(tooltip).toHaveTextContent('2026-05-16')
     expect(tooltip).toHaveTextContent('analyst-bot')
     expect(tooltip).toHaveTextContent('reviewer-bot')
-    // USD formatted via Intl.NumberFormat compact — exact format is implementation
-    // detail; assert key parts via substring instead of strict equality.
-    expect(tooltip.textContent ?? '').toMatch(/\$12/)
-    expect(tooltip.textContent ?? '').toMatch(/\$4/)
+    // AAASM-6199: these two were substring matches on the grounds that the exact
+    // compact format is an implementation detail. It is not — it is a display
+    // contract, and treating it as a detail is why the formatter's output could
+    // change with the host V8 without any test noticing. Exact strings now.
+    expect(tooltip.textContent ?? '').toContain('$12.5')
+    expect(tooltip.textContent ?? '').toContain('$4.8')
     // Percent of subtree: child-1 is 12.50/17.25 = 72%; child-2 is 27/28%.
     expect(tooltip.textContent ?? '').toMatch(/72%/)
     expect(tooltip.textContent ?? '').toMatch(/2[78]%/)
+  })
+
+  // AAASM-6199: the values above keep their decimal on any engine, so they do
+  // not discriminate. These do: a compact value landing on a whole number is
+  // `$2.0K` only because the formatter declares a minimum fraction digit, and
+  // was `$2K` on V8 13.6+ before it did.
+  it('keeps the trailing zero on whole-number spends and totals', () => {
+    render(
+      <BurnTooltip
+        active
+        label="2026-05-16"
+        childName={childName}
+        payload={[{ dataKey: 'child-1', value: 2000, color: '#4f9aff' }]}
+      />,
+    )
+
+    const tooltip = screen.getByTestId('subtree-burn-tooltip')
+    expect(tooltip.querySelector('.sbc__tooltip-value')?.textContent).toBe('$2.0K · 100%')
+    expect(tooltip.querySelector('.sbc__tooltip-total')?.textContent).toBe('Total: $2.0K')
   })
 
   it('uses the aggregate total Line value when present (does not double-count)', () => {
