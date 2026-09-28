@@ -37,17 +37,25 @@ pub struct RuleSnapshot {
     pub suppression_labels: BTreeMap<String, String>,
 }
 
-/// One delivery attempt by the connector framework for a routed alert.
+/// The shape reserved for one delivery attempt against a configured
+/// destination — Slack, PagerDuty, webhook, etc.
 ///
-/// Each entry records the outcome of fanning an alert out to a configured
-/// destination — Slack, PagerDuty, webhook, etc. The framework appends a
-/// new entry per attempt; dedup-suppressed re-fires must NOT add entries.
+/// AAASM-6216: no production code constructs this type. Alert routing is
+/// not wired up — the rule evaluator seeds an empty `routing_log` and
+/// nothing appends to it, so the field is unconditionally `[]` on every
+/// alert a running server produces. The type and its `routing_log`
+/// carrier exist so the eventual hookup does not change the wire format.
+///
+/// When delivery does land, the intended contract is one entry per
+/// attempt, and dedup-suppressed re-fires must NOT add entries — which is
+/// what `dedup_or_record_rule_alert` already honours by copying an
+/// existing log through untouched.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct RoutingLogEntry {
-    /// Identifier of the destination the alert was routed to.
+    /// Identifier of the destination an attempt targeted.
     pub destination_id: String,
-    /// ISO 8601 timestamp at which the connector framework completed
-    /// the delivery attempt.
+    /// ISO 8601 timestamp at which the connector framework would record
+    /// the attempt as complete.
     pub delivered_at: String,
     /// Outcome label — typically `"ok"`, `"error"`, or a connector-
     /// specific status string.
@@ -98,8 +106,15 @@ pub struct RuleContext {
 
 /// Active silence record attached to an alert.
 ///
-/// Present when an operator has acknowledged the alert and asked the
-/// notification framework to suppress further routing until `expires_at`.
+/// Present when an operator has acknowledged the alert and asked for it
+/// to stay suppressed until `expires_at`. The suppression is real and
+/// enforced: `AlertStore::suppress` flips the alert's visible status and
+/// publishes an `alert.silence` frame, and `spawn_silence_expiry_watcher`
+/// restores the alert when the window closes.
+///
+/// AAASM-6216: what a silence does *not* do is hold back outbound
+/// notifications, because there are none to hold back — see
+/// [`RoutingLogEntry`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 pub struct Silence {
     /// Stable identifier of the silence record.
