@@ -3464,11 +3464,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # AAASM-6221: 30s + 30s covered a 60-second window, and the 2026-09-28
+      # outage was still refusing at the end of it — all three attempts ran
+      # inside 13:19:52–13:20:52 and the next successful analysis was 90 minutes
+      # later, so the real outage length is unknown and bounded only above by
+      # 90 minutes. No sane retry chain rides that out, which is why the cache
+      # above is the fix and this backoff is only the cold-run fallback:
+      # widening 30/30 to 60/180 buys a 4-minute window instead of a 1-minute
+      # one for the short flakes it can actually absorb. The job sets no
+      # timeout-minutes, so the added wait cannot push it past a ceiling.
       - name: Wait before retry (attempt 2)
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         run: |
-          echo "::warning::SonarCloud scanner failed on attempt 1 (likely transient CDN flake); waiting 30s before retry."
-          sleep 30
+          echo "::warning::SonarCloud scanner failed on attempt 1 (transient flake, or the scanner CLI download was refused — see AAASM-6221); waiting 60s before retry."
+          sleep 60
       - name: SonarCloud scan (attempt 2)
         id: sonar-scan-attempt-2
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
@@ -3482,8 +3491,8 @@ jobs:
       - name: Wait before retry (attempt 3)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         run: |
-          echo "::warning::SonarCloud scanner failed twice; waiting 30s before final retry."
-          sleep 30
+          echo "::warning::SonarCloud scanner failed twice; waiting 180s before the final retry. If all three fail on 'Unexpected HTTP response: 403' while installing the CLI, the scanner-CLI cache above missed — that is AAASM-6221, not a Sonar-side quality problem."
+          sleep 180
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
