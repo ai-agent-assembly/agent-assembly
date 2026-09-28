@@ -709,7 +709,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Build dashboard assets
@@ -2503,7 +2504,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -2530,7 +2532,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -2561,7 +2564,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -2616,7 +2620,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -2881,7 +2886,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
 
@@ -3085,7 +3091,8 @@ jobs:
           version: 10.9.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dependencies
@@ -3254,7 +3261,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: needs.dashboard-test.result != 'success'
         with:
-          node-version: 22
+          # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
+          node-version-file: dashboard/.nvmrc
           cache: pnpm
           cache-dependency-path: dashboard/pnpm-lock.yaml
       - name: Install dashboard dependencies (fallback)

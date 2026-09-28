@@ -284,7 +284,7 @@ code is on the channel and nobody measured the capability against a container.
 The second is `unmeasured`, never `unsupported` — ADR 0034 forbidden design 8.
 
 ```
-count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 19 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
+count: [R17] vocabulary: 9 channels = 9 surveyed + 0 not surveyed + 0 unclassified; 20 workflow files scanned, 4 publish here (['crates_io', 'ghcr', 'github_release', 'homebrew'])
 count: [R17] ghcr: 81 rows = 24 carry it + 7 not_applicable + 50 recorded absent + 0 unaccounted
 ```
 
@@ -298,6 +298,13 @@ workflow — a pull request the `changes` router does not select this gate for,
 because it touched no governance or schema path. The `push` backstop caught it on
 `main` instead, which is the division of labour the header above describes,
 paid for with one red run.
+
+AAASM-6202 added `dashboard-node-version.yml` as the 20th. That pull request
+also touched `scripts/`, which the `changes` router *does* select this gate for,
+so the stale count was caught before merge rather than on `main` — the same
+probe, one rung earlier, and no red `main` to pay for it. Worth recording
+because it shows the two mechanisms are not redundant: the router catches what
+it can see, and the `push` backstop exists for everything it cannot.
 
 ## The three questions
 
