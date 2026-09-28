@@ -3322,7 +3322,11 @@ export interface components {
             dedup_occurrence_count: number;
             /** @description Timestamp when the active dedup window ends, or `null`. */
             dedup_window_expires_at?: string | null;
-            /** @description Destinations the rule routes to. Empty for legacy alerts. */
+            /**
+             * @description Destinations bound to the originating rule, copied onto the alert
+             *     at fire time. Empty for legacy alerts. AAASM-6216: nothing is
+             *     delivered to them — see [`AlertRule::destination_ids`].
+             */
             destination_ids: string[];
             /** @description Primary detected credential kind for `secret_detected` alerts. */
             detected_pattern_type?: string | null;
@@ -3351,7 +3355,11 @@ export interface components {
              *     while firing.
              */
             resolved_at?: string | null;
-            /** @description Connector-framework delivery log. Empty for legacy alerts. */
+            /**
+             * @description Delivery log reserved for the connector framework. AAASM-6216:
+             *     always empty today — no production code appends to it. See
+             *     [`RoutingLogEntry`].
+             */
             routing_log: components["schemas"]["RoutingLogEntry"][];
             ruleSnapshot?: components["schemas"]["AlertRule"] | null;
             /**
@@ -3449,8 +3457,14 @@ export interface components {
             /** @description Free-form description displayed in the dashboard rule list. */
             description: string;
             /**
-             * @description Destinations the alert is routed to. Non-empty; each id must
-             *     exist in the destination registry.
+             * @description Destinations bound to this rule. Non-empty; each id must exist
+             *     in the destination registry (see [`AlertRule::validate`]).
+             *
+             *     AAASM-6216: binding only. Outbound delivery is not wired up yet —
+             *     the sole production caller of the connector framework is the
+             *     manual test-fire endpoint (`POST /alerts/destinations/{id}/test`),
+             *     so a rule that fires records the ids on the alert and sends
+             *     nothing. See `docs/src/concepts/connector.md`.
              */
             destinationIds: string[];
             /** @description Whether the rule is actively evaluated. */
@@ -4077,7 +4091,10 @@ export interface components {
         };
         /** @description Body for `POST /api/v1/alerts/destinations`. */
         CreateDestinationRequest: components["schemas"]["DestinationConfig"] & {
-            /** @description Whether dispatch is enabled on creation (defaults to true). */
+            /**
+             * @description Initial value of the stored enable flag (defaults to true).
+             *     AAASM-6216: recorded only — see [`DestinationResponse::enabled`].
+             */
             enabled?: boolean;
             /** @description Operator-supplied display name. */
             name: string;
@@ -4206,7 +4223,14 @@ export interface components {
         DestinationResponse: components["schemas"]["DestinationConfig"] & {
             /** @description RFC 3339 creation timestamp. */
             created_at: string;
-            /** @description Whether dispatch is allowed. */
+            /**
+             * @description Operator-set enable flag, stored and echoed back verbatim.
+             *
+             *     AAASM-6216: no code path consults it. `test_destination` gates on
+             *     write scope, tenant ownership and the SSRF egress guard, and never
+             *     on this flag, so `false` does not currently stop a test-fire. See
+             *     AAASM-6217.
+             */
             enabled: boolean;
             /** @description Stable identifier (`dst_<32 hex>`). */
             id: string;
@@ -5913,19 +5937,27 @@ export interface components {
             to_role: string;
         };
         /**
-         * @description One delivery attempt by the connector framework for a routed alert.
+         * @description The shape reserved for one delivery attempt against a configured
+         *     destination — Slack, PagerDuty, webhook, etc.
          *
-         *     Each entry records the outcome of fanning an alert out to a configured
-         *     destination — Slack, PagerDuty, webhook, etc. The framework appends a
-         *     new entry per attempt; dedup-suppressed re-fires must NOT add entries.
+         *     AAASM-6216: no production code constructs this type. Alert routing is
+         *     not wired up — the rule evaluator seeds an empty `routing_log` and
+         *     nothing appends to it, so the field is unconditionally `[]` on every
+         *     alert a running server produces. The type and its `routing_log`
+         *     carrier exist so the eventual hookup does not change the wire format.
+         *
+         *     When delivery does land, the intended contract is one entry per
+         *     attempt, and dedup-suppressed re-fires must NOT add entries — which is
+         *     what `dedup_or_record_rule_alert` already honours by copying an
+         *     existing log through untouched.
          */
         RoutingLogEntry: {
             /**
-             * @description ISO 8601 timestamp at which the connector framework completed
-             *     the delivery attempt.
+             * @description ISO 8601 timestamp at which the connector framework would record
+             *     the attempt as complete.
              */
             delivered_at: string;
-            /** @description Identifier of the destination the alert was routed to. */
+            /** @description Identifier of the destination an attempt targeted. */
             destination_id: string;
             /**
              * @description Outcome label — typically `"ok"`, `"error"`, or a connector-
@@ -6476,8 +6508,15 @@ export interface components {
         /**
          * @description Active silence record attached to an alert.
          *
-         *     Present when an operator has acknowledged the alert and asked the
-         *     notification framework to suppress further routing until `expires_at`.
+         *     Present when an operator has acknowledged the alert and asked for it
+         *     to stay suppressed until `expires_at`. The suppression is real and
+         *     enforced: `AlertStore::suppress` flips the alert's visible status and
+         *     publishes an `alert.silence` frame, and `spawn_silence_expiry_watcher`
+         *     restores the alert when the window closes.
+         *
+         *     AAASM-6216: what a silence does *not* do is hold back outbound
+         *     notifications, because there are none to hold back — see
+         *     [`RoutingLogEntry`].
          */
         Silence: {
             /** @description ISO 8601 timestamp at which the silence expires. */
@@ -7194,8 +7233,10 @@ export interface components {
         /**
          * @description Body for `PUT /api/v1/alerts/destinations/{id}`.
          *
-         *     All fields are optional — supplying just `enabled` toggles dispatch
-         *     without touching the configuration payload.
+         *     All fields are optional — supplying just `enabled` flips the stored
+         *     flag without touching the configuration payload. AAASM-6216: that
+         *     flag is not consulted by any dispatch path, so the toggle changes what
+         *     the API reports and nothing else. See [`DestinationResponse::enabled`].
          */
         UpdateDestinationRequest: (components["schemas"]["DestinationConfig"] | null) & {
             /** @description New enabled flag. */
