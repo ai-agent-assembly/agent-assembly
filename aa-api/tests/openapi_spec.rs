@@ -134,7 +134,11 @@ fn spec_makes_no_unearned_alert_delivery_claim() {
     // doc-comment wrapping introduces, so a needle spanning two source
     // lines is still findable after normalization.
     let json = serde_json::to_string(&aa_api::ApiDoc::openapi()).unwrap();
-    let spec = json.replace("\\n", " ").split_whitespace().collect::<Vec<_>>().join(" ");
+    let spec = json
+        .replace("\\n", " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // --- Claims that must be gone -----------------------------------
     for false_claim in [
