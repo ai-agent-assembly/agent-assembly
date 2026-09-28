@@ -1,0 +1,38 @@
+# pnpm settings for the TypeScript agent fixture. AAASM-6223.
+#
+# This was the third of the repository's three npm projects and the only one
+# with no floors file at all. `dashboard/` and
+# `examples/aa-devint-reference-client/` both declare `js-yaml: ^4.3.2` and
+# both resolve 4.3.2. This fixture resolved 4.1.1 — inside the affected range
+# of GHSA-2883-xcg3-v3hh, GHSA-5p4m-2wfm-xmqj and GHSA-52cp-r559-cp3m (all
+# high) and of GHSA-h67p-54hq-rp68 (medium) — transitively via
+# `langchain@0.3.37`, and `pnpm install --frozen-lockfile` in
+# integration-tests.yml put it on the runner.
+#
+# Nothing raised an alert, and the reason is worth recording because it is not
+# "the advisory is new". Five js-yaml alerts have fired on this repository
+# (#44, #57, #58, #64, #65, all now fixed) and every one of them named one of
+# the other two lockfiles. This manifest is absent from the repository's
+# dependency graph — `dependencyGraphManifests` lists 73 manifests and only
+# four npm entries, none of them this directory — so the same package, at a
+# worse version, in a third project, was never looked at. `.github/dependabot.yml`
+# has configured this directory since AAASM-5675, so the configuration intent
+# was already on record; it is the ingestion that was missing.
+#
+# The floor is a range, not a pin: `^4.3.2` lets a future patch through and
+# only forbids going back below the patched version, which is the same shape
+# the other two files use.
+#
+# `scripts/check_pnpm_overrides_parity.py` assertion 3 exists because of this
+# directory: the parity loop it grew out of iterates the files that exist, so
+# a project with no floors file was never visited and "no floors at all" sat
+# outside the gate's reachable state space. That assertion is now driven by the
+# lockfile instead, so the next such project fails rather than being skipped.
+#
+# There is deliberately no `packageManager` field in this fixture's
+# package.json (AAASM-6133 records why the workflow pins 10.9.0 instead), so
+# this file must stay readable by both pnpm 10 and pnpm 11 — which is the one
+# property `pnpm-workspace.yaml` has and `package.json`'s `pnpm.overrides`
+# field has lost.
+overrides:
+  js-yaml: ^4.3.2
