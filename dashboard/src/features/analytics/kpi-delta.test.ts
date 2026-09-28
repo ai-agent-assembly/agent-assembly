@@ -46,6 +46,23 @@ describe('formatDelta', () => {
     expect(result).toMatch(/^-?\d+(\.\d)?K%$/) // e.g. -15K%
   })
 
+  // AAASM-6199: this formatter's compact path had no exact-literal assertion —
+  // both tests above bind the result to a variable and match a regex whose
+  // groups are optional, so neither would notice a change in fraction digits.
+  // Asserted exactly now. Unlike the three currency formatters this one is NOT
+  // engine-dependent: it has no `style: 'currency'`, so `minimumFractionDigits`
+  // resolves to 0 on every V8 from 11.3 to 14.6 and these literals hold on all
+  // of them. That is why it needs coverage rather than a code change.
+  // Only the positive path is pinned here. The negative compact path drops its
+  // minus sign — `formatDelta(-150)` returns `15K%`, not `-15K%` — so the only
+  // literal that would pass today is the wrong one. Tracked as AAASM-6200 and
+  // fixed there, together with tightening the `-?` regex on line 46.
+  it('formats the compact path to an exact string on any engine', () => {
+    expect(formatDelta(100)).toBe('+10K%')
+    expect(formatDelta(123.45)).toBe('+12.3K%')
+    expect(formatDelta(1234.5)).toBe('+123.5K%')
+  })
+
   it('does not use compact notation below threshold', () => {
     expect(formatDelta(99.9)).toBe('+9990.0%') // Just below 100x threshold
   })
