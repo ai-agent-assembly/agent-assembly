@@ -23,7 +23,9 @@ export function isDeltaPositive(metric: KpiMetric, delta: number): boolean {
 // Threshold beyond which we switch to compact notation (100x = 10,000%)
 const LARGE_DELTA_THRESHOLD = 100
 
-// Intl formatter for large percentage values: e.g. 12345% -> +12K%
+// Intl formatter for large percentage values: e.g. 12345% -> +12.3K%
+// (one fraction digit is allowed, so the compact form keeps a decimal where one
+// is significant — AAASM-6200 corrected this example, which read `+12K%`.)
 const compactFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 1,
