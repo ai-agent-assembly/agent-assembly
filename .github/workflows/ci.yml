@@ -3329,6 +3329,41 @@ jobs:
         if: needs.dashboard-test.result != 'success'
         working-directory: dashboard
         run: pnpm test:coverage
+      # ---- Snapshot completeness guard --------------------------------------
+      # AAASM-6220: a main analysis REPLACES the stored measures, so a report
+      # that is missing one language does not leave that language's coverage
+      # alone — it overwrites it with nothing, and the result looks
+      # authoritative. Both paths below are the ones named in
+      # sonar-project.properties (`sonar.rust.lcov.reportPaths` and
+      # `sonar.javascript.lcov.reportPaths`), so this asserts exactly what the
+      # scanner is about to read. Failing here is deliberately preferred to
+      # publishing: a red job is visible, a silently-narrowed coverage gate is
+      # not. The steps above are structured so this should be unreachable; it is
+      # the backstop that makes that claim checkable rather than assumed.
+      - name: Assert the full snapshot carries coverage for both languages
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          set -euo pipefail
+          incomplete=0
+          for report in lcov.info dashboard/coverage/lcov.info; do
+            if [ ! -s "${report}" ]; then
+              echo "::error::${report} is missing or empty."
+              incomplete=1
+              continue
+            fi
+            # `grep -c` exits 1 on zero matches, which `set -e` would treat as
+            # fatal before the count could be reported.
+            records="$(grep -c '^DA:' "${report}" || true)"
+            echo "${report}: ${records} DA line-coverage records"
+            if [ "${records}" -eq 0 ]; then
+              echo "::error::${report} carries no DA: line-coverage records, so it would contribute no coverage."
+              incomplete=1
+            fi
+          done
+          if [ "${incomplete}" -ne 0 ]; then
+            echo "::error::Refusing to scan. A main SonarCloud analysis is a FULL snapshot, so publishing an incomplete one would overwrite a language's coverage with nothing and make the coverage quality gate vacuous (AAASM-6220)."
+            exit 1
+          fi
       # ---- Scan -------------------------------------------------------------
       # AAASM-3819: derive sonar.projectVersion from the workspace Cargo version
       # so SonarCloud's reported project version tracks the release automatically
