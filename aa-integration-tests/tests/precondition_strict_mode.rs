@@ -153,8 +153,9 @@ struct AllowedBypass {
 /// this list accepts. "The test is awkward to provision" is not one; neither is
 /// "converting it would go red", which is the finding, not the excuse.
 ///
-/// These are still weaker than a real assertion, and they are tracked
-/// separately from this ticket rather than declared acceptable.
+/// These are still weaker than a real assertion. They are tracked in
+/// AAASM-6228 rather than declared acceptable — a named ticket, so the claim is
+/// checkable from here instead of taken on trust.
 const ALLOWED_BYPASSES: &[AllowedBypass] = &[
     AllowedBypass {
         file: "cli_dashboard.rs",
