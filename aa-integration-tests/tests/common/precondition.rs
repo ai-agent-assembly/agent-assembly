@@ -56,10 +56,23 @@ use evidence::Measurement;
 
 use std::path::{Path, PathBuf};
 
-/// Set only by `.github/workflows/integration-tests.yml`. That lane builds
-/// every binary its own guards check for, so an unmet precondition there is a
+/// Set only by `.github/workflows/integration-tests.yml`. Where that lane
+/// provisions the artifact a guard checks for, an unmet precondition there is a
 /// broken lane, not an honest opt-out — a graceful return would report it as
-/// a pass, which is the exact invisibility this ticket exists to remove.
+/// a pass, which is the exact invisibility AAASM-5977 exists to remove.
+///
+/// AAASM-6224: this doc comment used to say the lane "builds every binary its
+/// own guards check for". That was never true. It did not build the sibling
+/// node-sdk at all, so the seven tests gated on that checkout's `dist/` and
+/// napi addon skipped-as-passed on every run, and 15 guard sites never called
+/// through this module in the first place, so setting the variable could not
+/// reach them. The lane now builds the sibling and those 15 sites are
+/// converted. The claim is still deliberately scoped to *provisioned*
+/// artifacts: a handful of guards turn on host capabilities the lane does not
+/// and cannot provide (a built dashboard SPA, admin rights for the macOS CA
+/// trust store), those are honest opt-outs, and arming this variable must not
+/// redden them. They are enumerated in `precondition_strict_mode.rs`'s
+/// `every_skip_shaped_guard_is_accounted_for` so the list cannot grow unnoticed.
 pub const REQUIRE_ENV: &str = "AA_REQUIRE_PRECONDITIONS";
 
 /// Gate a test on an environment precondition (AAASM-5977).

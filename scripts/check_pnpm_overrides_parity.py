@@ -21,13 +21,16 @@ generic ``ERR_PNPM_LOCKFILE_CONFIG_MISMATCH`` that named neither the directory
 nor the package). Both were fixed by moving the declarations to
 ``pnpm-workspace.yaml``, the file pnpm 10 and pnpm 11 both read.
 
-CONTRACT — two assertions, and the second is the reason this is not a copy
--------------------------------------------------------------------------
+CONTRACT — three assertions, and the second and third are why this is not a copy
+--------------------------------------------------------------------------------
 1. **Parity.** For every ``pnpm-workspace.yaml`` that declares an
    ``overrides:`` mapping, its sibling ``pnpm-lock.yaml`` must declare the
    identical mapping (same keys, same values).
 2. **No stragglers.** No ``package.json`` in the tree may declare a non-empty
    ``pnpm.overrides``, because pnpm 11 ignores it.
+3. **A declaration site exists.** Every directory holding a ``pnpm-lock.yaml``
+   must also hold a ``pnpm-workspace.yaml``, or be named in
+   ``NO_FLOORS_REQUIRED`` with a reason.
 
 Assertion 1 alone is what ``ai-agent-assembly/examples`` ships. Ported
 verbatim into this repository it would have been a *vacuous pass*: it iterates
@@ -39,7 +42,26 @@ the exit code mean something on this tree: it is the assertion that fails on
 the pre-migration state, and it keeps failing if anyone reintroduces a floor
 in the field pnpm 11 has stopped reading.
 
-Exit 0 if both assertions hold. Exit 1 and list every violation otherwise.
+Assertion 3 (AAASM-6223) closes what was left. Assertions 1 and 2 between them
+catch a floor that is *wrong* and a floor in the *wrong file* — but not a
+project with no floors file at all, because assertion 1 iterates the files that
+exist and assertion 2 only inspects what a manifest declares. A third npm
+project sat in this tree for months with no ``pnpm-workspace.yaml``, no floors,
+and ``js-yaml`` resolved at 4.1.1 while the other two pinned ``^4.3.2`` and
+resolved 4.3.2 — inside three high advisories, installed on the runner by
+``pnpm install --frozen-lockfile``, and invisible to this script because a
+directory it does not visit cannot fail. Presence-driven iteration cannot
+detect absence, so assertion 3 is driven by the lockfile instead: a lockfile is
+proof a project resolves third-party packages, and that is exactly the set of
+projects that must be able to carry a floor.
+
+Note the asymmetry that makes assertion 3 worth having even though it looks
+weaker than the other two: it does not require any *particular* floor, only
+that the file pnpm reads floors from exists. Deciding which floors a project
+needs is a judgement call and belongs to review; noticing that a project has
+nowhere to put one is mechanical, and this is the mechanism.
+
+Exit 0 if all three assertions hold. Exit 1 and list every violation otherwise.
 
 This is a declaration-site and parity check, not a lockfile validator — it
 does not evaluate whether an override's version range is itself high enough to
@@ -67,6 +89,14 @@ EXCLUDE_DIR_NAMES = {"node_modules", ".git", ".venv", "target"}
 WORKSPACE_FILENAME = "pnpm-workspace.yaml"
 LOCK_FILENAME = "pnpm-lock.yaml"
 MANIFEST_FILENAME = "package.json"
+
+# Assertion 3's escape hatch, keyed by path relative to the repository root.
+# Deliberately empty: all three npm projects carry floors as of AAASM-6223, and
+# an entry here is a claim that a project resolving third-party packages needs
+# no floor *and never will*, which is a review decision rather than a default.
+# Anything added must carry the reason inline, so the exemption is arguable in
+# the diff instead of silent in the exit code.
+NO_FLOORS_REQUIRED: dict[str, str] = {}
 
 
 def _iter_tree_files(root: Path, filename: str) -> list[Path]:
@@ -156,6 +186,41 @@ def find_manifest_violations(root: Path) -> list[str]:
     return violations
 
 
+def find_missing_declaration_sites(root: Path) -> tuple[list[str], int]:
+    """Assertion 3: a lockfile-bearing directory must have somewhere to declare floors.
+
+    Driven by ``pnpm-lock.yaml`` rather than ``pnpm-workspace.yaml`` on purpose.
+    The other two assertions iterate what exists — the workspace files, the
+    manifests — so a project with neither a floors file nor a floor in the wrong
+    place is outside the set either of them examines. A lockfile cannot be
+    absent from a project that installs third-party packages, which makes it the
+    one marker that cannot be missing from the thing being looked for.
+
+    Returns the violations and the number of lockfile directories inspected, so
+    the caller can refuse to report success over an empty walk.
+    """
+    violations: list[str] = []
+    inspected = 0
+
+    for lock_file in _iter_tree_files(root, LOCK_FILENAME):
+        project = lock_file.parent
+        rel = project.relative_to(root)
+        inspected += 1
+        if (project / WORKSPACE_FILENAME).is_file():
+            continue
+        if str(rel) in NO_FLOORS_REQUIRED:
+            continue
+        violations.append(
+            f"{rel}: has {LOCK_FILENAME} but no {WORKSPACE_FILENAME}, so it has nowhere "
+            f"pnpm 11 will read a security floor from. Add "
+            f"{rel / WORKSPACE_FILENAME} (an `overrides:` mapping, even a small one, "
+            f"or a documented entry in NO_FLOORS_REQUIRED explaining why this project "
+            f"needs none)"
+        )
+
+    return violations, inspected
+
+
 def find_parity_violations(root: Path) -> tuple[list[str], int]:
     """Assertion 1: pnpm-workspace.yaml overrides must match the sibling lockfile."""
     violations: list[str] = []
@@ -196,8 +261,22 @@ def find_parity_violations(root: Path) -> tuple[list[str], int]:
 def main() -> int:
     manifest_violations = find_manifest_violations(REPO_ROOT)
     parity_violations, checked = find_parity_violations(REPO_ROOT)
+    site_violations, inspected = find_missing_declaration_sites(REPO_ROOT)
 
-    if manifest_violations or parity_violations:
+    # A walk that found no lockfiles has verified nothing, yet would otherwise
+    # print the same success line as a clean tree — the exact vacuous pass the
+    # module docstring describes, one level up. This repository has three npm
+    # projects; if the walk stops seeing them, the exclusion list or the layout
+    # changed and that must be loud rather than green.
+    if inspected == 0:
+        print(
+            f"check_pnpm_overrides_parity: FAIL — found no {LOCK_FILENAME} anywhere under "
+            f"{REPO_ROOT}. Refusing to report success over an empty walk.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if manifest_violations or parity_violations or site_violations:
         print("check_pnpm_overrides_parity: FAIL", file=sys.stderr)
         if manifest_violations:
             print("  pnpm.overrides still declared in package.json (pnpm 11 ignores it):", file=sys.stderr)
@@ -207,9 +286,17 @@ def main() -> int:
             print(f"  {WORKSPACE_FILENAME} / {LOCK_FILENAME} disagree:", file=sys.stderr)
             for v in parity_violations:
                 print(f"    {v}", file=sys.stderr)
+        if site_violations:
+            print(
+                f"  {LOCK_FILENAME} present with no {WORKSPACE_FILENAME} to declare a floor in:",
+                file=sys.stderr,
+            )
+            for v in site_violations:
+                print(f"    {v}", file=sys.stderr)
         print(
-            f"\n{len(manifest_violations) + len(parity_violations)} violation(s) across "
-            f"{checked} overrides-carrying director(y/ies). Fix: move each "
+            f"\n{len(manifest_violations) + len(parity_violations) + len(site_violations)} "
+            f"violation(s) across {inspected} npm project(s), {checked} of them "
+            f"overrides-carrying. Fix: move each "
             f"`pnpm.overrides` block into a sibling {WORKSPACE_FILENAME} preserving "
             "keys and values exactly, then relock in that directory with the pnpm "
             "version its `packageManager` field pins (`corepack pnpm@<version> install "
@@ -220,9 +307,10 @@ def main() -> int:
         return 1
 
     print(
-        f"check_pnpm_overrides_parity: OK — {checked} overrides-carrying "
-        f"director(y/ies) checked, 0 mismatches, 0 package.json still declaring "
-        "pnpm.overrides"
+        f"check_pnpm_overrides_parity: OK — {inspected} npm project(s) inspected, "
+        f"{checked} overrides-carrying director(y/ies) checked, 0 mismatches, "
+        f"0 package.json still declaring pnpm.overrides, 0 project(s) without a "
+        f"{WORKSPACE_FILENAME}"
     )
     return 0
 

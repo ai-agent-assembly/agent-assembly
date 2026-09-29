@@ -81,7 +81,8 @@ jobs:
     # invisible state this ticket exists to eliminate; a step ceiling firing
     # reports `failure`, which is red and blocks.
     #
-    #   step ceilings          96  = 6 protobuf + 6 cache restore + 4 pnpm
+    #   step ceilings         108  = 6 protobuf + 6 cache restore + 4 pnpm
+    #                               + 12 build sibling node-sdk (AAASM-6224)
     #                               + 24 pre-build aasm + 12 pre-build api
     #                               + 16 pre-build test binaries (AAASM-6033)
     #                               + 28 tests
@@ -103,7 +104,7 @@ jobs:
     #                               on each would cost more noise than it buys.
     #   cold cache save         2  = measured 44s, rounded up. See below.
     #                          ---
-    #   worst bounded run     100  = the longest run in which every step still
+    #   worst bounded run     112  = the longest run in which every step still
     #                               fires its own ceiling first
     #   strictness margin       1  = the ceiling must be strictly ABOVE that sum,
     #                               not equal to it. At equality the two fire in
@@ -111,7 +112,7 @@ jobs:
     #                               tie, which is the `cancelled` outcome this
     #                               whole file exists to make impossible.
     #                          ---
-    #                          101
+    #                          113
     #
     # The cache save is the one contributor that *cannot* be ceilinged: it is a
     # post step, and post steps do not accept `timeout-minutes`. It is therefore
@@ -132,7 +133,7 @@ jobs:
     #
     # Do not lower this below the sum above without lowering the step ceilings
     # too, and do not add an un-ceilinged step that can do unbounded work.
-    timeout-minutes: 101
+    timeout-minutes: 113
     strategy:
       fail-fast: false
       matrix:
@@ -253,6 +254,64 @@ jobs:
         # GITHUB_WORKSPACE. The checkout action places node-sdk one level below
         # GITHUB_WORKSPACE so we create a sibling symlink to bridge the gap.
         run: ln -sfn "$GITHUB_WORKSPACE/node-sdk" "$(dirname "$GITHUB_WORKSPACE")/node-sdk"
+
+      - name: Build the sibling node-sdk
+        # AAASM-6224. Until this step existed, this lane checked the sibling out
+        # and never built it, so `node-sdk/dist/` and the napi `.node` addon were
+        # both absent on every run. Seven tests are gated on those two artifacts
+        # and each took an early `return` — which Rust reports as a PASS, not a
+        # skip. `real_langchain_single_agent_registers_with_gateway_and_emits_
+        # started_done` has therefore been counted in this lane's passed total
+        # since it was written without ever registering an agent.
+        #
+        # Ordered BEFORE the fixture install on purpose. The fixture resolves
+        # `@agent-assembly/sdk` through `file:../../../../../../node-sdk`, and a
+        # `file:` directory dependency is materialised at install time; building
+        # the sibling afterwards would be a race against whether pnpm linked the
+        # directory or copied it. Building first is correct under either.
+        #
+        # `pnpm build` produces `dist/esm/runtime.js` (the
+        # `node_runtime_present()` guard); `pnpm native:build` produces
+        # `native/aa-ffi-node/*.node` (the `native_binding_ready()` guard).
+        # Both are needed — they gate different tests.
+        #
+        # CEILING BASIS, stated as what it is. The only measurement behind this
+        # number is local, on macOS arm64 (the same architecture as
+        # macos-latest), against a warm pnpm store and a cold
+        # `CARGO_TARGET_DIR`: install 4s, `pnpm build` 3s, `native:build` 20s —
+        # 27s total, 640 MB of build output. No runner observation of this step
+        # exists yet, because it has never run. 12 minutes is therefore generous
+        # slack over an unmeasured distribution, NOT 1.5x an observation, and it
+        # is deliberately not derived by scaling the 27s by a cold-vs-warm ratio
+        # — the note above `Pre-build aasm` is explicit that conflating those two
+        # distributions is how this file previously got a ceiling wrong. Ratchet
+        # it against the first completed cold run here, the way the cache-save
+        # line in the job ceiling note was replaced by its 44s observation.
+        #
+        # The napi crate is its own cargo root (`node-sdk/` has no workspace
+        # `Cargo.toml`), so it builds into `node-sdk/native/aa-ffi-node/target`
+        # and the `Swatinem/rust-cache` entry above — keyed on this workspace —
+        # does not cover it. This step pays a near-cold Rust build every run.
+        # That is a known cost, recorded rather than hidden; caching a second
+        # target dir is a separate change.
+        timeout-minutes: 12
+        working-directory: node-sdk
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm native:build
+          # Assert the two artifacts the guards actually probe for, rather than
+          # trusting three exit codes. A silently empty `dist/` or a napi build
+          # that wrote nothing would otherwise arm the strict-mode panic below
+          # and surface as seven confusing test failures instead of one clear
+          # build failure here.
+          test -f dist/esm/runtime.js \
+            || { echo "::error::pnpm build produced no dist/esm/runtime.js"; exit 1; }
+          addons=$(find native/aa-ffi-node -maxdepth 1 -name '*.node' | wc -l | tr -d ' ')
+          [ "${addons}" -ge 1 ] \
+            || { echo "::error::pnpm native:build produced no native/aa-ffi-node/*.node"; exit 1; }
+          echo "node-sdk built: dist/esm/runtime.js + ${addons} napi addon(s)"
 
       - name: Install TypeScript fixture dependencies
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
@@ -450,11 +509,19 @@ jobs:
           # to serialize (see the pre-build step's comment above) is already
           # eliminated by spawning this pre-built binary directly.
           AASM_BIN_PATH: ${{ github.workspace }}/target/debug/aasm
-          # AAASM-5977: this lane provisions every binary its own skip guards
-          # check for (see the pre-build step above), so an unmet precondition
-          # here is a broken lane, not an honest opt-out. Arms
-          # `common::precondition::require` to panic — a distinct, non-green
-          # nextest FAILED — instead of degrading to a silent skip-as-pass.
+          # AAASM-5977: this lane provisions every artifact its own skip guards
+          # check for, so an unmet precondition here is a broken lane, not an
+          # honest opt-out. Arms `common::precondition::require` to panic — a
+          # distinct, non-green nextest FAILED — instead of degrading to a
+          # silent skip-as-pass.
+          #
+          # AAASM-6224: that sentence was not true when it was written. It was
+          # read as covering the Rust pre-build steps alone, and 15 guards —
+          # including the seven gated on the sibling node-sdk's `dist/` and napi
+          # addon — never routed through `require` at all, so arming this
+          # variable did nothing for them. `Build the sibling node-sdk` above is
+          # what makes the claim hold for those seven; the conversion of the 15
+          # call sites is what makes arming this variable reach them.
           AA_REQUIRE_PRECONDITIONS: "1"
           # AAASM-5977 / AAASM-5465: the ledger `common::precondition::require`
           # and the pre-existing conformance-scenario guards both write to, so
