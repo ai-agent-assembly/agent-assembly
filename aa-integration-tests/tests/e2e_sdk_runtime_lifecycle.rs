@@ -4,10 +4,23 @@
 //! short subprocess and asserts the binary-in-PATH and binary-not-found
 //! contract holds identically across Python, Node, and Go.
 //!
-//! Tests **soft-skip** with an `eprintln!` (and `return`) when the sibling
-//! SDK repo is absent, the F115 runtime module has not been merged there
-//! (AAASM-1227/1228/1229), or the language toolchain is missing. This lets
-//! the file compile and pass cleanly even on a stripped-down dev box.
+//! Tests soft-skip when the sibling SDK repo is absent, the F115 runtime
+//! module has not been merged there (AAASM-1227/1228/1229), or the language
+//! toolchain is missing. This lets the file compile and pass cleanly even on a
+//! stripped-down dev box.
+//!
+//! AAASM-6224: "pass cleanly" was doing too much work in that sentence. Each
+//! guard was a bare `eprintln!` plus `return`, and an early `return` from a
+//! `#[test]` fn is a **pass** — so on a machine (or a CI lane) where the
+//! precondition was unmet, the test reported success having asserted nothing,
+//! and nextest suppressed the `eprintln!` because it only prints captured
+//! output for tests that *fail*. The two `node_*` tests below were in exactly
+//! that state on every `Integration tests` run, because the lane checked the
+//! sibling node-sdk out and never built it. The guards now go through
+//! [`common::precondition::require`], which the integration lane arms
+//! (`AA_REQUIRE_PRECONDITIONS`) to panic instead — a lane that provisions an
+//! artifact has no honest reason to skip a test gated on it — while a
+//! developer box keeps the graceful behaviour.
 //!
 //! Sibling-repo resolution mirrors the established pattern in
 //! `e2e_sdk_python.rs` / `e2e_sdk_node.rs` / `e2e_sdk_go.rs`:
@@ -17,10 +30,24 @@
 
 #![allow(dead_code)]
 
+mod common;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Shorthand for the guards below: `Ok(())` when `met`, else `Err(reason())`.
+///
+/// `reason` is a closure so the (sometimes filesystem-touching) message is
+/// only built on the declining path.
+fn met_or(met: bool, reason: impl FnOnce() -> String) -> Result<(), String> {
+    if met {
+        Ok(())
+    } else {
+        Err(reason())
+    }
+}
 
 /// Resolve a binary name (e.g. `"go"`) to its absolute path by walking the
 /// current process's `PATH`. Needed before any `Command::new(name)` call
@@ -86,18 +113,27 @@ fn python_runtime_present() -> bool {
 
 #[test]
 fn python_binary_in_path_returns_resolved_path() {
-    if !python_runtime_present() {
-        eprintln!(
-            "skip python_binary_in_path: {} has no agent_assembly/runtime.py \
-             (AAASM-1227 likely not yet merged)",
-            python_sdk_path().display()
-        );
+    const NAME: &str = "python_binary_in_path_returns_resolved_path";
+    if !common::precondition::require(
+        NAME,
+        met_or(python_runtime_present(), || {
+            format!(
+                "{} has no agent_assembly/runtime.py (AAASM-1227 likely not yet merged)",
+                python_sdk_path().display()
+            )
+        }),
+    ) {
         return;
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
+    // No `if !` on the toolchain guards in this file: there is no
+    // met-precondition branch to fall through to, because the value being
+    // bound is the thing that is missing. Under `AA_REQUIRE_PRECONDITIONS`
+    // `require` panics before the `return`; on a developer box it records the
+    // decline and returns false, and either way there is nothing to run.
     let Some(py_bin) = resolve_in_path("python3") else {
-        eprintln!("skip python_binary_in_path: `python3` not on $PATH");
+        common::precondition::require(NAME, Err("`python3` not on $PATH".to_string()));
         return;
     };
     let fake_home = tempfile::tempdir().expect("create fake HOME");
@@ -127,15 +163,17 @@ fn python_binary_in_path_returns_resolved_path() {
 
 #[test]
 fn python_init_assembly_raises_runtime_error_when_missing() {
-    if !python_runtime_present() {
-        eprintln!(
-            "skip python_init_assembly_raises_…: {} has no agent_assembly/runtime.py",
-            python_sdk_path().display()
-        );
+    const NAME: &str = "python_init_assembly_raises_runtime_error_when_missing";
+    if !common::precondition::require(
+        NAME,
+        met_or(python_runtime_present(), || {
+            format!("{} has no agent_assembly/runtime.py", python_sdk_path().display())
+        }),
+    ) {
         return;
     }
     let Some(py_bin) = resolve_in_path("python3") else {
-        eprintln!("skip python_init_assembly_raises_…: `python3` not on $PATH");
+        common::precondition::require(NAME, Err("`python3` not on $PATH".to_string()));
         return;
     };
     let fake_home = tempfile::tempdir().expect("create fake HOME");
@@ -191,26 +229,42 @@ fn refresh_go_replace_directive() -> bool {
 
 #[test]
 fn go_init_assembly_succeeds_when_binary_in_path() {
-    if !go_runtime_present() {
-        eprintln!(
-            "skip go_init_assembly_succeeds_…: {} has no assembly/aasm_runtime.go \
-             (AAASM-1229 likely not yet merged)",
-            go_sdk_path().display()
-        );
+    const NAME: &str = "go_init_assembly_succeeds_when_binary_in_path";
+    if !common::precondition::require(
+        NAME,
+        met_or(go_runtime_present(), || {
+            format!(
+                "{} has no assembly/aasm_runtime.go (AAASM-1229 likely not yet merged)",
+                go_sdk_path().display()
+            )
+        }),
+    ) {
         return;
     }
-    if Command::new("go").arg("version").output().is_err() {
-        eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
+    if !common::precondition::require(
+        NAME,
+        met_or(Command::new("go").arg("version").output().is_ok(), || {
+            "`go` not on $PATH".to_string()
+        }),
+    ) {
         return;
     }
-    if !refresh_go_replace_directive() {
-        eprintln!("skip go_init_assembly_succeeds_…: go mod edit failed");
+    // `go mod edit` failing is not a toolchain absence — `go` answered
+    // `version` immediately above, and the fixture's go.mod is committed. It is
+    // a broken working tree, so a lane that forbids skips should go red on it
+    // rather than report a pass.
+    if !common::precondition::require(
+        NAME,
+        met_or(refresh_go_replace_directive(), || {
+            format!("`go mod edit -replace` failed in {}", probe_go_dir().display())
+        }),
+    ) {
         return;
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let _fake = make_fake_aasm(tmp.path());
     let Some(go_bin) = resolve_in_path("go") else {
-        eprintln!("skip go_init_assembly_succeeds_…: `go` not on $PATH");
+        common::precondition::require(NAME, Err("`go` not on $PATH".to_string()));
         return;
     };
     // Empty-but-writable HOME so `go run .` can populate its build
@@ -242,23 +296,33 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
 
 #[test]
 fn go_init_assembly_returns_err_when_missing() {
-    if !go_runtime_present() {
-        eprintln!(
-            "skip go_init_assembly_returns_err_…: {} has no assembly/aasm_runtime.go",
-            go_sdk_path().display()
-        );
+    const NAME: &str = "go_init_assembly_returns_err_when_missing";
+    if !common::precondition::require(
+        NAME,
+        met_or(go_runtime_present(), || {
+            format!("{} has no assembly/aasm_runtime.go", go_sdk_path().display())
+        }),
+    ) {
         return;
     }
-    if Command::new("go").arg("version").output().is_err() {
-        eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
+    if !common::precondition::require(
+        NAME,
+        met_or(Command::new("go").arg("version").output().is_ok(), || {
+            "`go` not on $PATH".to_string()
+        }),
+    ) {
         return;
     }
-    if !refresh_go_replace_directive() {
-        eprintln!("skip go_init_assembly_returns_err_…: go mod edit failed");
+    if !common::precondition::require(
+        NAME,
+        met_or(refresh_go_replace_directive(), || {
+            format!("`go mod edit -replace` failed in {}", probe_go_dir().display())
+        }),
+    ) {
         return;
     }
     let Some(go_bin) = resolve_in_path("go") else {
-        eprintln!("skip go_init_assembly_returns_err_…: `go` not on $PATH");
+        common::precondition::require(NAME, Err("`go` not on $PATH".to_string()));
         return;
     };
     // Empty-but-writable HOME so `go run .` can populate its build
@@ -305,18 +369,26 @@ fn probe_node_fixture() -> PathBuf {
 
 #[test]
 fn node_binary_in_path_returns_resolved_path() {
-    if !node_runtime_present() {
-        eprintln!(
-            "skip node_binary_in_path: {} has no dist/esm/runtime.js \
-             (AAASM-1228 not merged or pnpm build not run)",
-            node_sdk_path().display()
-        );
+    const NAME: &str = "node_binary_in_path_returns_resolved_path";
+    // This is one of the two guards AAASM-6224 was filed for: the integration
+    // lane checked the sibling node-sdk out and never built it, so
+    // `dist/esm/runtime.js` was absent on every run and this test passed here
+    // without ever spawning the probe.
+    if !common::precondition::require(
+        NAME,
+        met_or(node_runtime_present(), || {
+            format!(
+                "{} has no dist/esm/runtime.js (AAASM-1228 not merged or pnpm build not run)",
+                node_sdk_path().display()
+            )
+        }),
+    ) {
         return;
     }
     let tmp = tempfile::tempdir().expect("create temp dir");
     let fake = make_fake_aasm(tmp.path());
     let Some(node_bin) = resolve_in_path("node") else {
-        eprintln!("skip node_binary_in_path: `node` not on $PATH");
+        common::precondition::require(NAME, Err("`node` not on $PATH".to_string()));
         return;
     };
     let fake_home = tempfile::tempdir().expect("create fake HOME");
@@ -343,15 +415,17 @@ fn node_binary_in_path_returns_resolved_path() {
 
 #[test]
 fn node_init_assembly_throws_when_missing() {
-    if !node_runtime_present() {
-        eprintln!(
-            "skip node_init_assembly_throws_…: {} has no dist/esm/runtime.js",
-            node_sdk_path().display()
-        );
+    const NAME: &str = "node_init_assembly_throws_when_missing";
+    if !common::precondition::require(
+        NAME,
+        met_or(node_runtime_present(), || {
+            format!("{} has no dist/esm/runtime.js", node_sdk_path().display())
+        }),
+    ) {
         return;
     }
     let Some(node_bin) = resolve_in_path("node") else {
-        eprintln!("skip node_init_assembly_throws_…: `node` not on $PATH");
+        common::precondition::require(NAME, Err("`node` not on $PATH".to_string()));
         return;
     };
     let fake_home = tempfile::tempdir().expect("create fake HOME");
