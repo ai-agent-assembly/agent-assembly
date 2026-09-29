@@ -3391,6 +3391,112 @@ jobs:
           key: ${{ runner.os }}-sonar-${{ hashFiles('sonar-project.properties') }}
           restore-keys: |
             ${{ runner.os }}-sonar-
+      # AAASM-6221: cache the scanner CLI itself, not only the analysis state.
+      #
+      # `sonarqube-scan-action` resolves the CLI through @actions/tool-cache's
+      # find(), which reads $RUNNER_TOOL_CACHE. Hosted runners do not carry that
+      # directory between runs, so find() always missed and every analysis —
+      # including the green ones — re-downloaded the zip from
+      # binaries.sonarsource.com, fetched its detached .asc, and pulled the
+      # signing key from a public keyserver. Three external endpoints on the
+      # critical path of a required check, on main and on every PR. On
+      # 2026-09-28 the zip answered 403 and took main red at 63a5b127.
+      #
+      # Restoring into $RUNNER_TOOL_CACHE is what makes find() hit. The
+      # `~/.sonar/cache` entry above is the *analysis* cache and never covered
+      # the binary.
+      #
+      # MEASURED LIMITATION — this cache does not hit in this repository yet,
+      # and the steps below are dormant rather than protective. The claim worth
+      # testing was "a warm run issues none of those requests", so it was
+      # tested instead of assumed, and it failed: the entry saved at 19:56:53
+      # ("Cache saved with key: Linux-X64-sonar-scanner-cli-ba9859…") was
+      # already gone by 21:22:27 on the same pull request ("Cache not found for
+      # input keys: …"), and the next analysis still logged "Installing Sonar
+      # Scanner CLI 8.1.0.6389 for linux-x64..." with three
+      # binaries.sonarsource.com requests.
+      #
+      # The cause is not this key. The repository's Actions cache sits at
+      # ~9.9 GB against GitHub's 10 GB per-repository ceiling across >4,300
+      # entries, essentially all created within the preceding 24 hours, so
+      # least-recently-used eviction discards an entry this size well before the
+      # next analysis looks for it — and because each open PR gets its own
+      # `refs/pull/N/merge` cache scope, concurrent PRs multiply rather than
+      # share it. That is AAASM-6225 and is not fixable from this file.
+      #
+      # These steps are kept because they are correct, cost only the download
+      # that already happens today when they miss, and begin working the moment
+      # the repository is under quota. What they are NOT is the mitigation for
+      # the 2026-09-28 outage: until AAASM-6225 lands, the widened retry chain
+      # below is the load-bearing part.
+      - name: Resolve the pinned scanner action SHA for the cache key
+        id: sonar-action-pin
+        run: |
+          set -euo pipefail
+          workflow=".github/workflows/ci.yml"
+          # Derived from this workflow rather than written next to the `uses:`
+          # lines. The CLI version is fixed by the action pin, so the key has to
+          # move when the pin moves; a literal SHA here would keep matching
+          # after a Dependabot bump and quietly serve a cache of the previous
+          # CLI while the action downloaded the new one anyway.
+          mapfile -t shas < <(
+            grep -oE 'SonarSource/sonarqube-scan-action@[0-9a-f]{40}' "${workflow}" |
+              cut -d@ -f2 | sort -u
+          )
+          # Fails closed on 0 (the pin became a tag, so there is no version to
+          # key on) and on >1 (the scan attempts drifted apart, so no single key
+          # describes the CLI in use). Either way an unkeyable cache must be an
+          # error, not an empty key silently shared across versions.
+          if [ "${#shas[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one pinned SonarSource/sonarqube-scan-action SHA in ${workflow}, found ${#shas[@]}: ${shas[*]:-none}."
+            exit 1
+          fi
+          echo "sha=${shas[0]}" >> "$GITHUB_OUTPUT"
+          echo "Scanner CLI cache keyed on sonarqube-scan-action@${shas[0]}"
+      - name: Cache the Sonar Scanner CLI
+        id: sonar-cli-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.tool_cache }}/sonar-scanner-cli
+          # No `restore-keys` on purpose: a near-miss restores a *different* CLI
+          # version, which find() ignores, so it would buy nothing and then
+          # block the save of the version actually in use.
+          key: ${{ runner.os }}-${{ runner.arch }}-sonar-scanner-cli-${{ steps.sonar-action-pin.outputs.sha }}
+      - name: Check a restored scanner CLI is usable, and discard it if not
+        if: steps.sonar-cli-cache.outputs.cache-hit == 'true'
+        run: |
+          set -euo pipefail
+          root="${RUNNER_TOOL_CACHE}/sonar-scanner-cli"
+          # tool-cache's find() returns a version directory only when the
+          # sibling `<arch>.complete` marker exists, so the marker — not the
+          # directory — is what decides whether the download is skipped.
+          #
+          # `|| true` because `find` exits non-zero when the root is absent, and
+          # under `pipefail` that would abort the step at the assignment — i.e.
+          # fail with no message at all, which is worse than the state being
+          # diagnosed. Counting zero and reporting it is the useful outcome.
+          markers="$({ find "${root}" -maxdepth 2 -name '*.complete' -type f 2>/dev/null || true; } | wc -l | tr -d ' ')"
+          launchers="$({ find "${root}" -maxdepth 4 -path '*/bin/sonar-scanner' -type f 2>/dev/null || true; } | wc -l | tr -d ' ')"
+          echo "Restored ${markers} tool-cache completion marker(s) and ${launchers} sonar-scanner launcher(s) under ${root}"
+          if [ "${markers}" -eq 0 ] || [ "${launchers}" -eq 0 ]; then
+            # Warn and discard rather than fail. The tempting design is a hard
+            # error, on the grounds that a dead mitigation should not look
+            # healthy — but an exact-key hit does not re-save, so a cache
+            # poisoned once (tool-cache interrupted between the copy and the
+            # marker) would redden this required check on EVERY subsequent run
+            # until a human edited the key. That is a self-inflicted permanent
+            # red main over a narrow window, strictly worse than the CDN
+            # dependency it diagnoses.
+            #
+            # Removing the tree makes find() miss, so the action downloads and
+            # re-populates exactly as it does today: degraded to the old
+            # behaviour, never broken. The state is not silent either — the
+            # annotation repeats on every run until the key moves, and the real
+            # proof that caching works is the scan log below
+            # ("Using cached Sonar Scanner CLI from:"), not this step.
+            echo "::warning::Restored a scanner-CLI cache that @actions/tool-cache cannot use; discarding it so the scan re-downloads and re-populates. If this repeats, bust the cache key (AAASM-6221)."
+            rm -rf "${root}"
+          fi
       - name: SonarCloud scan (attempt 1)
         id: sonar-scan-attempt-1
         continue-on-error: true
@@ -3400,11 +3506,26 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # AAASM-6221: 30s + 30s covered a 60-second window, and the 2026-09-28
+      # outage was still refusing at the end of it — all three attempts ran
+      # inside 13:19:52–13:20:52 and the next successful analysis was 90 minutes
+      # later, so the real outage length is unknown and bounded only above by
+      # 90 minutes. No retry chain rides that out, so this is not a claim to
+      # have fixed that outage — widening 30/30 to 60/180 buys a 4-minute
+      # window instead of a 1-minute one, which covers the short refusals it
+      # can actually absorb and nothing longer. The job sets no
+      # timeout-minutes, so the added wait cannot push it past a ceiling.
+      #
+      # While AAASM-6225 keeps the scanner-CLI cache above evicted, this backoff
+      # is the whole of the mitigation rather than its fallback. Stated plainly:
+      # a long CDN outage can still redden this required check, and the honest
+      # improvement here is a wider transient window plus a log that names the
+      # cause instead of reading as a Sonar-side quality failure.
       - name: Wait before retry (attempt 2)
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
         run: |
-          echo "::warning::SonarCloud scanner failed on attempt 1 (likely transient CDN flake); waiting 30s before retry."
-          sleep 30
+          echo "::warning::SonarCloud scanner failed on attempt 1 (transient flake, or the scanner CLI download was refused — see AAASM-6221); waiting 60s before retry."
+          sleep 60
       - name: SonarCloud scan (attempt 2)
         id: sonar-scan-attempt-2
         if: steps.sonar-scan-attempt-1.outcome == 'failure'
@@ -3418,8 +3539,8 @@ jobs:
       - name: Wait before retry (attempt 3)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         run: |
-          echo "::warning::SonarCloud scanner failed twice; waiting 30s before final retry."
-          sleep 30
+          echo "::warning::SonarCloud scanner failed twice; waiting 180s before the final retry. If all three fail on 'Unexpected HTTP response: 403' while installing the CLI, the download was refused upstream and the scanner-CLI cache did not hit (expected while AAASM-6225 holds this repository at its Actions cache ceiling) — that is AAASM-6221, not a Sonar-side quality problem."
+          sleep 180
       - name: SonarCloud scan (attempt 3 — final)
         if: steps.sonar-scan-attempt-1.outcome == 'failure' && steps.sonar-scan-attempt-2.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
