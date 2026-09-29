@@ -16,6 +16,8 @@
 
 #![cfg(unix)]
 
+mod common;
+
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -110,8 +112,15 @@ async fn wait_for_healthz(port: u16, deadline: Duration) -> Option<serde_json::V
 
 #[tokio::test]
 async fn aa_mode_local_serves_healthz_and_exits_cleanly_on_sigterm() {
+    // AAASM-6224: a bare `eprintln!` plus `return` here reported a PASS with
+    // the message suppressed. The integration lane pre-builds `aa-gateway`, so
+    // an absent binary there is a broken lane — `require` panics under that
+    // lane's `AA_REQUIRE_PRECONDITIONS` and keeps the graceful path locally.
     let Some(binary) = locate_aa_gateway() else {
-        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+        common::precondition::require(
+            "aa_mode_local_serves_healthz_and_exits_cleanly_on_sigterm",
+            Err("aa-gateway binary not found — run `cargo build -p aa-gateway` first".to_string()),
+        );
         return;
     };
 
