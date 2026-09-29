@@ -211,12 +211,14 @@ fn leading_string_literal(after_open_paren: &str) -> Option<String> {
     let s = after_open_paren.trim_start();
     let (body, terminator) = if let Some(rest) = s.strip_prefix('"') {
         (rest, String::from("\""))
-    } else if let Some(rest) = s.strip_prefix('r') {
+    } else {
+        // `?` rather than an `else if let` + `else return None`: clippy's
+        // `question_mark` lint rejects the latter, and the lane runs
+        // `--all-targets --all-features -- -D warnings`.
+        let rest = s.strip_prefix('r')?;
         let hashes = rest.len() - rest.trim_start_matches('#').len();
         let rest = rest[hashes..].strip_prefix('"')?;
         (rest, format!("\"{}", "#".repeat(hashes)))
-    } else {
-        return None;
     };
 
     if terminator != "\"" {
