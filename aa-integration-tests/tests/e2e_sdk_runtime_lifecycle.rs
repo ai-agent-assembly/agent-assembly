@@ -167,10 +167,7 @@ fn python_init_assembly_raises_runtime_error_when_missing() {
     if !common::precondition::require(
         NAME,
         met_or(python_runtime_present(), || {
-            format!(
-                "{} has no agent_assembly/runtime.py",
-                python_sdk_path().display()
-            )
+            format!("{} has no agent_assembly/runtime.py", python_sdk_path().display())
         }),
     ) {
         return;
@@ -259,10 +256,7 @@ fn go_init_assembly_succeeds_when_binary_in_path() {
     if !common::precondition::require(
         NAME,
         met_or(refresh_go_replace_directive(), || {
-            format!(
-                "`go mod edit -replace` failed in {}",
-                probe_go_dir().display()
-            )
+            format!("`go mod edit -replace` failed in {}", probe_go_dir().display())
         }),
     ) {
         return;
@@ -306,10 +300,7 @@ fn go_init_assembly_returns_err_when_missing() {
     if !common::precondition::require(
         NAME,
         met_or(go_runtime_present(), || {
-            format!(
-                "{} has no assembly/aasm_runtime.go",
-                go_sdk_path().display()
-            )
+            format!("{} has no assembly/aasm_runtime.go", go_sdk_path().display())
         }),
     ) {
         return;
@@ -325,10 +316,7 @@ fn go_init_assembly_returns_err_when_missing() {
     if !common::precondition::require(
         NAME,
         met_or(refresh_go_replace_directive(), || {
-            format!(
-                "`go mod edit -replace` failed in {}",
-                probe_go_dir().display()
-            )
+            format!("`go mod edit -replace` failed in {}", probe_go_dir().display())
         }),
     ) {
         return;
@@ -431,10 +419,7 @@ fn node_init_assembly_throws_when_missing() {
     if !common::precondition::require(
         NAME,
         met_or(node_runtime_present(), || {
-            format!(
-                "{} has no dist/esm/runtime.js",
-                node_sdk_path().display()
-            )
+            format!("{} has no dist/esm/runtime.js", node_sdk_path().display())
         }),
     ) {
         return;

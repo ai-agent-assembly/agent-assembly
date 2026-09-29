@@ -271,11 +271,22 @@ async fn audit_chain_survives_gateway_restart() -> anyhow::Result<()> {
 
     use common::binary_gateway::BinaryGateway;
 
-    // Skip cleanly when the binary isn't on disk — matches the
-    // `cli_gateway.rs` pattern so engineers running just one test
-    // crate get a clear hint instead of a confusing failure.
-    if !workspace_gateway_binary_locatable() {
-        eprintln!("skip: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+    // Skip cleanly when the binary isn't on disk so engineers running just one
+    // test crate get a clear hint instead of a confusing failure.
+    //
+    // AAASM-6224: this used to be a bare `eprintln!` plus `return Ok(())`,
+    // which nextest reports as a PASS and whose message it suppresses for
+    // passing tests. The integration lane pre-builds `aa-gateway`, so an unmet
+    // precondition there is a broken lane; `require` panics under that lane's
+    // `AA_REQUIRE_PRECONDITIONS` while keeping the graceful path locally.
+    if !common::precondition::require(
+        "audit_chain_survives_gateway_restart",
+        if workspace_gateway_binary_locatable() {
+            Ok(())
+        } else {
+            Err("aa-gateway binary not found — run `cargo build -p aa-gateway` first".to_string())
+        },
+    ) {
         return Ok(());
     }
 
