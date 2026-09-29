@@ -1,8 +1,11 @@
 // Vite builds this into a real, same-origin asset and hands back a constructor
-// that instantiates it via `new Worker(new URL(...), { type: 'module' })`. The
-// specifier carries `esm/vs/...` because monaco-editor 0.55's `exports` map is
-// the identity mapping `"./*": "./*"`.
-import EditorWorker from 'monaco-editor/esm/vs/editor/editor.worker.js?worker'
+// that instantiates it from that asset's URL.
+//
+// The specifier is relative to `esm/vs/`, not to the package root: monaco-editor
+// 0.57 maps `"./*.js": "./esm/vs/*.js"` in its `exports`, where 0.55 mapped
+// `"./*": "./*"`. So `esm/vs/editor/editor.worker.js` — correct on 0.55 —
+// resolves to `esm/vs/esm/vs/editor/editor.worker.js` on 0.57 and fails.
+import EditorWorker from 'monaco-editor/editor/editor.worker.js?worker'
 
 /** The one member of Monaco's `Environment` this dashboard sets. */
 interface MonacoWorkerEnvironment {
