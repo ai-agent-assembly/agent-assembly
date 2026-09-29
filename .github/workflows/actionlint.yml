@@ -68,6 +68,7 @@ jobs:
               # The reachability gate below lives outside .github/, and editing
               # a gate must re-run it.
               - 'scripts/check_workflow_job_reachability.py'
+              - 'scripts/check_workflow_timeout_ceilings.py'
 
   lint:
     name: actionlint
@@ -133,6 +134,24 @@ jobs:
           set -euo pipefail
           python3 scripts/check_workflow_job_reachability.py --selftest
           python3 scripts/check_workflow_job_reachability.py
+
+      # AAASM-6231: actionlint accepts any `timeout-minutes` that parses, so it
+      # is silent on a job ceiling that sits at or below the sum of its step
+      # ceilings. That relationship decides whether an overrun is reported as a
+      # red failure (a step ceiling fired) or as `cancelled` (the job ceiling
+      # fired), and branch protection accepts `cancelled`.
+      #
+      # integration-tests.yml derives its job ceiling from its step ceilings for
+      # that reason and said so only in comments. PR #2566 edited the file
+      # without re-deriving it and this check reported success, because nothing
+      # was checking.
+      #
+      # Self-test first, in the same step, for the same reason as above.
+      - name: Fail if a job ceiling does not sit above the sum of its step ceilings
+        run: |
+          set -euo pipefail
+          python3 scripts/check_workflow_timeout_ceilings.py --selftest
+          python3 scripts/check_workflow_timeout_ceilings.py
 
   # The stable required context. Named separately from the job it aggregates
   # so renaming an internal job cannot silently drop the branch-protection
