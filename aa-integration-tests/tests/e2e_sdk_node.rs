@@ -270,30 +270,48 @@ fn selftest_langgraph_hierarchy_exits_zero_and_emits_root_planner_executor_start
 // `LiveGateway::spawn` and uses its `addr()` for `AA_GATEWAY_ADDR`. The
 // sibling `node-sdk/` checkout must have the napi-rs `.node` artifact
 // built (`pnpm native:build`). Both prerequisites are probed by
-// `setup_real_test`; missing-prereq tests skip with `eprintln!` rather
-// than failing confusingly. AAASM-1602.
+// `setup_real_test`. AAASM-1602.
+//
+// AAASM-6224: those probes used to skip with a bare `eprintln!` and an
+// early `return`, which `cargo nextest` reports as PASS and whose
+// message it suppresses for passing tests. In CI the napi addon was
+// never built, so all five `real_*` tests below were counted as passes
+// while registering no agent at all — 23-72ms each, against 2.5-2.9s
+// for the `selftest_*` tests that do strictly less work. They now route
+// through `common::precondition::require`, which the integration lane
+// arms to panic, and the lane builds the sibling so the precondition is
+// actually met.
 // ---------------------------------------------------------------------------
 
 /// Returns `Some((live_gateway, addr_string))` when both the
-/// `aa-gateway` binary and the Node.js native binding are available,
-/// or `None` (after printing a skip message) when either is missing.
+/// `aa-gateway` binary and the Node.js native binding are available. When
+/// either is missing this panics in a lane that sets
+/// `AA_REQUIRE_PRECONDITIONS` and returns `None` otherwise — see
+/// `common::precondition::require`.
 ///
 /// Caller keeps the returned `LiveGateway` alive for the duration of
 /// the test — Drop kills the spawned gateway.
 #[allow(dead_code)]
 fn setup_real_test(test_name: &str) -> Option<(LiveGateway, String)> {
-    if !gateway_binary_locatable() {
-        eprintln!("skip {test_name}: aa-gateway binary not found — run `cargo build -p aa-gateway` first");
+    let gateway_present = if gateway_binary_locatable() {
+        Ok(())
+    } else {
+        Err("aa-gateway binary not found — run `cargo build -p aa-gateway` first".to_string())
+    };
+    if !common::precondition::require(test_name, gateway_present) {
         return None;
     }
-    if let Err(e) = native_binding_ready() {
-        eprintln!("skip {test_name}: {e}");
+    if !common::precondition::require(test_name, native_binding_ready().map_err(|e| e.to_string())) {
         return None;
     }
     let gw = match LiveGateway::spawn() {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("skip {test_name}: LiveGateway::spawn failed: {e}");
+            // No `if !` here: there is no met-precondition branch to fall
+            // through to. In a strict lane `require` panics before the return;
+            // on a developer machine it records the decline and returns false,
+            // and either way this function has no gateway to hand back.
+            common::precondition::require(test_name, Err(format!("LiveGateway::spawn failed: {e}")));
             return None;
         }
     };
