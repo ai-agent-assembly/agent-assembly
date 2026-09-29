@@ -32,7 +32,7 @@ git pull --ff-only remote main
 bash scripts/release-readiness.sh <version>      # e.g. 0.0.1-alpha.5
 ```
 
-All 13 checks must report ✓ before continuing. Common failures and what to do:
+All 15 checks must report ✓ before continuing. Common failures and what to do:
 
 - *Cargo.toml version mismatch* — bump PR not yet merged.
 - *Workspace path-dep literals don't match* — at least one Cargo.toml was
@@ -46,6 +46,50 @@ All 13 checks must report ✓ before continuing. Common failures and what to do:
 - *QA sign-off missing or not PASS* — see section 1.6; run
   `/release-qa-gate <version>`, resolve or waive any release-blocking finding,
   commit the PASS sign-off, then re-run.
+- *Version already registered on a publish registry* — the number is
+  permanently unusable; pick a different one. See section 1.1.
+
+## 1.1. Consumed version numbers — 0.0.2 is permanently unavailable (AAASM-6232)
+
+**PyPI version `0.0.2` of `agent-assembly` can never be released.** It was
+uploaded on 2026-05-28 by mistake — a single pure-Python `py3-none-any` wheel
+plus an sdist, where a genuine release ships a platform-wheel set — and both
+files were yanked with the reason "have wrong to release".
+
+Yanking is not deletion. PEP 592 keeps a yanked file on the index and keeps the
+version registered, so the filename **`agent_assembly-0.0.2.tar.gz`** is
+permanently taken. The same is true of crates.io yanking, and npm records an
+unpublished version in its `time` map forever and refuses to let it be
+published again. **No registry ever frees a version number.**
+
+So the version line after `0.0.1` is **`0.0.3`** — `0.0.2` is skipped. Concrete
+live state as of 2026-09-29:
+
+| Number  | PyPI                          | crates.io (9) | npm (5) | Usable for a release? |
+| ------- | ----------------------------- | ------------- | ------- | --------------------- |
+| `0.0.1` | free                          | free          | free    | yes                   |
+| `0.0.2` | **TAKEN** (yanked, 2 files)   | free          | free    | **no**                |
+| `0.0.3` | free                          | free          | free    | yes                   |
+
+`0.0.2` being free on crates.io and npm does not help: one release publishes to
+all three registries at one version, so a single consumed registry consumes the
+number for the whole release.
+
+Do not attempt to "release 0.0.2 anyway". The failure is not a clean refusal —
+it is a **partial publish**. The sdist name collides and is rejected while the
+twelve platform wheels, whose names no existing file uses, upload fine, leaving
+`0.0.2` live with fresh un-yanked wheels beside the old yanked one and no sdist.
+On crates.io it is worse: the nine crates publish in sequence, so a collision
+partway leaves a half-published workspace that cannot be rolled back.
+
+`scripts/release-readiness.sh` check 15 enforces this before any byte is
+uploaded, across PyPI, all 9 crates and all 5 npm packages. To ask the question
+directly at any time — it is a read-only index query, it publishes nothing:
+
+```bash
+python3 scripts/check_version_availability.py <version>   # e.g. 0.0.3
+python3 scripts/check_version_availability.py --selftest   # offline, proves it discriminates
+```
 
 ## 1.5. Security gate — review sign-off (BLOCKS the tag push)
 
@@ -162,9 +206,10 @@ bash scripts/release-tag-guard.sh <version>
 
 **Do not run `git tag` / `git push` directly for this step** (AAASM-5879).
 `scripts/release-tag-guard.sh` is the only sanctioned way to create/push
-the tag: it re-runs `scripts/release-readiness.sh` (all 14 checks,
-including sections 1.5/1.6's security/QA sign-off PASS and section 1.7's
-finalized evidence), re-verifies candidate binding fresh against `HEAD`
+the tag: it re-runs `scripts/release-readiness.sh` (all 15 checks,
+including sections 1.5/1.6's security/QA sign-off PASS, section 1.7's
+finalized evidence, and section 1.1's registry availability),
+re-verifies candidate binding fresh against `HEAD`
 immediately before tagging (AAASM-5998 — TOCTOU defense-in-depth re-running
 the same R1/R1b rules check 14 already ran against the committed
 release-evidence record), then additionally runs a narrower,
@@ -248,8 +293,15 @@ crate publishes broken, the only recovery is to bump to the next version
 (e.g. alpha-5 → alpha-6) and re-tag. Get the source fix in **before**
 re-triggering, not after.
 
-PyPI and npm allow re-publish only within a short grace window and only
-if no installs have happened. Treat them as immutable in practice.
+**PyPI and npm are immutable too — there is no re-publish grace window.**
+PyPI has never accepted a second upload of a filename it already holds, and
+deleting or yanking a release does not release the name. npm's 72-hour
+unpublish window removes a version from resolution but keeps it in the
+package's `time` map and refuses to let that number be published again. So
+for all three registries the rule is the same: **a version number, once
+used, is used forever.** The bumped-to number must itself be one no registry
+has seen — which is why `0.0.2` is unusable (section 1.1) and why
+`release-readiness.sh` check 15 exists.
 
 ## 7. Decoupling note — SDK versions are not required to match
 
