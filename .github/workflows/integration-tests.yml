@@ -594,7 +594,22 @@ jobs:
         # evidence.overrides]]) rather than serializing the whole suite
         # again — ci.yml's `Test` job already runs these same tests fully
         # concurrently and is green, which is the precedent this leans on.
-        run: cargo nextest run -p aa-integration-tests --profile evidence --test-threads=4
+        # AAASM-6224 AC4, second attempt. Run 36507261723 (this same branch, one
+        # commit earlier) proved the panic fires, but proved nothing about the
+        # SCOPE: nextest's default fail-fast aborted the whole suite at the first
+        # precondition panic — "598/751 tests run: 597 passed, 1 failed" — so
+        # exactly one of the seven ever executed, and the 153 tests after it
+        # never ran at all. The expectation written above ("naming exactly seven
+        # tests ... if anything outside those seven fails, the scope claim is
+        # wrong") is not decidable from a fail-fast run in either direction.
+        #
+        # `--no-fail-fast` lets every test execute so all seven panics appear and
+        # the complement is observable. `--retries 0` because the evidence
+        # profile retries 3x and a deterministic missing-file precondition cannot
+        # pass on a retry — it only triples the log.
+        #
+        # Control-only. This branch is never merged.
+        run: cargo nextest run -p aa-integration-tests --profile evidence --test-threads=4 --no-fail-fast --retries 0
 
       - name: Test evidence summary
         # `always()`: a lane that failed on a strict-mode precondition panic
