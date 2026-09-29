@@ -11,7 +11,7 @@
 # The floors now live in pnpm-workspace.yaml, which pnpm 10 and pnpm 11 both
 # read. This job is the gate that keeps them there.
 #
-# It asserts two things; scripts/check_pnpm_overrides_parity.py has the detail:
+# It asserts three things; scripts/check_pnpm_overrides_parity.py has the detail:
 #   1. every pnpm-workspace.yaml "overrides:" mapping matches its sibling
 #      pnpm-lock.yaml (the HORO-377 / AAASM-6032 failure, where a relock
 #      silently deleted the block)
@@ -19,6 +19,15 @@
 #      failure, and the assertion the sibling repository's version of this
 #      script does not have — without it the script exits 0 on a tree with no
 #      pnpm-workspace.yaml, having checked nothing)
+#   3. every directory holding a pnpm-lock.yaml also holds a pnpm-workspace.yaml
+#      (the AAASM-6223 failure). Assertions 1 and 2 catch a floor that is wrong
+#      and a floor in the file pnpm 11 stopped reading; neither catches a
+#      project with no floors file at all, because both iterate what is present.
+#      The TypeScript agent fixture sat here with no pnpm-workspace.yaml and
+#      js-yaml resolved at 4.1.1 — inside three high advisories — while the
+#      other two projects pinned ^4.3.2. Assertion 3 is driven by the lockfile
+#      instead, since a lockfile cannot be absent from a project that resolves
+#      third-party packages.
 #
 # WHY THERE IS NO `paths:` FILTER
 # --------------------------------
