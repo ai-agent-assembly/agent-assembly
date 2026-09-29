@@ -246,17 +246,112 @@ class TestManifestAssertion(_TreeCase):
                 cpop.find_manifest_violations(root)
 
 
+class TestDeclarationSiteAssertion(_TreeCase):
+    """Assertion 3 (AAASM-6223): a lockfile-bearing project needs a floors file.
+
+    The gap the other two assertions leave. Both iterate what is present — the
+    workspace files, the manifests — so a project with no floors file and no
+    misplaced floor is in neither's search space. That is not hypothetical: the
+    TypeScript agent fixture sat in this tree with no pnpm-workspace.yaml and
+    js-yaml resolved at 4.1.1, inside three high advisories, while the other two
+    projects pinned ^4.3.2 and resolved 4.3.2.
+    """
+
+    def test_lockfile_without_workspace_file_is_a_violation(self) -> None:
+        # The exact pre-fix shape of aa-integration-tests/.../typescript.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "fixtures" / "typescript"
+            project.mkdir(parents=True)
+            (project / "pnpm-lock.yaml").write_text(MATCHING_LOCKFILE, encoding="utf-8")
+            violations, inspected = cpop.find_missing_declaration_sites(root)
+            self.assertEqual(inspected, 1)
+            self.assertEqual(len(violations), 1)
+            self.assertIn("fixtures/typescript", violations[0])
+            self.assertIn("nowhere pnpm 11 will read a security floor from", violations[0])
+
+    def test_lockfile_with_workspace_file_passes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_pair(root / "dashboard", WORKSPACE_YAML, MATCHING_LOCKFILE)
+            violations, inspected = cpop.find_missing_declaration_sites(root)
+            self.assertEqual((violations, inspected), ([], 1))
+
+    def test_a_workspace_file_with_no_overrides_still_satisfies_assertion_3(self) -> None:
+        # Deliberate: assertion 3 asks whether there is anywhere to declare a
+        # floor, not which floors are needed. Deciding a project needs none is a
+        # review judgement; noticing it has nowhere to put one is mechanical.
+        # Assertion 1 skips such a directory, so the two do not overlap.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_pair(root / "proj", "onlyBuiltDependencies:\n  - esbuild\n", MATCHING_LOCKFILE)
+            violations, inspected = cpop.find_missing_declaration_sites(root)
+            self.assertEqual((violations, inspected), ([], 1))
+            parity, checked = cpop.find_parity_violations(root)
+            self.assertEqual((parity, checked), ([], 0))
+
+    def test_documented_exemption_suppresses_the_violation(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "vendor" / "thing"
+            project.mkdir(parents=True)
+            (project / "pnpm-lock.yaml").write_text(MATCHING_LOCKFILE, encoding="utf-8")
+            original = dict(cpop.NO_FLOORS_REQUIRED)
+            try:
+                cpop.NO_FLOORS_REQUIRED["vendor/thing"] = "test exemption"
+                violations, inspected = cpop.find_missing_declaration_sites(root)
+            finally:
+                cpop.NO_FLOORS_REQUIRED.clear()
+                cpop.NO_FLOORS_REQUIRED.update(original)
+            self.assertEqual((violations, inspected), ([], 1))
+
+    def test_exemption_list_ships_empty(self) -> None:
+        # An entry is a standing claim that a project resolving third-party
+        # packages will never need a floor. If one appears, the diff that adds
+        # it should have to change this test too.
+        self.assertEqual(cpop.NO_FLOORS_REQUIRED, {})
+
+    def test_reports_every_offending_project_not_just_the_first(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("a", "b"):
+                p = root / name
+                p.mkdir()
+                (p / "pnpm-lock.yaml").write_text(MATCHING_LOCKFILE, encoding="utf-8")
+            violations, inspected = cpop.find_missing_declaration_sites(root)
+            self.assertEqual(inspected, 2)
+            self.assertEqual(len(violations), 2)
+
+    def test_node_modules_lockfiles_are_not_walked(self) -> None:
+        # Installed dependencies ship their own lockfiles and are not ours.
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            p = root / "node_modules" / "dep"
+            p.mkdir(parents=True)
+            (p / "pnpm-lock.yaml").write_text(MATCHING_LOCKFILE, encoding="utf-8")
+            violations, inspected = cpop.find_missing_declaration_sites(root)
+            self.assertEqual((violations, inspected), ([], 0))
+
+
 class TestRealRepositoryState(unittest.TestCase):
     """The gate must hold on this repository, not only on fixtures."""
 
-    def test_repo_root_passes_both_assertions(self) -> None:
+    def test_repo_root_passes_all_three_assertions(self) -> None:
         self.assertEqual(cpop.find_manifest_violations(cpop.REPO_ROOT), [])
         violations, checked = cpop.find_parity_violations(cpop.REPO_ROOT)
         self.assertEqual(violations, [])
         # Guards against the vacuous pass: if this ever reads 0, the tree has
         # stopped declaring overrides anywhere and the parity half of the gate
-        # is asserting nothing. Two directories carry floors as of AAASM-6133.
-        self.assertGreaterEqual(checked, 2)
+        # is asserting nothing. Two directories carried floors as of AAASM-6133;
+        # AAASM-6223 added the third.
+        self.assertGreaterEqual(checked, 3)
+
+        site_violations, inspected = cpop.find_missing_declaration_sites(cpop.REPO_ROOT)
+        self.assertEqual(site_violations, [])
+        # The same guard for assertion 3, and the reason main() refuses to pass
+        # on inspected == 0: a walk that finds no lockfile has verified nothing
+        # but would print the same success line as a clean tree.
+        self.assertGreaterEqual(inspected, 3)
 
 
 if __name__ == "__main__":
