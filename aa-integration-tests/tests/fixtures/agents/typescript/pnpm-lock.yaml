@@ -4,13 +4,16 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  js-yaml: ^4.3.2
+
 importers:
 
   .:
     dependencies:
       '@agent-assembly/sdk':
         specifier: file:../../../../../../node-sdk
-        version: file:../../../../../../node-sdk(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))
+        version: file:../../../../../../node-sdk(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))(@langchain/langgraph@0.2.74(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))(zod-to-json-schema@3.25.2(zod@3.25.76)))
       '@langchain/core':
         specifier: ^0.3.0
         version: 0.3.80(openai@5.12.2(zod@3.25.76))
@@ -38,11 +41,20 @@ packages:
     engines: {node: '>=18.18.0', pnpm: '>=10'}
     peerDependencies:
       '@langchain/core': '>=0.3.0'
+      '@langchain/langgraph': '>=1.0.0'
+      '@mastra/core': '>=0.20.0'
       '@openai/agents': '>=0.1.0'
+      ai: '>=5.0.0'
     peerDependenciesMeta:
       '@langchain/core':
         optional: true
+      '@langchain/langgraph':
+        optional: true
+      '@mastra/core':
+        optional: true
       '@openai/agents':
+        optional: true
+      ai:
         optional: true
 
   '@cfworker/json-schema@4.1.1':
@@ -318,8 +330,8 @@ packages:
   js-tiktoken@1.0.21:
     resolution: {integrity: sha512-biOj/6M5qdgx5TKjDnFT1ymSpM5tbd3ylwDtrQvFQSu0Z7bBYko2dF+W/aUkXUPuk6IVpRxk/3Q2sHOzGlS36g==}
 
-  js-yaml@4.1.1:
-    resolution: {integrity: sha512-qQKT4zQxXl8lLwBtHMWwaTcGfFOZviOJet3Oy/xmGk2gZH677CJM9EvtfdSkgWcATZhj/55JZ0rmy3myCT5lsA==}
+  js-yaml@4.3.2:
+    resolution: {integrity: sha512-SFNOvSJ+Dgf/9An904Yx+CgSlIPCkIpao4qo51lpee25TIRejdH3rhR4EZMGoNx3/TP3O+wzWuiTFl4sqbltzA==}
     hasBin: true
 
   jsonpointer@5.0.1:
@@ -490,9 +502,10 @@ packages:
 
 snapshots:
 
-  '@agent-assembly/sdk@file:../../../../../../node-sdk(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))':
+  '@agent-assembly/sdk@file:../../../../../../node-sdk(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))(@langchain/langgraph@0.2.74(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))(zod-to-json-schema@3.25.2(zod@3.25.76)))':
     optionalDependencies:
       '@langchain/core': 0.3.80(openai@5.12.2(zod@3.25.76))
+      '@langchain/langgraph': 0.2.74(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))(zod-to-json-schema@3.25.2(zod@3.25.76))
 
   '@cfworker/json-schema@4.1.1': {}
 
@@ -714,7 +727,7 @@ snapshots:
     dependencies:
       base64-js: 1.5.1
 
-  js-yaml@4.1.1:
+  js-yaml@4.3.2:
     dependencies:
       argparse: 2.0.1
 
@@ -726,7 +739,7 @@ snapshots:
       '@langchain/openai': 0.6.17(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))
       '@langchain/textsplitters': 0.1.0(@langchain/core@0.3.80(openai@5.12.2(zod@3.25.76)))
       js-tiktoken: 1.0.21
-      js-yaml: 4.1.1
+      js-yaml: 4.3.2
       jsonpointer: 5.0.1
       langsmith: 0.3.87(openai@5.12.2(zod@3.25.76))
       openapi-types: 12.1.3
