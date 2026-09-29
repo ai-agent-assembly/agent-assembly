@@ -220,6 +220,10 @@ on:
       # need their own entries here.
       - "scripts/qa/ci-watch.py"
       - "scripts/qa/ci-watch-negative-control.sh"
+      # AAASM-6232: the pre-publish version-availability gate. Same ADR 0028
+      # pairing rule — this path has a matching `qa_registry` router filter
+      # entry below. Editing a gate must re-run it.
+      - "scripts/check_version_availability.py"
   pull_request:
     branches: [main]
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
@@ -594,6 +598,11 @@ jobs:
               # resource-lock does — same `qa/**` + `scripts/qa/**` surface.
               - 'scripts/qa/ci-watch.py'
               - 'scripts/qa/ci-watch-negative-control.sh'
+              # AAASM-6232: the pre-publish version-availability gate. Shares
+              # this router flag rather than adding a new one — like the
+              # release-evidence checker above, it is release-assurance
+              # machinery whose self-test belongs in the same job.
+              - 'scripts/check_version_availability.py'
               - '.github/workflows/ci.yml'
             # AAASM-5884: community-health file completeness (J33). A
             # dedicated flag rather than folding into `qa_registry` above —
@@ -1519,6 +1528,25 @@ jobs:
       # produces one.
       - name: Self-test the release-evidence checker (negative control)
         run: bash scripts/tests/release-evidence-negative-control.sh
+
+      # AAASM-6232: same convention again, for
+      # scripts/check_version_availability.py — the pre-publish gate that
+      # refuses a version PyPI/crates.io/npm has already registered.
+      # `scripts/release-readiness.sh` check 15 runs this self-test itself
+      # before trusting the live verdict, but that only fires during a
+      # release, so without this step the gate could rot for months and the
+      # first sign would be at the worst possible moment.
+      #
+      # Deliberately `--selftest` only, never the live probe: the real check
+      # queries fifteen third-party indexes over the network, which is exactly
+      # the flakiness that has no place on a per-PR gate. The self-test is
+      # offline and deterministic — it drives the same `findings_for()` the
+      # live path uses over fixtures that include the real shape of PyPI's
+      # yanked 0.0.2 — so it catches rot without importing a network
+      # dependency. The live question belongs where it is answered: at
+      # release-readiness time, on the sanctioned tag path.
+      - name: Self-test the version-availability gate (negative control)
+        run: python3 scripts/check_version_availability.py --selftest
 
   community-health-gate:
     needs: [changes]
