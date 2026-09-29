@@ -313,6 +313,56 @@ jobs:
             || { echo "::error::pnpm native:build produced no native/aa-ffi-node/*.node"; exit 1; }
           echo "node-sdk built: dist/esm/runtime.js + ${addons} napi addon(s)"
 
+      # ══════════════════════════════════════════════════════════════════════
+      # AAASM-6224 AC4 — NEGATIVE CONTROL. THIS BRANCH IS NOT FOR MERGE.
+      #
+      # AC4 asks for a deliberate in-CI precondition break shown going red.
+      # Three links have to hold for the strict gate to be worth anything:
+      #   1. the lane sets AA_REQUIRE_PRECONDITIONS,
+      #   2. that variable makes `require` panic instead of returning false,
+      #   3. a panicking test reddens the check.
+      # Links 1 and 2 are already asserted from inside the lane by
+      # `the_integration_lane_arms_the_strict_gate` and
+      # `strict_mode_turns_an_unmet_precondition_red`. Link 3, and the three
+      # composed end to end, are only demonstrable by unsetting a real
+      # precondition in a real run — which is what this step does.
+      #
+      # Placed AFTER the build step on purpose: the build step asserts both
+      # artifacts exist, so the run first proves they were produced and only
+      # then removes them. That distinguishes "the gate fires on a genuinely
+      # absent artifact" from "the build never worked in the first place".
+      #
+      # `mv`, not `rm`: the point is to unset a precondition, not to destroy
+      # anything, and a moved-aside file can be listed as proof of what was
+      # taken away.
+      #
+      # EXPECTED OUTCOME: the `Run integration tests` step FAILS with
+      # precondition panics naming exactly seven tests — the two gated on
+      # `node_runtime_present()` (dist/esm/runtime.js) and the five gated on
+      # `native_binding_ready()` (the napi *.node glob). The five hermetic
+      # `selftest_*` tests in the same binary must still PASS: their
+      # `@agent-assembly/sdk` import is a *dynamic* `await import` reached only
+      # on the non-AA_SELFTEST branch, so they never touch dist/. If anything
+      # outside those seven fails, the scope claim in AAASM-6224 is wrong.
+      # ══════════════════════════════════════════════════════════════════════
+      - name: "AAASM-6224 AC4: unset the two node-sdk preconditions"
+        working-directory: node-sdk
+        run: |
+          set -euo pipefail
+          mkdir -p ../_ac4_withheld
+          mv dist/esm/runtime.js ../_ac4_withheld/runtime.js
+          find native/aa-ffi-node -maxdepth 1 -name '*.node' -exec mv {} ../_ac4_withheld/ \;
+          echo "withheld:"
+          ls -1 ../_ac4_withheld
+          # Assert the removal actually took, so a red run cannot be credited to
+          # this step when the artifacts are in fact still present.
+          test ! -f dist/esm/runtime.js \
+            || { echo "::error::dist/esm/runtime.js still present; control is void"; exit 1; }
+          remaining=$(find native/aa-ffi-node -maxdepth 1 -name '*.node' | wc -l | tr -d ' ')
+          [ "${remaining}" -eq 0 ] \
+            || { echo "::error::${remaining} napi addon(s) still present; control is void"; exit 1; }
+          echo "both preconditions are now unmet"
+
       - name: Install TypeScript fixture dependencies
         working-directory: aa-integration-tests/tests/fixtures/agents/typescript
         # Ceilinged as a network install: 4s against a warm pnpm store, minutes
