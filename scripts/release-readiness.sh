@@ -5,7 +5,7 @@
 # Usage: bash scripts/release-readiness.sh <version>
 #   e.g. bash scripts/release-readiness.sh 0.0.1-alpha.5
 #
-# Runs 14 local checks that must all pass before pushing a release tag.
+# Runs 15 checks that must all pass before pushing a release tag.
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
@@ -215,6 +215,36 @@ if [ "$EVIDENCE_CHECK_STATUS" -eq 0 ]; then
   fi
 else
   fail "Release-assurance evidence missing/stale/inadmissible for $VERSION" "run /release-qa-gate $VERSION and re-check — see the printed classification table from 'python3 scripts/qa/check-release-evidence.py --version $VERSION --tag-target HEAD'"
+fi
+
+# 15. The version is still available on every immutable publish registry
+# (AAASM-6232). Every check above asks whether *this repo* is ready. None asks
+# whether the outside world will accept the number, and a registry that has
+# already seen it will not — PyPI, crates.io and npm all refuse to re-register a
+# version, and yanking/unpublishing does not free one. `agent-assembly` already
+# has a consumed number: PyPI 0.0.2, uploaded 2026-05-28 by mistake and yanked,
+# with `agent_assembly-0.0.2.tar.gz` permanently taken.
+#
+# Discovering that during a release is worse than a clean refusal. The sdist
+# name collides and is rejected while the platform wheels — new names — upload
+# fine, so PyPI ends up half-published; on crates.io the nine crates publish in
+# sequence, so a collision partway leaves a workspace that cannot be rolled
+# back. This check refuses before any byte is uploaded.
+#
+# Self-test first, in the same step, so a check that has stopped discriminating
+# cannot report readiness. The script is read-only against the registries: it
+# publishes, tags and mutates nothing.
+if ! python3 scripts/check_version_availability.py --selftest >/dev/null 2>&1; then
+  fail "check_version_availability.py self-test fails" "the availability check itself is broken — run 'python3 scripts/check_version_availability.py --selftest' and fix before trusting any verdict from it"
+else
+  AVAIL_OUT="$(python3 scripts/check_version_availability.py "$VERSION" 2>&1)"
+  AVAIL_STATUS=$?
+  if [ "$AVAIL_STATUS" -eq 0 ]; then
+    pass "Version $VERSION is unregistered on PyPI, all 9 crates and all 5 npm packages"
+  else
+    fail "Version $VERSION is already registered on at least one publish registry" "choose a version no registry has seen — registries never free a number, so this one is permanently unusable"
+    printf '%s\n' "$AVAIL_OUT" | sed 's/^/    /' >&2
+  fi
 fi
 
 echo
