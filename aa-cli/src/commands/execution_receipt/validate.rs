@@ -98,6 +98,15 @@ pub enum ReceiptDefect {
     /// The recorded start is after the recorded end.
     #[error("the recorded start is after the recorded end")]
     TimelineInverted,
+    /// A receipt carrying a workspace-transaction binding dropped the
+    /// non-transactional-scope disclaimer, or dropped part of it
+    /// (AAASM-6162).
+    #[error("the workspace binding is missing the scope disclaimer token(s): {missing:?}")]
+    WorkspaceScopeDisclaimerMissing {
+        /// The [`super::schema::NOT_TRANSACTIONAL`] tokens absent from
+        /// `workspace.not_transactional`.
+        missing: Vec<String>,
+    },
 }
 
 /// Whether `claim` asserts coverage, mirroring
@@ -175,6 +184,26 @@ pub fn defects(envelope: &ReceiptEnvelope) -> Vec<ReceiptDefect> {
 
     // R6: withholding is recorded.
     check_withholdings(body, &mut out);
+
+    // R8 (AAASM-6162): a workspace binding must carry the full
+    // non-transactional-scope disclaimer — compared as a set, never by
+    // length, so a receipt that swaps one token for a duplicate of another
+    // still fails.
+    if let Some(workspace) = &body.workspace {
+        let present: std::collections::BTreeSet<&str> = workspace
+            .not_transactional
+            .iter()
+            .filter_map(super::text::ReceiptText::as_str)
+            .collect();
+        let missing: Vec<String> = super::schema::NOT_TRANSACTIONAL
+            .iter()
+            .filter(|token| !present.contains(*token))
+            .map(|token| token.to_string())
+            .collect();
+        if !missing.is_empty() {
+            out.push(ReceiptDefect::WorkspaceScopeDisclaimerMissing { missing });
+        }
+    }
 
     out
 }
