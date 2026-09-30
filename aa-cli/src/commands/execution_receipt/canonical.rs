@@ -18,7 +18,7 @@
 //! a no-op on the digest — see `the_canonical_form_is_pinned` and
 //! `struct_field_order_does_not_change_the_digest` for the tests that pin this
 //! down rather than merely assert it once.
-use aa_core::integration::fingerprint::fingerprint_raw;
+use aa_core::integration::fingerprint::{fingerprint_raw, FINGERPRINT_PREFIX};
 
 /// Names the canonical form a digest is taken over.
 ///
@@ -38,6 +38,18 @@ impl Digest {
     /// The digest of `canonical`'s exact bytes.
     pub fn of_canonical(canonical: &str) -> Self {
         Self(fingerprint_raw(canonical))
+    }
+
+    /// Wrap an already-computed lowercase SHA-256 hex digest, in the same
+    /// `sha256:<hex>` encoding [`fingerprint_raw`] produces.
+    ///
+    /// For a mechanism (e.g. `aa-workspace-tx`) that already hashes its own
+    /// content and hands back bare hex — hashing that hex string again
+    /// through [`Self::of_canonical`] would digest the digest, not the
+    /// content it names. This constructor does not re-hash; it trusts `hex`
+    /// is already the digest a caller wants stored.
+    pub fn from_sha256_hex(hex: &str) -> Self {
+        Self(format!("{FINGERPRINT_PREFIX}{hex}"))
     }
 
     /// The `sha256:<hex>` string.
@@ -186,6 +198,18 @@ mod tests {
             CanonicalError::FloatingPoint { pointer } => assert_eq!(pointer, "/x"),
             other => panic!("expected FloatingPoint, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn from_sha256_hex_agrees_with_of_canonical_for_the_same_bytes() {
+        let canonical = r#"{"a":1}"#;
+        let via_canonical = Digest::of_canonical(canonical);
+        let hex = via_canonical
+            .as_str()
+            .strip_prefix(FINGERPRINT_PREFIX)
+            .expect("of_canonical output carries the sha256: prefix");
+        let via_hex = Digest::from_sha256_hex(hex);
+        assert_eq!(via_canonical, via_hex);
     }
 
     #[test]
