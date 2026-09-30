@@ -44,7 +44,7 @@ use super::host;
 use super::schema::{
     AssertedIdentity, BackendBinding, ConsideredBinding, CredentialNames, DegradedCondition, DegradedKind,
     DomainOutcome, EvidenceRef, ExecutionOutcome, LeaseBinding, LeaseProjection, PolicyBinding, ProducerIdentity,
-    ReceiptBody, SpecBinding, SpecProjection, TerminationRecord,
+    ReceiptBody, SpecBinding, SpecProjection, TerminationRecord, WorkspaceBinding, NOT_TRANSACTIONAL,
 };
 // `super::schema::TerminationRecord` above is the *stored* shape;
 // `TerminationInput` below (defined in this module) is the *raw* shape
@@ -76,6 +76,9 @@ pub struct ReceiptContext<'a> {
     /// not re-derived from `disposition` alone, because only the supervisor
     /// knows whether a deadline or an operator signal was involved.
     pub termination: TerminationInput,
+    /// This launch's settled `--workspace-tx` outcome, when one applied
+    /// (AAASM-6162). `None` for every launch without `--workspace-tx`.
+    pub workspace: Option<&'a crate::commands::run_workspace_tx::WorkspaceOutcome>,
 }
 
 /// Raw termination facts, as `run_confined` observes them — screened into a
@@ -179,7 +182,7 @@ pub fn body_for_run(ctx: &ReceiptContext<'_>) -> Result<ReceiptBody, CanonicalEr
         leases,
         domains,
         credentials,
-        workspace: None,
+        workspace: ctx.workspace.map(workspace_binding),
         // AAASM-6171: `aasm run` never requests a specific `HostOperation` of
         // its own (`self.host_capability_contract` is `not_required()` for
         // every launch today) — see `run.rs`'s `resolve_boundary` for the gate
@@ -619,6 +622,32 @@ fn execution_outcome(ctx: &ReceiptContext<'_>, withheld: &mut Vec<FieldName>) ->
         exit_code,
         no_code_detail,
         termination,
+    }
+}
+
+/// Project a settled `--workspace-tx` outcome into a [`WorkspaceBinding`]
+/// (AAASM-6162). `diff_digest` is taken over the sorted `(verb, path)`
+/// change set so the receipt pins the exact set without storing any path as
+/// text — the digest, not a list of paths, is what a verifier can compare.
+fn workspace_binding(outcome: &crate::commands::run_workspace_tx::WorkspaceOutcome) -> WorkspaceBinding {
+    let diff_digest = digest_of(&outcome.sorted_changes).ok();
+    WorkspaceBinding {
+        base_digest: if outcome.base_digest_hex.is_empty() {
+            None
+        } else {
+            Some(Digest::from_sha256_hex(&outcome.base_digest_hex))
+        },
+        result_digest: outcome.result_digest_hex.as_deref().map(Digest::from_sha256_hex),
+        diff_digest,
+        committed: Some(outcome.committed),
+        refusal_kind: outcome.refusal_kind.map(ReceiptText::token),
+        added_count: outcome.added,
+        modified_count: outcome.modified,
+        deleted_count: outcome.deleted,
+        surface_excluded_count: outcome.surface_excluded_count,
+        protected_selector_count: outcome.protected_selector_count,
+        approval_presented: outcome.approval_presented,
+        not_transactional: NOT_TRANSACTIONAL.iter().copied().map(ReceiptText::token).collect(),
     }
 }
 

@@ -74,6 +74,7 @@ fn build_body(preventing: &[CapabilityDomain]) -> ReceiptBody {
         ended_at: std::time::SystemTime::now(),
         disposition: &disposition,
         termination: TerminationInput::SelfExited,
+        workspace: None,
     };
     body_for_run(&ctx).expect("a mock-backend fixture never carries a float or a non-serializable value")
 }

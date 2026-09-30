@@ -330,14 +330,64 @@ pub struct CredentialNames {
     pub ambient_unremoved: Vec<ReceiptText>,
 }
 
-/// A workspace-transaction binding. Every field `None`/empty today — see
-/// `mod.rs`'s deferred-scope list.
+/// What a workspace transaction does not make transactional (AAASM-6162).
+///
+/// Emitted on every receipt that carries a [`WorkspaceBinding`] and on every
+/// `--workspace-tx` run's stderr block, so the same list backs both
+/// surfaces. `validate.rs`'s rule checks a receipt's
+/// [`WorkspaceBinding::not_transactional`] against this exact constant,
+/// which is what keeps the writer and the verifier from drifting onto two
+/// different lists: a transaction stages and folds back filesystem writes
+/// under a declared surface — it says nothing about network calls, database
+/// writes, processes started, or a path outside that surface.
+pub const NOT_TRANSACTIONAL: [&str; 4] = [
+    "network_side_effects",
+    "database_side_effects",
+    "paths_outside_declared_surface",
+    "processes_and_ipc",
+];
+
+/// A workspace-transaction binding. `None` on [`ReceiptBody::workspace`] when
+/// `--workspace-tx` was not passed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceBinding {
-    /// A digest of the transaction's staged-versus-base diff, when computed.
+    /// A digest of the base tree immediately before commit, when the
+    /// transaction reached a commit attempt.
+    pub base_digest: Option<Digest>,
+    /// A digest of the base tree immediately after a successful commit.
+    /// `Some` only when [`Self::committed`] is `Some(true)`.
+    pub result_digest: Option<Digest>,
+    /// A digest of the transaction's exact applied-or-attempted change set
+    /// (the sorted `(verb, path)` list) — pins what changed without storing
+    /// any path as text.
     pub diff_digest: Option<Digest>,
-    /// Whether the transaction committed.
+    /// Whether the transaction committed. `Some(true)` committed,
+    /// `Some(false)` with [`Self::refusal_kind`] `None` discarded,
+    /// `Some(false)` with a `refusal_kind` present was refused. `None` only
+    /// if a transaction never reached a settle decision at all.
     pub committed: Option<bool>,
+    /// A [`CommitRefusal::kind_str`] token, present only when the commit was
+    /// refused.
+    pub refusal_kind: Option<ReceiptText>,
+    /// How many paths in the change set were additions.
+    pub added_count: usize,
+    /// How many paths in the change set were modifications.
+    pub modified_count: usize,
+    /// How many paths in the change set were deletions.
+    pub deleted_count: usize,
+    /// How many selectors were excluded from the declared surface. Excluded
+    /// from the *copy-in*, not from the apply-back — see `mod.rs`'s
+    /// transactional-workspace-mode notes for why a path created inside an
+    /// excluded selector still lands in the change set.
+    pub surface_excluded_count: usize,
+    /// How many protected-path selectors this launch declared.
+    pub protected_selector_count: usize,
+    /// Whether `--workspace-tx-approve` was passed.
+    pub approval_presented: bool,
+    /// [`NOT_TRANSACTIONAL`], carried onto the receipt itself so a reader
+    /// never has to cross-reference this module's source to know what a
+    /// transaction does not cover.
+    pub not_transactional: Vec<ReceiptText>,
 }
 
 /// What the launch actually did.

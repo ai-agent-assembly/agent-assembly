@@ -42,6 +42,7 @@ pub mod run_egress_broker;
 pub mod run_host_capability;
 pub mod run_no_proxy_guard;
 pub mod run_registration;
+pub mod run_workspace_tx;
 // strip-for-publish:end devtool
 pub mod sandbox;
 pub mod start;
