@@ -221,6 +221,7 @@
   - [0037 - Release Candidate/Tag Binding & Append-Only Evidence Attempts](adr/0037-release-candidate-tag-binding-and-evidence-attempt-identity.md)
   - [0038 - Capability Leases & the Explicit-Authority Contract](adr/0038-capability-leases-and-explicit-authority-contract.md)
   - [0039 - Personal-Observe Deployment Profile](adr/0039-personal-observe-profile.md)
+  - [0040 - Transactional Workspace Mode](adr/0040-transactional-workspace-mode.md)
 
 # Research
 
