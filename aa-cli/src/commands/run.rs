@@ -3980,7 +3980,7 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         plan::RunTarget::DevTool { .. } => "<dry-run: managed settings not generated>".to_string(),
     };
 
-    format_dry_run_output(
+    let mut output = format_dry_run_output(
         &handle,
         resolved.policy().resolution(),
         resolved.network().no_proxy(),
@@ -3989,7 +3989,24 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         bound.child_env(),
         bound.fidelity(),
         bound.isolation(),
-    )
+    );
+
+    // AAASM-6162: a preview never opens a transaction (no state directory is
+    // created, nothing is copied) — it only names what a live run with these
+    // flags would do, matching every other refusal/description this
+    // function reports rather than performs.
+    if let Some(plan) = &resolved.workspace_tx {
+        output.push_str(&format!(
+            "\nworkspace transaction: base={} exclusions={} protected={} approval_presented={} \
+             (preview only — nothing is materialized; a live run would open a transaction here)\n",
+            plan.base_root.display(),
+            plan.exclusions.len(),
+            plan.protected.len(),
+            plan.approved,
+        ));
+    }
+
+    output
 }
 
 /// Testable core of `execute`: detect, register, apply settings, spawn child.
@@ -8271,6 +8288,48 @@ mod tests {
         assert!(
             output.contains("working_dir: <inherited from this shell>"),
             "with no --workdir the preview must say the child inherits this shell's directory: {output}"
+        );
+    }
+
+    /// AAASM-6162 AC 2: a `--dry-run --workspace-tx` preview names the base
+    /// root and states that nothing is materialized — and, separately
+    /// (asserted by the caller of this function, not here), creates no
+    /// state directory on disk.
+    #[test]
+    fn a_workspace_tx_preview_names_the_base_root_and_materializes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+        args.workdir = Some(dir.path().to_path_buf());
+        args.workspace_tx = true;
+        args.dry_run = true;
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains(&format!("base={}", dir.path().display())),
+            "the preview must name the base root: {output}"
+        );
+        assert!(
+            output.contains("nothing is materialized"),
+            "the preview must say nothing is materialized: {output}"
+        );
+    }
+
+    /// The converse control: a preview with no `--workspace-tx` says nothing
+    /// about a transaction at all.
+    #[test]
+    fn a_preview_without_workspace_tx_says_nothing_about_a_transaction() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            !output.contains("workspace transaction"),
+            "a preview without --workspace-tx must not mention a transaction: {output}"
         );
     }
 }
