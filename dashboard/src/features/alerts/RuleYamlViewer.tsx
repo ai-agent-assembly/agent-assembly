@@ -16,11 +16,19 @@ import { useTheme } from '../../theme/useTheme'
 // `script-src 'self'` CSP (AAASM-4322) blocks that fetch — but the config
 // call is deferred until Monaco is actually being loaded, before Editor
 // resolves.
+//
+// `configureMonacoWorkers` is the same story one layer down: that CSP also
+// governs how Monaco starts its *worker*, and left unconfigured Monaco starts
+// it from a `blob:` URL the policy blocks (AAASM-6233). It has to run before
+// Monaco asks for a worker, which it does only once an editor is mounted —
+// after this factory resolves.
 const Editor = lazy(async () => {
-  const [monaco, { default: MonacoEditor }] = await Promise.all([
+  const [monaco, { default: MonacoEditor }, { configureMonacoWorkers }] = await Promise.all([
     import('monaco-editor'),
     import('@monaco-editor/react'),
+    import('./monacoWorkerEnvironment'),
   ])
+  configureMonacoWorkers()
   loader.config({ monaco })
   return { default: MonacoEditor }
 })
