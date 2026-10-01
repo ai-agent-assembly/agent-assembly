@@ -776,16 +776,18 @@ fn a_max_open_files_flag_reaches_the_native_backend_as_a_real_rlimit() {
     );
 }
 
-/// A script that repeatedly appends 64 bytes to `target` until a write
-/// fails, then records how many bytes actually landed. `dd` rather than a
-/// shell loop so each write is a single, uniformly-sized syscall — `dd`
-/// itself gets SIGXFSZ on the write that crosses the ceiling, truncating the
-/// file at the ceiling rather than partway through a line.
+/// A script that appends a 64-byte line to `target` 100 times (6400 bytes
+/// total, well past the ceiling below), via the shell's own `>>` builtin
+/// rather than an external tool — no `dd` flag compatibility to depend on
+/// across hosts. A write that crosses `RLIMIT_FSIZE` delivers `SIGXFSZ` to
+/// this shell process itself, ending the script at whatever the file's size
+/// was at that point rather than partway through a line (each `printf` call
+/// is one write of a fixed, known size).
 fn fsize_loop_script(target: &Path) -> String {
     format!(
-        "i=0; while [ $i -lt 4096 ]; do \
-         dd if=/dev/zero bs=64 count=1 oflag=append conv=notrunc of={} 2>/dev/null || break; \
-         i=$((i+64)); done",
+        "i=0; while [ $i -lt 100 ]; do \
+         printf '0123456789012345678901234567890123456789012345678901234567\\n' >> {} || break; \
+         i=$((i+1)); done",
         target.display()
     )
 }
