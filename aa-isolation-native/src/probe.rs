@@ -245,6 +245,25 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
         &nested(&script(&test_target)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    // AAASM-6165 temporary diagnostic: this probe's Inconclusive detail is
+    // not surfaced through the capability report (`measured()` always shows
+    // its own fixed description), so a real refusal on CI otherwise gives no
+    // way to tell "the launcher itself refused" from "the script ran but
+    // never reported a count" without a round-trip per hypothesis. Print the
+    // launcher's own diagnostic straight to stderr -- visible in the raw CI
+    // job log -- and remove this once the real cause is confirmed.
+    if control.is_err() || read_count(&control_target).is_none() {
+        eprintln!(
+            "AAASM-6165 descriptor-ceiling probe: control diagnostic: {:?}",
+            control.as_ref().map(|o| &o.diagnostic)
+        );
+    }
+    if test.is_err() || read_count(&test_target).is_none() {
+        eprintln!(
+            "AAASM-6165 descriptor-ceiling probe: test diagnostic: {:?}",
+            test.as_ref().map(|o| &o.diagnostic)
+        );
+    }
     let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
         return Observation::Inconclusive {
             detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
