@@ -174,6 +174,12 @@ fn exec_args(argv: &[&str]) -> RunArgs {
         observe: false,
         isolation: aa_cli::commands::run::IsolationIntent::None,
         isolation_backend: None,
+        max_memory_bytes: None,
+        max_pids: None,
+        max_open_files: None,
+        max_file_size_bytes: None,
+        max_wall_clock_seconds: None,
+        max_cpu_seconds: None,
     }
 }
 

@@ -333,6 +333,12 @@ fn confined_exec_args(policy: &Path, script: &str) -> RunArgs {
         observe: false,
         isolation: IsolationIntent::Process,
         isolation_backend: None,
+        max_memory_bytes: None,
+        max_pids: None,
+        max_open_files: None,
+        max_file_size_bytes: None,
+        max_wall_clock_seconds: None,
+        max_cpu_seconds: None,
     }
 }
 
@@ -690,5 +696,82 @@ fn an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist() {
         "a syscalls.allow policy resolved `--isolation auto` to the native backend, its filter killed \
          the process for the write it did not permit, and the identical launch with `write` \
          allowlisted produced the effect instead",
+    );
+}
+
+/// A script that opens file descriptors in a loop until the kernel refuses one,
+/// then writes the count it reached to `target`. Mirrors
+/// `aa-isolation-native/src/probe.rs`'s own descriptor-ceiling probe.
+fn fd_loop_script(target: &Path) -> String {
+    format!(
+        "i=0; while [ $i -lt 2000 ]; do eval \"exec $((i+10))<>/dev/null\" || break; i=$((i+1)); done; \
+         printf %s \"$i\" > {}",
+        target.display()
+    )
+}
+
+/// **AAASM-6165, the Round-1 reachability proof.** `--max-open-files` on
+/// `aasm run exec` reaches the AASM-native backend and is enforced as a real
+/// `RLIMIT_NOFILE` ceiling on the confined process — the chain the ticket's
+/// own design calls out as the actual gap this ticket closes (the backend-
+/// neutral `ResourceLimits` type already existed; nothing produced a
+/// requirement that reached it).
+///
+/// The pair: identical launch, ceiling present vs. absent. The test run must
+/// open strictly fewer descriptors than the control **and** stay at or under
+/// the stated ceiling — either half failing would mean the flag reached the
+/// backend but the number it installed was not the number requested, or that
+/// the ceiling had no effect at all.
+#[test]
+fn a_max_open_files_flag_reaches_the_native_backend_as_a_real_rlimit() {
+    const SCENARIO: &str = "aasm-run-native-max-open-files";
+    if require_confining_native_host(SCENARIO).is_none() {
+        return;
+    }
+    const CEILING: u32 = 32;
+    let scratch = Scratch::new("max-open-files");
+    let target = scratch.permitted().join("fd-count");
+    let policy = policy_permitting_writes(&scratch, "p.yaml", &[scratch.permitted()]);
+
+    // Control: the identical launch, no `Resource` requirement at all.
+    let mut control_args = confined_exec_args(&policy, &fd_loop_script(&target));
+    control_args.isolation = IsolationIntent::Process;
+    control_args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.to_string());
+    let _ = launch(&control_args, no_adapters()).expect("the control launch runs");
+    let control_count: u32 = std::fs::read_to_string(&target)
+        .expect("the control run must report a count")
+        .trim()
+        .parse()
+        .expect("the control run must report a valid count");
+    std::fs::remove_file(&target).expect("reset between the pair");
+
+    // Test: the identical launch, `--max-open-files 32`.
+    let mut test_args = confined_exec_args(&policy, &fd_loop_script(&target));
+    test_args.isolation = IsolationIntent::Process;
+    test_args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.to_string());
+    test_args.max_open_files = Some(CEILING);
+    let _ = launch(&test_args, no_adapters());
+    let test_count: u32 = std::fs::read_to_string(&target)
+        .expect("the test run must report a count")
+        .trim()
+        .parse()
+        .expect("the test run must report a valid count");
+
+    assert!(
+        test_count < control_count,
+        "a `--max-open-files {CEILING}` launch opened as many descriptors as the control \
+         ({test_count} vs {control_count}); the ceiling reached no mechanism"
+    );
+    assert!(
+        test_count <= CEILING,
+        "a `--max-open-files {CEILING}` launch opened {test_count} descriptors, over the stated ceiling"
+    );
+
+    measured(
+        SCENARIO,
+        &format!(
+            "`--max-open-files {CEILING}` lowered to a real RLIMIT_NOFILE on the native backend: the \
+             ceilinged run opened {test_count} descriptor(s) against the control's {control_count}"
+        ),
     );
 }
