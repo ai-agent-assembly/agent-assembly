@@ -112,9 +112,18 @@ fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64, name: &str) -> Re
 /// The non-Linux stub. Keeps every caller — including this crate's own
 /// tests, written in the runtime-decline shape so they type-check on every
 /// host — compiling on a host with no rlimit mechanism reachable from here.
+///
+/// An empty set installs nothing on any platform, so it succeeds here too
+/// (mirroring the real Linux path's own no-op case) rather than refusing a
+/// launch that asked for no ceiling at all just because this host can't
+/// enforce one.
 #[cfg(not(target_os = "linux"))]
-pub fn install(_limits: &NativeLimits) -> Result<Vec<String>, String> {
-    Err("this platform has no rlimit mechanism reachable from this crate".to_string())
+pub fn install(limits: &NativeLimits) -> Result<Vec<String>, String> {
+    if limits.is_empty() {
+        Ok(Vec::new())
+    } else {
+        Err("this platform has no rlimit mechanism reachable from this crate".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -142,7 +151,6 @@ mod tests {
         assert!(rendered.contains("max_file_size_bytes=4096"));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn installing_an_empty_set_is_a_harmless_noop() {
         assert_eq!(
