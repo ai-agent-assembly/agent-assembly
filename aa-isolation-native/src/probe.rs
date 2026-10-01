@@ -264,6 +264,16 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
         &nested(&script(&test_target, &test_sink)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    // AAASM-6165 temporary diagnostic, round 3: the RDWR-vs-write-only fix
+    // did not resolve this symptom either, so print full evidence again.
+    // Remove once the real cause is confirmed.
+    eprintln!(
+        "AAASM-6165 probe round 3: control={:?} control_count={:?} test={:?} test_count={:?}",
+        control.as_ref().map(|o| &o.diagnostic),
+        read_count(&control_target),
+        test.as_ref().map(|o| &o.diagnostic),
+        read_count(&test_target),
+    );
     let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
         return Observation::Inconclusive {
             detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
