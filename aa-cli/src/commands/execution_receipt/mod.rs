@@ -42,9 +42,10 @@
 //! * **That any property recorded as unmeasured actually held.** A domain
 //!   whose [`schema::DomainOutcome::evidence_basis`] is anything short of
 //!   `decision` cannot carry a prevention claim — [`validate`]'s rules R1–R5
-//!   enforce this at verify time, not merely at construction, so a hand-built
-//!   receipt with a freshly recomputed, holding seal still fails `verify()`
-//!   if it asserts more than its own evidence supports.
+//!   enforce this only at `verify()` time (construction never calls
+//!   [`validate::defects`]), so a hand-built receipt with a freshly
+//!   recomputed, holding seal still fails `verify()` if it asserts more than
+//!   its own evidence supports.
 //!
 //! A receipt that does not verify (holding seal *and* zero defects) is never
 //! acted on by anything reading it.

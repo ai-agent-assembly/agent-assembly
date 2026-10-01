@@ -151,10 +151,10 @@ fn state_asserts_coverage(state: &str) -> Option<bool> {
 
 /// Every defect found in `envelope`'s body, in rule order.
 ///
-/// Runs at construction (see `project.rs`'s callers) and again at
-/// [`super::verify::verify`] time — the latter is what catches a hand-built
-/// receipt whose seal was freshly, correctly recomputed after the lie was
-/// written in.
+/// Called only from [`super::verify::verify`] (AAASM-6162 self-review:
+/// `project.rs` does not call this at construction time, despite an earlier
+/// version of this doc claiming it does — a sealed receipt is written with
+/// no defect check, and only a later `aasm receipt verify` run catches one).
 pub fn defects(envelope: &ReceiptEnvelope) -> Vec<ReceiptDefect> {
     let mut out = Vec::new();
     let body = &envelope.body;
