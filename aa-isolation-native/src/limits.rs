@@ -80,25 +80,34 @@ impl fmt::Display for NativeLimits {
 pub fn install(limits: &NativeLimits) -> Result<Vec<String>, String> {
     let mut steps = Vec::new();
     if let Some(max) = limits.max_open_files {
-        set_rlimit(libc::RLIMIT_NOFILE, u64::from(max), "RLIMIT_NOFILE")?;
+        set_rlimit(libc::RLIMIT_NOFILE as libc::c_int, u64::from(max), "RLIMIT_NOFILE")?;
         steps.push(format!("RLIMIT_NOFILE installed: soft == hard == {max}"));
     }
     if let Some(max) = limits.max_file_size_bytes {
-        set_rlimit(libc::RLIMIT_FSIZE, max, "RLIMIT_FSIZE")?;
+        set_rlimit(libc::RLIMIT_FSIZE as libc::c_int, max, "RLIMIT_FSIZE")?;
         steps.push(format!("RLIMIT_FSIZE installed: soft == hard == {max} byte(s)"));
     }
     Ok(steps)
 }
 
+// `libc::RLIMIT_*` constants are typed `__rlimit_resource_t` on glibc but a
+// plain `c_int` on other Linux libcs (musl, the "Excluded workspace builds"
+// CI lane's target) -- `__rlimit_resource_t` does not exist there at all, so
+// this takes the portable `c_int` and callers cast at the call site rather
+// than this function naming a glibc-only type.
 #[cfg(target_os = "linux")]
-fn set_rlimit(resource: libc::__rlimit_resource_t, value: u64, name: &str) -> Result<(), String> {
+fn set_rlimit(resource: libc::c_int, value: u64, name: &str) -> Result<(), String> {
     let limit = libc::rlimit {
-        rlim_cur: value,
-        rlim_max: value,
+        rlim_cur: value as libc::rlim_t,
+        rlim_max: value as libc::rlim_t,
     };
     // SAFETY: `limit` is a valid, fully-initialized `rlimit` whose pointer does
     // not outlive this call. `setrlimit` affects only the calling process.
-    let rc = unsafe { libc::setrlimit(resource, &limit) };
+    // `as _`: `setrlimit`'s first parameter's exact integer type (c_int on
+    // some libcs, c_uint/`__rlimit_resource_t` on glibc) varies by target;
+    // this lets the compiler coerce `resource` to whichever one applies here
+    // rather than this function naming a target-specific type.
+    let rc = unsafe { libc::setrlimit(resource as _, &limit) };
     if rc == 0 {
         Ok(())
     } else {
