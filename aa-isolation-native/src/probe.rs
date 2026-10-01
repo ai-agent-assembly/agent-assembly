@@ -144,6 +144,10 @@ pub struct ConfinementProbe {
     pub filesystem_write: Observation,
     /// Whether a grandchild was denied a syscall the launch did not permit.
     pub syscall: Observation,
+    /// Whether a grandchild that opened file descriptors in a loop hit
+    /// `RLIMIT_NOFILE` before it hit whatever the host's own default ceiling
+    /// is (AAASM-6165).
+    pub descriptor_ceiling: Observation,
 }
 
 impl ConfinementProbe {
@@ -155,7 +159,8 @@ impl ConfinementProbe {
         Self {
             filesystem_read: observation.clone(),
             filesystem_write: observation.clone(),
-            syscall: observation,
+            syscall: observation.clone(),
+            descriptor_ceiling: observation,
         }
     }
 
@@ -194,6 +199,64 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
         filesystem_read: measure_read(facts, &secret),
         filesystem_write: measure_write(facts, &target),
         syscall: measure_syscall(facts, &target),
+        descriptor_ceiling: measure_descriptor_ceiling(facts, &target),
+    }
+}
+
+/// The ceiling this probe installs on the test run. Tiny, and well above a
+/// minimal `/bin/sh` grandchild's own baseline descriptor usage (stdin,
+/// stdout, stderr and the handful the shell itself opens), so a shortfall
+/// against the control is attributable to the ceiling and not to the shell's
+/// own footprint.
+const DESCRIPTOR_CEILING_PROBE_LIMIT: u32 = 16;
+
+/// Resource (`max_open_files`): the control run installs no ceiling and opens
+/// file descriptors in a loop until the host's own default stops it; the test
+/// run installs [`DESCRIPTOR_CEILING_PROBE_LIMIT`] and does the same. Both
+/// write how many they reached to a file, because the effect under test is a
+/// count, not a boolean — unlike every other measurement in this module.
+fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
+    let control_target = dir.join("fd-control");
+    let test_target = dir.join("fd-test");
+    let script = |target: &Path| {
+        format!(
+            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))<>/dev/null\" || break; i=$((i+1)); done; \
+             printf %s \"$i\" > {}",
+            shell_word(&target.to_string_lossy())
+        )
+    };
+    let control = run_confined(facts, write_grant(dir), &nested(&script(&control_target)));
+    let test = run_confined_with_limits(
+        facts,
+        write_grant(dir),
+        crate::limits::NativeLimits {
+            max_open_files: Some(DESCRIPTOR_CEILING_PROBE_LIMIT),
+            max_file_size_bytes: None,
+        },
+        &nested(&script(&test_target)),
+    );
+    let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
+        return Observation::Inconclusive {
+            detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
+        };
+    };
+    if control_count == 0 {
+        return Observation::Inconclusive {
+            detail: "the descriptor-ceiling control run opened zero descriptors, so the test run's \
+                     shortfall is not attributable to the boundary"
+                .to_string(),
+        };
+    }
+    let (Ok(_), Some(test_count)) = (&test, read_count(&test_target)) else {
+        return Observation::Inconclusive {
+            detail: "the descriptor-ceiling test run could not be executed or did not report a count".to_string(),
+        };
+    };
+    if test_count < control_count && test_count <= DESCRIPTOR_CEILING_PROBE_LIMIT {
+        Observation::Denied
+    } else {
+        Observation::Permitted
     }
 }
 
@@ -388,7 +451,13 @@ struct RunOutput {
 /// Run `script` through the launcher with exactly `grants` installed and no
 /// syscall filter.
 fn run_confined(facts: &HostFacts, grants: Grants, script: &str) -> Result<RunOutput, String> {
-    run_confined_inner(facts, grants, &SyscallFilter::NotRequested, script)
+    run_confined_inner(
+        facts,
+        grants,
+        &SyscallFilter::NotRequested,
+        &crate::limits::NativeLimits::default(),
+        script,
+    )
 }
 
 /// Run `script` through the launcher with exactly `grants` and `syscalls`
@@ -399,16 +468,40 @@ fn run_confined_with_syscalls(
     syscalls: BTreeSet<Syscall>,
     script: &str,
 ) -> Result<RunOutput, String> {
-    run_confined_inner(facts, grants, &SyscallFilter::Allow(syscalls), script)
+    run_confined_inner(
+        facts,
+        grants,
+        &SyscallFilter::Allow(syscalls),
+        &crate::limits::NativeLimits::default(),
+        script,
+    )
+}
+
+/// Run `script` through the launcher with exactly `grants` and `limits`
+/// installed, no syscall filter (AAASM-6165).
+fn run_confined_with_limits(
+    facts: &HostFacts,
+    grants: Grants,
+    limits: crate::limits::NativeLimits,
+    script: &str,
+) -> Result<RunOutput, String> {
+    run_confined_inner(facts, grants, &SyscallFilter::NotRequested, &limits, script)
 }
 
 fn run_confined_inner(
     facts: &HostFacts,
     grants: Grants,
     syscalls: &SyscallFilter,
+    limits: &crate::limits::NativeLimits,
     script: &str,
 ) -> Result<RunOutput, String> {
-    let argv = crate::launch::build(&grants, syscalls, PROBE_SHELL, &["-c".to_string(), script.to_string()]);
+    let argv = crate::launch::build(
+        &grants,
+        syscalls,
+        limits,
+        PROBE_SHELL,
+        &["-c".to_string(), script.to_string()],
+    );
     let mut command = Command::new(facts.launcher());
     for arg in &argv {
         command.arg(arg);

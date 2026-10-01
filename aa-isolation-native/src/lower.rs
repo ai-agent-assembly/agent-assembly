@@ -55,6 +55,8 @@ pub struct DomainLowering {
     pub grants: Grants,
     /// The syscall filter this requirement contributes.
     pub syscalls: SyscallFilter,
+    /// The rlimit ceilings this requirement contributes (AAASM-6165).
+    pub limits: crate::limits::NativeLimits,
     /// A description of what was done, in this backend's own words, for
     /// [`aa_isolation::Lowering`].
     pub steps: Vec<String>,
@@ -110,13 +112,7 @@ pub fn lower_requirement(requirement: &ControlRequirement) -> Result<DomainLower
                      truthful statement"
                 .to_string(),
         }),
-        CapabilityDomain::Resource => Err(LoweringGap {
-            domain: CapabilityDomain::Resource,
-            reason: "this backend imposes no numeric ceiling of any kind — no memory, CPU, process, \
-                     wall-clock, file-size or descriptor limit. A filesystem boundary caps nothing \
-                     countable, and approximating one would be a control the kernel is not applying"
-                .to_string(),
-        }),
+        CapabilityDomain::Resource => resource(requirement),
         // `CapabilityDomain` is `#[non_exhaustive]`: a domain added by a later
         // ticket must refuse here, not fall through to "nothing to do".
         other => Err(LoweringGap {
@@ -177,12 +173,14 @@ fn filesystem(requirement: &ControlRequirement, verb: Verb) -> DomainLowering {
             DomainLowering {
                 grants,
                 syscalls: SyscallFilter::NotRequested,
+                limits: crate::limits::NativeLimits::default(),
                 steps,
             }
         }
         RequirementScope::Whole => DomainLowering {
             grants,
             syscalls: SyscallFilter::NotRequested,
+            limits: crate::limits::NativeLimits::default(),
             steps: vec![format!(
                 "{domain}: whole-domain requirement; no path is made {}, so the kernel's default-deny \
                  posture covers the domain entirely",
@@ -192,12 +190,102 @@ fn filesystem(requirement: &ControlRequirement, verb: Verb) -> DomainLowering {
         RequirementScope::Limits(_) => DomainLowering {
             grants,
             syscalls: SyscallFilter::NotRequested,
+            limits: crate::limits::NativeLimits::default(),
             steps: vec![format!(
                 "{domain}: numeric ceilings do not apply to a filesystem domain; no grant emitted, so the \
                  default-deny posture stands"
             )],
         },
     }
+}
+
+/// Resource domain: numeric ceilings this backend can lower to an rlimit
+/// (AAASM-6165), or an explicit gap naming the specific ceiling that cannot
+/// be expressed.
+///
+/// # Per-requirement, not per-domain
+///
+/// A caller is expected to carry one ceiling per [`ControlRequirement`] (see
+/// `aa-cli`'s `run` command, which never bundles two `ResourceLimits` fields
+/// into one requirement) precisely so a gap here names the one ceiling that
+/// failed rather than the whole domain. A requirement that nonetheless
+/// bundles an unsupported field alongside a supported one still gaps the
+/// whole requirement — the all-or-nothing-per-requirement rule the ADR
+/// records — but the reason still names the specific field that caused it.
+fn resource(requirement: &ControlRequirement) -> Result<DomainLowering, LoweringGap> {
+    let domain = requirement.domain();
+    let limits = match requirement.scope() {
+        RequirementScope::Limits(limits) => *limits,
+        _ => {
+            return Err(LoweringGap {
+                domain,
+                reason: "a `Resource` requirement must carry a `RequirementScope::Limits` value naming \
+                         the ceiling; this one carried a different scope shape"
+                    .to_string(),
+            });
+        }
+    };
+    if limits.max_memory_bytes.is_some() {
+        return Err(LoweringGap {
+            domain,
+            reason: "max_memory_bytes: no cgroup subtree is available on this backend; see the cgroup v2 \
+                     follow-up ticket for a native memory ceiling (the sandlock backend already \
+                     enforces this ceiling)"
+                .to_string(),
+        });
+    }
+    if limits.max_pids.is_some() {
+        return Err(LoweringGap {
+            domain,
+            reason: "max_pids: `RLIMIT_NPROC` counts processes per real UID across the whole host, not \
+                     within the confined process tree, and setting it here would starve the supervisor \
+                     itself — this is not offered as a tree-scoped PID ceiling (the sandlock backend \
+                     already enforces a tree-scoped PID ceiling)"
+                .to_string(),
+        });
+    }
+    if limits.max_wall_clock_seconds.is_some() {
+        return Err(LoweringGap {
+            domain,
+            reason: "max_wall_clock_seconds: wall-clock is a post-effect signal `aasm run`'s own \
+                     supervisor enforces, not a mechanism this backend installs; it is carried as its \
+                     own `Observe`/`Optional` requirement rather than lowered here"
+                .to_string(),
+        });
+    }
+    if limits.max_cpu_seconds.is_some() {
+        return Err(LoweringGap {
+            domain,
+            reason: "max_cpu_seconds: CPU ceilings on this backend are deferred to a follow-up ticket".to_string(),
+        });
+    }
+    if limits.max_file_size_bytes.is_none() && limits.max_open_files.is_none() {
+        return Err(LoweringGap {
+            domain,
+            reason: "the requirement's `ResourceLimits` stated no ceiling at all".to_string(),
+        });
+    }
+    let native = crate::limits::NativeLimits {
+        max_open_files: limits.max_open_files,
+        max_file_size_bytes: limits.max_file_size_bytes,
+    };
+    let mut steps = Vec::new();
+    if let Some(n) = native.max_open_files {
+        steps.push(format!(
+            "{domain}: max_open_files={n} lowered to RLIMIT_NOFILE, soft == hard"
+        ));
+    }
+    if let Some(n) = native.max_file_size_bytes {
+        steps.push(format!(
+            "{domain}: max_file_size_bytes={n} lowered to RLIMIT_FSIZE, soft == hard"
+        ));
+    }
+    Ok(DomainLowering {
+        grants: Grants::default(),
+        syscalls: SyscallFilter::NotRequested,
+        limits: native,
+        steps,
+    })
 }
 
 /// Syscall domain: a permitted syscall set, or an explicit refusal.
@@ -246,6 +334,7 @@ fn syscall(requirement: &ControlRequirement) -> Result<DomainLowering, LoweringG
             Ok(DomainLowering {
                 grants: Grants::default(),
                 syscalls: SyscallFilter::Allow(permitted),
+                limits: crate::limits::NativeLimits::default(),
                 steps: vec![format!(
                     "{domain}: default-deny beyond the startup baseline; {} syscall(s) permitted by policy: {}",
                     names.len(),

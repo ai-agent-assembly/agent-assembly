@@ -516,7 +516,13 @@ pub fn to_launcher_argv(request: &Message) -> Vec<String> {
         }
     };
 
-    aa_isolation_native::launch::build(&grants, &syscalls, program, args)
+    aa_isolation_native::launch::build(
+        &grants,
+        &syscalls,
+        &aa_isolation_native::NativeLimits::default(),
+        program,
+        args,
+    )
 }
 
 /// The implicit grant [`to_launcher_argv`] adds, for a caller that needs to
