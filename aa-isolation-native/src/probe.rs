@@ -208,7 +208,16 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
 /// stdout, stderr and the handful the shell itself opens), so a shortfall
 /// against the control is attributable to the ceiling and not to the shell's
 /// own footprint.
-const DESCRIPTOR_CEILING_PROBE_LIMIT: u32 = 16;
+///
+/// 16 produced a real false-Inconclusive (and so a refused launch for every
+/// `Resource` ceiling, including `max_file_size_bytes`, which the shared
+/// prerequisite below gates on this same probe) on at least one CI
+/// container whose combined-lane baseline fd usage sat close enough to 16
+/// that the probe's own `/bin/sh` startup -- not the loop it measures --
+/// could plausibly account for the shortfall. 64 keeps the same "tiny,
+/// safe to run on any host" property AC8 asks for while giving several
+/// times more headroom above any plausible shell-startup baseline.
+const DESCRIPTOR_CEILING_PROBE_LIMIT: u32 = 64;
 
 /// Resource (`max_open_files`): the control run installs no ceiling and opens
 /// file descriptors in a loop until the host's own default stops it; the test
