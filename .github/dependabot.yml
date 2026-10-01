@@ -193,3 +193,24 @@ updates:
     commit-message:
       prefix: "⬆"
     open-pull-requests-limit: 10
+    # AAASM-6239: github/codeql-action/init and /analyze are separate
+    # dependencies to Dependabot, but analyze refuses a configuration file
+    # written by a different version of init ("Loaded a configuration file for
+    # version '4.38.2', but running version '4.38.1'"). Ungrouped, one upstream
+    # release opens one pull request per step and neither can ever merge: every
+    # language leg fails and the top-level CodeQL check degrades to neutral, so
+    # the page shows a CodeQL entry that is not red while no analysis ran at
+    # all.
+    #
+    # Both groups are required. applies-to defaults to version-updates, so a
+    # single entry would leave the security-advisory path splitting exactly as
+    # before -- which is the path that matters most.
+    groups:
+      codeql-action:
+        applies-to: version-updates
+        patterns:
+          - "github/codeql-action*"
+      codeql-action-security:
+        applies-to: security-updates
+        patterns:
+          - "github/codeql-action*"
