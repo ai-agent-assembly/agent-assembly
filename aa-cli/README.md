@@ -25,7 +25,10 @@ line, talking to the gateway over its HTTP/OpenAPI surface.
 
 The recommended way to get the `aasm` binary is the one-line installer, which
 downloads the matching pre-built release tarball, verifies its checksum, and
-installs to `~/.local/bin`:
+installs to `/usr/local/bin` if that directory is writable, otherwise falls
+back to `~/.local/bin` (see
+[Installation](https://docs.agent-assembly.com/quick-start/installation) for
+the full method matrix and PATH setup):
 
 ```sh
 curl -fsSL https://agent-assembly.com/install.sh | sh
