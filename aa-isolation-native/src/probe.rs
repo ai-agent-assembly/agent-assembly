@@ -258,6 +258,17 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
         &nested(&script(&test_target, &test_sink)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
+    // AAASM-6165 temporary diagnostic, round 2: the /dev/null fix did not
+    // resolve this symptom, so the cause is something else. Print the
+    // launcher's own diagnostic straight to stderr -- remove once the real
+    // cause is confirmed.
+    eprintln!(
+        "AAASM-6165 probe round 2: control={:?} control_count={:?} test={:?} test_count={:?}",
+        control.as_ref().map(|o| &o.diagnostic),
+        read_count(&control_target),
+        test.as_ref().map(|o| &o.diagnostic),
+        read_count(&test_target),
+    );
     let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
         return Observation::Inconclusive {
             detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
