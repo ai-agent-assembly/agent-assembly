@@ -377,8 +377,18 @@ help_out="$("$AASM" --help 2>&1)" || err "packaged \`aasm --help\` exited non-ze
 
 # Top-level subcommands the packaged binary ADVERTISES, straight out of its own
 # help. Not a hardcoded list: a command added tomorrow is covered.
+#
+# Only a line with exactly two leading spaces before the command name is a
+# real entry (clap's own indentation convention). A wrapped multi-line
+# description's continuation is indented further, under the description
+# column (AAASM-6235 made this matter: enabling clap's `wrap_help` means a
+# long description now really does wrap onto a second line in CI's non-TTY
+# width too, not just interactively) -- matching NF on every non-empty line
+# previously picked up a continuation's first word as if it were a
+# subcommand (e.g. "wall-clock" out of sandbox's wrapped description,
+# "`--purge`" out of uninstall's).
 advertised="$(printf '%s\n' "$help_out" \
-    | awk '/^Commands:/{c=1;next} c && /^[A-Za-z]/{exit} c && NF {print $1}' \
+    | awk '/^Commands:/{c=1;next} c && /^[A-Za-z]/{exit} c && /^  [A-Za-z]/{print $1}' \
     | grep -v '^help$' || true)"
 
 [ -n "$advertised" ] || err "packaged \`aasm --help\` advertises no subcommands at all"
