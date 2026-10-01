@@ -43,14 +43,25 @@ const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/workspace_t
 
 /// A minimal, always-permitted policy — same shape as
 /// `cli_run_execution_receipt.rs`'s own fixture, for the same reason
-/// (AAASM-5349's "some effective policy resolves" precondition).
+/// (AAASM-5349's "some effective policy resolves" precondition), plus a
+/// `filesystem.write` grant that fixture does not need: test 4 is the only
+/// test in this file that runs under real confinement
+/// (`--isolation-backend aasm-native`), and the fixture's `agent.sh` writes
+/// real files (edits, a new file, a build artifact) into whatever directory
+/// becomes its cwd — including the transaction's staged directory once
+/// `--workspace-tx` remaps it there. `aa-isolation-native`'s own
+/// documented contract is "an absent grant is the strictest posture
+/// available" (`aa-isolation-native/src/backend.rs`), so without this the
+/// confined write fails closed and the agent cycle this test drives can
+/// never succeed, regardless of `--workspace-tx`.
 fn write_test_policy(dir: &Path, name: &str) -> io::Result<PathBuf> {
     let path = dir.join("policy.yaml");
     std::fs::write(
         &path,
         format!(
             "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: {name}\nspec:\n  tools:\n    \
-             read_file:\n      allow: true\n  filesystem:\n    read:\n      allow:\n        - /\n"
+             read_file:\n      allow: true\n  filesystem:\n    read:\n      allow:\n        - /\n    \
+             write:\n      allow:\n        - /\n"
         ),
     )?;
     Ok(path)
