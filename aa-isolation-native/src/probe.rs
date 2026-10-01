@@ -233,9 +233,15 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
     // default-deny write policy denies that regardless of the descriptor
     // ceiling, and the resulting Permission Denied reads as inconclusive for
     // a reason that has nothing to do with what this probe measures.
+    //
+    // Write-only (`>`), not read-write (`<>`): `write_grant` only grants the
+    // write right on `dir`, and opening read-write makes Landlock check the
+    // read right too, which this policy never grants -- that combination
+    // read as the identical "Permission Denied" this comment already guards
+    // against, just from a different missing right.
     let script = |target: &Path, sink: &Path| {
         format!(
-            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
+            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))>{}\" || break; i=$((i+1)); done; \
              printf %s \"$i\" > {}",
             shell_word(&sink.to_string_lossy()),
             shell_word(&target.to_string_lossy())
@@ -258,17 +264,6 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
         &nested(&script(&test_target, &test_sink)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
-    // AAASM-6165 temporary diagnostic, round 2: the /dev/null fix did not
-    // resolve this symptom, so the cause is something else. Print the
-    // launcher's own diagnostic straight to stderr -- remove once the real
-    // cause is confirmed.
-    eprintln!(
-        "AAASM-6165 probe round 2: control={:?} control_count={:?} test={:?} test_count={:?}",
-        control.as_ref().map(|o| &o.diagnostic),
-        read_count(&control_target),
-        test.as_ref().map(|o| &o.diagnostic),
-        read_count(&test_target),
-    );
     let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
         return Observation::Inconclusive {
             detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
