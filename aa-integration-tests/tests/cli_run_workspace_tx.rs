@@ -476,12 +476,16 @@ async fn a_confined_transactional_run_writes_tx_metadata_into_its_receipt() -> a
     let envelope: serde_json::Value = serde_json::from_str(&raw)?;
     let workspace = &envelope["body"]["workspace"];
     assert_eq!(workspace["committed"], serde_json::json!(true));
+    // `Digest` is a single-field tuple struct over `String`, which serde's
+    // derive serializes transparently as a bare JSON string (`"sha256:..."`),
+    // not as an object -- confirmed by a real CI failure on this exact
+    // assertion (`is_object()` on a string value).
     assert!(
-        workspace["base_digest"].is_object(),
+        workspace["base_digest"].is_string(),
         "base_digest must be present: {workspace}"
     );
     assert!(
-        workspace["result_digest"].is_object(),
+        workspace["result_digest"].is_string(),
         "result_digest must be present: {workspace}"
     );
     assert_ne!(
