@@ -25,10 +25,13 @@ aasm version
 
 ```text
 COMPONENT   VERSION
-cli         0.0.1-rc.6
-gateway     0.0.1-rc.6
-api         0.0.1-rc.6
+cli         <your installed aasm version>
+gateway     <reachable gateway's version, or "unreachable">
+api         <reachable API's version, or "unreachable">
 ```
+
+(illustrative shape only — run `aasm version` to see your actual installed
+and reachable versions; see `aasm --version` for the bare CLI version)
 
 JSON form:
 
