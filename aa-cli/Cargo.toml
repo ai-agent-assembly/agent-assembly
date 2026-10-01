@@ -80,6 +80,11 @@ aa-isolation-native  = { path = "../aa-isolation-native", version = "0.0.1-rc.7"
 # build outputs — see the crate's own docs), with real measured capability
 # rows on a host that has them.
 aa-isolation-macos-vm = { path = "../aa-isolation-macos-vm", version = "0.0.1-rc.7" }
+# AAASM-6162: the materialized-workspace-transaction mechanism
+# `run_workspace_tx.rs` (`--workspace-tx`) binds to. Same region, same
+# reason: `publish = false` and its only consumer is the `aasm run`
+# surface the `devtool` region already strips.
+aa-workspace-tx      = { path = "../aa-workspace-tx", version = "0.0.1-rc.7" }
 # strip-for-publish:end devtool
 aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.7" }
 aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.7" }

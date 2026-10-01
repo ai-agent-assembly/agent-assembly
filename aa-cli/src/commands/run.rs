@@ -91,6 +91,47 @@ pub struct RunArgs {
     #[arg(long, value_name = "DIR")]
     pub workdir: Option<std::path::PathBuf>,
 
+    /// Run the child inside a materialized transaction over the base
+    /// directory (`--workdir`, or this shell's working directory) instead of
+    /// the base itself (AAASM-6162).
+    ///
+    /// The base is never written to while the child runs — it stages a copy,
+    /// lets the child write there, and folds the exact change set back onto
+    /// the base only if the child exits `0`; any other exit discards the
+    /// staged copy and leaves the base untouched. There is no separate
+    /// commit mode: the child's own exit code is the entire disposition
+    /// rule. This is about durability of the declared surface, not
+    /// confinement — it makes no claim about network calls, database
+    /// writes, processes started, or a path outside the surface (see the
+    /// `workspace_tx.not_transactional` line this launch prints).
+    #[arg(long)]
+    pub workspace_tx: bool,
+
+    /// A path excluded from the declared surface, relative to the base
+    /// directory. Repeatable.
+    ///
+    /// Not a glob: a path matches when it equals this selector or starts
+    /// with `<selector>/`. An excluded path is **absent from the staged
+    /// workspace, not shared with the base** — a build inside a transaction
+    /// with `target/` excluded rebuilds from scratch. It is also excluded
+    /// from the *copy-in* only: a path the child creates inside an excluded
+    /// selector is still present in the change set and still applied on
+    /// commit.
+    #[arg(long = "workspace-tx-exclude", value_name = "PATH", requires = "workspace_tx")]
+    pub workspace_tx_exclude: Vec<std::path::PathBuf>,
+
+    /// A protected selector, relative to the base directory. Repeatable.
+    ///
+    /// A change set that touches a protected selector refuses to commit
+    /// unless `--workspace-tx-approve` is also passed — the base is left
+    /// untouched either way until that decision is made.
+    #[arg(long = "workspace-tx-protect", value_name = "PATH", requires = "workspace_tx")]
+    pub workspace_tx_protect: Vec<String>,
+
+    /// Pre-authorize a commit that touches a protected selector.
+    #[arg(long, requires = "workspace_tx")]
+    pub workspace_tx_approve: bool,
+
     /// Show the launch command and settings without executing.
     #[arg(long)]
     pub dry_run: bool,
@@ -1386,6 +1427,14 @@ mod plan {
         policy: PolicyPlan,
         isolation: IsolationPlan,
         enforcement_mode: aa_core::EnforcementMode,
+        /// This launch's `--workspace-tx` configuration, when the flag was
+        /// passed and every precondition passed. Set once, at `resolve`
+        /// time; `workspace_staged` below is the runtime value derived from
+        /// it once a transaction has actually been opened.
+        pub(super) workspace_tx: Option<crate::commands::run_workspace_tx::WorkspaceTxPlan>,
+        /// The staged directory a transaction opened for this launch, set by
+        /// [`Self::set_workspace_staged_dir`]. `None` until that call.
+        workspace_staged: Option<std::path::PathBuf>,
     }
 
     impl<'a> ResolvedRunPlan<'a> {
@@ -1410,6 +1459,15 @@ mod plan {
         /// child's `HTTP_PROXY`/`HTTPS_PROXY` and the adapter's launch command.
         pub(super) fn set_endpoint(&mut self, endpoint: String) {
             self.network.set_endpoint(endpoint);
+        }
+
+        /// Record this live launch's staged transaction directory — same
+        /// contract as [`Self::set_endpoint`]: must be called, if at all,
+        /// before [`Self::bind`], because `bind` is what reads it into the
+        /// child's working directory (and, through `spec` reading cwd back
+        /// off the command, into the `ExecutionSpec`/report/receipt too).
+        pub(super) fn set_workspace_staged_dir(&mut self, dir: std::path::PathBuf) {
+            self.workspace_staged = Some(dir);
         }
 
         /// The effective policy.
@@ -1457,6 +1515,18 @@ mod plan {
             // the `ExecutionSpec` below, because `spec` reads it back off the
             // command rather than being told separately.
             if let Some(dir) = &self.args.workdir {
+                command.current_dir(dir);
+            }
+
+            // AAASM-6162: a transaction's staged directory wins over
+            // everything above, including an explicit `--workdir` — the
+            // whole point of `--workspace-tx` is that the child never sees
+            // the base directory at all. Applied here, in the same place
+            // `--workdir` is, for the same reason `--workdir`'s own comment
+            // gives: `spec` below reads cwd back off `command` rather than
+            // being told separately, so the staged directory has to reach
+            // the command before that read happens.
+            if let Some(dir) = &self.workspace_staged {
                 command.current_dir(dir);
             }
 
@@ -1640,6 +1710,21 @@ mod plan {
                 }
             }
 
+            // 0b. AAASM-6162: `--workspace-tx`'s own preconditions — also a
+            //     pure check (no copy, no registration) and also run before
+            //     everything below, for the same reason stage 0 is: a launch
+            //     that is going to refuse must not create state (a gateway
+            //     registration, or here, a materialized staged copy) it then
+            //     has to unwind.
+            let workspace_tx = match crate::commands::run_workspace_tx::resolve(self.args) {
+                None => None,
+                Some(Ok(plan)) => Some(plan),
+                Some(Err(reason)) => {
+                    posture.refuse(anyhow::anyhow!("{reason}"))?;
+                    None
+                }
+            };
+
             // 1. Integration. A live launch of a tool that is not installed stops
             //    here. A preview does not: previewing a launch from CI, or from a
             //    machine still being set up, is the case `--dry-run` is most
@@ -1765,6 +1850,8 @@ mod plan {
                 policy: PolicyPlan { resolution, document },
                 isolation,
                 enforcement_mode,
+                workspace_tx,
+                workspace_staged: None,
             })
         }
 
@@ -3634,6 +3721,10 @@ async fn run_confined(
     plan: aa_isolation::EnforcementPlan,
     report: aa_isolation::IsolationReport,
     receipt_inputs: ReceiptInputs,
+    workspace_tx: Option<(
+        crate::commands::run_workspace_tx::WorkspaceTxGuard,
+        crate::commands::run_workspace_tx::WorkspaceTxPlan,
+    )>,
 ) -> Result<i32> {
     // AAASM-6165: a wall-clock ceiling is enforced here, at the one place every
     // backend's run passes through, rather than inside any one backend — see
@@ -3778,6 +3869,18 @@ async fn run_confined(
     let final_report = report.with_evidence(&evidence);
     eprint!("{}", isolation_machine_block(&final_report));
 
+    // AAASM-6162: settled here, after `disposition` is known and before the
+    // receipt is assembled, so the receipt's `workspace` binding reflects
+    // this exact run's real commit-or-discard decision rather than a
+    // placeholder. `close()` happens inside `settle` — the confined process
+    // has exited by this point, so the transaction's staged workspace is
+    // stable.
+    let workspace_outcome = workspace_tx.map(|(mut guard, plan)| {
+        let outcome = crate::commands::run_workspace_tx::settle(&mut guard, disposition.code(), &plan);
+        eprint!("{}", crate::commands::run_workspace_tx::machine_block(&outcome));
+        outcome
+    });
+
     // AAASM-6166: never fail the run because a receipt could not be written —
     // the child already ran, and its exit code is the launcher's existing
     // contract, which predates execution receipts entirely and must not be
@@ -3805,6 +3908,7 @@ async fn run_confined(
         ended_at,
         disposition: &disposition,
         termination,
+        workspace: workspace_outcome.as_ref(),
     };
     match execution_receipt::body_for_run(&receipt_ctx).and_then(execution_receipt::ReceiptEnvelope::seal) {
         Ok(envelope) => {
@@ -3876,7 +3980,7 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         plan::RunTarget::DevTool { .. } => "<dry-run: managed settings not generated>".to_string(),
     };
 
-    format_dry_run_output(
+    let mut output = format_dry_run_output(
         &handle,
         resolved.policy().resolution(),
         resolved.network().no_proxy(),
@@ -3885,7 +3989,24 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         bound.child_env(),
         bound.fidelity(),
         bound.isolation(),
-    )
+    );
+
+    // AAASM-6162: a preview never opens a transaction (no state directory is
+    // created, nothing is copied) — it only names what a live run with these
+    // flags would do, matching every other refusal/description this
+    // function reports rather than performs.
+    if let Some(plan) = &resolved.workspace_tx {
+        output.push_str(&format!(
+            "\nworkspace transaction: base={} exclusions={} protected={} approval_presented={} \
+             (preview only — nothing is materialized; a live run would open a transaction here)\n",
+            plan.base_root.display(),
+            plan.exclusions.len(),
+            plan.protected.len(),
+            plan.approved,
+        ));
+    }
+
+    output
 }
 
 /// Testable core of `execute`: detect, register, apply settings, spawn child.
@@ -4038,6 +4159,28 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         resolved.set_endpoint(format!("http://{}", pg.bound_addr()));
     }
 
+    // AAASM-6162: opened immediately before `bind` — the one place that
+    // reads `workspace_staged` into the child's cwd — and after registration,
+    // so a governed identity exists before anything is materialized. `None`
+    // for any launch without `--workspace-tx`. Every refusal path between
+    // here and `run_confined`/`spawn_and_wait` (a boundary refusal, an
+    // adapter error) drops this guard via its `Drop` impl, discarding the
+    // staged copy without ever touching the base (AC 4).
+    let mut workspace_tx_guard = match &resolved.workspace_tx {
+        Some(plan) => {
+            let id = aa_isolation::TransactionId::new(handle.session_id.clone());
+            let guard = crate::commands::run_workspace_tx::WorkspaceTxGuard::open(id, plan)
+                .map_err(|e| anyhow::anyhow!("refusing to launch: {e}"))?;
+            let staged = guard
+                .staged_dir()
+                .expect("a freshly opened guard always holds a transaction")
+                .to_path_buf();
+            resolved.set_workspace_staged_dir(staged);
+            Some(guard)
+        }
+        None => None,
+    };
+
     // The same bind `--dry-run` renders, against the identity the gateway just
     // accepted. No `cmd.envs(&child_env)` anywhere: `spawn_and_wait` applies both
     // sources with the adapter's on top, and overlaying `child_env` onto the
@@ -4096,6 +4239,16 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     let receipt_policy = resolved.policy().resolution().clone();
 
     let backend = resolved.take_backend();
+    // AAASM-6162: taken out of `resolved` here, paired with the guard opened
+    // above, and threaded into whichever boundary arm below actually runs —
+    // `run_confined` settles it once the disposition is known; the `Absent`
+    // arm settles it here, right after `spawn_and_wait` returns the child's
+    // own exit code, which is the entire disposition rule.
+    let workspace_tx_plan = resolved.workspace_tx.take();
+    let workspace_tx = match (workspace_tx_guard.take(), workspace_tx_plan) {
+        (Some(guard), Some(plan)) => Some((guard, plan)),
+        _ => None,
+    };
     let (cmd, child_env, boundary, isolation) = bound.into_execution_parts();
     let code = match boundary {
         // The launch runs inside the negotiated boundary, or not at all. There
@@ -4107,12 +4260,20 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
                 session: receipt_session,
                 policy: receipt_policy,
             };
-            run_confined(backend.into_arc(), *plan, isolation, receipt_inputs).await?
+            run_confined(backend.into_arc(), *plan, isolation, receipt_inputs, workspace_tx).await?
         }
-        // Unchanged from every `aasm run` before `--isolation` existed.
+        // Unchanged from every `aasm run` before `--isolation` existed, plus
+        // AAASM-6162: the only stderr surface a `--workspace-tx` run's truth
+        // reaches on this path, since no execution boundary here means no
+        // execution receipt either.
         plan::Boundary::Absent => {
             let withheld = withheld_from_isolation_report(&isolation);
-            spawn_and_wait(cmd, &child_env, args.no_proxy, &withheld).await?
+            let code = spawn_and_wait(cmd, &child_env, args.no_proxy, &withheld).await?;
+            if let Some((mut guard, plan)) = workspace_tx {
+                let outcome = crate::commands::run_workspace_tx::settle(&mut guard, Some(code), &plan);
+                eprint!("{}", crate::commands::run_workspace_tx::machine_block(&outcome));
+            }
+            code
         }
         // Refused above, before the managed settings were written.
         plan::Boundary::Refused(why) => anyhow::bail!("refusing to launch: {why}"),
@@ -5586,6 +5747,10 @@ mod tests {
             no_proxy: false,
             policy: None,
             workdir: None,
+            workspace_tx: false,
+            workspace_tx_exclude: vec![],
+            workspace_tx_protect: vec![],
+            workspace_tx_approve: false,
             dry_run: false,
             enforcement_mode: None,
             observe: false,
@@ -8123,6 +8288,48 @@ mod tests {
         assert!(
             output.contains("working_dir: <inherited from this shell>"),
             "with no --workdir the preview must say the child inherits this shell's directory: {output}"
+        );
+    }
+
+    /// AAASM-6162 AC 2: a `--dry-run --workspace-tx` preview names the base
+    /// root and states that nothing is materialized — and, separately
+    /// (asserted by the caller of this function, not here), creates no
+    /// state directory on disk.
+    #[test]
+    fn a_workspace_tx_preview_names_the_base_root_and_materializes_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+        args.workdir = Some(dir.path().to_path_buf());
+        args.workspace_tx = true;
+        args.dry_run = true;
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            output.contains(&format!("base={}", dir.path().display())),
+            "the preview must name the base root: {output}"
+        );
+        assert!(
+            output.contains("nothing is materialized"),
+            "the preview must say nothing is materialized: {output}"
+        );
+    }
+
+    /// The converse control: a preview with no `--workspace-tx` says nothing
+    /// about a transaction at all.
+    #[test]
+    fn a_preview_without_workspace_tx_says_nothing_about_a_transaction() {
+        let mut args = planning_args(EXEC_TARGET);
+        args.tool_args = vec!["python3".to_string()];
+
+        let target = plan::RunTarget::command(&args.tool_args).expect("a program is present");
+        let output = dry_run_preview(target, None, &args);
+
+        assert!(
+            !output.contains("workspace transaction"),
+            "a preview without --workspace-tx must not mention a transaction: {output}"
         );
     }
 }

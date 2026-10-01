@@ -74,6 +74,7 @@ fn build_body(preventing: &[CapabilityDomain]) -> ReceiptBody {
         ended_at: std::time::SystemTime::now(),
         disposition: &disposition,
         termination: TerminationInput::SelfExited,
+        workspace: None,
     };
     body_for_run(&ctx).expect("a mock-backend fixture never carries a float or a non-serializable value")
 }
@@ -296,6 +297,46 @@ fn an_unrecorded_withholding_is_a_defect() {
             field: FieldName::PolicySource
         }
     )));
+}
+
+#[test]
+fn a_workspace_binding_missing_one_scope_disclaimer_token_is_a_defect() {
+    use aa_cli::commands::execution_receipt::schema::{WorkspaceBinding, NOT_TRANSACTIONAL};
+
+    let mut body = build_body(&[]);
+    body.workspace = Some(WorkspaceBinding {
+        committed: Some(true),
+        // Every token except the first — the falsifying mutation, not a
+        // hand-picked expectation string.
+        not_transactional: NOT_TRANSACTIONAL[1..].iter().copied().map(ReceiptText::token).collect(),
+        ..Default::default()
+    });
+    let envelope = sealed(body);
+    let found = defects(&envelope);
+    assert!(
+        found
+            .iter()
+            .any(|d| matches!(d, ReceiptDefect::WorkspaceScopeDisclaimerMissing { missing } if missing == &[NOT_TRANSACTIONAL[0].to_string()])),
+        "expected a WorkspaceScopeDisclaimerMissing defect naming {:?}, got {found:?}",
+        NOT_TRANSACTIONAL[0]
+    );
+}
+
+#[test]
+fn a_workspace_binding_carrying_the_full_disclaimer_is_not_a_defect() {
+    use aa_cli::commands::execution_receipt::schema::{WorkspaceBinding, NOT_TRANSACTIONAL};
+
+    let mut body = build_body(&[]);
+    body.workspace = Some(WorkspaceBinding {
+        committed: Some(true),
+        not_transactional: NOT_TRANSACTIONAL.iter().copied().map(ReceiptText::token).collect(),
+        ..Default::default()
+    });
+    let envelope = sealed(body);
+    let found = defects(&envelope);
+    assert!(!found
+        .iter()
+        .any(|d| matches!(d, ReceiptDefect::WorkspaceScopeDisclaimerMissing { .. })));
 }
 
 #[test]

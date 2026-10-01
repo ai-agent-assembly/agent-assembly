@@ -336,6 +336,21 @@ impl TransactionStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Committed | Self::Discarded | Self::ConflictRefused { .. })
     }
+
+    /// A stable, lowercase token for this status — the vocabulary
+    /// `aasm run --workspace-tx`'s stderr block and execution-receipt
+    /// binding both render, so the two surfaces cannot drift into different
+    /// spellings for the same fact (AAASM-6162).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Committed => "committed",
+            Self::Discarded => "discarded",
+            Self::ConflictRefused { .. } => "conflict_refused",
+            Self::InterruptedApply => "interrupted_apply",
+        }
+    }
 }
 
 /// Why a commit was refused, in full detail.
@@ -388,6 +403,23 @@ pub enum CommitRefusal {
         /// Why the lock or ownership check failed, in words.
         detail: String,
     },
+}
+
+impl CommitRefusal {
+    /// A stable, lowercase token naming why a commit was refused — the same
+    /// vocabulary a receipt's `WorkspaceBinding::refusal_kind` and `aasm
+    /// run`'s stderr block both need, kept in this defining crate so neither
+    /// surface re-derives its own spelling of the same variant (AAASM-6162).
+    pub fn kind_str(&self) -> &'static str {
+        match self {
+            Self::BaseDrift { .. } => "base_drift",
+            Self::ProtectedPathNotApproved { .. } => "protected_path_not_approved",
+            Self::BoundaryEscape { .. } => "boundary_escape",
+            Self::HardlinkToBase { .. } => "hardlink_to_base",
+            Self::NotClosed { .. } => "not_closed",
+            Self::LockUnavailable { .. } => "lock_unavailable",
+        }
+    }
 }
 
 /// What a successful commit produced.
@@ -474,6 +506,52 @@ mod tests {
         assert!(!TransactionStatus::Open.is_terminal());
         assert!(!TransactionStatus::Closed.is_terminal());
         assert!(!TransactionStatus::InterruptedApply.is_terminal());
+    }
+
+    #[test]
+    fn transaction_status_as_str_is_lowercase_and_stable() {
+        assert_eq!(TransactionStatus::Open.as_str(), "open");
+        assert_eq!(TransactionStatus::Closed.as_str(), "closed");
+        assert_eq!(TransactionStatus::Committed.as_str(), "committed");
+        assert_eq!(TransactionStatus::Discarded.as_str(), "discarded");
+        assert_eq!(TransactionStatus::InterruptedApply.as_str(), "interrupted_apply");
+        assert_eq!(
+            TransactionStatus::ConflictRefused {
+                refusal: CommitRefusal::NotClosed {
+                    observed: Box::new(TransactionStatus::Open)
+                }
+            }
+            .as_str(),
+            "conflict_refused"
+        );
+    }
+
+    #[test]
+    fn commit_refusal_kind_str_covers_every_variant() {
+        assert_eq!(CommitRefusal::BaseDrift { paths: vec![] }.kind_str(), "base_drift");
+        assert_eq!(
+            CommitRefusal::ProtectedPathNotApproved { selectors: vec![] }.kind_str(),
+            "protected_path_not_approved"
+        );
+        assert_eq!(
+            CommitRefusal::BoundaryEscape { path: "x".into() }.kind_str(),
+            "boundary_escape"
+        );
+        assert_eq!(
+            CommitRefusal::HardlinkToBase { path: "x".into() }.kind_str(),
+            "hardlink_to_base"
+        );
+        assert_eq!(
+            CommitRefusal::NotClosed {
+                observed: Box::new(TransactionStatus::Open)
+            }
+            .kind_str(),
+            "not_closed"
+        );
+        assert_eq!(
+            CommitRefusal::LockUnavailable { detail: "x".into() }.kind_str(),
+            "lock_unavailable"
+        );
     }
 
     #[test]

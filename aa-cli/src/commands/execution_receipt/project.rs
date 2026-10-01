@@ -44,7 +44,7 @@ use super::host;
 use super::schema::{
     AssertedIdentity, BackendBinding, ConsideredBinding, CredentialNames, DegradedCondition, DegradedKind,
     DomainOutcome, EvidenceRef, ExecutionOutcome, LeaseBinding, LeaseProjection, PolicyBinding, ProducerIdentity,
-    ReceiptBody, SpecBinding, SpecProjection, TerminationRecord,
+    ReceiptBody, SpecBinding, SpecProjection, TerminationRecord, WorkspaceBinding, NOT_TRANSACTIONAL,
 };
 // `super::schema::TerminationRecord` above is the *stored* shape;
 // `TerminationInput` below (defined in this module) is the *raw* shape
@@ -76,6 +76,9 @@ pub struct ReceiptContext<'a> {
     /// not re-derived from `disposition` alone, because only the supervisor
     /// knows whether a deadline or an operator signal was involved.
     pub termination: TerminationInput,
+    /// This launch's settled `--workspace-tx` outcome, when one applied
+    /// (AAASM-6162). `None` for every launch without `--workspace-tx`.
+    pub workspace: Option<&'a crate::commands::run_workspace_tx::WorkspaceOutcome>,
 }
 
 /// Raw termination facts, as `run_confined` observes them — screened into a
@@ -179,7 +182,7 @@ pub fn body_for_run(ctx: &ReceiptContext<'_>) -> Result<ReceiptBody, CanonicalEr
         leases,
         domains,
         credentials,
-        workspace: None,
+        workspace: ctx.workspace.map(workspace_binding),
         // AAASM-6171: `aasm run` never requests a specific `HostOperation` of
         // its own (`self.host_capability_contract` is `not_required()` for
         // every launch today) — see `run.rs`'s `resolve_boundary` for the gate
@@ -622,6 +625,32 @@ fn execution_outcome(ctx: &ReceiptContext<'_>, withheld: &mut Vec<FieldName>) ->
     }
 }
 
+/// Project a settled `--workspace-tx` outcome into a [`WorkspaceBinding`]
+/// (AAASM-6162). `diff_digest` is taken over the sorted `(verb, path)`
+/// change set so the receipt pins the exact set without storing any path as
+/// text — the digest, not a list of paths, is what a verifier can compare.
+fn workspace_binding(outcome: &crate::commands::run_workspace_tx::WorkspaceOutcome) -> WorkspaceBinding {
+    let diff_digest = digest_of(&outcome.sorted_changes).ok();
+    WorkspaceBinding {
+        base_digest: if outcome.base_digest_hex.is_empty() {
+            None
+        } else {
+            Some(Digest::from_sha256_hex(&outcome.base_digest_hex))
+        },
+        result_digest: outcome.result_digest_hex.as_deref().map(Digest::from_sha256_hex),
+        diff_digest,
+        committed: Some(outcome.committed),
+        refusal_kind: outcome.refusal_kind.map(ReceiptText::token),
+        added_count: outcome.added,
+        modified_count: outcome.modified,
+        deleted_count: outcome.deleted,
+        surface_excluded_count: outcome.surface_excluded_count,
+        protected_selector_count: outcome.protected_selector_count,
+        approval_presented: outcome.approval_presented,
+        not_transactional: NOT_TRANSACTIONAL.iter().copied().map(ReceiptText::token).collect(),
+    }
+}
+
 fn evidence_ref(record: &aa_isolation::EvidenceRecord) -> Result<EvidenceRef, CanonicalError> {
     Ok(EvidenceRef {
         kind: ReceiptText::token(match record.kind {
@@ -635,4 +664,66 @@ fn evidence_ref(record: &aa_isolation::EvidenceRecord) -> Result<EvidenceRef, Ca
         claim: ReceiptText::token(record.claim.as_str()),
         detail_digest: digest_of(&record.detail)?,
     })
+}
+
+#[cfg(test)]
+mod workspace_binding_tests {
+    // AAASM-6162 self-review: the dogfood suite exercises `--isolation none`
+    // only, which writes no receipt at all, so `workspace_binding` has no
+    // coverage from that direction on any host. These tests are this
+    // function's only direct coverage.
+    use super::*;
+    use crate::commands::run_workspace_tx::WorkspaceOutcome;
+
+    fn outcome(committed: bool, refusal_kind: Option<&'static str>) -> WorkspaceOutcome {
+        WorkspaceOutcome {
+            id: "wtx-test".into(),
+            base_digest_hex: "a".repeat(64),
+            result_digest_hex: committed.then(|| "b".repeat(64)),
+            added: 1,
+            modified: 2,
+            deleted: 3,
+            sorted_changes: vec![("added", "src/new.txt".into())],
+            committed,
+            refusal_kind,
+            surface_entry_count: 5,
+            surface_excluded_count: 1,
+            protected_selector_count: 1,
+            approval_presented: false,
+        }
+    }
+
+    #[test]
+    fn a_committed_outcome_carries_both_digests_and_the_full_disclaimer() {
+        let binding = workspace_binding(&outcome(true, None));
+        assert_eq!(binding.committed, Some(true));
+        assert!(binding.base_digest.is_some());
+        assert!(binding.result_digest.is_some());
+        assert!(binding.diff_digest.is_some());
+        assert!(binding.refusal_kind.is_none());
+        assert_eq!(binding.added_count, 1);
+        assert_eq!(binding.modified_count, 2);
+        assert_eq!(binding.deleted_count, 3);
+        assert_eq!(binding.surface_excluded_count, 1);
+        assert_eq!(binding.protected_selector_count, 1);
+        let tokens: Vec<&str> = binding
+            .not_transactional
+            .iter()
+            .filter_map(ReceiptText::as_str)
+            .collect();
+        for expected in NOT_TRANSACTIONAL {
+            assert!(tokens.contains(&expected), "missing disclaimer token {expected}");
+        }
+    }
+
+    #[test]
+    fn a_refused_outcome_carries_no_result_digest_and_names_the_refusal() {
+        let binding = workspace_binding(&outcome(false, Some("protected_path_not_approved")));
+        assert_eq!(binding.committed, Some(false));
+        assert!(binding.result_digest.is_none());
+        assert_eq!(
+            binding.refusal_kind.as_ref().and_then(ReceiptText::as_str),
+            Some("protected_path_not_approved")
+        );
+    }
 }

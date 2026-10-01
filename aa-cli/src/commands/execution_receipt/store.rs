@@ -12,6 +12,21 @@ use super::schema::ReceiptEnvelope;
 /// Subdirectory name under the state directory.
 pub const RECEIPT_DIR: &str = "execution-receipts";
 
+/// `aasm`'s state root: `$AASM_STATE_DIR`, or `~/.aasm` when unset.
+///
+/// Extracted out of [`ReceiptStore::default_location`] (AAASM-6162) so
+/// `run_workspace_tx`'s own state root — a *sibling* subdirectory, never
+/// nested under the receipt store's own `execution-receipts` — resolves
+/// "where does aasm keep its state" exactly once, rather than re-deriving
+/// the `$AASM_STATE_DIR`-or-`~/.aasm` fallback a second time and risking the
+/// two answers drifting apart.
+pub(crate) fn state_base() -> Result<std::path::PathBuf, StoreError> {
+    match std::env::var_os("AASM_STATE_DIR") {
+        Some(dir) if !dir.is_empty() => Ok(std::path::PathBuf::from(dir)),
+        _ => Ok(dirs::home_dir().ok_or(StoreError::NoStateDirectory)?.join(".aasm")),
+    }
+}
+
 /// Errors this store can produce.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -56,11 +71,7 @@ impl ReceiptStore {
     /// default location, never sharing a file or name with an integration
     /// receipt.
     pub fn default_location() -> Result<Self, StoreError> {
-        let base = match std::env::var_os("AASM_STATE_DIR") {
-            Some(dir) if !dir.is_empty() => std::path::PathBuf::from(dir),
-            _ => dirs::home_dir().ok_or(StoreError::NoStateDirectory)?.join(".aasm"),
-        };
-        Ok(Self::at(base.join(RECEIPT_DIR)))
+        Ok(Self::at(state_base()?.join(RECEIPT_DIR)))
     }
 
     /// The directory receipts are written to.

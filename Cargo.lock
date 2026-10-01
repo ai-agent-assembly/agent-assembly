@@ -114,6 +114,7 @@ dependencies = [
  "aa-storage",
  "aa-storage-memory",
  "aa-storage-redis",
+ "aa-workspace-tx",
  "anyhow",
  "assert_cmd",
  "async-trait",

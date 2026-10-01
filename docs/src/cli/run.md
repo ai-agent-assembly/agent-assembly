@@ -47,6 +47,10 @@ flow (ADR 0035 §1):
 | `--no-proxy` | flag | off | Launch **without** routing the tool through the governed proxy — an explicit opt-out of transport mediation. Without it, `aasm run` refuses to launch unless it can establish a trusted local proxy endpoint; it never launches unproxied by accident. Refused outright on a host where another party has already required managed operation of the named tool. |
 | `--policy <PATH>` | path | _(resolved from `$AA_POLICY` / default locations)_ | Policy YAML file this session runs under. A launch refuses when no effective policy resolves — an unconfigured policy is never an implicit allow-all. |
 | `--workdir <DIR>` | path | _(inherited from this shell)_ | Directory the launched process starts in. Checked before anything is registered or started; a launch that cannot start where it was told to is refused, not silently redirected. |
+| `--workspace-tx` | flag | off | Run the child inside a materialized transaction over the base directory instead of the base itself. See [Transactional workspace mode](#transactional-workspace-mode---workspace-tx) below. |
+| `--workspace-tx-exclude <PATH>` | path, repeatable | _(none)_ | A path excluded from the declared surface, relative to the base directory. Requires `--workspace-tx`. |
+| `--workspace-tx-protect <PATH>` | path, repeatable | _(none)_ | A protected selector; a change set touching it refuses to commit without `--workspace-tx-approve`. Requires `--workspace-tx`. |
+| `--workspace-tx-approve` | flag | off | Pre-authorize a commit that touches a protected selector. Requires `--workspace-tx`. |
 | `--dry-run` | flag | off | Show the resolved launch — identity, policy, proxy, managed settings, launch command, environment, and the execution-isolation report — without executing anything. |
 | `--enforcement-mode <MODE>` | `enforce` \| `observe` \| `disabled` | `enforce` | Enforcement posture for this session, overriding the policy default. `observe` records decisions but never applies them — the tool sees Allow for every action, and shadow events land in the audit log. |
 | `--observe` | flag | off | Shorthand for `--enforcement-mode observe`. Mutually exclusive with `--enforcement-mode`. |
@@ -116,6 +120,41 @@ operation should use `--isolation` alone.
   [platform/backend support matrix](../security/execution-isolation.md#platform-and-backend-support-matrix) — it is not repeated here because this
   page documents the CLI contract, and the matrix is the place that fact is
   allowed to change without this page changing.
+
+## Transactional workspace mode (`--workspace-tx`)
+
+`--workspace-tx` stages a materialized copy of the base directory (`--workdir`, or
+this shell's own working directory), points the launched process at the staged copy
+instead, and folds the exact change set back onto the base only if the launch exits
+`0`. Any other exit — or an unobservable exit — discards the staged copy; the base is
+never touched in that case. There is no separate commit mode: the child's own exit
+code is the entire disposition rule.
+
+- `--workspace-tx-exclude <PATH>` excludes a selector from the declared surface. It is
+  **not a glob** — a path matches when it equals the selector or starts with
+  `<selector>/`. An excluded path is **absent from the staged workspace, not shared
+  with the base** — a build inside a transaction with `target/` excluded rebuilds from
+  scratch. Exclusion applies to the copy-in only: a path the launched process creates
+  inside an excluded selector is still present in the change set and still applied on
+  commit.
+- `--workspace-tx-protect <PATH>` marks a selector as protected: a change set touching
+  it refuses to commit unless `--workspace-tx-approve` is also passed. The base is left
+  untouched either way until that decision is made.
+- Every `--workspace-tx` run prints a `workspace_tx.*` block to stderr — the only
+  surface this mode's outcome reaches when no execution-isolation boundary ran
+  (`--isolation none`, the default, writes no execution receipt). The block always
+  includes a `workspace_tx.not_transactional` line naming what this mode does **not**
+  cover: network calls, database writes, processes started, or a path outside the
+  declared surface. This is about durability of the declared surface, not about
+  confinement.
+- When `--isolation` also establishes an execution boundary, the execution receipt's
+  `workspace` binding carries the same facts — base/result/diff digests,
+  added/modified/deleted counts, and the same non-coverage list — and `aasm receipt
+  verify` refuses a receipt whose binding drops any part of that list.
+
+See [ADR 0040](../adr/0040-transactional-workspace-mode.md) for the full design —
+alternatives considered (a git worktree, overlayfs, a VM disk snapshot), the fail-closed
+commit order, and the crash/cancel disposition.
 
 ## Dry-run output
 

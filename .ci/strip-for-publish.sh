@@ -131,6 +131,12 @@ DELETED_FILES=(
     # path, so it goes with the two files above rather than being left behind
     # importing a dependency the published manifest no longer declares.
     "${REPO_ROOT}/aa-cli/src/commands/run_audit.rs"
+    # AAASM-6162: the --workspace-tx mechanism. Consumes aa-workspace-tx and
+    # aa-isolation (both publish = false) and is only ever reached from the
+    # devtool-region run.rs/CLI wiring above, so it goes with it rather than
+    # being left behind importing a held-back dep.
+    "${REPO_ROOT}/aa-cli/src/commands/run_workspace_tx.rs"
+    "${REPO_ROOT}/aa-integration-tests/tests/cli_run_workspace_tx.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
