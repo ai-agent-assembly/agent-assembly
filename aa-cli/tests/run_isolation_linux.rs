@@ -775,3 +775,83 @@ fn a_max_open_files_flag_reaches_the_native_backend_as_a_real_rlimit() {
         ),
     );
 }
+
+/// A script that repeatedly appends 64 bytes to `target` until a write
+/// fails, then records how many bytes actually landed. `dd` rather than a
+/// shell loop so each write is a single, uniformly-sized syscall — `dd`
+/// itself gets SIGXFSZ on the write that crosses the ceiling, truncating the
+/// file at the ceiling rather than partway through a line.
+fn fsize_loop_script(target: &Path) -> String {
+    format!(
+        "i=0; while [ $i -lt 4096 ]; do \
+         dd if=/dev/zero bs=64 count=1 oflag=append conv=notrunc of={} 2>/dev/null || break; \
+         i=$((i+64)); done",
+        target.display()
+    )
+}
+
+/// **AAASM-6165, the file-size ceiling's reachability proof.**
+/// `--max-file-size-bytes` on `aasm run exec` reaches the AASM-native
+/// backend and is enforced as a real `RLIMIT_FSIZE` on the confined
+/// process — `limits.rs`'s `install` is unit-tested in isolation, but
+/// nothing before this exercised it through the real CLI -> lowering ->
+/// launcher chain, the same gap `--max-open-files`'s sibling test above
+/// closes for descriptors.
+///
+/// The pair: identical launch, ceiling present vs. absent. The control
+/// writes past the ceiling's byte count; the test run must stop at or under
+/// the stated ceiling, proving the ceiling reached a real `setrlimit` call
+/// rather than being silently dropped between the CLI flag and the launcher.
+#[test]
+fn a_max_file_size_bytes_flag_reaches_the_native_backend_as_a_real_rlimit() {
+    const SCENARIO: &str = "aasm-run-native-max-file-size-bytes";
+    if require_confining_native_host(SCENARIO).is_none() {
+        return;
+    }
+    const CEILING: u64 = 4096;
+    let scratch = Scratch::new("max-file-size-bytes");
+    let target = scratch.permitted().join("growing-file");
+    let policy = policy_permitting_writes(&scratch, "p.yaml", &[scratch.permitted()]);
+
+    // Control: the identical launch, no `Resource` requirement at all.
+    let mut control_args = confined_exec_args(&policy, &fsize_loop_script(&target));
+    control_args.isolation = IsolationIntent::Process;
+    control_args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.to_string());
+    let _ = launch(&control_args, no_adapters()).expect("the control launch runs");
+    let control_len = std::fs::metadata(&target)
+        .expect("the control run must produce the file")
+        .len();
+    std::fs::remove_file(&target).expect("reset between the pair");
+    assert!(
+        control_len > CEILING,
+        "the control run must grow the file past the ceiling to be a meaningful control, got {control_len} bytes"
+    );
+
+    // Test: the identical launch, `--max-file-size-bytes 4096`.
+    let mut test_args = confined_exec_args(&policy, &fsize_loop_script(&target));
+    test_args.isolation = IsolationIntent::Process;
+    test_args.isolation_backend = Some(aa_isolation_native::BACKEND_ID.to_string());
+    test_args.max_file_size_bytes = Some(CEILING);
+    let _ = launch(&test_args, no_adapters());
+    let test_len = std::fs::metadata(&target)
+        .expect("the test run must produce the file")
+        .len();
+
+    assert!(
+        test_len <= CEILING,
+        "a `--max-file-size-bytes {CEILING}` launch produced a {test_len}-byte file, over the stated ceiling"
+    );
+    assert!(
+        test_len < control_len,
+        "a `--max-file-size-bytes {CEILING}` launch grew the file as large as the control \
+         ({test_len} vs {control_len}); the ceiling reached no mechanism"
+    );
+
+    measured(
+        SCENARIO,
+        &format!(
+            "`--max-file-size-bytes {CEILING}` lowered to a real RLIMIT_FSIZE on the native backend: the \
+             ceilinged run produced a {test_len}-byte file against the control's {control_len}"
+        ),
+    );
+}
