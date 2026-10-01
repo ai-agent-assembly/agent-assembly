@@ -702,10 +702,15 @@ fn an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist() {
 /// A script that opens file descriptors in a loop until the kernel refuses one,
 /// then writes the count it reached to `target`. Mirrors
 /// `aa-isolation-native/src/probe.rs`'s own descriptor-ceiling probe.
+/// Opens each descriptor against a sink file inside `target`'s own
+/// directory, not `/dev/null` -- opening `/dev/null` is a write, and this
+/// test's policy only grants write on the scratch directory, not `/dev`.
 fn fd_loop_script(target: &Path) -> String {
+    let sink = target.with_file_name("fd-sink");
     format!(
-        "i=0; while [ $i -lt 2000 ]; do eval \"exec $((i+10))<>/dev/null\" || break; i=$((i+1)); done; \
+        "i=0; while [ $i -lt 2000 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
          printf %s \"$i\" > {}",
+        sink.display(),
         target.display()
     )
 }
