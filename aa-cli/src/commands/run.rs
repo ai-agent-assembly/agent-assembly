@@ -2250,17 +2250,36 @@ mod plan {
         Some(spec)
     }
 
+    /// The [`aa_isolation::Candidate`] `backend` presents for `probe`,
+    /// narrowed the same way a real [`SelectedBackend::plan`] call would
+    /// narrow it — see [`SelectedBackend::capabilities_for`] for why that
+    /// narrowing has to happen at this construction site rather than being
+    /// left to the evaluation call.
+    fn candidate_for(backend: &SelectedBackend, probe: &ExecutionSpec) -> aa_isolation::Candidate {
+        aa_isolation::Candidate::new(backend.identity(), backend.capabilities_for(probe))
+    }
+
     /// Walk the fixed, ordered candidate list and select the first backend that
     /// can plan this launch's lowered requirements, or refuse naming every
     /// candidate and why it was rejected.
     ///
-    /// "Eligible" means `backend.plan(probe_spec).is_ok()` — the same
+    /// "Eligible" means [`aa_isolation::planner::evaluate_candidate`] accepts
+    /// the candidate built by [`candidate_for`] — the same
     /// `plan()`/`negotiate()` machinery a real launch uses, not a hand-written
     /// comparison of what each backend's capability gaps are known to be. That
     /// is deliberate: sandlock and the native backend's gaps are complementary
     /// rather than nested, so a domain-subset comparison would have to be kept
     /// in step with both backends by hand, and the negotiation machinery
     /// already has to be right for every other code path.
+    ///
+    /// This calls `evaluate_candidate` directly, never
+    /// [`aa_isolation::planner::select`]: `select` forces eager discovery of
+    /// every candidate up front, which would break the laziness
+    /// `aa-cli/tests/run_isolation.rs` and `aa-isolation/tests/negotiation.rs`
+    /// already pin (the second candidate must never be probed when the first
+    /// is eligible), and `select`'s generic `PlanRefusal::to_string()` detail
+    /// would replace this function's own, more actionable
+    /// `super::describe_refusal` wording.
     fn auto_select(
         lowering: &Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
@@ -2292,6 +2311,21 @@ mod plan {
                 host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
             });
         };
+
+        // Built FROM `probe` rather than hand-assembled a second time, so the
+        // two structurally cannot drift: `requirements.probe_spec()` folds
+        // this exact confinement list back into an `ExecutionSpec`, which is
+        // what makes `evaluate_candidate`'s negotiation below reach the same
+        // verdict `backend.plan(&probe)` would for the confinement domains.
+        // No evidence minimum is stated here — nothing upstream of this
+        // function produces one yet — which is what keeps
+        // `unmet_evidence_minimums` returning empty and preserves today's
+        // exact eligibility behavior.
+        let requirements = probe
+            .requirements()
+            .iter()
+            .cloned()
+            .fold(aa_isolation::RuntimeRequirements::new(), |r, c| r.with_confinement(c));
 
         let mut considered = Vec::new();
         for id in CANDIDATES {
@@ -2325,7 +2359,21 @@ mod plan {
                 continue;
             }
 
-            match backend.plan(&probe) {
+            let candidate = candidate_for(&backend, &probe);
+            let verdict = aa_isolation::planner::evaluate_candidate(&requirements, &candidate);
+            // Pins planner-vs-`plan()` verdict equivalence for every
+            // candidate this build actually probes. A future backend added
+            // to `CANDIDATES` without its own `SelectedBackend::capabilities_for`
+            // arm would fall through to raw, unnarrowed capabilities here and
+            // fail this in debug/CI rather than silently selecting a backend
+            // that then refuses the real launch.
+            debug_assert_eq!(
+                verdict.is_ok(),
+                backend.plan(&probe).is_ok(),
+                "auto_select's planner-backed eligibility decision disagreed with {backend_id}'s own \
+                 plan()/negotiate() verdict"
+            );
+            match verdict {
                 Ok(_) => {
                     considered.push(aa_isolation::ConsideredBackend {
                         id: backend_id,

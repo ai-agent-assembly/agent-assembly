@@ -296,7 +296,7 @@ pub use plan::{
     negotiate, AchievedControl, BackendIdentity, EnforcementPlan, LaunchPosture, Lowering, PlanRefusal,
     PlannedRequirement, Provenance, RefusalReason, RequirementOutcome,
 };
-pub use planner::{select, select_pinned, Candidate, Selection};
+pub use planner::{evaluate_candidate, select, select_pinned, Candidate, Selection};
 pub use report::{
     BackendSelection, CandidateVerdict, ConsideredBackend, ControlState, DomainAuthoritySummary, DomainProjection,
     EvidenceBasis, HostCapabilityBinding, IsolationReport, ReportStage, ReportedPosture, RequestedControl,
