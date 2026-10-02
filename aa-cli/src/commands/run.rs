@@ -179,6 +179,53 @@ pub struct RunArgs {
     /// of it would leave the operator believing the other half took effect.
     #[arg(long, value_name = "ID")]
     pub isolation_backend: Option<String>,
+
+    /// Refuse the launch if a backend cannot enforce this many bytes of
+    /// resident memory (AAASM-6165).
+    ///
+    /// Produces its own `prevent(Resource)` requirement, carrying only this
+    /// ceiling — never bundled with another one. Each resource ceiling flag
+    /// becomes its own requirement so a backend that can enforce one ceiling
+    /// but not another refuses with a reason naming the specific ceiling,
+    /// rather than gapping every ceiling this launch asked for. See the ADR
+    /// this ticket adds (`docs/src/adr/`) for why lowering is all-or-nothing
+    /// *per requirement*, not per domain.
+    #[arg(long, value_name = "BYTES")]
+    pub max_memory_bytes: Option<u64>,
+
+    /// Refuse the launch if a backend cannot enforce this ceiling on the
+    /// number of processes in the confined tree (AAASM-6165).
+    #[arg(long, value_name = "COUNT")]
+    pub max_pids: Option<u32>,
+
+    /// Refuse the launch if a backend cannot enforce this ceiling on the
+    /// number of simultaneously open file descriptors (AAASM-6165).
+    #[arg(long, value_name = "COUNT")]
+    pub max_open_files: Option<u32>,
+
+    /// Refuse the launch if a backend cannot enforce this ceiling on the
+    /// size of any single file the agent creates (AAASM-6165).
+    #[arg(long, value_name = "BYTES")]
+    pub max_file_size_bytes: Option<u64>,
+
+    /// This launch's wall-clock lifetime ceiling, in seconds (AAASM-6165).
+    ///
+    /// `Optional`, not `Required`: wall-clock is enforced by `aasm run`'s own
+    /// supervisor (see `aa_isolation::deadline::requested_wall_clock_ceiling`),
+    /// never by a backend mechanism, so a backend that cannot express it as a
+    /// lowering must not refuse the launch over it — the supervisor's own
+    /// ceiling still fires regardless of what any backend reports.
+    #[arg(long, value_name = "SECONDS")]
+    pub max_wall_clock_seconds: Option<u64>,
+
+    /// This launch's accumulated CPU-time ceiling, in seconds (AAASM-6165).
+    ///
+    /// `Optional`, like `--max-wall-clock-seconds`: no backend in this
+    /// version enforces this as a *prevention* mechanism (see the ADR),
+    /// and a `Required` posture here would refuse every launch that named
+    /// it.
+    #[arg(long, value_name = "SECONDS")]
+    pub max_cpu_seconds: Option<u64>,
 }
 
 /// The stable, backend-neutral statement of how much execution isolation a
@@ -249,6 +296,81 @@ impl RunArgs {
     }
 }
 
+/// Build this launch's `Resource` ceiling requirements from its `--max-*`
+/// flags (AAASM-6165).
+///
+/// **One requirement per stated ceiling, never a bundled [`aa_isolation::ResourceLimits`]
+/// with several fields set.** A backend's lowering is all-or-nothing per
+/// requirement (see the ADR this ticket adds), so bundling two ceilings into
+/// one requirement would gap the whole bundle the moment either one is
+/// unsupported, even if the backend could have honoured the other ceiling on
+/// its own. Per-ceiling requirements let each lower, or refuse, independently
+/// — and name the specific ceiling in the refusal.
+///
+/// `--max-memory-bytes`/`--max-pids`/`--max-open-files`/`--max-file-size-bytes`
+/// are [`aa_isolation::RequirementPosture::Required`]: a backend that cannot enforce one of
+/// these must refuse rather than silently running without it.
+/// `--max-wall-clock-seconds`/`--max-cpu-seconds` are
+/// [`aa_isolation::RequirementPosture::Optional`]: neither is a backend-lowered prevention
+/// mechanism in this version (wall-clock is enforced by `aasm run`'s own
+/// supervisor; see `aa_isolation::deadline::requested_wall_clock_ceiling`), so
+/// a `Required` posture would refuse every launch that named one.
+fn resource_requirements(args: &RunArgs) -> Vec<aa_isolation::ControlRequirement> {
+    let mut requirements = Vec::new();
+    let mut required = |limits: aa_isolation::ResourceLimits| {
+        requirements.push(
+            aa_isolation::ControlRequirement::prevent(aa_isolation::CapabilityDomain::Resource)
+                .with_posture(aa_isolation::RequirementPosture::Required)
+                .with_scope(aa_isolation::RequirementScope::Limits(limits)),
+        );
+    };
+    if let Some(max_memory_bytes) = args.max_memory_bytes {
+        required(aa_isolation::ResourceLimits {
+            max_memory_bytes: Some(max_memory_bytes),
+            ..aa_isolation::ResourceLimits::default()
+        });
+    }
+    if let Some(max_pids) = args.max_pids {
+        required(aa_isolation::ResourceLimits {
+            max_pids: Some(max_pids),
+            ..aa_isolation::ResourceLimits::default()
+        });
+    }
+    if let Some(max_open_files) = args.max_open_files {
+        required(aa_isolation::ResourceLimits {
+            max_open_files: Some(max_open_files),
+            ..aa_isolation::ResourceLimits::default()
+        });
+    }
+    if let Some(max_file_size_bytes) = args.max_file_size_bytes {
+        required(aa_isolation::ResourceLimits {
+            max_file_size_bytes: Some(max_file_size_bytes),
+            ..aa_isolation::ResourceLimits::default()
+        });
+    }
+    if let Some(max_wall_clock_seconds) = args.max_wall_clock_seconds {
+        requirements.push(
+            aa_isolation::ControlRequirement::observe(aa_isolation::CapabilityDomain::Resource)
+                .with_posture(aa_isolation::RequirementPosture::Optional)
+                .with_scope(aa_isolation::RequirementScope::Limits(aa_isolation::ResourceLimits {
+                    max_wall_clock_seconds: Some(max_wall_clock_seconds),
+                    ..aa_isolation::ResourceLimits::default()
+                })),
+        );
+    }
+    if let Some(max_cpu_seconds) = args.max_cpu_seconds {
+        requirements.push(
+            aa_isolation::ControlRequirement::observe(aa_isolation::CapabilityDomain::Resource)
+                .with_posture(aa_isolation::RequirementPosture::Optional)
+                .with_scope(aa_isolation::RequirementScope::Limits(aa_isolation::ResourceLimits {
+                    max_cpu_seconds: Some(max_cpu_seconds),
+                    ..aa_isolation::ResourceLimits::default()
+                })),
+        );
+    }
+    requirements
+}
+
 /// Planning for `aasm run`: what a launch resolves to, before anything runs.
 ///
 /// # The seam
@@ -291,9 +413,9 @@ mod plan {
     use aa_isolation::host_capability::{host_capability_gate, HostCapabilityAuthority, HostCapabilityContract};
     use aa_isolation::{
         authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
-        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, HostCapabilityBinding,
-        HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope, SessionRef, TargetRef,
-        XcodeListRequest,
+        ControlRequirement, CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec,
+        HostCapabilityBinding, HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope,
+        SessionRef, TargetRef, XcodeListRequest,
     };
     use aa_policy::resolve as run_policy;
 
@@ -843,6 +965,13 @@ mod plan {
         /// source of leases has one call site to populate rather than a new
         /// one to wire.
         leases: Vec<CapabilityLease>,
+        /// Per-ceiling `Resource` requirements built from this launch's
+        /// `--max-*` flags (AAASM-6165). Attached to `base_spec` the same way
+        /// `leases` is: CLI provenance, never policy-derived, which is why
+        /// these never appear in `lowering`'s own requirement list — see the
+        /// ADR this ticket adds for why that is the correct provenance to
+        /// record.
+        resource_requirements: Vec<ControlRequirement>,
         /// This launch's position in an execution ancestry (AAASM-6161, ADR
         /// 0038 amendment). `Ancestry::Root` for every launch today — no
         /// policy path resolves a parent's authority yet, so `--root-agent`
@@ -940,6 +1069,7 @@ mod plan {
                 working_dir: Option<std::path::PathBuf>,
                 credentials: CredentialPosture,
                 leases: Vec<CapabilityLease>,
+                resource_requirements: Vec<ControlRequirement>,
             }
 
             let fields = BoundLaunchFields {
@@ -951,6 +1081,7 @@ mod plan {
                 working_dir: command.get_current_dir().map(std::path::Path::to_path_buf),
                 credentials,
                 leases: self.leases.clone(),
+                resource_requirements: self.resource_requirements.clone(),
             };
             let BoundLaunchFields {
                 program,
@@ -958,6 +1089,7 @@ mod plan {
                 working_dir,
                 credentials,
                 leases,
+                resource_requirements,
             } = fields;
 
             let mut spec = ExecutionSpec::new(program, identity.identity_ref(&handle.agent_id))
@@ -968,6 +1100,13 @@ mod plan {
             }
             for lease in leases {
                 spec = spec.with_lease(lease);
+            }
+            // AAASM-6165: CLI-provenance `Resource` ceiling requirements,
+            // attached here rather than threaded through `lowering` — see
+            // `IsolationPlan::resource_requirements`'s own documentation for
+            // why the operator's `--max-*` flags are not policy-derived.
+            for requirement in resource_requirements {
+                spec = spec.with_requirement(requirement);
             }
             Some(spec)
         }
@@ -1081,6 +1220,15 @@ mod plan {
 
             let spec = match lowering.apply_to(base.clone()) {
                 Ok(spec) => spec,
+                // `apply_to` refuses only when the POLICY document lowered to
+                // nothing — it never inspects `base`'s own pre-existing
+                // requirements. AAASM-6165's resource-ceiling flags attach
+                // their `ControlRequirement`s to `base` directly (CLI
+                // provenance, not policy — see the ADR's provenance
+                // decision), so a launch that asked for a ceiling and
+                // nothing else must not read as "nothing to enforce" just
+                // because the policy document itself was silent.
+                Err(_nothing) if !base.requirements().is_empty() => base.clone(),
                 Err(nothing) => {
                     let detail = nothing.to_string();
                     let mut report = IsolationReport::no_boundary(
@@ -1903,6 +2051,7 @@ mod plan {
                     ),
                     selection: None,
                     leases: Vec::new(),
+                    resource_requirements: super::resource_requirements(args),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
                     credential_contract: CredentialContract::not_required(),
@@ -1915,12 +2064,14 @@ mod plan {
             // `--isolation auto --isolation-backend X` must behave exactly as
             // `--isolation process --isolation-backend X` does, not run
             // automatic selection and then check whether it agreed.
+            let resource_requirements = super::resource_requirements(args);
+
             if let Some(id) = &args.isolation_backend {
-                return explicit_backend(id, args.isolation, lowering, posture);
+                return explicit_backend(id, args.isolation, lowering, posture, resource_requirements);
             }
 
             if args.isolation == super::IsolationIntent::Auto {
-                return auto_select(&lowering, posture);
+                return auto_select(&lowering, posture, resource_requirements);
             }
 
             // `--isolation process` with no backend named. The default is
@@ -1931,7 +2082,13 @@ mod plan {
             // it is not pre-decided by naming the native backend here". So the
             // second backend is reachable only by naming it, and `process`
             // without a name stays hardcoded to `sandlock`.
-            explicit_backend(aa_isolation_sandlock::BACKEND_ID, args.isolation, lowering, posture)
+            explicit_backend(
+                aa_isolation_sandlock::BACKEND_ID,
+                args.isolation,
+                lowering,
+                posture,
+                resource_requirements,
+            )
         }
     }
 
@@ -1948,6 +2105,7 @@ mod plan {
         intent: super::IsolationIntent,
         lowering: Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
+        resource_requirements: Vec<ControlRequirement>,
     ) -> anyhow::Result<IsolationPlan> {
         let backend = match requested {
             id if id == aa_isolation_sandlock::BACKEND_ID => {
@@ -1983,6 +2141,7 @@ mod plan {
                     absent: Some(format!("no backend answers to the id `{other}` in this build")),
                     selection: None,
                     leases: Vec::new(),
+                    resource_requirements: resource_requirements.clone(),
                     ancestry: Ancestry::Root,
                     egress: aa_isolation::EgressContract::not_required(),
                     credential_contract: CredentialContract::not_required(),
@@ -2011,6 +2170,7 @@ mod plan {
                 )),
                 selection: None,
                 leases: Vec::new(),
+                resource_requirements: resource_requirements.clone(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
                 credential_contract: CredentialContract::not_required(),
@@ -2024,6 +2184,7 @@ mod plan {
             absent: None,
             selection: None,
             leases: Vec::new(),
+            resource_requirements: resource_requirements.clone(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
             credential_contract: CredentialContract::not_required(),
@@ -2045,9 +2206,21 @@ mod plan {
     /// the existing `NoRequirementsLowered` refusal in
     /// [`IsolationPlan::resolve_boundary`] handles that case; this function
     /// does not duplicate it.
-    fn probe_spec(lowering: &aa_isolation::PolicyLowering) -> Option<ExecutionSpec> {
+    fn probe_spec(
+        lowering: &aa_isolation::PolicyLowering,
+        resource_requirements: &[ControlRequirement],
+    ) -> Option<ExecutionSpec> {
         let throwaway = ExecutionSpec::new("probe", IdentityRef::root("probe"));
-        lowering.apply_to(throwaway).ok()
+        // AAASM-6165: the eligibility oracle has to see the operator's
+        // `--max-*` ceilings too, or `--isolation auto` could select a
+        // backend that cannot actually enforce one of them — the policy
+        // lowering alone never carries them (see `resource_requirements`'s
+        // own documentation for why their provenance is the CLI, not policy).
+        let mut spec = lowering.apply_to(throwaway).ok()?;
+        for requirement in resource_requirements {
+            spec = spec.with_requirement(requirement.clone());
+        }
+        Some(spec)
     }
 
     /// Walk the fixed, ordered candidate list and select the first backend that
@@ -2064,6 +2237,7 @@ mod plan {
     fn auto_select(
         lowering: &Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
+        resource_requirements: Vec<ControlRequirement>,
     ) -> anyhow::Result<IsolationPlan> {
         const CANDIDATES: [&str; 3] = [
             aa_isolation_sandlock::BACKEND_ID,
@@ -2071,7 +2245,7 @@ mod plan {
             aa_isolation_macos_vm::BACKEND_ID,
         ];
 
-        let Some(probe) = lowering.as_ref().and_then(probe_spec) else {
+        let Some(probe) = lowering.as_ref().and_then(|l| probe_spec(l, &resource_requirements)) else {
             // Nothing to lower — the existing `NoRequirementsLowered` refusal
             // in `resolve_boundary` fires downstream against today's default
             // candidate. Refusing here as well would duplicate that message
@@ -2084,6 +2258,7 @@ mod plan {
                 absent: None,
                 selection: None,
                 leases: Vec::new(),
+                resource_requirements: resource_requirements.clone(),
                 ancestry: Ancestry::Root,
                 egress: aa_isolation::EgressContract::not_required(),
                 credential_contract: CredentialContract::not_required(),
@@ -2140,6 +2315,7 @@ mod plan {
                             considered,
                         }),
                         leases: Vec::new(),
+                        resource_requirements: resource_requirements.clone(),
                         ancestry: Ancestry::Root,
                         egress: aa_isolation::EgressContract::not_required(),
                         credential_contract: CredentialContract::not_required(),
@@ -2188,6 +2364,7 @@ mod plan {
                 considered,
             }),
             leases: Vec::new(),
+            resource_requirements: resource_requirements.clone(),
             ancestry: Ancestry::Root,
             egress: aa_isolation::EgressContract::not_required(),
             credential_contract: CredentialContract::not_required(),
@@ -5758,6 +5935,12 @@ mod tests {
             // launch with no execution-isolation boundary, exactly as before.
             isolation: IsolationIntent::None,
             isolation_backend: None,
+            max_memory_bytes: None,
+            max_pids: None,
+            max_open_files: None,
+            max_file_size_bytes: None,
+            max_wall_clock_seconds: None,
+            max_cpu_seconds: None,
         }
     }
 

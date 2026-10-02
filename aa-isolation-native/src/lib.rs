@@ -103,6 +103,7 @@ pub mod capability;
 pub mod host;
 pub mod inherit;
 pub mod launch;
+pub mod limits;
 pub mod lower;
 pub mod probe;
 pub mod proc_scope;
@@ -115,6 +116,7 @@ pub use backend::{
 pub use host::{AbiFloor, HostFacts, HostUnusable, SyscallFilterSupport, LAUNCHER_PATH_ENV, LAUNCHER_PROGRAM};
 pub use inherit::seal_inherited_descriptors;
 pub use launch::{Grants, LauncherArgv, SyscallFilter, EXIT_LAUNCH_REFUSED, FAILURE_MARKER};
+pub use limits::NativeLimits;
 pub use lower::LoweringGap;
 pub use probe::{ConfinementProbe, Observation};
 pub use proc_scope::{ProcListing, ScopedGrants, OWN_PROC};

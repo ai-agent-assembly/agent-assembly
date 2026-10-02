@@ -62,7 +62,14 @@ fn main() -> std::process::ExitCode {
         Err(reason) => return refuse(&reason),
     };
 
-    confine_and_exec(&plan, &parsed.syscalls, &filter, &parsed.program, &parsed.args)
+    confine_and_exec(
+        &plan,
+        &parsed.syscalls,
+        &filter,
+        &parsed.limits,
+        &parsed.program,
+        &parsed.args,
+    )
 }
 
 /// Install the boundary and become the program. Never returns on success.
@@ -73,18 +80,23 @@ fn main() -> std::process::ExitCode {
 ///    `landlock_*`, which are outside the syscall filter's vocabulary and must
 ///    run before that filter is installed, or installing the filter first
 ///    would kill the Landlock setup itself.
-/// 2. The `CString` program name and the argv pointer array are built next —
+/// 2. [`aa_isolation_native::limits::install`] next, before the syscall filter
+///    for the same reason in reverse (`setrlimit`/`prlimit64` must still be
+///    reachable), and after step 1 because a tight `RLIMIT_NOFILE` installed
+///    first could make opening the paths Landlock needs to rule on fail
+///    before the boundary itself is even up (AAASM-6165).
+/// 3. The `CString` program name and the argv pointer array are built next —
 ///    the only allocation in this function — **before** the syscall filter,
 ///    because allocating after it would depend on `mmap`/`brk` being in the
 ///    filter's permitted set on every path, not just the loader's.
-/// 3. `SIGPIPE` is reset to `SIG_DFL`, preserving what `Command::exec` used to
+/// 4. `SIGPIPE` is reset to `SIG_DFL`, preserving what `Command::exec` used to
 ///    do before this function replaced it.
-/// 4. The syscall filter is installed, only when one was requested
+/// 5. The syscall filter is installed, only when one was requested
 ///    ([`aa_isolation_native::launch::SyscallFilter::Allow`]) — see that
 ///    type's own documentation for why `NotRequested` installs nothing at all.
-/// 5. `execve` immediately, with **no allocation** between steps 4 and 5.
+/// 6. `execve` immediately, with **no allocation** between steps 5 and 6.
 ///
-/// After step 4, [`refuse`]'s `eprintln!` depends on `write`, which the filter
+/// After step 5, [`refuse`]'s `eprintln!` depends on `write`, which the filter
 /// denies unless policy named it. A failed `execve` past that point surfaces to
 /// the supervisor as `SIGSYS` with no [`aa_isolation_native::launch::FAILURE_MARKER`]
 /// line — fail-closed, which is correct, but it means no test in this crate may
@@ -95,12 +107,17 @@ fn confine_and_exec(
     plan: &aa_isolation_native::rules::RulePlan,
     syscalls: &aa_isolation_native::launch::SyscallFilter,
     filter: &aa_isolation_native::seccomp::FilterProgram,
+    limits: &aa_isolation_native::limits::NativeLimits,
     program: &str,
     args: &[String],
 ) -> std::process::ExitCode {
     use std::ffi::CString;
 
     if let Err(reason) = aa_isolation_native::rules::install(plan) {
+        return refuse(&reason);
+    }
+
+    if let Err(reason) = aa_isolation_native::limits::install(limits) {
         return refuse(&reason);
     }
 
@@ -162,6 +179,7 @@ fn confine_and_exec(
     _plan: &aa_isolation_native::rules::RulePlan,
     _syscalls: &aa_isolation_native::launch::SyscallFilter,
     _filter: &aa_isolation_native::seccomp::FilterProgram,
+    _limits: &aa_isolation_native::limits::NativeLimits,
     program: &str,
     _args: &[String],
 ) -> std::process::ExitCode {

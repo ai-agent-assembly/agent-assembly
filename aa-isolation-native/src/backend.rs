@@ -100,6 +100,10 @@ struct Prepared {
     /// keeps the two apart rather than defaulting to an installed-but-empty
     /// program.
     syscall_filter: Option<FilterProgram>,
+    /// The rlimit ceilings this launch will install, or an empty
+    /// [`crate::limits::NativeLimits`] when no `Resource` requirement named
+    /// this launch (AAASM-6165).
+    limits: crate::limits::NativeLimits,
     /// What the `/proc` scope did to the grant set, and whether other processes'
     /// per-PID entries ended up outside the installed boundary (AAASM-5804).
     proc_scope: ScopedGrants,
@@ -405,6 +409,9 @@ pub struct PermittedScope {
     pub grants: Grants,
     /// The syscall allowlist every enforced requirement contributed.
     pub syscalls: SyscallFilter,
+    /// The rlimit ceilings every enforced requirement contributed
+    /// (AAASM-6165).
+    pub limits: crate::limits::NativeLimits,
 }
 
 /// Collect the permitted scope every enforced requirement contributes.
@@ -429,6 +436,7 @@ pub fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnEr
     let mut grants = Grants::default();
     let mut syscalls: BTreeSet<Syscall> = BTreeSet::new();
     let mut syscall_requirement_seen = false;
+    let mut limits = crate::limits::NativeLimits::default();
     for planned in plan.planned() {
         if !emits_grants(&planned.outcome) {
             continue;
@@ -446,6 +454,17 @@ pub fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnEr
             syscall_requirement_seen = true;
             syscalls.extend(names);
         }
+        // The smallest stated ceiling wins, mirroring `aa_isolation::deadline`'s
+        // "a spec is free to carry more than one `Resource` requirement; the
+        // effective ceiling is the smallest one stated" rule — each ceiling is
+        // its own per-requirement lowering (see `crate::lower::resource`), so
+        // more than one enforced requirement can contribute the same rlimit.
+        if let Some(n) = lowered.limits.max_open_files {
+            limits.max_open_files = Some(limits.max_open_files.map_or(n, |cur| cur.min(n)));
+        }
+        if let Some(n) = lowered.limits.max_file_size_bytes {
+            limits.max_file_size_bytes = Some(limits.max_file_size_bytes.map_or(n, |cur| cur.min(n)));
+        }
     }
     Ok(PermittedScope {
         grants,
@@ -454,6 +473,7 @@ pub fn permitted_scope(plan: &EnforcementPlan) -> Result<PermittedScope, SpawnEr
         } else {
             SyscallFilter::NotRequested
         },
+        limits,
     })
 }
 
@@ -542,7 +562,13 @@ impl IsolationBackend for NativeBackend {
         // becomes.
         let descriptors = seal_inherited_descriptors();
         let residual_authority = residual_authority(plan.spec(), self.child_environment.is_some());
-        let argv = launch::build(&grants, &permitted.syscalls, plan.spec().program(), plan.spec().args());
+        let argv = launch::build(
+            &grants,
+            &permitted.syscalls,
+            &permitted.limits,
+            plan.spec().program(),
+            plan.spec().args(),
+        );
         let token = self.issue_token();
         self.prepared.lock().expect("backend state poisoned").insert(
             token.clone(),
@@ -551,6 +577,7 @@ impl IsolationBackend for NativeBackend {
                 argv,
                 rules,
                 syscall_filter,
+                limits: permitted.limits,
                 proc_scope: scoped,
                 residual_authority,
                 descriptors,
@@ -864,6 +891,49 @@ impl IsolationBackend for NativeBackend {
             ),
         ));
 
+        // The rlimit ceilings (AAASM-6165), always, including when none were
+        // requested — silence here must not read as a permissive run, the same
+        // rule the filesystem and syscall records above already follow.
+        evidence.record(EvidenceRecord::new(
+            EvidenceKind::Installed,
+            CapabilityDomain::Resource,
+            ClaimTerm::Planned,
+            if entry.limits.is_empty() {
+                "resource ceilings: none requested. No `Resource` requirement named this launch, so the \
+                 launcher installed no rlimit ceiling at all"
+                    .to_string()
+            } else {
+                format!(
+                    "resource ceilings installed before exec, soft == hard: {}",
+                    entry.limits
+                )
+            },
+        ));
+
+        // Whether the run ended by a signal this backend can honestly name as a
+        // ceiling. `Detected`, never `Decision` — EMFILE/EFBIG and the signals
+        // below are delivered to the CHILD process, not to this supervisor, so
+        // `supports_prevention_claim(Resource)` must stay false (AC7).
+        if !entry.limits.is_empty() {
+            if let Some(completed) = self
+                .completed
+                .lock()
+                .expect("backend state poisoned")
+                .get(handle.token())
+            {
+                if !completed.launcher_refused() {
+                    if let Some((term, detail)) = resource_signal_cause(&completed.status) {
+                        evidence.record(EvidenceRecord::new(
+                            EvidenceKind::Exercised,
+                            CapabilityDomain::Resource,
+                            term,
+                            detail,
+                        ));
+                    }
+                }
+            }
+        }
+
         if let Some(completed) = self
             .completed
             .lock()
@@ -936,6 +1006,42 @@ fn residual_authority(spec: &ExecutionSpec, replaced: bool) -> Vec<String> {
     residual
 }
 
+/// Whether `status` ended by a signal this backend can honestly name as a
+/// resource ceiling (AAASM-6165), and the evidence term/detail to report if
+/// so. `libc`'s signal constants are only a dependency on Linux (see this
+/// crate's `Cargo.toml`), so the lookup itself is cfg-gated even though the
+/// evidence shape it returns is platform-neutral.
+///
+/// `ClaimTerm::Detected`, never `Decision` — SIGXFSZ is delivered to the
+/// CHILD process, not to this supervisor, so this is observation, not a
+/// pre-execution decision (AC7). SIGKILL is reported as explicitly
+/// non-attributable: it is equally consistent with an OOM kill or an
+/// operator-issued `terminate()`, and guessing it was the ceiling would be a
+/// claim this backend cannot stand behind.
+#[cfg(target_os = "linux")]
+fn resource_signal_cause(status: &ExitStatus) -> Option<(ClaimTerm, String)> {
+    use std::os::unix::process::ExitStatusExt;
+    match status.signal() {
+        Some(sig) if sig == libc::SIGXFSZ => Some((
+            ClaimTerm::Detected,
+            "the run ended by SIGXFSZ: the file-size ceiling (RLIMIT_FSIZE) was reached".to_string(),
+        )),
+        Some(sig) if sig == libc::SIGKILL => Some((
+            ClaimTerm::Unmeasured,
+            "the run ended by SIGKILL, which this backend cannot attribute to a resource ceiling — it \
+             is equally consistent with an out-of-memory kill or an operator-issued `terminate()`, and \
+             reporting it as the ceiling would be a guess"
+                .to_string(),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn resource_signal_cause(_status: &ExitStatus) -> Option<(ClaimTerm, String)> {
+    None
+}
+
 /// Send a termination request to the confined process.
 ///
 /// Linux only, and the non-Linux arm returns an error rather than doing nothing
@@ -1006,6 +1112,7 @@ mod tests {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
             syscall: Observation::Denied,
+            descriptor_ceiling: Observation::Denied,
         }
     }
 
@@ -1246,6 +1353,85 @@ mod tests {
             !evidence.records().iter().any(|r| r.kind == EvidenceKind::Decision),
             "this backend has no per-decision channel and must emit no Decision record"
         );
+    }
+
+    /// A spec carrying one `max_open_files` ceiling, enforced.
+    fn open_files_spec(target: &str, max_open_files: u32) -> ExecutionSpec {
+        use aa_isolation::ResourceLimits;
+        writing_spec(target).with_requirement(ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(
+            RequirementScope::Limits(ResourceLimits {
+                max_open_files: Some(max_open_files),
+                ..ResourceLimits::default()
+            }),
+        ))
+    }
+
+    /// AC7, positive half: a `Resource` requirement this backend CAN lower
+    /// (`max_open_files`) still produces no `Decision` evidence — EMFILE is
+    /// delivered to the child, never to this supervisor — while still
+    /// producing `Installed` evidence, so this is not a vacuous pass over a
+    /// run with no Resource evidence at all (AAASM-6165).
+    #[test]
+    fn a_lowered_resource_ceiling_never_produces_a_decision_record() {
+        let backend = backend();
+        let plan = backend.plan(&open_files_spec("/tmp/never", 32)).expect("planned");
+        let prepared = backend.prepare(plan).expect("prepared");
+        let handle = ExecutionHandle::new(backend.identity(), prepared.token(), prepared.plan().posture());
+        let evidence = backend.evidence(&handle);
+
+        assert!(
+            evidence
+                .records()
+                .iter()
+                .any(|r| r.domain == Some(CapabilityDomain::Resource) && r.kind == EvidenceKind::Installed),
+            "the lowered ceiling must be recorded as Installed: {:?}",
+            evidence.records()
+        );
+        assert!(
+            !evidence.supports_prevention_claim(CapabilityDomain::Resource),
+            "Resource must never support a prevention claim on this backend (AC7)"
+        );
+        assert!(
+            !evidence
+                .records()
+                .iter()
+                .any(|r| r.domain == Some(CapabilityDomain::Resource) && r.kind == EvidenceKind::Decision),
+            "the Resource domain emitted a Decision record: {:?}",
+            evidence.records()
+        );
+    }
+
+    /// AC7, the precise-refusal half: a `Required` `max_memory_bytes`
+    /// requirement is refused (this backend has no cgroup subtree), while its
+    /// `max_open_files` twin, same posture, is not — and the refusal names the
+    /// specific ceiling rather than a generic "Resource unsupported" message.
+    #[test]
+    fn an_unsupported_ceiling_refuses_while_its_supported_twin_does_not() {
+        use aa_isolation::ResourceLimits;
+        let backend = backend();
+
+        let memory_only = writing_spec("/tmp/never").with_requirement(
+            ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(RequirementScope::Limits(
+                ResourceLimits {
+                    max_memory_bytes: Some(16 * 1024 * 1024),
+                    ..ResourceLimits::default()
+                },
+            )),
+        );
+        let refusal = backend
+            .plan(&memory_only)
+            .expect_err("max_memory_bytes has no native lowering");
+        let message = format!("{refusal:?}");
+        assert!(
+            message.contains("max_memory_bytes") && message.contains("cgroup"),
+            "the refusal must name the specific ceiling, not a generic Resource-unsupported message: \
+             {message}"
+        );
+
+        let open_files_only = open_files_spec("/tmp/never", 32);
+        backend
+            .plan(&open_files_only)
+            .expect("max_open_files is lowerable and must not be refused");
     }
 
     /// The command line must put the caller's program after the separator and the

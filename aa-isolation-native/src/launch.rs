@@ -65,6 +65,14 @@ pub const FLAG_SYSCALL_FILTER: &str = "--syscall-filter";
 /// (`aa_security::policy::syscall::Syscall`). Repeatable.
 pub const FLAG_SYSCALL_ALLOW: &str = "--syscall-allow";
 
+/// Sets `RLIMIT_NOFILE` (soft == hard) before the program is executed. See
+/// [`crate::limits`] for why only this ceiling and [`FLAG_MAX_FILE_SIZE`] are
+/// expressible by this backend.
+pub const FLAG_MAX_OPEN_FILES: &str = "--max-open-files";
+
+/// Sets `RLIMIT_FSIZE` (soft == hard) before the program is executed.
+pub const FLAG_MAX_FILE_SIZE: &str = "--max-file-size";
+
 /// The exit status the launcher uses when it could not establish the boundary
 /// and therefore did **not** execute the program.
 ///
@@ -133,6 +141,14 @@ pub enum ArgvError {
     /// that built the argv, and this launcher refuses rather than guessing
     /// whether the marker was meant to be there.
     SyscallNameWithoutFilter,
+    /// A [`FLAG_MAX_OPEN_FILES`] or [`FLAG_MAX_FILE_SIZE`] value was not a
+    /// valid unsigned integer.
+    InvalidLimit {
+        /// The flag that carried it.
+        flag: &'static str,
+        /// The value as it arrived.
+        value: String,
+    },
 }
 
 impl core::fmt::Display for ArgvError {
@@ -170,6 +186,11 @@ impl core::fmt::Display for ArgvError {
                 f,
                 "`{FLAG_SYSCALL_ALLOW}` appeared without `{FLAG_SYSCALL_FILTER}`; refusing rather than \
                  guessing whether a filter was meant to be installed"
+            ),
+            Self::InvalidLimit { flag, value } => write!(
+                f,
+                "`{flag}={value}` is not a valid unsigned integer; refusing rather than installing a \
+                 ceiling that differs from the one the supervisor asked for"
             ),
         }
     }
@@ -259,6 +280,8 @@ pub struct LauncherArgv {
     pub grants: Grants,
     /// The syscall filter to install before executing anything.
     pub syscalls: SyscallFilter,
+    /// The rlimit ceilings to install before executing anything.
+    pub limits: crate::limits::NativeLimits,
     /// The program to execute once the boundary is installed.
     pub program: String,
     /// Its arguments, excluding the program name.
@@ -270,8 +293,14 @@ pub struct LauncherArgv {
 /// The returned vector excludes `argv[0]`: the caller supplies the launcher's
 /// own path from measured host facts, so a spec can never name the binary that
 /// confines it.
-pub fn build(grants: &Grants, syscalls: &SyscallFilter, program: &str, args: &[String]) -> Vec<String> {
-    let mut argv = Vec::with_capacity(grants.read.len() + grants.write.len() + args.len() + 3);
+pub fn build(
+    grants: &Grants,
+    syscalls: &SyscallFilter,
+    limits: &crate::limits::NativeLimits,
+    program: &str,
+    args: &[String],
+) -> Vec<String> {
+    let mut argv = Vec::with_capacity(grants.read.len() + grants.write.len() + args.len() + 4);
     for path in &grants.read {
         argv.push(format!("{FLAG_FS_READ}={path}"));
     }
@@ -283,6 +312,12 @@ pub fn build(grants: &Grants, syscalls: &SyscallFilter, program: &str, args: &[S
         for syscall in names {
             argv.push(format!("{FLAG_SYSCALL_ALLOW}={}", syscall.name()));
         }
+    }
+    if let Some(n) = limits.max_open_files {
+        argv.push(format!("{FLAG_MAX_OPEN_FILES}={n}"));
+    }
+    if let Some(n) = limits.max_file_size_bytes {
+        argv.push(format!("{FLAG_MAX_FILE_SIZE}={n}"));
     }
     argv.push(ARG_SEPARATOR.to_string());
     // From here down every element is caller-supplied and is pushed whole. No
@@ -307,6 +342,7 @@ where
     let mut grants = Grants::default();
     let mut saw_filter_marker = false;
     let mut allow: BTreeSet<Syscall> = BTreeSet::new();
+    let mut limits = crate::limits::NativeLimits::default();
     let mut iter = argv.into_iter().map(Into::into);
     let mut saw_separator = false;
     let mut tail: Vec<String> = Vec::new();
@@ -333,6 +369,20 @@ where
             allow.insert(syscall);
             continue;
         }
+        if let Some(value) = arg.strip_prefix(&format!("{FLAG_MAX_OPEN_FILES}=")) {
+            limits.max_open_files = Some(value.parse().map_err(|_| ArgvError::InvalidLimit {
+                flag: FLAG_MAX_OPEN_FILES,
+                value: value.to_string(),
+            })?);
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix(&format!("{FLAG_MAX_FILE_SIZE}=")) {
+            limits.max_file_size_bytes = Some(value.parse().map_err(|_| ArgvError::InvalidLimit {
+                flag: FLAG_MAX_FILE_SIZE,
+                value: value.to_string(),
+            })?);
+            continue;
+        }
         return Err(ArgvError::UnknownArgument(arg));
     }
     if !saw_separator {
@@ -355,6 +405,7 @@ where
     Ok(LauncherArgv {
         grants,
         syscalls,
+        limits,
         program,
         args: tail.collect(),
     })
@@ -388,10 +439,17 @@ mod tests {
         let built = LauncherArgv {
             grants: grants(&["/usr", "/etc"], &["/workspace/build"]),
             syscalls: SyscallFilter::NotRequested,
+            limits: crate::limits::NativeLimits::default(),
             program: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "printf x".to_string()],
         };
-        let argv = build(&built.grants, &built.syscalls, &built.program, &built.args);
+        let argv = build(
+            &built.grants,
+            &built.syscalls,
+            &built.limits,
+            &built.program,
+            &built.args,
+        );
         assert_eq!(parse(argv).expect("a built command line parses"), built);
     }
 
@@ -401,10 +459,17 @@ mod tests {
         let built = LauncherArgv {
             grants: grants(&["/usr"], &[]),
             syscalls: SyscallFilter::Allow([Syscall::Read, Syscall::Write].into_iter().collect()),
+            limits: crate::limits::NativeLimits::default(),
             program: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), "printf x".to_string()],
         };
-        let argv = build(&built.grants, &built.syscalls, &built.program, &built.args);
+        let argv = build(
+            &built.grants,
+            &built.syscalls,
+            &built.limits,
+            &built.program,
+            &built.args,
+        );
         assert_eq!(parse(argv).expect("a built command line parses"), built);
     }
 
@@ -432,6 +497,7 @@ mod tests {
         let argv = build(
             &grants(&["/usr"], &[]),
             &SyscallFilter::NotRequested,
+            &crate::limits::NativeLimits::default(),
             "--fs-write=/etc",
             &hostile,
         );
@@ -451,6 +517,7 @@ mod tests {
         let argv = build(
             &grants(&["/--fs-write=/etc"], &[]),
             &SyscallFilter::NotRequested,
+            &crate::limits::NativeLimits::default(),
             "/bin/true",
             &[],
         );
@@ -492,11 +559,55 @@ mod tests {
     /// round trip as one.
     #[test]
     fn an_empty_grant_set_round_trips_as_deny_everything() {
-        let argv = build(&Grants::default(), &SyscallFilter::NotRequested, "/bin/true", &[]);
+        let argv = build(
+            &Grants::default(),
+            &SyscallFilter::NotRequested,
+            &crate::limits::NativeLimits::default(),
+            "/bin/true",
+            &[],
+        );
         assert_eq!(argv, [ARG_SEPARATOR, "/bin/true"]);
         let parsed = parse(argv).expect("parses");
         assert!(parsed.grants.is_empty());
         assert_eq!(parsed.syscalls, SyscallFilter::NotRequested);
+    }
+
+    /// The rlimit flags round trip the same way the grant and syscall flags
+    /// do (AAASM-6165).
+    #[test]
+    fn rlimit_ceilings_round_trip_through_the_command_line() {
+        let built = LauncherArgv {
+            grants: Grants::default(),
+            syscalls: SyscallFilter::NotRequested,
+            limits: crate::limits::NativeLimits {
+                max_open_files: Some(32),
+                max_file_size_bytes: Some(4096),
+            },
+            program: "/bin/true".to_string(),
+            args: vec![],
+        };
+        let argv = build(
+            &built.grants,
+            &built.syscalls,
+            &built.limits,
+            &built.program,
+            &built.args,
+        );
+        assert_eq!(parse(argv).expect("a built command line parses"), built);
+    }
+
+    /// An rlimit value that is not a valid unsigned integer is refused rather
+    /// than installing a ceiling that differs from the one requested.
+    #[test]
+    fn an_invalid_rlimit_value_is_refused() {
+        let error = parse(["--max-open-files=not-a-number", ARG_SEPARATOR, "/bin/true"]).expect_err("must refuse");
+        assert_eq!(
+            error,
+            ArgvError::InvalidLimit {
+                flag: FLAG_MAX_OPEN_FILES,
+                value: "not-a-number".to_string(),
+            }
+        );
     }
 
     /// A [`FLAG_SYSCALL_ALLOW`] name outside the closed vocabulary is refused,

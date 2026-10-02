@@ -75,11 +75,15 @@ pub fn discover(facts: &HostFacts, probe: &ConfinementProbe) -> BackendCapabilit
         filesystem_read(probe),
         filesystem_write(facts, probe),
         syscall(facts, probe),
+        resource(probe),
     ];
     for domain in CapabilityDomain::ALL {
         if matches!(
             domain,
-            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
+            CapabilityDomain::FilesystemRead
+                | CapabilityDomain::FilesystemWrite
+                | CapabilityDomain::Syscall
+                | CapabilityDomain::Resource
         ) {
             continue;
         }
@@ -368,6 +372,52 @@ fn syscall(facts: &HostFacts, probe: &ConfinementProbe) -> CapabilityReport {
     report.with_support(support(&[&probe.syscall], syscall_limitations()))
 }
 
+/// Limitations the `Resource` domain carries on every host, whether or not
+/// the descriptor-ceiling probe found it available here (AAASM-6165).
+fn resource_limitations() -> Vec<String> {
+    vec![
+        "max_memory_bytes is not enforced here: no cgroup subtree is available on this backend. The \
+         sandlock backend already enforces a memory ceiling; a native cgroup v2 ceiling is deferred to \
+         a follow-up ticket"
+            .to_string(),
+        "max_pids is not offered as a tree-scoped ceiling here: `RLIMIT_NPROC` counts processes per \
+         real UID across the whole host, not within the confined process tree, and setting it would \
+         starve the supervisor itself. The sandlock backend already enforces a tree-scoped PID ceiling"
+            .to_string(),
+        "max_wall_clock_seconds is never lowered here: it is a post-effect signal `aasm run`'s own \
+         supervisor enforces directly against the spec, not a mechanism this backend installs"
+            .to_string(),
+        "max_cpu_seconds is deferred to a follow-up ticket for this backend".to_string(),
+        "disk and temporary-storage growth have no mechanism on this backend; deferred to the cgroup v2 \
+         follow-up ticket"
+            .to_string(),
+        "`prlimit64` is in `crate::seccomp::STARTUP_BASELINE`, so a confined child could otherwise raise \
+         its own soft limit back toward the hard one; both ceilings this backend installs are set soft \
+         == hard specifically to close that"
+            .to_string(),
+    ]
+}
+
+/// `max_open_files`/`max_file_size_bytes` via `RLIMIT_NOFILE`/`RLIMIT_FSIZE`
+/// (AAASM-6165). See [`resource_limitations`] for everything this domain does
+/// not cover on this backend.
+fn resource(probe: &ConfinementProbe) -> CapabilityReport {
+    CapabilityReport::new(
+        CapabilityDomain::Resource,
+        Mediation::Enforce,
+        DecisionTiming::Pre,
+        Synchrony::Sync,
+    )
+    .with_failure_posture(posture(&probe.descriptor_ceiling))
+    .with_descendants(descendants(&probe.descriptor_ceiling))
+    .with_support(support(&[&probe.descriptor_ceiling], resource_limitations()))
+    .with_prerequisite(measured(
+        "the kernel denies a file descriptor allocation beyond the installed RLIMIT_NOFILE ceiling, to \
+         a descendant of the launched process",
+        &probe.descriptor_ceiling,
+    ))
+}
+
 /// Replace a domain's report with an unsupported one when *this* requirement
 /// cannot be lowered.
 ///
@@ -405,6 +455,7 @@ mod tests {
             filesystem_read: Observation::Denied,
             filesystem_write: Observation::Denied,
             syscall: Observation::Denied,
+            descriptor_ceiling: Observation::Denied,
         }
     }
 
@@ -501,7 +552,10 @@ mod tests {
             let report = capabilities.report_for(*domain).expect("reported");
             let implemented = matches!(
                 domain,
-                CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
+                CapabilityDomain::FilesystemRead
+                    | CapabilityDomain::FilesystemWrite
+                    | CapabilityDomain::Syscall
+                    | CapabilityDomain::Resource
             );
             assert_eq!(
                 report.support().is_available(),

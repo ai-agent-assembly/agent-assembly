@@ -756,6 +756,7 @@ fn reported_capabilities_match_the_probe() {
         (CapabilityDomain::FilesystemRead, probe.filesystem_read.is_denied()),
         (CapabilityDomain::FilesystemWrite, probe.filesystem_write.is_denied()),
         (CapabilityDomain::Syscall, probe.syscall.is_denied()),
+        (CapabilityDomain::Resource, probe.descriptor_ceiling.is_denied()),
     ] {
         let report = capabilities.report_for(domain).expect("every domain is reported");
         assert_eq!(
@@ -768,7 +769,10 @@ fn reported_capabilities_match_the_probe() {
     for domain in CapabilityDomain::ALL {
         if matches!(
             domain,
-            CapabilityDomain::FilesystemRead | CapabilityDomain::FilesystemWrite | CapabilityDomain::Syscall
+            CapabilityDomain::FilesystemRead
+                | CapabilityDomain::FilesystemWrite
+                | CapabilityDomain::Syscall
+                | CapabilityDomain::Resource
         ) {
             continue;
         }
@@ -780,7 +784,7 @@ fn reported_capabilities_match_the_probe() {
     }
     measured(
         SCENARIO,
-        "the three implemented domains claim exactly what the probe observed and the other six claim \
+        "the four implemented domains claim exactly what the probe observed and the other five claim \
          nothing",
     );
 }

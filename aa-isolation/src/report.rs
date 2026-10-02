@@ -199,7 +199,14 @@ impl TargetRef {
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[non_exhaustive]
 pub enum RequestedControl {
-    /// Policy stated a requirement for this domain.
+    /// The resolved spec stated a requirement for this domain.
+    ///
+    /// Historically every requirement reaching a spec was policy-derived, so
+    /// this was worded "policy stated a requirement" — AAASM-6165's CLI-
+    /// provenance `Resource` ceiling requirements are the first
+    /// counter-example (attached directly to the spec, never routed through
+    /// `PolicyLowering`), which is why the wording says "the resolved spec"
+    /// rather than "policy".
     Stated {
         /// What the control is asked to do.
         intent: RequirementIntent,

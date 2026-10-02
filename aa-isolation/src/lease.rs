@@ -887,6 +887,45 @@ mod tests {
         assert_eq!(lease().validate_at(t(1_500)), Ok(()));
     }
 
+    /// AAASM-6165: a leased `Resource` ceiling request narrower than the
+    /// lease's own granted ceiling is covered; one wider is not. This is the
+    /// containment check `aa-cli`'s `authority_gate` relies on for a leased
+    /// launch that also passes a `--max-*` ceiling flag.
+    #[test]
+    fn a_resource_lease_covers_a_narrower_ceiling_and_denies_a_wider_one() {
+        use crate::spec::ResourceLimits;
+        let granted = CapabilityLease::new(
+            LeaseId::new("lease-resource"),
+            IdentityRef::root("agent-a"),
+            CapabilityDomain::Resource,
+            RequirementScope::Limits(ResourceLimits {
+                max_open_files: Some(64),
+                ..ResourceLimits::default()
+            }),
+            t(1_000),
+            t(2_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        );
+
+        let narrower = RequirementScope::Limits(ResourceLimits {
+            max_open_files: Some(32),
+            ..ResourceLimits::default()
+        });
+        assert!(
+            granted.covers(&narrower),
+            "a ceiling narrower than the lease's own grant must be covered"
+        );
+
+        let wider = RequirementScope::Limits(ResourceLimits {
+            max_open_files: Some(128),
+            ..ResourceLimits::default()
+        });
+        assert!(
+            !granted.covers(&wider),
+            "a ceiling wider than the lease's own grant must NOT be covered"
+        );
+    }
+
     /// Falsification target for AC "invalid/expired/revoked required leases
     /// fail closed". Spot-checked by temporarily changing `t(2_000)` to
     /// `t(9_999)` above and confirming this test then fails — it does.
