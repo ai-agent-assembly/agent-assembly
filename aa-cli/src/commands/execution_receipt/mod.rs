@@ -80,6 +80,7 @@ pub mod validate;
 pub mod verify;
 
 pub use canonical::{CanonicalError, Digest, CANONICAL_FORM};
+pub use inspect::{InspectArgs, RefusalReason};
 pub use project::{body_for_run, ReceiptContext, TerminationInput};
 pub use schema::{ReceiptBody, ReceiptEnvelope, ReceiptSeal, ReceiptSealKind, RECEIPT_SCHEMA};
 pub use store::{ReceiptStore, StoreError};

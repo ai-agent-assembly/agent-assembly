@@ -1,11 +1,29 @@
 //! `aasm receipt inspect` — forensic reconstruction surfaces over a stored
 //! execution receipt (AAASM-6172, parent Epic AAASM-6159).
 //!
-//! This module starts with the renderer alone: pure functions over an
-//! already-sealed [`ReceiptEnvelope`] and an already-computed defect list,
-//! with no opinion yet on *when* they're safe to call — that gate lands in a
-//! later commit (see this module's doc comment there for the full Gate
-//! A/Gate B design).
+//! # The refusal gate — two independent gates, never collapsed
+//!
+//! **Gate A** refuses to render the body at all, and prints zero fields from
+//! it: the file is missing or ambiguous, the content is corrupt, the seal
+//! does not hold, or the schema is one this build does not read. A reader
+//! must never be shown body content this build cannot vouch for.
+//!
+//! **Gate B** renders the full body but surfaces every
+//! [`super::validate::defects`] finding prominently: the seal holds and the
+//! schema matches, but the content overclaims against its own recorded
+//! evidence (e.g. [`super::validate::ReceiptDefect::PreventionWithoutDecision`]).
+//! This is deliberately **not** the same gate as
+//! [`super::verify::Verification::is_trustworthy`], which demands both
+//! seal-holds *and* zero defects — using that method here would hide from an
+//! operator exactly the finding `inspect` exists to surface.
+//!
+//! Gate A is checked strictly before Gate B, and the schema check reads
+//! `envelope.schema` directly rather than scanning the defects list for
+//! [`super::validate::ReceiptDefect::UnknownSchema`] — `schema` sits outside
+//! the seal digest (see `mod.rs`), so this is a compatibility check, not an
+//! integrity one, and conflating the two checks would make the ordering
+//! between them an accident of how `defects()` happens to be implemented
+//! rather than a deliberate boundary.
 //!
 //! # The `workspace.diff_digest` correctness fix
 //!
@@ -19,10 +37,212 @@
 //! as if it meant something about this specific run. [`render_workspace`]
 //! and [`suppress_diff_digest_if_not_committed`] both withhold it whenever
 //! `workspace.committed != Some(true)`.
+use std::process::ExitCode;
+
 use super::host;
-use super::schema::{ReceiptEnvelope, WorkspaceBinding};
+use super::schema::{ReceiptEnvelope, WorkspaceBinding, RECEIPT_SCHEMA};
+use super::store::{ReceiptStore, StoreError};
 use super::text::ReceiptText;
 use super::validate::ReceiptDefect;
+use super::verify::{verify, SealVerdict};
+
+/// Arguments for `aasm receipt inspect`.
+#[derive(clap::Args)]
+pub struct InspectArgs {
+    /// The run id to inspect (matches the stored receipt's filename suffix).
+    /// Exactly one of `RUN_ID` or `--path` must be given.
+    pub run_id: Option<String>,
+    /// Inspect a receipt file directly, bypassing run-id resolution against
+    /// the local store.
+    #[arg(long)]
+    pub path: Option<std::path::PathBuf>,
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// Why `inspect` refused to render a receipt's body (Gate A).
+#[derive(Debug, thiserror::Error)]
+pub enum RefusalReason {
+    /// Neither `RUN_ID` nor `--path` was given.
+    #[error("no run specified: pass a RUN_ID or --path")]
+    NoTarget,
+    /// Both `RUN_ID` and `--path` were given.
+    #[error("both a RUN_ID and --path were given; pass exactly one")]
+    AmbiguousTarget,
+    /// [`StoreError::NoSuchRun`].
+    #[error("no stored receipt matches run id `{run_id}`")]
+    NoSuchRun {
+        /// The run id looked up.
+        run_id: String,
+    },
+    /// [`StoreError::AmbiguousRun`].
+    #[error(
+        "run id `{run_id}` matches multiple stored receipts; name one explicitly with --path: {}",
+        display_paths(matches)
+    )]
+    AmbiguousRun {
+        /// The run id looked up.
+        run_id: String,
+        /// Every path whose filename suffix matched.
+        matches: Vec<std::path::PathBuf>,
+    },
+    /// The file could not be read.
+    #[error("could not read {path}: {detail}")]
+    Io {
+        /// The path involved.
+        path: std::path::PathBuf,
+        /// The underlying error, stringified.
+        detail: String,
+    },
+    /// The file's content was not a valid receipt envelope.
+    #[error("corrupt receipt at {path}: {detail}")]
+    Corrupt {
+        /// The path involved.
+        path: std::path::PathBuf,
+        /// What went wrong.
+        detail: String,
+    },
+    /// The seal does not match the body.
+    #[error(
+        "the receipt's seal does not match its body (seal: mismatch) — its content is not what was written, so its \
+         fields are not shown"
+    )]
+    SealMismatch,
+    /// The seal could not even be recomputed.
+    #[error("the receipt's seal could not be recomputed: {detail}")]
+    SealUncomputable {
+        /// Why.
+        detail: String,
+    },
+    /// `envelope.schema` is not [`RECEIPT_SCHEMA`].
+    ///
+    /// `schema` sits outside the seal digest (see `mod.rs`'s "What the seal
+    /// covers"), so this is a compatibility check, not an integrity one —
+    /// the message says so rather than implying tampering.
+    #[error(
+        "the receipt declares schema `{found}`, which this build does not read; this is a compatibility check, not \
+         an integrity one — schema sits outside the seal digest"
+    )]
+    UnknownSchema {
+        /// The schema string found.
+        found: String,
+    },
+}
+
+fn display_paths(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+impl RefusalReason {
+    fn from_store_error(e: StoreError) -> Self {
+        match e {
+            StoreError::NoSuchRun { run_id } => Self::NoSuchRun { run_id },
+            StoreError::AmbiguousRun { run_id, matches } => Self::AmbiguousRun { run_id, matches },
+            StoreError::Corrupt { path, detail } => Self::Corrupt { path, detail },
+            StoreError::Io { path, source } => Self::Io {
+                path,
+                detail: source.to_string(),
+            },
+            StoreError::Canonical(e) => Self::Io {
+                path: std::path::PathBuf::new(),
+                detail: e.to_string(),
+            },
+            StoreError::NoStateDirectory => Self::Io {
+                path: std::path::PathBuf::new(),
+                detail: "could not resolve a state directory: set AASM_STATE_DIR".to_string(),
+            },
+        }
+    }
+}
+
+fn resolve_target_path(args: &InspectArgs) -> Result<std::path::PathBuf, RefusalReason> {
+    match (&args.run_id, &args.path) {
+        (Some(_), Some(_)) => Err(RefusalReason::AmbiguousTarget),
+        (None, None) => Err(RefusalReason::NoTarget),
+        (None, Some(path)) => Ok(path.clone()),
+        (Some(run_id), None) => {
+            let store = ReceiptStore::default_location().map_err(RefusalReason::from_store_error)?;
+            store.resolve_run_id(run_id).map_err(RefusalReason::from_store_error)
+        }
+    }
+}
+
+/// Build the full `inspect` report (output text and exit code) for `args`.
+/// Exposed separately from [`inspect_command`] so tests can assert on the
+/// rendered content directly rather than capturing stdout.
+pub fn inspect_report(args: &InspectArgs) -> (ExitCode, String) {
+    let path = match resolve_target_path(args) {
+        Ok(path) => path,
+        Err(reason) => return refusal_report(&reason, args.json),
+    };
+
+    let envelope = match ReceiptStore::load(&path) {
+        Ok(e) => e,
+        Err(e) => return refusal_report(&RefusalReason::from_store_error(e), args.json),
+    };
+
+    let verification = verify(&envelope);
+
+    // Gate A, part 1: the seal must hold.
+    match &verification.seal {
+        SealVerdict::Mismatch => return refusal_report(&RefusalReason::SealMismatch, args.json),
+        SealVerdict::Uncomputable { detail } => {
+            return refusal_report(&RefusalReason::SealUncomputable { detail: detail.clone() }, args.json)
+        }
+        SealVerdict::Holds => {}
+    }
+
+    // Gate A, part 2: the schema must be one this build reads. Checked
+    // directly against `envelope.schema`, never derived from `defects()` —
+    // see this module's doc comment.
+    if envelope.schema != RECEIPT_SCHEMA {
+        return refusal_report(
+            &RefusalReason::UnknownSchema {
+                found: envelope.schema.clone(),
+            },
+            args.json,
+        );
+    }
+
+    // Gate A passed. Render — Gate B surfaces `verification.defects` as
+    // findings rather than refusing.
+    render_report(&envelope, &verification.defects, args.json)
+}
+
+/// Dispatch `aasm receipt inspect`.
+pub fn inspect_command(args: InspectArgs) -> ExitCode {
+    let (code, output) = inspect_report(&args);
+    println!("{output}");
+    code
+}
+
+fn refusal_report(reason: &RefusalReason, json: bool) -> (ExitCode, String) {
+    let output = if json {
+        serde_json::json!({ "refused": true, "reason": reason.to_string() }).to_string()
+    } else {
+        format!("refused: {reason}")
+    };
+    (ExitCode::FAILURE, output)
+}
+
+fn render_report(envelope: &ReceiptEnvelope, defects: &[ReceiptDefect], json: bool) -> (ExitCode, String) {
+    let output = if json {
+        json_report(envelope, defects).to_string()
+    } else {
+        render_text(envelope, defects)
+    };
+    let code = if defects.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    (code, output)
+}
 
 fn text_or_withheld(t: &ReceiptText) -> String {
     t.as_str()
