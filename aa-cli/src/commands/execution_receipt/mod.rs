@@ -71,6 +71,7 @@
 //! nothing published to crates.io emits or reads a receipt.
 pub mod canonical;
 pub mod host;
+pub mod inspect;
 pub mod project;
 pub mod schema;
 pub mod store;
