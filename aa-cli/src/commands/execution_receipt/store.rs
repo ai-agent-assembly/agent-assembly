@@ -52,6 +52,75 @@ pub enum StoreError {
     /// The body could not be canonicalized to compute or check its seal.
     #[error("could not canonicalize the receipt body: {0}")]
     Canonical(#[from] super::canonical::CanonicalError),
+    /// No stored receipt's filename suffix matches the given run id.
+    #[error("no stored receipt matches run id `{run_id}`")]
+    NoSuchRun {
+        /// The run id that was looked up.
+        run_id: String,
+    },
+    /// More than one stored receipt's filename suffix matches the given run
+    /// id — [`ReceiptStore::path_for`]'s sanitization maps any two distinct
+    /// run ids that differ only in characters outside
+    /// `[A-Za-z0-9_-]` onto the same suffix, so a collision here is a real,
+    /// if rare, possibility, never a reason to silently pick one.
+    #[error("run id `{run_id}` matches multiple stored receipts: {}", display_paths(matches))]
+    AmbiguousRun {
+        /// The run id that was looked up.
+        run_id: String,
+        /// Every path whose filename suffix matched.
+        matches: Vec<std::path::PathBuf>,
+    },
+}
+
+fn display_paths(paths: &[std::path::PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// One stored receipt's cheaply-available metadata, read from its filename
+/// alone — never parses or verifies the file's content. Verifying a seal is
+/// `inspect`'s job, per-item; `list` only enumerates (AAASM-6172).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiptEntry {
+    /// The sanitized run-id suffix recorded in the filename — see
+    /// [`ReceiptStore::path_for`]'s character mapping. May differ from the
+    /// original run id if it contained a character outside
+    /// `[A-Za-z0-9_-]`.
+    pub run_id: String,
+    /// The `<recorded_at_unix_secs>` filename prefix.
+    pub recorded_at_unix_secs: u64,
+    /// The file's full path.
+    pub path: std::path::PathBuf,
+}
+
+/// [`ReceiptStore::path_for`]'s character mapping, factored out so
+/// [`ReceiptStore::resolve_run_id`] can sanitize its input identically
+/// before comparing it against a filename's already-sanitized suffix.
+fn sanitize_run_id(run_id: &str) -> String {
+    run_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Parse `<recorded_at_unix_secs>-<safe_run_id>.execution-receipt.json` back
+/// into its two components. `None` for anything that doesn't match this
+/// store's own naming convention (e.g. a stray `.tmp` file from an
+/// interrupted write).
+fn parse_entry_filename(file_name: &str) -> Option<(u64, String)> {
+    let stem = file_name.strip_suffix(".execution-receipt.json")?;
+    let (secs_str, run_id) = stem.split_once('-')?;
+    let recorded_at_unix_secs = secs_str.parse::<u64>().ok()?;
+    Some((recorded_at_unix_secs, run_id.to_string()))
 }
 
 /// A local store of execution receipts.
@@ -82,18 +151,78 @@ impl ReceiptStore {
     /// `<recorded_at_unix_secs>-<run_id>.execution-receipt.json`. One file per
     /// run; nothing is ever overwritten by [`write`](Self::write).
     pub fn path_for(&self, run_id: &str, recorded_at_unix_secs: u64) -> std::path::PathBuf {
-        let safe_run_id: String = run_id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        let safe_run_id = sanitize_run_id(run_id);
         self.root
             .join(format!("{recorded_at_unix_secs}-{safe_run_id}.execution-receipt.json"))
+    }
+
+    /// Every receipt file in this store, newest first by the filename's
+    /// `recorded_at_unix_secs` prefix (ties broken by path, for a stable
+    /// order). An absent store directory is an empty list, not an error —
+    /// nothing has been written yet is a normal state, unlike a directory
+    /// that exists but can't be read.
+    pub fn entries(&self) -> Result<Vec<ReceiptEntry>, StoreError> {
+        let read_dir = match std::fs::read_dir(&self.root) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => {
+                return Err(StoreError::Io {
+                    path: self.root.clone(),
+                    source,
+                })
+            }
+        };
+
+        let mut out = Vec::new();
+        for entry in read_dir {
+            let entry = entry.map_err(|source| StoreError::Io {
+                path: self.root.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some((recorded_at_unix_secs, run_id)) = parse_entry_filename(file_name) else {
+                continue;
+            };
+            out.push(ReceiptEntry {
+                run_id,
+                recorded_at_unix_secs,
+                path,
+            });
+        }
+        out.sort_by(|a, b| {
+            b.recorded_at_unix_secs
+                .cmp(&a.recorded_at_unix_secs)
+                .then_with(|| b.path.cmp(&a.path))
+        });
+        Ok(out)
+    }
+
+    /// The single receipt whose filename's sanitized run-id suffix matches
+    /// `run_id` (sanitized identically to how [`Self::path_for`] sanitized
+    /// it at write time — never matched against the raw, unsanitized
+    /// argument). Fails loudly on zero or on more than one match; never
+    /// silently picks one.
+    pub fn resolve_run_id(&self, run_id: &str) -> Result<std::path::PathBuf, StoreError> {
+        let sanitized = sanitize_run_id(run_id);
+        let matches: Vec<std::path::PathBuf> = self
+            .entries()?
+            .into_iter()
+            .filter(|e| e.run_id == sanitized)
+            .map(|e| e.path)
+            .collect();
+        match matches.len() {
+            0 => Err(StoreError::NoSuchRun {
+                run_id: run_id.to_string(),
+            }),
+            1 => Ok(matches.into_iter().next().expect("len checked above")),
+            _ => Err(StoreError::AmbiguousRun {
+                run_id: run_id.to_string(),
+                matches,
+            }),
+        }
     }
 
     /// Write `envelope`, 0700 directory / 0600 file, atomically.
