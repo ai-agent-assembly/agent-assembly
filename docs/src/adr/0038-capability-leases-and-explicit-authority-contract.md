@@ -699,3 +699,119 @@ asserting the newtypes reject it.
   `Synchrony::Sync`) still yields a refusal when the spec is lease-aware and that domain
   carries no lease of its own, because `EffectiveAuthority` never reads
   `BackendCapabilities` at all.
+
+---
+
+## Amendment (AAASM-6187): cross-process `/proc` credential recovery closes as structurally unmeasurable, not as a fix
+
+**Scope of this amendment: it closes the open item the AAASM-6164 amendment's "What
+this amendment does not decide" list left open — "whether a confined process can ever
+recover a credential from a different process's `/proc` entry on a Yama host remains
+open." It records a conclusion for that question. It decides nothing else, reverses
+no prior decision, and does not touch ADR 0035.**
+
+### What was tried, and why it was removed rather than shipped declining
+
+A cross-process companion to `another_processs_environ_is_outside_a_scoped_proc_grant`
+(`aa-isolation-native/tests/adversarial_boundary_native_linux.rs`) was attempted for
+this ticket: the confined child reading its own supervisor's
+`/proc/<supervisor-pid>/environ`, the reverse of the direction that scenario already
+measures (parent reading child). Its own mandatory unscoped control — launched with
+`/proc` granted whole and **no backend confinement installed at all** — failed to read
+the target `environ` identically on every real CI runner this was tried against. A
+scenario whose zero-confinement control cannot demonstrate the read succeeding cannot
+attribute the control's own failure to this backend, so it was removed rather than
+shipped `#[ignore]`d or declining — the latter would trip the
+`isolation-backend-native-linux` lane's "fail on any decline" gate, which treats a
+decline as a broken lane, not an honest opt-out.
+
+### The mechanism, verified against the current kernel source rather than assumed
+
+Before concluding anything, the actual kernel path was read, not inferred from this
+ticket's own prior framing. `/proc/<pid>/environ` is opened by `environ_open()`
+(`fs/proc/base.c`) via `__mem_open(inode, file, PTRACE_MODE_READ)`, which reaches
+`mm_access(task, mode | PTRACE_MODE_FSCREDS)`. The actual permission decision is
+`__ptrace_may_access()` (`kernel/ptrace.c`): a same-thread-group early-out, then a
+same-credential check (caller's fsuid/fsgid against the target's full uid/gid triple,
+or `CAP_SYS_PTRACE`), then `task_still_dumpable()`, and finally
+`security_ptrace_access_check()` — the active LSM stack's hook, called for **every**
+mode, READ included.
+
+This matters because it is **not** what this ticket's own framing, or the existing
+`another_processs_environ_is_outside_a_scoped_proc_grant` scenario's doc comment,
+says: Yama's own hook (`yama_ptrace_access_check`, `security/yama/yama_lsm.c`) opens
+with `if (mode & PTRACE_MODE_ATTACH) { ... }` — its descendant-only `ptrace_scope`
+switch (the "a descendant may ptrace an ancestor, not the reverse" rule) **only
+executes for `PTRACE_MODE_ATTACH`**. `PTRACE_MODE_READ` (`0x01`) and
+`PTRACE_MODE_ATTACH` (`0x02`) are distinct bits (`include/linux/ptrace.h`), and
+`environ_open` passes `READ`, never `ATTACH`. For this one specific access, Yama's
+scope switch does not run at all, and Yama's hook returns `0` regardless of the
+host's `ptrace_scope` value. So "Yama's `ptrace_scope` refuses a descendant reading an
+ancestor's `environ` unconditionally" overstates what is true of Yama's own code for
+this access — the real gate for `environ` (and for `auxv`/`stack`/`wchan`, which use
+the identical `PTRACE_MODE_READ_FSCREDS` path) is the generic, **credential-and-
+dumpability** check in `__ptrace_may_access()`, plus whatever the host's full LSM
+stack's `security_ptrace_access_check()` hook additionally decides — not an
+ancestry-direction rule. (`/proc/<pid>/mem`, by contrast, genuinely does pass
+`PTRACE_MODE_ATTACH` and so genuinely is subject to Yama's descendant-only switch;
+`environ` is not in that set.)
+
+This leaves the CI-observed failure real but its exact cause host-specific and not
+externally attributable: the runners this was tried against report
+`lockdown,capability,landlock,yama,apparmor,ima,evm` active simultaneously, and
+`__ptrace_may_access()` offers several non-ancestry predicates — uid/gid mismatch,
+`task_still_dumpable()`, or any one LSM's own `security_ptrace_access_check()` — any
+of which could be the one returning `-EPERM` on a given host. Which predicate fired is
+not decidable from outside the kernel without instrumenting the specific runner, and
+the ticket's "unmeasurable" conclusion does not require deciding it: **every one of
+those predicates sits in the generic ptrace-access path, reached before any
+Landlock/seccomp rule this (or any) `IsolationBackend` installs is even consulted.**
+That is the fact the mandatory unscoped control exists to establish, and it held on
+every runner tried, regardless of which predicate inside that path was responsible.
+
+### No alternate measurement technique avoids the same gate
+
+Every `/proc/<pid>/X` entry that can carry live memory content — `environ`, `mem`,
+`maps`/`smaps`, `auxv`, `stack`, `wchan` — is reached through `mm_access()`/
+`__ptrace_may_access()`, the identical gate `environ` sits behind (whether the
+specific entry additionally trips Yama's `ATTACH`-only switch or not, as above). The
+entries that are *not* gated this way — `cmdline`, `stat`, `status`, `comm`, the
+`cwd`/`exe` symlink targets — are exactly the ones this Epic's existing scenarios
+(`another_processes_proc_entry_is_unreadable_without_a_proc_grant`'s `cmdline` probe)
+already use successfully, and none of them carries an environment value or other
+live memory content. `cmdline` is already named and rejected for this reason in this
+ticket's own problem statement; the rest are weaker still. Core dumps, shared memory,
+and inherited file descriptors were also considered: each requires the supervisor to
+have deliberately placed the secret somewhere the child's grant reaches, or a
+misconfigured, unrelated subsystem (`core_pattern`) to leak it — a different attack
+surface than "`/proc` credential recovery," and not a `ptrace`-free route to the same
+measurement.
+
+### Resolution: won't fix / structurally unmeasurable, not closed by kernel design
+
+The confined-child-reads-supervisor-`environ` direction is **not shipped as a test**,
+in any form — not `#[ignore]`d, not declining. This amendment is the documented
+conclusion in place of that test: on every CI runner tried, the generic
+ptrace-access path refuses this read before this backend's own Landlock/seccomp rules
+are reached, so no denial can be credited to, or demanded of, this backend or any
+future `IsolationBackend` implementor. No credential is exposed via this path today —
+something in the host's existing ptrace-access stack already closes it, independent of
+any AASM backend. This is **not** a claim that the direction is closed by kernel
+design the way the `mem`/`ATTACH` case is: `environ`'s gate is credential-and-
+dumpability-based, not ancestry-based, so a same-uid, dumpable supervisor is not
+excluded by Yama's own logic, and a host whose full LSM stack and process credentials
+differ from the runners tested here could plausibly behave differently. The
+conclusion is "not measurable on the class of host this Epic's CI and target
+deployments run today," not "provably impossible on every host" — a future
+measurement attempt remains legitimate if a different host's observed behavior, or a
+backend that doesn't rely on this kernel path for its own evidence, changes the
+premise.
+
+### Consequence for existing text
+
+The AAASM-6164 amendment's "What this amendment does not decide" bullet on this topic
+is now closed by this amendment rather than left open; its own wording stands
+unchanged as the historical record of what was attempted. This amendment also narrows
+no claim about `/proc/<pid>/mem` (still genuinely `ATTACH`-gated and ancestry-direction
+restricted by Yama) — only about `environ` and the `PTRACE_MODE_READ`-class entries.
+No other recorded text in this ADR, or in ADR 0035, changes.
