@@ -66,6 +66,13 @@ pub fn verify_path(path: &std::path::Path) -> Result<Verification, StoreError> {
 pub enum ReceiptCommand {
     /// Verify a stored execution receipt.
     Verify(VerifyArgs),
+    /// Render a stored execution receipt's content for forensic
+    /// reconstruction (AAASM-6172) — gated on the same seal/schema checks
+    /// `verify` performs, plus the truth-downgrade defect rules.
+    Inspect(super::inspect::InspectArgs),
+    /// List stored execution receipts, newest first (AAASM-6172). Does not
+    /// verify any receipt's seal — that is `inspect`'s job, per-item.
+    List(super::inspect::ListArgs),
 }
 
 /// Arguments for `aasm receipt`.
@@ -98,6 +105,8 @@ pub struct VerifyArgs {
 pub fn dispatch(args: ReceiptArgs) -> ExitCode {
     match args.command {
         ReceiptCommand::Verify(args) => verify_command(args),
+        ReceiptCommand::Inspect(args) => super::inspect::inspect_command(args),
+        ReceiptCommand::List(args) => super::inspect::list_command(args),
     }
 }
 

@@ -122,7 +122,10 @@ pub struct ReceiptBody {
     pub domains: Vec<DomainOutcome>,
     /// Credential names only — never values.
     pub credentials: CredentialNames,
-    /// A workspace-transaction binding. `None` today — see `mod.rs`.
+    /// A workspace-transaction binding. `Some` when the launch passed
+    /// `--workspace-tx` and the transaction reached a settle decision
+    /// (AAASM-6162 wired this through `project.rs::workspace_binding`);
+    /// `None` for every launch without `--workspace-tx`.
     pub workspace: Option<WorkspaceBinding>,
     /// The host-capability broker binding (AAASM-6171). `None` when no
     /// host-capability contract applied to this run — every `aasm run`

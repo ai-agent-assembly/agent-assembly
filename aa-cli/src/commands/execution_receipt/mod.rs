@@ -71,6 +71,7 @@
 //! nothing published to crates.io emits or reads a receipt.
 pub mod canonical;
 pub mod host;
+pub mod inspect;
 pub mod project;
 pub mod schema;
 pub mod store;
@@ -79,9 +80,10 @@ pub mod validate;
 pub mod verify;
 
 pub use canonical::{CanonicalError, Digest, CANONICAL_FORM};
+pub use inspect::{InspectArgs, ListArgs, RefusalReason};
 pub use project::{body_for_run, ReceiptContext, TerminationInput};
 pub use schema::{ReceiptBody, ReceiptEnvelope, ReceiptSeal, ReceiptSealKind, RECEIPT_SCHEMA};
-pub use store::{ReceiptStore, StoreError};
+pub use store::{ReceiptEntry, ReceiptStore, StoreError};
 pub use text::{FieldName, ReceiptText};
 pub use validate::ReceiptDefect;
 pub use verify::{dispatch, verify, verify_path, ReceiptArgs, SealVerdict, Verification};
