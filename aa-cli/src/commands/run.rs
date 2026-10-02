@@ -894,6 +894,33 @@ mod plan {
             }
         }
 
+        /// Capabilities narrowed for `spec`, suitable for feeding
+        /// [`aa_isolation::planner::evaluate_candidate`] — never this
+        /// backend's own raw [`Self::capabilities`].
+        ///
+        /// [`Self::plan`] always narrows before calling `negotiate`: sandlock
+        /// and native each via their own crate's `capability::narrow_for`,
+        /// and `aa-isolation-macos-vm` by delegating to the *native* crate's
+        /// `narrow_for` as well, because — per that backend's own `plan()`
+        /// comment — it "delegates grant computation to the same lowering"
+        /// `aa-isolation-native` does. `evaluate_candidate` negotiates
+        /// whatever capabilities its `Candidate` carries, narrowed or not, so
+        /// this method is what keeps the planner's eligibility decision from
+        /// being strictly more permissive than raw capabilities ever are: a
+        /// requirement a backend's own `lower` module cannot express (for
+        /// example a `max_open_files` ceiling against sandlock, whose
+        /// `lower::resource` has no way to express it) must narrow the report
+        /// down to ineligible here exactly as it would inside `plan()`,
+        /// or `--isolation auto` could select a backend that then refuses
+        /// the real launch once `resolve_boundary` narrows for real.
+        fn capabilities_for(&self, spec: &ExecutionSpec) -> aa_isolation::BackendCapabilities {
+            match self {
+                Self::Sandlock(backend) => aa_isolation_sandlock::capability::narrow_for(&backend.capabilities(), spec),
+                Self::Native(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
+                Self::MacosVm(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
+            }
+        }
+
         /// Install the exact environment the confined program is to receive.
         fn set_child_environment(&mut self, env: std::collections::BTreeMap<String, String>) {
             match self {
