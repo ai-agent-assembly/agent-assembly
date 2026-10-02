@@ -705,12 +705,17 @@ fn an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist() {
 /// Opens each descriptor against a sink file inside `target`'s own
 /// directory, not `/dev/null` -- opening `/dev/null` is a write, and this
 /// test's policy only grants write on the scratch directory, not `/dev`.
-/// Write-only (`>`), not read-write (`<>`): the policy grants only the write
-/// right, and opening read-write makes the backend check the read right too.
+/// Read-write (`<>`), not write-only (`>`): CI's actual `/bin/sh` (dash) was
+/// observed to fail to parse a write-only redirection onto a two-digit
+/// descriptor number as a redirect at all (`exec: 10: not found` -- it tried
+/// to run a program named `10`), while the identical descriptor number under
+/// `<>` parses correctly. `scratch.root` is already in this test's read
+/// allow-list (see `system_reads`/`policy_permitting_writes`), so `<>` needs
+/// no extra grant here.
 fn fd_loop_script(target: &Path) -> String {
     let sink = target.with_file_name("fd-sink");
     format!(
-        "i=0; while [ $i -lt 2000 ]; do eval \"exec $((i+10))>{}\" || break; i=$((i+1)); done; \
+        "i=0; while [ $i -lt 2000 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
          printf %s \"$i\" > {}",
         sink.display(),
         target.display()

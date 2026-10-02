@@ -227,21 +227,24 @@ const DESCRIPTOR_CEILING_PROBE_LIMIT: u32 = 64;
 fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
     let control_target = dir.join("fd-control");
     let test_target = dir.join("fd-test");
-    // Opens each descriptor against `dir`'s own already-write-granted sink
-    // file, not `/dev/null` -- the same reason `nested()`'s own doc comment
-    // gives for never redirecting stderr there: opening it is a *write*, a
-    // default-deny write policy denies that regardless of the descriptor
-    // ceiling, and the resulting Permission Denied reads as inconclusive for
-    // a reason that has nothing to do with what this probe measures.
+    // Opens each descriptor against `dir`'s own sink file read-write
+    // (`<>`), not `/dev/null` -- the same reason `nested()`'s own doc
+    // comment gives for never redirecting stderr there: opening it is a
+    // *write*, a default-deny write policy denies that regardless of the
+    // descriptor ceiling, and the resulting Permission Denied reads as
+    // inconclusive for a reason that has nothing to do with what this probe
+    // measures.
     //
-    // Write-only (`>`), not read-write (`<>`): `write_grant` only grants the
-    // write right on `dir`, and opening read-write makes Landlock check the
-    // read right too, which this policy never grants -- that combination
-    // read as the identical "Permission Denied" this comment already guards
-    // against, just from a different missing right.
+    // Read-write (`<>`), not write-only (`>`): CI's actual `/bin/sh` (dash)
+    // was observed, via a temporary diagnostic, to fail to parse a
+    // *write-only* redirection onto a two-digit descriptor number as a
+    // redirect at all -- it read as `exec: 10: not found`, i.e. dash tried
+    // to run a program named `10` -- while the identical descriptor number
+    // under `<>` parses correctly. Since `<>` needs both the read and write
+    // rights, this probe grants both on `dir` rather than switching operator.
     let script = |target: &Path, sink: &Path| {
         format!(
-            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))>{}\" || break; i=$((i+1)); done; \
+            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
              printf %s \"$i\" > {}",
             shell_word(&sink.to_string_lossy()),
             shell_word(&target.to_string_lossy())
@@ -251,12 +254,12 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
     let test_sink = dir.join("fd-test-sink");
     let control = run_confined(
         facts,
-        write_grant(dir),
+        read_write_grant(dir),
         &nested(&script(&control_target, &control_sink)),
     );
     let test = run_confined_with_limits(
         facts,
-        write_grant(dir),
+        read_write_grant(dir),
         crate::limits::NativeLimits {
             max_open_files: Some(DESCRIPTOR_CEILING_PROBE_LIMIT),
             max_file_size_bytes: None,
@@ -264,11 +267,12 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
         &nested(&script(&test_target, &test_sink)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
-    // AAASM-6165 temporary diagnostic, round 3: the RDWR-vs-write-only fix
-    // did not resolve this symptom either, so print full evidence again.
-    // Remove once the real cause is confirmed.
+    // AAASM-6165 temporary diagnostic, round 4: verifying the <> + read+write
+    // grant fix (diagnosed from comparing round-2 and round-3 CI logs
+    // directly) actually resolves this on the real CI host before removing
+    // the diagnostic for good.
     eprintln!(
-        "AAASM-6165 probe round 3: control={:?} control_count={:?} test={:?} test_count={:?}",
+        "AAASM-6165 probe round 4: control={:?} control_count={:?} test={:?} test_count={:?}",
         control.as_ref().map(|o| &o.diagnostic),
         read_count(&control_target),
         test.as_ref().map(|o| &o.diagnostic),
@@ -427,6 +431,15 @@ fn read_grant(dir: &Path) -> Grants {
 fn write_grant(dir: &Path) -> Grants {
     let mut grants = system_grants();
     grants.write.insert(dir.to_string_lossy().into_owned());
+    grants
+}
+
+/// `dir` granted both read and write, for the one probe (the
+/// descriptor-ceiling measurement) whose script opens a sink file read-write
+/// (`<>`) rather than write-only.
+fn read_write_grant(dir: &Path) -> Grants {
+    let mut grants = write_grant(dir);
+    grants.read.insert(dir.to_string_lossy().into_owned());
     grants
 }
 
