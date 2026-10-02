@@ -894,6 +894,33 @@ mod plan {
             }
         }
 
+        /// Capabilities narrowed for `spec`, suitable for feeding
+        /// [`aa_isolation::planner::evaluate_candidate`] — never this
+        /// backend's own raw [`Self::capabilities`].
+        ///
+        /// [`Self::plan`] always narrows before calling `negotiate`: sandlock
+        /// and native each via their own crate's `capability::narrow_for`,
+        /// and `aa-isolation-macos-vm` by delegating to the *native* crate's
+        /// `narrow_for` as well, because — per that backend's own `plan()`
+        /// comment — it "delegates grant computation to the same lowering"
+        /// `aa-isolation-native` does. `evaluate_candidate` negotiates
+        /// whatever capabilities its `Candidate` carries, narrowed or not, so
+        /// this method is what keeps the planner's eligibility decision from
+        /// being strictly more permissive than raw capabilities ever are: a
+        /// requirement a backend's own `lower` module cannot express (for
+        /// example a `max_open_files` ceiling against sandlock, whose
+        /// `lower::resource` has no way to express it) must narrow the report
+        /// down to ineligible here exactly as it would inside `plan()`,
+        /// or `--isolation auto` could select a backend that then refuses
+        /// the real launch once `resolve_boundary` narrows for real.
+        fn capabilities_for(&self, spec: &ExecutionSpec) -> aa_isolation::BackendCapabilities {
+            match self {
+                Self::Sandlock(backend) => aa_isolation_sandlock::capability::narrow_for(&backend.capabilities(), spec),
+                Self::Native(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
+                Self::MacosVm(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
+            }
+        }
+
         /// Install the exact environment the confined program is to receive.
         fn set_child_environment(&mut self, env: std::collections::BTreeMap<String, String>) {
             match self {
@@ -2223,17 +2250,36 @@ mod plan {
         Some(spec)
     }
 
+    /// The [`aa_isolation::Candidate`] `backend` presents for `probe`,
+    /// narrowed the same way a real [`SelectedBackend::plan`] call would
+    /// narrow it — see [`SelectedBackend::capabilities_for`] for why that
+    /// narrowing has to happen at this construction site rather than being
+    /// left to the evaluation call.
+    fn candidate_for(backend: &SelectedBackend, probe: &ExecutionSpec) -> aa_isolation::Candidate {
+        aa_isolation::Candidate::new(backend.identity(), backend.capabilities_for(probe))
+    }
+
     /// Walk the fixed, ordered candidate list and select the first backend that
     /// can plan this launch's lowered requirements, or refuse naming every
     /// candidate and why it was rejected.
     ///
-    /// "Eligible" means `backend.plan(probe_spec).is_ok()` — the same
+    /// "Eligible" means [`aa_isolation::planner::evaluate_candidate`] accepts
+    /// the candidate built by [`candidate_for`] — the same
     /// `plan()`/`negotiate()` machinery a real launch uses, not a hand-written
     /// comparison of what each backend's capability gaps are known to be. That
     /// is deliberate: sandlock and the native backend's gaps are complementary
     /// rather than nested, so a domain-subset comparison would have to be kept
     /// in step with both backends by hand, and the negotiation machinery
     /// already has to be right for every other code path.
+    ///
+    /// This calls `evaluate_candidate` directly, never
+    /// [`aa_isolation::planner::select`]: `select` forces eager discovery of
+    /// every candidate up front, which would break the laziness
+    /// `aa-cli/tests/run_isolation.rs` and `aa-isolation/tests/negotiation.rs`
+    /// already pin (the second candidate must never be probed when the first
+    /// is eligible), and `select`'s generic `PlanRefusal::to_string()` detail
+    /// would replace this function's own, more actionable
+    /// `super::describe_refusal` wording.
     fn auto_select(
         lowering: &Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
@@ -2265,6 +2311,21 @@ mod plan {
                 host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
             });
         };
+
+        // Built FROM `probe` rather than hand-assembled a second time, so the
+        // two structurally cannot drift: `requirements.probe_spec()` folds
+        // this exact confinement list back into an `ExecutionSpec`, which is
+        // what makes `evaluate_candidate`'s negotiation below reach the same
+        // verdict `backend.plan(&probe)` would for the confinement domains.
+        // No evidence minimum is stated here — nothing upstream of this
+        // function produces one yet — which is what keeps
+        // `unmet_evidence_minimums` returning empty and preserves today's
+        // exact eligibility behavior.
+        let requirements = probe
+            .requirements()
+            .iter()
+            .cloned()
+            .fold(aa_isolation::RuntimeRequirements::new(), |r, c| r.with_confinement(c));
 
         let mut considered = Vec::new();
         for id in CANDIDATES {
@@ -2298,7 +2359,21 @@ mod plan {
                 continue;
             }
 
-            match backend.plan(&probe) {
+            let candidate = candidate_for(&backend, &probe);
+            let verdict = aa_isolation::planner::evaluate_candidate(&requirements, &candidate);
+            // Pins planner-vs-`plan()` verdict equivalence for every
+            // candidate this build actually probes. A future backend added
+            // to `CANDIDATES` without its own `SelectedBackend::capabilities_for`
+            // arm would fall through to raw, unnarrowed capabilities here and
+            // fail this in debug/CI rather than silently selecting a backend
+            // that then refuses the real launch.
+            debug_assert_eq!(
+                verdict.is_ok(),
+                backend.plan(&probe).is_ok(),
+                "auto_select's planner-backed eligibility decision disagreed with {backend_id}'s own \
+                 plan()/negotiate() verdict"
+            );
+            match verdict {
                 Ok(_) => {
                     considered.push(aa_isolation::ConsideredBackend {
                         id: backend_id,
@@ -2388,6 +2463,180 @@ mod plan {
                     Ok(())
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod planner_wiring_tests {
+        use super::*;
+        use aa_isolation::{
+            BackendAvailability, BackendCapabilities, BackendIdentity, Candidate, CapabilityReport, DecisionTiming,
+            DescendantCoverage, EvidenceMinimum, FailurePosture, Mediation, PlatformBoundary, Provenance,
+            RuntimeRequirements, Synchrony,
+        };
+
+        /// Proves capability narrowing is load-bearing, independent of any
+        /// particular host's availability — the control this PR's own bug
+        /// report names: `aasm run --isolation auto --max-open-files 64` must
+        /// not select sandlock, because sandlock's `lower::resource` cannot
+        /// express `max_open_files` (`aa_isolation_sandlock::lower::unexpressible_limit`)
+        /// even though sandlock's *raw* `Resource` report is
+        /// `Enforce`/`Pre`/`Sync` and therefore `can_prevent()`s it. This is
+        /// exactly the gap `SelectedBackend::capabilities_for` closes:
+        /// without narrowing at the construction site, `evaluate_candidate`
+        /// would negotiate the raw report and accept sandlock for a
+        /// requirement it cannot actually enforce.
+        #[test]
+        fn narrowing_a_resource_ceiling_sandlock_cannot_express_disqualifies_it() {
+            let facts = aa_isolation_sandlock::host::HostFacts::for_test("/usr/bin/sandlock", "sandlock 0.8.6", None);
+            let probe = aa_isolation_sandlock::probe::ConfinementProbe {
+                filesystem_read: aa_isolation_sandlock::probe::Observation::Denied,
+                filesystem_write: aa_isolation_sandlock::probe::Observation::Denied,
+                process_ceiling: aa_isolation_sandlock::probe::Observation::Denied,
+                network_egress: aa_isolation_sandlock::probe::Observation::Denied,
+            };
+            let raw = aa_isolation_sandlock::capability::discover(&facts, &probe, &[]);
+
+            let requirement = ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(
+                RequirementScope::Limits(aa_isolation::ResourceLimits {
+                    max_open_files: Some(64),
+                    ..aa_isolation::ResourceLimits::default()
+                }),
+            );
+            let spec = ExecutionSpec::new("probe", IdentityRef::root("probe")).with_requirement(requirement);
+            let identity = BackendIdentity {
+                id: "sandlock".to_string(),
+                version: "0".to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    modified: false,
+                },
+            };
+
+            // Control: the raw report is negotiate-eligible for this
+            // requirement — the mutation below only proves something if this
+            // holds.
+            assert!(
+                aa_isolation::negotiate(&spec, &identity, &raw, &|_, _| aa_isolation::Lowering::none()).is_ok(),
+                "raw capabilities must be negotiate-eligible for the control to mean anything"
+            );
+
+            let narrowed = aa_isolation_sandlock::capability::narrow_for(&raw, &spec);
+            assert!(
+                aa_isolation::negotiate(&spec, &identity, &narrowed, &|_, _| aa_isolation::Lowering::none()).is_err(),
+                "narrowing must make sandlock ineligible for a max_open_files ceiling it cannot express"
+            );
+        }
+
+        /// The two oracles agree for all three real candidates, across a
+        /// couple of small probe-spec fixtures.
+        ///
+        /// On a dev macOS host every one of `SelectedBackend::discover()`'s
+        /// three variants reports `Unavailable`, so both sides agree
+        /// vacuously there (the same `RejectedUnavailable`-shaped refusal on
+        /// both paths, before narrowing or negotiation ever run) — this test
+        /// cannot demonstrate the narrowing fix on such a host: a
+        /// `capabilities_for` that skipped narrowing entirely would pass this
+        /// test identically on macOS, since both sides return `Err` before
+        /// narrowing is ever consulted. Its real discriminating value is on a
+        /// provisioned Linux CI runner where sandlock and the native backend
+        /// are actually `Available`. The host-independent proof that
+        /// narrowing matters is
+        /// `narrowing_a_resource_ceiling_sandlock_cannot_express_disqualifies_it`
+        /// above — that one fails if narrowing is removed, on every host.
+        #[test]
+        fn evaluate_candidate_and_plan_agree_per_backend() {
+            let fixtures: [Vec<ControlRequirement>; 3] = [
+                vec![ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)],
+                vec![
+                    ControlRequirement::prevent(CapabilityDomain::FilesystemWrite),
+                    ControlRequirement::prevent(CapabilityDomain::NetworkEgress),
+                ],
+                vec![
+                    ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(RequirementScope::Limits(
+                        aa_isolation::ResourceLimits {
+                            max_open_files: Some(64),
+                            ..aa_isolation::ResourceLimits::default()
+                        },
+                    )),
+                ],
+            ];
+
+            for confinement in fixtures {
+                let probe = confinement.iter().cloned().fold(
+                    ExecutionSpec::new("probe", IdentityRef::root("probe")),
+                    |spec, requirement| spec.with_requirement(requirement),
+                );
+                let requirements = confinement
+                    .into_iter()
+                    .fold(RuntimeRequirements::new(), |r, c| r.with_confinement(c));
+
+                let backends = [
+                    SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover()),
+                    SelectedBackend::Native(aa_isolation_native::NativeBackend::discover()),
+                    SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover()),
+                ];
+                for backend in backends {
+                    let candidate = candidate_for(&backend, &probe);
+                    assert_eq!(
+                        aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_ok(),
+                        backend.plan(&probe).is_ok(),
+                        "evaluate_candidate and plan() disagreed for {}",
+                        backend.identity().id
+                    );
+                }
+            }
+        }
+
+        /// An `EvidenceMinimum` disqualifies a candidate `negotiate` alone
+        /// would accept — mirrors `aa_isolation::planner`'s own
+        /// `a_candidate_negotiate_would_accept_is_excluded_by_a_failure_posture_minimum`
+        /// mutation test, at this crate's own construction site.
+        ///
+        /// Built directly against `RuntimeRequirements`/`Candidate` rather
+        /// than through `auto_select`: nothing in `aasm run` produces an
+        /// `EvidenceMinimum` yet, so there is no end-to-end CLI path this
+        /// test exercises, only the library behavior `auto_select` would
+        /// inherit automatically if a future caller started stating one.
+        #[test]
+        fn an_evidence_minimum_disqualifies_a_candidate_negotiate_alone_would_accept() {
+            let domain = CapabilityDomain::FilesystemWrite;
+            let report = CapabilityReport::new(domain, Mediation::Enforce, DecisionTiming::Pre, Synchrony::Sync)
+                .with_descendants(DescendantCoverage::ProcessTree)
+                .with_failure_posture(FailurePosture::FailOpenSilent)
+                .with_support(aa_isolation::SupportLevel::Full);
+            let capabilities = BackendCapabilities::new(
+                BackendAvailability::Available,
+                PlatformBoundary::SharedHostKernel,
+                vec![report],
+            )
+            .expect("unique domain");
+            let identity = BackendIdentity {
+                id: "weak".to_string(),
+                version: "0".to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    modified: false,
+                },
+            };
+            let candidate = Candidate::new(identity, capabilities);
+            let requirements = RuntimeRequirements::new().with_confinement(ControlRequirement::prevent(domain));
+
+            assert!(
+                aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_ok(),
+                "negotiate alone must accept this candidate for the mutation to mean anything"
+            );
+
+            let requirements = requirements.with_evidence_minimum(
+                domain,
+                EvidenceMinimum::none().with_min_failure_posture(FailurePosture::FailClosed),
+            );
+            assert!(
+                aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_err(),
+                "a stated evidence minimum must disqualify a candidate negotiate alone would accept"
+            );
         }
     }
 }

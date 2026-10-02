@@ -454,17 +454,18 @@ call into `negotiate()` — the same "single decision point" this ADR already es
 so no per-domain refusal rule changes, proven by a mutation test and by a positive control
 against `aa-isolation-macos-vm`'s own real capability-reporting logic (not a `MockBackend`).
 
-**`aa-cli/src/commands/run.rs::auto_select` has not yet been switched over to call it.**
-That function still implements the identical algorithm inline, branching on each concrete
-`SelectedBackend` variant the way the AAASM-5808 amendment described. Rewiring it to build
-`Candidate`s from its already-discovered backends and delegate the evaluation decision to
-`aa-isolation::planner::select` — leaving only the construction site, which must still name
-concrete backend types somewhere, since Rust has no plugin loader — is left as follow-up
-work, because it touches the CLI's tested `--dry-run`/live-parity surface
-(`aa-cli/tests/run_isolation.rs`) and was judged higher-risk to rush than to land separately
-once verified end-to-end. Until that follow-up lands, "without special-case CLI branching"
-is true of the *new* mechanism this amendment adds, not yet of the one path that currently
-calls it.
+**`aa-cli/src/commands/run.rs::auto_select` now delegates its eligibility decision to
+`aa-isolation::planner::evaluate_candidate` (AAASM-6167's own follow-through, landed in the
+same ticket this amendment records).** It calls `evaluate_candidate`, not `select`: `select`
+forces eager discovery of every candidate up front, which would break the lazy discovery
+`aa-cli/tests/run_isolation.rs` and `aa-isolation/tests/negotiation.rs` already pin (the
+second candidate must never be probed when the first is eligible), and `select`'s generic
+`PlanRefusal::to_string()` detail would replace the CLI's own, more actionable
+`describe_refusal` wording. The loop, the availability pre-check and the `ConsideredBackend`
+construction are otherwise unchanged — only the eligibility oracle and the capabilities fed
+to it moved. The construction site still names concrete backend types, since Rust has no
+plugin loader; see "Consequence for existing text" below for why that construction site must
+narrow those capabilities before handing them to `evaluate_candidate`.
 
 ### The evidence-minimum bar: a second, independent gate
 
@@ -493,9 +494,15 @@ capability-and-tradeoff writeups, not shipped `IsolationBackend` implementors wi
 benchmark numbers — so encoding a numeric ranking now would be a policy input this ADR
 cannot yet stand behind. `aa-isolation::planner::select` therefore keeps exactly the
 AAASM-5808 tie-break: the first candidate in the caller's declared order that is eligible
-wins. `aa-cli`'s own `CANDIDATES` list, unchanged by this amendment, still produces the
-identical selection it did before this generalization for every requirement set expressible
-today.
+wins. `aa-cli`'s own `CANDIDATES` list, unchanged by this amendment, produces the identical
+selection `backend.plan()` would for every requirement set expressible today — but only
+because the construction site now supplies `evaluate_candidate` the same *narrowed*
+capabilities `plan()` computes internally via each backend's own `capability::narrow_for`
+(see "Consequence for existing text" below). Feeding `evaluate_candidate` a candidate's raw,
+unnarrowed capabilities does not reach this parity — a domain `narrow_for` would have made
+ineligible (e.g. a `Resource` ceiling `lower::resource` cannot express) can still look
+eligible on the raw report, which is exactly the regression narrowing at the construction
+site exists to prevent.
 
 ### Named runtime classes remain out of scope
 
@@ -509,11 +516,27 @@ explicit properties it bundles — deferred entirely rather than shipped provisi
 ### Consequence for existing text
 
 The AAASM-5808 amendment's description of the algorithm as living in
-`aa-cli/src/commands/run.rs::auto_select` still describes where the algorithm executes
-today. This amendment records that the identical algorithm now also exists, independently
-implemented and tested, in `aa-isolation::planner::select`, and that switching
-`auto_select`'s evaluation path over to it is tracked follow-up work rather than something
-this amendment claims is already done. No other recorded text in this ADR changes.
+`aa-cli/src/commands/run.rs::auto_select` still describes where the eligibility decision is
+made today. This amendment does not record the two implementations as an independent
+implementation of the identical algorithm: `auto_select`'s own `backend.plan()` narrows a
+candidate's capabilities via each backend's `capability::narrow_for` before calling
+`negotiate()`, while `aa-isolation::planner::evaluate_candidate` negotiates whatever
+capabilities the caller's `Candidate` carries, narrowed or not. The two paths agree only when
+the construction site performs that narrowing itself before building the `Candidate` — they
+were not, and are not by construction, the "identical algorithm" independently reached.
+`auto_select` now delegates its own eligibility decision to `evaluate_candidate` directly
+(never to `select`, which would force eager discovery of every candidate and replace the
+CLI's own `describe_refusal` wording with `PlanRefusal::to_string()`), feeding it capabilities
+narrowed for the probe spec at the construction site via a new `SelectedBackend::capabilities_for`.
+That is what makes `auto_select`'s selection and `backend.plan()`'s selection agree for every
+requirement set expressible today — not an incidental property of the two algorithms being
+written the same way twice. A `debug_assert_eq!` inside `auto_select`'s loop checks this per
+candidate in debug builds, but only for a candidate that passes the availability pre-check
+first — on a host where every candidate reports `Unavailable` (true of every macOS
+development host today, since sandlock and the native backend's Linux-only mechanisms and
+the still-unavailable macOS VM backend are all unavailable there) the assertion never
+executes for any candidate, so it pins this claim only on a provisioned Linux CI runner, not
+on every host that builds this code. No other recorded text in this ADR changes.
 
 ---
 
