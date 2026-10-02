@@ -244,7 +244,7 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
     // rights, this probe grants both on `dir` rather than switching operator.
     let script = |target: &Path, sink: &Path| {
         format!(
-            "i=0; while [ $i -lt 200 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
+            "set -x; i=0; while [ $i -lt 3 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
              printf %s \"$i\" > {}",
             shell_word(&sink.to_string_lossy()),
             shell_word(&target.to_string_lossy())
