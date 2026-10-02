@@ -203,90 +203,65 @@ pub fn measure(facts: &HostFacts) -> ConfinementProbe {
     }
 }
 
-/// The ceiling this probe installs on the test run. Tiny, and well above a
-/// minimal `/bin/sh` grandchild's own baseline descriptor usage (stdin,
-/// stdout, stderr and the handful the shell itself opens), so a shortfall
-/// against the control is attributable to the ceiling and not to the shell's
-/// own footprint.
+/// The ceiling this probe installs on the test run. Tiny (AC8), and well
+/// below any host's own default `RLIMIT_NOFILE` (typically 1024+), so the
+/// control run's reported default is never mistaken for this probe's own
+/// value -- see [`measure_descriptor_ceiling`]'s Inconclusive check on
+/// `control_count`.
 ///
-/// 16 produced a real false-Inconclusive (and so a refused launch for every
-/// `Resource` ceiling, including `max_file_size_bytes`, which the shared
-/// prerequisite below gates on this same probe) on at least one CI
-/// container whose combined-lane baseline fd usage sat close enough to 16
-/// that the probe's own `/bin/sh` startup -- not the loop it measures --
-/// could plausibly account for the shortfall. 64 keeps the same "tiny,
-/// safe to run on any host" property AC8 asks for while giving several
-/// times more headroom above any plausible shell-startup baseline.
+/// 16 produced a real false-Inconclusive on at least one CI container whose
+/// combined-lane baseline fd-count noise sat close enough to 16 to make the
+/// (now-retired) empirical open-and-count probe shape unreliable at that
+/// scale; 64 keeps well clear of that noise floor.
 const DESCRIPTOR_CEILING_PROBE_LIMIT: u32 = 64;
 
-/// Resource (`max_open_files`): the control run installs no ceiling and opens
-/// file descriptors in a loop until the host's own default stops it; the test
-/// run installs [`DESCRIPTOR_CEILING_PROBE_LIMIT`] and does the same. Both
-/// write how many they reached to a file, because the effect under test is a
+/// Resource (`max_open_files`): the control run reports the host's own
+/// default `RLIMIT_NOFILE`; the test run installs
+/// [`DESCRIPTOR_CEILING_PROBE_LIMIT`] and reports that instead. Both write
+/// `ulimit -n`'s own value to a file, because the effect under test is a
 /// count, not a boolean — unlike every other measurement in this module.
 fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
     let control_target = dir.join("fd-control");
     let test_target = dir.join("fd-test");
-    // Opens each descriptor against `dir`'s own sink file read-write
-    // (`<>`), not `/dev/null` -- the same reason `nested()`'s own doc
-    // comment gives for never redirecting stderr there: opening it is a
-    // *write*, a default-deny write policy denies that regardless of the
-    // descriptor ceiling, and the resulting Permission Denied reads as
-    // inconclusive for a reason that has nothing to do with what this probe
-    // measures.
+    // Earlier shapes of this probe opened descriptors in a loop via
+    // `exec $((i+10))<>path` to empirically exhaust the ceiling. That
+    // construction is fundamentally broken on CI's actual `/bin/sh` (dash):
+    // confirmed via a `set -x` trace (AAASM-6165) that dash's `eval` never
+    // recognises a dynamically-expanded two-digit descriptor number as an
+    // IO_NUMBER at all -- `eval "exec 10<>'/path'"` traces as `+ exec 10`,
+    // i.e. dash treats "10" as a plain command-name argument to `exec`, not
+    // a file descriptor, and then fails to find a program named `10`. A
+    // single-digit descriptor range (3-9) avoids that, but this module's own
+    // prior history (see `DESCRIPTOR_CEILING_PROBE_LIMIT`'s doc comment)
+    // already found CI container fd-count noise close enough to 16 to be
+    // unsafe at that scale, so single digits give no safety margin at all.
     //
-    // Read-write (`<>`), not write-only (`>`): CI's actual `/bin/sh` (dash)
-    // was observed, via a temporary diagnostic, to fail to parse a
-    // *write-only* redirection onto a two-digit descriptor number as a
-    // redirect at all -- it read as `exec: 10: not found`, i.e. dash tried
-    // to run a program named `10` -- while the identical descriptor number
-    // under `<>` parses correctly. Since `<>` needs both the read and write
-    // rights, this probe grants both on `dir` rather than switching operator.
-    let script = |target: &Path, sink: &Path| {
-        format!(
-            "set -x; i=0; while [ $i -lt 3 ]; do eval \"exec $((i+10))<>{}\" || break; i=$((i+1)); done; \
-             printf %s \"$i\" > {}",
-            shell_word(&sink.to_string_lossy()),
-            shell_word(&target.to_string_lossy())
-        )
-    };
-    let control_sink = dir.join("fd-control-sink");
-    let test_sink = dir.join("fd-test-sink");
-    let control = run_confined(
-        facts,
-        read_write_grant(dir),
-        &nested(&script(&control_target, &control_sink)),
-    );
+    // Read the *installed* ceiling back directly instead: `ulimit -n` asks
+    // the kernel (via `getrlimit`) what this process's own soft
+    // `RLIMIT_NOFILE` actually is. This still observes the real kernel state
+    // `install()` produced, not a value this crate merely believes it set,
+    // and it needs no descriptor arithmetic, no `eval`, and no sink file.
+    let script = |target: &Path| format!("ulimit -n > {}", shell_word(&target.to_string_lossy()));
+    let control = run_confined(facts, write_grant(dir), &nested(&script(&control_target)));
     let test = run_confined_with_limits(
         facts,
-        read_write_grant(dir),
+        write_grant(dir),
         crate::limits::NativeLimits {
             max_open_files: Some(DESCRIPTOR_CEILING_PROBE_LIMIT),
             max_file_size_bytes: None,
         },
-        &nested(&script(&test_target, &test_sink)),
+        &nested(&script(&test_target)),
     );
     let read_count = |path: &Path| -> Option<u32> { std::fs::read_to_string(path).ok()?.trim().parse().ok() };
-    // AAASM-6165 temporary diagnostic, round 4: verifying the <> + read+write
-    // grant fix (diagnosed from comparing round-2 and round-3 CI logs
-    // directly) actually resolves this on the real CI host before removing
-    // the diagnostic for good.
-    eprintln!(
-        "AAASM-6165 probe round 4: control={:?} control_count={:?} test={:?} test_count={:?}",
-        control.as_ref().map(|o| &o.diagnostic),
-        read_count(&control_target),
-        test.as_ref().map(|o| &o.diagnostic),
-        read_count(&test_target),
-    );
     let (Ok(_), Some(control_count)) = (&control, read_count(&control_target)) else {
         return Observation::Inconclusive {
             detail: "the descriptor-ceiling control run could not be executed or did not report a count".to_string(),
         };
     };
-    if control_count == 0 {
+    if control_count <= DESCRIPTOR_CEILING_PROBE_LIMIT {
         return Observation::Inconclusive {
-            detail: "the descriptor-ceiling control run opened zero descriptors, so the test run's \
-                     shortfall is not attributable to the boundary"
+            detail: "the host's own default RLIMIT_NOFILE is already at or below the probe's ceiling, so a \
+                     lowered test-run value is not attributable to the boundary"
                 .to_string(),
         };
     }
@@ -295,7 +270,7 @@ fn measure_descriptor_ceiling(facts: &HostFacts, dir: &Path) -> Observation {
             detail: "the descriptor-ceiling test run could not be executed or did not report a count".to_string(),
         };
     };
-    if test_count < control_count && test_count <= DESCRIPTOR_CEILING_PROBE_LIMIT {
+    if test_count == DESCRIPTOR_CEILING_PROBE_LIMIT {
         Observation::Denied
     } else {
         Observation::Permitted
@@ -431,15 +406,6 @@ fn read_grant(dir: &Path) -> Grants {
 fn write_grant(dir: &Path) -> Grants {
     let mut grants = system_grants();
     grants.write.insert(dir.to_string_lossy().into_owned());
-    grants
-}
-
-/// `dir` granted both read and write, for the one probe (the
-/// descriptor-ceiling measurement) whose script opens a sink file read-write
-/// (`<>`) rather than write-only.
-fn read_write_grant(dir: &Path) -> Grants {
-    let mut grants = write_grant(dir);
-    grants.read.insert(dir.to_string_lossy().into_owned());
     grants
 }
 
