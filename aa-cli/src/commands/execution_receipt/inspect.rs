@@ -41,7 +41,7 @@ use std::process::ExitCode;
 
 use super::host;
 use super::schema::{ReceiptEnvelope, WorkspaceBinding, RECEIPT_SCHEMA};
-use super::store::{ReceiptStore, StoreError};
+use super::store::{ReceiptEntry, ReceiptStore, StoreError};
 use super::text::ReceiptText;
 use super::validate::ReceiptDefect;
 use super::verify::{verify, SealVerdict, Verification};
@@ -63,6 +63,17 @@ pub struct InspectArgs {
     /// seal/defect re-evaluation — the only replay mode this build supports.
     #[arg(long)]
     pub re_evaluate: bool,
+}
+
+/// Arguments for `aasm receipt list`.
+#[derive(clap::Args)]
+pub struct ListArgs {
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    pub json: bool,
+    /// Show at most this many receipts, newest first.
+    #[arg(long)]
+    pub limit: Option<usize>,
 }
 
 /// Why `inspect` refused to render a receipt's body (Gate A).
@@ -744,4 +755,51 @@ fn suppress_diff_digest_if_not_committed(body_value: &mut serde_json::Value) {
             serde_json::json!("not_meaningful: transaction did not commit"),
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// `aasm receipt list`
+// ---------------------------------------------------------------------------
+
+/// Build the full `list` report (output text and exit code).
+pub fn list_report(args: &ListArgs) -> (ExitCode, String) {
+    let store = match ReceiptStore::default_location() {
+        Ok(s) => s,
+        Err(e) => return (ExitCode::FAILURE, format!("could not resolve the receipt store: {e}")),
+    };
+    let mut entries = match store.entries() {
+        Ok(e) => e,
+        Err(e) => return (ExitCode::FAILURE, format!("could not list receipts: {e}")),
+    };
+    if let Some(limit) = args.limit {
+        entries.truncate(limit);
+    }
+
+    let output = if args.json {
+        serde_json::json!({ "receipts": entries.iter().map(entry_json).collect::<Vec<_>>() }).to_string()
+    } else if entries.is_empty() {
+        "(no stored receipts)".to_string()
+    } else {
+        entries
+            .iter()
+            .map(|e| format!("{} {} {}", e.recorded_at_unix_secs, e.run_id, e.path.display()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    (ExitCode::SUCCESS, output)
+}
+
+fn entry_json(e: &ReceiptEntry) -> serde_json::Value {
+    serde_json::json!({
+        "run_id": e.run_id,
+        "recorded_at_unix_secs": e.recorded_at_unix_secs,
+        "path": e.path.display().to_string(),
+    })
+}
+
+/// Dispatch `aasm receipt list`.
+pub fn list_command(args: ListArgs) -> ExitCode {
+    let (code, output) = list_report(&args);
+    println!("{output}");
+    code
 }
