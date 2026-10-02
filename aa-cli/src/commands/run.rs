@@ -2469,7 +2469,11 @@ mod plan {
     #[cfg(test)]
     mod planner_wiring_tests {
         use super::*;
-        use aa_isolation::{BackendIdentity, Provenance};
+        use aa_isolation::{
+            BackendAvailability, BackendCapabilities, BackendIdentity, Candidate, CapabilityReport, DecisionTiming,
+            DescendantCoverage, EvidenceMinimum, FailurePosture, Mediation, PlatformBoundary, Provenance,
+            RuntimeRequirements, Synchrony,
+        };
 
         /// Proves capability narrowing is load-bearing, independent of any
         /// particular host's availability — the control this PR's own bug
@@ -2522,6 +2526,116 @@ mod plan {
             assert!(
                 aa_isolation::negotiate(&spec, &identity, &narrowed, &|_, _| aa_isolation::Lowering::none()).is_err(),
                 "narrowing must make sandlock ineligible for a max_open_files ceiling it cannot express"
+            );
+        }
+
+        /// The two oracles agree for all three real candidates, across a
+        /// couple of small probe-spec fixtures.
+        ///
+        /// On a dev macOS host every one of `SelectedBackend::discover()`'s
+        /// three variants reports `Unavailable`, so both sides agree
+        /// vacuously there (the same `RejectedUnavailable`-shaped refusal on
+        /// both paths, before narrowing or negotiation ever run) — this test
+        /// cannot demonstrate the narrowing fix on such a host: a
+        /// `capabilities_for` that skipped narrowing entirely would pass this
+        /// test identically on macOS, since both sides return `Err` before
+        /// narrowing is ever consulted. Its real discriminating value is on a
+        /// provisioned Linux CI runner where sandlock and the native backend
+        /// are actually `Available`. The host-independent proof that
+        /// narrowing matters is
+        /// `narrowing_a_resource_ceiling_sandlock_cannot_express_disqualifies_it`
+        /// above — that one fails if narrowing is removed, on every host.
+        #[test]
+        fn evaluate_candidate_and_plan_agree_per_backend() {
+            let fixtures: [Vec<ControlRequirement>; 3] = [
+                vec![ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)],
+                vec![
+                    ControlRequirement::prevent(CapabilityDomain::FilesystemWrite),
+                    ControlRequirement::prevent(CapabilityDomain::NetworkEgress),
+                ],
+                vec![
+                    ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(RequirementScope::Limits(
+                        aa_isolation::ResourceLimits {
+                            max_open_files: Some(64),
+                            ..aa_isolation::ResourceLimits::default()
+                        },
+                    )),
+                ],
+            ];
+
+            for confinement in fixtures {
+                let probe = confinement.iter().cloned().fold(
+                    ExecutionSpec::new("probe", IdentityRef::root("probe")),
+                    |spec, requirement| spec.with_requirement(requirement),
+                );
+                let requirements = confinement
+                    .into_iter()
+                    .fold(RuntimeRequirements::new(), |r, c| r.with_confinement(c));
+
+                let backends = [
+                    SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover()),
+                    SelectedBackend::Native(aa_isolation_native::NativeBackend::discover()),
+                    SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover()),
+                ];
+                for backend in backends {
+                    let candidate = candidate_for(&backend, &probe);
+                    assert_eq!(
+                        aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_ok(),
+                        backend.plan(&probe).is_ok(),
+                        "evaluate_candidate and plan() disagreed for {}",
+                        backend.identity().id
+                    );
+                }
+            }
+        }
+
+        /// An `EvidenceMinimum` disqualifies a candidate `negotiate` alone
+        /// would accept — mirrors `aa_isolation::planner`'s own
+        /// `a_candidate_negotiate_would_accept_is_excluded_by_a_failure_posture_minimum`
+        /// mutation test, at this crate's own construction site.
+        ///
+        /// Built directly against `RuntimeRequirements`/`Candidate` rather
+        /// than through `auto_select`: nothing in `aasm run` produces an
+        /// `EvidenceMinimum` yet, so there is no end-to-end CLI path this
+        /// test exercises, only the library behavior `auto_select` would
+        /// inherit automatically if a future caller started stating one.
+        #[test]
+        fn an_evidence_minimum_disqualifies_a_candidate_negotiate_alone_would_accept() {
+            let domain = CapabilityDomain::FilesystemWrite;
+            let report = CapabilityReport::new(domain, Mediation::Enforce, DecisionTiming::Pre, Synchrony::Sync)
+                .with_descendants(DescendantCoverage::ProcessTree)
+                .with_failure_posture(FailurePosture::FailOpenSilent)
+                .with_support(aa_isolation::SupportLevel::Full);
+            let capabilities = BackendCapabilities::new(
+                BackendAvailability::Available,
+                PlatformBoundary::SharedHostKernel,
+                vec![report],
+            )
+            .expect("unique domain");
+            let identity = BackendIdentity {
+                id: "weak".to_string(),
+                version: "0".to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    modified: false,
+                },
+            };
+            let candidate = Candidate::new(identity, capabilities);
+            let requirements = RuntimeRequirements::new().with_confinement(ControlRequirement::prevent(domain));
+
+            assert!(
+                aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_ok(),
+                "negotiate alone must accept this candidate for the mutation to mean anything"
+            );
+
+            let requirements = requirements.with_evidence_minimum(
+                domain,
+                EvidenceMinimum::none().with_min_failure_posture(FailurePosture::FailClosed),
+            );
+            assert!(
+                aa_isolation::planner::evaluate_candidate(&requirements, &candidate).is_err(),
+                "a stated evidence minimum must disqualify a candidate negotiate alone would accept"
             );
         }
     }
