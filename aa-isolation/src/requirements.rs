@@ -30,8 +30,10 @@
 //! # Deferred fields, and why they are still here
 //!
 //! The ticket's design section lists more properties than this pass wires into
-//! [`crate::planner::select`]'s eligibility check. Two are present on this type
-//! but not yet evaluated by anything:
+//! [`crate::planner::evaluate_candidate`]'s eligibility check (and therefore
+//! into [`crate::planner::select`], which calls it for every candidate). Two
+//! are present on this type but not yet evaluated by anything, plus one that
+//! is not a field at all:
 //!
 //! * [`transactional_workspace_required`](RuntimeRequirements::transactional_workspace_required) —
 //!   AAASM-6162 ("transactional COW workspaces") had landed no commits past
@@ -40,6 +42,11 @@
 //!   flag could be checked against yet. The field exists so a caller can start
 //!   recording the requirement now; wiring it is AAASM-6162's or a follow-up's
 //!   job, once a backend has something to report.
+//! * [`allowed_platform_boundaries`](RuntimeRequirements::allowed_platform_boundaries) —
+//!   present so a caller can start restricting a candidate's
+//!   [`PlatformBoundary`] now; [`crate::planner::evaluate_candidate`] does not
+//!   read it. See [`with_allowed_platform_boundaries`](RuntimeRequirements::with_allowed_platform_boundaries)
+//!   for why `PlatformBoundary` is the reused vocabulary.
 //! * Locality/latency constraints are **not** a field at all, deliberately.
 //!   Unlike the workspace flag, there is no existing type anywhere in this
 //!   crate a locality constraint could even be compared against — no backend
@@ -50,9 +57,9 @@
 //!   Deferred in full; a future ticket introducing a real locality-reporting
 //!   backend capability is where this belongs.
 //!
-//! [`crate::planner::select`] never treats a deferred property as satisfied —
-//! it simply does not read it, so nothing in this type can be misread as an
-//! enforced guarantee.
+//! [`crate::planner::evaluate_candidate`] never treats a deferred property as
+//! satisfied — it simply does not read it, so nothing in this type can be
+//! misread as an enforced guarantee.
 //!
 //! [`ExecutionSpec`]: crate::spec::ExecutionSpec
 //! [`probe_spec`]: RuntimeRequirements::probe_spec
@@ -213,6 +220,12 @@ impl RuntimeRequirements {
 
     /// Restrict the candidate's [`PlatformBoundary`] to one of these.
     ///
+    /// **Not yet evaluated.** Nothing in [`crate::planner::evaluate_candidate`]
+    /// reads this field yet — there is no per-candidate check wired for it,
+    /// the same gap [`with_transactional_workspace_required`](Self::with_transactional_workspace_required)
+    /// documents for its own field. The value travels with the rest of the
+    /// requirement set in the meantime.
+    ///
     /// The concrete stand-in for the ticket's "compatibility/runtime needs
     /// (POSIX/fork/toolchain/WASM)" axis: [`PlatformBoundary`] already
     /// distinguishes a shared-host-kernel process boundary from a
@@ -261,7 +274,8 @@ impl RuntimeRequirements {
     }
 
     /// The allowed [`PlatformBoundary`] set, when this requirement set
-    /// restricts it.
+    /// restricts it. **Not yet evaluated** — see
+    /// [`with_allowed_platform_boundaries`](Self::with_allowed_platform_boundaries).
     pub fn allowed_platform_boundaries(&self) -> Option<&[PlatformBoundary]> {
         self.allowed_platform_boundaries.as_deref()
     }
