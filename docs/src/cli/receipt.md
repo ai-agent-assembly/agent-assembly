@@ -1,9 +1,9 @@
 # aasm receipt
 
-Verify a locally-stored execution receipt: a versioned record of one `aasm
-run` launch, binding the exact policy, spec, backend and achieved capability
-evidence that launch produced, with a content digest that detects tampering
-since it was written.
+Verify, inspect, and list locally-stored execution receipts: versioned
+records of `aasm run` launches, binding the exact policy, spec, backend and
+achieved capability evidence each launch produced, with a content digest
+that detects tampering since each one was written.
 
 > **Availability.** `aasm receipt` sits inside the same `devtool` region as
 > `aasm run` (`aa-cli/src/commands/mod.rs`) — nothing publishes a receipt, so
@@ -14,6 +14,8 @@ since it was written.
 
 ```text
 aasm receipt verify <PATH> [--json]
+aasm receipt inspect <RUN_ID|--path <PATH>> [--json] [--re-evaluate]
+aasm receipt list [--json] [--limit N]
 ```
 
 ## Where receipts come from
@@ -81,14 +83,14 @@ Run with `--json` to distinguish those causes programmatically; the human
 output also separates "seal: …" from "defects: …" on separate lines so the
 two checks are never collapsed into one verdict.
 
-## Options
+## `verify` options
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
 | `<PATH>` | path | _(required)_ | Path to the stored receipt file. |
 | `--json` | flag | off | Emit a machine-readable JSON report instead of a human-readable summary. |
 
-## Examples
+## `verify` examples
 
 ```console
 $ aasm receipt verify ~/.aasm/execution-receipts/1758912345-run-abc123.execution-receipt.json
@@ -101,6 +103,95 @@ trustworthy: true (the seal covers content integrity since write, never origin �
 $ aasm receipt verify --json ./tampered-receipt.json
 {"seal":"mismatch","seal_detail":null,"defects":[],"trustworthy":false}
 ```
+
+## `aasm receipt inspect` (AAASM-6172)
+
+Renders a stored receipt's full content — every section `verify` only
+summarizes as pass/fail — for forensic reconstruction of one launch. Pass
+either a `RUN_ID` (resolved against the local store's filename convention) or
+`--path` to a file directly; passing both, or neither, is refused.
+
+### The refusal gate — two independent checks, never collapsed
+
+`inspect` refuses in two genuinely different ways, and the distinction is
+the whole point of the command:
+
+**Gate A — refuses to render anything, zero body fields shown.** The run id
+doesn't resolve (or resolves to more than one file — every matching path is
+named in the refusal, never silently picked from), the file is missing,
+corrupt, or unreadable, the seal does not hold (content changed since
+write), or the receipt declares a schema this build does not read. A reader
+must never be shown content this build cannot vouch for.
+
+**Gate B — renders the full body, but leads with a "findings" section.**
+The seal holds and the schema matches, but
+[`aasm receipt verify`](#what-receipt-integrity-proves--and-does-not-prove)'s
+own truth-downgrade rules (e.g. a domain claiming prevention with no
+decision record behind it) found something. This is deliberately **not**
+the same gate `verify`'s `trustworthy` flag uses — that flag would refuse to
+show you the one receipt where the overclaim itself is the thing you came to
+look at.
+
+A clean receipt (seal holds, schema matches, zero findings) renders in full
+with an empty findings section.
+
+### `inspect` options
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `<RUN_ID>` | positional | _(one of `RUN_ID`/`--path` required)_ | Resolved against the store's `<recorded_at>-<run_id>.execution-receipt.json` filename convention. |
+| `--path` | path | _(one of `RUN_ID`/`--path` required)_ | Inspect a receipt file directly, bypassing run-id resolution. |
+| `--json` | flag | off | Emit a machine-readable JSON report instead of a human-readable one. |
+| `--re-evaluate` | flag | off | Print the replay-mode taxonomy below, and re-run the deterministic seal/defect re-evaluation. |
+
+### The `--re-evaluate` replay taxonomy
+
+There are three things "replay a receipt" could mean. Only the first is
+built:
+
+1. **Deterministic re-evaluation — supported, this is what `--re-evaluate`
+   does.** Re-run the seal check and the truth-downgrade defect rules over
+   the exact bytes already on disk. A pure function of stored content; it
+   never reads the current wall clock, so the same file produces the same
+   answer today, next year, on a different host.
+2. **Re-execution in a fresh environment — not supported.** The receipt
+   stores only digests of the program, argv, working directory, and
+   credential *names* — never their values. There is nothing to
+   reconstruct a real invocation from, by design (see "What a receipt
+   records" below).
+3. **Impossible/non-replayable external side effects — not supported, and
+   never will be from a receipt alone.** A workspace transaction's own
+   `not_transactional` list (see `[workspace]` below, or `NOT_TRANSACTIONAL`
+   in `aa-cli/src/commands/execution_receipt/schema.rs`) names exactly the
+   side-effect classes no transactional mechanism in this product makes
+   replayable: network calls, database writes, processes started, and paths
+   outside the declared surface.
+
+### The `workspace.diff_digest` correctness fix
+
+`workspace_binding` computes `diff_digest` from the transaction's applied
+change set unconditionally at write time — and a transaction that didn't
+commit (refused or discarded) always has an *empty* change set, because
+`run_workspace_tx::settle`'s non-commit branches never populate one. That
+means **every receipt whose transaction did not commit carries the exact
+same `diff_digest`: the digest of an empty list** — a constant, not a fact
+about that specific run. `inspect` never renders that value as an
+unqualified diff: it labels `diff_digest` (and `result_digest`) as "not
+meaningful" whenever `workspace.committed != true`, in both the text and
+`--json` outputs.
+
+## `aasm receipt list` (AAASM-6172)
+
+Enumerates stored receipts, newest first, from the filename alone —
+**`list` never opens or verifies any file's seal**; that's `inspect`'s job,
+per receipt you actually choose to look at.
+
+### `list` options
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--json` | flag | off | Emit a machine-readable JSON array instead of one line per receipt. |
+| `--limit` | integer | unlimited | Show at most this many receipts. |
 
 ## What a receipt records
 
@@ -125,11 +216,19 @@ recorded as withheld, never partially redacted, never silently dropped.
 ## Deferred — not built in this ticket
 
 - Real cryptographic signing, key custody, or a SaaS verification service.
-- Receipt-based replay or forensic reconstruction of a run.
+  Every receipt in this release is **sealed** (a `sha256` content digest) —
+  never signed — and this doc, and every receipt-related source file, says
+  so deliberately.
+- Path-level diff of a workspace transaction's change set. `diff_digest`
+  pins the exact set of changes a committed transaction applied, but the
+  paths themselves (`sorted_changes`) are digested and discarded before the
+  receipt is ever written — nothing durable survives to diff against.
+- Replay mode 2 (re-execution in a fresh environment) and mode 3
+  (non-transactional external side effects) — see `inspect --re-evaluate`'s
+  taxonomy above. Only mode 1, deterministic re-evaluation, ships.
 - A digest of the guest/runtime image a backend launched — no backend
-  computes one today; the field exists in the schema and is always `None`.
-- A workspace-transaction diff binding — `aa-workspace-tx` has no consumer
-  today; the field exists and is always `None`.
+  computes one today; the field exists in the schema and `inspect` renders
+  it as explicitly "not recorded", never a blank section.
 - Retention or garbage collection of stored receipts — one file is written
   per confined run and nothing prunes them.
 - A receipt for a launch refused before it started — there is nothing such a
