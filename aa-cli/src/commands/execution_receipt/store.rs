@@ -415,6 +415,100 @@ mod tests {
     }
 
     #[test]
+    fn resolve_run_id_finds_the_one_matching_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path());
+        let mut body = sample_body();
+        body.run_id = "run-a".to_string();
+        let path = store.write(&ReceiptEnvelope::seal(body).unwrap()).unwrap();
+
+        assert_eq!(store.resolve_run_id("run-a").unwrap(), path);
+    }
+
+    #[test]
+    fn resolve_run_id_sanitizes_the_input_the_same_way_path_for_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path());
+        let mut body = sample_body();
+        body.run_id = "run:weird/chars".to_string();
+        let path = store.write(&ReceiptEnvelope::seal(body).unwrap()).unwrap();
+
+        // The raw run id, containing characters `path_for` sanitizes, must
+        // still resolve — proving resolution sanitizes the query the same
+        // way, rather than matching the raw string against a sanitized
+        // filename.
+        assert_eq!(store.resolve_run_id("run:weird/chars").unwrap(), path);
+    }
+
+    #[test]
+    fn resolve_run_id_fails_loudly_on_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path());
+        std::fs::create_dir_all(dir.path()).unwrap();
+        let err = store.resolve_run_id("nonexistent").unwrap_err();
+        assert!(matches!(err, StoreError::NoSuchRun { run_id } if run_id == "nonexistent"));
+    }
+
+    #[test]
+    fn resolve_run_id_fails_loudly_on_a_sanitized_suffix_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path());
+        // Two distinct run ids that sanitize to the same suffix, written at
+        // different `recorded_at` prefixes so they are genuinely two files,
+        // not one filename written twice.
+        let mut body_a = sample_body();
+        body_a.run_id = "run:a".to_string();
+        body_a.recorded_at_unix_secs = 1_700_000_000;
+        let mut body_b = sample_body();
+        // Sanitizes to the identical suffix as "run:a" (':' -> '_'), via a
+        // different original run id — a genuine collision, not a duplicate
+        // filename.
+        body_b.run_id = "run_a".to_string();
+        body_b.recorded_at_unix_secs = 1_700_000_001;
+
+        let path_a = store.write(&ReceiptEnvelope::seal(body_a).unwrap()).unwrap();
+        let path_b = store.write(&ReceiptEnvelope::seal(body_b).unwrap()).unwrap();
+        assert_ne!(path_a, path_b);
+
+        let err = store.resolve_run_id("run:a").unwrap_err();
+        match err {
+            StoreError::AmbiguousRun { run_id, matches } => {
+                assert_eq!(run_id, "run:a");
+                assert!(matches.contains(&path_a));
+                assert!(matches.contains(&path_b));
+            }
+            other => panic!("expected AmbiguousRun, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entries_lists_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path());
+        let mut older = sample_body();
+        older.run_id = "older".to_string();
+        older.recorded_at_unix_secs = 1_700_000_000;
+        let mut newer = sample_body();
+        newer.run_id = "newer".to_string();
+        newer.recorded_at_unix_secs = 1_700_000_050;
+
+        store.write(&ReceiptEnvelope::seal(older).unwrap()).unwrap();
+        store.write(&ReceiptEnvelope::seal(newer).unwrap()).unwrap();
+
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].run_id, "newer");
+        assert_eq!(entries[1].run_id, "older");
+    }
+
+    #[test]
+    fn entries_on_an_unwritten_store_is_an_empty_list_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ReceiptStore::at(dir.path().join("never-created"));
+        assert_eq!(store.entries().unwrap(), Vec::new());
+    }
+
+    #[test]
     fn writing_twice_for_different_run_ids_never_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         let store = ReceiptStore::at(dir.path());
