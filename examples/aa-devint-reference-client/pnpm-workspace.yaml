@@ -21,6 +21,13 @@
 # rather than silent.
 overrides:
   js-yaml: ^4.3.2
-  brace-expansion@1: ^1.1.18
-  brace-expansion@2: ^2.1.4
+  # GHSA-q2hr-2g5m-vwhr (a crafted brace pattern makes expand() allocate
+  # super-linearly, so a caller that expands untrusted input is a DoS). Both
+  # floors were stale by several patches, so the advisory fired against floors
+  # that already existed: 1.1.18 is inside `< 1.1.21` and 2.1.4 is inside
+  # `>= 2.0.0, < 2.1.7`. Both reach us through minimatch (3.1.5 and 9.0.9),
+  # whose declared ranges are satisfied by the patched versions, so these are
+  # ordinary floor raises rather than overrides of an upstream pin.
+  brace-expansion@1: ^1.1.21
+  brace-expansion@2: ^2.1.7
   nanoid: ^3.3.17
