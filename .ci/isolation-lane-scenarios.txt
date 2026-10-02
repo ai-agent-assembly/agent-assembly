@@ -33,6 +33,8 @@ aasm-run-confined-child-environment
 aasm-run-confined-exit-code
 aasm-run-devtool-confined-write-denied
 aasm-run-exec-confined-write-denied
+aasm-run-native-max-file-size-bytes
+aasm-run-native-max-open-files
 
 absent backend refuses before launch
 adversarial: a detached descendant and an alternate executable path are confined alike
