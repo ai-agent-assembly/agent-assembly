@@ -803,3 +803,186 @@ pub fn list_command(args: ListArgs) -> ExitCode {
     println!("{output}");
     code
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::execution_receipt::canonical::Digest;
+    use crate::commands::execution_receipt::schema::{
+        AchievedOperation, AssertedIdentity, BackendBinding, CredentialNames, DegradedCondition, DegradedKind,
+        DomainOutcome, EvidenceRef, ExecutionOutcome, HostCapabilityBinding, LeaseBinding, PolicyBinding,
+        ProducerIdentity, ReceiptBody, SpecBinding, TerminationRecord,
+    };
+
+    fn minimal_body() -> ReceiptBody {
+        ReceiptBody {
+            run_id: "run-1".to_string(),
+            trace_id: "trace-1".to_string(),
+            recorded_at_unix_secs: 1_700_000_000,
+            asserted_identity: AssertedIdentity {
+                agent_id: ReceiptText::screened("agent-1"),
+                team_id: None,
+                lineage: Vec::new(),
+                depth: 0,
+            },
+            producer: ProducerIdentity::current(),
+            policy: PolicyBinding {
+                canonical_digest: None,
+                source: None,
+                resolution: ReceiptText::token("unconfigured"),
+                unmapped: Vec::new(),
+            },
+            spec: SpecBinding {
+                digest: Digest::of_canonical("{}"),
+                program: ReceiptText::screened("true"),
+                arg_count: 0,
+                argv_digest: Digest::of_canonical("[]"),
+                working_dir_digest: None,
+                required_count: 0,
+                optional_count: 0,
+                degrade_if_unavailable_count: 0,
+            },
+            backend: None,
+            host: Vec::new(),
+            runtime_image: None,
+            leases: Vec::new(),
+            domains: Vec::new(),
+            credentials: CredentialNames::default(),
+            workspace: None,
+            host_capability: None,
+            execution: ExecutionOutcome {
+                started_at_unix_secs: 1_700_000_000,
+                ended_at_unix_secs: 1_700_000_001,
+                exit_code: Some(0),
+                no_code_detail: None,
+                termination: TerminationRecord::SelfExited,
+            },
+            degraded: Vec::new(),
+            withheld_fields: Vec::new(),
+            evidence_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn runtime_image_none_renders_an_explicit_not_recorded_marker_not_blank() {
+        let body = minimal_body();
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("<not recorded: no backend computes a guest/runtime-image digest today>"));
+    }
+
+    #[test]
+    fn host_capability_none_renders_an_explicit_not_recorded_marker_not_blank() {
+        let body = minimal_body();
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("<not recorded: no host-capability contract applied to this run>"));
+    }
+
+    #[test]
+    fn workspace_none_renders_an_explicit_not_recorded_marker_not_blank() {
+        let body = minimal_body();
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("<not recorded: --workspace-tx was not passed>"));
+    }
+
+    #[test]
+    fn a_host_capability_binding_renders_its_achieved_operations() {
+        let mut body = minimal_body();
+        body.host_capability = Some(HostCapabilityBinding {
+            posture: ReceiptText::token("broker_required"),
+            broker_available: true,
+            toolchain: vec![ReceiptText::screened("xcodebuild 26.6")],
+            requested: vec![ReceiptText::token("simulator_boot")],
+            achieved: vec![AchievedOperation {
+                kind: ReceiptText::token("simulator_boot"),
+                exit_code: Some(0),
+                argv_digest: Digest::of_canonical("[]"),
+                output_truncated: false,
+            }],
+            refused: Vec::new(),
+        });
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("achieved: kind=simulator_boot"));
+    }
+
+    #[test]
+    fn a_non_backend_render_shows_the_unavailable_marker() {
+        let body = minimal_body();
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("<unavailable: no execution-isolation boundary ran>"));
+    }
+
+    #[test]
+    fn a_backend_binding_renders_its_id() {
+        let mut body = minimal_body();
+        body.backend = Some(BackendBinding {
+            id: ReceiptText::screened("mock-backend"),
+            version: ReceiptText::screened("1.0"),
+            provenance_source: ReceiptText::token("builtin"),
+            provenance_license: ReceiptText::token("MIT"),
+            provenance_modified: false,
+            platform_boundary: ReceiptText::token("shared_host_kernel"),
+            selection_mode: None,
+            considered: Vec::new(),
+        });
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("id=mock-backend"));
+    }
+
+    #[test]
+    fn findings_section_lists_every_defect() {
+        let body = minimal_body();
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let defects = vec![ReceiptDefect::PreventionWithoutDecision {
+            domain: "network_egress".to_string(),
+        }];
+        let text = render_text(&envelope, &defects);
+        assert!(text.contains("findings:"));
+        assert!(text.contains("network_egress"));
+    }
+
+    #[test]
+    fn evidence_refs_and_leases_render_entries() {
+        let mut body = minimal_body();
+        body.leases.push(LeaseBinding {
+            lease_id: ReceiptText::screened("lease-1"),
+            digest: Digest::of_canonical("{}"),
+            domain: ReceiptText::token("network_egress"),
+            derived_from_lease_id: None,
+            inheritance_mode: None,
+        });
+        body.evidence_refs.push(EvidenceRef {
+            kind: ReceiptText::token("configured"),
+            domain: Some(ReceiptText::token("network_egress")),
+            claim: ReceiptText::token("planned"),
+            detail_digest: Digest::of_canonical("\"detail\""),
+        });
+        body.degraded.push(DegradedCondition {
+            domain: None,
+            kind: DegradedKind::FactUnavailable,
+            detail: ReceiptText::token("example"),
+        });
+        body.domains.push(DomainOutcome {
+            domain: ReceiptText::token("network_egress"),
+            requested: ReceiptText::token("observe"),
+            state: ReceiptText::token("observe_only"),
+            claim: ReceiptText::token("observed"),
+            evidence_basis: ReceiptText::token("decision"),
+            unmeasured_reason: None,
+            unmeasured_detail: None,
+            residual_policy_gaps: Vec::new(),
+            prevention_supported: false,
+            independently_verified: false,
+        });
+        let envelope = ReceiptEnvelope::seal(body).unwrap();
+        let text = render_text(&envelope, &[]);
+        assert!(text.contains("lease-1"));
+        assert!(text.contains("- kind=configured"));
+        assert!(text.contains("- domain=network_egress"));
+    }
+}
