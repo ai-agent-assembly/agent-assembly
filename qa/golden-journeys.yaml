@@ -2117,3 +2117,221 @@ journeys:
   - pr
   - main
   fidelity: real_local_process
+- id: J81
+  jira: AAASM-6259
+  name: Acquire and exercise a capability lease under the runtime-wide explicit-authority contract
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6259 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6160
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-6259
+- id: J82
+  jira: AAASM-6260
+  name: Confirm monotonic capability attenuation across a sub-agent process tree
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6260 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6161
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-6260
+- id: J83
+  jira: AAASM-6261
+  name: Enforce identity-bound, policy-governed egress through the network broker
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  - aa-proxy
+  entry_point: cli
+  lanes:
+  - security
+  - network
+  browser_required: false
+  outcome: See AAASM-6261 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6163
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-6261
+- id: J84
+  jira: AAASM-6262
+  name: Run a governed agent that never sees a plaintext secret via the credential broker
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  - aa-security
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6262 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6164
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-6262
+- id: J85
+  jira: AAASM-6263
+  name: Commit, approve, and discard a transactional copy-on-write workspace
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-workspace-tx
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6263 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6162
+  lifecycle_state: gap
+- id: J86
+  jira: AAASM-6264
+  name: Enforce runtime-wide CPU, memory, PID, FD, disk, network and wall-time ceilings
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6264 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6165
+  lifecycle_state: gap
+- id: J87
+  jira: AAASM-6265
+  name: Verify an execution receipt's content-digest seal binds policy, authority, backend and achieved evidence
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-runtime
+  - aa-isolation
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6265 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6166
+  lifecycle_state: gap
+- id: J88
+  jira: AAASM-6266
+  name: Confirm evidence-aware runtime-class selection picks the backend that actually matches the requested security property
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6266 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6167
+  lifecycle_state: gap
+- id: J89
+  jira: AAASM-6267
+  name: Perform a native host operation (Xcode / Simulator / signing) only through the typed host-capability broker
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6267 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6171
+  lifecycle_state: gap
+- id: J90
+  jira: AAASM-6268
+  name: Confirm the re-baselined Landlock ABI holds its claimed network/IPC confinement on aa-isolation-native
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation-native
+  entry_point: cli
+  lanes:
+  - security
+  browser_required: false
+  outcome: See AAASM-6268 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6173
+  lifecycle_state: partial
+  gap_owner: AAASM-6268
+  evidence:
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'Linux CI lane exercising aa-isolation-native Landlock ruleset tests
+      (ci.yml) — live operation infeasible on a non-Linux QA host, per this
+      Story''s own stated limitation.'
+- id: J91
+  jira: AAASM-6269
+  name: Confirm the confined-launch IsolationPlan::base_spec regression (AAASM-6038) stays fixed, not just field-copied
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6269 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6038
+  release_blocking: true
+  lifecycle_state: gap
+  gap_owner: AAASM-6269
+- id: J92
+  jira: AAASM-6270
+  name: Reconstruct a run forensically using receipt inspect/list and controlled replay
+  priority: P2
+  persona_track: Operator
+  surfaces:
+  - aa-cli
+  - aa-runtime
+  entry_point: cli
+  lanes:
+  - functional
+  browser_required: false
+  outcome: See AAASM-6270 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6172
+  lifecycle_state: gap
