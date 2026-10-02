@@ -44,7 +44,7 @@ use super::schema::{ReceiptEnvelope, WorkspaceBinding, RECEIPT_SCHEMA};
 use super::store::{ReceiptStore, StoreError};
 use super::text::ReceiptText;
 use super::validate::ReceiptDefect;
-use super::verify::{verify, SealVerdict};
+use super::verify::{verify, SealVerdict, Verification};
 
 /// Arguments for `aasm receipt inspect`.
 #[derive(clap::Args)]
@@ -59,6 +59,10 @@ pub struct InspectArgs {
     /// Emit machine-readable JSON instead of a human-readable report.
     #[arg(long)]
     pub json: bool,
+    /// Also print the replay-mode taxonomy and re-run the deterministic
+    /// seal/defect re-evaluation — the only replay mode this build supports.
+    #[arg(long)]
+    pub re_evaluate: bool,
 }
 
 /// Why `inspect` refused to render a receipt's body (Gate A).
@@ -211,7 +215,7 @@ pub fn inspect_report(args: &InspectArgs) -> (ExitCode, String) {
 
     // Gate A passed. Render — Gate B surfaces `verification.defects` as
     // findings rather than refusing.
-    render_report(&envelope, &verification.defects, args.json)
+    render_report(&envelope, &verification.defects, args.json, args.re_evaluate)
 }
 
 /// Dispatch `aasm receipt inspect`.
@@ -230,11 +234,54 @@ fn refusal_report(reason: &RefusalReason, json: bool) -> (ExitCode, String) {
     (ExitCode::FAILURE, output)
 }
 
-fn render_report(envelope: &ReceiptEnvelope, defects: &[ReceiptDefect], json: bool) -> (ExitCode, String) {
+/// The three-mode replay taxonomy, printed verbatim by `--re-evaluate` —
+/// documentation text, not a computed value, so it never drifts from what
+/// this build actually supports.
+const REPLAY_TAXONOMY: &str = "\
+replay taxonomy:
+  1. deterministic re-evaluation (SUPPORTED — this flag performs it): re-run the seal check and the truth-downgrade
+     defect rules over the stored body. A pure function of already-stored bytes; never reads the current wall clock,
+     so it is reproducible from the same file at any later time.
+  2. re-execution in a fresh environment (NOT SUPPORTED): the receipt stores only digests of the program, argv,
+     working directory, and credential names — never their values (see SpecBinding/CredentialNames) — so there is
+     nothing to re-execute from.
+  3. impossible/non-replayable external side effects (NOT SUPPORTED, by design, from a receipt alone): network calls,
+     database writes, processes started, and paths outside a workspace transaction's declared surface. See
+     `not_transactional` in the [workspace] section above, or NOT_TRANSACTIONAL in schema.rs.
+";
+
+fn seal_token(verdict: &SealVerdict) -> &'static str {
+    match verdict {
+        SealVerdict::Holds => "holds",
+        SealVerdict::Mismatch => "mismatch",
+        SealVerdict::Uncomputable { .. } => "uncomputable",
+    }
+}
+
+fn render_report(
+    envelope: &ReceiptEnvelope,
+    defects: &[ReceiptDefect],
+    json: bool,
+    re_evaluate: bool,
+) -> (ExitCode, String) {
     let output = if json {
-        json_report(envelope, defects).to_string()
+        let mut report = json_report(envelope, defects);
+        if re_evaluate {
+            let verification = verify(envelope);
+            report["re_evaluate"] = serde_json::json!({
+                "taxonomy": REPLAY_TAXONOMY,
+                "seal": seal_token(&verification.seal),
+                "defects": verification.defects.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            });
+        }
+        report.to_string()
     } else {
-        render_text(envelope, defects)
+        let mut out = render_text(envelope, defects);
+        if re_evaluate {
+            out.push('\n');
+            out.push_str(&render_re_evaluate(&verify(envelope)));
+        }
+        out
     };
     let code = if defects.is_empty() {
         ExitCode::SUCCESS
@@ -242,6 +289,30 @@ fn render_report(envelope: &ReceiptEnvelope, defects: &[ReceiptDefect], json: bo
         ExitCode::FAILURE
     };
     (code, output)
+}
+
+fn render_re_evaluate(verification: &Verification) -> String {
+    let mut out = String::new();
+    out.push_str(REPLAY_TAXONOMY);
+    out.push_str("\nre-evaluation:\n");
+    let (token, detail) = match &verification.seal {
+        SealVerdict::Holds => ("holds", None),
+        SealVerdict::Mismatch => ("mismatch", None),
+        SealVerdict::Uncomputable { detail } => ("uncomputable", Some(detail.clone())),
+    };
+    out.push_str(&format!(
+        "seal={token}{}\n",
+        detail.map(|d| format!(" ({d})")).unwrap_or_default()
+    ));
+    if verification.defects.is_empty() {
+        out.push_str("defects=none\n");
+    } else {
+        out.push_str("defects:\n");
+        for d in &verification.defects {
+            out.push_str(&format!("  - {d}\n"));
+        }
+    }
+    out
 }
 
 fn text_or_withheld(t: &ReceiptText) -> String {
