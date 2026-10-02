@@ -2417,6 +2417,66 @@ mod plan {
             }
         }
     }
+
+    #[cfg(test)]
+    mod planner_wiring_tests {
+        use super::*;
+        use aa_isolation::{BackendIdentity, Provenance};
+
+        /// Proves capability narrowing is load-bearing, independent of any
+        /// particular host's availability — the control this PR's own bug
+        /// report names: `aasm run --isolation auto --max-open-files 64` must
+        /// not select sandlock, because sandlock's `lower::resource` cannot
+        /// express `max_open_files` (`aa_isolation_sandlock::lower::unexpressible_limit`)
+        /// even though sandlock's *raw* `Resource` report is
+        /// `Enforce`/`Pre`/`Sync` and therefore `can_prevent()`s it. This is
+        /// exactly the gap `SelectedBackend::capabilities_for` closes:
+        /// without narrowing at the construction site, `evaluate_candidate`
+        /// would negotiate the raw report and accept sandlock for a
+        /// requirement it cannot actually enforce.
+        #[test]
+        fn narrowing_a_resource_ceiling_sandlock_cannot_express_disqualifies_it() {
+            let facts = aa_isolation_sandlock::host::HostFacts::for_test("/usr/bin/sandlock", "sandlock 0.8.6", None);
+            let probe = aa_isolation_sandlock::probe::ConfinementProbe {
+                filesystem_read: aa_isolation_sandlock::probe::Observation::Denied,
+                filesystem_write: aa_isolation_sandlock::probe::Observation::Denied,
+                process_ceiling: aa_isolation_sandlock::probe::Observation::Denied,
+                network_egress: aa_isolation_sandlock::probe::Observation::Denied,
+            };
+            let raw = aa_isolation_sandlock::capability::discover(&facts, &probe, &[]);
+
+            let requirement = ControlRequirement::prevent(CapabilityDomain::Resource).with_scope(
+                RequirementScope::Limits(aa_isolation::ResourceLimits {
+                    max_open_files: Some(64),
+                    ..aa_isolation::ResourceLimits::default()
+                }),
+            );
+            let spec = ExecutionSpec::new("probe", IdentityRef::root("probe")).with_requirement(requirement);
+            let identity = BackendIdentity {
+                id: "sandlock".to_string(),
+                version: "0".to_string(),
+                provenance: Provenance {
+                    source: "test".to_string(),
+                    license: "Apache-2.0".to_string(),
+                    modified: false,
+                },
+            };
+
+            // Control: the raw report is negotiate-eligible for this
+            // requirement — the mutation below only proves something if this
+            // holds.
+            assert!(
+                aa_isolation::negotiate(&spec, &identity, &raw, &|_, _| aa_isolation::Lowering::none()).is_ok(),
+                "raw capabilities must be negotiate-eligible for the control to mean anything"
+            );
+
+            let narrowed = aa_isolation_sandlock::capability::narrow_for(&raw, &spec);
+            assert!(
+                aa_isolation::negotiate(&spec, &identity, &narrowed, &|_, _| aa_isolation::Lowering::none()).is_err(),
+                "narrowing must make sandlock ineligible for a max_open_files ceiling it cannot express"
+            );
+        }
+    }
 }
 
 /// Stable string form of an [`aa_core::EnforcementMode`] used on the wire to
