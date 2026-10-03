@@ -1,0 +1,59 @@
+name: CLI Reference
+
+# AAASM-421: the `docs/cli/` reference is auto-generated from the live `clap`
+# command tree by `aasm docs export`. This job runs `aasm docs export --check`
+# on every PR so a change to a `clap` definition that forgets to regenerate the
+# committed reference fails the build instead of silently drifting.
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - "aa-cli/**"
+      - "docs/cli/**"
+      - ".github/workflows/cli-reference.yml"
+  push:
+    branches: [master]
+    paths:
+      - "aa-cli/**"
+      - "docs/cli/**"
+      - ".github/workflows/cli-reference.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: Verify docs/cli is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies (protoc, pkg-config, libssl-dev)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build aasm
+        run: cargo build -p aa-cli
+
+      - name: Verify CLI reference is current
+        # Non-zero exit (with the list of stale files) when a clap definition
+        # changed but `docs/cli/` was not regenerated. Fix locally with:
+        #   cargo run -p aa-cli -- docs export --format markdown --out docs/cli/
+        run: ./target/debug/aasm docs export --check --out docs/cli/
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
