@@ -820,9 +820,12 @@ No other recorded text in this ADR, or in ADR 0035, changes.
 
 ## Amendment (AAASM-6272): production sourcing for leases, egress and ancestry, and three defects it surfaces
 
-**Scope of this amendment: it replaces the §4/§"No lease sourcing from the policy
-schema"/§21's "ships inert" deferral language with the real policy-sourced design,
-and it records four fixes the design work found necessary — one a deliberate,
+**Scope of this amendment: it replaces the "No new policy DSL... deferred rather
+than ruled out" bullet in "What this ADR does not decide" above, and the "No lease
+sourcing from the policy schema... this amendment ships inert" bullets repeated in
+the AAASM-6163 and AAASM-6164 amendments' own "What this amendment does not decide"
+lists, with the real policy-sourced design below — and it records four fixes the
+design work found necessary — one a deliberate,
 owner-approved narrowing of this ADR's own §3 compatibility promise (D4), three
 ordinary defect fixes (D-b, D1, D2) the sourcing work forced into the light because
 it needed to reason about ancestry and lease identity for the first time against a
@@ -831,9 +834,10 @@ ADR 0035 stays `Proposed` — see "Sequencing: promotion, not yet" below.**
 
 ### Why "ships inert" was true, and what changes
 
-Every prior amendment to this ADR that touches lease sourcing (§4, and the "No lease
-sourcing from the policy schema" bullet repeated in the AAASM-6163/6164 amendments'
-"What this amendment does not decide" lists) says the same true thing: a real
+Every prior amendment to this ADR that touches lease sourcing — the top-level "No
+new policy DSL" bullet, and the "No lease sourcing from the policy schema" bullet
+repeated verbatim in the AAASM-6163 and AAASM-6164 amendments' own "What this
+amendment does not decide" lists — says the same true thing: a real
 `aasm run` constructs `IsolationPlan` with `leases: Vec::new()`, `Ancestry::Root`
 unconditionally, and `EgressContract::not_required()`, at all 7 call sites in
 `aa-cli/src/commands/run.rs`. `authority_gate`, the per-domain `ScopeOrder`
@@ -864,8 +868,8 @@ requirement from policy for a real launch. AAASM-6272 adds that sourcing path:
    — authoring against the pre-#2592 signature would need rework once it merges.
 
 None of this changes `authority_gate`'s, `negotiate`'s, or the egress/credential
-gates' own logic — it is exactly the sourcing path §4, §"No lease sourcing..." and
-the AAASM-6163/6164 "ships inert" bullets already said was deferred, now built.
+gates' own logic — it is exactly the sourcing path the bullets named above already
+said was deferred, now built.
 
 ### D4: closing the compatibility-residual escape hatch under a resolved parent — an owner-approved narrowing of §3
 
@@ -1032,6 +1036,12 @@ source of truth.
   correct route — re-deriving from the execution receipt — needs a `LeaseBinding`
   schema bump (`aa-cli/src/commands/execution_receipt/schema.rs` records only
   `lease_id`, a digest, `domain`, `derived_from_lease_id` and `inheritance_mode` — no
-  scope, expiry, or subject) that this ADR's own §6/§13 (additive-only reporting) and
-  ADR 0035's AAASM-6166 amendment deliberately avoided taking on here.
+  scope, expiry, or subject) that this ADR's own §6 — whose cross-reference note
+  explicitly scopes a receipt's `LeaseBinding` to "a lease's id and a digest of its
+  redaction-safe projection, never the lease's basis reason or its scope selectors"
+  — and ADR 0035's AAASM-6166 amendment (the receipt schema itself) deliberately
+  avoided taking on here. §13 is the same additive-only discipline applied to
+  `DomainAuthoritySummary`/`REPORT_SCHEMA`, not to the receipt — cited here only as
+  the sibling precedent for "additive, not a schema bump," not as a second source
+  that scoped the receipt.
 - **No ADR status change.** See "Sequencing: promotion, not yet" above.
