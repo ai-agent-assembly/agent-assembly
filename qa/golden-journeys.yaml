@@ -2153,8 +2153,23 @@ journeys:
   feature_refs:
   - AAASM-6161
   release_blocking: true
-  lifecycle_state: gap
-  gap_owner: AAASM-6260
+  lifecycle_state: partial
+  gap_owner: AAASM-6273
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::a_lease_unaware_child_under_a_resolved_parent_is_refused
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::a_parent_lease_not_yet_active_at_gate_time_refuses_the_child
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/attenuation.rs::concurrent_child_derivation_never_issues_a_child_after_the_revocation_is_recorded
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: 'AAASM-6272''s bug cluster (AAASM-6280/6281/6282) pinned each fix against the pre-fix behavior before it was corrected -- see each test''s own doc comment for the adversarial/positive-control pair. AAASM-6272 (D1/D2/D4) proved the attenuation-ceiling refusal logic correct through `resolve_boundary`-shaped fixtures with `Ancestry::Parent` constructed directly in the test harness -- real in-process gating, not a live cross-process handoff. The remaining gap is cross-process parent-authority handoff (a real supervisor process attesting a real child process''s resolved `ParentAuthority`), which AAASM-6273 owns as its own Story -- still `partial`, not `automated`, until that handoff exists.'
 - id: J83
   jira: AAASM-6261
   name: Enforce identity-bound, policy-governed egress through the network broker
