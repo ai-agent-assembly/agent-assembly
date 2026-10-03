@@ -8379,12 +8379,28 @@ mod tests {
     }
 
     /// AAASM-6038: `base_spec` projects `working_dir` off the bound command
-    /// exactly like `program`, `args` and `credentials` — but it is the one
-    /// field applied conditionally (`if let Some(dir) = working_dir`) rather
-    /// than passed straight into a builder call, which made it the field
-    /// most likely to be lost on the pre-fix builder chain.
-    /// AAASM-5706 found the equivalent gap for `spawn_and_wait`'s child
-    /// process; this is the confined path's analogous control.
+    /// exactly like `program`, `args` and `credentials`.
+    ///
+    /// **What this test does and does not prove** (AAASM-6269 AC3 follow-up):
+    /// this is a value-level assertion that today's projection is correct —
+    /// it does not reproduce a pre-`66662927d` failure, because `working_dir`
+    /// was already applied unconditionally before that commit too (via the
+    /// same `if let Some(dir) = command.get_current_dir())` shape, just
+    /// without the `BoundLaunchFields` destructure around it). The actual
+    /// defect AAASM-6038 closed was structural, not a value this test's
+    /// assertion can observe: a *future* field added to `ExecutionSpec`
+    /// with no corresponding consumption here would previously compile
+    /// clean and silently never reach a launch. That failure mode is
+    /// covered live by the `E0027` exhaustive-destructure guard in this
+    /// function's `BoundLaunchFields` (and its `aa_isolation`-side
+    /// counterpart, `spec::field_sync_tests`) — verified directly by
+    /// temporarily dropping a field from each destructure and observing
+    /// the build fail, then reverting; see AAASM-6269. A runtime `#[test]`
+    /// cannot exercise a compile-time-only protection, so this test's role
+    /// is narrower: pin the currently-correct value, not stand in for the
+    /// structural guard. AAASM-5706 found the equivalent gap for
+    /// `spawn_and_wait`'s child process; this is the confined path's
+    /// analogous control.
     #[test]
     fn the_execution_spec_carries_the_working_directory() {
         let dir = tempfile::tempdir().expect("tempdir");

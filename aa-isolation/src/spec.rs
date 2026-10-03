@@ -451,3 +451,44 @@ impl ExecutionSpec {
         self.requirements.iter().filter(|r| r.posture().refuses_on_failure())
     }
 }
+
+#[cfg(test)]
+mod field_sync_tests {
+    use super::*;
+
+    /// AAASM-6269 AC2: `aa-cli`'s `base_spec` projection guards against
+    /// silently dropping a field it already knows about (AAASM-6038's
+    /// `BoundLaunchFields` exhaustive destructure, `E0027`), but that guard
+    /// lives entirely in `aa-cli` and has no visibility into `ExecutionSpec`'s
+    /// own *private* field list here in `aa_isolation` — a field added to
+    /// this struct without a corresponding `aa-cli` projection field would
+    /// compile cleanly on both sides and simply never reach a launch.
+    ///
+    /// This test closes that specific gap from the side that can actually see
+    /// it: `ExecutionSpec`'s fields are private to this crate, so only code
+    /// here can destructure them exhaustively. Adding a field to
+    /// `ExecutionSpec` without adding the matching arm below is `E0027`,
+    /// which fails *this* crate's build — forcing whoever adds the field to
+    /// notice this test and, by extension, to go check whether `aa-cli`'s
+    /// `base_spec` needs the same field. It does not by itself guarantee
+    /// `aa-cli` was updated correctly; it guarantees the omission cannot pass
+    /// silently in either crate.
+    #[test]
+    fn every_execution_spec_field_is_named_here_so_a_new_one_cannot_pass_unnoticed() {
+        let spec = ExecutionSpec::new("prog", IdentityRef::root("agent"));
+        let ExecutionSpec {
+            program,
+            args,
+            working_dir,
+            identity,
+            requirements,
+            credentials,
+            leases,
+        } = spec;
+        // Nothing to assert beyond the destructure itself compiling — the
+        // protection is `E0027` firing on a field added above but not named
+        // here, not a runtime check. The touch below only silences
+        // "unused variable" for an intentionally un-asserted destructure.
+        let _ = (program, args, working_dir, identity, requirements, credentials, leases);
+    }
+}
