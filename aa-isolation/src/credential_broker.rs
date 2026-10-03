@@ -47,7 +47,7 @@
 //! policy must be widened deliberately, the same discipline
 //! [`crate::egress::RangePolicy::default`] already holds for restricted ranges.
 //!
-//! # Mode 2 has vocabulary, not a mechanism
+//! # Mode 2 has vocabulary, not a mechanism — and so, today, does Mode 3's refusal
 //!
 //! [`BrokerageMode::EphemeralScopedCredential`] and
 //! [`RequiredMode::RunBoundEphemeralOnly`] exist so a future provider can be
@@ -58,6 +58,15 @@
 //! [`check_required_mode`] refuses, rather than silently passing, when a
 //! contract requires [`RequiredMode::RunBoundEphemeralOnly`] and no reported
 //! service offers it.
+//!
+//! The same is true, as of AAASM-6174's live-verification campaign, of
+//! [`BrokerageMode::RawInjectionFallback`]: no production code path in this
+//! repository constructs it today — `aa-cli`'s
+//! `run_credential_broker::report_for_launch` only ever emits
+//! [`BrokerageMode::BrokerPerformsRequest`] or no service at all, so
+//! [`check_raw_fallback`]'s refuse-on-`RawInjectionFallback` branch (tested
+//! directly against a hand-constructed [`CredentialBrokerReport`] in this
+//! module's own tests) has no real launch to refuse yet either.
 //!
 //! # What this module defers
 //!

@@ -1205,6 +1205,25 @@ mod plan {
             // nine read `not_derived`, which is what they read before this
             // ticket and is far more benign than the truth.
             let Some(backend) = self.backend.as_mut() else {
+                // AAASM-6262: `credential_brokerage` must be attached on this
+                // arm too, or `withheld_from_isolation_report` (what the
+                // unconfined spawn path reads to decide which ambient names
+                // to `env_remove` from the real child) reads this report's
+                // default empty list and never strips a withheld provider
+                // key from the one launch shape every default `aasm run`
+                // actually takes -- `bind`'s `credentials` posture already
+                // says the name was removed, but nothing downstream actually
+                // removed it from the real child's environment. See
+                // `report_for_launch`'s other call sites below in this same
+                // function for the identical construction.
+                let credential_broker = crate::commands::run_credential_broker::report_for_launch(
+                    network.endpoint(),
+                    network.no_proxy(),
+                    parse_llm_only_env(),
+                    &mitm_hosts_env(),
+                    &crate::commands::run_credential_broker::provider_key_hosts_env(),
+                    network_fail_open_env(),
+                );
                 let mut report = IsolationReport::no_boundary(
                     session,
                     identity_ref,
@@ -1215,6 +1234,7 @@ mod plan {
                 if let Some(lowering) = &self.lowering {
                     report = report.with_policy(lowering);
                 }
+                report = report.with_credential_brokerage(credential_broker.services().to_vec());
                 report = self.with_selection(report);
                 return (Some(base), report, Boundary::Absent);
             };
@@ -8379,12 +8399,28 @@ mod tests {
     }
 
     /// AAASM-6038: `base_spec` projects `working_dir` off the bound command
-    /// exactly like `program`, `args` and `credentials` — but it is the one
-    /// field applied conditionally (`if let Some(dir) = working_dir`) rather
-    /// than passed straight into a builder call, which made it the field
-    /// most likely to be lost on the pre-fix builder chain.
-    /// AAASM-5706 found the equivalent gap for `spawn_and_wait`'s child
-    /// process; this is the confined path's analogous control.
+    /// exactly like `program`, `args` and `credentials`.
+    ///
+    /// **What this test does and does not prove** (AAASM-6269 AC3 follow-up):
+    /// this is a value-level assertion that today's projection is correct —
+    /// it does not reproduce a pre-`66662927d` failure, because `working_dir`
+    /// was already applied unconditionally before that commit too (via the
+    /// same `if let Some(dir) = command.get_current_dir())` shape, just
+    /// without the `BoundLaunchFields` destructure around it). The actual
+    /// defect AAASM-6038 closed was structural, not a value this test's
+    /// assertion can observe: a *future* field added to `ExecutionSpec`
+    /// with no corresponding consumption here would previously compile
+    /// clean and silently never reach a launch. That failure mode is
+    /// covered live by the `E0027` exhaustive-destructure guard in this
+    /// function's `BoundLaunchFields` (and its `aa_isolation`-side
+    /// counterpart, `spec::field_sync_tests`) — verified directly by
+    /// temporarily dropping a field from each destructure and observing
+    /// the build fail, then reverting; see AAASM-6269. A runtime `#[test]`
+    /// cannot exercise a compile-time-only protection, so this test's role
+    /// is narrower: pin the currently-correct value, not stand in for the
+    /// structural guard. AAASM-5706 found the equivalent gap for
+    /// `spawn_and_wait`'s child process; this is the confined path's
+    /// analogous control.
     #[test]
     fn the_execution_spec_carries_the_working_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -8762,6 +8798,182 @@ mod tests {
         assert!(
             !output.contains("workspace transaction"),
             "a preview without --workspace-tx must not mention a transaction: {output}"
+        );
+    }
+
+    /// Adapter shaped like a real one that does NOT strip the operator's
+    /// provider key itself — unlike [`StubEnvContributing`], whose own
+    /// `env_remove("ANTHROPIC_API_KEY")` would make a withholding test pass
+    /// for the wrong reason. The credential broker is what must withhold it
+    /// here, not the adapter.
+    struct StubKeyPassthrough;
+
+    #[async_trait]
+    impl DevToolAdapter for StubKeyPassthrough {
+        fn detect(&self) -> Option<DevToolInfo> {
+            Some(DevToolInfo {
+                kind: DevToolKind::ClaudeCode,
+                version: Some("1.2.3".into()),
+                install_path: PathBuf::from("/usr/local/bin/claude"),
+                governance_level: GovernanceLevel::L2Enforce,
+                supports_mcp: true,
+                supports_managed_settings: true,
+            })
+        }
+        async fn generate_managed_settings(&self, _p: &PolicyDocument) -> Result<String, AdapterError> {
+            Ok("{}".into())
+        }
+        async fn apply_settings(&self, _s: &str) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn build_launch_command(
+            &self,
+            args: &[String],
+            _agent: &str,
+            _team: Option<&str>,
+            _proxy: Option<&str>,
+        ) -> Result<std::process::Command, AdapterError> {
+            let mut cmd = std::process::Command::new("claude-real-binary");
+            cmd.args(args);
+            Ok(cmd)
+        }
+        async fn list_mcp_servers(&self) -> Result<Vec<McpServerInfo>, AdapterError> {
+            Ok(vec![])
+        }
+        async fn apply_mcp_governance(&self, _a: &[String], _d: &[String]) -> Result<(), AdapterError> {
+            Ok(())
+        }
+        fn governance_level(&self) -> GovernanceLevel {
+            GovernanceLevel::L2Enforce
+        }
+    }
+
+    /// AAASM-6164/AAASM-6262: the real chain `report_for_launch` ->
+    /// `withheld_names` -> `effective_child_env` really does withhold a
+    /// brokered provider credential from the bound launch's environment,
+    /// and — the mandatory unscoped positive control — the identical
+    /// ambient key reaches the child when the broker reports no brokered
+    /// service for this launch at all. The only variable that moves between
+    /// the two arms is whether `AA_PROXY_PROVIDER_KEYS` configures the host.
+    ///
+    /// Security-handling: every assertion below is on a *name*
+    /// (`"ANTHROPIC_API_KEY"`), never on a value, and the placeholder
+    /// ambient value is never read back or formatted — only its key's
+    /// presence/absence is.
+    #[test]
+    fn a_brokered_provider_credentials_ambient_name_is_withheld_from_the_bound_launch_environment() {
+        let _guard = crate::test_support::env_guard();
+        let prior_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prior_provider_keys = std::env::var("AA_PROXY_PROVIDER_KEYS").ok();
+        let prior_llm_only = std::env::var("AA_PROXY_LLM_ONLY").ok();
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-placeholder-not-real");
+        std::env::remove_var("AA_PROXY_LLM_ONLY"); // deterministic default: true
+
+        let adapter = StubKeyPassthrough;
+        let args = run_args("claude");
+
+        // Adversarial arm: the broker is configured for this host, so the
+        // ambient key must be withheld.
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "api.anthropic.com=sk-test-placeholder-not-real",
+        );
+        let mut resolved = preview_plan(&adapter, &args);
+        resolved.set_endpoint("127.0.0.1:9".to_string());
+        let bound = resolved.bind(&stub_handle(None));
+        let credentials = bound.spec().expect("spec").credentials().clone();
+
+        // Control arm: identical launch, identical ambient key, no provider
+        // configured for the broker at all.
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        let mut control_resolved = preview_plan(&adapter, &args);
+        control_resolved.set_endpoint("127.0.0.1:9".to_string());
+        let control_bound = control_resolved.bind(&stub_handle(None));
+        let control_credentials = control_bound.spec().expect("spec").credentials().clone();
+
+        match prior_key {
+            Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match prior_provider_keys {
+            Some(v) => std::env::set_var("AA_PROXY_PROVIDER_KEYS", v),
+            None => std::env::remove_var("AA_PROXY_PROVIDER_KEYS"),
+        }
+        match prior_llm_only {
+            Some(v) => std::env::set_var("AA_PROXY_LLM_ONLY", v),
+            None => std::env::remove_var("AA_PROXY_LLM_ONLY"),
+        }
+
+        assert!(
+            credentials.removed.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a brokered provider's ambient key must be recorded as removed"
+        );
+        assert!(
+            !credentials.ambient_unremoved.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "a withheld key must not also be reported as reaching the child"
+        );
+        assert!(
+            control_credentials
+                .ambient_unremoved
+                .contains(&"ANTHROPIC_API_KEY".to_string()),
+            "positive control: without a configured broker for this host, the identical ambient \
+             key must reach the child, or the withholding above proves nothing about the broker \
+             specifically"
+        );
+        assert!(
+            !control_credentials.removed.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "positive control: the unconfigured arm must not independently remove the key"
+        );
+    }
+
+    /// AAASM-6262 regression: the real *unconfined* spawn path
+    /// (`--isolation none`, the default and the overwhelming majority of
+    /// real invocations) must withhold the same brokered provider
+    /// credential `withheld_from_isolation_report` is supposed to report —
+    /// before this fix, `IsolationReport::no_boundary` never attached
+    /// `credential_brokerage`, so this list was always empty on this path
+    /// and the real spawned child still inherited the operator's key from
+    /// the ambient process environment despite `credentials.removed`
+    /// already (correctly) saying it was removed.
+    #[test]
+    fn the_unconfined_launch_path_withholds_the_brokered_provider_credential_it_reports_as_removed() {
+        let _guard = crate::test_support::env_guard();
+        let prior_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let prior_provider_keys = std::env::var("AA_PROXY_PROVIDER_KEYS").ok();
+        let prior_llm_only = std::env::var("AA_PROXY_LLM_ONLY").ok();
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-placeholder-not-real");
+        std::env::remove_var("AA_PROXY_LLM_ONLY");
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "api.anthropic.com=sk-test-placeholder-not-real",
+        );
+
+        let adapter = StubKeyPassthrough;
+        let args = run_args("claude");
+        let mut resolved = preview_plan(&adapter, &args);
+        resolved.set_endpoint("127.0.0.1:9".to_string());
+        let bound = resolved.bind(&stub_handle(None));
+        let withheld = withheld_from_isolation_report(bound.isolation());
+
+        match prior_key {
+            Some(v) => std::env::set_var("ANTHROPIC_API_KEY", v),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match prior_provider_keys {
+            Some(v) => std::env::set_var("AA_PROXY_PROVIDER_KEYS", v),
+            None => std::env::remove_var("AA_PROXY_PROVIDER_KEYS"),
+        }
+        match prior_llm_only {
+            Some(v) => std::env::set_var("AA_PROXY_LLM_ONLY", v),
+            None => std::env::remove_var("AA_PROXY_LLM_ONLY"),
+        }
+
+        assert!(
+            withheld.contains(&"ANTHROPIC_API_KEY".to_string()),
+            "the unconfined spawn path's own withheld-name list (what it actually passes to \
+             spawn_and_wait's env_remove) must name the brokered provider key the bound \
+             launch's own credential posture already reports as removed, or the real child \
+             process still inherits it from the ambient environment despite the report"
         );
     }
 }
