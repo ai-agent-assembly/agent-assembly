@@ -58,11 +58,7 @@ fn egress_witness_requires_an_authority_witness_from_the_same_spec() {
     let spec = base_spec()
         .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(host_scope.clone()))
         .with_lease(lease_for(CapabilityDomain::NetworkEgress, host_scope.clone(), 2_000))
-        .with_lease(lease_for(
-            CapabilityDomain::NameResolution,
-            RequirementScope::Whole,
-            2_000,
-        ));
+        .with_lease(lease_for(CapabilityDomain::NameResolution, host_scope.clone(), 2_000));
 
     let witness = authority_gate(&spec, &Ancestry::Root, t(1_500)).expect("valid lease admits at t(1_500)");
     let authority = EgressAuthority::from_gated_spec(&spec, &witness);
