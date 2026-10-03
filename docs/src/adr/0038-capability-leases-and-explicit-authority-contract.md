@@ -815,3 +815,233 @@ unchanged as the historical record of what was attempted. This amendment also na
 no claim about `/proc/<pid>/mem` (still genuinely `ATTACH`-gated and ancestry-direction
 restricted by Yama) — only about `environ` and the `PTRACE_MODE_READ`-class entries.
 No other recorded text in this ADR, or in ADR 0035, changes.
+
+---
+
+## Amendment (AAASM-6272): production sourcing for leases, egress and ancestry, and three defects it surfaces
+
+**Scope of this amendment: it replaces the "No new policy DSL... deferred rather
+than ruled out" bullet in "What this ADR does not decide" above, and the "No lease
+sourcing from the policy schema... this amendment ships inert" bullets repeated in
+the AAASM-6163 and AAASM-6164 amendments' own "What this amendment does not decide"
+lists, with the real policy-sourced design below — and it records four fixes the
+design work found necessary — one a deliberate,
+owner-approved narrowing of this ADR's own §3 compatibility promise (D4), three
+ordinary defect fixes (D-b, D1, D2) the sourcing work forced into the light because
+it needed to reason about ancestry and lease identity for the first time against a
+real launch. Parent Epic AAASM-6159, Story AAASM-6272. Status of this ADR and of
+ADR 0035 stays `Proposed` — see "Sequencing: promotion, not yet" below.**
+
+### Why "ships inert" was true, and what changes
+
+Every prior amendment to this ADR that touches lease sourcing — the top-level "No
+new policy DSL" bullet, and the "No lease sourcing from the policy schema" bullet
+repeated verbatim in the AAASM-6163 and AAASM-6164 amendments' own "What this
+amendment does not decide" lists — says the same true thing: a real
+`aasm run` constructs `IsolationPlan` with `leases: Vec::new()`, `Ancestry::Root`
+unconditionally, and `EgressContract::not_required()`, at all 7 call sites in
+`aa-cli/src/commands/run.rs`. `authority_gate`, the per-domain `ScopeOrder`
+comparators, `Ancestry`/`ParentAuthority`, and the egress-contract types are all real
+and exercised by this crate's own tests — but nothing an operator does can reach any
+of them, because nothing sources a lease, a resolved ancestry, or an egress
+requirement from policy for a real launch. AAASM-6272 adds that sourcing path:
+
+1. **`authority.leases`**, a new policy node across `aa-policy`'s raw/document/
+   canonical/validator layers and `schemas/policy/v1`, lets a policy author declare
+   capability leases for a run.
+2. **A new `aa-isolation` module** — deliberately **not** folded into `lower_policy`
+   — lowers the canonical node into `Vec<CapabilityLease>`. `lower_policy`'s own
+   documentation states it is deterministic/pure over restriction nodes only; a
+   lease carries a lifetime and an issuer (`LeaseBasis`), neither of which is a
+   restriction-node concept, so giving it its own lowering path keeps `lower_policy`'s
+   existing purity contract intact rather than widening it to a case it was never
+   designed for.
+3. **The 7 `IsolationPlan` call sites in `run.rs` collapse onto one resolved
+   authority sub-struct**, populated from that lowering and from ancestry
+   resolution, mirroring the existing `resource_requirements` pattern already used
+   in the same function for an analogous resolved sub-struct.
+4. **An egress-contract policy node** lowers to `EgressContract::broker_required()`,
+   replacing the hardcoded `EgressContract::not_required()` the AAASM-6163 amendment's
+   own "ships inert" bullet already named. This node is sequenced to land **after**
+   PR #2592 (AAASM-6261, open at the time of this amendment) merges, since that PR
+   changes `check_name_resolution_grant`'s signature in `aa-isolation/src/egress.rs`
+   — authoring against the pre-#2592 signature would need rework once it merges.
+
+None of this changes `authority_gate`'s, `negotiate`'s, or the egress/credential
+gates' own logic — it is exactly the sourcing path the bullets named above already
+said was deferred, now built.
+
+### D4: closing the compatibility-residual escape hatch under a resolved parent — an owner-approved narrowing of §3
+
+§3 above states the rc.7 compatibility rule precisely: a spec with no lease at all is
+read, spec-wide, under the pre-lease contract (`AuthorityState::CompatibilityResidual`,
+which `authority_gate`'s `covered()` treats as granted). That rule was written, and is
+still correct, for a **root** launch with no ancestry claim. Building AAASM-6272's
+sourcing path exposed a case §3 did not anticipate: `attenuation_applies` —
+```rust
+fn attenuation_applies(spec: &ExecutionSpec, _ancestry: &Ancestry) -> bool {
+    !spec.identity().lineage.is_empty() && EffectiveAuthority::is_lease_aware(spec)
+}
+```
+— requires **both** non-empty lineage **and** `is_lease_aware(spec)` before any
+ancestry check runs at all. A child launch with a genuinely resolved
+`Ancestry::Parent` but **zero leases of its own** fails the second conjunct, so
+`attenuation_applies` returns `false` **without ever inspecting `ancestry`**, and the
+child is read under the same spec-wide compatibility residual a root launch gets —
+granted in full, with no reference to the parent's ceiling whatsoever. A lease-aware
+parent's attenuation is trivially shed by a child that simply declines to carry any
+lease itself, while still claiming to be that parent's descendant via non-empty
+lineage.
+
+This was escalated to the product owner as decision D4, because closing it is a
+**narrowing of this ADR's own §3 promise**, not a bug fix under the rule as written:
+**decision — close it.** A child launch under a *resolved* `Ancestry::Parent` is now
+required to be lease-aware itself. Zero leases under a resolved parent refuses, via a
+new, additive `AuthorityRefusal` variant (non-breaking: the enum is `#[non_exhaustive]`)
+— it does not fall through to `CompatibilityResidual`. The compatibility rule in §3 is
+otherwise unchanged: it still applies in full to a root launch, or to a launch whose
+ancestry could not be resolved at all (`Ancestry::UnresolvedParent`, already refused
+on a different ground — `AuthorityRefusal::AncestryUnresolved`).
+
+**Effect on the two tests §3 names.** Both `adding_any_lease_switches_the_whole_spec_
+out_of_the_legacy_path` and `legacy_spec_with_no_leases_passes_on_policy_grants_alone`
+call `authority_gate` under `Ancestry::Root` in every assertion they make today.
+`adding_any_lease_switches_the_whole_spec_out_of_the_legacy_path` is **structurally
+unaffected** by this narrowing — it is, and remains, a statement about root/no-parent
+launches only, and D4 has nothing to say about that case.
+`legacy_spec_with_no_leases_passes_on_policy_grants_alone` **remains true exactly as
+written** — it is still a correct statement about the root case — but it is now
+incomplete as the sole regression pin for the compatibility residual: it never
+exercised a resolved parent, so it could not have caught this escape hatch in the
+first place. This amendment's implementation adds a **new companion test** asserting
+the opposite outcome — refusal — for the identical zero-lease spec under a resolved
+`Ancestry::Parent`, which is the test that actually pins D4's closure.
+
+**D1, the same function, a distinct defect.** `attenuation_applies`'s second
+parameter is named `_ancestry` and the body never reads it — this is independent of
+D4's `is_lease_aware` conjunct, and is the mechanism that makes D4 reachable in the
+first place: because `ancestry` is never consulted, a resolved `Ancestry::Parent` and
+an unresolved claim are indistinguishable to this predicate, and the only reason
+`authority_gate`'s separate match on `ancestry` still fails closed for an unresolved
+parent today is that it happens to run its own ancestry match *after*
+`attenuation_applies` already decided, using only `lineage`/`is_lease_aware`. D1
+(AAASM-6280) and D4 (AAASM-6282) are tracked as two Jira bug subtasks under
+AAASM-6272 because they are two distinct, independently testable claims, but both
+fixes land at this one call site, and fixing D1 (make `attenuation_applies` actually
+read `ancestry`) is what gives D4's fix somewhere to hook its new refusal.
+
+### D2 (AAASM-6281): parent lease validity is unchecked on the ancestry path
+
+`check_attenuation` (the function `authority_gate` calls once a resolved parent
+applies) compares a child lease's scope, expiry and limits against its parent's, and
+catches a parent revoked *after* the child's derivation via
+`DelegationProvenance::parent_generation`. It never calls `parent_lease.validate_at
+(now)` — so a parent lease that has since expired, or whose `not_before` the current
+`now` has not yet reached, passes silently as long as the child's own fields and
+recorded generation stay consistent. `authority_gate`'s main loop already validates
+the **child's** own lease at `now` for the ordinary `AuthorityState::Leased` case;
+this amendment extends the identical validity check to the **parent's** lease on the
+ancestry path, so a child cannot continue deriving authority from a parent whose own
+lease has simply lapsed.
+
+### D-b (AAASM-6279): a lease's subject is never checked against the launch's actual identity
+
+Separately from the ancestry path, `aasm host --lease-file` (`aa-cli/src/commands/
+host.rs`) builds its `ExecutionSpec` with a fixed `identity = IdentityRef::root
+("aasm-host-operator")` and loads a lease whose `subject_agent_id` comes from the
+lease file — but nothing compares the two. Neither `authority_gate`'s `covered()`
+nor anything else in `aa-isolation` checks a lease's own subject against the spec it
+is attached to. A lease issued for one subject is therefore usable to authorize a
+launch under a different claimed identity, reachable today via `aasm host
+--lease-file`. This amendment fixes that at the gate: a lease whose subject does not
+match the spec's own identity is refused.
+
+### D-a: `covered()`'s scope check diverges from the egress/name-resolution checks, and why
+
+`authority_gate`'s internal `covered()` helper and `check_egress_grant`/
+`check_name_resolution_grant` (`aa-isolation/src/egress.rs`) today all call the same
+comparator — `CapabilityLease::covers`, whose own doc comment states it is
+"deliberately coarse": `Whole` covers only `Whole`, and a `Selectors` list covers
+another only when every requested selector is present **verbatim**. That is correct
+and unchanged for `check_egress_grant`/`check_name_resolution_grant`, which this
+amendment leaves exactly as they are — AAASM-6261/#2592's own stated security
+rationale for egress and name-resolution grants is that a narrower-but-not-identical
+match is a different, riskier question than "does this lease's exact scope cover
+this exact requirement," and that strictness is deliberate there, not an oversight to
+fix.
+
+`authority_gate`'s own `covered()` is a different question: once a policy-sourced
+lease is lowered from an authored node (rather than hand-built verbatim to match a
+requirement, as every existing fixture does), a lease that is legitimately broader —
+`whole: true`, or a selector set that contains a narrower lowered requirement without
+being identical to it — should still be able to cover that requirement. §7's real
+per-domain `ScopeOrder` comparators already answer exactly this "is X narrower than or
+equal to Y" question for `check_attenuation`'s parent/child comparison; `covered()`
+reuses the same comparator rather than inventing a second one. Concretely, `covered()`
+changes from
+
+```rust
+AuthorityState::Leased(lease) => {
+    if lease.covers(scope) { Ok(()) } else { Err(..LeaseScopeInsufficient..) }
+}
+```
+
+to accepting the **union** of the existing strict check and the `ScopeOrder`-based
+one — `lease.covers(scope) || matches!(scope_order::order_for(domain).compare(lease.
+scope(), scope), ScopeOrdering::Narrower | ScopeOrdering::Equal)` — rather than a
+straight replacement. A straight replacement would regress today's passing case:
+`ProcessCreation`, `Ipc` and `WorkspaceTransaction` get `UndefinedScopeOrder` (§7),
+whose `compare` returns `Incomparable` **unconditionally**, including for `Whole`
+vs. `Whole` — exactly the shape `aasm host --lease-file` uses today via
+`HostCapabilityContract`. Swapping `covers()` out entirely would make that currently-
+working, verbatim-matching case refuse. The union preserves every case `covers()`
+already accepts and additionally accepts a narrower-or-equal match on a domain with a
+real comparator — so `covered()` and the egress/name-resolution checks are allowed to
+diverge: they are answering different questions (a lease's scope *strictly matching*
+a requirement, versus a lease's scope *containing* one), not the same question
+answered inconsistently.
+
+### Sequencing: promotion, not yet
+
+This amendment's design — together with ADR 0035, which this amendment does not
+otherwise edit — is accepted by the product owner to be **promoted to `Accepted`
+together**, as a pair, once ready. "Ready" is not "this amendment is written": per
+this Epic's own standing review discipline (see the AAASM-6160/6161/6163/6164/6171
+amendments above, each of which earned its place by reading the merged code rather
+than the design sketch), both ADRs stay `Proposed` until AAASM-6272's implementation
+lands and demonstrates `authority_gate`/`egress_gate` genuinely refusing a real
+authored workload — not merely passing this crate's own test fixtures. AAASM-6272's
+own `Verify ...` subtask records that demonstration; the Jira tracking note for the
+joint promotion lives on that Story rather than being restated here as a second
+source of truth.
+
+### What this amendment does not decide
+
+- **No change to `authority_gate`'s, `negotiate`'s, or `egress_gate`'s own control-
+  flow** beyond the four fixes (D4, D1, D2, D-a) and the sourcing path described
+  above — no new gate, no new ordering between `authority_gate` and `negotiate`.
+- **No crypto identity binding.** `IdentityRef` stays asserted-only; D-b fixes a
+  *consistency* check (does the lease's claimed subject match the spec's claimed
+  identity), not an *authentication* one — AAASM-5533 still owns verification.
+- **No change to `aa-isolation/src/descendant.rs`** — unaffected by any fix here, for
+  the same reason the AAASM-6161 amendment above gave for leaving it alone.
+- **No cross-process parent-authority handoff.** `ParentAuthority::from_gated_spec`
+  remains constructible only in-process, from a spec and a witness minted by the same
+  process's `authority_gate` call. A real multi-process sub-agent tree's attenuation
+  guarantee therefore stays partial after this amendment — tracked separately as its
+  own Jira Story (AAASM-6273) rather than folded into this amendment's scope, because
+  every route considered (serializing `ParentAuthority` directly; a
+  `--parent-authority-file` flag analogous to `aasm host --lease-file`) reopens the
+  exact forgery hole witness-gating exists to close, and the one architecturally
+  correct route — re-deriving from the execution receipt — needs a `LeaseBinding`
+  schema bump (`aa-cli/src/commands/execution_receipt/schema.rs` records only
+  `lease_id`, a digest, `domain`, `derived_from_lease_id` and `inheritance_mode` — no
+  scope, expiry, or subject) that this ADR's own §6 — whose cross-reference note
+  explicitly scopes a receipt's `LeaseBinding` to "a lease's id and a digest of its
+  redaction-safe projection, never the lease's basis reason or its scope selectors"
+  — and ADR 0035's AAASM-6166 amendment (the receipt schema itself) deliberately
+  avoided taking on here. §13 is the same additive-only discipline applied to
+  `DomainAuthoritySummary`/`REPORT_SCHEMA`, not to the receipt — cited here only as
+  the sibling precedent for "additive, not a schema bump," not as a second source
+  that scoped the receipt.
+- **No ADR status change.** See "Sequencing: promotion, not yet" above.
