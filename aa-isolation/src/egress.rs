@@ -686,6 +686,9 @@ pub enum EgressRefusal {
     /// A grant exists for [`CapabilityDomain::NetworkEgress`] but does not
     /// cover the requested scope.
     EgressScopeNotCoveredByGrant,
+    /// A grant exists for [`CapabilityDomain::NameResolution`] but does not
+    /// cover the requested name(s) (AAASM-6174/D2).
+    NameResolutionScopeNotCoveredByGrant,
     /// A selector in the requested scope is not a grammar this crate
     /// understands.
     SelectorGrammarUninterpretable,
@@ -706,7 +709,9 @@ impl EgressRefusal {
     /// exactly one.
     pub fn domain(&self) -> Option<CapabilityDomain> {
         match self {
-            Self::NoNameResolutionGrant => Some(CapabilityDomain::NameResolution),
+            Self::NoNameResolutionGrant | Self::NameResolutionScopeNotCoveredByGrant => {
+                Some(CapabilityDomain::NameResolution)
+            }
             Self::BrokerRequiredButUnavailable { .. }
             | Self::BrokerRequiredButFailsOpen { .. }
             | Self::MediationDepthInsufficient { .. }
@@ -766,6 +771,12 @@ impl core::fmt::Display for EgressRefusal {
                 write!(
                     f,
                     "an egress grant exists for this run but does not cover the requested destination"
+                )
+            }
+            Self::NameResolutionScopeNotCoveredByGrant => {
+                write!(
+                    f,
+                    "a name-resolution grant exists for this run but does not cover the requested name"
                 )
             }
             Self::SelectorGrammarUninterpretable => {
@@ -909,16 +920,35 @@ pub fn check_egress_grant(
     }
 }
 
-/// Whether `authority` grants [`CapabilityDomain::NameResolution`], when
-/// `needs_resolution` is true. A no-op (`Ok`) when it is false — a literal
-/// destination needs no name-resolution grant at all.
-pub fn check_name_resolution_grant(authority: &EgressAuthority, needs_resolution: bool) -> Result<(), EgressRefusal> {
+/// Whether `authority` grants [`CapabilityDomain::NameResolution`] for
+/// `requested_names`, when `needs_resolution` is true. A no-op (`Ok`) when it
+/// is false — a literal destination needs no name-resolution grant at all.
+///
+/// AAASM-6174/D2: a [`AuthorityState::Leased`] grant is checked against
+/// `requested_names` via [`CapabilityLease::covers`] — mirroring
+/// [`check_egress_grant`] immediately above — rather than admitting any
+/// NameResolution lease for any name. This module's own documentation on
+/// [`egress_gate`] is explicit that "a lookup alone can exfiltrate with no
+/// egress connection at all"; admitting an unscoped lease for a scoped
+/// request would leave that exact exfiltration path unenforced.
+pub fn check_name_resolution_grant(
+    authority: &EgressAuthority,
+    needs_resolution: bool,
+    requested_names: &RequirementScope,
+) -> Result<(), EgressRefusal> {
     if !needs_resolution {
         return Ok(());
     }
     match authority.name_resolution_state() {
         AuthorityState::Denied => Err(EgressRefusal::NoNameResolutionGrant),
-        AuthorityState::CompatibilityResidual | AuthorityState::Leased(_) => Ok(()),
+        AuthorityState::CompatibilityResidual => Ok(()),
+        AuthorityState::Leased(lease) => {
+            if lease.covers(requested_names) {
+                Ok(())
+            } else {
+                Err(EgressRefusal::NameResolutionScopeNotCoveredByGrant)
+            }
+        }
     }
 }
 
@@ -979,6 +1009,7 @@ pub fn egress_gate(
     check_egress_grant(authority, requested_scope)?;
 
     let mut needs_resolution = false;
+    let mut name_selectors: Vec<String> = Vec::new();
     if let RequirementScope::Selectors(selectors) = requested_scope {
         for raw in selectors {
             let host = permitted_selector(raw).unwrap_or(raw);
@@ -999,12 +1030,19 @@ pub fn egress_gate(
                         });
                     }
                 }
-                DestinationClass::Name(_) => needs_resolution = true,
+                DestinationClass::Name(_) => {
+                    needs_resolution = true;
+                    name_selectors.push(raw.clone());
+                }
                 DestinationClass::RoutableAddress(_) => {}
             }
         }
     }
-    check_name_resolution_grant(authority, needs_resolution)?;
+    check_name_resolution_grant(
+        authority,
+        needs_resolution,
+        &RequirementScope::Selectors(name_selectors),
+    )?;
     check_ceilings(contract.ceilings(), broker)?;
 
     Ok(EgressWitness(()))
@@ -1121,7 +1159,7 @@ mod tests {
         let spec = base_spec()
             .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()))
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, scope.clone()));
         let authority = egress_authority_for(&spec);
         let contract = EgressContract::broker_required();
         let broker = available_broker();
@@ -1149,7 +1187,7 @@ mod tests {
         let spec = base_spec()
             .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(granted.clone()))
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, granted.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, granted.clone()));
         let authority = egress_authority_for(&spec);
         let contract = EgressContract::broker_required();
         let broker = available_broker();
@@ -1359,7 +1397,7 @@ mod tests {
         let spec2 = base_spec()
             .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()))
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, scope.clone()));
         let authority2 = egress_authority_for(&spec2);
         assert!(egress_gate(&contract, &broker, &authority2, &scope).is_ok());
     }
@@ -1500,7 +1538,7 @@ mod tests {
         );
         let spec = spec
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, out_of_scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, out_of_scope.clone()));
         let authority = egress_authority_for(&spec);
         assert_eq!(
             egress_gate(&contract, &broker, &authority, &out_of_scope),
@@ -1516,7 +1554,7 @@ mod tests {
         );
         let spec2 = spec2
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, in_scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, in_scope.clone()));
         let authority2 = egress_authority_for(&spec2);
         assert!(egress_gate(&contract, &broker, &authority2, &in_scope).is_ok());
     }
@@ -1591,9 +1629,10 @@ mod tests {
     #[test]
     fn egress_authority_reads_network_egress_and_name_resolution_leases_separately() {
         let scope = selectors(&["api.example.com"]);
+        let other_scope = selectors(&["other.example.com"]);
         let spec = base_spec()
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, other_scope));
         let authority = egress_authority_for(&spec);
         assert!(authority.egress_lease().is_some());
         assert!(authority.name_resolution_lease().is_some());
@@ -1641,7 +1680,7 @@ mod tests {
         let scope = selectors(&["api.example.com"]);
         let spec_with_grant = base_spec()
             .with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()))
-            .with_lease(lease_for(CapabilityDomain::NameResolution, RequirementScope::Whole));
+            .with_lease(lease_for(CapabilityDomain::NameResolution, scope.clone()));
         let authority_with_grant = egress_authority_for(&spec_with_grant);
         let no_grant_authority = egress_authority_for(&base_spec());
 
