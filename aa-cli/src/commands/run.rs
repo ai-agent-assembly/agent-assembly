@@ -2659,6 +2659,191 @@ mod plan {
             );
         }
     }
+
+    /// AAASM-6174 live/adversarial verification for J83 (AAASM-6261, identity-bound
+    /// egress broker, implementation AAASM-6163).
+    ///
+    /// # Honest scope of this coverage
+    ///
+    /// `egress_gate` and `check_name_resolution_grant` are real, exercised here
+    /// through the actual production call chain
+    /// (`IsolationPlan::resolve_boundary`, the same private function
+    /// `ResolvedRunPlan::bind` calls). But `self.egress` is
+    /// `aa_isolation::EgressContract::not_required()` at all seven production
+    /// construction sites in this file — no policy source issues a stronger
+    /// contract yet, so `egress_gate` admits unconditionally
+    /// (`EgressPosture::NotRequired`) on every real `aasm run` today. This
+    /// test constructs an `IsolationPlan` directly, inside this module, with
+    /// `egress: EgressContract::broker_required()` specifically to reach the
+    /// gate's refusing branches — proving the decision logic itself is
+    /// correct, not that the shipped binary currently applies it to a real
+    /// launch. See AAASM-6174's sign-off for the inertness finding; do not
+    /// cite this test as evidence of live egress prevention in the product.
+    #[cfg(test)]
+    mod egress_broker_adversarial_tests {
+        use super::*;
+        use aa_isolation::{CapabilityLease, EgressContract, EgressRefusal, LeaseBasis, LeaseId};
+
+        /// A minimal `IsolationPlan` with a Sandlock backend selected and a
+        /// broker-required egress contract -- every other contract left at
+        /// its real-world default (`not_required()`), exactly as every
+        /// construction site in this file leaves them today.
+        ///
+        /// Carries a CLI-provenance `FilesystemWrite` requirement (mirroring
+        /// `--max-*`'s `resource_requirements` provenance) plus a matching
+        /// `FilesystemWrite` lease in *every* fixture this function builds --
+        /// present identically in both the adversarial and control arms of
+        /// every test below, so it never discriminates between them. It
+        /// exists only so `apply_to` has a non-empty requirement set to work
+        /// with (an empty one refuses the launch before `egress_gate` is ever
+        /// reached) and so `authority_gate` never refuses on a domain this
+        /// test isn't about; the egress-domain lease passed in via `leases`
+        /// is the only variable each test actually moves.
+        fn egress_test_plan(mut leases: Vec<CapabilityLease>) -> IsolationPlan {
+            let policy = aa_security::policy::PolicyDocument::default();
+            let lowering = aa_isolation::lower_policy(&policy, &aa_isolation::LoweringOptions::strict());
+            leases.push(egress_lease(CapabilityDomain::FilesystemWrite));
+            IsolationPlan {
+                lowering: Some(lowering),
+                backend: Some(SelectedBackend::Sandlock(
+                    aa_isolation_sandlock::SandlockBackend::discover(),
+                )),
+                leases,
+                resource_requirements: vec![ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)],
+                egress: EgressContract::broker_required(),
+                ..Default::default()
+            }
+        }
+
+        fn egress_lease(domain: CapabilityDomain) -> CapabilityLease {
+            CapabilityLease::new(
+                LeaseId::new(format!("{domain}-lease")),
+                IdentityRef::root("agent-under-test"),
+                domain,
+                RequirementScope::Whole,
+                std::time::SystemTime::now(),
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
+                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: egress broker adversarial"),
+            )
+        }
+
+        fn test_identity_and_handle() -> (IdentityPlan, RegistrationHandle) {
+            let args = RunArgs {
+                tool: "claude".to_string(),
+                tool_args: vec![],
+                agent_id: None,
+                team_id: None,
+                root_agent: None,
+                governance_level: None,
+                no_proxy: false,
+                policy: None,
+                workdir: None,
+                workspace_tx: false,
+                workspace_tx_exclude: vec![],
+                workspace_tx_protect: vec![],
+                workspace_tx_approve: false,
+                dry_run: false,
+                enforcement_mode: None,
+                observe: false,
+                isolation: super::super::IsolationIntent::None,
+                isolation_backend: None,
+                max_memory_bytes: None,
+                max_pids: None,
+                max_open_files: None,
+                max_file_size_bytes: None,
+                max_wall_clock_seconds: None,
+                max_cpu_seconds: None,
+            };
+            let identity = IdentityPlan::of(&args);
+            let handle = identity.preview_handle();
+            (identity, handle)
+        }
+
+        /// Runs `resolve_boundary` with a broker-required egress contract and
+        /// returns the resulting `Boundary`'s refusal detail, if any.
+        fn resolve(leases: Vec<CapabilityLease>) -> Boundary {
+            let (identity, handle) = test_identity_and_handle();
+            let command = std::process::Command::new("echo");
+            let child_env = std::collections::BTreeMap::new();
+            let credentials = CredentialPosture::default();
+            let network = NetworkPlan {
+                endpoint: Some("127.0.0.1:9".to_string()),
+                no_proxy: false,
+            };
+            let mut plan = egress_test_plan(leases);
+            let (_, _, boundary) =
+                plan.resolve_boundary(&identity, &handle, &command, &child_env, credentials, &network);
+            boundary
+        }
+
+        fn refusal_detail(boundary: &Boundary) -> Option<&str> {
+            match boundary {
+                Boundary::Refused(detail) => Some(detail.as_str()),
+                _ => None,
+            }
+        }
+
+        /// Pair A -- the identity-bound grant arm, the decisive adversarial
+        /// check: with no `NetworkEgress` lease at all, the real `egress_gate`
+        /// refuses with `EgressRefusal::NoEgressGrant`, and the mandatory
+        /// unscoped positive control -- the identical harness, differing only
+        /// by the presence of a covering lease -- admits past that specific
+        /// refusal.
+        #[test]
+        fn an_egress_grant_is_required_once_the_broker_is_required_and_a_covering_lease_admits_past_it() {
+            let adversarial = resolve(vec![]);
+            let adversarial_detail = refusal_detail(&adversarial).unwrap_or_default().to_string();
+            assert!(
+                adversarial_detail.contains(&EgressRefusal::NoEgressGrant.to_string()),
+                "a broker-required launch with no egress grant at all must be refused for \
+                 exactly that reason: {adversarial_detail}"
+            );
+
+            let control = resolve(vec![egress_lease(CapabilityDomain::NetworkEgress)]);
+            let control_detail = refusal_detail(&control).unwrap_or_default().to_string();
+            assert!(
+                !control_detail.contains(&EgressRefusal::NoEgressGrant.to_string()),
+                "positive control: a covering NetworkEgress lease must admit past the \
+                 no-grant refusal, or the refusal above proves nothing about the grant \
+                 specifically: {control_detail}"
+            );
+        }
+
+        /// Pair B -- the scope arm: a `NetworkEgress` lease exists but is
+        /// scoped to specific selectors while the requested scope here is
+        /// `Whole` (the only form reachable from this call site, since no
+        /// production path ever lowers a `NetworkEgress` `ControlRequirement`
+        /// here -- `egress_scope` always defaults to `Whole`) -- so the lease
+        /// does not cover the request, and `egress_gate` refuses with
+        /// `EgressScopeNotCoveredByGrant`. The positive control is the same
+        /// lease widened to `Whole`.
+        #[test]
+        fn a_lease_scoped_narrower_than_the_request_does_not_cover_it() {
+            let narrow_lease = CapabilityLease::new(
+                LeaseId::new("narrow-egress-lease"),
+                IdentityRef::root("agent-under-test"),
+                CapabilityDomain::NetworkEgress,
+                RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
+                std::time::SystemTime::now(),
+                std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
+                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: narrower than Whole"),
+            );
+            let adversarial = resolve(vec![narrow_lease]);
+            let adversarial_detail = refusal_detail(&adversarial).unwrap_or_default().to_string();
+            assert!(
+                adversarial_detail.contains(&EgressRefusal::EgressScopeNotCoveredByGrant.to_string()),
+                "a Selectors-scoped lease must not cover a Whole-scoped request: {adversarial_detail}"
+            );
+
+            let control = resolve(vec![egress_lease(CapabilityDomain::NetworkEgress)]);
+            let control_detail = refusal_detail(&control).unwrap_or_default().to_string();
+            assert!(
+                !control_detail.contains(&EgressRefusal::EgressScopeNotCoveredByGrant.to_string()),
+                "positive control: a Whole-scoped lease must cover a Whole-scoped request: \
+                 {control_detail}"
+            );
+        }
+    }
 }
 
 /// Stable string form of an [`aa_core::EnforcementMode`] used on the wire to
