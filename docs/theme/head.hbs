@@ -19,7 +19,11 @@
     }
   } catch (e) {}
   gtag('js', new Date());
-  gtag('config', 'G-EV2FPGTJJB', { 'anonymize_ip': true });
+  gtag('config', 'G-EV2FPGTJJB', { 'anonymize_ip': true,
+    'page_location': 'https://docs.agent-assembly.com/',
+    'page_referrer': '',
+    'page_title': 'Agent Assembly documentation',
+    'send_page_view': false });
 </script>
 <script async src="https://www.googletagmanager.com/gtag/js?id=G-EV2FPGTJJB"></script>
 
@@ -107,12 +111,12 @@
     function sendFeedback(value) {
       // Consent Mode (AAASM-3554) governs whether this hit is stored; fire either way.
       if (typeof gtag === 'function') {
-        gtag('event', 'feedback', { 'value': value, 'page_path': location.pathname });
+        gtag('event', 'feedback', { 'value': value, 'page_id': 'docs' });
       }
     }
     function issueUrl() {
-      var title = 'Docs feedback: ' + location.pathname;
-      var body = 'Page: ' + location.href + '\n\nWhat could be improved?\n';
+      var title = 'Docs feedback';
+      var body = 'Page: Agent Assembly documentation\n\nWhat could be improved?\n';
       return 'https://github.com/ai-agent-assembly/' + REPO + '/issues/new?labels=docs,feedback'
         + '&title=' + encodeURIComponent(title) + '&body=' + encodeURIComponent(body);
     }
