@@ -83,13 +83,14 @@ export function analyticsBootstrap(pageLocation) {
   function gtag() {
     if (arguments[0] === 'event' && arguments[1] === 'feedback') {
       var vote = arguments[2] && arguments[2].value === 1 ? 1 : 0;
-      dataLayer.push(['event', 'feedback', {
+      arguments[2] = {
         'value': vote,
         'page_id': 'docs',
         'page_location': ${locationLiteral},
         'page_referrer': '',
         'page_title': ${jsString(FIXED_TITLE)}
-      }]);
+      };
+      dataLayer.push(arguments);
       return;
     }
     dataLayer.push(arguments);

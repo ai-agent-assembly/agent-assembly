@@ -151,7 +151,7 @@ granted.context.gtag('event', 'feedback', {
   page_path: `/${privateCanary}`,
   repo: privateCanary,
 });
-assert.deepEqual(plain(granted.calls.at(-1)), ['event', 'feedback', {
+assert.deepEqual(plain(Array.from(granted.calls.at(-1))), ['event', 'feedback', {
   value: 1,
   page_id: 'docs',
   page_location: canonical,
