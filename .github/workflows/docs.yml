@@ -221,6 +221,9 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      - name: Run analytics privacy VM checks
+        run: node docs/scripts/test_analytics_privacy.mjs
+
       # AAASM-6213: `scripts/check-doc-links.sh` resolves Markdown links against
       # the WORKING TREE, which is a different property from "this link works for
       # a reader". mdBook renders `foo/README.md` to `foo/index.html` while
