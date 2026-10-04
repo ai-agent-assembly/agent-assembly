@@ -179,6 +179,13 @@ assert.throws(
   ),
   /expected one feedback title, found 0/,
 );
+assert.throws(
+  () => hardenHtml(
+    historicalHtml.replace('return title + body;', 'var detail = document.referrer; return title + body + detail;'),
+    canonical,
+  ),
+  /feedback link still contains runtime page identity/,
+);
 
 const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aa-docs-privacy-'));
 try {

@@ -171,7 +171,8 @@ function hardenFeedback(html, pageLocation) {
       `var body = ${jsString(`Page: ${canonical.href}\n\nWhat could be improved?\n`)};`,
       'body',
     );
-    if (body.includes('location.href') || body.includes('location.pathname')) {
+    const runtimeIdentity = /\b(?:window\.)?location\b|\bdocument\.(?:URL|documentURI|referrer|title)\b/;
+    if (runtimeIdentity.test(body)) {
       throw new Error('feedback link still contains runtime page identity');
     }
     output = output.slice(0, block.bodyStart) + body + output.slice(block.closeStart);
