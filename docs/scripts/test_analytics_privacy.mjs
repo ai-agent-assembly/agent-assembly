@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -231,6 +232,26 @@ try {
     'preflight must finish before any rendered page is rewritten',
   );
   fs.rmSync(path.join(fixtureRoot, 'v0.0.1-rc.7', 'broken.html'));
+
+  const cliRoot = path.join(fixtureRoot, 'cli-artifact');
+  fs.mkdirSync(cliRoot);
+  fs.writeFileSync(path.join(cliRoot, 'index.html'), historicalHtml);
+  const cliLink = path.join(fixtureRoot, 'harden-cli.mjs');
+  fs.symlinkSync(
+    path.join(docsRoot, 'scripts', 'harden_published_analytics.mjs'),
+    cliLink,
+  );
+  const cli = spawnSync(
+    process.execPath,
+    [cliLink, cliRoot, '--public-prefix', '/core/'],
+    { encoding: 'utf8' },
+  );
+  assert.equal(cli.status, 0, cli.stderr);
+  assert.match(cli.stdout, /Hardened analytics identity in 1 rendered HTML file/);
+  assertSafePageView(
+    execute(analyticsScript(fs.readFileSync(path.join(cliRoot, 'index.html'), 'utf8'))).calls,
+    'https://docs.agent-assembly.com/core/',
+  );
 
   fs.symlinkSync('/tmp', path.join(fixtureRoot, 'escaped'));
   assert.throws(() => hardenSite(fixtureRoot), /refusing rendered symlink/);

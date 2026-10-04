@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 export const DOCS_ORIGIN = 'https://docs.agent-assembly.com';
 export const MEASUREMENT_ID = 'G-EV2FPGTJJB';
@@ -262,7 +262,16 @@ function parseArguments(argv) {
   return { siteRoot: positional[0], publicPrefix };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+function isMainModule(moduleUrl, executablePath) {
+  if (!executablePath) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(moduleUrl)) === fs.realpathSync(executablePath);
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
   const { siteRoot, publicPrefix } = parseArguments(process.argv.slice(2));
   const count = hardenSite(siteRoot, publicPrefix);
   console.log(`Hardened analytics identity in ${count} rendered HTML file(s).`);
