@@ -15,6 +15,20 @@ import {
 
 const docsRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const privateCanary = 'PRIVATE_PROMPT_PRIVATE_REPO';
+const workflow = fs.readFileSync(
+  path.resolve(docsRoot, '../.github/workflows/docs.yml'),
+  'utf8',
+);
+
+assert.match(
+  workflow,
+  /node docs\/scripts\/harden_published_analytics\.mjs docs\/book \\\n\s+--public-prefix \/core\/latest\//,
+);
+const assembleStart = workflow.indexOf('cp docs/site-root-index.html _site/index.html');
+const lastMile = workflow.indexOf('node docs/scripts/harden_published_analytics.mjs _site');
+const upload = workflow.indexOf('- name: Upload Pages artifact');
+assert.ok(assembleStart >= 0 && assembleStart < lastMile, 'hardening follows site assembly');
+assert.ok(lastMile < upload, 'hardening precedes Pages artifact upload');
 
 function analyticsScript(html) {
   const matches = scriptBlocks(html).filter((block) => block.body.includes(MEASUREMENT_ID));
