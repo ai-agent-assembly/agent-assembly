@@ -1232,6 +1232,52 @@ mod tests {
             assert!(authority_gate(&child_spec, &ancestry, t(1_500)).is_ok());
         }
 
+        /// AAASM-6280/D1 companion: a child spec that asserts **no** lineage
+        /// at all, gated against a *resolved* `Ancestry::Parent`, must not be
+        /// refused as an `AncestryMismatch` — the supervisor-resolved parent
+        /// is the trusted fact here, and a missing self-asserted lineage is
+        /// not grounds to refuse. It still goes through the normal
+        /// attenuation ceiling check (admits because the child's lease is
+        /// narrower-or-equal to the parent's). The positive control
+        /// (`a_parent_whose_agent_id_is_absent_from_the_childs_lineage_is_refused`,
+        /// pre-existing, elsewhere in this module) covers the other branch
+        /// this guard distinguishes: lineage that names a *different*
+        /// ancestor than the one actually resolved.
+        #[test]
+        fn a_resolved_parent_with_no_self_asserted_lineage_on_the_child_is_not_an_ancestry_mismatch() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: IdentityRef::root("child-agent"),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Same,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("an equal child scope must derive");
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let lineage_free_child = ExecutionSpec::new("echo", IdentityRef::root("child-agent"))
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead)
+                        .with_scope(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()])),
+                )
+                .with_lease(child_lease);
+            assert!(lineage_free_child.identity().lineage.is_empty());
+            let result = authority_gate(&lineage_free_child, &ancestry, t(1_500));
+            assert!(
+                result.is_ok(),
+                "an empty self-asserted lineage under a resolved parent must not be read as an ancestry mismatch: {result:?}"
+            );
+        }
+
         /// §4.3: a child requesting a path outside its parent's grant is
         /// refused, even though the lease is otherwise well-formed.
         #[test]
