@@ -23,7 +23,6 @@ curl -fsSL https://agent-assembly.com/install.sh | sh
 This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
 [published release](https://github.com/ai-agent-assembly/agent-assembly/releases).
 The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
-The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
 ```sh
 # Pin a specific version
