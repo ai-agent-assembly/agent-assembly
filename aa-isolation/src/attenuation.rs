@@ -411,8 +411,16 @@ mod tests {
         }
 
         // Every pre-revocation child is refused by `authority_gate` once the
-        // parent is revoked: the recorded generation (0) no longer matches
-        // the parent's current one (1).
+        // parent is revoked. AAASM-6281/D2 made this a direct observation —
+        // `check_attenuation` now validates the parent's own lease snapshot
+        // at `now` and catches the revocation itself
+        // (`AuthorityRefusal::LeaseInvalid`) before ever reaching the
+        // provenance-generation comparison. Before D2 landed, the
+        // generation mismatch (`StaleParentGeneration`) was the *only*
+        // mechanism that caught this case; it remains correct as a
+        // fallback for a parent lease that is still itself valid but whose
+        // recorded generation has moved on without an accompanying
+        // revocation being observable in this snapshot.
         let revoked_parent_lease = (*parent).clone().with_revocation(RevocationState::Revoked {
             generation: 1,
             reason: "operator revoked mid-flight".to_string(),
@@ -437,10 +445,12 @@ mod tests {
             assert!(
                 matches!(
                     authority_gate(&child_spec, &stale_ancestry, t(1_500)),
-                    Err(crate::authority::AuthorityRefusal::StaleParentGeneration { domain })
-                        if domain == CapabilityDomain::FilesystemRead
+                    Err(crate::authority::AuthorityRefusal::LeaseInvalid {
+                        domain,
+                        reason: crate::lease::LeaseInvalid::Revoked { .. }
+                    }) if domain == CapabilityDomain::FilesystemRead
                 ),
-                "a child derived before the revocation was not refused once the parent generation moved on"
+                "a child derived before the revocation was not refused once the parent was revoked"
             );
         }
     }

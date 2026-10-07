@@ -2731,7 +2731,14 @@ mod plan {
             let args = RunArgs {
                 tool: "claude".to_string(),
                 tool_args: vec![],
-                agent_id: None,
+                // Pinned rather than minted (`None` would mint a fresh
+                // `dry-run-<uuid>` per call): `egress_lease`'s leases are
+                // subjected to this exact id, and `authority_gate` now
+                // checks a lease's subject against the launch's real
+                // identity (AAASM-6279/D-b) — a minted id here would make
+                // every lease in this module a subject mismatch unrelated
+                // to what each test actually exercises.
+                agent_id: Some("agent-under-test".to_string()),
                 team_id: None,
                 root_agent: None,
                 governance_level: None,

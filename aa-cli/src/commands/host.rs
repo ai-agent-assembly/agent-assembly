@@ -542,6 +542,83 @@ mod tests {
         );
     }
 
+    /// AAASM-6279's own reproduction: a `--lease-file` whose `subject_agent_id`
+    /// does not match `base_spec_and_contract`'s fixed launch identity
+    /// (`aasm-host-operator`) must be refused once the resulting spec reaches
+    /// `authority_gate` — exactly the gate `run_operation` calls for every
+    /// real `aasm host` subcommand. The fix landed at the gate itself
+    /// (`AuthorityRefusal::LeaseSubjectMismatch`, AAASM-6272/D-b) rather than
+    /// in this file, so this test exercises the lease-file path specifically
+    /// to close the AC's own named reproduction, not just the generic gate
+    /// mechanism already pinned in `aa-isolation::authority`.
+    #[test]
+    fn lease_file_with_mismatched_subject_is_refused_at_the_gate() {
+        let fixture_dir = std::env::temp_dir().join("aaasm-6279-lease-subject-mismatch-fixture");
+        std::fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+        let lease_path = fixture_dir.join("mismatched-lease.json");
+        std::fs::write(
+            &lease_path,
+            r#"{
+                "lease_id": "lease-under-test",
+                "subject_agent_id": "some-other-agent",
+                "issuer_agent_id": "issuer",
+                "basis_reason": "test fixture",
+                "not_before_unix_secs": 0,
+                "expires_at_unix_secs": 9999999999
+            }"#,
+        )
+        .expect("write fixture lease file");
+
+        let (spec, _contract) = base_spec_and_contract(&Some(lease_path.clone()), vec![OperationKind::XcodeList])
+            .expect("a well-formed lease file parses");
+        let result = aa_isolation::authority_gate(&spec, &aa_isolation::Ancestry::Root, std::time::SystemTime::now());
+
+        let _ = std::fs::remove_dir_all(&fixture_dir);
+
+        assert!(
+            matches!(
+                &result,
+                Err(aa_isolation::AuthorityRefusal::LeaseSubjectMismatch { lease_subject, .. })
+                    if lease_subject == "some-other-agent"
+            ),
+            "a lease file naming a subject other than the launch's own identity must be refused: {result:?}"
+        );
+    }
+
+    /// Positive control for the test above: the identical lease file, subject
+    /// corrected to match the launch's own fixed identity, gates cleanly —
+    /// isolating the subject mismatch, specifically, as what the refusal
+    /// above turns on.
+    #[test]
+    fn lease_file_with_matching_subject_gates_cleanly() {
+        let fixture_dir = std::env::temp_dir().join("aaasm-6279-lease-subject-match-fixture");
+        std::fs::create_dir_all(&fixture_dir).expect("create fixture dir");
+        let lease_path = fixture_dir.join("matching-lease.json");
+        std::fs::write(
+            &lease_path,
+            r#"{
+                "lease_id": "lease-under-test",
+                "subject_agent_id": "aasm-host-operator",
+                "issuer_agent_id": "issuer",
+                "basis_reason": "test fixture",
+                "not_before_unix_secs": 0,
+                "expires_at_unix_secs": 9999999999
+            }"#,
+        )
+        .expect("write fixture lease file");
+
+        let (spec, _contract) = base_spec_and_contract(&Some(lease_path.clone()), vec![OperationKind::XcodeList])
+            .expect("a well-formed lease file parses");
+        let result = aa_isolation::authority_gate(&spec, &aa_isolation::Ancestry::Root, std::time::SystemTime::now());
+
+        let _ = std::fs::remove_dir_all(&fixture_dir);
+
+        assert!(
+            result.is_ok(),
+            "a lease file whose subject matches the launch's own identity must gate cleanly: {result:?}"
+        );
+    }
+
     /// Under `NotRequired` (every real launch's inert default today),
     /// `gated_list` must admit without ever consulting a real toolchain —
     /// mirrors `host_capability_gate`'s own first-line short-circuit.

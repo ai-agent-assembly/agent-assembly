@@ -340,6 +340,18 @@ pub enum AuthorityRefusal {
     /// [`crate::lease::DelegationProvenance::parent_generation`] does not
     /// match the parent lease's current revocation generation — the
     /// concurrent-revocation catch on the read side.
+    ///
+    /// AAASM-6281/D2 added a direct check — `check_attenuation` now calls
+    /// `parent_lease.validate_at(now)` on the [`ParentAuthority`] snapshot
+    /// before ever reaching this comparison, so a parent snapshot recorded
+    /// as [`crate::lease::RevocationState::Revoked`] is now caught earlier,
+    /// as [`AuthorityRefusal::LeaseInvalid`]. This variant stays reachable
+    /// for the case `validate_at` cannot see: [`crate::lease::RevocationState::Active`]
+    /// itself carries a generation, which a reaffirmation can advance
+    /// without ever transitioning through `Revoked` — a child derived at an
+    /// earlier generation, then gated against a later-reaffirmed-but-still-
+    /// `Active` parent snapshot, is still stale even though the parent
+    /// lease remains currently valid.
     StaleParentGeneration {
         /// The domain whose provenance generation is stale.
         domain: CapabilityDomain,
@@ -349,6 +361,35 @@ pub enum AuthorityRefusal {
     /// policy/approval grant.
     EscalationNotIndependentlyApproved {
         /// The domain whose escalation was not independently approved.
+        domain: CapabilityDomain,
+    },
+    /// The lease covering `domain` names a subject other than the spec's own
+    /// launch identity (AAASM-6279/D-b).
+    ///
+    /// A lease is proof of what its named subject was authorized for, not of
+    /// what *this* launch was authorized for — reading any covering lease as
+    /// sufficient, regardless of whose name it carries, would let a lease
+    /// issued for one identity authorize a launch claiming to be a different
+    /// one.
+    LeaseSubjectMismatch {
+        /// The domain whose lease names the wrong subject.
+        domain: CapabilityDomain,
+        /// The subject the lease actually names.
+        lease_subject: String,
+    },
+    /// A resolved parent (`Ancestry::Parent`) is in play, but the child's own
+    /// spec carries no lease at all for `domain` (AAASM-6282/D4).
+    ///
+    /// Before this variant existed, a lease-unaware child under a resolved
+    /// parent read `domain` as [`AuthorityState::CompatibilityResidual`] —
+    /// the rc.7 compatibility grant, which carries no reference to the
+    /// parent's ceiling at all — letting it shed the parent's attenuation
+    /// ceiling simply by not opting into leases itself. Owner decision
+    /// (AAASM-6272 D4, recorded in ADR 0038's amendment): once a parent is
+    /// resolved, the child must be lease-aware too, or it is refused.
+    ChildMustBeLeaseAware {
+        /// The domain the lease-unaware child requested under a resolved
+        /// parent.
         domain: CapabilityDomain,
     },
 }
@@ -373,7 +414,9 @@ impl AuthorityRefusal {
             | Self::ProvenanceMismatch { domain }
             | Self::DelegationRightsExceedParent { domain }
             | Self::StaleParentGeneration { domain }
-            | Self::EscalationNotIndependentlyApproved { domain } => Some(*domain),
+            | Self::EscalationNotIndependentlyApproved { domain }
+            | Self::LeaseSubjectMismatch { domain, .. }
+            | Self::ChildMustBeLeaseAware { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
             Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
         }
@@ -457,6 +500,18 @@ impl core::fmt::Display for AuthorityRefusal {
                      independently-attributable approval"
                 )
             }
+            Self::LeaseSubjectMismatch { domain, lease_subject } => {
+                write!(
+                    f,
+                    "the lease for domain `{domain}` names subject `{lease_subject}`, not this launch's own identity"
+                )
+            }
+            Self::ChildMustBeLeaseAware { domain } => {
+                write!(
+                    f,
+                    "a resolved parent is in play but this spec carries no lease at all for domain `{domain}`"
+                )
+            }
         }
     }
 }
@@ -464,12 +519,37 @@ impl core::fmt::Display for AuthorityRefusal {
 impl std::error::Error for AuthorityRefusal {}
 
 /// Whether `scope` is covered by `authority`'s recorded state for `domain`.
+///
+/// For a [`AuthorityState::Leased`] domain, coverage is the **union** of two
+/// independent checks (AAASM-6282/D-a) — an OR, never a replacement of
+/// either:
+///
+/// * [`CapabilityLease::covers`] — the strict, domain-agnostic check this
+///   module has always used, and the one [`crate::egress`]'s
+///   `check_egress_grant`/`check_name_resolution_grant` keep using on their
+///   own, separate call path for their own stated security reasons (#2592).
+/// * [`crate::scope_order::order_for`]`(domain).compare(lease.scope(),
+///   scope)` accepting `{Narrower, Equal}` — the per-domain scope-ordering
+///   comparator, so a lease genuinely broader than what is requested (e.g. a
+///   path-prefix grant over a subdirectory the lease never names verbatim)
+///   also covers.
+///
+/// This must stay an OR: [`crate::scope_order::UndefinedScopeOrder`] (used
+/// for [`CapabilityDomain::ProcessCreation`]/[`CapabilityDomain::Ipc`]/
+/// [`CapabilityDomain::WorkspaceTransaction`]) returns
+/// [`ScopeOrdering::Incomparable`] even for a `Whole`/`Whole` match, which a
+/// straight swap from `covers()` to the scope-order comparator would wrongly
+/// refuse — `covers()` alone still admits that case.
 fn covered(state: &AuthorityState, domain: CapabilityDomain, scope: &RequirementScope) -> Result<(), AuthorityRefusal> {
     match state {
         AuthorityState::Denied => Err(AuthorityRefusal::NoExplicitGrant { domain }),
         AuthorityState::CompatibilityResidual => Ok(()),
         AuthorityState::Leased(lease) => {
-            if lease.covers(scope) {
+            let order_covers = matches!(
+                crate::scope_order::order_for(domain).compare(lease.scope(), scope),
+                ScopeOrdering::Narrower | ScopeOrdering::Equal
+            );
+            if lease.covers(scope) || order_covers {
                 Ok(())
             } else {
                 Err(AuthorityRefusal::LeaseScopeInsufficient { domain })
@@ -541,12 +621,20 @@ pub fn authority_gate(
         None
     };
 
+    // A resolved parent's agent id must appear in the spec's own lineage —
+    // but only when the spec actually claims lineage. An empty lineage with
+    // a resolved parent is not a mismatch: the supervisor-resolved `parent`
+    // is the trusted fact here, and a missing self-asserted lineage is not
+    // grounds to refuse (AAASM-6280/D1). The mismatch refusal is reserved
+    // for the case lineage names a *different* ancestor than the one
+    // actually resolved.
     if let Some(parent) = parent {
-        if !spec
-            .identity()
-            .lineage
-            .iter()
-            .any(|ancestor| ancestor == &parent.identity().agent_id)
+        if !spec.identity().lineage.is_empty()
+            && !spec
+                .identity()
+                .lineage
+                .iter()
+                .any(|ancestor| ancestor == &parent.identity().agent_id)
         {
             return Err(AuthorityRefusal::AncestryMismatch {
                 claimed_ancestor: parent.identity().agent_id.clone(),
@@ -561,30 +649,56 @@ pub fn authority_gate(
             if let Err(reason) = lease.validate_at(now) {
                 return Err(AuthorityRefusal::LeaseInvalid { domain, reason });
             }
+            // AAASM-6279/D-b: a lease is proof of what its named subject was
+            // authorized for, not of what this launch was authorized for.
+            if lease.subject().agent_id != spec.identity().agent_id {
+                return Err(AuthorityRefusal::LeaseSubjectMismatch {
+                    domain,
+                    lease_subject: lease.subject().agent_id.clone(),
+                });
+            }
         }
         covered(state, domain, requirement.scope())?;
 
         if let Some(parent) = parent {
-            check_attenuation(parent, domain, state, spec.identity())?;
+            check_attenuation(parent, domain, state, spec.identity(), now)?;
         }
     }
 
     Ok(AuthorityWitness(()))
 }
 
-/// Whether ancestry attenuation applies to `spec` at all.
+/// Whether ancestry attenuation applies to this launch at all.
 ///
-/// Both conditions must hold: a spec with no claimed lineage has nothing to
-/// attenuate against, and a spec that never opted into the lease system
-/// ([`EffectiveAuthority::is_lease_aware`]) is still on the rc.7
-/// compatibility residual, where an ancestry question was never asked before
-/// this ticket and must not start being asked now. In particular,
-/// `aasm run --root-agent` sets lineage today but no policy path issues a
-/// lease yet, so this predicate is false for every real launch until a
-/// lease-issuing policy source exists — see `aa-cli`'s `IsolationPlan` for
-/// where that residual is documented.
-fn attenuation_applies(spec: &ExecutionSpec, _ancestry: &Ancestry) -> bool {
-    !spec.identity().lineage.is_empty() && EffectiveAuthority::is_lease_aware(spec)
+/// AAASM-6280/D1: this reads `ancestry` **directly**, rather than deciding
+/// purely from the caller-asserted `spec.identity().lineage` and leaving
+/// `authority_gate`'s own separate match on `ancestry` to catch the
+/// unresolved case after the fact (which it could only ever do by accident,
+/// since nothing here examined `ancestry`'s own value).
+///
+/// * [`Ancestry::Parent`] — always applies. A resolved parent is a trusted,
+///   supervisor-verified fact; whether the child itself claims lineage or
+///   opted into leases is answered downstream (see
+///   [`AuthorityRefusal::ChildMustBeLeaseAware`], AAASM-6282/D4), not here.
+/// * [`Ancestry::UnresolvedParent`] — always applies, unconditionally. A
+///   claimed-but-unverified ancestry must never be read as "no parent,
+///   proceed unattenuated" regardless of whether the spec also happens to be
+///   lease-aware — reading it that way is exactly the structural gap this
+///   bug exists to close.
+/// * [`Ancestry::Root`] — applies only when the spec claims lineage
+///   (`!lineage.is_empty()`) **and** is lease-aware
+///   ([`EffectiveAuthority::is_lease_aware`]): a spec that never opted into
+///   the lease system is still on the rc.7 compatibility residual, where an
+///   ancestry question was never asked before this ticket and must not start
+///   being asked now. In particular, `aasm run --root-agent` sets lineage
+///   today but no policy path issues a lease yet, so this arm is false for
+///   every such real launch until a lease-issuing policy source exists — see
+///   `aa-cli`'s `IsolationPlan` for where that residual is documented.
+fn attenuation_applies(spec: &ExecutionSpec, ancestry: &Ancestry) -> bool {
+    match ancestry {
+        Ancestry::Parent(_) | Ancestry::UnresolvedParent { .. } => true,
+        Ancestry::Root => !spec.identity().lineage.is_empty() && EffectiveAuthority::is_lease_aware(spec),
+    }
 }
 
 /// A stable numeric rank for [`DelegationRule`], used only to compare a
@@ -602,20 +716,44 @@ fn delegation_rank(rule: DelegationRule) -> u8 {
 /// Check one domain's leased child authority against its parent's, per
 /// AAASM-6161's monotonic-attenuation invariant.
 ///
-/// Returns `Ok(())` immediately for any [`AuthorityState`] other than
-/// [`AuthorityState::Leased`] — [`AuthorityState::Denied`] was already refused
-/// by [`covered`], and [`AuthorityState::CompatibilityResidual`] carries no
-/// lease for ancestry to attenuate.
+/// Called only when `ancestry` resolved to a parent at all — see
+/// [`attenuation_applies`]. [`AuthorityState::Denied`] never reaches this
+/// function: [`covered`] already refused it. [`AuthorityState::CompatibilityResidual`]
+/// is refused here with [`AuthorityRefusal::ChildMustBeLeaseAware`]
+/// (AAASM-6282/D4) — a resolved parent is in play, so a child that carries no
+/// lease at all for this domain cannot be read as the rc.7 compatibility
+/// grant, which would let it shed the parent's ceiling by simply not opting
+/// into leases.
 fn check_attenuation(
     parent: &ParentAuthority,
     domain: CapabilityDomain,
     state: &AuthorityState,
     child_identity: &IdentityRef,
+    now: SystemTime,
 ) -> Result<(), AuthorityRefusal> {
-    let AuthorityState::Leased(child_lease) = state else {
-        return Ok(());
+    let child_lease = match state {
+        AuthorityState::Leased(lease) => lease,
+        AuthorityState::CompatibilityResidual => {
+            return Err(AuthorityRefusal::ChildMustBeLeaseAware { domain });
+        }
+        AuthorityState::Denied => return Err(AuthorityRefusal::NoExplicitGrant { domain }),
     };
     let parent_lease = parent.lease_for(domain);
+
+    // AAASM-6281/D2: the parent's own lease must itself be currently valid —
+    // not merely recorded — at `now`. Catches an expired or not-yet-active
+    // parent lease independent of any provenance-generation check below.
+    // Documented, pinned gap: this is a snapshot check against the parent
+    // lease value captured in `ParentAuthority` at the moment it was built,
+    // not a live re-read — a revocation recorded *after* that snapshot is
+    // only caught via `DelegationProvenance::parent_generation` against
+    // `DelegationLedger`'s live generation (the `StaleParentGeneration`
+    // refusal below), never by this check.
+    if let Some(parent_lease) = parent_lease {
+        if let Err(reason) = parent_lease.validate_at(now) {
+            return Err(AuthorityRefusal::LeaseInvalid { domain, reason });
+        }
+    }
 
     // The first bullet a child's claim actually violates, if any. `None`
     // means the child is provably within the ceiling its parent granted.
@@ -887,6 +1025,40 @@ mod tests {
         ));
     }
 
+    /// AAASM-6279/D-b: a lease covering the domain, valid and in scope, but
+    /// naming a subject other than the launch's own identity is refused —
+    /// and the identical lease, re-subjected to the launch's own identity,
+    /// is the positive control that proves the refusal is about the subject
+    /// mismatch specifically, not about the lease or the requirement shape.
+    #[test]
+    fn lease_subject_mismatch_is_denied() {
+        let spec = base_spec().with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead));
+        let mismatched = CapabilityLease::new(
+            LeaseId::new("lease-under-test"),
+            IdentityRef::root("some-other-agent"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Whole,
+            t(1_000),
+            t(2_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        );
+        let spec = attach_lease(spec, mismatched);
+        assert_eq!(
+            authority_gate(&spec, &Ancestry::Root, t(1_500)),
+            Err(AuthorityRefusal::LeaseSubjectMismatch {
+                domain: CapabilityDomain::FilesystemRead,
+                lease_subject: "some-other-agent".to_string(),
+            })
+        );
+
+        // Positive control: the identical lease, subject corrected to match
+        // the launch's own identity, admits.
+        let control_spec = base_spec().with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead));
+        let correctly_subjected = lease_for(CapabilityDomain::FilesystemRead, RequirementScope::Whole);
+        let control_spec = attach_lease(control_spec, correctly_subjected);
+        assert!(authority_gate(&control_spec, &Ancestry::Root, t(1_500)).is_ok());
+    }
+
     /// Falsification target 5 (compatibility): an rc.7-shaped spec with no
     /// leases at all must still pass, on the strength of its
     /// `ControlRequirement`s alone — this is the regression test for "existing
@@ -1058,6 +1230,52 @@ mod tests {
                 RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]),
             );
             assert!(authority_gate(&child_spec, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6280/D1 companion: a child spec that asserts **no** lineage
+        /// at all, gated against a *resolved* `Ancestry::Parent`, must not be
+        /// refused as an `AncestryMismatch` — the supervisor-resolved parent
+        /// is the trusted fact here, and a missing self-asserted lineage is
+        /// not grounds to refuse. It still goes through the normal
+        /// attenuation ceiling check (admits because the child's lease is
+        /// narrower-or-equal to the parent's). The positive control
+        /// (`a_parent_whose_agent_id_is_absent_from_the_childs_lineage_is_refused`,
+        /// pre-existing, elsewhere in this module) covers the other branch
+        /// this guard distinguishes: lineage that names a *different*
+        /// ancestor than the one actually resolved.
+        #[test]
+        fn a_resolved_parent_with_no_self_asserted_lineage_on_the_child_is_not_an_ancestry_mismatch() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: IdentityRef::root("child-agent"),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Same,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("an equal child scope must derive");
+            let parent = gated_parent(parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            let lineage_free_child = ExecutionSpec::new("echo", IdentityRef::root("child-agent"))
+                .with_requirement(
+                    ControlRequirement::observe(CapabilityDomain::FilesystemRead)
+                        .with_scope(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()])),
+                )
+                .with_lease(child_lease);
+            assert!(lineage_free_child.identity().lineage.is_empty());
+            let result = authority_gate(&lineage_free_child, &ancestry, t(1_500));
+            assert!(
+                result.is_ok(),
+                "an empty self-asserted lineage under a resolved parent must not be read as an ancestry mismatch: {result:?}"
+            );
         }
 
         /// §4.3: a child requesting a path outside its parent's grant is
@@ -1300,6 +1518,133 @@ mod tests {
                     claimed_ancestor: "parent-agent".to_string()
                 })
             );
+        }
+
+        /// AAASM-6282/D4: a child under a *resolved* parent that carries
+        /// zero leases of its own is refused — it must not be read as the
+        /// rc.7 compatibility residual, which would let it shed the
+        /// parent's attenuation ceiling simply by not opting into leases.
+        /// The positive control is the identical child, given a lease for
+        /// the same domain (narrower-or-equal to the parent's), which
+        /// admits — isolating lease-awareness, specifically, as what the
+        /// refusal above turns on.
+        #[test]
+        fn a_lease_unaware_child_under_a_resolved_parent_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let parent = gated_parent(parent_lease.clone());
+            let ancestry = Ancestry::Parent(Box::new(parent));
+
+            // The child claims lineage naming the parent, but carries no
+            // lease at all — exactly AAASM-6282's reproduction.
+            let lease_unaware_child = ExecutionSpec::new("echo", child_identity()).with_requirement(
+                ControlRequirement::observe(CapabilityDomain::FilesystemRead)
+                    .with_scope(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()])),
+            );
+            assert!(!EffectiveAuthority::is_lease_aware(&lease_unaware_child));
+            assert_eq!(
+                authority_gate(&lease_unaware_child, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::ChildMustBeLeaseAware {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // Positive control: the identical child, now lease-aware with a
+            // narrower-or-equal lease for the same domain, admits.
+            let child_lease = parent_lease
+                .derive_child(
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                        child_expires_at: t(2_000),
+                        mode: InheritanceMode::Same,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    &PathPrefixOrder,
+                    t(1_100),
+                )
+                .expect("an equal child scope must derive");
+            let lease_aware_child = child_spec_with_lease(
+                child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            );
+            assert!(authority_gate(&lease_aware_child, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6281/D2: a parent lease that is not yet active at the gate
+        /// time (`now` is before the parent's own `not_before`) refuses the
+        /// child, even though the child's own lease is itself perfectly
+        /// valid, identical in scope, and otherwise well-formed — the
+        /// parent's own validity window, independent of provenance
+        /// generation, must be checked at the moment the gate actually needs
+        /// an answer. The positive control gates the identical child lease
+        /// against a parent whose only difference is a validity window that
+        /// already covers the chosen `now` — isolating the parent's own
+        /// validity, specifically, as what the refusal above turns on. (An
+        /// *expired*, rather than not-yet-active, parent cannot isolate this
+        /// the same way: `check_attenuation`'s own `ChildExtendsExpiry` rule
+        /// requires `child.expires_at() <= parent.expires_at()`, so a parent
+        /// expired at `now` structurally implies the child's own
+        /// `validate_at(now)` would also fail first — not-yet-active is the
+        /// one window-validity gap `authority_gate`'s existing per-requirement
+        /// ordering cannot otherwise catch.)
+        #[test]
+        fn a_parent_lease_not_yet_active_at_gate_time_refuses_the_child() {
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let child_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(1_900),
+                crate::lease::LeaseBasis::new(parent_identity(), "hand-built, not derived"),
+            );
+            let child_spec = child_spec_with_lease(child_lease.clone(), scope.clone());
+            assert_eq!(
+                child_lease.validate_at(t(1_500)),
+                Ok(()),
+                "fixture-honesty: the child's own lease must itself be valid at the `now` used \
+                 below, or a refusal could not be attributed to the parent specifically"
+            );
+
+            // Adversarial: the parent's own lease only becomes valid at
+            // t(3_000) -- not yet active at t(1_500), the `now` used to gate
+            // the child.
+            let not_yet_active_parent_lease = CapabilityLease::new(
+                crate::lease::LeaseId::new("parent-fs-lease"),
+                parent_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(3_000),
+                t(5_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+            )
+            .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+            let adversarial_parent_spec =
+                ExecutionSpec::new("echo", parent_identity()).with_lease(not_yet_active_parent_lease);
+            let adversarial_witness = authority_gate(&adversarial_parent_spec, &Ancestry::Root, t(3_500))
+                .expect("parent's own launch must be authorized at a `now` inside its own window");
+            let adversarial_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
+                &adversarial_parent_spec,
+                &adversarial_witness,
+            )));
+            assert_eq!(
+                authority_gate(&child_spec, &adversarial_ancestry, t(1_500)),
+                Err(AuthorityRefusal::LeaseInvalid {
+                    domain: CapabilityDomain::FilesystemRead,
+                    reason: LeaseInvalid::NotYetValid { not_before: t(3_000) },
+                })
+            );
+
+            // Positive control: the identical child lease, against a parent
+            // whose only difference is a validity window that already
+            // covers t(1_500) -- admits.
+            let active_parent_lease = parent_fs_lease(scope.clone());
+            let control_parent = gated_parent(active_parent_lease);
+            let control_ancestry = Ancestry::Parent(Box::new(control_parent));
+            assert!(authority_gate(&child_spec, &control_ancestry, t(1_500)).is_ok());
         }
 
         /// A root launch and a legacy no-lease spec are both unaffected by
