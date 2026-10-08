@@ -296,6 +296,56 @@ fn hash_syscalls(hasher: &mut Sha256, syscalls: Option<&aa_security::policy::Sys
     }
 }
 
+/// Hash the AAASM-6275 authored capability leases.
+///
+/// **Emitted only when `leases` is non-empty**, mirroring [`hash_filesystem`]
+/// and [`hash_syscalls`]: a document that authors no lease must hash to
+/// exactly the bytes it hashed to before this field existed, so adding this
+/// node does not re-key every existing document's `policy_doc_id`. Unlike
+/// those two, there is no absent-vs-stated-empty distinction to carry here —
+/// see [`crate::document::PolicyDocument::leases`]'s own doc comment for why
+/// a lease list has no tri-state reading — so "emitted when non-empty" is the
+/// whole rule, not a special case of a three-way one.
+fn hash_leases(hasher: &mut Sha256, leases: &[crate::document::LeaseGrant]) {
+    if leases.is_empty() {
+        return;
+    }
+    hasher.update(b"lea\x01");
+    hasher.update((leases.len() as u64).to_be_bytes());
+    for lease in leases {
+        hash_str(hasher, lease.domain.as_str());
+        match &lease.scope {
+            crate::document::LeaseScope::Whole => hasher.update([0u8]),
+            crate::document::LeaseScope::Selectors(selectors) => {
+                hasher.update([1u8]);
+                hasher.update((selectors.len() as u64).to_be_bytes());
+                for s in selectors {
+                    hash_str(hasher, s);
+                }
+            }
+        }
+        match lease.max_count {
+            None => hasher.update([0u8]),
+            Some(n) => {
+                hasher.update([1u8]);
+                hasher.update(n.to_be_bytes());
+            }
+        }
+        match lease.ttl_seconds {
+            None => hasher.update([0u8]),
+            Some(n) => {
+                hasher.update([1u8]);
+                hasher.update(n.to_be_bytes());
+            }
+        }
+        hasher.update([u8::from(lease.delegable)]);
+        hash_opt_str(hasher, lease.issuer.as_deref());
+        hash_opt_str(hasher, lease.policy_rule.as_deref());
+        hash_opt_str(hasher, lease.approval_ref.as_deref());
+        hash_str(hasher, &lease.reason);
+    }
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -327,6 +377,7 @@ impl PolicyDocument {
         hash_capabilities(&mut hasher, self.capabilities.as_ref());
         hash_filesystem(&mut hasher, self.filesystem.as_ref());
         hash_syscalls(&mut hasher, self.syscall_allowlist.as_ref());
+        hash_leases(&mut hasher, &self.leases);
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -407,6 +458,7 @@ mod tests {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 
@@ -551,6 +603,74 @@ mod tests {
         let mut same = base_doc();
         same.syscall_allowlist = Some(SyscallAllowlist::from_names(["write", "read", "write"]).unwrap());
         assert_eq!(same.content_digest(), io.content_digest());
+    }
+
+    /// AAASM-6275 — the same migration question `filesystem`/`syscalls` ask,
+    /// reached through the lease node. The pinned value is the one
+    /// `legacy_documents_keep_their_pre_filesystem_digest` already pins from
+    /// the same fixture, so all three agree by construction.
+    ///
+    /// If this fails, `hash_leases` started emitting bytes for a document
+    /// that authored no leases. That is a migration event, not a refactor.
+    #[test]
+    fn legacy_documents_keep_their_pre_leases_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert!(doc.leases.is_empty());
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding leases re-keyed a document that does not use it"
+        );
+    }
+
+    /// Documents that author different leases are different policies. Three
+    /// fixtures, chosen so a collapsing encoding fails: no leases vs. one
+    /// lease is the pair a digest that ignored an empty `Vec` specially would
+    /// merge, and two leases differing only in domain is the pair a digest
+    /// keyed on count alone would merge.
+    #[test]
+    fn leases_are_part_of_the_documents_identity() {
+        use crate::document::{LeaseDomain, LeaseGrant, LeaseScope};
+
+        let lease = |domain: LeaseDomain| LeaseGrant {
+            domain,
+            scope: LeaseScope::Whole,
+            max_count: None,
+            ttl_seconds: None,
+            delegable: false,
+            issuer: None,
+            policy_rule: None,
+            approval_ref: None,
+            reason: "fixture".to_string(),
+        };
+
+        let unstated = base_doc();
+
+        let mut egress = base_doc();
+        egress.leases = vec![lease(LeaseDomain::NetworkEgress)];
+
+        let mut syscall = base_doc();
+        syscall.leases = vec![lease(LeaseDomain::Syscall)];
+
+        let digests: Vec<String> = [&unstated, &egress, &syscall]
+            .iter()
+            .map(|d| d.content_digest())
+            .collect();
+        let distinct: std::collections::BTreeSet<&String> = digests.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            3,
+            "three different policies collapsed onto fewer digests"
+        );
+
+        // The control: the same lease list is one policy.
+        let same = egress.clone();
+        assert_eq!(same.content_digest(), egress.content_digest());
     }
 
     #[test]

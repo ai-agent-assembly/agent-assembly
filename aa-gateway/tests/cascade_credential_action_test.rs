@@ -43,6 +43,7 @@ fn data_doc(scope: PolicyScope, pattern: &str, action: CredentialAction) -> Poli
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     }
 }
 

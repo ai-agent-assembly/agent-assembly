@@ -2767,6 +2767,7 @@ mod tests {
             capabilities: Some(capabilities),
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 

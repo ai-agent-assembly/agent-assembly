@@ -147,6 +147,159 @@ pub struct ToolPolicy {
     pub requires_approval_if: Option<String>,
 }
 
+/// A capability domain a [`LeaseGrant`] may be issued against (AAASM-6275,
+/// ADR 0038).
+///
+/// Mirrors `aa_isolation::capability::CapabilityDomain`'s variant vocabulary
+/// by name — same words, independently defined type. The two must stay
+/// separate for two reasons: `aa-policy` cannot depend on `aa-isolation` (the
+/// dependency edge runs the other way; `aa-isolation`'s own crate docs on the
+/// `aa-policy` → `aa-isolation` packaging cycle explain why), and — the one
+/// that actually matters — a lease that collapsed onto the same domain type
+/// as whatever produces this document's `ControlRequirement`s would let
+/// `aa_isolation::authority::authority_gate`'s lease-vs-requirement check
+/// become a tautology: the lease would always exactly match whatever
+/// requirement it is checked against, because both would trace back to one
+/// authored value. Keeping an independently-authored type here, fed by its
+/// own `authority.leases` node rather than a projection of `filesystem` /
+/// `syscalls` / `capabilities` / `network`, is what keeps "was this
+/// explicitly leased" answerable from a source a `ControlRequirement` never
+/// touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LeaseDomain {
+    /// Reading file content or metadata.
+    FilesystemRead,
+    /// Creating, writing, renaming or deleting filesystem entries.
+    FilesystemWrite,
+    /// Outbound network connections, by destination.
+    NetworkEgress,
+    /// Hostname resolution.
+    NameResolution,
+    /// Direct system-call access.
+    Syscall,
+    /// Creating child processes.
+    ProcessCreation,
+    /// Inter-process channels: sockets, shared memory, inherited descriptors.
+    Ipc,
+    /// The authority a child would inherit: environment secrets, tokens,
+    /// open descriptors and sockets that carry credentials.
+    Credential,
+    /// Numeric ceilings: memory, CPU, process count, wall clock, file size,
+    /// open descriptors.
+    Resource,
+    /// Staged, drift-checked materialization of a working directory's
+    /// changes onto its base.
+    WorkspaceTransaction,
+}
+
+impl LeaseDomain {
+    /// Parse the wire name a policy author writes (snake_case). Returns
+    /// `None` for an unrecognised word — a closed vocabulary, like
+    /// `aa_security::policy::Syscall`'s, so the validator can reject a typo
+    /// rather than silently drop the entry.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "filesystem_read" => Some(Self::FilesystemRead),
+            "filesystem_write" => Some(Self::FilesystemWrite),
+            "network_egress" => Some(Self::NetworkEgress),
+            "name_resolution" => Some(Self::NameResolution),
+            "syscall" => Some(Self::Syscall),
+            "process_creation" => Some(Self::ProcessCreation),
+            "ipc" => Some(Self::Ipc),
+            "credential" => Some(Self::Credential),
+            "resource" => Some(Self::Resource),
+            "workspace_transaction" => Some(Self::WorkspaceTransaction),
+            _ => None,
+        }
+    }
+
+    /// The wire name this domain round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::FilesystemRead => "filesystem_read",
+            Self::FilesystemWrite => "filesystem_write",
+            Self::NetworkEgress => "network_egress",
+            Self::NameResolution => "name_resolution",
+            Self::Syscall => "syscall",
+            Self::ProcessCreation => "process_creation",
+            Self::Ipc => "ipc",
+            Self::Credential => "credential",
+            Self::Resource => "resource",
+            Self::WorkspaceTransaction => "workspace_transaction",
+        }
+    }
+}
+
+/// What within a [`LeaseDomain`] a [`LeaseGrant`] covers (AAASM-6275).
+///
+/// Mirrors the shape of `aa_isolation::spec::RequirementScope`'s two scoped
+/// variants (`Whole` / `Selectors`) — same concept, independently defined,
+/// for the reason given on [`LeaseDomain`]. There is no `Limits` variant:
+/// AAASM-6276's lowering decides whether and how to source a numeric ceiling
+/// for [`LeaseDomain::Resource`]; authoring one here before that mapping
+/// exists would be a field nothing reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeaseScope {
+    /// The lease covers the whole domain, with no further restriction.
+    ///
+    /// Must be authored explicitly — the literal YAML string `"whole"` —
+    /// because, unlike a restriction node, an *unstated* scope has no safe
+    /// default on a grant. There is no reading under which omitting
+    /// `scope:` entirely should mean this.
+    Whole,
+    /// Domain-specific selector strings: paths for filesystem domains,
+    /// destinations for network domains, call names for syscalls.
+    ///
+    /// Opaque to this crate, exactly as
+    /// `aa_isolation::spec::RequirementScope::Selectors` documents itself:
+    /// carried and rendered, never parsed or matched here.
+    Selectors(Vec<String>),
+}
+
+/// One authored capability-lease grant (AAASM-6275, ADR 0038).
+///
+/// This is policy *intent* — which domain, what scope, how it may be
+/// delegated, and who/why it was authored — not an issued lease. It carries
+/// no `LeaseId`, no `issued_at`/`expires_at` instant and no `RevocationState`:
+/// those are issuance-time facts a future lowering pass (AAASM-6276) assigns
+/// when it turns this into a real `aa_isolation::lease::CapabilityLease`, not
+/// something a policy author can predict.
+///
+/// # Why this is never derived from `resource_requirements`
+///
+/// See [`LeaseDomain`]'s doc comment for the hazard this type exists to
+/// avoid. Nothing in [`super::validator::PolicyValidator`]'s construction of
+/// a `LeaseGrant` reads `filesystem`, `syscalls`, `capabilities` or `network`
+/// — it reads only the document's own `authority.leases` entries — and
+/// nothing should ever be added here that changes that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseGrant {
+    /// Which capability domain this lease grants authority over.
+    pub domain: LeaseDomain,
+    /// What within the domain the lease covers.
+    pub scope: LeaseScope,
+    /// Maximum number of times this lease may be exercised. `None` is
+    /// uncapped by count (still bounded by `ttl_seconds` and revocation,
+    /// once issued).
+    pub max_count: Option<u64>,
+    /// Seconds from issuance before this lease expires. `None` leaves expiry
+    /// to the issuing mechanism.
+    pub ttl_seconds: Option<u64>,
+    /// Whether a child launch may inherit this lease, narrowed. Defaults to
+    /// `false`.
+    pub delegable: bool,
+    /// Free-text identity reference this lease is issued on behalf of, when
+    /// the author wants to record one.
+    pub issuer: Option<String>,
+    /// The named policy rule this lease was authored under.
+    pub policy_rule: Option<String>,
+    /// A reference to a recorded approval, when issuance was gated on one.
+    pub approval_ref: Option<String>,
+    /// Why this lease is granted, in words an operator can act on. Never a
+    /// credential value.
+    pub reason: String,
+}
+
 /// Fully validated policy document produced by [`super::validator::PolicyValidator`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PolicyDocument {
@@ -222,6 +375,17 @@ pub struct PolicyDocument {
     /// `syscalls:` section — so the two ingest paths for one on-disk contract
     /// answer this question identically rather than each inventing an answer.
     pub syscall_allowlist: Option<aa_security::policy::SyscallAllowlist>,
+    /// AAASM-6275 — capability leases this policy document grants.
+    ///
+    /// Unlike [`filesystem`](Self::filesystem) and
+    /// [`syscall_allowlist`](Self::syscall_allowlist), there is no tri-state
+    /// "stated but empty" distinction to carry here: a lease is purely
+    /// additive, so an `authority:` section that grants nothing is
+    /// indistinguishable in effect from an absent one, and an empty `Vec`
+    /// covers both. See [`LeaseGrant`] for why this is never a projection of
+    /// [`filesystem`](Self::filesystem), [`syscall_allowlist`](Self::syscall_allowlist),
+    /// [`capabilities`](Self::capabilities) or [`network`](Self::network).
+    pub leases: Vec<LeaseGrant>,
 }
 
 #[cfg(test)]
@@ -245,11 +409,38 @@ mod tests {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         };
         assert!(doc.tools.is_empty());
         // AAASM-5751 — an unstated path node. Read this as "nobody said",
         // never as "nothing is restricted".
         assert!(doc.filesystem.is_none());
+        // AAASM-6275 — no leases authored.
+        assert!(doc.leases.is_empty());
+    }
+
+    #[test]
+    fn lease_domain_round_trips_through_parse_and_as_str() {
+        for domain in [
+            LeaseDomain::FilesystemRead,
+            LeaseDomain::FilesystemWrite,
+            LeaseDomain::NetworkEgress,
+            LeaseDomain::NameResolution,
+            LeaseDomain::Syscall,
+            LeaseDomain::ProcessCreation,
+            LeaseDomain::Ipc,
+            LeaseDomain::Credential,
+            LeaseDomain::Resource,
+            LeaseDomain::WorkspaceTransaction,
+        ] {
+            assert_eq!(LeaseDomain::parse(domain.as_str()), Some(domain));
+        }
+    }
+
+    #[test]
+    fn lease_domain_rejects_an_unrecognised_word() {
+        assert_eq!(LeaseDomain::parse("filesystem_execute"), None);
+        assert_eq!(LeaseDomain::parse(""), None);
     }
 
     #[test]

@@ -61,6 +61,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         }),
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     }
 }
 
@@ -80,6 +81,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     }
 }
 

@@ -806,6 +806,7 @@ impl PolicyEngine {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 
@@ -940,6 +941,7 @@ impl PolicyEngine {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         };
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
@@ -2762,6 +2764,7 @@ mod tests {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 
@@ -5244,6 +5247,7 @@ mod tests {
             capabilities: caps,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 

@@ -1063,6 +1063,7 @@ mod tests {
             capabilities: Some(caps),
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         });
 
         state

@@ -1043,6 +1043,7 @@ mod tests {
             capabilities,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 
@@ -1519,6 +1520,7 @@ mod tests {
             capabilities: Some(caps),
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         };
 
         let rules = project_rules(&doc);

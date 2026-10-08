@@ -108,6 +108,71 @@ impl PolicyDocument {
     }
 }
 
+/// Canonical form of one authored [`crate::document::LeaseGrant`]
+/// (AAASM-6275).
+///
+/// Structurally identical to the validated [`LeaseGrant`] today — there is no
+/// richer L7-only computation to fold in yet, unlike `budget`/`schedule`'s
+/// relationship to their raw sections. Kept as its own type and reached
+/// through its own method ([`PolicyDocument::to_canonical_leases`]) rather
+/// than folded into [`PolicyDocument::to_canonical`], and that separation is
+/// deliberate: [`to_canonical`](PolicyDocument::to_canonical) projects onto
+/// [`CanonPolicyDocument`], the exact AST `aa_isolation::lowering::lower_policy`
+/// reads to build `ControlRequirement`s. A lease must never be reachable
+/// through that path — see [`crate::document::LeaseDomain`]'s doc comment for
+/// the hazard this separation exists to prevent — so this is a different
+/// function, reading a different source field, writing to a type
+/// `aa_security` never sees.
+///
+/// [`LeaseGrant`]: crate::document::LeaseGrant
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalLeaseGrant {
+    /// Which capability domain this lease grants authority over.
+    pub domain: crate::document::LeaseDomain,
+    /// What within the domain the lease covers.
+    pub scope: crate::document::LeaseScope,
+    /// Maximum number of times this lease may be exercised.
+    pub max_count: Option<u64>,
+    /// Seconds from issuance before this lease expires.
+    pub ttl_seconds: Option<u64>,
+    /// Whether a child launch may inherit this lease, narrowed.
+    pub delegable: bool,
+    /// Free-text identity reference this lease is issued on behalf of.
+    pub issuer: Option<String>,
+    /// The named policy rule this lease was authored under.
+    pub policy_rule: Option<String>,
+    /// A reference to a recorded approval, when issuance was gated on one.
+    pub approval_ref: Option<String>,
+    /// Why this lease is granted, in words an operator can act on.
+    pub reason: String,
+}
+
+impl From<&crate::document::LeaseGrant> for CanonicalLeaseGrant {
+    fn from(grant: &crate::document::LeaseGrant) -> Self {
+        Self {
+            domain: grant.domain,
+            scope: grant.scope.clone(),
+            max_count: grant.max_count,
+            ttl_seconds: grant.ttl_seconds,
+            delegable: grant.delegable,
+            issuer: grant.issuer.clone(),
+            policy_rule: grant.policy_rule.clone(),
+            approval_ref: grant.approval_ref.clone(),
+            reason: grant.reason.clone(),
+        }
+    }
+}
+
+impl PolicyDocument {
+    /// Lower this document's authored leases into their canonical form.
+    ///
+    /// Deliberately separate from [`Self::to_canonical`] — see
+    /// [`CanonicalLeaseGrant`]'s doc comment for why.
+    pub fn to_canonical_leases(&self) -> Vec<CanonicalLeaseGrant> {
+        self.leases.iter().map(CanonicalLeaseGrant::from).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -134,6 +199,7 @@ mod tests {
             capabilities: None,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 
@@ -319,5 +385,69 @@ mod tests {
 
         let rules = aa_security::policy::lower_to_ebpf(&doc.to_canonical());
         assert!(rules.deny_paths().any(|p| p == "/etc"));
+    }
+
+    // ── AAASM-6275 — authority.leases canonical lowering ────────────────────
+
+    #[test]
+    fn leases_round_trip_through_to_canonical_leases() {
+        use crate::document::{LeaseDomain, LeaseGrant, LeaseScope};
+
+        let mut doc = base_doc();
+        doc.leases = vec![LeaseGrant {
+            domain: LeaseDomain::NetworkEgress,
+            scope: LeaseScope::Selectors(vec!["api.example.com".to_string()]),
+            max_count: Some(10),
+            ttl_seconds: Some(3600),
+            delegable: true,
+            issuer: Some("ops-team".to_string()),
+            policy_rule: Some("egress-build-step".to_string()),
+            approval_ref: Some("approval-123".to_string()),
+            reason: "scoped egress for the build step".to_string(),
+        }];
+
+        let canonical = doc.to_canonical_leases();
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical[0].domain, LeaseDomain::NetworkEgress);
+        assert_eq!(
+            canonical[0].scope,
+            LeaseScope::Selectors(vec!["api.example.com".to_string()])
+        );
+        assert_eq!(canonical[0].max_count, Some(10));
+        assert_eq!(canonical[0].ttl_seconds, Some(3600));
+        assert!(canonical[0].delegable);
+        assert_eq!(canonical[0].issuer.as_deref(), Some("ops-team"));
+        assert_eq!(canonical[0].reason, "scoped egress for the build step");
+    }
+
+    #[test]
+    fn no_authored_leases_lowers_to_an_empty_canonical_list() {
+        assert!(base_doc().to_canonical_leases().is_empty());
+    }
+
+    /// The central hazard this node exists to avoid, stated as an assertion:
+    /// authoring a lease must never change the `ControlRequirement`-building
+    /// bridge's output. `to_canonical` and `to_canonical_leases` must stay
+    /// provably independent, not merely independent by convention.
+    #[test]
+    fn authoring_a_lease_does_not_change_the_control_requirement_bridge() {
+        use crate::document::{LeaseDomain, LeaseGrant, LeaseScope};
+
+        let without = base_doc().to_canonical();
+
+        let mut with_lease = base_doc();
+        with_lease.leases = vec![LeaseGrant {
+            domain: LeaseDomain::FilesystemWrite,
+            scope: LeaseScope::Whole,
+            max_count: None,
+            ttl_seconds: None,
+            delegable: false,
+            issuer: None,
+            policy_rule: None,
+            approval_ref: None,
+            reason: "fixture".to_string(),
+        }];
+
+        assert_eq!(without, with_lease.to_canonical());
     }
 }

@@ -163,6 +163,90 @@ pub struct RawSyscallAllowlist {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// The on-disk shape of one [`RawLeaseGrant::scope`] (AAASM-6275).
+///
+/// Untagged so a policy author writes either the bare string `"whole"` or a
+/// YAML list of selector strings — serde tries each variant in declaration
+/// order, and the two shapes never collide (a YAML scalar is never a
+/// sequence). The string is not matched against `"whole"` here: this is still
+/// the raw, unvalidated layer, so an unrecognised word (a typo of "whole")
+/// deserializes successfully and is rejected with a clear message by
+/// `PolicyValidator`'s lease validation instead of failing deserialization
+/// with serde's own, less actionable, error text.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum RawLeaseScope {
+    /// The literal string the author wrote.
+    Whole(String),
+    /// Domain-specific selector strings: paths for filesystem domains,
+    /// destinations for network domains, call names for syscalls.
+    Selectors(Vec<String>),
+}
+
+/// Raw (unvalidated) deserialization target for one `authority.leases[]`
+/// entry (AAASM-6275, ADR 0038).
+///
+/// Mirrors the shape `aa_isolation::lease::CapabilityLease` and
+/// `aa_isolation::lease::LeaseBasis` need at issuance time, independently
+/// defined — this crate cannot depend on `aa-isolation` (the dependency edge
+/// runs the other way; see that crate's own `src/lib.rs` for the packaging
+/// reason), and more importantly a lease node must never be *derived* from
+/// whatever produces this document's `ControlRequirement`s. See
+/// [`crate::document::LeaseDomain`] for the full hazard this independence
+/// exists to avoid.
+#[derive(Debug, Deserialize)]
+pub struct RawLeaseGrant {
+    /// Which capability domain this lease grants authority over. A closed
+    /// vocabulary; validated against [`crate::document::LeaseDomain`].
+    pub domain: Option<String>,
+    /// What within the domain the lease covers: the literal string
+    /// `"whole"`, or a list of domain-specific selector strings. Required —
+    /// unlike a restriction node (`filesystem`, `syscalls`), an unstated
+    /// scope on a *grant* has no safe default to fall back to.
+    pub scope: Option<RawLeaseScope>,
+    /// Maximum number of times this lease may be exercised before it is
+    /// exhausted. `None` means uncapped by count (still bounded by
+    /// `ttl_seconds` and revocation, once AAASM-6276 lowers this into an
+    /// issued lease).
+    pub max_count: Option<u64>,
+    /// Seconds from issuance before this lease expires. `None` leaves the
+    /// expiry to the issuing mechanism rather than authoring one here.
+    pub ttl_seconds: Option<u64>,
+    /// Whether a child launch may inherit this lease, narrowed. Defaults to
+    /// `false` — the same not-delegable-by-default posture
+    /// `aa_isolation::lease::DelegationRule` holds.
+    pub delegable: Option<bool>,
+    /// Free-text identity reference for who/what this lease is issued on
+    /// behalf of, when the policy author wants to record one explicitly.
+    pub issuer: Option<String>,
+    /// The named policy rule this lease was authored under, for audit
+    /// attribution when more than one rule could plausibly have issued it.
+    pub policy_rule: Option<String>,
+    /// A reference to a recorded approval, when this lease's issuance was
+    /// gated on one.
+    pub approval_ref: Option<String>,
+    /// Why this lease is granted, in words an operator can act on. Required
+    /// and never a credential value — the same requirement
+    /// `aa_isolation::lease::LeaseBasis::reason` holds on the issued form.
+    pub reason: Option<String>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
+/// Raw (unvalidated) deserialization target for the `authority` policy
+/// section (AAASM-6275).
+#[derive(Debug, Deserialize)]
+pub struct RawAuthorityPolicy {
+    /// Capability leases this policy document grants.
+    pub leases: Option<Vec<RawLeaseGrant>>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `metadata` section
 /// of the governance policy YAML envelope.
 #[derive(Debug, Deserialize)]
@@ -232,6 +316,8 @@ pub struct RawPolicyDocument {
     pub filesystem: Option<RawFilesystemPolicy>,
     /// Kernel syscall allowlist (AAASM-5753).
     pub syscalls: Option<RawSyscallAllowlist>,
+    /// Capability leases this policy document grants (AAASM-6275).
+    pub authority: Option<RawAuthorityPolicy>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -541,5 +627,56 @@ mod tests {
         // in `unknown`, so the capture above is attributable to the typo.
         let ok: RawPolicyDocument = serde_yaml::from_str("syscalls:\n  allow:\n    - read\n").unwrap();
         assert!(ok.syscalls.as_ref().unwrap().unknown.is_empty());
+    }
+
+    // ── RawAuthorityPolicy / RawLeaseGrant (AAASM-6275) ─────────────────────
+
+    #[test]
+    fn raw_authority_deserializes_a_whole_scope_lease() {
+        let yaml = "authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: scoped egress for the build step\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        let leases = raw.authority.as_ref().unwrap().leases.as_ref().unwrap();
+        assert_eq!(leases.len(), 1);
+        assert_eq!(leases[0].domain, Some("network_egress".to_string()));
+        assert!(matches!(leases[0].scope, Some(RawLeaseScope::Whole(ref s)) if s == "whole"));
+        assert_eq!(leases[0].reason, Some("scoped egress for the build step".to_string()));
+    }
+
+    #[test]
+    fn raw_authority_deserializes_a_selector_scope_lease() {
+        let yaml = "authority:\n  leases:\n    - domain: filesystem_write\n      scope:\n        - /workspace\n      max_count: 10\n      ttl_seconds: 3600\n      delegable: true\n      issuer: ops-team\n      reason: scoped write access\n";
+        let raw: RawPolicyDocument = serde_yaml::from_str(yaml).unwrap();
+        let lease = &raw.authority.as_ref().unwrap().leases.as_ref().unwrap()[0];
+        assert!(matches!(lease.scope, Some(RawLeaseScope::Selectors(ref s)) if s == &vec!["/workspace".to_string()]));
+        assert_eq!(lease.max_count, Some(10));
+        assert_eq!(lease.ttl_seconds, Some(3600));
+        assert_eq!(lease.delegable, Some(true));
+        assert_eq!(lease.issuer, Some("ops-team".to_string()));
+    }
+
+    #[test]
+    fn raw_authority_absent_section_is_none() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("{}\n").unwrap();
+        assert!(raw.authority.is_none());
+    }
+
+    #[test]
+    fn raw_authority_absent_leases_list_is_none() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("authority: {}\n").unwrap();
+        assert!(raw.authority.as_ref().unwrap().leases.is_none());
+    }
+
+    #[test]
+    fn raw_authority_captures_unknown_keys_at_both_levels() {
+        let section: RawPolicyDocument = serde_yaml::from_str("authority:\n  leasess: []\n").unwrap();
+        assert!(section.authority.as_ref().unwrap().unknown.contains_key("leasess"));
+
+        let entry: RawPolicyDocument = serde_yaml::from_str(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: whole\n      reason: r\n      dmoain: syscall\n",
+        )
+        .unwrap();
+        assert!(entry.authority.as_ref().unwrap().leases.as_ref().unwrap()[0]
+            .unknown
+            .contains_key("dmoain"));
     }
 }

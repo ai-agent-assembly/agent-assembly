@@ -40,6 +40,7 @@ fn doc_for_scope(scope: PolicyScope) -> PolicyDocument {
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     }
 }
 

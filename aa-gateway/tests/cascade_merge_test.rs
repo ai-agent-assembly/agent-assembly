@@ -26,6 +26,7 @@ fn allow_doc(scope: PolicyScope) -> Arc<PolicyDocument> {
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     })
 }
 
@@ -55,6 +56,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     })
 }
 
@@ -84,6 +86,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     })
 }
 
