@@ -13,24 +13,59 @@
          by default and only enabled after explicit opt-in. Mirrors the content-page
          tag in docs/theme/head.hbs so the bare site root is tagged too — AAASM-3559. -->
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag() { dataLayer.push(arguments); }
-      // Consent Mode v2 — deny analytics/ads storage until the visitor opts in.
-      gtag('consent', 'default', {
-        'analytics_storage': 'denied',
-        'ad_storage': 'denied',
-        'ad_user_data': 'denied',
-        'ad_personalization': 'denied'
-      });
-      // Re-apply a stored opt-in before the first hit fires.
-      try {
-        if (window.localStorage && localStorage.getItem('aa-analytics-consent') === 'granted') {
-          gtag('consent', 'update', { 'analytics_storage': 'granted' });
-        }
-      } catch (e) {}
-      gtag('js', new Date());
-      gtag('config', 'G-EV2FPGTJJB', { 'anonymize_ip': true });
-    </script>
+  // Privacy boundary: only build-generated public documentation identity may
+  // reach analytics. Runtime URL, referrer, title, and arbitrary event fields
+  // are deliberately outside this boundary.
+  window.dataLayer = window.dataLayer || [];
+  function gtag() {
+    if (arguments[0] === 'event' && arguments[1] === 'feedback') {
+      var vote = arguments[2] && arguments[2].value === 1 ? 1 : 0;
+      arguments[2] = {
+        'value': vote,
+        'page_id': 'docs',
+        'page_location': "https://docs.agent-assembly.com/core/",
+        'page_referrer': '',
+        'page_title': "Agent Assembly documentation"
+      };
+      dataLayer.push(arguments);
+      return;
+    }
+    dataLayer.push(arguments);
+  }
+  // Consent Mode v2 — deny analytics/ads storage until the visitor opts in.
+  gtag('consent', 'default', {
+    'analytics_storage': 'denied',
+    'ad_storage': 'denied',
+    'ad_user_data': 'denied',
+    'ad_personalization': 'denied'
+  });
+  // Re-apply a stored opt-in before the first hit fires.
+  try {
+    if (window.localStorage && localStorage.getItem('aa-analytics-consent') === 'granted') {
+      gtag('consent', 'update', { 'analytics_storage': 'granted' });
+    }
+  } catch (e) {}
+  gtag('js', new Date());
+  gtag('set', {
+    'page_location': "https://docs.agent-assembly.com/core/",
+    'page_referrer': '',
+    'page_title': "Agent Assembly documentation"
+  });
+  gtag('config', 'G-EV2FPGTJJB', {
+    'anonymize_ip': true,
+    'send_page_view': false,
+    'page_location': "https://docs.agent-assembly.com/core/",
+    'page_referrer': '',
+    'page_title': "Agent Assembly documentation"
+  });
+  gtag('event', 'page_view', {
+    'page_path': "/core/",
+    'page_location': "https://docs.agent-assembly.com/core/",
+    'page_referrer': '',
+    'page_title': "Agent Assembly documentation",
+    'send_to': 'G-EV2FPGTJJB'
+  });
+</script>
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-EV2FPGTJJB"></script>
     <meta charset="utf-8">
     <meta name="robots" content="noindex">

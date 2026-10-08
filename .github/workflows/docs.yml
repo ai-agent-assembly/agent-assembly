@@ -221,6 +221,12 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      - name: Run analytics privacy VM checks
+        run: |
+          node docs/scripts/test_analytics_privacy.mjs
+          node docs/scripts/harden_published_analytics.mjs docs/book \
+            --public-prefix /core/latest/
+
       # AAASM-6213: `scripts/check-doc-links.sh` resolves Markdown links against
       # the WORKING TREE, which is a different property from "this link works for
       # a reader". mdBook renders `foo/README.md` to `foo/index.html` while
@@ -437,6 +443,14 @@ jobs:
 
           # 3. Root redirect (stable -> pre-release -> latest, resolved client-side).
           cp docs/site-root-index.html _site/index.html
+
+          # 4. Every book above, including snapshots rebuilt from historical
+          #    tags, still contains the analytics bootstrap from its source
+          #    revision. Replace that one boundary with build-generated public
+          #    page identity before the artifact can be uploaded. This keeps
+          #    page-view navigation while excluding runtime URL/referrer data.
+          node docs/scripts/harden_published_analytics.mjs _site \
+            --public-prefix /core/
 
           echo "Assembled _site:"; find _site -maxdepth 2 -type d | sort
 
