@@ -2288,7 +2288,50 @@ journeys:
   outcome: See AAASM-6263 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-6162
-  lifecycle_state: gap
+  lifecycle_state: partial
+  gap_owner: AAASM-6263
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::discard_leaves_base_byte_for_byte_unchanged
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::commit_applies_exactly_the_intended_change_set
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::protected_path_denial_leaves_base_unchanged_and_the_denial_is_the_actual_cause
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::base_drift_inside_the_change_set_refuses_drift_outside_it_does_not
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::commit_before_close_is_refused
+  - repo: agent-assembly
+    kind: test
+    selector: aa-workspace-tx/tests/commit_falsification.rs::reopen_after_a_crash_mid_apply_does_not_detect_interrupted_apply_or_touch_base
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-workspace-tx/tests/commit_falsification.rs::reopen_after_a_crash_mid_apply_should_report_interrupted_apply (#[ignore]d: documents an open AAASM-6291 ST-4 finding, not yet filed/fixed -- run with --ignored to reproduce)'
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_workspace_tx.rs::a_transactional_run_that_succeeds_applies_exactly_the_measured_change_set
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_workspace_tx.rs::a_transactional_run_that_fails_leaves_the_base_byte_for_byte_unchanged
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_workspace_tx.rs::a_change_set_touching_a_protected_selector_is_refused_and_leaves_the_base_unchanged
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-integration-tests/tests/cli_run_workspace_tx.rs::a_confined_transactional_run_writes_tx_metadata_into_its_receipt (Linux-only, #[cfg(target_os = "linux")] -- genuinely unverified on this macOS authoring host, not merely un-run)'
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_workspace_tx.rs::a_live_base_drift_during_an_in_flight_run_refuses_commit_and_applies_nothing
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real
+  negative_control: 'AAASM-6291 (ST-4, independent QA) exercised the full commit/discard/protected-path/drift decision sequence plus one new deterministic crash-interruption characterization test and one new live concurrent-conflict test (a real `aasm run` subprocess synchronized via file flags, not a library-level simulation). Found one real gap, documented rather than fixed (QA scope): `aa_isolation::TransactionStatus::InterruptedApply` (tx.rs:326-330) and `aa-workspace-tx/src/lib.rs:44-48`''s own doc comment both describe a leftover apply journal as discoverable on a later run, but no code path anywhere in `aa-workspace-tx` or `aa-cli` ever inspects one -- `WorkspaceTransaction::open` always re-measures the base and re-materializes staged content with no awareness a journal exists, silently clobbering any staged edit that was in flight when the journal was written. `TransactionId`''s own doc comment names `aasm workspace tx show/discard/gc` as the intended recovery surface; it does not exist in `aa-cli::commands::Commands` (confirmed by enumeration, not absence-of-grep-hits) -- there is no operator-visible surfacing of `InterruptedApply` anywhere in `aasm` output or in an execution receipt. The target contract is pinned as an `#[ignore]`d failing test (`reopen_after_a_crash_mid_apply_should_report_interrupted_apply`); candidate Bug not yet filed. `lifecycle_state` moved gap -> partial rather than automated: the crash-recovery leg of this journey remains genuinely uncovered by any passing test, and the Linux-only confined-receipt case (test 4) stays unverified on this macOS host.'
 - id: J86
   jira: AAASM-6264
   name: Enforce runtime-wide CPU, memory, PID, FD, disk, network and wall-time ceilings
