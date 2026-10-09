@@ -1450,6 +1450,7 @@ pub(crate) mod graph_tests {
             capabilities,
             filesystem: None,
             syscall_allowlist: None,
+            leases: Vec::new(),
         }
     }
 

@@ -4,11 +4,11 @@ use std::collections::HashMap;
 
 use crate::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, NetworkPolicy,
-        PolicyDocument, SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, LeaseDomain,
+        LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
-    raw::{GovernancePolicyEnvelope, RawPolicyDocument},
+    raw::{GovernancePolicyEnvelope, RawAuthorityPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument},
     scope::PolicyScope,
 };
 
@@ -73,7 +73,7 @@ impl PolicyValidator {
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
                          schedule, budget, data, tools, capabilities, filesystem, syscalls, \
-                         approval_timeout_secs, approval",
+                         authority, approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -89,6 +89,7 @@ impl PolicyValidator {
         let capabilities = Self::validate_capabilities(raw.capabilities, &mut errors, &mut warnings);
         let filesystem = Self::validate_filesystem(raw.filesystem, &mut errors);
         let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
+        let leases = Self::validate_authority(raw.authority, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -125,6 +126,7 @@ impl PolicyValidator {
                 capabilities,
                 filesystem,
                 syscall_allowlist,
+                leases,
             },
             warnings,
         })
@@ -542,6 +544,135 @@ impl PolicyValidator {
         // hypothetical future divergence between the per-entry and whole-list
         // checks narrows this allowlist rather than widening it.
         Some(aa_security::policy::SyscallAllowlist::from_names(&accepted).unwrap_or_default())
+    }
+
+    /// Validate the `authority:` section's `leases:` list (AAASM-6275).
+    ///
+    /// Returns an empty `Vec` both when the section is absent and when
+    /// `leases:` is present but empty. Unlike
+    /// [`validate_filesystem`](Self::validate_filesystem) and
+    /// [`validate_syscalls`](Self::validate_syscalls), there is no tri-state
+    /// "stated but empty" reading to preserve here — see
+    /// [`crate::document::PolicyDocument::leases`]'s own doc comment: a lease
+    /// list is purely additive, so an authority section that grants nothing
+    /// is indistinguishable in effect from one that was never written, and
+    /// there is no restriction to lose by collapsing the two.
+    fn validate_authority(raw: Option<RawAuthorityPolicy>, errors: &mut Vec<ValidationError>) -> Vec<LeaseGrant> {
+        let Some(raw) = raw else { return Vec::new() };
+
+        reject_unknown_keys("authority", &raw.unknown, errors);
+
+        let entries = raw.leases.unwrap_or_default();
+        let mut leases = Vec::with_capacity(entries.len());
+        for (i, entry) in entries.into_iter().enumerate() {
+            if let Some(grant) = Self::validate_lease_grant(entry, i, errors) {
+                leases.push(grant);
+            }
+        }
+        leases
+    }
+
+    /// Validate one `authority.leases[i]` entry into a [`LeaseGrant`].
+    ///
+    /// `domain`, `scope` and `reason` are required — none of the three has a
+    /// safe default on a *grant* (see [`LeaseScope::Whole`]'s doc comment for
+    /// why `scope` specifically cannot default), so a missing one is a hard
+    /// error rather than a silently narrowed or widened lease, matching the
+    /// AAASM-4330 fail-closed rule applied to a restriction node. An entry
+    /// that fails validation contributes no [`LeaseGrant`] — harmless, since
+    /// a non-empty `errors` already fails the whole document, exactly as
+    /// `validate_tools` and `validate_capabilities` behave on a bad entry.
+    fn validate_lease_grant(raw: RawLeaseGrant, index: usize, errors: &mut Vec<ValidationError>) -> Option<LeaseGrant> {
+        let field = |suffix: &str| format!("authority.leases[{index}].{suffix}");
+        reject_unknown_keys(&format!("authority.leases[{index}]"), &raw.unknown, errors);
+
+        let domain = match raw.domain.as_deref() {
+            None => {
+                errors.push(ValidationError::new(field("domain"), "is required"));
+                None
+            }
+            Some(name) => match LeaseDomain::parse(name) {
+                Some(d) => Some(d),
+                None => {
+                    errors.push(ValidationError::new(
+                        field("domain"),
+                        format!(
+                            "unrecognised lease domain '{name}'; valid domains are: filesystem_read, \
+                             filesystem_write, network_egress, name_resolution, syscall, process_creation, \
+                             ipc, credential, resource, workspace_transaction"
+                        ),
+                    ));
+                    None
+                }
+            },
+        };
+
+        let scope = match raw.scope {
+            None => {
+                errors.push(ValidationError::new(
+                    field("scope"),
+                    "is required; write the literal string \"whole\" or a non-empty list of selector strings",
+                ));
+                None
+            }
+            Some(RawLeaseScope::Whole(word)) => {
+                if word == "whole" {
+                    Some(LeaseScope::Whole)
+                } else {
+                    errors.push(ValidationError::new(
+                        field("scope"),
+                        format!("unrecognised scope '{word}'; the only accepted string is \"whole\""),
+                    ));
+                    None
+                }
+            }
+            Some(RawLeaseScope::Selectors(selectors)) => {
+                if selectors.is_empty() {
+                    errors.push(ValidationError::new(
+                        field("scope"),
+                        "selector list must not be empty; write \"whole\" to grant the whole domain instead",
+                    ));
+                    None
+                } else {
+                    Some(LeaseScope::Selectors(selectors))
+                }
+            }
+        };
+
+        if raw.ttl_seconds == Some(0) {
+            errors.push(ValidationError::new(field("ttl_seconds"), "must be greater than 0"));
+        }
+        if raw.max_count == Some(0) {
+            errors.push(ValidationError::new(field("max_count"), "must be greater than 0"));
+        }
+
+        let reason = match raw.reason.as_deref() {
+            Some(r) if !r.trim().is_empty() => Some(r.to_string()),
+            _ => {
+                errors.push(ValidationError::new(
+                    field("reason"),
+                    "is required and must not be empty",
+                ));
+                None
+            }
+        };
+
+        let (domain, scope, reason) = match (domain, scope, reason) {
+            (Some(domain), Some(scope), Some(reason)) => (domain, scope, reason),
+            _ => return None,
+        };
+
+        Some(LeaseGrant {
+            domain,
+            scope,
+            max_count: raw.max_count.filter(|&n| n > 0),
+            ttl_seconds: raw.ttl_seconds.filter(|&n| n > 0),
+            delegable: raw.delegable.unwrap_or(false),
+            issuer: raw.issuer,
+            policy_rule: raw.policy_rule,
+            approval_ref: raw.approval_ref,
+            reason,
+        })
     }
 
     /// Validate one `filesystem.<verb>` node into a canonical
@@ -1938,5 +2069,134 @@ approval:
             .expect("a stated empty allowlist is in force, not silence");
         assert!(node.permits_nothing());
         assert_ne!(absent.document.syscall_allowlist, empty.document.syscall_allowlist);
+    }
+
+    // ── AAASM-6275 — authority.leases ───────────────────────────────────────
+
+    #[test]
+    fn a_whole_scope_lease_round_trips_through_validation() {
+        let yaml = "authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: scoped egress for the build step\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("valid lease document");
+        assert_eq!(out.document.leases.len(), 1);
+        assert_eq!(out.document.leases[0].domain, LeaseDomain::NetworkEgress);
+        assert_eq!(out.document.leases[0].scope, LeaseScope::Whole);
+        assert_eq!(out.document.leases[0].reason, "scoped egress for the build step");
+        assert!(!out.document.leases[0].delegable);
+    }
+
+    #[test]
+    fn a_selector_scope_lease_round_trips_through_validation() {
+        let yaml = "authority:\n  leases:\n    - domain: filesystem_write\n      scope:\n        - /workspace\n      max_count: 10\n      ttl_seconds: 3600\n      delegable: true\n      issuer: ops-team\n      reason: scoped write access\n";
+        let out = PolicyValidator::from_yaml(yaml).expect("valid lease document");
+        let lease = &out.document.leases[0];
+        assert_eq!(lease.domain, LeaseDomain::FilesystemWrite);
+        assert_eq!(lease.scope, LeaseScope::Selectors(vec!["/workspace".to_string()]));
+        assert_eq!(lease.max_count, Some(10));
+        assert_eq!(lease.ttl_seconds, Some(3600));
+        assert!(lease.delegable);
+        assert_eq!(lease.issuer.as_deref(), Some("ops-team"));
+    }
+
+    #[test]
+    fn absent_authority_section_is_an_empty_lease_list() {
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        assert!(out.document.leases.is_empty());
+    }
+
+    #[test]
+    fn empty_leases_list_is_also_an_empty_lease_list() {
+        let out = PolicyValidator::from_yaml("authority:\n  leases: []\n").expect("valid");
+        assert!(out.document.leases.is_empty());
+    }
+
+    #[test]
+    fn a_lease_missing_domain_is_rejected() {
+        let errs = PolicyValidator::from_yaml("authority:\n  leases:\n    - scope: whole\n      reason: r\n")
+            .expect_err("a lease with no domain must be rejected");
+        assert!(
+            errs.iter().any(|e| e.field == "authority.leases[0].domain"),
+            "expected a domain error, got: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn a_lease_with_an_unrecognised_domain_is_rejected() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: filesystem_execute\n      scope: whole\n      reason: r\n",
+        )
+        .expect_err("an unknown lease domain must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].domain"));
+    }
+
+    #[test]
+    fn a_lease_missing_scope_is_rejected() {
+        let errs = PolicyValidator::from_yaml("authority:\n  leases:\n    - domain: syscall\n      reason: r\n")
+            .expect_err("a lease with no scope must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].scope"));
+    }
+
+    #[test]
+    fn a_lease_with_a_misspelled_whole_scope_is_rejected() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: all\n      reason: r\n",
+        )
+        .expect_err("a misspelled scope string must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].scope"));
+    }
+
+    #[test]
+    fn a_lease_with_an_empty_selector_list_is_rejected() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: []\n      reason: r\n",
+        )
+        .expect_err("an empty selector list must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].scope"));
+    }
+
+    #[test]
+    fn a_lease_missing_reason_is_rejected() {
+        let errs = PolicyValidator::from_yaml("authority:\n  leases:\n    - domain: syscall\n      scope: whole\n")
+            .expect_err("a lease with no reason must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].reason"));
+    }
+
+    #[test]
+    fn a_lease_with_zero_ttl_seconds_is_rejected() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: whole\n      reason: r\n      ttl_seconds: 0\n",
+        )
+        .expect_err("a zero ttl must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].ttl_seconds"));
+    }
+
+    #[test]
+    fn a_lease_with_zero_max_count_is_rejected() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: whole\n      reason: r\n      max_count: 0\n",
+        )
+        .expect_err("a zero max_count must be rejected");
+        assert!(errs.iter().any(|e| e.field == "authority.leases[0].max_count"));
+    }
+
+    #[test]
+    fn a_misspelled_authority_key_is_rejected_rather_than_dropped() {
+        let errs =
+            PolicyValidator::from_yaml("authority:\n  leasess: []\n").expect_err("a nested typo must fail closed");
+        assert!(errs.iter().any(|e| e.field.starts_with("authority")));
+    }
+
+    #[test]
+    fn a_misspelled_lease_entry_key_is_rejected_rather_than_dropped() {
+        let errs = PolicyValidator::from_yaml(
+            "authority:\n  leases:\n    - domain: syscall\n      scope: whole\n      raeson: r\n",
+        )
+        .expect_err("a nested typo inside a lease entry must fail closed");
+        assert!(errs.iter().any(|e| e.field.starts_with("authority.leases[0]")));
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_lists_authority_as_valid() {
+        let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
+        assert!(errs.iter().any(|e| e.message.contains("authority")));
     }
 }

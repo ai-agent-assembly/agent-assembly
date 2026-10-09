@@ -47,8 +47,12 @@ pub mod scope;
 mod test_support;
 pub mod validator;
 
+pub use canonical::CanonicalLeaseGrant;
 pub use context::{ContextError, PolicyContext};
-pub use document::{ActiveHours, BudgetPolicy, DataPolicy, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy};
+pub use document::{
+    ActiveHours, BudgetPolicy, DataPolicy, LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument,
+    SchedulePolicy, ToolPolicy,
+};
 pub use error::{PolicyParseError, ValidationError, ValidationWarning};
 pub use expr::{evaluate_clause, ClauseKind, ResolutionFailure};
 pub use filesystem::{merge_cascade as merge_filesystem_cascade, CascadeFilesystemScope, EmptyCascadeRefusal};

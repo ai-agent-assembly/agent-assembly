@@ -83,6 +83,7 @@ fn empty_doc(scope: PolicyScope) -> PolicyDocument {
         capabilities: None,
         filesystem: None,
         syscall_allowlist: None,
+        leases: Vec::new(),
     }
 }
 

@@ -128,6 +128,94 @@
           }
         }
       }
+    },
+    "authority": {
+      "description": "Explicitly authored capability leases (AAASM-6275, ADR 0038). A lease states that this policy grants the agent authority over a capability domain -- for how long, under what scope, and whether a child launch may inherit it. A lease is independently authored: it is never derived from, and must not be confused with, a restriction node such as 'filesystem', 'syscalls', 'capabilities' or 'network' above.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leases": {
+          "description": "The list of capability-lease grants this policy document authors.",
+          "type": "array",
+          "items": {
+            "description": "One capability-lease grant.",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["domain", "scope", "reason"],
+            "properties": {
+              "domain": {
+                "description": "The capability domain this lease grants authority over. A closed vocabulary mirroring aa-isolation's CapabilityDomain names.",
+                "type": "string",
+                "enum": [
+                  "filesystem_read",
+                  "filesystem_write",
+                  "network_egress",
+                  "name_resolution",
+                  "syscall",
+                  "process_creation",
+                  "ipc",
+                  "credential",
+                  "resource",
+                  "workspace_transaction"
+                ]
+              },
+              "scope": {
+                "description": "What within the domain the lease covers: the literal string 'whole' (the whole domain, with no further restriction), or a non-empty list of domain-specific selector strings (paths for filesystem domains, destinations for network domains, call names for syscalls). Required -- an unstated scope on a grant has no safe default.",
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "const": "whole"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  }
+                ]
+              },
+              "max_count": {
+                "description": "Maximum number of times this lease may be exercised before it is exhausted. Omit for uncapped by count.",
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "ttl_seconds": {
+                "description": "Seconds from issuance before this lease expires. Omit to leave expiry to the issuing mechanism.",
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              "delegable": {
+                "description": "Whether a child launch may inherit this lease, narrowed. Defaults to false (not delegable).",
+                "type": "boolean",
+                "default": false
+              },
+              "issuer": {
+                "description": "Free-text identity reference this lease is issued on behalf of.",
+                "type": "string",
+                "minLength": 1
+              },
+              "policy_rule": {
+                "description": "The named policy rule this lease was authored under, for audit attribution.",
+                "type": "string",
+                "minLength": 1
+              },
+              "approval_ref": {
+                "description": "A reference to a recorded approval, when this lease's issuance was gated on one.",
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "description": "Why this lease is granted, in words an operator can act on. Required; never a credential value.",
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "default": []
+        }
+      }
     }
   },
   "examples": [
@@ -170,6 +258,25 @@
       "budget": { "daily_limit_usd": 25.00 },
       "schedule": {
         "active_hours": { "start": "00:00", "end": "23:59", "timezone": "UTC" }
+      },
+      "authority": {
+        "leases": [
+          {
+            "domain": "filesystem_write",
+            "scope": ["/workspace/build"],
+            "max_count": 100,
+            "ttl_seconds": 3600,
+            "delegable": false,
+            "issuer": "ops-team",
+            "reason": "scoped write access for the build step"
+          },
+          {
+            "domain": "network_egress",
+            "scope": "whole",
+            "ttl_seconds": 86400,
+            "reason": "unrestricted egress for the duration of this policy's active hours"
+          }
+        ]
       }
     },
     {
