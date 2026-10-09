@@ -328,24 +328,44 @@ fn a_narrower_derived_child_passes_the_same_gate_against_the_same_parent() {
 
 /// A real 3-generation attenuation chain, built end to end through the
 /// production machinery (`DelegationLedger::derive_child`, not a hand-built
-/// lease) at every hop: root -> child -> grandchild. Two adversarial
-/// properties, both load-bearing for AAASM-6161's "monotonic by
-/// construction" claim once a tree is more than one generation deep:
+/// lease) at every hop: root -> child -> grandchild.
 ///
 /// (a) a grandchild trying to claim a scope wider than its own parent (the
-///     child) ever held is refused by the gate -- not merely "wider than
-///     the root", which a shallower 2-generation test cannot distinguish
-///     from "wider than the immediate parent" at all.
-/// (b) revoking the root's lease reaches the grandchild too, not merely the
-///     immediate child: no fresh child can be re-derived through the
-///     ledger once the root is revoked, so no fresh grandchild can ever be
-///     minted from one either, and the grandchild's own lease -- checked
-///     directly against a `ParentAuthority` snapshot built from the
-///     post-revocation root -- is refused as well. This is the property a
-///     2-generation fixture cannot exercise at all: there is no second hop
-///     past the one a single-level test already checks.
+///     child, scoped to `/workspace/a`) ever held -- `/workspace/b`, a
+///     *sibling* of the child's own grant and therefore still well inside
+///     the root's `/workspace` grant -- is refused relative to the
+///     immediate parent specifically. The positive control re-gates the
+///     identical hand-built lease directly against the root ancestry
+///     (skipping the child), where it is narrower than the root's own
+///     grant and admits: a 2-generation fixture cannot isolate "refused
+///     because it exceeds the immediate parent" from "refused because it
+///     exceeds the root", since there both parents are the same node; this
+///     one can, and does.
+/// (b) revoking the root's lease: the immediate child is refused when
+///     re-gated against a `ParentAuthority` snapshot carrying the root's
+///     now-revoked lease, and the ledger refuses to mint any *fresh* child
+///     from the revoked root lease. Verified empirically (not asserted)
+///     against this crate's real production entry points and recorded
+///     honestly below is the limit of that cascade: revocation reaches
+///     only the hop derived directly from the revoked lease. An
+///     already-minted, already-held grandchild `ParentAuthority` whose own
+///     immediate parent (the child) was never itself revoked is
+///     unaffected -- the grandchild still gates cleanly, and a *fresh*
+///     grandchild can still be minted from the still-active child lease,
+///     because `RevocationState` lives on each lease object independently
+///     (see that type's own doc comment) and nothing in `check_attenuation`
+///     looks past the immediate parent to ask whether its own ancestors
+///     are still valid. This is the documented, pinned gap this test
+///     exists to make checkable rather than merely asserted: "revocation
+///     isn't accidentally scoped to only the immediate child" does NOT
+///     hold for an already-resolved deeper ancestry snapshot -- it holds
+///     only for whichever hop is re-gated directly against the revoked
+///     lease. A target-contract test below (`#[ignore]`d) pins the
+///     property this ticket's AC literally asks for, for a future fix;
+///     per AAASM-6290's scope this subtask documents the gap and does not
+///     change `authority_gate` or `DelegationLedger` to close it.
 #[test]
-fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revocation_reaches_the_grandchild() {
+fn a_three_generation_chain_refuses_widening_at_generation_two_and_characterizes_root_revocation_reach() {
     let now = t(1_500);
 
     let root_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace")]);
@@ -361,7 +381,7 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revoca
     .with_delegation(DelegationRule::DelegableWithNarrowerScope);
 
     let root_spec = ExecutionSpec::new("echo", IdentityRef::root("root-agent"))
-        .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(root_scope))
+        .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(root_scope.clone()))
         .with_lease(root_lease.clone());
     let root_witness = authority_gate(&root_spec, &Ancestry::Root, now).expect("root's own launch must gate");
     let root_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(&root_spec, &root_witness)));
@@ -434,16 +454,25 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revoca
     );
 
     // -----------------------------------------------------------------
-    // (a) Widening at generation 2: the grandchild hand-builds a lease
-    // claiming a scope wider than its own parent (the child, scoped to
-    // /workspace/a) ever held -- /etc, entirely outside the child's grant.
-    // A 2-generation fixture cannot distinguish "caught relative to the
-    // immediate parent" from "caught relative to the root"; this one can,
-    // because the root's own grant (/workspace) does not cover /etc either,
-    // but what matters here is that the refusal is attributable to the
-    // *child's* ceiling specifically, which this scope also violates.
+    // (a) Widening at generation 2, isolated from "wider than the root":
+    // /workspace/b is a sibling of the child's own /workspace/a grant, so
+    // it is outside the *immediate parent*'s ceiling while still squarely
+    // inside the root's /workspace grant.
     // -----------------------------------------------------------------
-    let widened_scope = RequirementScope::Selectors(vec![permit_only_selector("/etc")]);
+    let widened_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace/b")]);
+    assert_eq!(
+        scope_order::order_for(CapabilityDomain::FilesystemRead).compare(&child_scope, &widened_scope),
+        ScopeOrdering::Wider,
+        "fixture-honesty: /workspace/b is a sibling of /workspace/a, not a sub-path of it, so this \
+         attack scope really does exceed the immediate parent's grant"
+    );
+    assert_eq!(
+        scope_order::order_for(CapabilityDomain::FilesystemRead).compare(&root_scope, &widened_scope),
+        ScopeOrdering::Narrower,
+        "fixture-honesty: /workspace/b is still inside the root's own /workspace grant -- this \
+         scope is wide relative to the child specifically, not invalid in general"
+    );
+
     let widened_grandchild_lease = CapabilityLease::new(
         LeaseId::new("grandchild-fs-lease-widened"),
         grandchild_identity.clone(),
@@ -453,46 +482,45 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revoca
         t(2_000),
         LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: hand-built, not derived"),
     );
-    assert_eq!(
-        scope_order::order_for(CapabilityDomain::FilesystemRead).compare(&child_scope, &widened_scope),
-        ScopeOrdering::Wider,
-        "fixture-honesty: /etc is not a sub-path of /workspace/a under PathPrefixOrder, so this \
-         attack scope really is wider than (not merely different from) the immediate parent's grant"
-    );
     let widened_spec = ExecutionSpec::new("echo", grandchild_identity.clone())
-        .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(widened_scope))
-        .with_lease(widened_grandchild_lease);
-    let widening_refusal = authority_gate(&widened_spec, &child_ancestry, now)
-        .expect_err("a grandchild claiming a scope its own parent never held must be refused");
+        .with_requirement(
+            ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(widened_scope.clone()),
+        )
+        .with_lease(widened_grandchild_lease.clone());
+    assert_eq!(
+        authority_gate(&widened_spec, &child_ancestry, now),
+        Err(AuthorityRefusal::ChildExceedsParent {
+            domain: CapabilityDomain::FilesystemRead
+        }),
+        "widening at generation 2 must be refused as ChildExceedsParent against the immediate parent"
+    );
+
+    // Positive control: the identical hand-built lease, gated directly
+    // against the root ancestry (the child hop skipped entirely), admits
+    // -- it is narrower than the root's own grant and carries no
+    // provenance claiming a derivation this skip would falsify. This is
+    // the control a 2-generation fixture cannot express: it proves (a)'s
+    // refusal is attributable to the *immediate* parent's ceiling, not to
+    // the scope being wide in any absolute sense.
     assert!(
-        matches!(
-            widening_refusal,
-            AuthorityRefusal::ChildExceedsParent {
-                domain: CapabilityDomain::FilesystemRead
-            } | AuthorityRefusal::AttenuationIncomparable {
-                domain: CapabilityDomain::FilesystemRead
-            }
-        ),
-        "widening at generation 2 must be refused as an attenuation violation against the \
-         immediate parent, got: {widening_refusal:?}"
+        authority_gate(&widened_spec, &root_ancestry, now).is_ok(),
+        "unscoped control: the identical lease, checked directly against the root (which really \
+         does cover /workspace/b), must admit -- isolating (a)'s refusal as specific to the \
+         immediate parent's ceiling"
     );
 
     // -----------------------------------------------------------------
-    // (b) Revoking the root cascades to reach the grandchild -- not merely
-    // the immediate child. This is the property a 2-generation fixture
-    // cannot exercise at all: there is no second hop past the one the
-    // revocation is checked against.
+    // (b) Revoking the root.
     // -----------------------------------------------------------------
     ledger.revoke(root_lease.id(), 1, "operator revoked the root lease");
 
-    // (b-i) The immediate child is refused first, through the same
-    // mechanism the existing single-hop tests already pin: a fresh
+    // (b-i) The immediate child is refused when re-gated against a fresh
     // `ParentAuthority` snapshot carrying the root's now-revoked lease
-    // value is re-validated at gate time and is no longer active. An
-    // empty-requirement spec always gates (mirrors `attenuation.rs`'s own
-    // `concurrent_child_derivation_...` test) -- this is how the
-    // post-revocation snapshot is produced here without depending on the
-    // production orchestrator's own re-resolution path.
+    // value -- the same mechanism the existing single-hop tests already
+    // pin. An empty-requirement spec always gates (mirrors
+    // `attenuation.rs`'s own `concurrent_child_derivation_...` test) --
+    // this is how the post-revocation snapshot is produced here without
+    // depending on the production orchestrator's own re-resolution path.
     let root_spec_revoked = ExecutionSpec::new("echo", IdentityRef::root("root-agent")).with_lease(
         root_lease.clone().with_revocation(RevocationState::Revoked {
             generation: 1,
@@ -519,11 +547,8 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revoca
         "the immediate child must be refused with LeaseInvalid::Revoked, got: {child_refusal_after_revoke:?}"
     );
 
-    // (b-ii) No fresh child -- and therefore no fresh grandchild derived
-    // from one -- can ever be minted again once the root is revoked in the
-    // ledger: the chain cannot be freshly re-walked past the revoked root,
-    // which is what "cascades to the grandchild" means operationally for a
-    // ledger-tracked derivation.
+    // (b-ii) The ledger itself refuses to mint any *fresh* child from the
+    // now-revoked root lease.
     let fresh_child_attempt = ledger.derive_child(
         &root_lease,
         ChildLeaseRequest {
@@ -540,30 +565,143 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revoca
     assert_eq!(
         fresh_child_attempt,
         Err(DelegationDenied::ParentRevoked),
-        "once the root is revoked in the ledger, no fresh child -- and therefore no fresh \
-         grandchild derived from one -- can ever be minted again"
+        "the ledger must refuse to mint a fresh child directly from a revoked parent lease"
     );
 
-    // (b-iii) The grandchild spec, gated directly against the
-    // post-revocation root ancestry (skipping the intermediate child hop,
-    // as a check on whether the refusal is somehow scoped to only a
-    // direct-child relationship), is refused too -- fail-closed either way,
-    // which is the property this test needs, not the specific variant name.
-    let grandchild_refusal_direct = authority_gate(&grandchild_spec, &root_ancestry_post_revoke, now)
-        .expect_err("a grandchild is refused when checked directly against a revoked root ancestry too");
+    // (b-iii) Documented, pinned gap -- the limit of (b-i)/(b-ii)'s reach,
+    // verified empirically rather than assumed: an already-minted
+    // grandchild `ParentAuthority`, whose own immediate parent (the child
+    // lease) was never itself revoked, is unaffected by the root's
+    // revocation. The grandchild still gates cleanly against the
+    // already-held `child_ancestry` ...
     assert!(
-        matches!(
-            grandchild_refusal_direct,
-            AuthorityRefusal::ChildExceedsParent {
-                domain: CapabilityDomain::FilesystemRead
-            } | AuthorityRefusal::AttenuationIncomparable {
-                domain: CapabilityDomain::FilesystemRead
-            } | AuthorityRefusal::LeaseInvalid {
-                domain: CapabilityDomain::FilesystemRead,
-                ..
-            }
-        ),
-        "the grandchild must be refused, not admitted, once checked against a revoked root \
-         ancestry, got: {grandchild_refusal_direct:?}"
+        authority_gate(&grandchild_spec, &child_ancestry, now).is_ok(),
+        "documented gap: an already-held child ancestry snapshot is not retroactively invalidated \
+         by a revocation of ITS OWN parent (the root) -- only the hop re-gated directly against \
+         the revoked lease is caught. If this assertion starts failing, the gap has been closed \
+         and this test (plus J82's recorded finding) needs to be revisited deliberately, not \
+         silently."
+    );
+    // ... and a *fresh* grandchild can still be minted from the
+    // still-active child lease through the very same ledger that just
+    // refused a fresh child from the revoked root -- the ledger's
+    // `register_parent`/`revoke` state is keyed per lease id, not
+    // transitively across a derivation chain.
+    let fresh_grandchild_attempt = ledger.derive_child(
+        &child_lease,
+        ChildLeaseRequest {
+            child_id: LeaseId::new("grandchild-fs-lease-post-root-revoke"),
+            child_subject: grandchild_identity.clone(),
+            child_scope: grandchild_scope.clone(),
+            child_expires_at: t(7_000),
+            mode: InheritanceMode::Narrower,
+            child_delegation: DelegationRule::NotDelegable,
+            child_limits: None,
+        },
+        t(1_700),
+    );
+    assert!(
+        fresh_grandchild_attempt.is_ok(),
+        "documented gap: a fresh grandchild derived from the still-active child lease is not \
+         blocked by the root's revocation -- the ledger tracks revocation per lease id, not \
+         transitively up the ancestry chain"
+    );
+}
+
+/// Target-contract pin (per AAASM-6290's "document, don't fix" scope): the
+/// property the ticket's own AC literally asks for -- revoking the root's
+/// authority reaches the grandchild even through an already-held,
+/// already-minted `ParentAuthority` snapshot whose immediate parent was
+/// never itself revoked. The test above shows this does **not** currently
+/// hold; this one pins the desired behavior as a known-failing target so a
+/// future fix (transitively re-validating the whole ancestry chain, not
+/// just the immediate parent, inside `check_attenuation`) has a concrete
+/// regression test to turn green, without this QA subtask touching
+/// `authority_gate` or `DelegationLedger` itself.
+#[test]
+#[ignore = "AAASM-6290 ST-3 documented gap: revocation does not transitively reach a grandchild \
+            through an already-held, unaffected intermediate ParentAuthority snapshot -- see the \
+            passing characterization test above for the current (gap) behavior. Run with \
+            --ignored to reproduce; candidate Bug not yet filed."]
+fn a_grandchild_is_refused_once_any_ancestor_up_to_the_root_is_revoked_target_contract() {
+    let now = t(1_500);
+
+    let root_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace")]);
+    let root_lease = CapabilityLease::new(
+        LeaseId::new("root-fs-lease-target"),
+        IdentityRef::root("root-agent"),
+        CapabilityDomain::FilesystemRead,
+        root_scope,
+        t(1_000),
+        t(9_000),
+        LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: root grant"),
+    )
+    .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+
+    let ledger = DelegationLedger::new();
+    ledger.register_parent(&root_lease);
+
+    let child_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace/a")]);
+    let child_lease = ledger
+        .derive_child(
+            &root_lease,
+            ChildLeaseRequest {
+                child_id: LeaseId::new("child-fs-lease-target"),
+                child_subject: IdentityRef::root("child-agent").with_ancestor("root-agent"),
+                child_scope: child_scope.clone(),
+                child_expires_at: t(8_000),
+                mode: InheritanceMode::Narrower,
+                child_delegation: DelegationRule::DelegableWithNarrowerScope,
+                child_limits: None,
+            },
+            t(1_100),
+        )
+        .expect("a narrower child must derive from the root through the ledger");
+
+    let child_spec = ExecutionSpec::new("echo", IdentityRef::root("child-agent").with_ancestor("root-agent"))
+        .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(child_scope.clone()))
+        .with_lease(child_lease.clone());
+    let root_spec = ExecutionSpec::new("echo", IdentityRef::root("root-agent")).with_lease(root_lease.clone());
+    let root_witness = authority_gate(&root_spec, &Ancestry::Root, now).expect("root's own launch must gate");
+    let root_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(&root_spec, &root_witness)));
+    let child_witness = authority_gate(&child_spec, &root_ancestry, now).expect("child must gate against root");
+    let child_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(&child_spec, &child_witness)));
+
+    let grandchild_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace/a/sub")]);
+    let grandchild_lease = ledger
+        .derive_child(
+            &child_lease,
+            ChildLeaseRequest {
+                child_id: LeaseId::new("grandchild-fs-lease-target"),
+                child_subject: IdentityRef::root("grandchild-agent")
+                    .with_ancestor("root-agent")
+                    .with_ancestor("child-agent"),
+                child_scope: grandchild_scope.clone(),
+                child_expires_at: t(7_000),
+                mode: InheritanceMode::Narrower,
+                child_delegation: DelegationRule::NotDelegable,
+                child_limits: None,
+            },
+            t(1_200),
+        )
+        .expect("a narrower grandchild must derive from the child through the ledger");
+    let grandchild_spec = ExecutionSpec::new(
+        "echo",
+        IdentityRef::root("grandchild-agent")
+            .with_ancestor("root-agent")
+            .with_ancestor("child-agent"),
+    )
+    .with_requirement(ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(grandchild_scope))
+    .with_lease(grandchild_lease);
+
+    ledger.revoke(root_lease.id(), 1, "operator revoked the root lease");
+
+    // Target behavior: this should be refused once the root -- two hops
+    // up -- is revoked, even though `child_ancestry`'s own immediate
+    // parent lease (the child's) was never itself revoked.
+    assert!(
+        authority_gate(&grandchild_spec, &child_ancestry, now).is_err(),
+        "target contract: a grandchild must be refused once ANY ancestor up to the root is \
+         revoked, not only its own immediate parent"
     );
 }
