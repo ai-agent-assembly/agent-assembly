@@ -2230,11 +2230,29 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-isolation/src/egress.rs::tests::metadata_endpoint_destination_reports_the_specific_endpoint
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::private_rfc1918_literal_10_0_0_1_is_restricted_and_broker_required_refuses
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::link_local_metadata_address_169_254_169_254_is_restricted_and_named
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::ipv6_link_local_fe80_1_is_restricted_with_no_metadata_name
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::metadata_address_ipv4_mapped_v6_encoding_is_restricted_but_not_named
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::hostname_resolving_to_a_private_address_is_refused_without_live_dns
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-isolation/src/egress.rs::tests::metadata_address_as_decimal_integer_bypasses_the_classifier (#[ignore]d: documents an open AAASM-6292 ST-5 finding, not yet filed/fixed -- run with --ignored to reproduce)'
   execution_lanes:
   - pr
   - main
   fidelity: controlled_fake
-  negative_control: 'AAASM-6272 (AAASM-6278/6277) proved the policy-authored egress contract reaches every isolation intent and that a `broker_required` policy under `--isolation none` now refuses instead of silently launching unconfined (closing the fail-open gap #2616 fixed), plus cloud-metadata-service default-deny. AAASM-6261''s own acceptance contract also requires identity attribution verifiable in audit/evidence output (today only `EgressAuthority::identity`, documented as asserted-not-verified) and that a policy change narrowing egress takes effect on the next connection attempt (every gate test here runs once, at launch -- no dynamic re-evaluation is exercised). Those two remain a genuine gap, not yet `automated`. See AAASM-6284''s verification comment for the full AC-by-AC mapping.'
+  negative_control: 'AAASM-6272 (AAASM-6278/6277) proved the policy-authored egress contract reaches every isolation intent and that a `broker_required` policy under `--isolation none` now refuses instead of silently launching unconfined (closing the fail-open gap #2616 fixed), plus cloud-metadata-service default-deny. AAASM-6261''s own acceptance contract also requires identity attribution verifiable in audit/evidence output (today only `EgressAuthority::identity`, documented as asserted-not-verified) and that a policy change narrowing egress takes effect on the next connection attempt (every gate test here runs once, at launch -- no dynamic re-evaluation is exercised). Those two remain a genuine gap, not yet `automated`. AAASM-6292 (ST-5, independent QA) additionally live-verified the full `--isolation {none,process,auto}` x `broker_required` refusal matrix on a real macOS host (all three fail closed, each for a correctly-ordered reason -- `none` at the egress-contract check itself, `process`/`auto` earlier at backend-selection since no Linux/`aasm-macos-vm` backend is configured here -- never a silent admit) and found one real classifier gap: `classify_destination` (and `aa_core::net::blocked_ip_literal`, which `aa-proxy`''s own CONNECT literal check shares) parses a host via `std::str::FromStr<IpAddr>`, which does not accept decimal/octal/hex numeric IPv4 notation (`2852039166` for `169.254.169.254`), so that encoding is classified as a `Name` needing only a NameResolution grant rather than as a `RestrictedAddress` the per-destination check would refuse -- documented as an `#[ignore]`d failing test rather than fixed here, candidate Bug not yet filed. See AAASM-6284''s verification comment for the full AC-by-AC mapping.'
 - id: J84
   jira: AAASM-6262
   name: Run a governed agent that never sees a plaintext secret via the credential broker

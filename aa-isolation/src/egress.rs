@@ -1823,4 +1823,161 @@ mod tests {
             "every EgressRefusal variant reachable via egress_gate must fire in this sweep"
         );
     }
+
+    // ---- AAASM-6292 (ST-5): network broker bypass attempts --------------------
+    //
+    // Independent QA evidence for specific bypass-attempt inputs against the
+    // destination classifier and the `broker_required` gate, each paired with a
+    // positive or negative control per the ticket's own instruction.
+
+    #[test]
+    fn private_rfc1918_literal_10_0_0_1_is_restricted_and_broker_required_refuses() {
+        assert!(matches!(
+            classify_destination("10.0.0.1"),
+            DestinationClass::RestrictedAddress { .. }
+        ));
+        let scope = selectors(&["10.0.0.1"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &scope),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+
+        // Control: a public literal with the same grant shape is admitted.
+        let public_scope = selectors(&["93.184.216.34"]);
+        let public_spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, public_scope.clone()));
+        let public_authority = egress_authority_for(&public_spec);
+        assert!(egress_gate(&contract, &broker, &public_authority, &public_scope).is_ok());
+    }
+
+    #[test]
+    fn link_local_metadata_address_169_254_169_254_is_restricted_and_named() {
+        match classify_destination("169.254.169.254") {
+            DestinationClass::RestrictedAddress {
+                known_metadata_endpoint,
+                ..
+            } => {
+                assert_eq!(known_metadata_endpoint, Some("169.254.169.254"));
+            }
+            other => panic!("expected RestrictedAddress with a named metadata endpoint, got {other:?}"),
+        }
+        let scope = selectors(&["169.254.169.254"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &scope),
+            Err(EgressRefusal::RestrictedDestination {
+                known_metadata_endpoint: Some("169.254.169.254"),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn ipv6_link_local_fe80_1_is_restricted_with_no_metadata_name() {
+        // fe80::1 is link-local but not a named cloud-metadata endpoint — the
+        // `known_metadata_endpoint` arm correctly distinguishes the two.
+        match classify_destination("fe80::1") {
+            DestinationClass::RestrictedAddress {
+                known_metadata_endpoint,
+                ..
+            } => {
+                assert_eq!(known_metadata_endpoint, None);
+            }
+            other => panic!("expected RestrictedAddress, got {other:?}"),
+        }
+        let scope = selectors(&["fe80::1"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &scope),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+    }
+
+    #[test]
+    fn metadata_address_ipv4_mapped_v6_encoding_is_restricted_but_not_named() {
+        // `::ffff:169.254.169.254` is the metadata address re-encoded as an
+        // IPv4-mapped IPv6 literal. `is_blocked_ip` maps it back to v4 before
+        // the block decision, so the refusal still fires correctly — but
+        // `metadata_endpoint_match` compares `host` as a raw string against
+        // `CLOUD_METADATA_ENDPOINTS`, which only holds the bare
+        // "169.254.169.254" form, so the mapped encoding never matches and
+        // `known_metadata_endpoint` reads `None` even though the address
+        // actually blocked is the metadata endpoint. This is a truthful-
+        // evidence naming gap (the refusal's `detail` will not name the
+        // metadata endpoint for this encoding) — the refusal itself is not
+        // bypassed. See the AAASM-6292 ST-5 report.
+        match classify_destination("::ffff:169.254.169.254") {
+            DestinationClass::RestrictedAddress {
+                known_metadata_endpoint,
+                ..
+            } => {
+                assert_eq!(
+                    known_metadata_endpoint, None,
+                    "known_metadata_endpoint naming does not follow the IPv4-mapped encoding today \
+                     (AAASM-6292 ST-5) — update this assertion if that's since been fixed"
+                );
+            }
+            other => panic!("expected RestrictedAddress (the refusal must still fire), got {other:?}"),
+        }
+        let scope = selectors(&["::ffff:169.254.169.254"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        assert!(matches!(
+            egress_gate(&contract, &broker, &authority, &scope),
+            Err(EgressRefusal::RestrictedDestination { .. })
+        ));
+    }
+
+    #[test]
+    #[ignore = "AAASM-6292 ST-5 QA finding, not yet filed/fixed: classify_destination parses `host` via \
+                std's FromStr<IpAddr>, which rejects decimal (and octal/hex) numeric IPv4 notation \
+                ('2852039166' for 169.254.169.254) — the destination is classified as \
+                DestinationClass::Name instead of RestrictedAddress, so egress_gate's per-destination \
+                RestrictedDestination check never runs for it; only a NameResolution grant covering the \
+                literal string '2852039166' is required instead. aa_core::net::blocked_ip_literal (which \
+                aa-proxy's own CONNECT literal check uses) shares the identical gap. Left #[ignore]d so \
+                CI stays green; run with `--ignored` to reproduce. See the AAASM-6292 report for the full \
+                chain and why aa-proxy's separate resolved-answer re-validation may still catch a live \
+                dial downstream even though this layer's own classifier does not."]
+    fn metadata_address_as_decimal_integer_bypasses_the_classifier() {
+        // 2852039166 is 169.254.169.254 as a single base-10 u32 — a classic
+        // SSRF bypass encoding some HTTP clients/resolvers still accept.
+        assert!(matches!(
+            classify_destination("2852039166"),
+            DestinationClass::RestrictedAddress { .. }
+        ));
+    }
+
+    #[test]
+    fn hostname_resolving_to_a_private_address_is_refused_without_live_dns() {
+        // `classify_destination` takes no resolver to inject. Resolution is
+        // instead modeled at the IP-answer layer via `check_resolved_answers`/
+        // `partition_resolved_answers` — exactly where `aa-proxy`'s own
+        // `connect_revalidated` re-validates every DNS answer — so this
+        // constructs the answer set a hostname lookup would have returned
+        // rather than depending on live DNS.
+        let private_only: Vec<IpAddr> = vec!["10.0.0.1".parse().unwrap()];
+        assert_eq!(
+            check_resolved_answers(&private_only),
+            Err(EgressRefusal::ResolutionYieldedNoRoutableAnswer)
+        );
+        let (routable, restricted) = partition_resolved_answers(&private_only);
+        assert!(routable.is_empty());
+        assert_eq!(restricted, private_only);
+
+        // Control: the same hostname resolving to a public address is admitted.
+        let public_only: Vec<IpAddr> = vec!["93.184.216.34".parse().unwrap()];
+        assert!(check_resolved_answers(&public_only).is_ok());
+    }
 }
