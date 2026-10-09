@@ -1329,13 +1329,18 @@ mod plan {
             // policy that requires brokered egress now actually reaches this
             // gate. **Caveat**: this whole function returns before this point
             // for `--isolation none` (the `self.backend.as_mut()` `else` branch
-            // above) — the plan still carries the authored contract in
-            // `self.egress`, but nothing renders that field today (no
-            // `IsolationReport` field, no `--dry-run` line), and an unconfined
-            // launch is not gated against it either. A policy requiring
-            // brokered egress under the default `--isolation none` therefore
-            // fails open, silently. Do not cite this comment as evidence of
-            // live egress prevention under `--isolation none`.
+            // above) — `egress_gate` itself is simply never reached on that
+            // path, for any contract. That is not a silent fail-open, though:
+            // `resolve_isolation`'s own `IsolationIntent::None` arm refuses the
+            // launch outright (under `PlanPosture::Launch`) when the policy's
+            // contract is `broker_required`, specifically because no backend
+            // — and so no path to this gate — would otherwise exist to
+            // enforce it. Every other way `self.backend` ends up `None` under
+            // `Launch` (an unknown or unavailable backend, `auto` finding no
+            // eligible candidate) already refuses for its own reason before
+            // `resolve_boundary` is ever called, so `--isolation none` is the
+            // only backend-absent path this gate's absence could silently
+            // widen, and it is the one `resolve_isolation` closes explicitly.
             let egress_authority = EgressAuthority::from_gated_spec(&spec, &witness);
             let egress_scope = spec
                 .requirements()
@@ -2106,6 +2111,26 @@ mod plan {
                          `--isolation auto` (or `process`), or drop --isolation-backend."
                     ))?;
                 }
+                // The same contradiction, one level up: `egress_gate` (AAASM-6163)
+                // is only ever reached from `resolve_boundary` once a backend is
+                // selected, so a policy requiring brokered egress under
+                // `--isolation none` would otherwise carry `broker_required` as
+                // inert metadata on the plan while nothing enforces it — a
+                // silent fail-open, not merely an unconfined launch the operator
+                // asked for. Refuse rather than launch ungoverned on this
+                // specific dimension, mirroring the `--isolation-backend` check
+                // above.
+                if egress_contract == aa_isolation::EgressContract::broker_required() {
+                    posture.refuse(anyhow::anyhow!(
+                        "the effective policy requires brokered egress (`egress: posture: broker_required`), \
+                         but --isolation is `none`, so this launch establishes no execution-isolation \
+                         boundary and no backend would be consulted — `egress_gate` is only reached once a \
+                         backend is selected, so this requirement would otherwise be carried on the plan \
+                         without anything enforcing it. Add `--isolation auto` (or `process`) so a backend \
+                         is consulted, or change the policy to `posture: not_required` if this launch \
+                         genuinely needs no brokered egress."
+                    ))?;
+                }
                 return Ok(IsolationPlan {
                     lowering,
                     backend: None,
@@ -2726,13 +2751,13 @@ mod plan {
     /// otherwise — so `egress_gate` now actually refuses a real `aasm run`
     /// whose policy requires brokered egress and whose host has none, **with
     /// one caveat**: `resolve_boundary` returns before reaching `egress_gate`
-    /// at all when `self.backend` is `None` (`--isolation none`), so an
-    /// unconfined launch still carries the authored contract in
-    /// `self.egress`, but nothing renders that field (no `IsolationReport`
-    /// field, no `--dry-run` line exists for it) and the launch is not gated
-    /// against it either — a `broker_required` policy under the default
-    /// `--isolation none` fails open, silently. This test constructs an
-    /// `IsolationPlan` directly, inside this module, with
+    /// at all when `self.backend` is `None` (`--isolation none`). That is not
+    /// a silent fail-open, though — `resolve_isolation`'s own
+    /// `IsolationIntent::None` arm refuses the launch outright under
+    /// `PlanPosture::Launch` when the policy's contract is
+    /// `broker_required`, precisely because this gate is unreachable on that
+    /// path. This test constructs an `IsolationPlan` directly, inside this
+    /// module, with
     /// `egress: EgressContract::broker_required()` so the fixture does not
     /// depend on a real policy file on disk — the policy-to-contract
     /// lowering itself is covered separately by `egress_contract_for`'s own
@@ -3029,6 +3054,57 @@ mod plan {
             let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
                 .expect("preview must not error");
             assert_eq!(plan.egress, EgressContract::not_required());
+        }
+
+        /// The gap `every_isolation_intent_carries_…` above cannot see on its
+        /// own: carrying `broker_required` on a plan whose backend is `None`
+        /// is only safe because `--isolation none` is refused outright when
+        /// the two combine under `Launch`. Without this, the contract would
+        /// be inert metadata nothing ever enforces — silent fail-open on
+        /// exactly the dimension this epic exists to close.
+        #[test]
+        fn isolation_none_refuses_a_broker_required_policy_under_launch() {
+            let resolution = broker_required_resolution();
+            let args = args_with_intent(super::super::IsolationIntent::None);
+
+            let error = match RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution) {
+                Ok(_) => panic!("a broker_required policy under --isolation none must refuse to launch"),
+                Err(e) => e,
+            };
+            let text = error.to_string();
+            assert!(
+                text.contains("broker_required") && text.contains("--isolation"),
+                "the refusal must name the contradiction and the remedy: {text}"
+            );
+        }
+
+        /// The control for the test above: `--isolation none` with no egress
+        /// requirement is unaffected — this check must not refuse every
+        /// unconfined launch, only the ones whose policy actually asks for
+        /// brokered egress.
+        #[test]
+        fn isolation_none_does_not_refuse_a_not_required_policy_under_launch() {
+            let resolution = not_required_resolution();
+            let args = args_with_intent(super::super::IsolationIntent::None);
+
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution)
+                .expect("a not_required policy under --isolation none must still launch unconfined");
+            assert_eq!(plan.egress, EgressContract::not_required());
+        }
+
+        /// The other half of the control: under `Preview`, the same
+        /// contradiction warns and carries on (exactly as the pre-existing
+        /// `--isolation-backend` contradiction check does) rather than
+        /// refusing — a preview that aborted outright could not report what
+        /// a live run would do.
+        #[test]
+        fn isolation_none_warns_but_does_not_refuse_a_broker_required_policy_under_preview() {
+            let resolution = broker_required_resolution();
+            let args = args_with_intent(super::super::IsolationIntent::None);
+
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("a preview must report the refusal and carry on, not error");
+            assert_eq!(plan.egress, EgressContract::broker_required());
         }
     }
 }
