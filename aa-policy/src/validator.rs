@@ -4,11 +4,13 @@ use std::collections::HashMap;
 
 use crate::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, LeaseDomain,
-        LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, EgressPosture,
+        LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
-    raw::{GovernancePolicyEnvelope, RawAuthorityPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument},
+    raw::{
+        GovernancePolicyEnvelope, RawAuthorityPolicy, RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument,
+    },
     scope::PolicyScope,
 };
 
@@ -73,7 +75,7 @@ impl PolicyValidator {
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
                          schedule, budget, data, tools, capabilities, filesystem, syscalls, \
-                         authority, approval_timeout_secs, approval",
+                         authority, egress, approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -90,6 +92,7 @@ impl PolicyValidator {
         let filesystem = Self::validate_filesystem(raw.filesystem, &mut errors);
         let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
         let leases = Self::validate_authority(raw.authority, &mut errors);
+        let egress = Self::validate_egress(raw.egress, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -127,6 +130,7 @@ impl PolicyValidator {
                 filesystem,
                 syscall_allowlist,
                 leases,
+                egress,
             },
             warnings,
         })
@@ -673,6 +677,49 @@ impl PolicyValidator {
             approval_ref: raw.approval_ref,
             reason,
         })
+    }
+
+    /// Validate the `egress:` section into an [`EgressPosture`] (AAASM-6278).
+    ///
+    /// Returns [`EgressPosture::NotRequired`] when the section is absent —
+    /// the same rc.7-compatible default
+    /// `aa_isolation::egress::EgressContract::not_required()` carries.
+    /// Unlike [`validate_authority`](Self::validate_authority), an `egress:`
+    /// section that is *present* but omits `posture:` is a hard error rather
+    /// than falling back to the same default: writing the section at all is
+    /// a deliberate act, and a stated-but-empty section reading as "nothing
+    /// changed" would be the AAASM-4330 fail-closed rule's own silent-widening
+    /// hazard applied to a required-posture node.
+    fn validate_egress(raw: Option<RawEgressPolicy>, errors: &mut Vec<ValidationError>) -> EgressPosture {
+        let Some(raw) = raw else {
+            return EgressPosture::NotRequired;
+        };
+
+        reject_unknown_keys("egress", &raw.unknown, errors);
+
+        match raw.posture.as_deref() {
+            None => {
+                errors.push(ValidationError::new(
+                    "egress.posture",
+                    "is required when an `egress:` section is present; write \"not_required\" or \
+                     \"broker_required\"",
+                ));
+                EgressPosture::NotRequired
+            }
+            Some(word) => match EgressPosture::parse(word) {
+                Some(posture) => posture,
+                None => {
+                    errors.push(ValidationError::new(
+                        "egress.posture",
+                        format!(
+                            "unrecognised egress posture '{word}'; valid postures are: not_required, \
+                             broker_required"
+                        ),
+                    ));
+                    EgressPosture::NotRequired
+                }
+            },
+        }
     }
 
     /// Validate one `filesystem.<verb>` node into a canonical
@@ -2198,5 +2245,51 @@ approval:
     fn an_unknown_top_level_key_lists_authority_as_valid() {
         let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
         assert!(errs.iter().any(|e| e.message.contains("authority")));
+    }
+
+    // ── AAASM-6278 — egress ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_broker_required_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("egress:\n  posture: broker_required\n").expect("valid egress document");
+        assert_eq!(out.document.egress, EgressPosture::BrokerRequired);
+    }
+
+    #[test]
+    fn a_not_required_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("egress:\n  posture: not_required\n").expect("valid egress document");
+        assert_eq!(out.document.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn absent_egress_section_is_not_required() {
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        assert_eq!(out.document.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn an_egress_section_with_no_posture_is_rejected() {
+        let errs = PolicyValidator::from_yaml("egress: {}\n").expect_err("a section with no posture must be rejected");
+        assert!(errs.iter().any(|e| e.field == "egress.posture"));
+    }
+
+    #[test]
+    fn an_egress_section_with_an_unrecognised_posture_is_rejected() {
+        let errs = PolicyValidator::from_yaml("egress:\n  posture: broker_preferred\n")
+            .expect_err("an unknown posture must be rejected");
+        assert!(errs.iter().any(|e| e.field == "egress.posture"));
+    }
+
+    #[test]
+    fn a_misspelled_egress_key_is_rejected_rather_than_dropped() {
+        let errs = PolicyValidator::from_yaml("egress:\n  posturee: broker_required\n")
+            .expect_err("a nested typo must fail closed");
+        assert!(errs.iter().any(|e| e.field.starts_with("egress")));
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_lists_egress_as_valid() {
+        let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
+        assert!(errs.iter().any(|e| e.message.contains("egress")));
     }
 }

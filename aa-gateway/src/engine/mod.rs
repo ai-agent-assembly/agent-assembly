@@ -807,6 +807,7 @@ impl PolicyEngine {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::policy::EgressPosture::NotRequired,
         }
     }
 
@@ -942,6 +943,7 @@ impl PolicyEngine {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::policy::EgressPosture::NotRequired,
         };
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
@@ -2765,6 +2767,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::policy::EgressPosture::NotRequired,
         }
     }
 
@@ -5248,6 +5251,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::policy::EgressPosture::NotRequired,
         }
     }
 

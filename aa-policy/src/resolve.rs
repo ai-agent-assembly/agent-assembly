@@ -117,6 +117,14 @@ pub enum PolicyResolution {
         document: PolicyDocument,
         /// The cross-layer projection an execution boundary is lowered from.
         canonical: CanonicalPolicyDocument,
+        /// AAASM-6278 — this document's required egress-mediation posture,
+        /// captured here at the same point `canonical` is: the last point the
+        /// rich validated [`crate::document::PolicyDocument`] exists. Unlike
+        /// `canonical`, it never passes through `lower_policy`'s
+        /// `ControlRequirement` bridge — see
+        /// [`crate::document::PolicyDocument::egress`]'s own doc comment for
+        /// why.
+        egress: crate::document::EgressPosture,
     },
     /// The operator explicitly selected an allow-all artifact.
     Permissive {
@@ -132,6 +140,12 @@ pub enum PolicyResolution {
         /// anything else, and answering that from an absence would be the
         /// fail-open reading.
         canonical: CanonicalPolicyDocument,
+        /// AAASM-6278 — see [`Self::Enforced`]'s `egress` field. Present for
+        /// the same reason `canonical` is: `is_explicit_allow_all` already
+        /// refuses to classify a `broker_required` document as `Permissive`
+        /// in the first place, but a future, narrower permissiveness check
+        /// must not have to re-derive this from a document that is gone.
+        egress: crate::document::EgressPosture,
     },
     /// No effective policy resolved.
     Unconfigured(Unconfigured),
@@ -291,6 +305,20 @@ impl PolicyResolution {
         match self {
             Self::Enforced { canonical, .. } | Self::Permissive { canonical, .. } => Some(canonical),
             Self::Unconfigured(_) | Self::LoadFailed { .. } => None,
+        }
+    }
+
+    /// This resolution's required egress-mediation posture (AAASM-6278).
+    ///
+    /// [`crate::document::EgressPosture::NotRequired`] for the two refusing
+    /// states — a launch that is refused establishes no boundary, so there is
+    /// no contract for a backend to meet — and that is a safe default rather
+    /// than a lossy one, since neither state's `aasm run` call site ever
+    /// reaches the egress gate this feeds.
+    pub fn egress_posture(&self) -> crate::document::EgressPosture {
+        match self {
+            Self::Enforced { egress, .. } | Self::Permissive { egress, .. } => *egress,
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => crate::document::EgressPosture::NotRequired,
         }
     }
 
@@ -458,17 +486,20 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
     // exists. Deriving it later is not merely inconvenient, it is impossible —
     // which is how the execution boundary came to have no policy source at all.
     let canonical = validated.to_canonical();
+    let egress = validated.egress;
     if is_explicit_allow_all(&validated) {
         return PolicyResolution::Permissive {
             source: source.to_path_buf(),
             document,
             canonical,
+            egress,
         };
     }
     PolicyResolution::Enforced {
         source: source.to_path_buf(),
         document,
         canonical,
+        egress,
     }
 }
 
@@ -492,6 +523,11 @@ fn is_explicit_allow_all(doc: &crate::PolicyDocument) -> bool {
         && doc.budget.is_none()
         && doc.capabilities.is_none()
         && doc.data.as_ref().map_or(true, |d| d.sensitive_patterns.is_empty())
+        // AAASM-6278: a required egress posture is a restriction, not a grant
+        // like `leases` — a document that requires brokered egress restricts
+        // *something* even when its tool ruleset is wildcard-allow, so it
+        // must not read as "nothing is restricted".
+        && doc.egress == crate::document::EgressPosture::NotRequired
 }
 
 /// Project the gateway's validated document onto the rule list the dev-tool
@@ -730,6 +766,69 @@ mod tests {
             resolution.state_token(),
             "enforced",
             "a policy that still restricts egress is not permissive; got {resolution:?}"
+        );
+    }
+
+    /// AAASM-6278 — the same control as
+    /// `wildcard_allow_beside_another_restriction_is_enforced_not_permissive`,
+    /// for the egress posture node: a `broker_required` posture restricts
+    /// something even with a wildcard-allow tool ruleset.
+    #[test]
+    fn wildcard_allow_beside_broker_required_egress_is_enforced_not_permissive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "p.yaml",
+            "egress:\n  posture: broker_required\ntools:\n  \"*\":\n    allow: true\n",
+        );
+
+        let resolution = load(&path);
+
+        assert_eq!(
+            resolution.state_token(),
+            "enforced",
+            "a policy that requires brokered egress is not permissive; got {resolution:?}"
+        );
+        assert_eq!(
+            resolution.egress_posture(),
+            crate::document::EgressPosture::BrokerRequired
+        );
+    }
+
+    /// `egress_posture()` is the accessor `aasm run` reads to lower this
+    /// resolution's authored posture into an `EgressContract`. Pin its value
+    /// for the state that reaches a launch, and pin the safe default for the
+    /// two that refuse before launching at all.
+    #[test]
+    fn egress_posture_defaults_to_not_required_for_non_launching_states() {
+        assert_eq!(
+            PolicyResolution::Unconfigured(Unconfigured::NoSource { searched: vec![] }).egress_posture(),
+            crate::document::EgressPosture::NotRequired
+        );
+        assert_eq!(
+            PolicyResolution::LoadFailed {
+                source: PathBuf::from("/p.yaml"),
+                detail: "bad".to_string(),
+            }
+            .egress_posture(),
+            crate::document::EgressPosture::NotRequired
+        );
+    }
+
+    #[test]
+    fn egress_posture_reads_the_authored_value_for_an_enforced_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "p.yaml",
+            "egress:\n  posture: broker_required\ntools:\n  bash:\n    allow: false\n",
+        );
+
+        let resolution = load(&path);
+
+        assert_eq!(
+            resolution.egress_posture(),
+            crate::document::EgressPosture::BrokerRequired
         );
     }
 

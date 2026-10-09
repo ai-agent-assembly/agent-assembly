@@ -200,6 +200,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::document::EgressPosture::NotRequired,
         }
     }
 
@@ -449,5 +450,21 @@ mod tests {
         }];
 
         assert_eq!(without, with_lease.to_canonical());
+    }
+
+    /// AAASM-6278 — the same independence guarantee as the lease test above,
+    /// for the egress posture node: authoring a required egress posture is a
+    /// fact `aa_isolation::egress::egress_gate` reads, not a restriction fed
+    /// through `lower_policy`'s `ControlRequirement` bridge.
+    #[test]
+    fn authoring_an_egress_posture_does_not_change_the_control_requirement_bridge() {
+        use crate::document::EgressPosture;
+
+        let without = base_doc().to_canonical();
+
+        let mut with_egress = base_doc();
+        with_egress.egress = EgressPosture::BrokerRequired;
+
+        assert_eq!(without, with_egress.to_canonical());
     }
 }

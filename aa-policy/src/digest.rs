@@ -346,6 +346,22 @@ fn hash_leases(hasher: &mut Sha256, leases: &[crate::document::LeaseGrant]) {
     }
 }
 
+/// Hash the AAASM-6278 required egress-mediation posture.
+///
+/// **Emitted only when `posture` is not [`EgressPosture::NotRequired`]**, the
+/// same "emitted when non-default" rule [`hash_leases`] applies for "emitted
+/// when non-empty": a document that states no stronger posture than the
+/// rc.7-compatible default must hash to exactly the bytes it hashed to before
+/// this field existed.
+fn hash_egress(hasher: &mut Sha256, posture: crate::document::EgressPosture) {
+    use crate::document::EgressPosture;
+    if posture == EgressPosture::NotRequired {
+        return;
+    }
+    hasher.update(b"egr\x01");
+    hash_str(hasher, posture.as_str());
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -378,6 +394,7 @@ impl PolicyDocument {
         hash_filesystem(&mut hasher, self.filesystem.as_ref());
         hash_syscalls(&mut hasher, self.syscall_allowlist.as_ref());
         hash_leases(&mut hasher, &self.leases);
+        hash_egress(&mut hasher, self.egress);
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -459,6 +476,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::document::EgressPosture::NotRequired,
         }
     }
 
@@ -671,6 +689,47 @@ mod tests {
         // The control: the same lease list is one policy.
         let same = egress.clone();
         assert_eq!(same.content_digest(), egress.content_digest());
+    }
+
+    /// AAASM-6278 — the same migration question as
+    /// `legacy_documents_keep_their_pre_leases_digest`, for the egress
+    /// posture node. The pinned value is the one that test already pins from
+    /// the same fixture, so both agree by construction.
+    ///
+    /// If this fails, `hash_egress` started emitting bytes for a document
+    /// whose posture is the default `NotRequired`. That is a migration
+    /// event, not a refactor.
+    #[test]
+    fn legacy_documents_keep_their_pre_egress_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert_eq!(doc.egress, crate::document::EgressPosture::NotRequired);
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding the egress posture node re-keyed a document that does not use it"
+        );
+    }
+
+    /// A document requiring brokered egress is a different policy from one
+    /// that does not, and the control proves the same posture is one policy.
+    #[test]
+    fn egress_posture_is_part_of_the_documents_identity() {
+        use crate::document::EgressPosture;
+
+        let not_required = base_doc();
+
+        let mut broker_required = base_doc();
+        broker_required.egress = EgressPosture::BrokerRequired;
+
+        assert_ne!(not_required.content_digest(), broker_required.content_digest());
+
+        let same = broker_required.clone();
+        assert_eq!(same.content_digest(), broker_required.content_digest());
     }
 
     #[test]

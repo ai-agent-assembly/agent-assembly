@@ -154,6 +154,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: crate::policy::EgressPosture::NotRequired,
         }
     }
 

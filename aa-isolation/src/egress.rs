@@ -228,10 +228,11 @@ pub struct EgressContract {
 }
 
 impl EgressContract {
-    /// The inert, rc.7-compatible default: no egress-mediation property is
+    /// The rc.7-compatible default: no egress-mediation property is
     /// required, so [`egress_gate`] admits without consulting a broker at
-    /// all. Every real launch carries this today — no policy source issues a
-    /// stronger contract yet.
+    /// all. Every launch whose effective policy states no `egress:` section
+    /// — including every launch before AAASM-6278 gave policy a way to say
+    /// otherwise — carries this.
     pub fn not_required() -> Self {
         Self {
             schema_version: 1,

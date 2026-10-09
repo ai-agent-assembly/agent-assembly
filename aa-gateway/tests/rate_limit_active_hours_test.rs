@@ -84,6 +84,7 @@ fn empty_doc(scope: PolicyScope) -> PolicyDocument {
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     }
 }
 

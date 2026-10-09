@@ -62,6 +62,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     }
 }
 
@@ -82,6 +83,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     }
 }
 
