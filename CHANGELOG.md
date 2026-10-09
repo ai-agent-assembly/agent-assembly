@@ -7,6 +7,41 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`aasm run` wires real authority inputs into `authority_gate` (AAASM-6277,
+  ADR 0038)** — `aa-policy`'s `authority.leases` grants now actually reach
+  `aasm run`'s execution boundary: they are converted, validated before
+  registration, and lowered into real, subject-bound `CapabilityLease`s once
+  a launch has a real agent id. Three behavior changes operators should
+  know about:
+  - **`--root-agent` now refuses unless the claimed parent can be
+    trust-resolved** — and no mechanism to do that exists yet (tracked by
+    AAASM-6273). Previously, `--root-agent X` silently ran as a root launch
+    (`Ancestry::Root`) with no attenuation check at all. It now refuses at
+    plan time, before any gateway registration, naming
+    `AncestryUnresolved` — **with or without a capability lease present**.
+    If your workflow uses `--root-agent` today, it will start refusing; wait
+    for AAASM-6273 (real cross-process ancestry resolution) before relying
+    on declared lineage again.
+  - **ADR 0038's all-or-nothing-per-domain lease rule is now live**: once a
+    policy document authors *any* `authority.leases` grant,
+    `authority_gate` requires every domain its own requirements name to
+    carry its own covering lease — there is no partial-coverage fallback.
+    A policy that already authors a lease for one domain should audit
+    whether its other restricted domains (`network`, `capabilities`,
+    `filesystem`, `syscalls`) now need a lease too.
+  - **A new, non-fatal diagnostic** surfaces this before the gate: if a
+    policy authors a lease but leaves another required domain uncovered,
+    `aasm run` now prints which domain(s) are missing coverage and why the
+    launch will refuse at `authority_gate` — advisory only, never a
+    second enforcement path.
+  - Hostname-mediated egress (an allowlisted destination resolved by name)
+    now actually admits past the name-resolution gate when both the
+    `network_egress` and `name_resolution` domains carry a covering lease —
+    closing the limitation AAASM-6278 documented but could not close on its
+    own (no production path lowered a usable grant until this ticket).
+
 ## [0.0.1-rc.7] — 2026-09-08 (pre-release)
 
 > Merged since `0.0.1-rc.6`. The *Developer Integration
