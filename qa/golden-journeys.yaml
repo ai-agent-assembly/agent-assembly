@@ -2192,11 +2192,23 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-isolation/src/attenuation.rs::concurrent_child_derivation_never_issues_a_child_after_the_revocation_is_recorded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::attenuation_tests::a_grandchild_cannot_recover_authority_removed_at_the_child_level
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/authority_adversarial.rs::a_three_generation_chain_refuses_widening_at_generation_two_and_a_root_revocation_reaches_the_grandchild
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_command.rs::run_command_refuses_a_lineage_the_gateway_will_not_accept
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_exec_target.rs::exec_refuses_a_lineage_the_gateway_will_not_accept
   execution_lanes:
   - pr
   - main
   fidelity: controlled_fake
-  negative_control: 'AAASM-6272''s bug cluster (AAASM-6280/6281/6282) pinned each fix against the pre-fix behavior before it was corrected -- see each test''s own doc comment for the adversarial/positive-control pair. AAASM-6272 (D1/D2/D4) proved the attenuation-ceiling refusal logic correct through `resolve_boundary`-shaped fixtures with `Ancestry::Parent` constructed directly in the test harness -- real in-process gating, not a live cross-process handoff. The remaining gap is cross-process parent-authority handoff (a real supervisor process attesting a real child process''s resolved `ParentAuthority`), which AAASM-6273 owns as its own Story -- still `partial`, not `automated`, until that handoff exists.'
+  negative_control: 'AAASM-6272''s bug cluster (AAASM-6280/6281/6282) pinned each fix against the pre-fix behavior before it was corrected -- see each test''s own doc comment for the adversarial/positive-control pair. AAASM-6272 (D1/D2/D4) proved the attenuation-ceiling refusal logic correct through `resolve_boundary`-shaped fixtures with `Ancestry::Parent` constructed directly in the test harness -- real in-process gating, not a live cross-process handoff. The remaining gap is cross-process parent-authority handoff (a real supervisor process attesting a real child process''s resolved `ParentAuthority`), which AAASM-6273 owns as its own Story -- still `partial`, not `automated`, until that handoff exists. AAASM-6290 (ST-3, independent QA) re-ran `cargo nextest run -p aa-isolation --lib attenuation:: authority::` (32/32 pass) and `cargo nextest run -p aa-cli --test run_command --test run_exec_target` (17/17 pass), and added a real 3-generation (root -> child -> grandchild) attenuation-chain test built end to end through `DelegationLedger::derive_child` -- exercising two properties the prior 2-generation fixtures could not: widening at generation 2 refused relative to the *immediate* parent (not merely the root), and a root-lease revocation reaching the grandchild via the ledger (no fresh child, and therefore no fresh grandchild derived from one, can be minted once the root is revoked), plus a direct grandchild-vs-revoked-root-ancestry gate. ST-3 also checked `aa-cli`''s `--root-agent` refusal message wording in `run_command.rs`/`run_exec_target.rs`: both correctly name AAASM-6273 as the tracking ticket for cross-process ancestry resolution and accurately describe why the launch is refused rather than silently treated as rootless -- no documentation-accuracy finding. `lifecycle_state` stays `partial`: the cross-process handoff AAASM-6273 owns remains the only uncovered leg, not the in-process/CLI chain this subtask verified.'
 - id: J83
   jira: AAASM-6261
   name: Enforce identity-bound, policy-governed egress through the network broker
