@@ -1252,7 +1252,7 @@ mod plan {
             .canonical()
             .map(|doc| aa_isolation::lower_policy(doc, &aa_isolation::LoweringOptions::strict()))
         {
-            warn_on_uncovered_lease_domains(&lowering, &authored);
+            warn_on_uncovered_lease_domains(&lowering, &authored, args.isolation != super::IsolationIntent::None);
         }
 
         Ok(ResolvedAuthority {
@@ -1302,19 +1302,64 @@ mod plan {
     /// authors *some* lease, not the rc.7 compatibility residual where no
     /// lease exists at all and every domain still reads
     /// `CompatibilityResidual`.
-    fn warn_on_uncovered_lease_domains(lowering: &aa_isolation::PolicyLowering, authored: &[AuthoredLease]) {
+    ///
+    /// AAASM-6285 — `isolation_establishes_boundary` must be
+    /// `args.isolation != IsolationIntent::None`: under `--isolation none`,
+    /// `resolve_isolation` never calls `resolve_boundary`, so
+    /// `authority_gate` is never reached at all. The warning text is worded
+    /// differently for that case rather than claiming a refusal that cannot
+    /// happen — see this ticket for the wording bug this replaced.
+    fn warn_on_uncovered_lease_domains(
+        lowering: &aa_isolation::PolicyLowering,
+        authored: &[AuthoredLease],
+        isolation_establishes_boundary: bool,
+    ) {
         let missing = missing_lease_domains(lowering, authored);
-        if !missing.is_empty() {
-            let names: Vec<String> = missing.iter().map(|d| d.to_string()).collect();
-            eprintln!(
+        if let Some(message) = uncovered_lease_domains_warning(&missing, isolation_establishes_boundary) {
+            eprintln!("{message}");
+        }
+    }
+
+    /// The pure message-building half of [`warn_on_uncovered_lease_domains`]
+    /// — split out, like [`missing_lease_domains`], so the exact wording can
+    /// be asserted on directly in tests without capturing stderr. Returns
+    /// `None` when `missing` is empty (nothing to warn about).
+    ///
+    /// AAASM-6285 — the two branches must stay behaviorally distinct: the
+    /// `true` branch's claim ("refuses this launch at the authority gate")
+    /// is only true when an isolation boundary is actually established,
+    /// since `--isolation none` never reaches `resolve_boundary`/
+    /// `authority_gate` at all. Collapsing them back into one wording for
+    /// both cases would reintroduce this ticket's bug.
+    fn uncovered_lease_domains_warning(
+        missing: &[CapabilityDomain],
+        isolation_establishes_boundary: bool,
+    ) -> Option<String> {
+        if missing.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = missing.iter().map(|d| d.to_string()).collect();
+        Some(if isolation_establishes_boundary {
+            format!(
                 "warning: this policy authors at least one capability lease, which puts every domain its \
                  own requirements name under ADR 0038's all-or-nothing rule — a domain with no covering \
                  lease refuses this launch at the authority gate. Not covered by any authored lease: {}. \
                  Author a lease for each, or remove every authored lease to opt back into the rc.7 \
                  compatibility residual.",
                 names.join(", "),
-            );
-        }
+            )
+        } else {
+            format!(
+                "warning: this policy authors at least one capability lease, which puts every domain its \
+                 own requirements name under ADR 0038's all-or-nothing rule. Not covered by any authored \
+                 lease: {}. Under `--isolation none`, no execution-isolation boundary is established, so \
+                 `authority_gate` is never reached and this launch proceeds unconfined despite the gap — \
+                 it will refuse once an `--isolation process`/`auto` boundary is established instead. \
+                 Author a lease for each, or remove every authored lease to opt back into the rc.7 \
+                 compatibility residual.",
+                names.join(", "),
+            )
+        })
     }
 
     /// The pure computation behind [`warn_on_uncovered_lease_domains`] —
@@ -3835,6 +3880,50 @@ mod plan {
             // compatibility residual, deliberately out of scope for this
             // diagnostic.
             assert!(missing_lease_domains(&lowering, &[]).is_empty());
+        }
+
+        /// AAASM-6285 regression — under an isolation mode that establishes
+        /// a real boundary, the warning may truthfully claim a refusal at
+        /// `authority_gate`, since that gate is actually reached.
+        #[test]
+        fn the_coverage_warning_claims_a_gate_refusal_when_isolation_establishes_a_boundary() {
+            let message = uncovered_lease_domains_warning(&[CapabilityDomain::FilesystemWrite], true)
+                .expect("missing domains must produce a warning");
+            assert!(
+                message.contains("refuses this launch at the authority gate"),
+                "message should claim the real gate refusal when a boundary is established: {message}"
+            );
+            assert!(message.contains("filesystem_write"));
+        }
+
+        /// AAASM-6285 regression (the bug itself) — under `--isolation
+        /// none`, `resolve_isolation` never calls `resolve_boundary`, so
+        /// `authority_gate` is never reached at all. The warning must not
+        /// claim a gate refusal that cannot happen, and must say so
+        /// explicitly instead of silently omitting the distinction.
+        #[test]
+        fn the_coverage_warning_does_not_claim_a_gate_refusal_under_isolation_none() {
+            let message = uncovered_lease_domains_warning(&[CapabilityDomain::FilesystemWrite], false)
+                .expect("missing domains must still produce a warning under --isolation none");
+            assert!(
+                !message.contains("refuses this launch at the authority gate"),
+                "message must not claim a refusal that cannot happen under --isolation none: {message}"
+            );
+            assert!(
+                message.contains("--isolation none") && message.contains("authority_gate` is never reached"),
+                "message must explain why the gate is unreachable: {message}"
+            );
+            assert!(message.contains("filesystem_write"));
+        }
+
+        /// Adversarial control for both wording tests above: an empty
+        /// `missing` set must never produce a warning, regardless of
+        /// isolation mode — otherwise a passing test here could hide a
+        /// regression where the diagnostic fires unconditionally.
+        #[test]
+        fn the_coverage_warning_is_none_when_nothing_is_missing() {
+            assert!(uncovered_lease_domains_warning(&[], true).is_none());
+            assert!(uncovered_lease_domains_warning(&[], false).is_none());
         }
 
         fn test_identity_and_handle(agent_id: &str) -> (IdentityPlan, RegistrationHandle) {
