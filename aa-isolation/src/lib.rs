@@ -221,6 +221,7 @@ pub mod egress;
 pub mod evidence;
 pub mod host_capability;
 pub mod lease;
+pub mod lease_lowering;
 pub mod lowering;
 pub mod plan;
 pub mod planner;
