@@ -1303,19 +1303,7 @@ mod plan {
     /// lease exists at all and every domain still reads
     /// `CompatibilityResidual`.
     fn warn_on_uncovered_lease_domains(lowering: &aa_isolation::PolicyLowering, authored: &[AuthoredLease]) {
-        if authored.is_empty() {
-            return;
-        }
-        let leased: std::collections::HashSet<CapabilityDomain> = authored.iter().map(|g| g.domain).collect();
-        let mut missing: Vec<CapabilityDomain> = lowering
-            .requirements()
-            .iter()
-            .map(|r| r.domain())
-            .filter(|d| !leased.contains(d))
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        missing.sort();
+        let missing = missing_lease_domains(lowering, authored);
         if !missing.is_empty() {
             let names: Vec<String> = missing.iter().map(|d| d.to_string()).collect();
             eprintln!(
@@ -1327,6 +1315,32 @@ mod plan {
                 names.join(", "),
             );
         }
+    }
+
+    /// The pure computation behind [`warn_on_uncovered_lease_domains`] —
+    /// split out so the diagnostic's domain set can be asserted on directly
+    /// in tests, without capturing stderr. Empty when `authored` is empty
+    /// (the rc.7 compatibility residual, not in scope for this diagnostic)
+    /// or when every domain `lowering`'s requirements name already has a
+    /// grant.
+    pub(super) fn missing_lease_domains(
+        lowering: &aa_isolation::PolicyLowering,
+        authored: &[AuthoredLease],
+    ) -> Vec<CapabilityDomain> {
+        if authored.is_empty() {
+            return Vec::new();
+        }
+        let leased: std::collections::HashSet<CapabilityDomain> = authored.iter().map(|g| g.domain).collect();
+        let mut missing: Vec<CapabilityDomain> = lowering
+            .requirements()
+            .iter()
+            .map(|r| r.domain())
+            .filter(|d| !leased.contains(d))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        missing.sort();
+        missing
     }
 
     /// What the execution boundary is required to provide, and who is going to
@@ -3465,6 +3479,494 @@ mod plan {
             let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
                 .expect("a preview must report the refusal and carry on, not error");
             assert_eq!(plan.authority.egress, EgressContract::broker_required());
+        }
+    }
+
+    /// AAASM-6277 — the authority collapse itself: `resolve_authority`'s
+    /// lease wiring, the duplicate-domain/`max_count` preflight, the
+    /// Owner-Decision-1 ancestry refusal, the `--max-*`/lease conflict, the
+    /// Owner-Decision-2 coverage diagnostic, and an end-to-end hostname-
+    /// egress launch that actually succeeds past the name-resolution gate.
+    #[cfg(test)]
+    mod authority_collapse_tests {
+        use super::*;
+        use aa_isolation::{EgressContract, EgressRefusal};
+
+        fn expect_refusal(result: anyhow::Result<IsolationPlan>, msg: &str) -> anyhow::Error {
+            match result {
+                Err(e) => e,
+                Ok(_) => panic!("{msg}"),
+            }
+        }
+
+        fn base_args() -> RunArgs {
+            RunArgs {
+                tool: "claude".to_string(),
+                tool_args: vec![],
+                agent_id: None,
+                team_id: None,
+                root_agent: None,
+                governance_level: None,
+                no_proxy: false,
+                policy: None,
+                workdir: None,
+                workspace_tx: false,
+                workspace_tx_exclude: vec![],
+                workspace_tx_protect: vec![],
+                workspace_tx_approve: false,
+                dry_run: false,
+                enforcement_mode: None,
+                observe: false,
+                isolation: super::super::IsolationIntent::None,
+                isolation_backend: None,
+                max_memory_bytes: None,
+                max_pids: None,
+                max_open_files: None,
+                max_file_size_bytes: None,
+                max_wall_clock_seconds: None,
+                max_cpu_seconds: None,
+            }
+        }
+
+        fn resolution_with_leases(yaml_leases: &str) -> run_policy::PolicyResolution {
+            run_policy::classify(
+                std::path::Path::new("/authority-collapse-test.yaml"),
+                &format!("tools:\n  bash:\n    allow: true\nauthority:\n  leases:\n{yaml_leases}"),
+            )
+        }
+
+        fn plain_resolution() -> run_policy::PolicyResolution {
+            run_policy::classify(
+                std::path::Path::new("/authority-collapse-control.yaml"),
+                "tools:\n  bash:\n    allow: true\n",
+            )
+        }
+
+        /// Group A: a policy's `authority.leases` grants reach `plan.authority.lease_grants`,
+        /// converted exactly as `authored_lease_from` would, across every
+        /// `IsolationPlan` construction site this ticket rewired. Control:
+        /// a document with no `authority:` section gives empty grants,
+        /// `Ancestry::Root`, and `not_required()` contracts — the pre-6277
+        /// defaults, unchanged for a policy that authors no lease.
+        #[test]
+        fn lease_grants_reach_every_construction_site_and_a_bare_policy_gives_the_old_defaults() {
+            let resolution =
+                resolution_with_leases("    - domain: network_egress\n      scope: whole\n      reason: wiring test\n");
+            let expected: Vec<AuthoredLease> = resolution.lease_grants().iter().map(authored_lease_from).collect();
+            assert_eq!(expected.len(), 1);
+
+            for isolation in [
+                super::super::IsolationIntent::None,
+                super::super::IsolationIntent::Process,
+                super::super::IsolationIntent::Auto,
+            ] {
+                let mut args = base_args();
+                args.isolation = isolation;
+                let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                    .unwrap_or_else(|e| panic!("preview must not error for intent {isolation:?}: {e}"));
+                assert_eq!(
+                    plan.authority.lease_grants, expected,
+                    "intent {isolation:?} did not carry the policy-authored lease grants"
+                );
+            }
+
+            // A named-but-unknown backend is a fourth, distinct construction
+            // site (`explicit_backend`'s "no backend answers to this id" arm).
+            let mut named = base_args();
+            named.isolation = super::super::IsolationIntent::Process;
+            named.isolation_backend = Some("no-such-backend".to_string());
+            let plan = RunPlanner::resolve_isolation(&named, PlanPosture::Preview, &resolution)
+                .expect("preview must not error even for an unknown backend id");
+            assert_eq!(plan.authority.lease_grants, expected);
+
+            // Control: no `authority:` section.
+            let control_args = base_args();
+            let control = RunPlanner::resolve_isolation(&control_args, PlanPosture::Preview, &plain_resolution())
+                .expect("preview must not error");
+            assert!(control.authority.lease_grants.is_empty());
+            assert!(matches!(control.authority.ancestry, Ancestry::Root));
+            assert_eq!(
+                control.authority.credential_contract,
+                CredentialContract::not_required()
+            );
+            assert_eq!(
+                control.authority.host_capability_contract,
+                HostCapabilityContract::not_required()
+            );
+        }
+
+        /// Hazard control: a policy's `authority.leases` must never change
+        /// what `lower_policy` lowers from the SAME document's requirements
+        /// — the two are read from independent fields, never derived from
+        /// each other. Pinned by comparing the lowered requirement domains
+        /// of two otherwise-identical documents, one with `authority.leases`
+        /// and one without.
+        #[test]
+        fn leases_do_not_change_what_lower_policy_lowers() {
+            let without_leases = run_policy::classify(
+                std::path::Path::new("/hazard-without.yaml"),
+                "tools:\n  bash:\n    allow: true\nnetwork:\n  allowlist:\n    - api.example.com\n",
+            );
+            let with_leases = run_policy::classify(
+                std::path::Path::new("/hazard-with.yaml"),
+                "tools:\n  bash:\n    allow: true\nnetwork:\n  allowlist:\n    - api.example.com\n\
+                 authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: hazard\n",
+            );
+
+            assert!(without_leases.lease_grants().is_empty());
+            assert_eq!(with_leases.lease_grants().len(), 1);
+
+            let lowering_without = aa_isolation::lower_policy(
+                without_leases.canonical().unwrap(),
+                &aa_isolation::LoweringOptions::strict(),
+            );
+            let lowering_with = aa_isolation::lower_policy(
+                with_leases.canonical().unwrap(),
+                &aa_isolation::LoweringOptions::strict(),
+            );
+
+            let domains = |l: &aa_isolation::PolicyLowering| -> Vec<CapabilityDomain> {
+                l.requirements().iter().map(|r| r.domain()).collect()
+            };
+            assert_eq!(
+                domains(&lowering_without),
+                domains(&lowering_with),
+                "authoring a lease must never change what the policy's own requirements lower to"
+            );
+        }
+
+        /// Error C1: `max_count` is caught before registration, naming
+        /// `authority.leases[0]`, under `Launch`; under `Preview` it warns
+        /// and still carries the (unrepresentable) grant rather than
+        /// erroring. Control: no `max_count` is `Ok` under `Launch` too.
+        #[test]
+        fn an_unrepresentable_max_count_refuses_under_launch_and_warns_under_preview() {
+            let resolution = resolution_with_leases(
+                "    - domain: filesystem_read\n      scope: whole\n      max_count: 3\n      reason: bad grant\n",
+            );
+            let args = base_args();
+
+            let err = expect_refusal(
+                RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution),
+                "an unrepresentable max_count must refuse under Launch",
+            );
+            assert!(
+                err.to_string().contains("authority.leases[0]"),
+                "the refusal must name the offending grant: {err}"
+            );
+
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("a preview must warn and carry on, not error");
+            assert_eq!(plan.authority.lease_grants.len(), 1);
+
+            // Control.
+            let clean =
+                resolution_with_leases("    - domain: filesystem_read\n      scope: whole\n      reason: good grant\n");
+            RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &clean).expect("a clean grant must not refuse");
+        }
+
+        /// Error C2: two grants for the same domain refuse under `Launch`,
+        /// naming the second entry's index — `lower_leases` itself does not
+        /// catch this (it validates per grant, not across the batch); it
+        /// surfaces only inside `EffectiveAuthority` at the gate otherwise.
+        #[test]
+        fn a_duplicate_domain_grant_refuses_under_launch_and_warns_under_preview() {
+            let resolution = resolution_with_leases(
+                "    - domain: filesystem_read\n      scope: whole\n      reason: first\n\
+                 \x20   - domain: filesystem_read\n      scope: whole\n      reason: second\n",
+            );
+            let args = base_args();
+
+            let err = expect_refusal(
+                RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution),
+                "a duplicate-domain grant must refuse under Launch",
+            );
+            assert!(
+                err.to_string().contains("authority.leases[1]"),
+                "the refusal must name the second (duplicate) entry: {err}"
+            );
+
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("a preview must warn and carry on, not error");
+            assert_eq!(plan.authority.lease_grants.len(), 2);
+        }
+
+        /// Owner Decision 1: a launch that claims a parent this build
+        /// cannot trust-resolve refuses at PLAN TIME, before any
+        /// registration — with a lease present and without one (both must
+        /// refuse, which is the point of the owner's correction over the
+        /// design pass's original "always Root" recommendation). Control:
+        /// no parent claim resolves to `Ancestry::Root`, unaffected.
+        #[test]
+        fn a_claimed_parent_refuses_at_plan_time_with_and_without_a_lease() {
+            let leased =
+                resolution_with_leases("    - domain: filesystem_read\n      scope: whole\n      reason: present\n");
+            let plain = plain_resolution();
+
+            for resolution in [&leased, &plain] {
+                let mut args = base_args();
+                args.root_agent = Some("unverifiable-parent".to_string());
+                let err = expect_refusal(
+                    RunPlanner::resolve_isolation(&args, PlanPosture::Launch, resolution),
+                    "a claimed-but-unresolved parent must refuse under Launch",
+                );
+                let text = err.to_string();
+                assert!(
+                    text.contains("claims a parent") && text.contains("AAASM-6273"),
+                    "the refusal must name the claim and the tracking ticket: {text}"
+                );
+            }
+
+            // Control: no claim at all.
+            let control_args = base_args();
+            let plan = RunPlanner::resolve_isolation(&control_args, PlanPosture::Launch, &plain)
+                .expect("no parent claim must not refuse");
+            assert!(matches!(plan.authority.ancestry, Ancestry::Root));
+        }
+
+        /// Defense in depth: even under `Preview` (which warns rather than
+        /// refusing at plan time), the `ResolvedAuthority` this produces
+        /// still carries `Ancestry::UnresolvedParent`, so `authority_gate`
+        /// itself refuses unconditionally if this plan ever reaches
+        /// `resolve_boundary` — the gate is not relying on the plan-time
+        /// check alone.
+        #[test]
+        fn preview_still_carries_an_unresolved_ancestry_for_the_gate_to_refuse() {
+            let mut args = base_args();
+            args.root_agent = Some("unverifiable-parent".to_string());
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &plain_resolution())
+                .expect("preview warns and carries on");
+            assert!(matches!(plan.authority.ancestry, Ancestry::UnresolvedParent { .. }));
+        }
+
+        /// `--max-*` + an authored lease refuses early and by name: a
+        /// `Whole`/`Selectors` lease can never cover a `Limits`-scoped
+        /// resource-ceiling requirement. Control: `--isolation none` is
+        /// NOT refused by this specific check (it has its own separate
+        /// contradiction refusal elsewhere).
+        #[test]
+        fn a_max_flag_combined_with_a_lease_refuses_under_launch() {
+            let resolution =
+                resolution_with_leases("    - domain: filesystem_read\n      scope: whole\n      reason: present\n");
+            let mut args = base_args();
+            args.isolation = super::super::IsolationIntent::Process;
+            args.max_memory_bytes = Some(64 * 1024 * 1024);
+
+            let err = expect_refusal(
+                RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution),
+                "a lease plus a --max-* flag must refuse",
+            );
+            assert!(
+                err.to_string().contains("--max-*"),
+                "the refusal must name the conflicting mechanism: {err}"
+            );
+
+            // Control: --isolation none is unaffected by this specific check.
+            let mut none_args = base_args();
+            none_args.isolation = super::super::IsolationIntent::None;
+            none_args.max_memory_bytes = Some(64 * 1024 * 1024);
+            let err = RunPlanner::resolve_isolation(&none_args, PlanPosture::Launch, &resolution);
+            if let Err(e) = &err {
+                assert!(
+                    !e.to_string().contains("--max-*"),
+                    "--isolation none must not be refused by the --max-*/lease conflict check: {e}"
+                );
+            }
+        }
+
+        /// Owner Decision 2: the lease-coverage diagnostic names exactly
+        /// the domains `lower_policy`'s own requirements touch that have no
+        /// covering lease — a drift-check against the gate's own refusal,
+        /// never a second, independently-computed judgment. Adversarial:
+        /// full coverage gives an empty set, and zero leases authored at
+        /// all (the rc.7 compatibility residual) also gives an empty set.
+        #[test]
+        fn the_coverage_diagnostic_names_exactly_the_uncovered_domains() {
+            let policy = aa_security::policy::PolicyDocument {
+                capabilities: Some(aa_security::policy::CapabilitySet {
+                    deny: [aa_security::policy::Capability::FileWrite].into_iter().collect(),
+                    ..Default::default()
+                }),
+                network: Some(aa_security::policy::NetworkPolicy {
+                    allowlist: vec!["api.example.com".to_string()],
+                }),
+                ..Default::default()
+            };
+            let lowering = aa_isolation::lower_policy(&policy, &aa_isolation::LoweringOptions::strict());
+
+            // Only `NetworkEgress` is covered; `FilesystemWrite` is not.
+            let partial = vec![authored_lease_from(&aa_policy::CanonicalLeaseGrant {
+                domain: aa_policy::LeaseDomain::NetworkEgress,
+                scope: aa_policy::LeaseScope::Whole,
+                max_count: None,
+                ttl_seconds: None,
+                delegable: false,
+                issuer: None,
+                policy_rule: None,
+                approval_ref: None,
+                reason: "partial coverage".to_string(),
+            })];
+            let missing = missing_lease_domains(&lowering, &partial);
+            assert_eq!(missing, vec![CapabilityDomain::FilesystemWrite]);
+
+            // Adversarial: full coverage of both domains the requirements
+            // actually name gives an empty set.
+            let full = vec![
+                partial[0].clone(),
+                authored_lease_from(&aa_policy::CanonicalLeaseGrant {
+                    domain: aa_policy::LeaseDomain::FilesystemWrite,
+                    scope: aa_policy::LeaseScope::Whole,
+                    max_count: None,
+                    ttl_seconds: None,
+                    delegable: false,
+                    issuer: None,
+                    policy_rule: None,
+                    approval_ref: None,
+                    reason: "full coverage".to_string(),
+                }),
+            ];
+            assert!(missing_lease_domains(&lowering, &full).is_empty());
+
+            // Adversarial: zero leases authored at all — the rc.7
+            // compatibility residual, deliberately out of scope for this
+            // diagnostic.
+            assert!(missing_lease_domains(&lowering, &[]).is_empty());
+        }
+
+        fn test_identity_and_handle(agent_id: &str) -> (IdentityPlan, RegistrationHandle) {
+            let mut args = base_args();
+            args.agent_id = Some(agent_id.to_string());
+            let identity = IdentityPlan::of(&args);
+            let handle = identity.preview_handle();
+            (identity, handle)
+        }
+
+        /// A `NetworkEgress`/`NameResolution` grant authored exactly the way
+        /// `authored_lease_from` would convert one from policy — the
+        /// selector already carries the `permit-only:` prefix, since that
+        /// conversion happens before `resolve_boundary` ever sees a grant.
+        fn hostname_grant(domain: CapabilityDomain) -> AuthoredLease {
+            AuthoredLease {
+                domain,
+                scope: RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
+                max_count: None,
+                ttl_seconds: None,
+                delegable: false,
+                issuer: None,
+                policy_rule: None,
+                approval_ref: None,
+                reason: "hostname egress e2e".to_string(),
+            }
+        }
+
+        /// Runs `resolve_boundary` for a `broker_required`,
+        /// `network.allowlist: [api.example.com]` launch carrying `grants`,
+        /// with a bound endpoint (or `EgressBrokerReport::report_for_launch`
+        /// reads `Unavailable` and refuses at `check_broker_available`,
+        /// before the name-resolution check this test is actually about —
+        /// see that function's own doc comment).
+        fn resolve_hostname_egress(grants: Vec<AuthoredLease>) -> Boundary {
+            let policy = aa_security::policy::PolicyDocument {
+                network: Some(aa_security::policy::NetworkPolicy {
+                    allowlist: vec!["api.example.com".to_string()],
+                }),
+                ..Default::default()
+            };
+            let lowering = aa_isolation::lower_policy(&policy, &aa_isolation::LoweringOptions::strict());
+            let (identity, handle) = test_identity_and_handle("hostname-egress-agent");
+            let command = std::process::Command::new("echo");
+            let child_env = std::collections::BTreeMap::new();
+            let credentials = CredentialPosture::default();
+            let network = NetworkPlan {
+                endpoint: Some("127.0.0.1:9".to_string()),
+                no_proxy: false,
+            };
+            let mut plan = IsolationPlan {
+                lowering: Some(lowering),
+                backend: Some(SelectedBackend::Sandlock(
+                    aa_isolation_sandlock::SandlockBackend::discover(),
+                )),
+                authority: ResolvedAuthority {
+                    lease_grants: grants,
+                    egress: EgressContract::broker_required(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let (_, _, boundary) =
+                plan.resolve_boundary(&identity, &handle, &command, &child_env, credentials, &network);
+            boundary
+        }
+
+        /// End-to-end: hostname egress actually works once both the
+        /// `NetworkEgress` and `NameResolution` domains carry a covering
+        /// lease — closing AAASM-6278's documented limitation ("no
+        /// production path ever lowers a NetworkEgress requirement that
+        /// reaches the name-resolution check with a real grant"). Negative
+        /// 1: drop the `NameResolution` grant -> `NoNameResolutionGrant`.
+        #[test]
+        fn hostname_egress_admits_with_both_grants_and_refuses_without_the_name_resolution_grant() {
+            let admitted = resolve_hostname_egress(vec![
+                hostname_grant(CapabilityDomain::NetworkEgress),
+                hostname_grant(CapabilityDomain::NameResolution),
+            ]);
+            let admitted_detail = match &admitted {
+                Boundary::Refused(d) => d.clone(),
+                _ => String::new(),
+            };
+            assert!(
+                !admitted_detail.contains(&EgressRefusal::NoNameResolutionGrant.to_string())
+                    && !admitted_detail.contains("LeaseSubjectMismatch"),
+                "both grants present must admit past the name-resolution and subject checks: {admitted_detail}"
+            );
+
+            let without_name_resolution =
+                resolve_hostname_egress(vec![hostname_grant(CapabilityDomain::NetworkEgress)]);
+            let without_detail = match &without_name_resolution {
+                Boundary::Refused(d) => d.clone(),
+                _ => panic!("dropping the NameResolution grant must refuse"),
+            };
+            assert!(
+                without_detail.contains(&EgressRefusal::NoNameResolutionGrant.to_string()),
+                "dropping the NameResolution grant must refuse with NoNameResolutionGrant: {without_detail}"
+            );
+        }
+
+        /// Mutation-resistance: authoring the `NetworkEgress` grant with
+        /// the RAW, unprefixed selector (bypassing `permit_only_selector`,
+        /// as if `authored_lease_from`'s conversion had never run) must
+        /// refuse as scope-not-covered — proving the prefix is actually
+        /// load-bearing, not merely present alongside a working grant.
+        #[test]
+        fn an_unprefixed_selector_does_not_cover_the_permit_only_requirement() {
+            let raw_egress_grant = AuthoredLease {
+                domain: CapabilityDomain::NetworkEgress,
+                scope: RequirementScope::Selectors(vec!["api.example.com".to_string()]),
+                max_count: None,
+                ttl_seconds: None,
+                delegable: false,
+                issuer: None,
+                policy_rule: None,
+                approval_ref: None,
+                reason: "mutation-resistance: raw selector, no permit-only prefix".to_string(),
+            };
+            let boundary =
+                resolve_hostname_egress(vec![raw_egress_grant, hostname_grant(CapabilityDomain::NameResolution)]);
+            let detail = match &boundary {
+                Boundary::Refused(d) => d.clone(),
+                _ => panic!("an unprefixed selector must not admit"),
+            };
+            // This refuses at `authority_gate` itself (`LeaseScopeInsufficient`)
+            // rather than reaching `egress_gate` at all — the lease's raw
+            // selector does not cover the `permit-only:`-prefixed scope
+            // `lower_policy` lowered from `network.allowlist`, so authority
+            // is refused before egress is even considered. Either refusal
+            // proves the same point; this is the one that actually fires.
+            assert!(
+                detail.contains("does not cover the requested scope"),
+                "an unprefixed selector must refuse as scope-insufficient, proving the \
+                 permit_only_selector prefix is load-bearing: {detail}"
+            );
         }
     }
 }
