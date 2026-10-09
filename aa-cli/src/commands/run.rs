@@ -411,11 +411,12 @@ mod plan {
     use aa_core::{DevToolAdapter, DevToolInfo};
     use aa_isolation::credential_broker::{credential_gate, CredentialAuthority, CredentialContract};
     use aa_isolation::host_capability::{host_capability_gate, HostCapabilityAuthority, HostCapabilityContract};
+    use aa_isolation::lease_lowering::{lower_leases, AuthoredLease, LeaseIssuance};
     use aa_isolation::{
-        authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, CapabilityLease,
-        ControlRequirement, CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec,
-        HostCapabilityBinding, HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope,
-        SessionRef, TargetRef, XcodeListRequest,
+        authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, ControlRequirement,
+        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, HostCapabilityBinding,
+        HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope, SessionRef, TargetRef,
+        XcodeListRequest,
     };
     use aa_policy::resolve as run_policy;
 
@@ -955,6 +956,379 @@ mod plan {
         }
     }
 
+    /// The checked, authored authority inputs this launch carries into
+    /// [`IsolationPlan::resolve_boundary`] (AAASM-6277, ADR 0038).
+    ///
+    /// Collapses what used to be five separately hardcoded
+    /// [`IsolationPlan`] fields (`leases`, `ancestry`, `egress`,
+    /// `credential_contract`, `host_capability_contract`) into one struct
+    /// built, once, by [`resolve_authority`] — so the seven call sites that
+    /// used to construct an `IsolationPlan` with five repeated literals now
+    /// construct one. `egress`, `credential_contract` and
+    /// `host_capability_contract` are unchanged in *behavior* by this
+    /// ticket; only `lease_grants` and `ancestry` gain a real source.
+    ///
+    /// `lease_grants` holds **validated, not-yet-issued** [`AuthoredLease`]s
+    /// — never `CapabilityLease`s. AAASM-6276's lease-lowering module
+    /// requires a `subject: IdentityRef` to issue against, and no real
+    /// subject exists until registration mints one (see
+    /// [`resolve_authority`]'s own doc comment for why planning time cannot
+    /// issue a real lease). [`IsolationPlan::resolve_boundary`] is where a
+    /// real agent id first exists, so that is where this batch is actually
+    /// lowered into [`CapabilityLease`]s and attached to the spec.
+    #[derive(Debug, Clone, Default)]
+    pub(super) struct ResolvedAuthority {
+        /// Authored lease grants this launch's effective policy carries,
+        /// read from [`run_policy::PolicyResolution::lease_grants`] and
+        /// converted by [`authored_lease_from`] — never derived from
+        /// `lowering`'s own requirements. See [`authored_lease_from`]'s doc
+        /// comment for why that separation is load-bearing rather than
+        /// incidental.
+        lease_grants: Vec<AuthoredLease>,
+        /// This launch's position in an execution ancestry (AAASM-6161/6277,
+        /// ADR 0038 amendment). [`Ancestry::Root`] for a genuine root launch
+        /// (no parent claimed); [`Ancestry::UnresolvedParent`] when a parent
+        /// is claimed (`--root-agent`) and this build has no trusted,
+        /// cross-process mechanism to resolve that claim into a real
+        /// [`aa_isolation::ParentAuthority`] — which is every launch today.
+        /// Real resolution is tracked by **AAASM-6273**, a separate ticket;
+        /// see [`resolve_authority`]'s doc comment for why this is a
+        /// deliberate fail-closed distinction rather than a residual.
+        ancestry: Ancestry,
+        /// This launch's egress contract (AAASM-6163, ADR 0038 amendment).
+        /// Lowered in `resolve_isolation` from the effective policy's
+        /// `egress:` node (AAASM-6278) —
+        /// [`aa_isolation::EgressContract::broker_required`] when the policy
+        /// states `posture: broker_required`,
+        /// [`aa_isolation::EgressContract::not_required`] otherwise (absent
+        /// section, or no effective policy at all, since both refusing
+        /// `PolicyResolution` states read `NotRequired`).
+        egress: aa_isolation::EgressContract,
+        /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
+        /// amendment). [`CredentialContract::not_required`] for every launch
+        /// today — no policy path issues a stronger contract yet — but
+        /// threaded through `resolve_boundary` exactly as `egress` is.
+        credential_contract: CredentialContract,
+        /// This launch's host-capability contract (AAASM-6171, ADR 0038
+        /// amendment). [`HostCapabilityContract::not_required`] for every
+        /// launch today — no policy path issues a stronger contract yet, and
+        /// `aasm run` itself never requests a specific `HostOperation` — but
+        /// threaded through `resolve_boundary` exactly as `credential_contract`
+        /// is, so a future source has one call site to populate.
+        host_capability_contract: HostCapabilityContract,
+    }
+
+    /// Convert one authored [`aa_policy::CanonicalLeaseGrant`] into this
+    /// crate's own [`AuthoredLease`] (AAASM-6277).
+    ///
+    /// `aa-isolation` cannot depend on `aa-policy`'s type — see
+    /// `aa_isolation::lease_lowering`'s own module documentation, "Why the
+    /// input is not `aa_policy`'s own type" — so `aa-cli`, which already
+    /// depends on both, is where this conversion has to live. The domain
+    /// match is **exhaustive, with no wildcard arm**: a future
+    /// `LeaseDomain`/`CapabilityDomain` variant added to one side without a
+    /// corresponding arm here is a compile error, never a silently dropped
+    /// grant.
+    ///
+    /// `LeaseScope::Selectors` is converted through
+    /// [`aa_isolation::permit_only_selector`] — never passed through
+    /// verbatim. `aa_isolation::lowering::lower_policy`'s own requirement
+    /// selectors, `egress_gate`'s coverage check and `scope_order`'s
+    /// comparator all operate on the `permit-only:`-prefixed vocabulary;
+    /// `authority.leases`' own validator fixtures author bare selectors
+    /// (e.g. `api.example.com`, not `permit-only:api.example.com`). Without
+    /// this conversion, no authored selector lease would ever match anything
+    /// it is meant to cover. An author who writes the prefix themselves gets
+    /// double-prefixed (`permit-only:permit-only:x`), which can never match —
+    /// that is a safe refusal, not a silent admission, which is why this
+    /// applies the prefix unconditionally rather than detecting and skipping
+    /// an already-prefixed selector.
+    pub(super) fn authored_lease_from(grant: &aa_policy::CanonicalLeaseGrant) -> AuthoredLease {
+        use aa_policy::LeaseDomain;
+
+        let domain = match grant.domain {
+            LeaseDomain::FilesystemRead => CapabilityDomain::FilesystemRead,
+            LeaseDomain::FilesystemWrite => CapabilityDomain::FilesystemWrite,
+            LeaseDomain::NetworkEgress => CapabilityDomain::NetworkEgress,
+            LeaseDomain::NameResolution => CapabilityDomain::NameResolution,
+            LeaseDomain::Syscall => CapabilityDomain::Syscall,
+            LeaseDomain::ProcessCreation => CapabilityDomain::ProcessCreation,
+            LeaseDomain::Ipc => CapabilityDomain::Ipc,
+            LeaseDomain::Credential => CapabilityDomain::Credential,
+            LeaseDomain::Resource => CapabilityDomain::Resource,
+            LeaseDomain::WorkspaceTransaction => CapabilityDomain::WorkspaceTransaction,
+        };
+
+        let scope = match &grant.scope {
+            aa_policy::LeaseScope::Whole => RequirementScope::Whole,
+            aa_policy::LeaseScope::Selectors(selectors) => RequirementScope::Selectors(
+                selectors
+                    .iter()
+                    .map(|s| aa_isolation::permit_only_selector(s))
+                    .collect(),
+            ),
+        };
+
+        AuthoredLease {
+            domain,
+            scope,
+            max_count: grant.max_count,
+            ttl_seconds: grant.ttl_seconds,
+            delegable: grant.delegable,
+            issuer: grant.issuer.clone(),
+            policy_rule: grant.policy_rule.clone(),
+            approval_ref: grant.approval_ref.clone(),
+            reason: grant.reason.clone(),
+        }
+    }
+
+    /// The default lease TTL applied when an authored grant states no
+    /// `ttl_seconds` (AAASM-6277). One hour: short enough that a stale grant
+    /// does not quietly outlive the session it was authored for, long
+    /// enough that an ordinary `aasm run` invocation does not expire mid-launch.
+    const DEFAULT_LEASE_TTL_SECONDS: u64 = 3_600;
+
+    /// The issuer label recorded on a lease whose authored grant states none
+    /// (AAASM-6277). Never a per-launch identity: this is the component that
+    /// *decided* to issue the lease (the policy resolution this run went
+    /// through), not the operator or the agent.
+    const DEFAULT_LEASE_ISSUER: &str = "aasm-run:policy";
+
+    /// Resolve this launch's checked authority inputs (AAASM-6277, ADR 0038).
+    ///
+    /// Called once, at the top of [`RunPlanner::resolve_isolation`], in
+    /// place of the old standalone `egress_contract_for` call — `egress`
+    /// itself is unchanged; this just folds it into the wider struct.
+    ///
+    /// # Why this cannot issue real leases
+    ///
+    /// `aa_isolation::authority::authority_gate` refuses with
+    /// `LeaseSubjectMismatch` unless a lease's subject equals
+    /// `spec.identity().agent_id` — and no real agent id exists until
+    /// registration mints one (`IdentityPlan::agent_id` under
+    /// [`PlanPosture::Launch`]), which happens *after* planning. So this
+    /// function reads and validates authored intent — lowering a throwaway
+    /// batch (subject `"authority-preflight"`) purely to surface a
+    /// structural authoring error (`max_count`, an ambiguous scope, a TTL
+    /// overflow, a duplicate-domain grant) before registration, the same way
+    /// every other precondition in `resolve_isolation`/`resolve()` refuses
+    /// before a registration is created — and defers the real, subject-bound
+    /// lowering to [`IsolationPlan::resolve_boundary`], the one place a real
+    /// agent id exists.
+    ///
+    /// # Ancestry (Owner Decision 1, AAASM-6277)
+    ///
+    /// A launch "claims a parent" exactly when
+    /// `IdentityPlan::root_agent().is_some()` — the same field
+    /// `IdentityPlan::identity_ref` reads to populate `IdentityRef.lineage`,
+    /// so the ancestry decision here and the lineage a spec actually carries
+    /// can never disagree. No cross-process mechanism exists today to
+    /// resolve a `--root-agent` claim into a real, supervisor-verified
+    /// [`aa_isolation::ParentAuthority`] (`AuthorityWitness` is not
+    /// serializable, and there is no IPC for it) — closing that gap for real
+    /// is **AAASM-6273**, a separate ticket this one does not touch.
+    ///
+    /// Reading an unresolved claim as [`Ancestry::Root`] — the design pass's
+    /// original recommendation — would let a claimed-but-unverified lineage
+    /// launch with full, unattenuated authority whenever the launch carries
+    /// no lease (the exact rc.7 compatibility residual
+    /// `attenuation_applies` documents: `Ancestry::Root` only triggers
+    /// ancestry checking when the spec is *also* lease-aware). The owner
+    /// overrode that recommendation: a parent claim with no trusted
+    /// resolution is [`Ancestry::UnresolvedParent`], which
+    /// `authority_gate`'s `attenuation_applies` treats as **always**
+    /// applying, so the gate refuses it unconditionally — lease or no lease.
+    ///
+    /// That refusal at the gate is defense in depth, not the primary
+    /// mechanism: this function *also* refuses here, at plan time, before
+    /// any registration exists — `posture.refuse(...)`, exactly like the
+    /// pre-existing `--isolation-backend`/`broker_required` contradiction
+    /// checks in `resolve_isolation`'s `IsolationIntent::None` arm. Relying
+    /// on the gate alone would leave two gaps: `--isolation none` never
+    /// reaches `authority_gate` at all (`resolve_boundary` returns from the
+    /// no-backend arm before it), and every other path reaches the gate only
+    /// *after* `bind()`, which runs after registration — a gate-only refusal
+    /// would abandon a registration `resolve()`'s own contract says must
+    /// never be created for a launch that is going to refuse.
+    ///
+    /// This is a deliberate, owner-authorized behavior change: an existing
+    /// `--root-agent` launch — with or without a lease — now refuses where
+    /// it previously launched silently as `Ancestry::Root`. See the
+    /// migration note this ticket adds to `docs/` for the operator-facing
+    /// statement of that change.
+    fn resolve_authority(
+        args: &RunArgs,
+        resolution: &run_policy::PolicyResolution,
+        posture: PlanPosture,
+    ) -> anyhow::Result<ResolvedAuthority> {
+        let egress = egress_contract_for(resolution);
+
+        // AAASM-6277 — read ONLY from `resolution.lease_grants()`, never
+        // from `canonical()`/`lowering`. A lease must never be derivable
+        // from the same source a `ControlRequirement` comes from — doing so
+        // would make `authority_gate`'s lease-vs-requirement check a
+        // tautology, which is exactly the hazard
+        // `aa_policy::document::LeaseDomain`'s own doc comment warns
+        // against.
+        let authored: Vec<AuthoredLease> = resolution.lease_grants().iter().map(authored_lease_from).collect();
+
+        // Structural pre-registration check: duplicate-domain grants are not
+        // caught by `lower_leases` itself (it validates max_count/scope/TTL
+        // per grant, not across the batch), and `authority::EffectiveAuthority`
+        // refuses a spec carrying two leases for the same domain with
+        // `AuthorityBuildError::DuplicateLeaseDomain` — a refusal this
+        // function can and should surface before registration rather than
+        // leaving it to the gate.
+        let mut seen_domains = std::collections::HashSet::new();
+        for (index, grant) in authored.iter().enumerate() {
+            if !seen_domains.insert(grant.domain) {
+                posture.refuse(anyhow::anyhow!(
+                    "authority.leases[{index}] authors a second lease for domain `{domain}`, which \
+                     `aa_isolation::authority::EffectiveAuthority` refuses as a duplicate — each domain \
+                     may be leased at most once per policy document. Combine the two grants into one.",
+                    domain = grant.domain,
+                ))?;
+            }
+        }
+
+        // Throwaway lowering pass: surfaces `max_count`/ambiguous-scope/TTL-
+        // overflow authoring errors before registration. The subject is a
+        // placeholder — this batch is never attached to any real spec; see
+        // this function's own doc comment for why the real, subject-bound
+        // lowering happens in `resolve_boundary` instead.
+        if let Err(error) = lower_leases(
+            &authored,
+            &LeaseIssuance {
+                subject: IdentityRef::root("authority-preflight"),
+                default_issuer: IdentityRef::root(DEFAULT_LEASE_ISSUER),
+                issued_at: std::time::SystemTime::now(),
+                default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                id_prefix: "authority-preflight".to_string(),
+            },
+        ) {
+            // `LeaseLoweringError`'s own `Display` already names
+            // `authority.leases[i]` — see its own `fmt` impl — so there is
+            // no separate index to re-extract here, and `#[non_exhaustive]`
+            // means a `match` on its variants would need a wildcard arm
+            // anyway.
+            posture.refuse(anyhow::anyhow!("{error}"))?;
+        }
+
+        // AAASM-6165 — a `Whole` lease can never cover a `Limits`-scoped
+        // requirement (what `--max-*` flags lower to), and no `Limits`
+        // lease can be authored at all (`aa_policy::document::LeaseScope`
+        // has no such variant). Refuse early, by name, rather than letting
+        // an operator who combined a lease with a resource ceiling hit a
+        // confusing refusal three gates downstream. `--isolation none`
+        // never reaches a `Resource` requirement at all (it is refused, or
+        // establishes no boundary, before any requirement is checked), so
+        // this check is intentionally independent of that one.
+        if !authored.is_empty()
+            && args.isolation != super::IsolationIntent::None
+            && !super::resource_requirements(args).is_empty()
+        {
+            posture.refuse(anyhow::anyhow!(
+                "this launch authors at least one capability lease and also sets a `--max-*` resource \
+                 ceiling flag. A lease covers a domain `Whole` or by named `Selectors`; a `--max-*` flag \
+                 lowers to a `Limits`-scoped `Resource` requirement that no authored lease can cover (the \
+                 policy-authoring schema has no `Limits` scope). Author a `Resource` lease once the schema \
+                 supports one, or drop the `--max-*` flag."
+            ))?;
+        }
+
+        // Owner Decision 2 (AAASM-6277): once a policy authors any lease,
+        // ADR 0038 requires every domain its own requirements name to carry
+        // a covering lease, or `authority_gate` refuses at launch. Surface
+        // that as a bounded, non-fatal, named-domain diagnostic here —
+        // before the gate — using the same `lower_policy` pass
+        // `resolve_isolation` already computed, never a second, independent
+        // mapping from `capabilities`/`filesystem`/`network`/`syscalls`
+        // sections to domains (that duplication is exactly the kind of
+        // drift hazard `aa-policy`'s own `LeaseDomain` doc comment warns
+        // against, from the other side of the crate boundary). Advisory
+        // only: it names domains, never scope-coverage detail, and never
+        // blocks — the actual refusal is `authority_gate`'s alone.
+        if let Some(lowering) = resolution
+            .canonical()
+            .map(|doc| aa_isolation::lower_policy(doc, &aa_isolation::LoweringOptions::strict()))
+        {
+            warn_on_uncovered_lease_domains(&lowering, &authored);
+        }
+
+        Ok(ResolvedAuthority {
+            lease_grants: authored,
+            ancestry: resolve_ancestry(args, posture)?,
+            egress,
+            credential_contract: CredentialContract::not_required(),
+            host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+        })
+    }
+
+    /// Owner Decision 1 (AAASM-6277): resolve this launch's position in an
+    /// execution ancestry, refusing at plan time when a parent is claimed
+    /// but cannot be trusted-resolved. See [`resolve_authority`]'s doc
+    /// comment for the full reasoning.
+    fn resolve_ancestry(args: &RunArgs, posture: PlanPosture) -> anyhow::Result<Ancestry> {
+        let Some(claimed) = args.root_agent.clone() else {
+            return Ok(Ancestry::Root);
+        };
+
+        let detail = format!(
+            "this launch claims a parent (`--root-agent {claimed}`), but this build has no trusted, \
+             cross-process mechanism to resolve that claim into a real, supervisor-verified parent \
+             authority — AuthorityWitness is not serializable across a process boundary, and there is no \
+             IPC for one. Reading this as a root launch would let a claimed-but-unverified ancestry run \
+             with full, unattenuated authority. Real cross-process ancestry resolution is tracked by \
+             AAASM-6273; until it lands, a launch that claims a parent is refused rather than silently \
+             treated as one with none."
+        );
+        posture.refuse(anyhow::anyhow!("{detail}"))?;
+        Ok(Ancestry::UnresolvedParent {
+            claimed_ancestor: claimed,
+            detail,
+        })
+    }
+
+    /// Non-fatal diagnostic for Owner Decision 2 (AAASM-6277): when this
+    /// launch authors at least one lease, name every domain `lowering`'s own
+    /// requirements touch that has no covering lease grant at all.
+    ///
+    /// "Has a lease" only — this is a presence check, not a scope-coverage
+    /// check (whether a `Selectors` lease actually covers the requirement's
+    /// own scope is `authority_gate`'s job, via `covered()`/`ScopeOrder`,
+    /// and duplicating that comparison here would be a second, potentially
+    /// drifting implementation of it). Never run when `authored` is empty —
+    /// ADR 0038's all-or-nothing rule is specifically about a document that
+    /// authors *some* lease, not the rc.7 compatibility residual where no
+    /// lease exists at all and every domain still reads
+    /// `CompatibilityResidual`.
+    fn warn_on_uncovered_lease_domains(lowering: &aa_isolation::PolicyLowering, authored: &[AuthoredLease]) {
+        if authored.is_empty() {
+            return;
+        }
+        let leased: std::collections::HashSet<CapabilityDomain> = authored.iter().map(|g| g.domain).collect();
+        let mut missing: Vec<CapabilityDomain> = lowering
+            .requirements()
+            .iter()
+            .map(|r| r.domain())
+            .filter(|d| !leased.contains(d))
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        missing.sort();
+        if !missing.is_empty() {
+            let names: Vec<String> = missing.iter().map(|d| d.to_string()).collect();
+            eprintln!(
+                "warning: this policy authors at least one capability lease, which puts every domain its \
+                 own requirements name under ADR 0038's all-or-nothing rule — a domain with no covering \
+                 lease refuses this launch at the authority gate. Not covered by any authored lease: {}. \
+                 Author a lease for each, or remove every authored lease to opt back into the rc.7 \
+                 compatibility residual.",
+                names.join(", "),
+            );
+        }
+    }
+
     /// What the execution boundary is required to provide, and who is going to
     /// provide it.
     ///
@@ -986,48 +1360,19 @@ mod plan {
         /// there is nothing here for `--dry-run`/live parity to disagree about
         /// on an explicit or default selection.
         selection: Option<aa_isolation::BackendSelection>,
-        /// Capability leases this launch carries as explicit authority
-        /// (AAASM-6160, ADR 0038). Empty for every launch today — no policy
-        /// path issues one yet — but threaded through `base_spec` so a future
-        /// source of leases has one call site to populate rather than a new
-        /// one to wire.
-        leases: Vec<CapabilityLease>,
         /// Per-ceiling `Resource` requirements built from this launch's
         /// `--max-*` flags (AAASM-6165). Attached to `base_spec` the same way
-        /// `leases` is: CLI provenance, never policy-derived, which is why
-        /// these never appear in `lowering`'s own requirement list — see the
-        /// ADR this ticket adds for why that is the correct provenance to
-        /// record.
+        /// `authority.lease_grants` is: CLI provenance, never policy-derived,
+        /// which is why these never appear in `lowering`'s own requirement
+        /// list — see the ADR this ticket adds for why that is the correct
+        /// provenance to record.
         resource_requirements: Vec<ControlRequirement>,
-        /// This launch's position in an execution ancestry (AAASM-6161, ADR
-        /// 0038 amendment). `Ancestry::Root` for every launch today — no
-        /// policy path resolves a parent's authority yet, so `--root-agent`
-        /// setting lineage does not by itself make this launch lease-aware
-        /// attenuation-checked (see `crate::authority::attenuation_applies`)
-        /// — but threaded through so a future source of resolved parent
-        /// authority has one call site to populate.
-        ancestry: Ancestry,
-        /// This launch's egress contract (AAASM-6163, ADR 0038 amendment).
-        /// Lowered in `resolve_isolation` from the effective policy's
-        /// `egress:` node (AAASM-6278) —
-        /// [`aa_isolation::EgressContract::broker_required`] when the policy
-        /// states `posture: broker_required`,
-        /// [`aa_isolation::EgressContract::not_required`] otherwise (absent
-        /// section, or no effective policy at all, since both refusing
-        /// `PolicyResolution` states read `NotRequired`).
-        egress: aa_isolation::EgressContract,
-        /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
-        /// amendment). [`CredentialContract::not_required`] for every launch
-        /// today — no policy path issues a stronger contract yet — but
-        /// threaded through `resolve_boundary` exactly as `egress` is.
-        credential_contract: CredentialContract,
-        /// This launch's host-capability contract (AAASM-6171, ADR 0038
-        /// amendment). [`HostCapabilityContract::not_required`] for every
-        /// launch today — no policy path issues a stronger contract yet, and
-        /// `aasm run` itself never requests a specific `HostOperation` — but
-        /// threaded through `resolve_boundary` exactly as `credential_contract`
-        /// is, so a future source has one call site to populate.
-        host_capability_contract: HostCapabilityContract,
+        /// This launch's checked, authored authority inputs (AAASM-6277, ADR
+        /// 0038) — leases, ancestry, egress, credential and host-capability
+        /// contracts. Built once by [`resolve_authority`]; see
+        /// [`ResolvedAuthority`]'s own doc comment for why this collapsed
+        /// five separate fields into one.
+        authority: ResolvedAuthority,
     }
 
     impl IsolationPlan {
@@ -1098,7 +1443,6 @@ mod plan {
                 args: Vec<String>,
                 working_dir: Option<std::path::PathBuf>,
                 credentials: CredentialPosture,
-                leases: Vec<CapabilityLease>,
                 resource_requirements: Vec<ControlRequirement>,
             }
 
@@ -1110,7 +1454,6 @@ mod plan {
                     .collect::<Option<_>>()?,
                 working_dir: command.get_current_dir().map(std::path::Path::to_path_buf),
                 credentials,
-                leases: self.leases.clone(),
                 resource_requirements: self.resource_requirements.clone(),
             };
             let BoundLaunchFields {
@@ -1118,7 +1461,6 @@ mod plan {
                 args,
                 working_dir,
                 credentials,
-                leases,
                 resource_requirements,
             } = fields;
 
@@ -1128,9 +1470,12 @@ mod plan {
             if let Some(dir) = working_dir {
                 spec = spec.with_working_dir(dir);
             }
-            for lease in leases {
-                spec = spec.with_lease(lease);
-            }
+            // AAASM-6277: real, subject-bound `CapabilityLease`s are issued
+            // and attached in `resolve_boundary`, once a real agent id
+            // exists — see `resolve_authority`'s doc comment for why this
+            // function (called before that id is final under `Preview`'s
+            // minted identity, and before registration under `Launch`)
+            // cannot do it itself. Nothing is attached here.
             // AAASM-6165: CLI-provenance `Resource` ceiling requirements,
             // attached here rather than threaded through `lowering` — see
             // `IsolationPlan::resource_requirements`'s own documentation for
@@ -1166,6 +1511,12 @@ mod plan {
         ) -> (Option<ExecutionSpec>, IsolationReport, Boundary) {
             let session = SessionRef::new(&handle.session_id, &handle.trace_id);
             let identity_ref = identity.identity_ref(&handle.agent_id);
+            // AAASM-6277: read once, here — before `base_spec` so lease
+            // issuance and `authority_gate`'s own validation below share one
+            // instant, never two clock reads that could straddle a boundary
+            // (an `issued_at` a hair after the gate's `now` would read as
+            // not-yet-valid).
+            let now = std::time::SystemTime::now();
 
             let Some(base) = self.base_spec(identity, handle, command, credentials.clone()) else {
                 // The lossy rendering is a label for humans, which is all
@@ -1198,6 +1549,38 @@ mod plan {
                     None => Boundary::Absent,
                 };
                 return (None, report, boundary);
+            };
+
+            // AAASM-6277: lower this launch's authored lease grants into
+            // real, subject-bound `CapabilityLease`s now that a real agent
+            // id exists (`identity_ref`, above) — see `resolve_authority`'s
+            // doc comment for why planning time could not do this.
+            // `resolve_authority`'s own throwaway pass already caught every
+            // structural authoring error before registration, so this
+            // should never fail in practice; the error path is handled
+            // rather than `.expect()`-ed regardless.
+            let base = match lower_leases(
+                &self.authority.lease_grants,
+                &LeaseIssuance {
+                    subject: identity_ref.clone(),
+                    default_issuer: IdentityRef::root(DEFAULT_LEASE_ISSUER),
+                    issued_at: now,
+                    default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                    id_prefix: format!("{}-leases", handle.agent_id),
+                },
+            ) {
+                Ok(leases) => leases.into_iter().fold(base, ExecutionSpec::with_lease),
+                Err(error) => {
+                    let detail = format!("this launch's authored capability leases could not be issued: {error}");
+                    let report = self.with_selection(IsolationReport::no_boundary(
+                        session,
+                        identity_ref,
+                        TargetRef::of(&base),
+                        credentials,
+                        detail.clone(),
+                    ));
+                    return (Some(base), report, Boundary::Refused(detail));
+                }
             };
 
             // No backend: either nobody asked for one, or a preview met a
@@ -1299,12 +1682,11 @@ mod plan {
             // domain at all — and it must run *before* any backend is
             // consulted, so a domain with no covering grant is refused before
             // backend capability (possession) is ever in the picture. `now`
-            // is read once, here, rather than threaded from a caller: this is
-            // the one live call site, as opposed to this crate's own tests,
-            // which inject a fixed instant to keep expiry/not-yet-valid
-            // decisions deterministic.
-            let now = std::time::SystemTime::now();
-            let witness = match authority_gate(&spec, &self.ancestry, now) {
+            // is the same instant lease issuance above used, read once at
+            // the top of this function — this is the one live call site, as
+            // opposed to this crate's own tests, which inject a fixed
+            // instant to keep expiry/not-yet-valid decisions deterministic.
+            let witness = match authority_gate(&spec, &self.authority.ancestry, now) {
                 Ok(witness) => witness,
                 Err(refusal) => {
                     let authority = effective_authority_for_report(&spec);
@@ -1356,7 +1738,7 @@ mod plan {
                 network_fail_open_env(),
                 gateway_configured_env(),
             );
-            if let Err(refusal) = egress_gate(&self.egress, &broker, &egress_authority, &egress_scope) {
+            if let Err(refusal) = egress_gate(&self.authority.egress, &broker, &egress_authority, &egress_scope) {
                 let authority = effective_authority_for_report(&spec);
                 let detail = format!("the launch is refused: {refusal}");
                 let mut report = IsolationReport::no_boundary(
@@ -1397,7 +1779,7 @@ mod plan {
                 network_fail_open_env(),
             );
             if let Err(refusal) = credential_gate(
-                &self.credential_contract,
+                &self.authority.credential_contract,
                 &credential_broker,
                 &credential_authority,
                 &credentials,
@@ -1437,7 +1819,7 @@ mod plan {
             );
             let host_capability_op = HostOperation::XcodeList(XcodeListRequest::new(std::path::PathBuf::new()));
             if let Err(refusal) = host_capability_gate(
-                &self.host_capability_contract,
+                &self.authority.host_capability_contract,
                 &host_capability_broker,
                 &host_capability_authority,
                 &host_capability_op,
@@ -2094,11 +2476,14 @@ mod plan {
                 .canonical()
                 .map(|document| aa_isolation::lower_policy(document, &aa_isolation::LoweringOptions::strict()));
 
-            // AAASM-6278/ADR 0038 amendment: every `IsolationPlan` construction
-            // site below once hard-coded `EgressContract::not_required()`. This
-            // reads the resolved policy's authored posture instead — see
-            // `egress_contract_for`'s own doc comment for the lowering itself.
-            let egress_contract = egress_contract_for(resolution);
+            // AAASM-6277: every `IsolationPlan` construction site below once
+            // hard-coded five separate authority fields (`leases`,
+            // `ancestry`, `egress`, `credential_contract`,
+            // `host_capability_contract`) individually. `resolve_authority`
+            // resolves all five, once, from the policy resolution and this
+            // launch's own `--root-agent`/`--max-*` flags — see its own doc
+            // comment.
+            let authority = resolve_authority(args, resolution, posture)?;
 
             if args.isolation == super::IsolationIntent::None {
                 // Naming a backend for a launch that asked for no boundary is a
@@ -2120,7 +2505,7 @@ mod plan {
                 // asked for. Refuse rather than launch ungoverned on this
                 // specific dimension, mirroring the `--isolation-backend` check
                 // above.
-                if egress_contract == aa_isolation::EgressContract::broker_required() {
+                if authority.egress == aa_isolation::EgressContract::broker_required() {
                     posture.refuse(anyhow::anyhow!(
                         "the effective policy requires brokered egress (`egress: posture: broker_required`), \
                          but --isolation is `none`, so this launch establishes no execution-isolation \
@@ -2142,12 +2527,8 @@ mod plan {
                             .to_string(),
                     ),
                     selection: None,
-                    leases: Vec::new(),
                     resource_requirements: super::resource_requirements(args),
-                    ancestry: Ancestry::Root,
-                    egress: egress_contract,
-                    credential_contract: CredentialContract::not_required(),
-                    host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+                    authority,
                 });
             }
 
@@ -2159,18 +2540,11 @@ mod plan {
             let resource_requirements = super::resource_requirements(args);
 
             if let Some(id) = &args.isolation_backend {
-                return explicit_backend(
-                    id,
-                    args.isolation,
-                    lowering,
-                    posture,
-                    resource_requirements,
-                    egress_contract,
-                );
+                return explicit_backend(id, args.isolation, lowering, posture, resource_requirements, authority);
             }
 
             if args.isolation == super::IsolationIntent::Auto {
-                return auto_select(&lowering, posture, resource_requirements, egress_contract);
+                return auto_select(&lowering, posture, resource_requirements, authority);
             }
 
             // `--isolation process` with no backend named. The default is
@@ -2187,7 +2561,7 @@ mod plan {
                 lowering,
                 posture,
                 resource_requirements,
-                egress_contract,
+                authority,
             )
         }
     }
@@ -2227,7 +2601,7 @@ mod plan {
         lowering: Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
         resource_requirements: Vec<ControlRequirement>,
-        egress: aa_isolation::EgressContract,
+        authority: ResolvedAuthority,
     ) -> anyhow::Result<IsolationPlan> {
         let backend = match requested {
             id if id == aa_isolation_sandlock::BACKEND_ID => {
@@ -2262,12 +2636,8 @@ mod plan {
                     backend: None,
                     absent: Some(format!("no backend answers to the id `{other}` in this build")),
                     selection: None,
-                    leases: Vec::new(),
                     resource_requirements: resource_requirements.clone(),
-                    ancestry: Ancestry::Root,
-                    egress: egress.clone(),
-                    credential_contract: CredentialContract::not_required(),
-                    host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+                    authority: authority.clone(),
                 });
             }
         };
@@ -2291,12 +2661,8 @@ mod plan {
                      this host: {reason}"
                 )),
                 selection: None,
-                leases: Vec::new(),
                 resource_requirements: resource_requirements.clone(),
-                ancestry: Ancestry::Root,
-                egress: egress.clone(),
-                credential_contract: CredentialContract::not_required(),
-                host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+                authority: authority.clone(),
             });
         }
 
@@ -2305,12 +2671,8 @@ mod plan {
             backend: Some(backend),
             absent: None,
             selection: None,
-            leases: Vec::new(),
             resource_requirements: resource_requirements.clone(),
-            ancestry: Ancestry::Root,
-            egress,
-            credential_contract: CredentialContract::not_required(),
-            host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+            authority,
         })
     }
 
@@ -2379,7 +2741,7 @@ mod plan {
         lowering: &Option<aa_isolation::PolicyLowering>,
         posture: PlanPosture,
         resource_requirements: Vec<ControlRequirement>,
-        egress: aa_isolation::EgressContract,
+        authority: ResolvedAuthority,
     ) -> anyhow::Result<IsolationPlan> {
         const CANDIDATES: [&str; 3] = [
             aa_isolation_sandlock::BACKEND_ID,
@@ -2399,12 +2761,8 @@ mod plan {
                 )),
                 absent: None,
                 selection: None,
-                leases: Vec::new(),
                 resource_requirements: resource_requirements.clone(),
-                ancestry: Ancestry::Root,
-                egress: egress.clone(),
-                credential_contract: CredentialContract::not_required(),
-                host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+                authority,
             });
         };
 
@@ -2485,12 +2843,8 @@ mod plan {
                             mode: aa_isolation::SelectionMode::Automatic,
                             considered,
                         }),
-                        leases: Vec::new(),
                         resource_requirements: resource_requirements.clone(),
-                        ancestry: Ancestry::Root,
-                        egress: egress.clone(),
-                        credential_contract: CredentialContract::not_required(),
-                        host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+                        authority: authority.clone(),
                     });
                 }
                 Err(refusal) => {
@@ -2534,12 +2888,8 @@ mod plan {
                 mode: aa_isolation::SelectionMode::Automatic,
                 considered,
             }),
-            leases: Vec::new(),
             resource_requirements: resource_requirements.clone(),
-            ancestry: Ancestry::Root,
-            egress,
-            credential_contract: CredentialContract::not_required(),
-            host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
+            authority,
         })
     }
 
@@ -2769,7 +3119,7 @@ mod plan {
     #[cfg(test)]
     mod egress_broker_adversarial_tests {
         use super::*;
-        use aa_isolation::{CapabilityLease, EgressContract, EgressRefusal, LeaseBasis, LeaseId};
+        use aa_isolation::{EgressContract, EgressRefusal};
 
         /// A minimal `IsolationPlan` with a Sandlock backend selected and a
         /// broker-required egress contract -- every other contract left at
@@ -2778,40 +3128,48 @@ mod plan {
         ///
         /// Carries a CLI-provenance `FilesystemWrite` requirement (mirroring
         /// `--max-*`'s `resource_requirements` provenance) plus a matching
-        /// `FilesystemWrite` lease in *every* fixture this function builds --
-        /// present identically in both the adversarial and control arms of
-        /// every test below, so it never discriminates between them. It
-        /// exists only so `apply_to` has a non-empty requirement set to work
-        /// with (an empty one refuses the launch before `egress_gate` is ever
-        /// reached) and so `authority_gate` never refuses on a domain this
-        /// test isn't about; the egress-domain lease passed in via `leases`
-        /// is the only variable each test actually moves.
-        fn egress_test_plan(mut leases: Vec<CapabilityLease>) -> IsolationPlan {
+        /// `FilesystemWrite` lease grant in *every* fixture this function
+        /// builds -- present identically in both the adversarial and control
+        /// arms of every test below, so it never discriminates between
+        /// them. It exists only so `apply_to` has a non-empty requirement
+        /// set to work with (an empty one refuses the launch before
+        /// `egress_gate` is ever reached) and so `authority_gate` never
+        /// refuses on a domain this test isn't about; the egress-domain
+        /// grant passed in via `authored` is the only variable each test
+        /// actually moves. Grants are authored, not issued -- `resolve_boundary`
+        /// issues the real `CapabilityLease`s against `test_identity_and_handle`'s
+        /// fixed agent id once this plan is resolved.
+        fn egress_test_plan(mut authored: Vec<AuthoredLease>) -> IsolationPlan {
             let policy = aa_security::policy::PolicyDocument::default();
             let lowering = aa_isolation::lower_policy(&policy, &aa_isolation::LoweringOptions::strict());
-            leases.push(egress_lease(CapabilityDomain::FilesystemWrite));
+            authored.push(egress_lease(CapabilityDomain::FilesystemWrite));
             IsolationPlan {
                 lowering: Some(lowering),
                 backend: Some(SelectedBackend::Sandlock(
                     aa_isolation_sandlock::SandlockBackend::discover(),
                 )),
-                leases,
                 resource_requirements: vec![ControlRequirement::prevent(CapabilityDomain::FilesystemWrite)],
-                egress: EgressContract::broker_required(),
+                authority: ResolvedAuthority {
+                    lease_grants: authored,
+                    egress: EgressContract::broker_required(),
+                    ..Default::default()
+                },
                 ..Default::default()
             }
         }
 
-        fn egress_lease(domain: CapabilityDomain) -> CapabilityLease {
-            CapabilityLease::new(
-                LeaseId::new(format!("{domain}-lease")),
-                IdentityRef::root("agent-under-test"),
+        fn egress_lease(domain: CapabilityDomain) -> AuthoredLease {
+            AuthoredLease {
                 domain,
-                RequirementScope::Whole,
-                std::time::SystemTime::now(),
-                std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
-                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: egress broker adversarial"),
-            )
+                scope: RequirementScope::Whole,
+                max_count: None,
+                ttl_seconds: Some(3_600),
+                delegable: false,
+                issuer: Some("issuer".to_string()),
+                policy_rule: None,
+                approval_ref: None,
+                reason: "test fixture: egress broker adversarial".to_string(),
+            }
         }
 
         fn test_identity_and_handle() -> (IdentityPlan, RegistrationHandle) {
@@ -2855,7 +3213,7 @@ mod plan {
 
         /// Runs `resolve_boundary` with a broker-required egress contract and
         /// returns the resulting `Boundary`'s refusal detail, if any.
-        fn resolve(leases: Vec<CapabilityLease>) -> Boundary {
+        fn resolve(authored: Vec<AuthoredLease>) -> Boundary {
             let (identity, handle) = test_identity_and_handle();
             let command = std::process::Command::new("echo");
             let child_env = std::collections::BTreeMap::new();
@@ -2864,7 +3222,7 @@ mod plan {
                 endpoint: Some("127.0.0.1:9".to_string()),
                 no_proxy: false,
             };
-            let mut plan = egress_test_plan(leases);
+            let mut plan = egress_test_plan(authored);
             let (_, _, boundary) =
                 plan.resolve_boundary(&identity, &handle, &command, &child_env, credentials, &network);
             boundary
@@ -2913,15 +3271,17 @@ mod plan {
         /// lease widened to `Whole`.
         #[test]
         fn a_lease_scoped_narrower_than_the_request_does_not_cover_it() {
-            let narrow_lease = CapabilityLease::new(
-                LeaseId::new("narrow-egress-lease"),
-                IdentityRef::root("agent-under-test"),
-                CapabilityDomain::NetworkEgress,
-                RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
-                std::time::SystemTime::now(),
-                std::time::SystemTime::now() + std::time::Duration::from_secs(3_600),
-                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture: narrower than Whole"),
-            );
+            let narrow_lease = AuthoredLease {
+                domain: CapabilityDomain::NetworkEgress,
+                scope: RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
+                max_count: None,
+                ttl_seconds: Some(3_600),
+                delegable: false,
+                issuer: Some("issuer".to_string()),
+                policy_rule: None,
+                approval_ref: None,
+                reason: "test fixture: narrower than Whole".to_string(),
+            };
             let adversarial = resolve(vec![narrow_lease]);
             let adversarial_detail = refusal_detail(&adversarial).unwrap_or_default().to_string();
             assert!(
@@ -3027,7 +3387,7 @@ mod plan {
                 let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
                     .unwrap_or_else(|e| panic!("preview must not error for intent {isolation:?}: {e}"));
                 assert_eq!(
-                    plan.egress,
+                    plan.authority.egress,
                     EgressContract::broker_required(),
                     "intent {isolation:?} did not carry the policy-authored contract"
                 );
@@ -3040,7 +3400,7 @@ mod plan {
             named.isolation_backend = Some("no-such-backend".to_string());
             let plan = RunPlanner::resolve_isolation(&named, PlanPosture::Preview, &resolution)
                 .expect("preview must not error even for an unknown backend id");
-            assert_eq!(plan.egress, EgressContract::broker_required());
+            assert_eq!(plan.authority.egress, EgressContract::broker_required());
         }
 
         /// The control: a document with no `egress:` section still produces
@@ -3053,7 +3413,7 @@ mod plan {
             let args = args_with_intent(super::super::IsolationIntent::None);
             let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
                 .expect("preview must not error");
-            assert_eq!(plan.egress, EgressContract::not_required());
+            assert_eq!(plan.authority.egress, EgressContract::not_required());
         }
 
         /// The gap `every_isolation_intent_carries_…` above cannot see on its
@@ -3089,7 +3449,7 @@ mod plan {
 
             let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution)
                 .expect("a not_required policy under --isolation none must still launch unconfined");
-            assert_eq!(plan.egress, EgressContract::not_required());
+            assert_eq!(plan.authority.egress, EgressContract::not_required());
         }
 
         /// The other half of the control: under `Preview`, the same
@@ -3104,7 +3464,7 @@ mod plan {
 
             let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
                 .expect("a preview must report the refusal and carry on, not error");
-            assert_eq!(plan.egress, EgressContract::broker_required());
+            assert_eq!(plan.authority.egress, EgressContract::broker_required());
         }
     }
 }

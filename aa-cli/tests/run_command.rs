@@ -243,14 +243,19 @@ async fn run_command_refuses_to_launch_when_registration_is_impossible() {
     );
 }
 
-/// An identity the gateway *refuses* — as distinct from a gateway it cannot
-/// reach — must also stop the launch.
+/// A claimed parent this build cannot trust-resolve stops the launch before
+/// registration is even attempted (AAASM-6277, Owner Decision 1).
 ///
-/// `--root-agent` declares a parent, and `RegisterRequest` has no other field
-/// for a declared lineage, so the gateway resolves it: a parent it has never
-/// registered is `InvalidArgument`. A lineage claim nobody can verify must not
-/// be quietly dropped into a successful launch, because the resulting session
-/// would be attributed to a delegation chain that does not exist.
+/// `--root-agent` declares a parent, and until AAASM-6273 lands there is no
+/// cross-process mechanism to resolve that claim into a real, verified
+/// parent authority — so `aasm run` now refuses at plan time, naming
+/// `AncestryUnresolved`/AAASM-6273, rather than forwarding the claim to the
+/// gateway and letting it refuse as `InvalidArgument` (the pre-AAASM-6277
+/// behavior this test used to pin). A lineage claim nobody can verify must
+/// not be quietly dropped into a successful launch, because the resulting
+/// session would be attributed to a delegation chain that does not exist —
+/// and it must not even reach a gateway registration call, which is the
+/// behavior change this ticket makes deliberately.
 #[tokio::test(flavor = "multi_thread")]
 async fn run_command_refuses_a_lineage_the_gateway_will_not_accept() {
     let gateway = TestGateway::start().await.expect("start gateway");
@@ -270,19 +275,20 @@ async fn run_command_refuses_a_lineage_the_gateway_will_not_accept() {
 
     let err = execute_with_adapters(&args, &adapters)
         .await
-        .expect_err("a refused registration must not produce a launch");
+        .expect_err("a claimed-but-unresolved parent must refuse before any launch");
 
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("refusing to launch unregistered"),
-        "the refusal must name what was refused; got: {err}"
+        text.contains("claims a parent") && text.contains("AAASM-6273"),
+        "the refusal must name the ancestry claim and the tracking ticket: {text}"
     );
     assert!(
         !launched.load(std::sync::atomic::Ordering::SeqCst),
-        "the tool was launched despite the gateway refusing the session's identity"
+        "the tool was launched despite an unresolved ancestry claim"
     );
     assert!(
         gateway.registry().list().is_empty(),
-        "a refused registration must leave no record behind"
+        "a plan-time refusal must never reach registration at all"
     );
 }
 

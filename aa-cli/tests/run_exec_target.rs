@@ -375,8 +375,11 @@ async fn exec_honours_agent_id_and_team_in_the_child_environment() {
     );
 }
 
-/// AC 4 + AC 5: a lineage the gateway will not accept stops a generic launch,
-/// exactly as it stops a dev-tool launch.
+/// AC 4 + AC 5: a lineage this build cannot trust-resolve stops a generic
+/// launch, exactly as it stops a dev-tool launch (AAASM-6277, Owner Decision
+/// 1) — and, since AAASM-6277, before registration is even attempted. See
+/// `run_command.rs`'s `run_command_refuses_a_lineage_the_gateway_will_not_accept`
+/// for the full reasoning; this is its generic-command counterpart.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn exec_refuses_a_lineage_the_gateway_will_not_accept() {
@@ -392,19 +395,20 @@ async fn exec_refuses_a_lineage_the_gateway_will_not_accept() {
 
     let err = execute_with_adapters(&args, &no_adapters())
         .await
-        .expect_err("a refused registration must not produce a launch");
+        .expect_err("a claimed-but-unresolved parent must refuse before any launch");
 
+    let text = err.to_string();
     assert!(
-        err.to_string().contains("refusing to launch unregistered"),
-        "the refusal must name what was refused; got: {err}"
+        text.contains("claims a parent") && text.contains("AAASM-6273"),
+        "the refusal must name the ancestry claim and the tracking ticket: {text}"
     );
     assert!(
         !marker.exists(),
-        "the program was started despite the gateway refusing the session's identity"
+        "the program was started despite an unresolved ancestry claim"
     );
     assert!(
         gateway.registry().list().is_empty(),
-        "a refused registration must leave no record behind"
+        "a plan-time refusal must never reach registration at all"
     );
 }
 
