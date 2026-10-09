@@ -247,6 +247,22 @@ pub struct RawAuthorityPolicy {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for the `egress` policy section
+/// (AAASM-6278).
+#[derive(Debug, Deserialize)]
+pub struct RawEgressPolicy {
+    /// The required egress-mediation posture: `"not_required"` or
+    /// `"broker_required"`. Required when this section is present at all —
+    /// an `egress:` section with no `posture:` is ambiguous rather than a
+    /// safe default, the same AAASM-4330 fail-closed reading
+    /// `RawAuthorityPolicy`'s nested fields get.
+    pub posture: Option<String>,
+    /// Stray keys captured so the validator can reject them (AAASM-4330
+    /// fail-closed: a nested typo must not silently drop a restriction).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `metadata` section
 /// of the governance policy YAML envelope.
 #[derive(Debug, Deserialize)]
@@ -318,6 +334,8 @@ pub struct RawPolicyDocument {
     pub syscalls: Option<RawSyscallAllowlist>,
     /// Capability leases this policy document grants (AAASM-6275).
     pub authority: Option<RawAuthorityPolicy>,
+    /// Required egress-mediation posture (AAASM-6278).
+    pub egress: Option<RawEgressPolicy>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -678,5 +696,34 @@ mod tests {
         assert!(entry.authority.as_ref().unwrap().leases.as_ref().unwrap()[0]
             .unknown
             .contains_key("dmoain"));
+    }
+
+    // ── RawEgressPolicy (AAASM-6278) ────────────────────────────────────────
+
+    #[test]
+    fn raw_egress_deserializes_a_broker_required_posture() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("egress:\n  posture: broker_required\n").unwrap();
+        assert_eq!(
+            raw.egress.as_ref().unwrap().posture,
+            Some("broker_required".to_string())
+        );
+    }
+
+    #[test]
+    fn raw_egress_absent_section_is_none() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("{}\n").unwrap();
+        assert!(raw.egress.is_none());
+    }
+
+    #[test]
+    fn raw_egress_absent_posture_is_none() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("egress: {}\n").unwrap();
+        assert!(raw.egress.as_ref().unwrap().posture.is_none());
+    }
+
+    #[test]
+    fn raw_egress_captures_unknown_keys() {
+        let raw: RawPolicyDocument = serde_yaml::from_str("egress:\n  posturee: broker_required\n").unwrap();
+        assert!(raw.egress.as_ref().unwrap().unknown.contains_key("posturee"));
     }
 }

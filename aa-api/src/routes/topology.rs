@@ -1451,6 +1451,7 @@ pub(crate) mod graph_tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: aa_gateway::policy::EgressPosture::NotRequired,
         }
     }
 

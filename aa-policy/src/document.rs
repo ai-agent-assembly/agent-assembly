@@ -147,6 +147,54 @@ pub struct ToolPolicy {
     pub requires_approval_if: Option<String>,
 }
 
+/// Whether a policy document requires brokered egress (AAASM-6278, ADR 0038
+/// amendment).
+///
+/// Mirrors `aa_isolation::egress::EgressPosture`'s two-value vocabulary by
+/// name — same words, independently defined type, for the same reason
+/// [`LeaseDomain`] below mirrors `aa_isolation::capability::CapabilityDomain`:
+/// `aa-policy` cannot depend on `aa-isolation` (the dependency edge runs the
+/// other way). Unlike [`LeaseDomain`], there is no tautology hazard to avoid
+/// here — an egress posture is a restriction a policy author states directly,
+/// not a grant checked against an independently-sourced requirement — so this
+/// node is free to be read straight off the validated document rather than
+/// routed through [`PolicyDocument::to_canonical`]. It still is not routed
+/// through that bridge: see the `egress` field's own doc comment for why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EgressPosture {
+    /// No egress-mediation property is required. The default — every
+    /// document that states no `egress:` section reads this way, matching
+    /// `aa_isolation::egress::EgressContract::not_required()`'s own
+    /// rc.7-compatible default.
+    #[default]
+    NotRequired,
+    /// Egress must be mediated by a broker meeting
+    /// `aa_isolation::egress::EgressContract::broker_required()`'s stated
+    /// properties, or the launch must be refused.
+    BrokerRequired,
+}
+
+impl EgressPosture {
+    /// Parse the wire name a policy author writes (snake_case). Returns
+    /// `None` for an unrecognised word, so the validator can reject a typo
+    /// rather than silently falling back to [`Self::NotRequired`].
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "not_required" => Some(Self::NotRequired),
+            "broker_required" => Some(Self::BrokerRequired),
+            _ => None,
+        }
+    }
+
+    /// The wire name this posture round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::BrokerRequired => "broker_required",
+        }
+    }
+}
+
 /// A capability domain a [`LeaseGrant`] may be issued against (AAASM-6275,
 /// ADR 0038).
 ///
@@ -386,6 +434,19 @@ pub struct PolicyDocument {
     /// [`filesystem`](Self::filesystem), [`syscall_allowlist`](Self::syscall_allowlist),
     /// [`capabilities`](Self::capabilities) or [`network`](Self::network).
     pub leases: Vec<LeaseGrant>,
+    /// AAASM-6278 — this policy document's required egress-mediation posture.
+    ///
+    /// Defaults to [`EgressPosture::NotRequired`] when the document states no
+    /// `egress:` section — the same rc.7-compatible default
+    /// `aa_isolation::egress::EgressContract::not_required()` carries.
+    /// Deliberately never routed through [`Self::to_canonical`]: that method
+    /// projects onto `CanonPolicyDocument`, the exact AST
+    /// `aa_isolation::lowering::lower_policy` reads to build
+    /// `ControlRequirement`s, and an egress posture is a different kind of
+    /// fact (what this run's mediating component must provide, not what the
+    /// agent itself may do) consumed by `aa_isolation::egress::egress_gate`
+    /// instead.
+    pub egress: EgressPosture,
 }
 
 #[cfg(test)]
@@ -410,6 +471,7 @@ mod tests {
             filesystem: None,
             syscall_allowlist: None,
             leases: Vec::new(),
+            egress: EgressPosture::NotRequired,
         };
         assert!(doc.tools.is_empty());
         // AAASM-5751 — an unstated path node. Read this as "nobody said",
@@ -417,6 +479,21 @@ mod tests {
         assert!(doc.filesystem.is_none());
         // AAASM-6275 — no leases authored.
         assert!(doc.leases.is_empty());
+        // AAASM-6278 — no egress section authored.
+        assert_eq!(doc.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn egress_posture_round_trips_through_parse_and_as_str() {
+        for posture in [EgressPosture::NotRequired, EgressPosture::BrokerRequired] {
+            assert_eq!(EgressPosture::parse(posture.as_str()), Some(posture));
+        }
+    }
+
+    #[test]
+    fn egress_posture_rejects_an_unrecognised_word() {
+        assert_eq!(EgressPosture::parse("broker_preferred"), None);
+        assert_eq!(EgressPosture::parse(""), None);
     }
 
     #[test]

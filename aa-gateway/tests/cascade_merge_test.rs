@@ -27,6 +27,7 @@ fn allow_doc(scope: PolicyScope) -> Arc<PolicyDocument> {
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     })
 }
 
@@ -57,6 +58,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     })
 }
 
@@ -87,6 +89,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
         filesystem: None,
         syscall_allowlist: None,
         leases: Vec::new(),
+        egress: aa_gateway::policy::EgressPosture::NotRequired,
     })
 }
 

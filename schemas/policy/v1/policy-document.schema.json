@@ -216,6 +216,19 @@
           "default": []
         }
       }
+    },
+    "egress": {
+      "description": "Required egress-mediation posture (AAASM-6278, ADR 0038 amendment). States whether this launch must have its egress mediated by a broker meeting aa-isolation's EgressContract::broker_required() properties, or whether no egress-mediation property is required (the rc.7-compatible default when this section is absent).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture"],
+      "properties": {
+        "posture": {
+          "description": "The required egress-mediation posture. 'not_required' states no property is required; 'broker_required' requires a mediating broker or the launch is refused.",
+          "type": "string",
+          "enum": ["not_required", "broker_required"]
+        }
+      }
     }
   },
   "examples": [
@@ -277,6 +290,9 @@
             "reason": "unrestricted egress for the duration of this policy's active hours"
           }
         ]
+      },
+      "egress": {
+        "posture": "broker_required"
       }
     },
     {
