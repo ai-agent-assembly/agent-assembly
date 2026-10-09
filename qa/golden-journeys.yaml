@@ -2271,8 +2271,27 @@ journeys:
   feature_refs:
   - AAASM-6164
   release_blocking: true
-  lifecycle_state: gap
+  lifecycle_state: partial
   gap_owner: AAASM-6262
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/credential_broker.rs::tests (15 tests, `cargo nextest run -p aa-isolation --lib credential_broker::`)
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_credential_broker_sentinel.rs::credential_broker_sentinel::broker_active_sentinel_never_reaches_the_child_or_any_artifact
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_credential_broker_sentinel.rs::credential_broker_sentinel::broker_absent_sentinel_leaks_to_the_child_proving_detection_works
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_credential_broker_sentinel.rs::credential_broker_sentinel::a_descendant_can_read_the_supervisors_own_ps_e_environment
+  execution_lanes:
+  - release
+  fidelity: real_local_process
+  platforms:
+  - macos-apple-silicon
+  negative_control: 'AAASM-6293 (ST-6, independent QA) live-verified on a real macOS host that a synthetic sk-ant-QA6174-<pid>-<nanos> sentinel injected into ANTHROPIC_API_KEY never reaches a real spawned child''s own env, argv, lsof-visible descriptors, or any state/receipt/log file this run writes while the credential broker is active (AA_PROXY_PROVIDER_KEYS configured for api.anthropic.com) -- paired with a positive control (identical launch, broker unconfigured) that proves the sentinel DOES leak via ambient inheritance in that case, so the negative result is not vacuous. Also found and documented (not fixed, out of this ticket''s scope) a macOS counterpart to AAASM-6187''s Linux finding: a same-uid descendant can still read the aasm supervisor''s own real provider-key value via `ps -Eww -p $PPID` against its exec-time environment block, independent of what the child''s own process environment carries -- this is a residual exposure channel AAASM-6164''s withholding mechanism does not address and does not claim to. Fail-closed (BrokerRequired-but-unavailable) has no live CLI path to exercise today: `aa-cli/src/commands/run.rs` constructs `CredentialContract::not_required()` unconditionally for every launch -- no policy source in this repository issues `BrokeragePosture::BrokerRequired` yet, exactly as `credential_broker.rs`''s own module doc already states. That refusal path is covered only at the unit level (`unavailable_broker_is_refused_available_broker_is_admitted`); recorded here as a genuine gap, not faked as live. `lifecycle_state` stays `partial`, not `automated`, for both reasons: the fail-closed gap above, and because the live evidence above is macOS-only (`#[cfg(target_os = "macos")]`) and does not run in a Linux CI lane.'
 - id: J85
   jira: AAASM-6263
   name: Commit, approve, and discard a transactional copy-on-write workspace
