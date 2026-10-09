@@ -348,14 +348,13 @@ fn hash_leases(hasher: &mut Sha256, leases: &[crate::document::LeaseGrant]) {
 
 /// Hash the AAASM-6278 required egress-mediation posture.
 ///
-/// **Emitted only when `posture` is not [`EgressPosture::NotRequired`]**, the
-/// same "emitted when non-default" rule [`hash_leases`] applies for "emitted
-/// when non-empty": a document that states no stronger posture than the
-/// rc.7-compatible default must hash to exactly the bytes it hashed to before
-/// this field existed.
+/// **Emitted only when `posture` is not [`crate::document::EgressPosture::NotRequired`]**,
+/// the same "emitted when non-default" rule [`hash_leases`] applies for
+/// "emitted when non-empty": a document that states no stronger posture than
+/// the rc.7-compatible default must hash to exactly the bytes it hashed to
+/// before this field existed.
 fn hash_egress(hasher: &mut Sha256, posture: crate::document::EgressPosture) {
-    use crate::document::EgressPosture;
-    if posture == EgressPosture::NotRequired {
+    if posture == crate::document::EgressPosture::NotRequired {
         return;
     }
     hasher.update(b"egr\x01");

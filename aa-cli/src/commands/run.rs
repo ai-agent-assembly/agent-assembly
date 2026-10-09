@@ -1329,11 +1329,13 @@ mod plan {
             // policy that requires brokered egress now actually reaches this
             // gate. **Caveat**: this whole function returns before this point
             // for `--isolation none` (the `self.backend.as_mut()` `else` branch
-            // above) — the plan still carries the authored contract (so a
-            // report or `--dry-run` reading `self.egress` sees it), but an
-            // unconfined launch is not gated against it. Do not cite this
-            // comment as evidence of live egress prevention under
-            // `--isolation none`.
+            // above) — the plan still carries the authored contract in
+            // `self.egress`, but nothing renders that field today (no
+            // `IsolationReport` field, no `--dry-run` line), and an unconfined
+            // launch is not gated against it either. A policy requiring
+            // brokered egress under the default `--isolation none` therefore
+            // fails open, silently. Do not cite this comment as evidence of
+            // live egress prevention under `--isolation none`.
             let egress_authority = EgressAuthority::from_gated_spec(&spec, &witness);
             let egress_scope = spec
                 .requirements()
@@ -2725,14 +2727,19 @@ mod plan {
     /// whose policy requires brokered egress and whose host has none, **with
     /// one caveat**: `resolve_boundary` returns before reaching `egress_gate`
     /// at all when `self.backend` is `None` (`--isolation none`), so an
-    /// unconfined launch carries the authored contract in its report but is
-    /// not gated against it. This test constructs an `IsolationPlan` directly,
-    /// inside this module, with `egress: EgressContract::broker_required()`
-    /// so the fixture does not depend on a real policy file on disk — the
-    /// policy-to-contract lowering itself is covered separately by
-    /// `egress_contract_for`'s own unit tests, which do not need a selectable
-    /// backend on the host either. See AAASM-6174's sign-off for history on
-    /// the inertness finding this comment used to describe, and the
+    /// unconfined launch still carries the authored contract in
+    /// `self.egress`, but nothing renders that field (no `IsolationReport`
+    /// field, no `--dry-run` line exists for it) and the launch is not gated
+    /// against it either — a `broker_required` policy under the default
+    /// `--isolation none` fails open, silently. This test constructs an
+    /// `IsolationPlan` directly, inside this module, with
+    /// `egress: EgressContract::broker_required()` so the fixture does not
+    /// depend on a real policy file on disk — the policy-to-contract
+    /// lowering itself is covered separately by `egress_contract_for`'s own
+    /// unit tests and by `egress_policy_wiring_tests` below, neither of
+    /// which needs a selectable backend on the host either. See AAASM-6174's
+    /// sign-off for history on the inertness finding this comment used to
+    /// describe, and the
     /// `--isolation none` caveat above for what is still not covered.
     #[cfg(test)]
     mod egress_broker_adversarial_tests {
@@ -2904,6 +2911,124 @@ mod plan {
                 "positive control: a Whole-scoped lease must cover a Whole-scoped request: \
                  {control_detail}"
             );
+        }
+    }
+
+    /// AAASM-6278 — pins the AC the adversarial tests above cannot: that
+    /// `resolve_isolation` actually reads the policy's authored posture at
+    /// every production `IsolationPlan` construction site, not merely that
+    /// `egress_contract_for`'s mapping is correct in isolation (the unit
+    /// tests in `super::super::tests` already cover that in the other
+    /// direction, without a `PolicyResolution` at all).
+    ///
+    /// Deliberately does not assert a live refusal — this dev host can
+    /// select no backend at all (every `aa-cli/tests/run_isolation.rs` test
+    /// says so in its own comments), so a real `egress_gate` refusal is not
+    /// reachable here. [`PlanPosture::Preview`] is used instead of `Launch`
+    /// so every intent below returns a plan rather than an error regardless
+    /// of backend availability, and the assertion reads the plan's `egress`
+    /// field directly — the one piece of state this ticket's AC is actually
+    /// about.
+    #[cfg(test)]
+    mod egress_policy_wiring_tests {
+        use std::path::Path;
+
+        use super::*;
+        use aa_isolation::EgressContract;
+
+        /// A validated-document round trip, not a hand-built `PolicyResolution`
+        /// literal: this is the one test in the file that exercises the real
+        /// `aa_policy::resolve::classify` parse path for the `egress:` node,
+        /// in the envelope shape an on-disk artifact actually uses.
+        fn broker_required_resolution() -> run_policy::PolicyResolution {
+            run_policy::classify(
+                Path::new("/egress-wiring-test.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: egress-wiring-test\nspec:\n  \
+                 tools:\n    bash:\n      allow: true\n  egress:\n    posture: broker_required\n",
+            )
+        }
+
+        /// The control: the identical document minus the `egress:` section.
+        fn not_required_resolution() -> run_policy::PolicyResolution {
+            run_policy::classify(
+                Path::new("/egress-wiring-control.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: egress-wiring-control\nspec:\n  \
+                 tools:\n    bash:\n      allow: true\n",
+            )
+        }
+
+        fn args_with_intent(isolation: super::super::IsolationIntent) -> RunArgs {
+            RunArgs {
+                tool: "claude".to_string(),
+                tool_args: vec![],
+                agent_id: None,
+                team_id: None,
+                root_agent: None,
+                governance_level: None,
+                no_proxy: false,
+                policy: None,
+                workdir: None,
+                workspace_tx: false,
+                workspace_tx_exclude: vec![],
+                workspace_tx_protect: vec![],
+                workspace_tx_approve: false,
+                dry_run: false,
+                enforcement_mode: None,
+                observe: false,
+                isolation,
+                isolation_backend: None,
+                max_memory_bytes: None,
+                max_pids: None,
+                max_open_files: None,
+                max_file_size_bytes: None,
+                max_wall_clock_seconds: None,
+                max_cpu_seconds: None,
+            }
+        }
+
+        /// Every intent that reaches a different `IsolationPlan` construction
+        /// site in `resolve_isolation`/`explicit_backend`/`auto_select` must
+        /// carry the same authored contract — this is the "all seven sites"
+        /// half of the AC.
+        #[test]
+        fn every_isolation_intent_carries_the_policy_authored_broker_required_contract() {
+            let resolution = broker_required_resolution();
+            for isolation in [
+                super::super::IsolationIntent::None,
+                super::super::IsolationIntent::Process,
+                super::super::IsolationIntent::Auto,
+            ] {
+                let args = args_with_intent(isolation);
+                let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                    .unwrap_or_else(|e| panic!("preview must not error for intent {isolation:?}: {e}"));
+                assert_eq!(
+                    plan.egress,
+                    EgressContract::broker_required(),
+                    "intent {isolation:?} did not carry the policy-authored contract"
+                );
+            }
+
+            // A named-but-unknown backend is a fourth, distinct construction
+            // site (`explicit_backend`'s "no backend answers to this id" arm)
+            // that the three intents above never reach.
+            let mut named = args_with_intent(super::super::IsolationIntent::Process);
+            named.isolation_backend = Some("no-such-backend".to_string());
+            let plan = RunPlanner::resolve_isolation(&named, PlanPosture::Preview, &resolution)
+                .expect("preview must not error even for an unknown backend id");
+            assert_eq!(plan.egress, EgressContract::broker_required());
+        }
+
+        /// The control: a document with no `egress:` section still produces
+        /// `not_required()` — the AC is about a policy that states a
+        /// requirement reaching the plan, not about every plan defaulting to
+        /// `broker_required()` regardless of what was authored.
+        #[test]
+        fn a_document_with_no_egress_section_still_carries_not_required() {
+            let resolution = not_required_resolution();
+            let args = args_with_intent(super::super::IsolationIntent::None);
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("preview must not error");
+            assert_eq!(plan.egress, EgressContract::not_required());
         }
     }
 }
