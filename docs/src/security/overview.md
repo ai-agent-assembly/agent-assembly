@@ -81,3 +81,9 @@ forwarded raw (`aa-runtime/src/pipeline/enforcement.rs`,
 | [Trust boundaries](trust-boundaries.md) | Why is the SDK untrusted and the runtime/gateway authoritative? |
 | [Audit and assurance](audit-assurance.md) | How is the audit trail kept tamper-evident and free of secrets? |
 | [Execution isolation](execution-isolation.md) | What does `aasm run --isolation` confine, on which platforms, and what may — and may not — be claimed about it? |
+
+## Reporting a vulnerability
+
+Found a security issue in Agent Assembly itself? Report it privately through
+[the repository's security policy](https://github.com/ai-agent-assembly/agent-assembly/security/policy)
+— do not open a public GitHub issue for a security report.
