@@ -121,7 +121,7 @@ fn walkdir_flat(root: &Path) -> io::Result<Vec<PathBuf>> {
 /// distinguishing a directory, a symlink (with its literal target), or a
 /// file (with its content) — enough to assert "no other path appeared or
 /// changed" rather than only checking the paths a test happens to name.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Entry {
     Dir,
     File(Vec<u8>),
@@ -411,6 +411,142 @@ async fn a_change_set_touching_a_protected_selector_is_refused_and_leaves_the_ba
         "the approved commit must have applied the protected-path change: {approved_config}"
     );
 
+    Ok(())
+}
+
+/// AAASM-6291 ST-4 live conflict test: a real concurrent writer mutates the
+/// exact base path an in-flight `--workspace-tx` run has already staged a
+/// change to, *while the run is still open* -- not simulated at the library
+/// level (that's already `base_drift_inside_the_change_set_...` in
+/// `aa-workspace-tx/tests/commit_falsification.rs`), but through a real
+/// `aasm run` subprocess synchronized with the agent fixture's `conflict`
+/// mode via file flags (`$AWTX_READY`/`$AWTX_GO`), never a sleep race.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_live_base_drift_during_an_in_flight_run_refuses_commit_and_applies_nothing() -> anyhow::Result<()> {
+    let proxy = TrustedProxy::start()?;
+    let gateway = GrpcGateway::start().await?;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let policy = write_test_policy(root, "aaasm6291-conflict")?;
+    let state_dir = root.join("state");
+
+    let project_dir = root.join("project");
+    copy_fixture(&project_dir)?;
+    let before = snapshot(&project_dir);
+
+    let ready = root.join("ready");
+    let go = root.join("go");
+    let mut cmd = build_launch(
+        root,
+        "aaasm6291-conflict-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &project_dir,
+        "conflict",
+        &["--workspace-tx"],
+    )?;
+    cmd.env("AWTX_READY", &ready).env("AWTX_GO", &go);
+    let mut child = cmd.spawn()?;
+
+    wait_for(&ready, "the conflict agent to signal AWTX_READY", &mut child)?;
+
+    // The conflicting write: mutate the exact path the in-flight run has
+    // already staged a change to, before signalling it to proceed to exit
+    // (and thus to settle/commit).
+    std::fs::write(
+        project_dir.join("src/lib.txt"),
+        b"concurrently mutated while the run was in flight\n",
+    )?;
+    std::fs::write(&go, b"go")?;
+
+    let out = child.wait_with_output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "the agent's own cycle must succeed even though the commit refuses\nstderr tail:\n{}",
+        tail(&stderr, 60)
+    );
+    assert!(
+        stderr.contains("workspace_tx.refusal=base_drift"),
+        "expected a base-drift refusal; stderr:\n{stderr}"
+    );
+
+    let after = snapshot(&project_dir);
+    let mut expected = before.clone();
+    expected.insert(
+        "src/lib.txt".to_string(),
+        Entry::File(b"concurrently mutated while the run was in flight\n".to_vec()),
+    );
+    assert_eq!(
+        after, expected,
+        "a drift-refused commit must leave the base exactly as the concurrent writer left it -- nothing from \
+         the in-flight run's own staged change set may apply on top"
+    );
+
+    // Control, in the same test: the identical conflict-mode run, with no
+    // concurrent writer, must commit its one staged change -- proving the
+    // refusal above was actually caused by the drift, not some unrelated
+    // defect that refuses every "conflict"-mode commit regardless.
+    let project_dir_control = root.join("project-control");
+    copy_fixture(&project_dir_control)?;
+    let ready_control = root.join("ready-control");
+    let go_control = root.join("go-control");
+    let mut control_cmd = build_launch(
+        root,
+        "aaasm6291-conflict-control-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &project_dir_control,
+        "conflict",
+        &["--workspace-tx"],
+    )?;
+    control_cmd
+        .env("AWTX_READY", &ready_control)
+        .env("AWTX_GO", &go_control);
+    let mut control_child = control_cmd.spawn()?;
+    wait_for(
+        &ready_control,
+        "the control agent to signal AWTX_READY",
+        &mut control_child,
+    )?;
+    std::fs::write(&go_control, b"go")?;
+
+    let control_out = control_child.wait_with_output()?;
+    let control_stderr = String::from_utf8_lossy(&control_out.stderr).into_owned();
+    assert!(
+        control_stderr.contains("workspace_tx.committed=true"),
+        "the control run (same mode, no concurrent write) must commit; stderr:\n{control_stderr}"
+    );
+    assert_eq!(
+        std::fs::read(project_dir_control.join("src/lib.txt"))?,
+        b"original content\nmodified-by-agent\n".to_vec(),
+        "the control run's own staged change must have applied"
+    );
+
+    Ok(())
+}
+
+/// Bounded wait for `flag` to appear, synchronizing with the agent fixture's
+/// readiness signal rather than sleeping a fixed duration and hoping. Kills
+/// `child` and returns an error naming what was being waited for if the
+/// deadline passes first.
+fn wait_for(flag: &Path, what: &str, child: &mut std::process::Child) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !flag.exists() {
+        if let Some(status) = child.try_wait()? {
+            anyhow::bail!("agent process exited ({status}) before signalling {what}");
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            anyhow::bail!("timed out after 60s waiting for {what}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
     Ok(())
 }
 
