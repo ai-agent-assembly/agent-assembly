@@ -2377,8 +2377,31 @@ journeys:
   feature_refs:
   - AAASM-6038
   release_blocking: true
-  lifecycle_state: gap
+  # AAASM-6288 (independent QA pass, candidate 707a037ff3668d00036cc58c6c03e959c8987e9f):
+  # AC2 (structural guard against a silently-dropped field) and AC3 (the guard,
+  # not a value-level test, is what would have failed pre-AAASM-6038) verified
+  # by live mutation this pass -- see negative_control below. AC1 ("a confined
+  # launch's effective spec matches the full requested execution spec
+  # field-for-field") is NOT covered by this evidence: both cited tests stop
+  # at spec construction (aa-cli's base_spec) and never exercise delivery into
+  # the actual confined process through aa-runtime/an isolation backend -- no
+  # test here touches aa-runtime, even though it is one of this journey's own
+  # `surfaces`. Left `partial`, not promoted to `automated`, for that reason;
+  # AAASM-6269 remains the gap owner for AC1.
+  lifecycle_state: partial
   gap_owner: AAASM-6269
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/spec.rs::every_execution_spec_field_is_named_here_so_a_new_one_cannot_pass_unnoticed
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::the_execution_spec_carries_the_working_directory
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: 'AAASM-6288 (independent QA pass, candidate 707a037ff3668d00036cc58c6c03e959c8987e9f) live-falsified AAASM-6269''s two structural guards, not just read them. (1) Added a field to `ExecutionSpec` (`aa-isolation/src/spec.rs`) consumed by its constructor (so ordinary `cargo check -p aa-isolation` stays clean) but not by `field_sync_tests`''s exhaustive destructure -- `cargo check -p aa-isolation --tests` failed with E0027 (pattern does not mention field), confirming AC2''s aa-isolation-side guard; reverted, `git diff` empty after. (2) Added the matching field to `aa-cli::base_spec`''s `BoundLaunchFields` struct and its initializer but not its destructure -- `cargo check -p aa-cli --lib` failed with E0027 in `base_spec` itself, confirming AC2''s aa-cli-side guard independently; reverted, `git diff` empty after. (3) Separately, commented out the `spec = spec.with_working_dir(dir)` line in `base_spec` -- `the_execution_spec_carries_the_working_directory` went red (`left: None, right: Some(...)`), confirming that value-level pin actually detects a dropped projection, not just a value it never fails on; reverted, `git diff` empty after. All three reverts confirmed via empty `git diff`; both base tests pass on the candidate SHA afterward. NOTE per the test''s own doc comment (run.rs ~9864): the aa-isolation guard and the aa-cli guard are two independently-triggered E0027s in separate crates, not one cross-crate link -- adding a field to `ExecutionSpec` alone does not force a compile error in `aa-cli` (verified: aa-cli compiled and the working-directory test still passed with the aa-isolation-only probe field in place). AC2 is satisfied as "fails to compile in at least one crate", per AAASM-6269''s own wording, not as "one guard spanning both".'
 - id: J92
   jira: AAASM-6270
   name: Reconstruct a run forensically using receipt inspect/list and controlled replay
