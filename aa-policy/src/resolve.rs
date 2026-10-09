@@ -125,6 +125,16 @@ pub enum PolicyResolution {
         /// [`crate::document::PolicyDocument::egress`]'s own doc comment for
         /// why.
         egress: crate::document::EgressPosture,
+        /// AAASM-6277 — this document's authored capability-lease grants
+        /// (`authority.leases`), captured at the same point `canonical` and
+        /// `egress` are: the last point the rich validated document exists.
+        /// Like `egress`, a lease is never routed through `canonical`'s
+        /// `ControlRequirement` bridge — `crate::document::LeaseDomain`'s own
+        /// doc comment explains the tautology hazard that would open if it
+        /// were. `aa-cli` reads this accessor, converts each grant into
+        /// `aa_isolation::lease_lowering::AuthoredLease` and lowers the batch
+        /// once a real agent id exists; see `lease_grants()`.
+        leases: Vec<crate::canonical::CanonicalLeaseGrant>,
     },
     /// The operator explicitly selected an allow-all artifact.
     Permissive {
@@ -146,6 +156,12 @@ pub enum PolicyResolution {
         /// in the first place, but a future, narrower permissiveness check
         /// must not have to re-derive this from a document that is gone.
         egress: crate::document::EgressPosture,
+        /// AAASM-6277 — see [`Self::Enforced`]'s `leases` field. A lease
+        /// grant is additive authority, not a restriction, so its presence
+        /// never affects `is_explicit_allow_all`'s verdict the way `egress`
+        /// does — but it is carried here for the same reason `canonical` is:
+        /// this is the last point the rich document exists to read it from.
+        leases: Vec<crate::canonical::CanonicalLeaseGrant>,
     },
     /// No effective policy resolved.
     Unconfigured(Unconfigured),
@@ -322,6 +338,22 @@ impl PolicyResolution {
         }
     }
 
+    /// This resolution's authored capability-lease grants (AAASM-6277).
+    ///
+    /// Empty for the two refusing states, for the same reason `canonical()`
+    /// is `None` for them: a launch that is refused establishes no boundary,
+    /// so there is no subject to issue a lease to. It never means "this
+    /// policy grants no authority" for a state that actually launches — an
+    /// `Enforced`/`Permissive` document with no `authority:` section also
+    /// reads empty here, and that is the correct, structurally identical
+    /// reading: no grant was authored either way.
+    pub fn lease_grants(&self) -> &[crate::canonical::CanonicalLeaseGrant] {
+        match self {
+            Self::Enforced { leases, .. } | Self::Permissive { leases, .. } => leases,
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => &[],
+        }
+    }
+
     /// Consume this resolution into the policy a launch may proceed under, or
     /// refuse with an explanation the operator can act on.
     ///
@@ -487,12 +519,16 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
     // which is how the execution boundary came to have no policy source at all.
     let canonical = validated.to_canonical();
     let egress = validated.egress;
+    // AAASM-6277 — derived here for the same reason `canonical`/`egress`
+    // are: this is the last point the rich validated document exists.
+    let leases = validated.to_canonical_leases();
     if is_explicit_allow_all(&validated) {
         return PolicyResolution::Permissive {
             source: source.to_path_buf(),
             document,
             canonical,
             egress,
+            leases,
         };
     }
     PolicyResolution::Enforced {
@@ -500,6 +536,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
         document,
         canonical,
         egress,
+        leases,
     }
 }
 
@@ -1012,6 +1049,57 @@ mod tests {
             labels.iter().any(|l| l == "/etc/aasm/policy.yaml"),
             "the system default must be searched: {labels:?}"
         );
+    }
+
+    /// AAASM-6277 — `classify` keeps an authored `authority.leases` grant
+    /// rather than dropping it the way `project_rules` drops everything but
+    /// the tool ruleset.
+    #[test]
+    fn classify_keeps_an_authored_lease_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "leased.yaml",
+            "tools:\n  bash:\n    allow: true\n\
+             authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: test\n",
+        );
+
+        let resolution = load(&path);
+        assert_eq!(resolution.state_token(), "enforced");
+
+        let grants = resolution.lease_grants();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].domain, crate::document::LeaseDomain::NetworkEgress);
+        assert_eq!(grants[0].scope, crate::document::LeaseScope::Whole);
+    }
+
+    /// The control: a document with no `authority:` section gives an empty
+    /// lease list, not an absent one conflated with a refusing state.
+    #[test]
+    fn a_document_with_no_authority_section_gives_an_empty_lease_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "plain.yaml", "tools:\n  bash:\n    allow: true\n");
+
+        let resolution = load(&path);
+        assert_eq!(resolution.state_token(), "enforced");
+        assert!(resolution.lease_grants().is_empty());
+    }
+
+    /// Both refusing states carry no lease grants either — there is no
+    /// subject for one to be issued to.
+    #[test]
+    fn refusing_states_carry_no_lease_grants() {
+        assert!(
+            PolicyResolution::Unconfigured(Unconfigured::NoSource { searched: vec![] })
+                .lease_grants()
+                .is_empty()
+        );
+        assert!(PolicyResolution::LoadFailed {
+            source: PathBuf::from("/p.yaml"),
+            detail: "bad".to_string(),
+        }
+        .lease_grants()
+        .is_empty());
     }
 
     #[test]
