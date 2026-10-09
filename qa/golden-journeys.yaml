@@ -2134,8 +2134,35 @@ journeys:
   feature_refs:
   - AAASM-6160
   release_blocking: true
-  lifecycle_state: gap
+  lifecycle_state: partial
   gap_owner: AAASM-6259
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::authority_collapse_tests::lease_grants_reach_every_construction_site_and_a_bare_policy_gives_the_old_defaults
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::authority_collapse_tests::leases_do_not_change_what_lower_policy_lowers
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::tests::valid_in_scope_lease_permits
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::tests::expired_lease_denies
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::tests::revoked_lease_denies
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::tests::out_of_scope_lease_denies
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::tests::supervisor_possession_without_a_lease_is_denied_once_leases_are_in_play
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: 'AAASM-6272 (AAASM-6277) wired policy-authored leases through to `aa-cli`''s plan-time `IsolationPlan`/`authority_gate` boundary, with real in-scope/expired/revoked/out-of-scope denial behavior proved at the gate -- not a live `aasm run` acquiring a lease end to end through `aa-runtime`. AAASM-6259''s own acceptance contract is runtime-wide: `aa-runtime::handle_policy_query` entry, denial holding across a process restart, and no grace-period ambient fallback. `grep -rn lease aa-runtime/src/pipeline/` finds no capability-lease wiring in the SDK-facing policy gate at all -- this remains a genuine gap, not yet `automated`. See AAASM-6284''s verification comment for the full AC-by-AC mapping.'
 - id: J82
   jira: AAASM-6260
   name: Confirm monotonic capability attenuation across a sub-agent process tree
@@ -2188,8 +2215,26 @@ journeys:
   feature_refs:
   - AAASM-6163
   release_blocking: true
-  lifecycle_state: gap
+  lifecycle_state: partial
   gap_owner: AAASM-6261
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::egress_policy_wiring_tests::every_isolation_intent_carries_the_policy_authored_broker_required_contract
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::egress_policy_wiring_tests::isolation_none_refuses_a_broker_required_policy_under_launch
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::egress_policy_wiring_tests::isolation_none_does_not_refuse_a_not_required_policy_under_launch
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/egress.rs::tests::metadata_endpoint_destination_reports_the_specific_endpoint
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  negative_control: 'AAASM-6272 (AAASM-6278/6277) proved the policy-authored egress contract reaches every isolation intent and that a `broker_required` policy under `--isolation none` now refuses instead of silently launching unconfined (closing the fail-open gap #2616 fixed), plus cloud-metadata-service default-deny. AAASM-6261''s own acceptance contract also requires identity attribution verifiable in audit/evidence output (today only `EgressAuthority::identity`, documented as asserted-not-verified) and that a policy change narrowing egress takes effect on the next connection attempt (every gate test here runs once, at launch -- no dynamic re-evaluation is exercised). Those two remain a genuine gap, not yet `automated`. See AAASM-6284''s verification comment for the full AC-by-AC mapping.'
 - id: J84
   jira: AAASM-6262
   name: Run a governed agent that never sees a plaintext secret via the credential broker
