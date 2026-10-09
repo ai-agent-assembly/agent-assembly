@@ -1718,7 +1718,7 @@ mod plan {
             // before any backend is consulted, so a launch requiring brokered
             // egress this run's mediating component (or explicit authority)
             // cannot actually provide is refused before backend capability is
-            // in the picture, exactly as `authority_gate` itself is. `self.egress`
+            // in the picture, exactly as `authority_gate` itself is. `self.authority.egress`
             // is lowered from the effective policy's `egress:` node (AAASM-6278)
             // — `EgressContract::broker_required()` when the policy states
             // `posture: broker_required`, `not_required()` otherwise — so a
@@ -1774,7 +1774,7 @@ mod plan {
             // mediating component (or explicit authority) cannot actually
             // provide, or whose posture shows a "secretless" name still
             // reaching the child, is refused before backend capability is in
-            // the picture. `self.credential_contract` is
+            // the picture. `self.authority.credential_contract` is
             // `CredentialContract::not_required()` for every launch today, so
             // this is inert until a policy source issues a stronger contract.
             let credential_authority = CredentialAuthority::from_gated_spec(&spec, &witness);
@@ -1817,7 +1817,7 @@ mod plan {
 
             // AAASM-6171/ADR 0038 amendment: the host-capability broker's gate
             // runs immediately after `credential_gate`, before any backend is
-            // consulted. `self.host_capability_contract` is
+            // consulted. `self.authority.host_capability_contract` is
             // `HostCapabilityContract::not_required()` for every launch
             // today — `aasm run` never requests a specific `HostOperation` of
             // its own — so this is inert until a policy source issues a
@@ -3108,7 +3108,7 @@ mod plan {
     /// `egress_gate` and `check_name_resolution_grant` are real, exercised here
     /// through the actual production call chain
     /// (`IsolationPlan::resolve_boundary`, the same private function
-    /// `ResolvedRunPlan::bind` calls). As of AAASM-6278, `self.egress` at all
+    /// `ResolvedRunPlan::bind` calls). As of AAASM-6278, `self.authority.egress` at all
     /// seven production construction sites in this file is lowered from the
     /// effective policy's `egress:` node: `EgressContract::broker_required()`
     /// when the policy states `posture: broker_required`, `not_required()`
@@ -3277,10 +3277,14 @@ mod plan {
 
         /// Pair B -- the scope arm: a `NetworkEgress` lease exists but is
         /// scoped to specific selectors while the requested scope here is
-        /// `Whole` (the only form reachable from this call site, since no
-        /// production path ever lowers a `NetworkEgress` `ControlRequirement`
-        /// here -- `egress_scope` always defaults to `Whole`) -- so the lease
-        /// does not cover the request, and `egress_gate` refuses with
+        /// `Whole` -- `egress_test_plan`'s fixture policy has no
+        /// `network.allowlist`, so `egress_scope` defaults to `Whole` in
+        /// THIS harness specifically (not a general claim about production:
+        /// AAASM-6277's `hostname_egress_admits_with_both_grants_…` test, in
+        /// the `authority_collapse_tests` module below, exercises a real
+        /// `network.allowlist`-derived `Selectors`-scoped `NetworkEgress`
+        /// requirement end to end) -- so the lease does not cover the
+        /// request, and `egress_gate` refuses with
         /// `EgressScopeNotCoveredByGrant`. The positive control is the same
         /// lease widened to `Whole`.
         #[test]
