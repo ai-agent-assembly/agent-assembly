@@ -37,6 +37,10 @@
 //! *allowed* actually reaches the program), with a positive control proving the
 //! harness can observe the program run.
 //!
+//! On this host the 24 confining cells are effectively identical outcomes (all
+//! `rejected_unavailable`), so a regression that swapped which domain a policy
+//! lowers to would be seen only by the planner-level tests, not by this matrix.
+//!
 //! The `--isolation none` positive control establishes **harness observability
 //! only**. It is not, and must not be read as, evidence that any confined
 //! backend was selected or that confinement works: no confining cell can run
