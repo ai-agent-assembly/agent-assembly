@@ -2192,11 +2192,26 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-isolation/src/attenuation.rs::concurrent_child_derivation_never_issues_a_child_after_the_revocation_is_recorded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/authority.rs::attenuation_tests::a_grandchild_cannot_recover_authority_removed_at_the_child_level
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/authority_adversarial.rs::a_three_generation_chain_refuses_widening_at_generation_two_and_characterizes_root_revocation_reach
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-isolation/tests/authority_adversarial.rs::a_grandchild_is_refused_once_any_ancestor_up_to_the_root_is_revoked_target_contract (#[ignore]d: documents an open AAASM-6290 ST-3 finding, not yet filed/fixed -- run with --ignored to reproduce)'
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_command.rs::run_command_refuses_a_lineage_the_gateway_will_not_accept
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_exec_target.rs::exec_refuses_a_lineage_the_gateway_will_not_accept
   execution_lanes:
   - pr
   - main
   fidelity: controlled_fake
-  negative_control: 'AAASM-6272''s bug cluster (AAASM-6280/6281/6282) pinned each fix against the pre-fix behavior before it was corrected -- see each test''s own doc comment for the adversarial/positive-control pair. AAASM-6272 (D1/D2/D4) proved the attenuation-ceiling refusal logic correct through `resolve_boundary`-shaped fixtures with `Ancestry::Parent` constructed directly in the test harness -- real in-process gating, not a live cross-process handoff. The remaining gap is cross-process parent-authority handoff (a real supervisor process attesting a real child process''s resolved `ParentAuthority`), which AAASM-6273 owns as its own Story -- still `partial`, not `automated`, until that handoff exists.'
+  negative_control: 'AAASM-6272''s bug cluster (AAASM-6280/6281/6282) pinned each fix against the pre-fix behavior before it was corrected -- see each test''s own doc comment for the adversarial/positive-control pair. AAASM-6272 (D1/D2/D4) proved the attenuation-ceiling refusal logic correct through `resolve_boundary`-shaped fixtures with `Ancestry::Parent` constructed directly in the test harness -- real in-process gating, not a live cross-process handoff. The remaining gap is cross-process parent-authority handoff (a real supervisor process attesting a real child process''s resolved `ParentAuthority`), which AAASM-6273 owns as its own Story -- still `partial`, not `automated`, until that handoff exists. AAASM-6290 (ST-3, independent QA) re-ran `cargo nextest run -p aa-isolation --lib attenuation:: authority::` (32/32 pass) and `cargo nextest run -p aa-cli --test run_command --test run_exec_target` (17/17 pass), and added a real 3-generation (root -> child -> grandchild) attenuation-chain test built end to end through `DelegationLedger::derive_child`: widening at generation 2 (a sibling scope of the child''s own grant, still inside the root''s) is correctly refused as `ChildExceedsParent` against the immediate parent specifically, with a positive control proving the identical lease admits when checked directly against the root instead. Found one real gap in the revocation leg, documented rather than fixed (QA scope, verified by direct probe, not assumed): revoking the root''s lease is caught for the hop re-gated directly against it (the immediate child is refused via `LeaseInvalid::Revoked`, and the ledger refuses to mint any fresh child from the revoked lease) -- but an already-minted, already-held grandchild `ParentAuthority` whose own immediate parent (the child lease) was never itself revoked is NOT retroactively invalidated: the grandchild still gates cleanly against that held ancestry, and a fresh grandchild can still be minted from the still-active child lease through the same ledger. `RevocationState` lives per lease object (its own doc comment already says propagation latency is unmeasured and unclaimed) and `check_attenuation` only ever inspects the immediate parent, never the whole ancestry chain, so "revocation cascades to reach the grandchild" does not hold for an already-resolved deeper snapshot. The target contract is pinned as an `#[ignore]`d failing test (`a_grandchild_is_refused_once_any_ancestor_up_to_the_root_is_revoked_target_contract`); candidate Bug not yet filed. ST-3 also checked `aa-cli`''s `--root-agent` refusal message wording in `run_command.rs`/`run_exec_target.rs`: both correctly name AAASM-6273 as the tracking ticket for cross-process ancestry resolution and accurately describe why the launch is refused rather than silently treated as rootless -- no documentation-accuracy finding there. `lifecycle_state` stays `partial`: both the cross-process handoff AAASM-6273 owns and this newly-documented transitive-revocation gap remain open.'
 - id: J83
   jira: AAASM-6261
   name: Enforce identity-bound, policy-governed egress through the network broker
