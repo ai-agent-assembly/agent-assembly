@@ -22,9 +22,30 @@
 //! every confining cell is a refusal and the positive "selected" arm is not
 //! exercised: that arm is covered, on real reporting logic, by
 //! `planner_real_backend_matrix.rs`, and on a real kernel only by the Linux lane.
+//!
+//! # What a refusal here does and does NOT show
+//!
+//! On a host where every backend is `Unavailable` (macOS without the VM
+//! substrate) each confining cell refuses because of **host availability**, not
+//! because the requested property is unmet: the structured record says
+//! `rejected_unavailable` for every candidate and this file asserts exactly that
+//! verdict. Property-driven refusal (`rejected_requirements_unmet` naming the
+//! demanded domain) is exercised only at planner / `capability::discover` level
+//! (`aa-isolation/tests/planner_falsification.rs`,
+//! `planner_real_backend_matrix.rs`) on such a host; it is not claimed here.
+//! The live launches run in-process against a real gateway (so a launch that is
+//! *allowed* actually reaches the program), with a positive control proving the
+//! harness can observe the program run.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Output;
+
+use aa_cli::commands::run::{execute_with_adapters, IsolationIntent, RunArgs};
+use aa_core::DevToolAdapter;
+
+mod gateway_support;
+use gateway_support::{GatewayEnv, TestGateway};
 
 const BACKENDS: [&str; 3] = [
     aa_isolation_sandlock::BACKEND_ID,
@@ -156,64 +177,230 @@ fn classify(printed: &str, cell: &str) -> Outcome {
     }
 }
 
-/// Every confining cell either names its backend or refuses; a refusal in the
-/// preview is a refusal live, with the program not run.
+/// Parsed `key=value` machine lines of a preview.
+fn machine(printed: &str) -> BTreeMap<String, String> {
+    printed
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| k.starts_with("backend_selection") || k.starts_with("posture") || k.starts_with("backend_"))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// Whether this host can possibly make `id` available. When false the only
+/// legitimate verdict for `id` is `rejected_unavailable`.
+fn must_be_unavailable(id: &str) -> bool {
+    if id == aa_isolation_macos_vm::BACKEND_ID {
+        return ["HELPER", "KERNEL", "ROOTFS"]
+            .iter()
+            .any(|k| std::env::var(format!("AA_ISOLATION_MACOS_VM_{k}")).is_err());
+    }
+    !cfg!(target_os = "linux")
+}
+
+fn args_for(policy: &Path, intent: IsolationIntent, backend: Option<&str>, argv: &[&str]) -> RunArgs {
+    RunArgs {
+        tool: "exec".into(),
+        tool_args: argv.iter().map(|a| (*a).to_string()).collect(),
+        agent_id: None,
+        team_id: None,
+        root_agent: None,
+        governance_level: None,
+        no_proxy: true,
+        policy: Some(policy.to_path_buf()),
+        workdir: None,
+        workspace_tx: false,
+        workspace_tx_exclude: vec![],
+        workspace_tx_protect: vec![],
+        workspace_tx_approve: false,
+        dry_run: false,
+        enforcement_mode: None,
+        observe: false,
+        isolation: intent,
+        isolation_backend: backend.map(str::to_string),
+        max_memory_bytes: None,
+        max_pids: None,
+        max_open_files: None,
+        max_file_size_bytes: None,
+        max_wall_clock_seconds: None,
+        max_cpu_seconds: None,
+    }
+}
+
+/// Drive one live launch in-process against a real gateway, so the only thing
+/// that can stop the program is the isolation decision under test.
+fn launch(args: &RunArgs) -> anyhow::Result<i32> {
+    let adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    runtime.block_on(async move {
+        let gateway = TestGateway::start().await.expect("test gateway");
+        let _env = GatewayEnv::point_at(gateway.endpoint());
+        execute_with_adapters(args, &adapters).await
+    })
+}
+
+fn creates(target: &Path) -> String {
+    format!("printf x > {}", target.display())
+}
+
+fn intent_of(name: &str) -> IsolationIntent {
+    match name {
+        "auto" => IsolationIntent::Auto,
+        "process" => IsolationIntent::Process,
+        _ => IsolationIntent::None,
+    }
+}
+
+/// **Positive control for every "the program did not run" assertion below.**
+/// With `--isolation none` the same harness, same gateway, same command and the
+/// same policy DOES create the file, so a missing file in a refused cell is
+/// attributable to the refusal and not to a broken command, gateway or path.
 #[test]
-fn every_confining_cell_names_its_backend_or_refuses_and_runs_nothing() {
+fn the_harness_can_observe_the_program_run_when_launch_is_allowed() {
+    let scratch = Scratch::new("positive-control");
+    for domain in ["fs-write", "network", "syscall"] {
+        let policy = policy_for(&scratch, domain);
+        let target = scratch.root.join(format!("control-{domain}"));
+        let code = launch(&args_for(
+            &policy,
+            IsolationIntent::None,
+            None,
+            &["/bin/sh", "-c", &creates(&target)],
+        ))
+        .unwrap_or_else(|e| panic!("{domain}: the allowed control launch failed: {e:#}"));
+        assert_eq!(code, 0, "{domain}: the control program exited non-zero");
+        assert!(
+            target.exists(),
+            "{domain}: an allowed launch did not create {}; every 'target absent' below would mean nothing",
+            target.display()
+        );
+    }
+}
+
+/// Every confining cell: the structured preview says why, and the live launch
+/// agrees about whether the program may run.
+///
+/// * Preview refusal, auto cells: every candidate's verdict is read from the
+///   machine record. A candidate this host cannot provide MUST be exactly
+///   `rejected_unavailable` with no unmet domain (it is a host fact, not a
+///   property verdict); `selected` is accepted only for a candidate the host
+///   could provide.
+/// * Preview refusal, pinned cells: the refusal is the pinned backend's own
+///   unavailability, naming that backend.
+/// * Live: a refused cell errors with the same reason and the program does not
+///   run (paired with the positive control above). A selected cell is checked
+///   live too: it must be the pinned backend if pinned, and under the
+///   file-write-denying policy the program must not create the file.
+#[test]
+fn every_confining_cell_is_decided_by_the_structured_record_and_runs_nothing_when_refused() {
     let scratch = Scratch::new("matrix");
-    let mut cells = 0;
-    let mut refused = 0;
-    let mut selected = 0;
+    let (mut cells, mut refused, mut selected) = (0, 0, 0);
 
     for intent in ["auto", "process"] {
         for backend in [None, Some(BACKENDS[0]), Some(BACKENDS[1]), Some(BACKENDS[2])] {
             for domain in ["fs-write", "network", "syscall"] {
                 let cell = format!("--isolation {intent} --isolation-backend {backend:?} policy={domain}");
                 let policy = policy_for(&scratch, domain);
-
-                let preview = aasm(&scratch, &policy, intent, backend, true, &["/bin/echo", "hi"]);
-                let outcome = classify(&text(&preview), &cell);
+                let preview_text = text(&aasm(&scratch, &policy, intent, backend, true, &["/bin/echo", "hi"]));
+                let outcome = classify(&preview_text, &cell);
+                let m = machine(&preview_text);
                 cells += 1;
 
-                match outcome {
-                    Outcome::Selected(id) => {
-                        selected += 1;
-                        // A pin must be the backend that was selected.
-                        if let Some(pinned) = backend {
-                            assert_eq!(id, pinned, "{cell}: a pin was replaced by another backend");
-                        }
-                    }
+                // Which backend does the walk's pin/explicit-name resolve to?
+                let walk_applies = intent == "auto" && backend.is_none();
+
+                match &outcome {
                     Outcome::Refused => {
                         refused += 1;
+                        if walk_applies {
+                            assert_eq!(m["backend_selection_mode"], "automatic", "{cell}: {preview_text}");
+                            assert_eq!(m["backend_selection.considered_count"], "3", "{cell}: {preview_text}");
+                            for (n, id) in BACKENDS.iter().enumerate() {
+                                assert_eq!(m[&format!("backend_selection.considered.{n}.id")], *id, "{cell}");
+                                let verdict = &m[&format!("backend_selection.considered.{n}.verdict")];
+                                assert_ne!(verdict, "selected", "{cell}: a refused walk selected {id}");
+                                if must_be_unavailable(id) {
+                                    assert_eq!(
+                                        verdict, "rejected_unavailable",
+                                        "{cell}: {id} cannot exist on this host, so its verdict is a host fact"
+                                    );
+                                    assert_eq!(
+                                        m[&format!("backend_selection.considered.{n}.unmet_domain_count")],
+                                        "0",
+                                        "{cell}: an unavailable candidate must not be blamed on a property"
+                                    );
+                                    assert!(
+                                        m[&format!("backend_selection.considered.{n}.detail")]
+                                            .contains("cannot be selected on this host"),
+                                        "{cell}: {preview_text}"
+                                    );
+                                }
+                            }
+                        } else {
+                            let pinned = backend.unwrap_or(aa_isolation_sandlock::BACKEND_ID);
+                            if must_be_unavailable(pinned) {
+                                assert!(
+                                    preview_text
+                                        .contains(&format!("the `{pinned}` backend cannot be selected on this host")),
+                                    "{cell}: the refusal is not {pinned}'s own unavailability:\n{preview_text}"
+                                );
+                            }
+                        }
+
+                        // Live: same refusal, program does not run.
                         let target = scratch
                             .root
                             .join(format!("ran-{intent}-{}-{domain}", backend.unwrap_or("auto")));
-                        let live = aasm(
-                            &scratch,
+                        let err = launch(&args_for(
                             &policy,
-                            intent,
+                            intent_of(intent),
                             backend,
-                            false,
-                            &["/bin/sh", "-c", &format!("printf x > {}", target.display())],
-                        );
+                            &["/bin/sh", "-c", &creates(&target)],
+                        ))
+                        .expect_err(&format!("{cell}: the preview refused but the live launch succeeded"));
+                        let live = format!("{err:#}");
                         assert!(
-                            !live.status.success(),
-                            "{cell}: the preview said refuse but the live launch succeeded"
+                            live.contains("cannot be selected on this host") || live.contains("can plan this launch"),
+                            "{cell}: the live refusal is not the isolation planner's own:\n{live}"
                         );
-                        // The isolation reason specifically: a launch can also stop
-                        // for an unrelated reason (no gateway is running in this
-                        // suite), and "refusing to launch unregistered" must not be
-                        // able to stand in for the planner's own refusal.
-                        let live_text = text(&live);
+                        if walk_applies {
+                            for id in BACKENDS {
+                                assert!(
+                                    live.contains(id),
+                                    "{cell}: the live refusal omits candidate {id}:\n{live}"
+                                );
+                            }
+                        }
+                        assert!(!target.exists(), "{cell}: the program ran: {}", target.display());
+                    }
+                    Outcome::Selected(id) => {
+                        selected += 1;
+                        if let Some(pinned) = backend {
+                            assert_eq!(id, pinned, "{cell}: a pin was replaced by another backend");
+                        }
                         assert!(
-                            live_text.contains("There is no fallback") || live_text.contains("names a backend"),
-                            "{cell}: the live refusal is not the isolation planner's own:\n{live_text}"
+                            !must_be_unavailable(id),
+                            "{cell}: selected {id}, which this host cannot provide"
                         );
-                        assert!(
-                            !target.exists(),
-                            "{cell}: the program ran unconfined: {}",
-                            target.display()
-                        );
+                        let target = scratch
+                            .root
+                            .join(format!("sel-{intent}-{}-{domain}", backend.unwrap_or("auto")));
+                        let _ = launch(&args_for(
+                            &policy,
+                            intent_of(intent),
+                            backend,
+                            &["/bin/sh", "-c", &creates(&target)],
+                        ));
+                        if domain == "fs-write" {
+                            assert!(
+                                !target.exists(),
+                                "{cell}: {id} was selected for a write-denying policy but the program wrote {}",
+                                target.display()
+                            );
+                        }
                     }
                 }
             }
@@ -221,16 +408,25 @@ fn every_confining_cell_names_its_backend_or_refuses_and_runs_nothing() {
     }
 
     assert_eq!(cells, 24);
-    assert_eq!(selected + refused, cells);
+    let all_unavailable = BACKENDS.iter().all(|id| must_be_unavailable(id));
+    if all_unavailable {
+        assert_eq!(
+            (selected, refused),
+            (0, 24),
+            "no backend exists on this host, so nothing can be selected"
+        );
+    }
     println!(
-        "planner matrix: {cells} confining cells, {selected} selected a named backend, {refused} refused with a reason"
+        "planner matrix: {cells} confining cells, {selected} selected, {refused} refused; all backends unavailable on this host: {all_unavailable}"
     );
 }
 
 /// `--isolation none` states that no boundary exists rather than leaving it to
-/// be inferred, and naming a backend with it is a contradiction that refuses.
+/// be inferred; live it really launches unconfined (positive proof: the file is
+/// created) while the preview says so, and naming a backend with it refuses
+/// live with the program not run.
 #[test]
-fn isolation_none_states_it_and_a_named_backend_with_it_refuses() {
+fn isolation_none_states_it_launches_unconfined_and_a_named_backend_with_it_refuses() {
     let scratch = Scratch::new("none");
     for domain in ["fs-write", "network", "syscall"] {
         let policy = policy_for(&scratch, domain);
@@ -248,6 +444,20 @@ fn isolation_none_states_it_and_a_named_backend_with_it_refuses() {
             "{domain}: `none` must not name a backend:\n{preview}"
         );
 
+        let target = scratch.root.join(format!("none-{domain}"));
+        launch(&args_for(
+            &policy,
+            IsolationIntent::None,
+            None,
+            &["/bin/sh", "-c", &creates(&target)],
+        ))
+        .unwrap_or_else(|e| panic!("{domain}: `--isolation none` live launch failed: {e:#}"));
+        assert!(
+            target.exists(),
+            "{domain}: the preview said no boundary and the live run must really be unconfined, but {} is missing",
+            target.display()
+        );
+
         for backend in BACKENDS {
             let preview = text(&aasm(
                 &scratch,
@@ -258,6 +468,24 @@ fn isolation_none_states_it_and_a_named_backend_with_it_refuses() {
                 &["/bin/echo", "hi"],
             ));
             assert!(preview.contains("names a backend"), "{domain}/{backend}: {preview}");
+
+            let target = scratch.root.join(format!("none-{domain}-{backend}"));
+            let err = launch(&args_for(
+                &policy,
+                IsolationIntent::None,
+                Some(backend),
+                &["/bin/sh", "-c", &creates(&target)],
+            ))
+            .expect_err("`--isolation none` with a named backend must refuse live");
+            assert!(
+                format!("{err:#}").contains("names a backend"),
+                "{domain}/{backend}: {err:#}"
+            );
+            assert!(
+                !target.exists(),
+                "{domain}/{backend}: the program ran: {}",
+                target.display()
+            );
         }
     }
 }
