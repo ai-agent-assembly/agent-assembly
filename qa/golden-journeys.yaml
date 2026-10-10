@@ -2425,16 +2425,24 @@ journeys:
   # built through the real body_for_run/ReceiptEnvelope::seal/ReceiptStore
   # production pipeline driven by aa_isolation::mock::MockBackend, not a
   # live confined child process -- the closest achievable substitute, not a
-  # silent one. Two further findings, not product defects: (1) adding an
-  # unknown JSON field to a receipt is undetectable, since no type under
+  # silent one. Two further findings: (1) adding an unknown JSON field to a
+  # receipt still verifies clean (exit 0) -- no type under
   # aa-cli/src/commands/execution_receipt/ sets
-  # #[serde(deny_unknown_fields)] and the seal is recomputed over the
-  # parsed struct, never the raw bytes; (2) removing an Option field whose
-  # value was already null is likewise undetectable, because the content
-  # is unchanged either way. Left partial, not promoted to automated, for
+  # #[serde(deny_unknown_fields)], and the seal is recomputed over the
+  # parsed struct, never the raw file bytes. docs/src/cli/receipt.md states
+  # a holding seal proves "the receipt's content has not changed since
+  # `aasm run` wrote it" -- a raw-byte addition that still verifies clean
+  # is in tension with that sentence as worded, even though nothing a
+  # reader of the parsed struct would see actually changed. Flagged here
+  # as a doc-accuracy question for the ticket owner to resolve, not fixed:
+  # not obviously just wrong wording, so out of this verification-only
+  # pass's scope to edit. (2) removing an Option field whose value was
+  # already null also verifies clean, but for a different, benign reason
+  # -- the content is genuinely unchanged either way, so this one is not a
+  # doc-accuracy question. Left partial, not promoted to automated, for
   # the unconfined-receipt gap.
   lifecycle_state: partial
-  gap_owner: AAASM-6295
+  gap_owner: AAASM-6265
   evidence:
   - repo: agent-assembly
     kind: test
