@@ -934,8 +934,10 @@ read `ancestry`) is what gives D4's fix somewhere to hook its new refusal.
 
 `check_attenuation` (the function `authority_gate` calls once a resolved parent
 applies) compares a child lease's scope, expiry and limits against its parent's, and
-catches a parent revoked *after* the child's derivation via
-`DelegationProvenance::parent_generation`. It never calls `parent_lease.validate_at
+was described as catching a parent revoked *after* the child's derivation via
+`DelegationProvenance::parent_generation`; that description was wrong, see the
+AAASM-6307 amendment below — the generation is compared against the generation of
+the `ParentAuthority` snapshot's own lease value, never against the live ledger. It never calls `parent_lease.validate_at
 (now)` — so a parent lease that has since expired, or whose `not_before` the current
 `now` has not yet reached, passes silently as long as the child's own fields and
 recorded generation stay consistent. `authority_gate`'s main loop already validates
@@ -1045,3 +1047,78 @@ source of truth.
   the sibling precedent for "additive, not a schema bump," not as a second source
   that scoped the receipt.
 - **No ADR status change.** See "Sequencing: promotion, not yet" above.
+
+## Amendment (AAASM-6307): revocation is transitive, and the gate reads the live ledger
+
+### Why
+
+Three statements in this ADR and the code it describes were false, found by the
+AAASM-6290 independent QA pass. (1) §11 and D2 say a revocation recorded after a child's
+derivation is caught through `DelegationProvenance::parent_generation`. It was not:
+`authority_gate`/`check_attenuation` never read the `DelegationLedger`; the generation
+was compared with the generation of the lease value captured in the `ParentAuthority`
+snapshot, so gating a child against a *held* root ancestry after `ledger.revoke(root)`
+passed — one hop, not only the transitive case. (2) The ledger tracked state per lease id
+with no link between a child and its parent, so `derive_child` read only the immediate
+parent and a fresh grandchild could be minted under a revoked root. (3) The
+"Documented, pinned gap" comment in `check_attenuation` described a ledger comparison
+that did not exist. Severity High; production does not yet build an `Ancestry::Parent`
+(`resolve_ancestry` returns only `Root` or `UnresolvedParent`), so the exposure was
+latent and becomes live with AAASM-6273 (cross-process parent-authority handoff), which
+this change must precede.
+
+### §8 (amended): `ParentAuthority` carries the live ledger
+
+`ParentAuthority::from_gated_spec(spec, witness, ledger: Arc<DelegationLedger>)`. The
+witness still proves the spec was gated; the ledger is the live source of revocation
+state the snapshot cannot be. A `ParentAuthority` whose lease the ledger does not know
+makes every child gated against it fail closed rather than pass. No serialized format
+changes, and no production caller changes (production passes only `Ancestry::Root`).
+
+### §11 (amended): parent edges, a transitive check, and the new refusals
+
+- **Edges.** Each ledger entry is `{state, link}` with `link` one of `Root`,
+  `Parent(LeaseId)` or `Unlinked`. `derive_child` inserts the child with a `Parent`
+  edge under the ledger lock. `revoke` changes state only and keeps the edge; revoking
+  an id the ledger does not know inserts it as `Unlinked`.
+- **No resurrection, no severing.** `derive_child` refuses a child id the ledger already
+  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) and the auto-registration
+  of an unknown parent accept only a lease with no delegation provenance; a mid-chain
+  lease is refused (`AncestryUnverifiable`), because registering it as a root would cut
+  its link to the ancestors above it. Registering a known id is `DuplicateLeaseId`.
+- **Derive time.** `derive_child` walks the parent's whole chain and returns
+  `ParentRevoked` ("the parent or any ancestor") if any hop is revoked and
+  `AncestryUnverifiable` if a hop is unknown or unlinked. The walk is bounded by the
+  size of the map.
+- **Gate time.** In `check_attenuation`, after the snapshot `validate_at` and before the
+  violation/escalation branch (so an independently-approved escalation cannot launder a
+  revoked chain), when the parent holds a lease for the domain that lease and every hop
+  above it must be known, linked and active in the ledger: `RevokedInLedger { domain,
+  lease, reason }` for a revoked hop, `LedgerUnverifiable { domain, lease }` for an
+  unknown or unlinked one. A child lease the ledger knows to be revoked is refused with
+  `RevokedInLedger`; a child lease the ledger has never seen is not refused for that
+  reason alone.
+- `DelegationDenied` and `AuthorityRefusal` stay `#[non_exhaustive]`; the new variants
+  are additive.
+
+### D2 and `StaleParentGeneration`, corrected
+
+D2's `validate_at` check is a snapshot check and sees only a revocation already present
+in the lease value. A revocation recorded in the ledger after the snapshot is caught by
+the chain check above. `StaleParentGeneration` remains a comparison against the
+*snapshot's* generation and is reachable only for a reaffirmed-but-still-`Active` parent.
+
+### What this amendment claims, and does not
+
+- The chain is observed under the ledger lock at gate time. A revocation recorded a
+  moment later is not seen by a gate call already past that point, and this ADR still
+  makes no revocation-latency claim.
+- A ledger entry does not copy a lease's scope, expiry or limits; those are still taken
+  from the lease value in the `ParentAuthority`. The ledger authenticates *state and
+  ancestry by id*, not lease content.
+- The ledger is chosen by the caller of `from_gated_spec`. Nothing ties a lease to the
+  ledger that issued it: a provenance-free lease can be registered as a root in any
+  ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`
+  therefore means "this ledger has no record", not "this is the issuing ledger".
+  Which ledger is authoritative across processes is for AAASM-6273 to settle.
+- Cross-process handoff (AAASM-6273) is unchanged and still open.
