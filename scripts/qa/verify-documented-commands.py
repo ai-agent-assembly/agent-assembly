@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -91,6 +92,16 @@ from pathlib import Path
 from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _debug_dir() -> Path:
+    """Where `cargo build` puts debug binaries. Honors CARGO_TARGET_DIR so the
+    script works on hosts (and in worktrees) that redirect cargo's output
+    instead of assuming `<repo>/target`."""
+    override = os.environ.get("CARGO_TARGET_DIR")
+    base = Path(override) if override else REPO_ROOT / "target"
+    return base / "debug"
+
 
 # Every file under docs/src/quick-start/ is in scope, discovered by glob
 # rather than a hardcoded list — a new file in that directory must be
@@ -116,12 +127,26 @@ README_HEADINGS_IN_SCOPE = {
     "Running with Docker Compose",
 }
 
+# Runtime 2.0 reference pages scanned in addition to the quick-start glob and
+# README sections (AAASM-6302): the isolation security page and the two CLI
+# references for the governed-launch / receipt surface. Listed explicitly
+# (not globbed) because their sibling pages cover unrelated commands.
+EXTRA_SOURCE_FILES = [
+    "docs/src/security/execution-isolation.md",
+    "docs/src/cli/run.md",
+    "docs/src/cli/receipt.md",
+]
+
 FENCE_LANGS = {"sh", "bash", "shell", "console", "zsh"}
 PLACEHOLDER_RE = re.compile(r"<[a-zA-Z][a-zA-Z0-9_-]*>")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 DATA_TITLE_RE = re.compile(r'data-title="([^"]+)"')
-FENCE_START_RE = re.compile(r"^(>\s*)?```(\S*)\s*$")
-FENCE_END_RE = re.compile(r"^(>\s*)?```\s*$")
+# A fence may be indented (a code block nested under a numbered-list item, as
+# in execution-isolation.md's Quickstart); an anchored-at-column-0 pattern
+# silently skipped those blocks, so a documented command there was never even
+# seen, let alone classified.
+FENCE_START_RE = re.compile(r"^(>\s*)?(\s*)```(\S*)\s*$")
+FENCE_END_RE = re.compile(r"^(>\s*)?\s*```\s*$")
 
 
 @dataclass(frozen=True)
@@ -189,11 +214,14 @@ def extract_blocks(file_rel: str) -> list[Unit]:
 
         fm = FENCE_START_RE.match(raw)
         if fm:
-            lang = fm.group(2).lower()
+            lang = fm.group(3).lower()
+            indent = len(fm.group(2))
             body_lines: list[str] = []
             i += 1
             while i < len(lines) and not FENCE_END_RE.match(lines[i]):
-                body_lines.append(_strip_quote(lines[i]))
+                body = _strip_quote(lines[i])
+                lead = len(body) - len(body.lstrip(" "))
+                body_lines.append(body[min(indent, lead):])
                 i += 1
             i += 1  # consume closing fence
             if lang not in FENCE_LANGS:
@@ -252,6 +280,9 @@ def collect_units() -> list[Unit]:
         print(f"error: no *.md files found under {QUICK_START_DIR}/ — scan target is empty", file=sys.stderr)
         sys.exit(1)
     for f in quick_start_files:
+        units.extend(extract_blocks(f))
+
+    for f in EXTRA_SOURCE_FILES:
         units.extend(extract_blocks(f))
 
     # README_HEADINGS_IN_SCOPE names headings by exact string; if README.md
@@ -441,6 +472,48 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "same alternative-gateway-launch collision as first-run.md's "
         "identical command — would fight `aasm gateway start` for "
         "127.0.0.1:50051.",
+    # -- Runtime 2.0 reference pages (AAASM-6302). Blocks whose documented
+    # outcome depends on a Linux isolation backend, an interactive third-party
+    # tool, or a receipt only a confined run can write are ALLOWLISTED, never
+    # executed-and-passed on a host that cannot reproduce the documented
+    # outcome. Their claims are checked by hand against the real host and
+    # recorded in the AAASM-6302 PR, not by this script.
+    ("docs/src/security/execution-isolation.md", "Backend absent or incompatible",
+     "$ aasm run exec --isolation process -- python agent.py"):
+        "the transcript shown is the Linux-host refusal (`no sandlock executable "
+        "on PATH`). On macOS the same command refuses with a different reason "
+        "(the sandlock backend confines Linux processes), and on a Linux host "
+        "with a backend installed it launches. The output is host-specific, so "
+        "executing it would assert a different thing on each runner.",
+    ("docs/src/security/execution-isolation.md", "Quickstart: a governed, isolated launch",
+     "$ aasm run exec --isolation process -- python agent.py"):
+        "live isolated launch: succeeds only where a backend is installed "
+        "(Linux + sandlock, or a configured macOS VM substrate); the Quickstart "
+        "documents this as a Linux walkthrough. Not reproducible on a generic "
+        "CI runner.",
+    ("docs/src/cli/run.md", "Examples", "$ aasm run claude"):
+        "launches the real, interactive Claude Code binary against a real "
+        "provider account; there is no non-interactive outcome to assert.",
+    ("docs/src/cli/run.md", "Examples",
+     "$ aasm run exec --isolation auto -- python agent.py"):
+        "live `auto` launch: the backend `auto` selects (or whether it refuses) "
+        "depends on the host's installed backends and kernel, so there is no "
+        "single documented outcome to assert across runners.",
+    ("docs/src/cli/run.md", "Examples",
+     "$ aasm run exec --isolation process -- python agent.py"):
+        "live isolated launch: succeeds only where a backend is installed; see "
+        "the identical block under execution-isolation.md.",
+    ("docs/src/cli/receipt.md", "`verify` examples",
+     "$ aasm receipt verify ~/.aasm/execution-receipts/1758912345-run-abc123.execution-receipt.json"):
+        "needs a real receipt, which only a confined `aasm run` writes (the "
+        "path is an illustrative placeholder). No confining backend is "
+        "available on a generic runner, and a hand-built fixture would only "
+        "prove the fixture. Verification behavior is covered by "
+        "aa-cli/src/commands/execution_receipt unit tests.",
+    ("docs/src/cli/receipt.md", "`verify` examples",
+     "$ aasm receipt verify --json ./tampered-receipt.json"):
+        "`./tampered-receipt.json` is an illustrative placeholder for a "
+        "hand-edited receipt; there is no such file to verify.",
 }
 
 
@@ -480,7 +553,7 @@ def _exec_build_aa_cli() -> None:
     r = _run(["cargo", "build", "-p", "aa-cli"], cwd=REPO_ROOT, timeout=1800)
     if r.returncode != 0:
         raise AssertionError(f"cargo build -p aa-cli failed:\n{r.stderr}")
-    binary = REPO_ROOT / "target" / "debug" / "aasm"
+    binary = _debug_dir() / "aasm"
     if not binary.exists():
         raise AssertionError(f"expected binary at {binary}, not found")
 
@@ -494,7 +567,7 @@ def _ensure_binary_built(package: str, binary_name: str) -> Path:
     otherwise. Build it here if it's missing, so --run is self-sufficient
     on its own (e.g. for local reproduction) rather than silently relying
     on that earlier step."""
-    binary = REPO_ROOT / "target" / "debug" / binary_name
+    binary = _debug_dir() / binary_name
     if binary.exists():
         return binary
     r = _run(["cargo", "build", "-p", package], cwd=REPO_ROOT, timeout=1800)
@@ -512,7 +585,7 @@ def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     # full cold release build to every docs-touching PR. Everything below
     # exercises the binary `cargo build -p aa-cli` already produced instead;
     # `cargo install` itself is ALLOWLISTED (see below) with that reasoning.
-    binary = REPO_ROOT / "target" / "debug" / "aasm"
+    binary = _debug_dir() / "aasm"
     return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout)
 
 
@@ -742,6 +815,66 @@ def _exec_gateway_stop() -> None:
     _assert_in(r2.stdout, "not running", "aasm gateway status after stop")
 
 
+# -- Runtime 2.0 reference pages (AAASM-6302) ------------------------------
+# Only the `--dry-run` blocks are executable on every host: the dry-run report
+# is documented to print its `--- execution isolation ---` sections
+# *unconditionally* (run.md "Dry-run output"), and to report a missing backend
+# as a warning rather than stopping. The assertion is therefore on exit 0 and
+# on those documented section headers, never on which backend was selected.
+
+_DRY_RUN_SECTIONS = (
+    "--- aasm run dry-run ---",
+    "--- execution isolation ---",
+    "--- execution isolation (machine-readable) ---",
+    "--- launch command ---",
+)
+
+
+def _dry_run(*args: str) -> None:
+    # The command is run exactly as the doc writes it. The only addition is
+    # AA_POLICY (a documented policy source, run.md `--policy`), so a runner
+    # with no ~/.aasm/policy.yaml previews a resolved policy instead of the
+    # "unconfigured" warning. It is passed by environment, not as a flag,
+    # because the documented argv ends in `-- <program> [args]` and anything
+    # appended after that would be handed to the previewed program.
+    policy = REPO_ROOT / "policy-examples" / "low-risk.yaml"
+    env = {**os.environ, "AA_POLICY": str(policy)}
+    r = _run([str(_debug_dir() / "aasm"), "run", *args], cwd=REPO_ROOT, timeout=60, env=env)
+    if r.returncode != 0:
+        raise AssertionError(f"aasm run {' '.join(args)} exited {r.returncode}:\n{r.stdout}\n{r.stderr}")
+    for needle in _DRY_RUN_SECTIONS:
+        _assert_in(r.stdout, needle, "aasm run --dry-run")
+
+
+@_executor(
+    "docs/src/cli/run.md", "Examples",
+    '$ aasm run exec --dry-run -- python agent.py --task "summarize repo"',
+    "`aasm run exec --dry-run` prints the full plan, including the unconditional "
+    "execution-isolation sections, and exits 0 without launching anything",
+)
+def _exec_run_exec_dry_run() -> None:
+    _dry_run("exec", "--dry-run", "--", "python", "agent.py", "--task", "summarize repo")
+
+
+@_executor(
+    "docs/src/cli/run.md", "Examples",
+    "$ aasm run exec --isolation process --dry-run -- python agent.py",
+    "`--isolation process --dry-run` previews (reporting an unavailable backend "
+    "as a warning, not a refusal) and exits 0",
+)
+def _exec_run_isolation_process_dry_run_run_md() -> None:
+    _dry_run("exec", "--isolation", "process", "--dry-run", "--", "python", "agent.py")
+
+
+@_executor(
+    "docs/src/security/execution-isolation.md", "Quickstart: a governed, isolated launch",
+    "$ aasm run exec --isolation process --dry-run -- python agent.py",
+    "Quickstart step 1: the same preview, exits 0 even where the backend is not installed",
+)
+def _exec_run_isolation_process_dry_run_quickstart() -> None:
+    _dry_run("exec", "--isolation", "process", "--dry-run", "--", "python", "agent.py")
+
+
 # --------------------------------------------------------------------------
 
 
@@ -852,11 +985,14 @@ def _extract_blocks_from_path(path: Path, label: str) -> list[Unit]:
             continue
         fm = FENCE_START_RE.match(raw)
         if fm:
-            lang = fm.group(2).lower()
+            lang = fm.group(3).lower()
+            indent = len(fm.group(2))
             body_lines: list[str] = []
             i += 1
             while i < len(lines) and not FENCE_END_RE.match(lines[i]):
-                body_lines.append(_strip_quote(lines[i]))
+                body = _strip_quote(lines[i])
+                lead = len(body) - len(body.lstrip(" "))
+                body_lines.append(body[min(indent, lead):])
                 i += 1
             i += 1
             if lang not in FENCE_LANGS:
