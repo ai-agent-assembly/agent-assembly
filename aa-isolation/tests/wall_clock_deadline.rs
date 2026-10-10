@@ -365,11 +365,18 @@ fn marker_halves(test_name: &str) -> (String, String) {
 }
 
 /// Builds the leader's script: a double-fork daemon (POSIX's standard
-/// double-fork idiom, via Perl's `fork`, since this repo's own `setsid(1)`
-/// is a Linux `util-linux` tool absent on macOS, and this is a macOS-only
-/// test — `/usr/bin/perl` ships with the OS and exposes `fork`/
-/// `POSIX::setsid` directly), followed by the leader itself staying alive
-/// long enough to exceed the wall-clock ceiling.
+/// double-fork idiom, via Perl's `fork`/`POSIX::setsid`). Perl, not this
+/// repo's own `setsid(1)` tool (a Linux `util-linux` binary this macOS
+/// authoring host does not have), because `/usr/bin/perl` ships on both
+/// platforms this file's `#![cfg(unix)]` covers. **This test is not
+/// macOS-only** despite being written for the macOS-only AAASM-6294
+/// ticket — it compiles and runs wherever this crate's test suite does,
+/// including the `ubuntu-latest` GitHub Actions runners `.github/workflows/ci.yml`
+/// uses for every job in this repo (`perl` and `pgrep`/`pkill` — from
+/// `procps`, a base-image package — are both part of `ubuntu-latest`'s
+/// default toolset, not something this test installs), followed by the
+/// leader itself staying alive long enough to exceed the wall-clock
+/// ceiling.
 ///
 /// `detach` controls the one line that distinguishes the two tests below:
 /// when `true`, the first fork calls `setsid()` before forking again,
@@ -467,11 +474,21 @@ fn pkill(marker: &str) {
 ///   survives a native-backend wall-clock termination, a strictly bigger
 ///   gap than the one this test demonstrates.
 /// - `aa-isolation-macos-vm::MacosVmBackend::terminate` sends a
-///   `TerminateRequest` wire message into the guest; what the guest-side
-///   launcher actually signals is not verified here either — no VM
-///   substrate is configured on this host (see
+///   `TerminateRequest` wire message into the guest; its handler,
+///   `check_for_terminate` in
+///   `aa-isolation-macos-vm-poc/guest-init/src/protocol.rs:511`, issues the
+///   *identical* single-pid `libc::kill(child_pid, signal)` the native
+///   backend does — no `setpgid`/process-group setup appears anywhere in
+///   this file's own `fork()` call either (`protocol.rs:255`). This is the
+///   in-scope macOS surface for this ticket, read from source with the
+///   same confidence as the native finding above, but **not live-booted**:
+///   no VM substrate is configured on this host (see
 ///   `resource_ceiling_refusal.rs` in the sibling crate for the same
-///   caveat applied to that backend's `plan()`).
+///   caveat applied to that backend's `plan()`). If an ordinary (non-setsid)
+///   forked child of a confined `aasm-macos-vm` launch were live-tested
+///   against a real guest boot, this reading predicts it would also
+///   survive a wall-clock termination — a strictly bigger gap than the
+///   setsid-specific one this test demonstrates live.
 ///
 /// ADR 0041 ("Resource ceiling enforcement, round 1") discloses the
 /// product-level property this test's *conclusion* is consistent with,

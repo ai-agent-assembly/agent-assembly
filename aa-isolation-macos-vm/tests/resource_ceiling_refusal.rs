@@ -40,6 +40,21 @@
 //!    the `Available` arm, via a hand-built capability report rather than a
 //!    real boot.
 //!
+//! # Live CLI confirmation (not just this library-level test)
+//!
+//! `./target/debug/aasm run exec --isolation auto --isolation-backend
+//! aasm-macos-vm --max-open-files 16 -- /bin/true`, run for real on this
+//! host with an explicit allow-all policy (`AA_POLICY=...`) and a cleared
+//! environment, refused with exit code 1 and stderr: *"refusing to launch:
+//! an execution-isolation boundary was requested and the `aasm-macos-vm`
+//! backend cannot be selected on this host — the macOS VM substrate is not
+//! configured on this host..."* — the exact `BackendUnavailable` text test
+//! (2) exercises at the library level, confirming `authority_gate` (which
+//! runs before backend selection in `aa-cli`'s `resolve_boundary`) does not
+//! intercept an ordinary, lease-free launch first, and that
+//! `MacosVmBackend::discover()` really is what the real CLI entrypoint
+//! constructs.
+//!
 //! # A finding this test pins rather than hides: the refusal reason can be wrong
 //!
 //! Test (1)'s refusal reason text ("this one carried a different scope
@@ -50,11 +65,17 @@
 //! `narrow_for` only overrides it when the *specific* request's lowering
 //! fails — which it does not, here. So the refusal is for the right
 //! underlying cause (`Resource` genuinely has no live producer on this
-//! backend — ADR 0041's "out of scope" line) but gives the operator a
-//! misleading diagnostic. This is a real, observed documentation/UX
-//! accuracy gap against ADR 0041 decision 2's own stated intent ("the
-//! refusal reason names the specific ceiling"). Recorded here and in
-//! `qa/golden-journeys.yaml`'s J86 entry; not fixed — fixing
+//! backend — ADR 0041's "out of scope" line) but, **on a host where this
+//! backend is `Available`** (test (1)'s hand-built capability set — this
+//! has not been reproduced through a real boot), the operator would be
+//! given a misleading diagnostic. On *this* host, where the backend is
+//! `Unavailable`, the operator never sees this text at all — they see the
+//! `BackendUnavailable` message quoted above instead. This is a real,
+//! observed documentation/UX accuracy gap, inconsistent with the
+//! precise-reason *intent* ADR 0041 decision 2 states for the native and
+//! sandlock backends (that decision does not itself govern
+//! `aasm-macos-vm`, which it lists as untouched this round). Recorded here
+//! and in `qa/golden-journeys.yaml`'s J86 entry; not fixed — fixing
 //! `capability::discover`'s reporting is outside this QA ticket's scope.
 
 use aa_isolation::{
