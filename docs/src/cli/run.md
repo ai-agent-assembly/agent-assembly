@@ -141,8 +141,8 @@ operation should use `--isolation` alone.
   reports its own refusal if it cannot meet the launch's requirements — it
   does not fall through to a different backend automatic selection would
   have picked.
-- Naming a backend this build does not have is refused, naming the one it
-  does have.
+- Naming a backend this build does not have is refused, naming the backends it
+  does have (`sandlock`, `aasm-native` and `aasm-macos-vm`).
 - The exact string it accepts is an implementation fact recorded in the
   [platform/backend support matrix](../security/execution-isolation.md#platform-and-backend-support-matrix) — it is not repeated here because this
   page documents the CLI contract, and the matrix is the place that fact is
