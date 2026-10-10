@@ -751,7 +751,14 @@ fn f_truncating_the_file_fails_to_parse() {
 fn f_transplanting_another_receipts_digest_trips_the_seal() {
     let dir = tempfile::tempdir().unwrap();
     let mut json_a = genuine_envelope_json(&[]);
-    let json_b = genuine_envelope_json(&[CapabilityDomain::NetworkEgress]);
+    let mut body_b = build_body(&[CapabilityDomain::NetworkEgress]);
+    // `preventing` alone is not guaranteed to change the digest (no decision
+    // evidence means it may not surface in any digested field), and both
+    // fixtures are built in the same wall-clock second, so
+    // `recorded_at_unix_secs` doesn't reliably differ either — force a real
+    // content difference directly rather than relying on timing.
+    body_b.run_id = format!("{}-transplant-source", body_b.run_id);
+    let json_b = serde_json::to_value(sealed(body_b)).unwrap();
     assert_ne!(
         json_a["seal"]["digest"], json_b["seal"]["digest"],
         "the two fixtures must genuinely differ for this transplant to mean anything"
