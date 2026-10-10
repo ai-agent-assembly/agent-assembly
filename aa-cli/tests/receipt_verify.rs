@@ -505,14 +505,16 @@ fn cli_receipt_verify_reports_failure_for_a_tampered_receipt() {
 // AAASM-6287 (macOS hardware re-qualification) merged, but
 // `aa-isolation-macos-vm` remains an unwired PoC on this host — no VM
 // helper/kernel/rootfs assets are configured
-// (`aa-isolation-macos-vm-poc/README.md`), and the only other two compiled-in
-// backends (`aasm-native`, `aasm-sandlock`) are Linux-only. So no isolation
-// backend in this build can establish a confined boundary on this host at
-// all (empirically confirmed: `cli_run_execution_receipt.rs`'s existing
-// macOS test still hits its own `MACOS_VM_UNAVAILABLE_MARKER` branch, and
-// `aa-integration-tests/tests/cli_run_execution_receipt.rs`'s new
-// AAASM-6295 test shows `aasm-native` refuses on macOS too). The receipt
-// these tests tamper with is therefore built through the real
+// (`aa-isolation-macos-vm-poc/README.md`). So no isolation backend in this
+// build can establish a confined boundary on this host at all —
+// empirically confirmed for all three compiled-in backend ids (`sandlock`,
+// `aasm-native`, `aasm-macos-vm`) plus `--isolation auto`, each refusing
+// with its own named "backend cannot be selected on this host" (or, for
+// auto, "walked every backend... none of them") reason, never an
+// unrelated failure — by
+// `aa-integration-tests/tests/cli_run_execution_receipt.rs`'s AAASM-6295
+// tests. The receipt these tests tamper with is therefore built through the
+// real
 // `body_for_run`/`ReceiptEnvelope::seal`/`ReceiptStore` production pipeline
 // — the exact functions `aasm run` itself calls — driven by
 // `aa_isolation::mock::MockBackend` rather than a genuinely confined child
@@ -529,6 +531,12 @@ fn write_envelope_json(dir: &std::path::Path, name: &str, value: &serde_json::Va
 
 fn verify_json(path: &std::path::Path) -> (bool, serde_json::Value) {
     let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
+    // AAASM-6295: explicit allow-list, not ambient inheritance — same
+    // discipline as `aa-integration-tests/tests/cli_run_execution_receipt.rs`'s
+    // `aasm_receipt_verify`, per this campaign's AAASM-6293 near-miss
+    // finding. `receipt verify` only ever reads the file at `path`, so a
+    // minimal `PATH` is all it needs.
+    cmd.env_clear().env("PATH", "/usr/bin:/bin");
     let output = cmd
         .args(["receipt", "verify", "--json", path.to_str().unwrap()])
         .output()
@@ -698,17 +706,22 @@ fn f_removing_an_already_null_optional_field_is_undetectable_by_design() {
     assert_eq!(report["seal"], "holds");
 }
 
-/// Tamper category 3 (AAASM-6295 finding): adding an unknown field is
-/// UNDETECTABLE, because the seal is recomputed over the *parsed struct*
-/// (`serde_json::to_value(&body)`), and nothing in this module's types
-/// carries `#[serde(deny_unknown_fields)]` — confirmed by reading every
-/// file under `aa-cli/src/commands/execution_receipt/` (no occurrence). An
-/// unrecognized key is silently dropped by `serde_json::from_str` and never
-/// reaches the digest computation at all. This is a real finding to record,
-/// not a test to relax: a receipt with an added field the writer never put
-/// there still verifies clean.
+/// Tamper category 3 (AAASM-6295 finding): adding an unknown field still
+/// verifies clean (exit 0), because the seal is recomputed over the
+/// *parsed struct* (`serde_json::to_value(&body)`), and nothing in this
+/// module's types carries `#[serde(deny_unknown_fields)]` — confirmed by
+/// reading every file under `aa-cli/src/commands/execution_receipt/` (no
+/// occurrence). An unrecognized key is silently dropped by
+/// `serde_json::from_str` and never reaches the digest computation at all.
+/// Whether this is acceptable is a question for the ticket owner, not
+/// settled here: `docs/src/cli/receipt.md` states a holding seal proves
+/// "the receipt's content has not changed since `aasm run` wrote it", and
+/// a raw-byte addition that still verifies clean sits in tension with that
+/// sentence as worded — even though nothing a reader of the parsed struct
+/// would ever observe actually changed. This test pins the behavior; it
+/// does not rule on whether the behavior or the doc wording should change.
 #[test]
-fn f_adding_an_unknown_field_is_undetectable_by_design() {
+fn f_adding_an_unknown_field_still_verifies_clean() {
     let dir = tempfile::tempdir().unwrap();
     let mut json = genuine_envelope_json(&[]);
     json["body"]["an_unknown_field_nobody_wrote"] = serde_json::Value::String("injected".to_string());
