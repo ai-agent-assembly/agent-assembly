@@ -338,3 +338,178 @@ fn a_run_that_finishes_within_the_ceiling_is_not_reported_as_a_decision() {
     assert_eq!(record.kind, EvidenceKind::Exercised);
     assert_eq!(record.claim, ClaimTerm::Observed);
 }
+
+/// A unique, greppable marker for the detached descendant this test spawns,
+/// so `pgrep -f` cannot accidentally match an unrelated process on a shared
+/// CI host or this operator's own shell.
+fn marker_for(test_name: &str) -> String {
+    format!(
+        "aaasm-6294-marker-{test_name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the system clock is after 1970")
+            .as_nanos()
+    )
+}
+
+/// Builds the leader's script: a `setsid` + double-fork daemon (POSIX's
+/// standard double-fork idiom, via Perl's `fork`/`POSIX::setsid`, since this
+/// repo's own `setsid(1)` is a Linux `util-linux` tool and this is a
+/// macOS-only test — `/usr/bin/perl` ships with the OS), followed by the
+/// leader itself staying alive long enough to exceed the wall-clock ceiling.
+///
+/// # Why Perl, and why `env -i`
+///
+/// No `unsafe` `libc::fork()` is needed in *this* process — only the
+/// confined *child* needs to double-fork, and it is a real OS-level process
+/// this test spawns, exactly like every other backend's real child. `perl`
+/// is the one scripting runtime macOS ships that exposes raw `fork()` and
+/// `POSIX::setsid()` without a third-party dependency.
+///
+/// Per this ticket's security note: the daemon chain is launched under
+/// `env -i`, an empty environment, so nothing ambient (credentials, tokens)
+/// can reach a process this test deliberately detaches from supervision and
+/// leaves for `pgrep -f` to find — even though this fixture's own command
+/// line and the marker string are the only things that could appear in any
+/// panic/log output here, clearing the environment removes the leak path
+/// entirely rather than relying on that observation staying true.
+///
+/// The final, detached process is bounded to `sleep 10` — not an infinite
+/// loop — so this test's own invariant ("nothing survives longer than a
+/// could-be-flaky assertion") holds even if every assertion below is wrong:
+/// the marker process self-terminates within 10s regardless of what the
+/// test observes or asserts.
+fn setsid_double_fork_spec(marker: &str) -> ExecutionSpec {
+    let script = format!(
+        "env -i /usr/bin/perl -e 'use POSIX qw(setsid); my $m = $ARGV[0]; if (fork() == 0) {{ setsid(); if \
+         (fork() == 0) {{ exec(\"/usr/bin/perl\", \"-e\", \"sleep 10\", $m) or exit(1); }} exit(0); }} exit(0);' \
+         {marker}\nsleep 30\n"
+    );
+    spec_with_no_requirements("/bin/sh", &["-c", &script])
+}
+
+/// Counts live processes matching `marker` via `pgrep -f`, the same
+/// mechanism this ticket's AC specifies for counting survivors.
+fn pgrep_count(marker: &str) -> usize {
+    let output = Command::new("/usr/bin/pgrep")
+        .arg("-f")
+        .arg(marker)
+        .env_clear()
+        .output()
+        .expect("pgrep must be runnable on this host");
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count()
+}
+
+/// Best-effort cleanup for the marker process, run regardless of whether the
+/// test's assertions pass — this fixture's `sleep 10` bound makes this belt,
+/// not suspenders, but there is no reason to wait out the full 10s if the
+/// test already knows the pid pattern.
+fn pkill(marker: &str) {
+    let _ = Command::new("/usr/bin/pkill")
+        .arg("-f")
+        .arg(marker)
+        .env_clear()
+        .status();
+}
+
+/// **AAASM-6294 ST-7, live test**: a `setsid` + double-forked descendant —
+/// detached from the leader's process group and session before the
+/// wall-clock ceiling fires — is not reached by this backend's group-kill
+/// termination.
+///
+/// This is not a newly discovered gap. ADR 0041 ("Resource ceiling
+/// enforcement, round 1") states it explicitly under "Residual: AC5,
+/// orphan-freedom": *"There is no `cgroup.kill`-equivalent group-kill in
+/// this round: a confined tree whose immediate process ignores a
+/// `terminate()` relies on the pre-existing best-effort termination
+/// semantics, nothing stronger... this round's AC5 claim is honestly
+/// partial."* A `setsid` descendant is exactly the shape that escapes a
+/// process-group kill — `setsid()` puts the caller in a **new** session and
+/// process group, so `kill(-original_pgid, sig)` cannot reach it by
+/// construction, independent of any policy or backend bug. This test proves
+/// that disclosed limitation is actually true on this host, rather than
+/// trusting the ADR's prose unverified.
+///
+/// If this test ever started asserting zero survivors, that would mean the
+/// termination mechanism changed to something stronger than a
+/// process-group kill (e.g. a session-wide or cgroup-wide kill) — in which
+/// case ADR 0041's "honestly partial" claim and this test's own doc comment
+/// would both need deliberate revision, not a silent pass.
+#[test]
+fn a_setsid_double_forked_descendant_survives_the_process_group_kill() {
+    let marker = marker_for("survivor");
+    let backend = ProcessGroupBackend::new();
+    let spec = setsid_double_fork_spec(&marker);
+    let handle = launch(&backend, &spec);
+
+    // Give the leader's script time to actually run the double-fork and
+    // exec into the final, marker-bearing process before the ceiling fires
+    // — otherwise this test could race the assertion below against a
+    // daemon that simply hasn't execed yet, which would prove nothing about
+    // group-kill coverage either way.
+    let appeared = wait_for_marker(&marker, Duration::from_secs(2));
+    assert!(
+        appeared,
+        "the detached marker process never appeared within 2s — the double-fork fixture itself is broken, \
+         not the property this test means to check"
+    );
+
+    let ceiling = Duration::from_millis(300);
+    let outcome =
+        supervise_wall_clock(&backend, &handle, ceiling).expect("wait_for_exit on this backend does not fail");
+    let WallClockOutcome::DeadlineExceeded { termination, .. } = &outcome else {
+        panic!("a fixture that sleeps 30s in the leader must exceed a 300ms ceiling: {outcome:?}");
+    };
+    assert!(
+        termination.is_ok(),
+        "the group-kill termination request must still be delivered to the leader, even though it cannot \
+         reach the detached descendant: {termination:?}"
+    );
+
+    // The leader itself must actually be gone — the group-kill's reach is
+    // real, just not total. Without this, "the marker survived" could mean
+    // "termination did nothing at all" rather than "termination reached
+    // everything in the group except the one process that left it".
+    let leader_pid = {
+        let pids = backend.pids.lock().expect("state poisoned");
+        pids.get(handle.token()).copied()
+    };
+    if let Some(pid) = leader_pid {
+        let still_alive = wait_for_all_gone(&[pid as i32], Duration::from_secs(2));
+        assert!(
+            still_alive.is_empty(),
+            "the leader process {pid} must be gone after the group-kill — otherwise the marker's survival \
+             would say nothing about group-kill coverage, only that termination never ran: {still_alive:?}"
+        );
+    }
+
+    let survivors = pgrep_count(&marker);
+    pkill(&marker);
+
+    assert!(
+        survivors >= 1,
+        "expected the setsid-double-forked marker `{marker}` to survive the process-group kill (ADR 0041's \
+         disclosed, honestly-partial AC5 coverage), but pgrep -f found {survivors} — either this host's \
+         kill(-pgid) now reaches a process that left the group (a real improvement worth updating ADR 0041 \
+         for) or this fixture is not actually detaching the way it intends to"
+    );
+}
+
+/// Poll `pgrep -f marker` until it reports at least one match or `bound`
+/// elapses.
+fn wait_for_marker(marker: &str, bound: Duration) -> bool {
+    let start = Instant::now();
+    loop {
+        if pgrep_count(marker) > 0 {
+            return true;
+        }
+        if start.elapsed() > bound {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
