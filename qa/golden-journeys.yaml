@@ -422,9 +422,13 @@ journeys:
       run, so the journey name (''every documented command'') is not yet
       fully true — the gap is now a machine-enforced, documented boundary
       instead of an unowned hole.'
+  - repo: agent-assembly
+    kind: ci_job
+    selector: 'docs.yml/docs-governance.yml verify-commands, extended by AAASM-6302 (ST-14) to also scan docs/src/security/execution-isolation.md, docs/src/cli/run.md and docs/src/cli/receipt.md (EXTRA_SOURCE_FILES); the fence extractor now also sees fences indented under list items, which it previously skipped silently. 10 new command blocks: 3 `--dry-run` blocks EXECUTED (exit 0 plus the documented unconditional execution-isolation section headers), 7 ALLOWLISTED with reasons (live isolated launches whose outcome is backend-specific, the interactive `aasm run claude`, and two `aasm receipt verify` examples that need a receipt only a confined run writes).'
   execution_lanes:
   - pr
   fidelity: real_local_process
+  negative_control: 'AAASM-6302 (ST-14, independent QA, macOS Apple Silicon host, candidate e84c3dc5a plus this branch): `verify-documented-commands.py --selftest` passed both directions; `--check-coverage` reported exactly the 10 new blocks UNCOVERED before they were classified (so the extension is not vacuous), then OK (54 blocks, 20 executed, 33 allowlisted); `--run` passed 20 of 20 on a warm binary. The first `--run` on freshly built binaries failed 2 pre-existing executors (`aasm --version` 15s timeout, `aasm gateway start` not ready in 10s) -- explained, not waived: the same executors passed once the new binaries had completed macOS first-launch validation, and the orphaned aa-gateway the timed-out start left behind was proven to be this session''s (private target dir, worktree cwd) before it was stopped. Still `partial`: the Linux-only blocks (live `--isolation process|auto` launches, Troubleshooting transcript) are ALLOWLISTED by design and were run by hand on macOS only, where they refuse; no Linux host was available, so the Linux outcome the docs show is untested here. The journey also still excludes the public docs repo, which carries its own Runtime 2.0 claims (follow-up).'
 - id: J22
   jira: AAASM-4538
   name: Recover from a failure using the troubleshooting / FAQ docs
