@@ -3618,7 +3618,7 @@ mod plan {
             let linux_declined = selection
                 .considered
                 .iter()
-                .filter(|c| c.id.to_string() != aa_isolation_macos_vm::BACKEND_ID)
+                .filter(|c| c.id != aa_isolation_macos_vm::BACKEND_ID)
                 .all(|c| !matches!(c.verdict, aa_isolation::CandidateVerdict::Selected));
             if linux_declined {
                 assert!(
