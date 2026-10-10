@@ -2441,7 +2441,103 @@ journeys:
   outcome: See AAASM-6266 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-6167
-  lifecycle_state: gap
+  lifecycle_state: partial
+  gap_owner: AAASM-6266
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::every_failure_posture_pair_is_decided_by_the_ladder_and_nothing_else
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_posture_nobody_stated_meets_no_minimum_on_the_ladder
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::the_selected_backend_follows_the_demanded_property_in_either_candidate_order
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::without_an_evidence_minimum_both_backends_are_eligible_and_declared_order_decides
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_property_combination_no_backend_satisfies_selects_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::strength_on_one_domain_does_not_satisfy_a_minimum_on_another
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_partial_support_report_is_refused_by_a_full_support_minimum_and_accepted_without_one
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::an_evidence_minimum_on_a_domain_the_backend_never_reported_is_refused
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::an_unavailable_backend_is_never_selected_however_well_its_evidence_matches
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_refusal_is_attributable_to_the_stated_minimum_and_names_every_candidate_in_order
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_pin_that_misses_the_property_refuses_and_agrees_with_the_walk
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::excellent_evidence_labels_do_not_rescue_a_backend_that_cannot_prevent
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::repeated_selection_on_unchanged_capabilities_is_identical
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_change_in_host_capability_changes_the_selection
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::the_selection_walk_and_its_reasons_reach_the_machine_readable_report
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/planner_falsification.rs::a_refused_walk_is_recorded_with_no_selected_candidate
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/planner_real_backend_matrix.rs::each_real_backend_can_plan_only_the_domains_its_mechanism_covers
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/planner_real_backend_matrix.rs::the_walk_selects_the_covering_backend_and_refuses_an_uncoverable_combination
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/planner_real_backend_matrix.rs::the_selection_follows_the_probe_observation_not_the_backends_name
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/planner_real_backend_matrix.rs::when_no_backend_was_seen_to_deny_the_request_is_refused
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/planner_real_backend_matrix.rs::real_backend_selection_is_deterministic
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_planner_matrix.rs::every_confining_cell_names_its_backend_or_refuses_and_runs_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_planner_matrix.rs::isolation_none_states_it_and_a_named_backend_with_it_refuses
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_planner_matrix.rs::the_automatic_choice_is_deterministic_and_its_reasoning_is_in_the_receipt
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/planner.rs::a_candidate_negotiate_would_accept_is_excluded_by_a_failure_posture_minimum
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/src/planner.rs::a_candidate_negotiate_would_accept_is_excluded_by_a_full_support_minimum
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/negotiation.rs::a_policy_no_candidate_satisfies_selects_none_and_names_both
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-macos-vm/tests/planner_positive_control.rs::positive_control_selects_the_real_backend_under_a_fail_closed_minimum
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/adversarial_isolation_launch.rs::requesting_isolation_on_an_unavailable_backend_refuses_the_launch_rather_than_running_unconfined
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+  platforms:
+  - macos-apple-silicon
+  negative_control: "AAASM-6296 (ST-9, independent QA, macOS Apple Silicon authoring host; no Linux kernel, no VM substrate -- the positive 'a real backend is SELECTED and CONFINES' arm is BLOCKED here and left to the Linux/VM lanes). Verdict PARTIAL. AC2 (refuse or explicitly report, never silently grant) and AC4 (determinism) VERIFIED; AC3 (decision+reasoning visible in the receipt) VERIFIED on the report/--dry-run receipt (backend_selection_mode, considered.N.id/verdict/detail/unmet_domain.*), not observed on a live executed run's receipt because no backend can run here; AC1 (a requested property selects a backend whose achieved evidence matches) is VERIFIED at the planner and against the real backends' own capability::discover logic, but PARTIAL end to end: no operator surface states an evidence minimum. Mutations, each reverted and each turned a test red (the originals pass on restore): (M1) make unmet_evidence_minimums ignore FailurePosture -> planner::tests 1/7 red, planner_falsification 11/17 red; (M2) skip the evidence bar entirely in evaluate_candidate -> planner:: 2/7 red, planner_falsification 13/17 red; (M3) ignore the full-support bar -> planner:: 1/7 and planner_falsification 1/17 red; (M4) make PlanPosture::Launch swallow the refusal in aa-cli run.rs -> run_isolation_planner_matrix::every_confining_cell_names_its_backend_or_refuses_and_runs_nothing red (the first version of that assertion accepted 'refusing to launch unregistered' from the gateway check and did NOT redden -- it now requires the planner's own 'There is no fallback' wording); (M5) make sandlock treat a Permitted filesystem-write probe as Satisfied/Full/ProcessTree -> planner_real_backend_matrix 2/5 red. Removing only ONE of those three layers in M5 did not redden anything: CapabilityReport::can_prevent is defended in depth by the prerequisite, the support level and the descendant coverage, so a single-line regression there is masked by the other two. Live matrix (real compiled aasm, 24 confining cells = --isolation {auto,process} x --isolation-backend {-,sandlock,aasm-native,aasm-macos-vm} x policy denying {file_write,network_outbound} or allowing syscalls): 0 selected, 24 refused with the planner's own reason, and for every refusal the live launch exits non-zero and the program it would run never ran; sandlock and aasm-native are Unavailable (host is macos) and aasm-macos-vm is Unavailable (no AA_ISOLATION_MACOS_VM_* substrate). --isolation none states 'no execution-isolation boundary was requested' and a named backend with it refuses. FINDINGS (not fixed here): (F1) aa-cli/src/commands/run.rs auto_select builds RuntimeRequirements with confinement only and never calls with_evidence_minimum (its own comment: 'nothing upstream of this function produces one yet'); with_evidence_minimum has no caller outside tests and run.rs's unit test. So the evidence-aware half of AAASM-6167 (FailurePosture / SupportLevel floor) is unreachable from `aasm run`: a 'strong vs best-effort' property cannot be requested, and CLI selection is negotiate-eligibility in a fixed sandlock, aasm-native, aasm-macos-vm order. This is a feature gap against the J88 wording, not a regression. (F2) the real aasm-macos-vm backend reports SupportLevel::Partial on filesystem-write unconditionally (aa-isolation-macos-vm/tests/planner_positive_control.rs), so any future 'require full support' minimum can never select it. (F3) the --isolation auto path whose policy lowers to no requirement returns SandlockBackend::discover() with selection: None, so its receipt carries no backend_selection record at all (it is refused downstream by NoRequirementsLowered, so nothing runs, but the auto walk is not recorded)."
 - id: J89
   jira: AAASM-6267
   name: Perform a native host operation (Xcode / Simulator / signing) only through the typed host-capability broker
