@@ -3515,6 +3515,192 @@ mod plan {
             assert_eq!(plan.authority.egress, EgressContract::not_required());
         }
 
+        /// AAASM-6301: gVisor, Firecracker and Apple Containerization are
+        /// evaluation spikes (AAASM-6168/6169/6170), not backends. Naming one
+        /// must refuse in the same words as any unknown id, listing exactly the
+        /// compiled-in backends, and must never resolve to a backend -- under
+        /// either `--isolation process` or `--isolation auto`. The control is
+        /// the compiled-in id, which must still resolve past this arm.
+        #[test]
+        fn evaluation_spike_backend_ids_are_refused_and_never_selected() {
+            let resolution = not_required_resolution();
+            let compiled_in = [
+                aa_isolation_sandlock::BACKEND_ID,
+                aa_isolation_native::BACKEND_ID,
+                aa_isolation_macos_vm::BACKEND_ID,
+            ];
+            for spike in [
+                "gvisor",
+                "runsc",
+                "firecracker",
+                "apple-containerization",
+                "containerization",
+            ] {
+                for intent in [
+                    super::super::IsolationIntent::Process,
+                    super::super::IsolationIntent::Auto,
+                ] {
+                    let mut args = args_with_intent(intent);
+                    args.isolation_backend = Some(spike.to_string());
+
+                    let error = match RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution) {
+                        Ok(_) => panic!("`{spike}` under {intent:?} must refuse, not resolve to a backend"),
+                        Err(e) => e.to_string(),
+                    };
+                    assert!(
+                        error.contains(&format!("--isolation-backend {spike} names no backend this build has")),
+                        "{spike}/{intent:?}: {error}"
+                    );
+                    for id in compiled_in {
+                        assert!(
+                            error.contains(&format!("`{id}`")),
+                            "{spike}: refusal omits `{id}`: {error}"
+                        );
+                    }
+
+                    let preview = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                        .expect("a preview reports the refusal without erroring");
+                    assert!(preview.backend.is_none(), "{spike}/{intent:?} resolved to a backend");
+                    assert!(preview.absent.is_some(), "{spike}/{intent:?} left no recorded reason");
+                }
+            }
+
+            // Control: a compiled-in id is NOT refused by that arm, so the
+            // assertions above are specific to unknown ids and not to every
+            // `--isolation-backend` value.
+            for id in compiled_in {
+                let mut args = args_with_intent(super::super::IsolationIntent::Process);
+                args.isolation_backend = Some(id.to_string());
+                let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                    .expect("a preview never errors");
+                // On a host that cannot run the backend the plan is still
+                // absent, but for the backend's own reason, never the
+                // "no backend answers to the id" arm the spike ids hit.
+                let reason = plan.absent.clone().unwrap_or_default();
+                assert!(
+                    plan.backend.is_some() || !reason.contains("no backend answers to the id"),
+                    "compiled-in backend `{id}` was refused as an unknown id: {reason}"
+                );
+            }
+        }
+
+        /// AAASM-6301: `--isolation auto` walks all three compiled-in backends,
+        /// `aasm-macos-vm` included, on every host. Several docs once said the
+        /// macOS VM backend is "not selected by `auto`"; this pins the behavior
+        /// those sentences describe. The policy must lower a filesystem
+        /// requirement, or `auto_select` short-circuits to Sandlock without
+        /// walking anything and proves nothing.
+        #[test]
+        fn auto_selection_considers_every_compiled_in_backend_including_macos_vm() {
+            let resolution = run_policy::classify(
+                Path::new("/auto-walk.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: auto-walk\nspec:\n  tools:\n    bash:\n      allow: true\n  \
+                 filesystem:\n    read:\n      allow:\n        - /workspace\n    write:\n      allow:\n        - /workspace/build\n",
+            );
+            let args = args_with_intent(super::super::IsolationIntent::Auto);
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("a preview never errors");
+            let selection = plan
+                .selection
+                .expect("a policy with a filesystem requirement makes auto walk the candidate list");
+            let walked: Vec<String> = selection.considered.iter().map(|c| c.id.to_string()).collect();
+            assert!(
+                walked.len() <= 3 && walked.contains(&aa_isolation_sandlock::BACKEND_ID.to_string()),
+                "unexpected walk: {walked:?}"
+            );
+            // On a host where an earlier candidate is eligible the walk stops
+            // early (it is lazy), so assert the ORDER-preserving prefix property
+            // and that macos-vm is reached whenever both Linux backends declined.
+            let linux_declined = selection
+                .considered
+                .iter()
+                .filter(|c| c.id.to_string() != aa_isolation_macos_vm::BACKEND_ID)
+                .all(|c| !matches!(c.verdict, aa_isolation::CandidateVerdict::Selected));
+            if linux_declined {
+                assert!(
+                    walked.contains(&aa_isolation_macos_vm::BACKEND_ID.to_string()),
+                    "both Linux backends declined yet auto never considered aasm-macos-vm: {walked:?}"
+                );
+            }
+        }
+
+        /// AAASM-6301: the evaluation spikes are not backends, so no surface an
+        /// operator reads may name one as if it were available. This scans the
+        /// shipped docs, README, backend-provenance metadata and the CLI source
+        /// for the spike names; the only places allowed to name them are the
+        /// ADR and spike write-ups that exist to say they are not backends.
+        /// The positive control (the ADR must be found naming gVisor) proves
+        /// the scan reads files and matches case-insensitively, so an empty
+        /// result elsewhere is a measurement and not a broken walk.
+        #[test]
+        fn no_operator_facing_surface_names_an_evaluation_spike_backend() {
+            use std::path::{Path, PathBuf};
+
+            const TOKENS: [&str; 4] = ["gvisor", "runsc", "firecracker", "containerization"];
+            const ALLOWED_PREFIXES: [&str; 3] = [
+                "docs/src/adr/0035-",
+                "docs/src/research/AAASM-616",
+                "docs/src/SUMMARY.md",
+            ];
+
+            fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+                let Ok(entries) = std::fs::read_dir(dir) else { return };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path, out);
+                    } else if matches!(
+                        path.extension().and_then(|e| e.to_str()),
+                        Some("md" | "json" | "toml" | "yml" | "yaml")
+                    ) {
+                        out.push(path);
+                    }
+                }
+            }
+
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+            let mut files = vec![root.join("README.md")];
+            walk(&root.join("docs/src"), &mut files);
+            walk(&root.join("metadata"), &mut files);
+
+            let mut offenders = Vec::new();
+            let mut adr_names_gvisor = false;
+            for file in &files {
+                let relative = file.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                let Ok(text) = std::fs::read_to_string(file) else {
+                    continue;
+                };
+                let lower = text.to_lowercase();
+                let allowed = ALLOWED_PREFIXES.iter().any(|p| relative.starts_with(p));
+                if relative.starts_with("docs/src/adr/0035-") && lower.contains("gvisor") {
+                    adr_names_gvisor = true;
+                }
+                if !allowed {
+                    for token in TOKENS {
+                        if lower.contains(token) {
+                            offenders.push(format!("{relative} names `{token}`"));
+                        }
+                    }
+                }
+            }
+            assert!(
+                adr_names_gvisor,
+                "positive control failed: ADR 0035 was not found naming gVisor, so this scan proves nothing"
+            );
+            assert!(
+                offenders.is_empty(),
+                "an operator-facing surface names an evaluation spike as if it were a backend: {offenders:#?}"
+            );
+
+            // The count the support matrix leads with must track the compiled-in set.
+            let matrix = std::fs::read_to_string(root.join("docs/src/security/execution-isolation.md")).unwrap();
+            assert!(
+                matrix.contains("**Three execution-isolation backends ship today.**"),
+                "the support matrix no longer states the compiled-in backend count (3: sandlock, aasm-native, \
+                 aasm-macos-vm); update the doc and this test together"
+            );
+        }
+
         /// The other half of the control: under `Preview`, the same
         /// contradiction warns and carries on (exactly as the pre-existing
         /// `--isolation-backend` contradiction check does) rather than
