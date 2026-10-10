@@ -2577,11 +2577,16 @@ journeys:
   # ST-12/12a evidence was not available when this ran.
   # Corrected while testing (claim text only, no product behavior): the
   # AASM-native `Resource` row said Unsupported though `discover()` reports
-  # Partial (AAASM-6165); four docs said `aasm-macos-vm` is not reached by
-  # `--isolation auto` though `auto_select` walks it last (live-confirmed with
-  # `aasm run exec --isolation auto --dry-run`); the Linux aarch64 row said
-  # "Sandlock fully available" though no CI lane or pinned artifact covers
-  # aarch64.
+  # Partial (AAASM-6165); four sentences in two docs
+  # (execution-isolation.md x2, troubleshooting.md x2) said `aasm-macos-vm` is
+  # not reached by `--isolation auto` though `auto_select` walks it last
+  # (live-confirmed with `aasm run exec --isolation auto --dry-run`; any
+  # further such wording elsewhere is not fixed by this PR); the Linux aarch64
+  # row said "Sandlock fully available" though no CI lane or pinned artifact
+  # covers aarch64. Limits of the guards: the support-matrix tests compare
+  # only available-vs-Unsupported, so the doc's supported/partial prose is
+  # UNGUARDED; and the auto-walk test skips its macos-vm assertion on a host
+  # where an earlier candidate is Selected (e.g. Linux CI).
   lifecycle_state: partial
   gap_owner: AAASM-6301
   evidence:
