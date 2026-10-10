@@ -85,8 +85,10 @@ nothing applied:
 
 The journal from step 5 above is the crash-safety half of "two-phase": it is durable on
 disk before the base tree is touched at all, so a process that dies mid-apply leaves a
-discoverable `TransactionStatus::InterruptedApply`, never a silently half-done base
-tree. Three properties are load-bearing and stated here plainly:
+`TransactionStatus::InterruptedApply` on disk, never a silently half-done base
+tree. (As of AAASM-6291 nothing in `aasm` yet reads that status back or reports
+it to the operator, and re-opening the transaction re-materializes the staged copy
+without checking for a journal; "discoverable" means present on disk, not surfaced.) Three properties are load-bearing and stated here plainly:
 
 - Nothing in `aa-workspace-tx` ever auto-applies a journal on a later run. An
   interrupted apply requires explicit operator inspection; this is a deliberate scope

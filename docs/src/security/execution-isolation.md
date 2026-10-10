@@ -180,6 +180,10 @@ environment can still be inspected via `/proc/<pid>/environ` by anything with
 credential/environment isolation must carry this caveat rather than silently
 glossing over it (tracked as a known, non-blocking residual gap,
 [AAASM-5785](https://lightning-dust-mite.atlassian.net/browse/AAASM-5785)).
+The macOS analogue was measured under AAASM-6293: with the credential broker
+active a spawned child's own environment, argv, descriptors and written files
+carried no secret, but a same-user descendant could still read the aasm
+supervisor's own exec-time environment with `ps -Eww -p <supervisor pid>`.
 
 ## Platform and backend support matrix
 
@@ -199,7 +203,8 @@ boundary from the other two, not a competing implementation of the same one.
 `--isolation auto` considers it last, after the two Linux backends (see
 [Choosing between the two backends](#choosing-between-the-two-backends)); on
 a macOS host the Linux backends are unavailable, so it is the only candidate
-`auto` can reach there, and only when its prerequisites are in place (see
+`auto` can select there, and only when its prerequisites are in place and it
+can plan the policy's requirements (see
 [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites) below).
 
 | Platform | Process-level execution isolation | Notes |
@@ -334,7 +339,9 @@ backends above.
 **Selecting it explicitly:** pass `--isolation-backend aasm-macos-vm`. This
 is required with `--isolation process`, which defaults to `sandlock` and so
 refuses on a macOS host; `--isolation auto` walks the candidate list and
-reaches this backend on its own when it is configured.
+considers this backend last; it is selected only if it is configured and can
+plan the policy's requirements (it covers filesystem read/write only). On a
+host with the VM substrate unset, `auto` reports it as rejected (measured).
 
 ## Compatibility and performance relative to Sandlock
 
@@ -591,7 +598,8 @@ with process-level isolation required.
    `--isolation auto` instead. It selects, per launch, the first backend that
    can meet the policy's requirements (see
    [Choosing between the two backends](#choosing-between-the-two-backends)),
-   and it refuses under the same conditions as `process`.
+   and refuses when none can. That differs from `process` on macOS, where
+   `process` always refuses unless `--isolation-backend aasm-macos-vm` is given.
 
 For the full flag reference, see the [`aasm run` CLI reference](../cli/run.md).
 For the underlying architectural decision, see

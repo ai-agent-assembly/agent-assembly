@@ -17,8 +17,11 @@ resolved once and applied consistently whether you preview it or run it.
 > with the governance gateway. With no reachable gateway it refuses
 > (`refusing to launch unregistered: the governance gateway at … is
 > unreachable`) rather than running ungoverned: start one with `aasm gateway
-> start`, or point `AA_GATEWAY_ENDPOINT` at the gRPC endpoint. An
-> isolation request that no backend can meet is refused before this step.
+> start`, or point `AA_GATEWAY_ENDPOINT` at the gRPC endpoint. A proxied
+> launch (the default) also needs the `aa-proxy` binary beside `aasm`, on
+> `PATH` or in `~/.cargo/bin`, and refuses (`dedicated proxy failed to start:
+> aa-proxy binary not found`) without it. An isolation request that no backend
+> can meet is refused before the gateway step.
 
 ## Synopsis
 
@@ -67,10 +70,16 @@ flow (ADR 0035 §1):
 | `--max-pids <COUNT>` | integer | _(none)_ | Ceiling on processes in the confined tree. Refuses if the backend cannot enforce it. |
 | `--max-open-files <COUNT>` | integer | _(none)_ | Ceiling on simultaneously open file descriptors. Refuses if the backend cannot enforce it. |
 | `--max-file-size-bytes <BYTES>` | integer | _(none)_ | Ceiling on the size of any single file the agent creates. Refuses if the backend cannot enforce it. |
-| `--max-wall-clock-seconds <SECONDS>` | integer | _(none)_ | Wall-clock lifetime ceiling, enforced by `aasm run`'s own supervisor rather than by a backend. Termination is best-effort, and orphan-freedom is not guaranteed ([ADR 0041](../adr/0041-resource-ceiling-enforcement.md#residual-ac5-orphan-freedom)). |
+| `--max-wall-clock-seconds <SECONDS>` | integer | _(none)_ | Wall-clock lifetime ceiling, enforced by `aasm run`'s own supervisor rather than by a backend, on a launch that establishes an isolation boundary. Termination is best-effort, and orphan-freedom is not guaranteed ([ADR 0041](../adr/0041-resource-ceiling-enforcement.md#residual-ac5-orphan-freedom)). |
 | `--max-cpu-seconds <SECONDS>` | integer | _(none)_ | Accumulated CPU-time ceiling. Optional: no backend enforces it as prevention in this version ([ADR 0041](../adr/0041-resource-ceiling-enforcement.md)). |
 
-The `--max-*` ceilings are enforced per backend, not uniformly: the
+The `--max-*` ceilings only take effect on a launch that establishes an
+isolation boundary. With the default `--isolation none` they are accepted and
+**not enforced**: no backend is consulted, so nothing is refused either, and
+`--dry-run` reports an empty requested capability set (measured: `aasm run exec
+--no-proxy --isolation none --max-wall-clock-seconds 2 -- /bin/sleep 12` ran
+for the full 12 seconds and exited 0). Where a boundary is established, the
+ceilings are enforced per backend, not uniformly: the
 `aasm-macos-vm` backend has no resource-ceiling mechanism, so a required
 ceiling is refused at planning time (AAASM-6294), and Linux enforcement is
 described in [ADR 0041](../adr/0041-resource-ceiling-enforcement.md).
@@ -169,6 +178,12 @@ code is the entire disposition rule.
   `workspace` binding carries the same facts — base/result/diff digests,
   added/modified/deleted counts, and the same non-coverage list — and `aasm receipt
   verify` refuses a receipt whose binding drops any part of that list.
+
+An interrupted apply (the process dies while the change set is being folded
+back onto the base) leaves an on-disk apply journal, but nothing in `aasm`
+reads or reports it today, and no `aasm workspace tx` command exists to
+inspect or clear it (AAASM-6291); recovering from that state is a manual
+operation.
 
 See [ADR 0040](../adr/0040-transactional-workspace-mode.md) for the full design —
 alternatives considered (a git worktree, overlayfs, a VM disk snapshot), the fail-closed
