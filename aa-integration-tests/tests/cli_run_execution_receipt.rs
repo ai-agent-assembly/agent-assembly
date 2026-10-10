@@ -61,7 +61,18 @@ fn write_test_policy(dir: &Path, name: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Build the real `aasm run exec -- /bin/true` command this file drives, with
+/// `true(1)`'s path, which is not the same on every platform this file's
+/// tests run on: the pre-existing Linux-only and macOS-VM-guest-only tests
+/// below never actually exec this path on the *host* (the Linux test's
+/// guest/host share a path convention; the macOS-VM test refuses before
+/// spawning on this host), so this gap was latent until AAASM-6295 added a
+/// test that genuinely execs on the macOS host itself.
+#[cfg(target_os = "linux")]
+const TRUE_BIN: &str = "/bin/true";
+#[cfg(not(target_os = "linux"))]
+const TRUE_BIN: &str = "/usr/bin/true";
+
+/// Build the real `aasm run exec -- <true(1)>` command this file drives, with
 /// isolation requested via `extra_args`.
 #[allow(clippy::too_many_arguments)]
 fn build_launch(
@@ -92,6 +103,13 @@ fn build_launch(
         .expect("the built binary has a parent directory");
 
     let mut cmd = Command::new(proxy.aasm());
+    // AAASM-6295: explicit allow-list, not ambient inheritance — a prior
+    // subtask in this campaign (AAASM-6293) found a real credential reach a
+    // log via a panic message from a child spawned without `env_clear()`.
+    // Every variable this launch actually needs is set explicitly below;
+    // nothing else from this test process's own environment crosses into the
+    // child.
+    cmd.env_clear();
     cmd.current_dir(root)
         .env("PATH", proxy_trust_support::prefixed_path(dedicated_proxy_dir)?)
         .env("HOME", &home)
@@ -101,7 +119,7 @@ fn build_launch(
         .env("AA_GATEWAY_ENDPOINT", gateway_endpoint)
         .args(["run", "--policy", &policy.to_string_lossy(), "--agent-id", agent_id])
         .args(extra_args)
-        .args(["exec", "--", "/bin/true"])
+        .args(["exec", "--", TRUE_BIN])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     Ok(cmd)
@@ -136,7 +154,12 @@ fn the_one_receipt(state_dir: &Path) -> PathBuf {
 }
 
 fn aasm_receipt_verify(proxy: &TrustedProxy, path: &Path) -> std::process::Output {
+    // AAASM-6295: same explicit allow-list discipline as `build_launch` —
+    // `receipt verify` only ever reads the file at `path`, so it needs no
+    // ambient environment at all beyond a minimal `PATH`.
     Command::new(proxy.aasm())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
         .args(["receipt", "verify", &path.to_string_lossy()])
         .output()
         .expect("aasm receipt verify should execute")
@@ -289,6 +312,168 @@ async fn a_macos_hosted_confined_launch_writes_a_receipt_with_an_unmeasured_kern
         .find(|f| f["name"] == "guest_arch")
         .expect("a guest_arch host fact must be present");
     assert_eq!(guest_arch["basis"]["kind"], "asserted");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-6295 (ST-8): `--isolation none` writes no receipt at all.
+//
+// `docs/src/cli/receipt.md`'s "Where receipts come from" section states this
+// in prose ("A run that never establishes a boundary ... writes no
+// receipt"), and `aa-cli/src/commands/run.rs`'s `Boundary::Absent` arm
+// (`execute_with_adapters`) calls `spawn_and_wait` directly with no call to
+// `execution_receipt::body_for_run`/`ReceiptStore::write` anywhere on that
+// path — confirmed by reading, not assumed. This test is the empirical
+// control: a real, unconfined `aasm run` launch leaves
+// `execution-receipts/` either absent or empty, never populated with a
+// `posture: no_boundary` receipt. `ReceiptBody::posture()` CAN compute
+// `"no_boundary"` (it returns that token whenever `backend.is_none()`), but
+// nothing in this build's `aasm run` path ever constructs and seals a body
+// with a `None` backend to exercise it — `posture()`'s `no_boundary` arm is
+// reachable only from a hand-built `ReceiptBody` in a unit test, never from
+// a real `--isolation none` launch. The ticket's stated AC ("confirm
+// `--isolation none` produces `posture=no_boundary` in the receipt") does
+// not hold as written; this is the honest finding in its place.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unconfined_launch_with_isolation_none_writes_no_receipt() -> anyhow::Result<()> {
+    let proxy = TrustedProxy::start()?;
+    let gateway = GrpcGateway::start().await?;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let policy = write_test_policy(root, "aaasm6295-isolation-none")?;
+    let state_dir = root.join("state");
+
+    // `--isolation none` is also this flag's own default — passed explicitly
+    // here so the test's intent reads directly off the invocation rather
+    // than off the absence of a flag.
+    let mut cmd = build_launch(
+        root,
+        "aaasm6295-isolation-none-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &["--isolation", "none"],
+    )?;
+    let out = cmd.output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        out.status.success(),
+        "an unconfined launch of true(1) must succeed\nstderr tail:\n{}",
+        tail(&stderr, 60)
+    );
+    assert!(
+        !stderr.contains("execution receipt:"),
+        "an --isolation none launch must never announce a receipt path; stderr:\n{stderr}"
+    );
+
+    let receipts_dir = state_dir.join("execution-receipts");
+    let receipt_count = std::fs::read_dir(&receipts_dir).map(|rd| rd.count()).unwrap_or(0);
+    assert_eq!(
+        receipt_count, 0,
+        "an unconfined launch must write zero receipt files, not a receipt carrying posture=no_boundary"
+    );
+
+    Ok(())
+}
+
+/// Positive control for the test above: a launch that *does* establish a
+/// confined boundary writes exactly one receipt file in the same harness —
+/// so the previous test's absence is "this launch wrote none", not "this
+/// harness never writes any receipt at all, e.g. because of a path
+/// mistake". Same assertion shape `a_linux_native_confined_launch_...`
+/// already makes on Linux; reusing a genuinely different backend per
+/// platform there, rather than literally the same test, is unavoidable
+/// since no confinement backend compiled into this build runs on both.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_confined_launch_writes_exactly_one_receipt_as_the_control_for_isolation_none() -> anyhow::Result<()> {
+    let proxy = TrustedProxy::start()?;
+    let gateway = GrpcGateway::start().await?;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let policy = write_test_policy(root, "aaasm6295-control")?;
+    let state_dir = root.join("state");
+
+    let mut cmd = build_launch(
+        root,
+        "aaasm6295-control-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &["--isolation", "process", "--isolation-backend", "aasm-native"],
+    )?;
+    cmd.env(
+        "AA_ISOLATION_LAUNCHER",
+        proxy_trust_support::aa_isolation_launch_binary(),
+    );
+    let out = cmd.output()?;
+    assert!(out.status.success(), "the confined control launch must succeed");
+
+    let receipts_dir = state_dir.join("execution-receipts");
+    let receipt_count = std::fs::read_dir(&receipts_dir)?.count();
+    assert_eq!(receipt_count, 1, "a confined launch must write exactly one receipt");
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-6295 (ST-8): no isolation backend this build ships can establish a
+// real confined boundary on macOS. `aasm-native` and `aasm-sandlock` are
+// Linux-only (Landlock/seccomp), and `aasm-macos-vm` is a documented
+// exploratory PoC (`aa-isolation-macos-vm-poc/README.md`: "Not a crate, not
+// wired into any workspace build, not shipped in any release") whose guest
+// kernel/rootfs/helper assets are not present on this host even though
+// AAASM-6287 (hardware re-qualification) merged — that ticket re-verified
+// Virtualization.framework hardware capability, not the asset chain this
+// build needs to actually boot a guest. This is recorded as a known
+// limitation, not fixed here (out of this ticket's verification-only
+// scope): on this host, the 5-tamper-category tests below operate on a
+// receipt built through the real `body_for_run`/`ReceiptEnvelope::seal`/
+// `ReceiptStore` production pipeline (the exact functions `aasm run` calls),
+// driven by `aa_isolation::mock::MockBackend` rather than a live confined
+// process — see `aa-cli/tests/receipt_verify.rs` for those tests and their
+// own doc comment on this exact substitution.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn no_backend_compiled_into_this_build_can_confine_a_launch_on_macos() -> anyhow::Result<()> {
+    let proxy = TrustedProxy::start()?;
+    let gateway = GrpcGateway::start().await?;
+
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let policy = write_test_policy(root, "aaasm6295-macos-native-unavailable")?;
+    let state_dir = root.join("state");
+
+    let mut cmd = build_launch(
+        root,
+        "aaasm6295-macos-native-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &["--isolation", "process", "--isolation-backend", "aasm-native"],
+    )?;
+    let out = cmd.output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !out.status.success(),
+        "aasm-native is documented as a Linux-only backend; a macOS launch requesting it must refuse, \
+         not silently succeed unconfined: stderr:\n{stderr}"
+    );
+    eprintln!(
+        "AAASM-6295: aasm-native refused on macOS as expected, confirming no backend in this build \
+         confines a launch on this host — stderr tail:\n{}",
+        tail(&stderr, 20)
+    );
 
     Ok(())
 }
