@@ -366,12 +366,30 @@ async fn an_unconfined_launch_with_isolation_none_writes_no_receipt() -> anyhow:
         "an unconfined launch of true(1) must succeed\nstderr tail:\n{}",
         tail(&stderr, 60)
     );
+    // Checks for the substring, not just the exact "execution receipt:"
+    // success line — `run.rs`'s two warning branches ("the execution
+    // receipt could not be assembled"/"could not be written") also contain
+    // "execution receipt", and if the receipt code path ran at all under
+    // `--isolation none` (which it must not), it would surface through one
+    // of these three strings.
     assert!(
-        !stderr.contains("execution receipt:"),
-        "an --isolation none launch must never announce a receipt path; stderr:\n{stderr}"
+        !stderr.contains("execution receipt"),
+        "an --isolation none launch must never reach the receipt-assembly code path at all, success or \
+         failure; stderr:\n{stderr}"
     );
 
+    // Absence-of-directory, not just empty-or-absent-as-one-case: an empty
+    // `read_dir` and a directory that was never created both report 0
+    // entries above, but only "never created" is consistent with the
+    // receipt code path never running. If some other mechanism created
+    // the directory without populating it, that would be worth knowing
+    // separately from "wrote zero files".
     let receipts_dir = state_dir.join("execution-receipts");
+    assert!(
+        !receipts_dir.exists(),
+        "an --isolation none launch must never create the execution-receipts directory at all: {}",
+        receipts_dir.display()
+    );
     let receipt_count = std::fs::read_dir(&receipts_dir).map(|rd| rd.count()).unwrap_or(0);
     assert_eq!(
         receipt_count, 0,
@@ -425,53 +443,170 @@ async fn a_confined_launch_writes_exactly_one_receipt_as_the_control_for_isolati
 
 // ---------------------------------------------------------------------------
 // AAASM-6295 (ST-8): no isolation backend this build ships can establish a
-// real confined boundary on macOS. `aasm-native` and `aasm-sandlock` are
-// Linux-only (Landlock/seccomp), and `aasm-macos-vm` is a documented
-// exploratory PoC (`aa-isolation-macos-vm-poc/README.md`: "Not a crate, not
-// wired into any workspace build, not shipped in any release") whose guest
-// kernel/rootfs/helper assets are not present on this host even though
-// AAASM-6287 (hardware re-qualification) merged — that ticket re-verified
-// Virtualization.framework hardware capability, not the asset chain this
-// build needs to actually boot a guest. This is recorded as a known
-// limitation, not fixed here (out of this ticket's verification-only
-// scope): on this host, the 5-tamper-category tests below operate on a
-// receipt built through the real `body_for_run`/`ReceiptEnvelope::seal`/
-// `ReceiptStore` production pipeline (the exact functions `aasm run` calls),
-// driven by `aa_isolation::mock::MockBackend` rather than a live confined
-// process — see `aa-cli/tests/receipt_verify.rs` for those tests and their
-// own doc comment on this exact substitution.
+// real confined boundary on macOS. Confirmed empirically for all three
+// compiled-in backend ids (`sandlock`, `aasm-native`, `aasm-macos-vm`) plus
+// `--isolation auto`, below — not inferred from crate names. `aasm-macos-vm`
+// is a documented exploratory PoC (`aa-isolation-macos-vm-poc/README.md`:
+// "Not a crate, not wired into any workspace build, not shipped in any
+// release") whose guest kernel/rootfs/helper assets are not present on this
+// host even though AAASM-6287 (hardware re-qualification) merged — that
+// ticket re-verified Virtualization.framework hardware capability, not the
+// asset chain this build needs to actually boot a guest. This is recorded
+// as a known limitation, not fixed here (out of this ticket's
+// verification-only scope): on this host, the tamper-category tests in
+// `aa-cli/tests/receipt_verify.rs` operate on a receipt built through the
+// real `body_for_run`/`ReceiptEnvelope::seal`/`ReceiptStore` production
+// pipeline (the exact functions `aasm run` calls), driven by
+// `aa_isolation::mock::MockBackend` rather than a live confined process.
 // ---------------------------------------------------------------------------
 
+/// Every backend id `aa-cli/src/commands/run.rs::explicit_backend` recognizes
+/// — read directly from each crate's `backend.rs`/`lib.rs` rather than
+/// guessed, since none of those crates are a dependency of this test crate
+/// to reference by path: `aa-isolation-sandlock/src/backend.rs:56` →
+/// `"sandlock"`, `aa-isolation-native/src/backend.rs:67` → `"aasm-native"`,
+/// `aa-isolation-macos-vm/src/lib.rs:79` → `"aasm-macos-vm"`.
+///
+/// One real launch + one assertion, shared by all four
+/// `#[tokio::test]` functions below so each gets its own independent,
+/// parallel-eligible nextest result rather than one combined pass/fail —
+/// and so each launch's own gateway+proxy pair stays scoped to its own
+/// test, per this file's existing per-test fixture lifetime convention.
 #[cfg(target_os = "macos")]
-#[tokio::test(flavor = "multi_thread")]
-async fn no_backend_compiled_into_this_build_can_confine_a_launch_on_macos() -> anyhow::Result<()> {
+async fn assert_backend_refuses_on_macos(
+    backend_id: &str,
+    extra_args: &[&str],
+    must_contain: &str,
+) -> anyhow::Result<()> {
     let proxy = TrustedProxy::start()?;
     let gateway = GrpcGateway::start().await?;
 
     let tmp = tempfile::tempdir()?;
     let root = tmp.path();
-    let policy = write_test_policy(root, "aaasm6295-macos-native-unavailable")?;
+    let policy = write_test_policy(root, &format!("aaasm6295-macos-{backend_id}-unavailable"))?;
     let state_dir = root.join("state");
 
     let mut cmd = build_launch(
         root,
-        "aaasm6295-macos-native-agent",
+        &format!("aaasm6295-macos-{backend_id}-agent"),
         &policy,
         &proxy,
         gateway.endpoint(),
         &state_dir,
-        &["--isolation", "process", "--isolation-backend", "aasm-native"],
+        extra_args,
     )?;
     let out = cmd.output()?;
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !out.status.success(),
-        "aasm-native is documented as a Linux-only backend; a macOS launch requesting it must refuse, \
-         not silently succeed unconfined: stderr:\n{stderr}"
+        "backend `{backend_id}` must refuse on macOS, not silently succeed unconfined: stderr:\n{}",
+        tail(&stderr, 40)
+    );
+    // The exact, path-specific refusal string — not a looser
+    // "refusing to launch"/"cannot be selected" alternation, which would
+    // also match an unrelated failure this test must not mistake for the
+    // right one: `run.rs:5985`'s "refusing to launch ungoverned: dedicated
+    // proxy failed to start" and `run.rs:5598`'s "refusing to launch: the
+    // confined launch failed" both contain "refusing to launch" too, and
+    // the second of those would mean the backend WAS selectable and then
+    // failed for some other reason — a materially different finding this
+    // assertion must not silently accept as "refused as expected".
+    assert!(
+        stderr.contains(must_contain),
+        "backend `{backend_id}` must refuse with its own named reason (`{must_contain}`), not fail for an \
+         unrelated cause (e.g. a missing dedicated-proxy binary) that would also make `!success` true: \
+         stderr:\n{}",
+        tail(&stderr, 40)
+    );
+    let receipts_dir = state_dir.join("execution-receipts");
+    let receipt_count = std::fs::read_dir(&receipts_dir).map(|rd| rd.count()).unwrap_or(0);
+    assert_eq!(
+        receipt_count, 0,
+        "a refused launch for `{backend_id}` must write zero receipts"
     );
     eprintln!(
-        "AAASM-6295: aasm-native refused on macOS as expected, confirming no backend in this build \
-         confines a launch on this host — stderr tail:\n{}",
+        "AAASM-6295: backend `{backend_id}` refused on macOS as expected — stderr tail:\n{}",
+        tail(&stderr, 20)
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn sandlock_refuses_on_macos() -> anyhow::Result<()> {
+    assert_backend_refuses_on_macos(
+        "sandlock",
+        &["--isolation", "process", "--isolation-backend", "sandlock"],
+        "backend cannot be selected on this host",
+    )
+    .await
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn aasm_native_refuses_on_macos() -> anyhow::Result<()> {
+    assert_backend_refuses_on_macos(
+        "aasm-native",
+        &["--isolation", "process", "--isolation-backend", "aasm-native"],
+        "backend cannot be selected on this host",
+    )
+    .await
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn aasm_macos_vm_refuses_on_macos() -> anyhow::Result<()> {
+    assert_backend_refuses_on_macos(
+        "aasm-macos-vm",
+        &["--isolation", "process", "--isolation-backend", "aasm-macos-vm"],
+        "backend cannot be selected on this host",
+    )
+    .await
+}
+
+/// `--isolation auto` selects automatically among all three compiled-in
+/// backends rather than naming one — this is a materially different code
+/// path (`run.rs:2931`'s own refusal text, not `explicit_backend`'s), so it
+/// gets its own test rather than reusing the shared helper's message.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread")]
+async fn isolation_auto_finds_no_usable_backend_on_macos() -> anyhow::Result<()> {
+    let proxy = TrustedProxy::start()?;
+    let gateway = GrpcGateway::start().await?;
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let policy = write_test_policy(root, "aaasm6295-macos-auto-unavailable")?;
+    let state_dir = root.join("state");
+    let mut cmd = build_launch(
+        root,
+        "aaasm6295-macos-auto-agent",
+        &policy,
+        &proxy,
+        gateway.endpoint(),
+        &state_dir,
+        &["--isolation", "auto"],
+    )?;
+    let out = cmd.output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !out.status.success(),
+        "--isolation auto must refuse on macOS when no compiled-in backend is usable, not silently run \
+         unconfined: stderr:\n{}",
+        tail(&stderr, 40)
+    );
+    assert!(
+        stderr.contains("walked every backend this build has and none of them"),
+        "--isolation auto must refuse with its own named reason, not fail for an unrelated cause: stderr:\n{}",
+        tail(&stderr, 40)
+    );
+    let receipts_dir = state_dir.join("execution-receipts");
+    let receipt_count = std::fs::read_dir(&receipts_dir).map(|rd| rd.count()).unwrap_or(0);
+    assert_eq!(
+        receipt_count, 0,
+        "a refused --isolation auto launch must write zero receipts"
+    );
+    eprintln!(
+        "AAASM-6295: --isolation auto refused on macOS as expected — stderr tail:\n{}",
         tail(&stderr, 20)
     );
 
