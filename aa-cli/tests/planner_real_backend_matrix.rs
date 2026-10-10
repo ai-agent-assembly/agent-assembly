@@ -258,3 +258,99 @@ fn real_backend_selection_is_deterministic() {
     }
     assert_eq!(selected(&first).as_deref(), Some(aa_isolation_native::BACKEND_ID));
 }
+
+// --- One test per prevention layer ------------------------------------------
+//
+// `CapabilityReport::can_prevent` is defended in depth by THREE independent
+// layers (an unsatisfied prerequisite, the support level, and descendant
+// coverage), and a probe that watched a write succeed flips all three. A test
+// that only checks the combined verdict cannot notice one layer regressing: the
+// other two still refuse (QA found exactly that -- a single-layer mutation left
+// every combined-verdict test green). Each test below therefore asserts ONE
+// layer directly on the report a real backend produced, so a one-line
+// regression of that layer reddens its own test.
+
+fn report_of(candidate: &Candidate) -> &aa_isolation::CapabilityReport {
+    candidate
+        .capabilities
+        .report_for(FS)
+        .expect("the backend reports filesystem_write")
+}
+
+fn fs_write_candidates(observation: &str) -> Vec<Candidate> {
+    match observation {
+        "permitted" => vec![
+            sandlock(aa_isolation_sandlock::Observation::Permitted),
+            native(aa_isolation_native::Observation::Permitted),
+        ],
+        "inconclusive" => vec![
+            sandlock(aa_isolation_sandlock::Observation::Inconclusive { detail: "qa".into() }),
+            native(aa_isolation_native::Observation::Inconclusive { detail: "qa".into() }),
+        ],
+        _ => vec![
+            sandlock(aa_isolation_sandlock::Observation::Denied),
+            native(aa_isolation_native::Observation::Denied),
+        ],
+    }
+}
+
+/// Layer 1: a probe that did not see a denial leaves the prerequisite
+/// unsatisfied, whatever the other layers say. Control: a `Denied` probe leaves
+/// none unsatisfied.
+#[test]
+fn layer_prerequisite_is_unsatisfied_unless_the_probe_saw_a_denial() {
+    for c in fs_write_candidates("denied") {
+        assert!(report_of(&c).unsatisfied_prerequisite().is_none(), "{}", c.identity.id);
+    }
+    for observation in ["permitted", "inconclusive"] {
+        for c in fs_write_candidates(observation) {
+            assert!(
+                report_of(&c).unsatisfied_prerequisite().is_some(),
+                "{} / {observation}: a probe that did not see a denial must leave a prerequisite unsatisfied",
+                c.identity.id
+            );
+        }
+    }
+}
+
+/// Layer 2: a probe that watched the action succeed makes the domain
+/// `Unsupported`; one that merely could not tell does not (it is the other
+/// layers' job). Control: `Denied` is available.
+#[test]
+fn layer_support_is_unsupported_when_the_action_was_seen_to_succeed() {
+    for c in fs_write_candidates("denied") {
+        assert!(report_of(&c).support().is_available(), "{}", c.identity.id);
+    }
+    for c in fs_write_candidates("permitted") {
+        assert!(
+            matches!(report_of(&c).support(), aa_isolation::SupportLevel::Unsupported { .. }),
+            "{}: a write watched succeeding must be reported Unsupported, was {:?}",
+            c.identity.id,
+            report_of(&c).support()
+        );
+    }
+}
+
+/// Layer 3: descendant coverage is `ProcessTree` only when a grandchild was
+/// observed denied. Control: `Denied` reports `ProcessTree`.
+#[test]
+fn layer_descendant_coverage_is_process_tree_only_when_a_grandchild_was_denied() {
+    for c in fs_write_candidates("denied") {
+        assert_eq!(
+            report_of(&c).descendants(),
+            aa_isolation::DescendantCoverage::ProcessTree,
+            "{}",
+            c.identity.id
+        );
+    }
+    for observation in ["permitted", "inconclusive"] {
+        for c in fs_write_candidates(observation) {
+            assert_ne!(
+                report_of(&c).descendants(),
+                aa_isolation::DescendantCoverage::ProcessTree,
+                "{} / {observation}: process-tree coverage must not be claimed without a denial",
+                c.identity.id
+            );
+        }
+    }
+}
