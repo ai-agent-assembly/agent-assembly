@@ -63,10 +63,11 @@
 
 use std::time::SystemTime;
 
-use crate::attenuation::{Ancestry, ParentAuthority};
+use crate::attenuation::{Ancestry, ChainFault, ParentAuthority};
 use crate::capability::CapabilityDomain;
 use crate::lease::{
-    limits_narrower_or_equal, revocation_generation, CapabilityLease, DelegationRule, LeaseInvalid, ScopeOrdering,
+    limits_narrower_or_equal, revocation_generation, CapabilityLease, DelegationRule, LeaseId, LeaseInvalid,
+    ScopeOrdering,
 };
 use crate::spec::{ExecutionSpec, IdentityRef, RequirementScope};
 
@@ -341,17 +342,23 @@ pub enum AuthorityRefusal {
     /// match the parent lease's current revocation generation — the
     /// concurrent-revocation catch on the read side.
     ///
-    /// AAASM-6281/D2 added a direct check — `check_attenuation` now calls
-    /// `parent_lease.validate_at(now)` on the [`ParentAuthority`] snapshot
-    /// before ever reaching this comparison, so a parent snapshot recorded
-    /// as [`crate::lease::RevocationState::Revoked`] is now caught earlier,
-    /// as [`AuthorityRefusal::LeaseInvalid`]. This variant stays reachable
-    /// for the case `validate_at` cannot see: [`crate::lease::RevocationState::Active`]
-    /// itself carries a generation, which a reaffirmation can advance
-    /// without ever transitioning through `Revoked` — a child derived at an
-    /// earlier generation, then gated against a later-reaffirmed-but-still-
-    /// `Active` parent snapshot, is still stale even though the parent
-    /// lease remains currently valid.
+    /// Neither this variant nor the snapshot check compares anything against
+    /// the live ledger: `check_attenuation` validates the parent lease value
+    /// held in the [`ParentAuthority`] snapshot at `now`
+    /// (AAASM-6281/D2), so a snapshot already recorded as
+    /// [`crate::lease::RevocationState::Revoked`] is caught earlier, as
+    /// [`AuthorityRefusal::LeaseInvalid`]. A revocation recorded only in the
+    /// ledger after the snapshot was taken is caught by the ledger chain check
+    /// (AAASM-6307), as [`AuthorityRefusal::RevokedInLedger`], before this
+    /// comparison is reached.
+    ///
+    /// What remains for this variant is the provenance stamp against the
+    /// *snapshot's* generation: [`crate::lease::RevocationState::Active`]
+    /// itself carries a generation, which a reaffirmation can advance without
+    /// ever transitioning through `Revoked` — a child derived at an earlier
+    /// generation, then gated against a later-reaffirmed-but-still-`Active`
+    /// parent snapshot, is still stale even though the parent lease remains
+    /// currently valid.
     StaleParentGeneration {
         /// The domain whose provenance generation is stale.
         domain: CapabilityDomain,
@@ -376,6 +383,41 @@ pub enum AuthorityRefusal {
         domain: CapabilityDomain,
         /// The subject the lease actually names.
         lease_subject: String,
+    },
+    /// The [`DelegationLedger`](crate::attenuation::DelegationLedger) behind
+    /// the resolved parent records `lease` — the parent's lease for `domain`,
+    /// an ancestor above it, or the child's own lease — as revoked
+    /// (AAASM-6307).
+    ///
+    /// Distinct from [`LeaseInvalid`](Self::LeaseInvalid): that variant is the
+    /// lease *value* in hand being revoked, whereas this one is the live
+    /// ledger disagreeing with a snapshot that still reads as active.
+    /// Observed under the ledger lock at gate time; no claim is made about a
+    /// revocation recorded afterwards.
+    RevokedInLedger {
+        /// The domain whose chain is revoked.
+        domain: CapabilityDomain,
+        /// The revoked lease: the one the chain walk stopped at.
+        lease: LeaseId,
+        /// Why, as recorded by the revocation.
+        reason: String,
+    },
+    /// The ledger behind the resolved parent cannot verify the chain above
+    /// the parent's lease for `domain` (AAASM-6307): `lease` is unknown to it
+    /// or has no recorded parent edge.
+    ///
+    /// Fails closed. A parent built from a lease that never went through
+    /// [`DelegationLedger::derive_child`](crate::attenuation::DelegationLedger::derive_child)
+    /// or `register_parent` on the supplied ledger — a ledger with no record of
+    /// the lease — lands here instead of being read as "nothing above it is
+    /// revoked". It does not prove the ledger is the one that issued the lease:
+    /// the caller chooses the ledger, and a provenance-free lease can be
+    /// registered as a root in any ledger.
+    LedgerUnverifiable {
+        /// The domain whose chain could not be verified.
+        domain: CapabilityDomain,
+        /// The first lease on the chain that could not be verified.
+        lease: LeaseId,
     },
     /// A resolved parent (`Ancestry::Parent`) is in play, but the child's own
     /// spec carries no lease at all for `domain` (AAASM-6282/D4).
@@ -416,6 +458,8 @@ impl AuthorityRefusal {
             | Self::StaleParentGeneration { domain }
             | Self::EscalationNotIndependentlyApproved { domain }
             | Self::LeaseSubjectMismatch { domain, .. }
+            | Self::RevokedInLedger { domain, .. }
+            | Self::LedgerUnverifiable { domain, .. }
             | Self::ChildMustBeLeaseAware { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
             Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
@@ -504,6 +548,19 @@ impl core::fmt::Display for AuthorityRefusal {
                 write!(
                     f,
                     "the lease for domain `{domain}` names subject `{lease_subject}`, not this launch's own identity"
+                )
+            }
+            Self::RevokedInLedger { domain, lease, reason } => {
+                write!(
+                    f,
+                    "lease `{lease}` in the delegation chain for domain `{domain}` is revoked: {reason}"
+                )
+            }
+            Self::LedgerUnverifiable { domain, lease } => {
+                write!(
+                    f,
+                    "the delegation chain for domain `{domain}` cannot be verified: lease `{lease}` is unknown \
+                     to the ledger or has no recorded parent"
                 )
             }
             Self::ChildMustBeLeaseAware { domain } => {
@@ -741,18 +798,40 @@ fn check_attenuation(
     let parent_lease = parent.lease_for(domain);
 
     // AAASM-6281/D2: the parent's own lease must itself be currently valid —
-    // not merely recorded — at `now`. Catches an expired or not-yet-active
-    // parent lease independent of any provenance-generation check below.
-    // Documented, pinned gap: this is a snapshot check against the parent
-    // lease value captured in `ParentAuthority` at the moment it was built,
-    // not a live re-read — a revocation recorded *after* that snapshot is
-    // only caught via `DelegationProvenance::parent_generation` against
-    // `DelegationLedger`'s live generation (the `StaleParentGeneration`
-    // refusal below), never by this check.
+    // not merely recorded — at `now`. This is a snapshot check against the
+    // lease value captured in `ParentAuthority`; it cannot see a revocation
+    // recorded after that value was taken, which is what the ledger check
+    // below is for.
     if let Some(parent_lease) = parent_lease {
         if let Err(reason) = parent_lease.validate_at(now) {
             return Err(AuthorityRefusal::LeaseInvalid { domain, reason });
         }
+
+        // AAASM-6307: the parent's lease and every ancestor above it must be
+        // known, linked and active in the live ledger. Placed before the
+        // violation/escalation branch so an independently-approved
+        // escalation cannot launder a revoked or unverifiable chain, and
+        // fails closed: a lease the ledger cannot place is refused, never
+        // read as "nothing above it is revoked". The result is what the
+        // ledger held under its lock at this call; no claim is made about a
+        // revocation recorded a moment later.
+        if let Err(fault) = parent.ledger().verify_chain(parent_lease.id()) {
+            return Err(match fault {
+                ChainFault::Revoked { lease, reason } => AuthorityRefusal::RevokedInLedger { domain, lease, reason },
+                ChainFault::Unverifiable { lease } => AuthorityRefusal::LedgerUnverifiable { domain, lease },
+            });
+        }
+    }
+    // A child lease the ledger knows and has revoked is refused even when its
+    // parent chain is intact. A child the ledger has never seen (hand-built,
+    // or independently issued) is not an error here: absence of the child is
+    // not absence of authority above it.
+    if let Some(reason) = parent.ledger().revoked_reason(child_lease.id()) {
+        return Err(AuthorityRefusal::RevokedInLedger {
+            domain,
+            lease: child_lease.id().clone(),
+            reason,
+        });
     }
 
     // The first bullet a child's claim actually violates, if any. `None`
@@ -843,6 +922,7 @@ mod tests {
     };
     use crate::lease::{LeaseBasis, LeaseId, RevocationState};
     use crate::spec::{ControlRequirement, IdentityRef};
+    use std::sync::Arc;
     use std::time::Duration;
 
     fn t(secs: u64) -> SystemTime {
@@ -1162,7 +1242,7 @@ mod tests {
 
     mod attenuation_tests {
         use super::*;
-        use crate::attenuation::ParentAuthority;
+        use crate::attenuation::{DelegationLedger, ParentAuthority};
         use crate::lease::{ChildLeaseRequest, DelegationRule, InheritanceMode};
         use crate::scope_order::PathPrefixOrder;
 
@@ -1178,9 +1258,19 @@ mod tests {
         /// `/workspace`, already gated so a real [`AuthorityWitness`] backs
         /// the returned [`ParentAuthority`].
         fn gated_parent(lease: CapabilityLease) -> ParentAuthority {
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger
+                .register_parent(&lease)
+                .expect("a provenance-free parent lease registers as a root");
+            gated_parent_in(ledger, lease)
+        }
+
+        /// As [`gated_parent`], but against a caller-supplied ledger so a test
+        /// can derive the next generation through the same ledger.
+        fn gated_parent_in(ledger: Arc<DelegationLedger>, lease: CapabilityLease) -> ParentAuthority {
             let spec = ExecutionSpec::new("echo", parent_identity()).with_lease(lease);
             let witness = authority_gate(&spec, &Ancestry::Root, t(1_500)).expect("parent must gate cleanly");
-            ParentAuthority::from_gated_spec(&spec, &witness)
+            ParentAuthority::from_gated_spec(&spec, &witness, ledger)
         }
 
         fn parent_fs_lease(scope: RequirementScope) -> CapabilityLease {
@@ -1626,9 +1716,19 @@ mod tests {
                 ExecutionSpec::new("echo", parent_identity()).with_lease(not_yet_active_parent_lease);
             let adversarial_witness = authority_gate(&adversarial_parent_spec, &Ancestry::Root, t(3_500))
                 .expect("parent's own launch must be authorized at a `now` inside its own window");
+            let adversarial_ledger = Arc::new(DelegationLedger::new());
+            adversarial_ledger
+                .register_parent(
+                    adversarial_parent_spec
+                        .leases()
+                        .first()
+                        .expect("spec carries the lease"),
+                )
+                .expect("a provenance-free lease registers as a root");
             let adversarial_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
                 &adversarial_parent_spec,
                 &adversarial_witness,
+                adversarial_ledger,
             )));
             assert_eq!(
                 authority_gate(&child_spec, &adversarial_ancestry, t(1_500)),
@@ -1671,12 +1771,17 @@ mod tests {
         fn a_grandchild_cannot_recover_authority_removed_at_the_child_level() {
             let grandparent_lease =
                 parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
-            let grandparent = gated_parent(grandparent_lease.clone());
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger
+                .register_parent(&grandparent_lease)
+                .expect("a provenance-free lease registers as a root");
+            let grandparent = gated_parent_in(Arc::clone(&ledger), grandparent_lease.clone());
             let grandparent_ancestry = Ancestry::Parent(Box::new(grandparent));
 
             // Child attenuates to `/workspace/a`.
-            let child_lease = grandparent_lease
+            let child_lease = ledger
                 .derive_child(
+                    &grandparent_lease,
                     ChildLeaseRequest {
                         child_id: crate::lease::LeaseId::new("child-fs-lease"),
                         child_subject: child_identity(),
@@ -1686,7 +1791,6 @@ mod tests {
                         child_delegation: DelegationRule::DelegableWithNarrowerScope,
                         child_limits: None,
                     },
-                    &PathPrefixOrder,
                     t(1_100),
                 )
                 .expect("a narrower child scope must derive");
@@ -1696,7 +1800,7 @@ mod tests {
             );
             let child_witness = authority_gate(&child_spec, &grandparent_ancestry, t(1_500))
                 .expect("child must gate against grandparent");
-            let child_as_parent = ParentAuthority::from_gated_spec(&child_spec, &child_witness);
+            let child_as_parent = ParentAuthority::from_gated_spec(&child_spec, &child_witness, Arc::clone(&ledger));
             let child_ancestry = Ancestry::Parent(Box::new(child_as_parent));
 
             // Lineage names the whole ancestor chain, outermost first — both
@@ -1736,8 +1840,9 @@ mod tests {
             // Control (i): a grandchild asking for a path still inside the
             // child's own narrower grant succeeds — the chain is not
             // refuse-everything.
-            let inbound_grandchild_lease = child_lease
+            let inbound_grandchild_lease = ledger
                 .derive_child(
+                    &child_lease,
                     ChildLeaseRequest {
                         child_id: crate::lease::LeaseId::new("grandchild-fs-lease-ok"),
                         child_subject: grandchild_identity.clone(),
@@ -1747,7 +1852,6 @@ mod tests {
                         child_delegation: DelegationRule::NotDelegable,
                         child_limits: None,
                     },
-                    &PathPrefixOrder,
                     t(1_200),
                 )
                 .expect("a narrower grandchild scope must derive");

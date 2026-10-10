@@ -30,13 +30,14 @@
 //! sibling lane.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use aa_isolation::{
     authority_gate, permit_only_selector, Ancestry, AuthorityRefusal, CapabilityDomain, CapabilityLease,
-    ChildLeaseRequest, ControlRequirement, DelegationRule, DescendantRequirement, EnforcementEvidence, EvidenceKind,
-    ExecutionHandle, ExecutionSpec, IdentityRef, InheritanceMode, IsolationBackend, LeaseBasis, LeaseId,
-    ParentAuthority, PathPrefixOrder, RequirementScope, SupportLevel,
+    ChildLeaseRequest, ControlRequirement, DelegationLedger, DelegationRule, DescendantRequirement,
+    EnforcementEvidence, EvidenceKind, ExecutionHandle, ExecutionSpec, IdentityRef, InheritanceMode, IsolationBackend,
+    LeaseBasis, LeaseId, ParentAuthority, RequirementScope, SupportLevel,
 };
 use aa_isolation_native::{CompletedRun, NativeBackend, REQUIRED_ABI_VERSION};
 
@@ -1350,15 +1351,27 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
         .with_lease(parent_read_lease.clone());
     let parent_witness =
         authority_gate(&parent_spec, &Ancestry::Root, now).expect("the parent's own lease must gate cleanly");
+    // The parent's leases are tracked in a live ledger so the gate can verify
+    // each child lease's chain (AAASM-6307); the children below are derived
+    // through that same ledger.
+    let ledger = Arc::new(DelegationLedger::new());
+    ledger
+        .register_parent(&parent_lease)
+        .expect("a provenance-free parent lease registers as a root");
+    ledger
+        .register_parent(&parent_read_lease)
+        .expect("a provenance-free parent lease registers as a root");
     let ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
         &parent_spec,
         &parent_witness,
+        Arc::clone(&ledger),
     )));
 
     // The child: attenuated to `permitted/a` only.
     let child_identity = IdentityRef::root("sub-agent").with_ancestor("agent-under-test");
-    let child_lease = parent_lease
+    let child_lease = ledger
         .derive_child(
+            &parent_lease,
             ChildLeaseRequest {
                 child_id: LeaseId::new("attenuation-child-lease"),
                 child_subject: child_identity.clone(),
@@ -1368,13 +1381,13 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
                 child_delegation: DelegationRule::NotDelegable,
                 child_limits: None,
             },
-            &PathPrefixOrder,
             now,
         )
         .expect("a narrower child scope over a subdirectory must derive");
 
-    let child_read_lease = parent_read_lease
+    let child_read_lease = ledger
         .derive_child(
+            &parent_read_lease,
             ChildLeaseRequest {
                 child_id: LeaseId::new("attenuation-child-read-lease"),
                 child_subject: child_identity.clone(),
@@ -1384,7 +1397,6 @@ fn a_grandchild_of_an_attenuated_sub_agent_cannot_write_outside_the_childs_narro
                 child_delegation: DelegationRule::NotDelegable,
                 child_limits: None,
             },
-            &PathPrefixOrder,
             now,
         )
         .expect("the read baseline at an identical scope must derive under InheritanceMode::Same");

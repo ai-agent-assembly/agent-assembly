@@ -21,13 +21,16 @@
 //!   and the **child's** own witness, never from the grandparent's, so the
 //!   ceiling a grandchild is compared against can only ever have shrunk on
 //!   the way down.
-//! * [`DelegationLedger`] serializes the one piece of shared mutable state a
-//!   concurrent derivation touches — a parent lease's revocation generation —
-//!   so that a revocation racing a derivation can never be observed as "never
-//!   happened" by the child it produces.
+//! * [`DelegationLedger`] serializes the shared mutable state a concurrent
+//!   derivation touches — each lease's revocation state and the parent edge
+//!   it was derived through — so that a revocation racing a derivation can
+//!   never be observed as "never happened" by the child it produces, and so
+//!   that revoking a lease reaches every descendant, not only its direct
+//!   children (AAASM-6307). [`ParentAuthority`] carries the live ledger so
+//!   the gate can re-read it instead of trusting a snapshot.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::authority::{AuthorityWitness, EffectiveAuthority};
@@ -76,16 +79,24 @@ pub enum Ancestry {
 /// spec whose authority was never actually checked, and cannot backdate one
 /// for a spec that has since changed — a fresh witness is required every
 /// time.
+///
+/// It also carries the live [`DelegationLedger`] its leases were issued
+/// through (AAASM-6307). The lease value captured here is a snapshot, so on
+/// its own it cannot show a revocation recorded after it was taken;
+/// `authority_gate` therefore re-reads the ledger for the parent lease and
+/// every ancestor above it each time it gates a child against this value.
 #[derive(Debug, Clone)]
 pub struct ParentAuthority {
     identity: IdentityRef,
     authority: EffectiveAuthority,
     credentials: CredentialPosture,
+    ledger: Arc<DelegationLedger>,
 }
 
 impl ParentAuthority {
     /// Build the parent authority record from a spec that has already passed
-    /// [`crate::authority::authority_gate`], proven by `witness`.
+    /// [`crate::authority::authority_gate`], proven by `witness`, together
+    /// with the `ledger` its leases are tracked in.
     ///
     /// `witness` is never inspected — its only role is that a caller cannot
     /// have one without having called the gate, which is the whole proof
@@ -94,12 +105,23 @@ impl ParentAuthority {
     /// rebuilding it here cannot fail in practice; a hypothetical `Err` would
     /// mean `spec` was mutated between gating and this call, which no caller
     /// in this codebase does.
-    pub fn from_gated_spec(spec: &ExecutionSpec, _witness: &AuthorityWitness) -> Self {
+    ///
+    /// A parent lease the `ledger` does not know, or whose chain it cannot
+    /// verify, is not an error here: it makes every child gated against this
+    /// value fail closed instead (see
+    /// [`AuthorityRefusal::LedgerUnverifiable`](crate::authority::AuthorityRefusal::LedgerUnverifiable)).
+    pub fn from_gated_spec(spec: &ExecutionSpec, _witness: &AuthorityWitness, ledger: Arc<DelegationLedger>) -> Self {
         Self {
             identity: spec.identity().clone(),
             authority: crate::authority::effective_authority_for_report(spec),
             credentials: spec.credentials().clone(),
+            ledger,
         }
+    }
+
+    /// The live ledger the gate re-reads revocation state from.
+    pub(crate) fn ledger(&self) -> &DelegationLedger {
+        &self.ledger
     }
 
     /// The parent's own identity. Asserted, not verified — see [`IdentityRef`].
@@ -150,11 +172,19 @@ enum Link {
 
 /// Why a chain walk could not confirm every hop active.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ChainFault {
+pub(crate) enum ChainFault {
     /// `lease` — the lease asked about or one of its ancestors — is revoked.
-    Revoked { lease: LeaseId, reason: String },
+    Revoked {
+        /// The revoked lease.
+        lease: LeaseId,
+        /// The recorded reason.
+        reason: String,
+    },
     /// `lease` is unknown to the ledger or has no recorded parent edge.
-    Unverifiable { lease: LeaseId },
+    Unverifiable {
+        /// The lease that could not be verified.
+        lease: LeaseId,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +279,26 @@ impl DelegationLedger {
                 state,
                 link: Link::Unlinked,
             });
+    }
+
+    /// Whether `lease` and every ancestor above it are known, linked and
+    /// active, observed under the ledger lock at the moment of the call.
+    ///
+    /// Observation only: nothing here claims a revocation recorded a moment
+    /// later is seen, and this crate makes no revocation-latency claim.
+    pub(crate) fn verify_chain(&self, lease: &LeaseId) -> Result<(), ChainFault> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        Self::verify_chain_locked(&entries, lease)
+    }
+
+    /// The recorded reason when `lease` itself — not its ancestors — is
+    /// revoked in this ledger; `None` for an unknown or active lease.
+    pub(crate) fn revoked_reason(&self, lease: &LeaseId) -> Option<String> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        match &entries.get(lease)?.state {
+            RevocationState::Revoked { reason, .. } => Some(reason.clone()),
+            RevocationState::Active { .. } => None,
+        }
     }
 
     /// Walk from `start` to its root, requiring every hop to be known,
@@ -408,7 +458,8 @@ mod tests {
     fn parent_authority_requires_a_real_witness_from_the_gate() {
         let spec = ExecutionSpec::new("echo", IdentityRef::root("parent-agent")).with_lease(parent_lease());
         let witness = authority_gate(&spec, &Ancestry::Root, t(1_500)).expect("root launch with its own lease gates");
-        let parent = ParentAuthority::from_gated_spec(&spec, &witness);
+        let ledger = Arc::new(DelegationLedger::new());
+        let parent = ParentAuthority::from_gated_spec(&spec, &witness, ledger);
         assert_eq!(parent.identity().agent_id, "parent-agent");
         assert!(parent.lease_for(CapabilityDomain::FilesystemRead).is_some());
     }
@@ -640,6 +691,7 @@ mod tests {
         let stale_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
             &parent_spec,
             &parent_witness,
+            Arc::clone(&ledger),
         )));
 
         for child in &oks {
