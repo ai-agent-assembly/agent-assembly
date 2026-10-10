@@ -315,4 +315,41 @@ mod tests {
         assert!(matches!(host_arch.basis, FactBasis::Unmeasured { .. }));
         assert!(host_arch.value.is_none());
     }
+
+    /// AAASM-6295: the real `aasm-macos-vm` backend's `kernel_release` fact
+    /// must be `Unmeasured`, never a fabricated host or guest kernel version
+    /// — the guest kernel ran the confined process, not the host's, and this
+    /// build never probes the guest's version (see this module's `facts`
+    /// doc comment on the `GuestKernel` arm). `MacosVmBackend::discover()`
+    /// only inspects env-var configuration and never starts a VM, so this
+    /// exercises the real backend crate's `capabilities()`/`platform_boundary()`
+    /// logic — not `MockBackend` — without requiring the VM substrate to be
+    /// present on this host. Degraded-state truthfulness check for golden
+    /// journey J87/J92 (AAASM-6295): confirms this build never claims a
+    /// measured kernel release for a guest-kernel boundary, independent of
+    /// whether the VM assets (`AA_ISOLATION_MACOS_VM_HELPER`/`_KERNEL`/`_ROOTFS`)
+    /// are configured on this host.
+    #[test]
+    fn a_real_macos_vm_backend_reports_kernel_release_unmeasured_not_fabricated() {
+        let backend = aa_isolation_macos_vm::MacosVmBackend::discover();
+        let facts = facts(&backend);
+
+        let boundary = facts.iter().find(|f| f.name == FactName::PlatformBoundary).unwrap();
+        assert_eq!(
+            boundary.value.as_ref().and_then(ReceiptText::as_str),
+            Some("guest_kernel"),
+            "aasm-macos-vm must report a GuestKernel platform boundary: {boundary:?}"
+        );
+
+        let kernel_release = facts.iter().find(|f| f.name == FactName::KernelRelease).unwrap();
+        assert!(
+            matches!(kernel_release.basis, FactBasis::Unmeasured { .. }),
+            "a guest-kernel backend must never report kernel_release as measured or asserted — the \
+             host's own kernel never ran the confined process: {kernel_release:?}"
+        );
+        assert!(
+            kernel_release.value.is_none(),
+            "an unmeasured kernel_release must carry no value: {kernel_release:?}"
+        );
+    }
 }
