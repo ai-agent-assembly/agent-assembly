@@ -190,8 +190,8 @@ is no silent degrade.
 
 **Fix.** On Linux, install the backend and put it on `PATH`, or set
 `AA_SANDLOCK_BIN` to its path. On Apple Silicon macOS, pass
-`--isolation-backend aasm-macos-vm` explicitly (not selected by `auto`) and
-set `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` — see
+`--isolation-backend aasm-macos-vm` (`auto` considers it last, after the Linux
+backends) and set `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` — see
 [Execution isolation](../security/execution-isolation.md#platform-and-backend-support-matrix)
 for the full prerequisites and its named limitations. On Intel macOS or
 Windows there is no fix; no backend targets those platforms today. If you
@@ -220,4 +220,4 @@ than requested. Check the per-capability table in `aasm run --dry-run`'s
 | `gateway status` "not running" | Local mode ≠ legacy gRPC; use `status` / `/healthz` |
 | Empty dashboard tables | `--mode local` serves no data routes — run `aa-api-server` |
 | `validate` warnings | Unknown keys ignored — move into a supported section |
-| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? Apple Silicon macOS needs `--isolation-backend aasm-macos-vm` explicitly. Intel macOS/Windows have no backend at all |
+| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? Apple Silicon macOS needs the `AA_ISOLATION_MACOS_VM_*` variables set (`auto` considers `aasm-macos-vm` last; `--isolation-backend aasm-macos-vm` pins it). Intel macOS/Windows have no backend at all |

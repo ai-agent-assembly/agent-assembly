@@ -190,13 +190,14 @@ in Core ADR 035 for the underlying record. The third, `aasm-macos-vm`
 targets macOS by booting a confined Linux guest via Virtualization.framework
 rather than confining the host process directly — a different platform
 boundary from the other two, not a competing implementation of the same one;
-it has no default-selection relationship with them (see [macOS VM runtime
-prerequisites](#macos-vm-runtime-prerequisites) below).
+it is the last candidate `--isolation auto` considers, after the two Linux
+backends (see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites)
+below).
 
 | Platform | Process-level execution isolation | Notes |
 |---|---|---|
 | **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both Linux backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
-| **Linux (aarch64)** | ✅ Sandlock fully available. AASM-native: filesystem confinement only — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
+| **Linux (aarch64)** | ⚠️ **Not measured.** No CI lane or recorded run exercises either backend on aarch64 (the Linux isolation lanes run on `ubuntu-latest` x86_64 and install only Sandlock's x86_64 release asset). The design is that AASM-native offers filesystem confinement only here — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
 | **macOS (Apple Silicon)** | ✅ Available via `aasm-macos-vm`, subject to the runtime probe below — filesystem read/write confinement only, with named platform limitations. | Guest-boundary confinement via Virtualization.framework, not a host-process mechanism — see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites). |
 | **macOS (Intel)** | ❌ **Not supported.** `aasm-macos-vm` requires Apple Silicon. | Not attempted; the guest kernel and helper are built arm64-only through this Epic. |
 | **Windows** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets Windows. |
@@ -292,6 +293,10 @@ backends above.
 
 **Stated plainly, this backend's real limitations:**
 
+- **Maturity: Experimental** (Core ADR 035 §4: implemented, not validated for
+  production use). Maturity is separate from the capability rows and from
+  runtime availability: it does not mean installed or selectable, and a
+  missing guest kernel/rootfs/helper still reports `Unavailable`.
 - **Apple Silicon only.** No Intel build exists through this Epic.
 - **No general toolchain inside the guest.** Only `/usr/local/bin/busybox`
   (`sh`/`cat`/`printf`) and `/usr/local/bin/aa-isolation-launch` are present —
@@ -317,9 +322,10 @@ backends above.
   `#[ignore]`d, run explicitly), not by an automated gate. Self-hosted
   macOS CI to close this gap is tracked under AAASM-5814.
 
-**Selecting it explicitly:** pass `--isolation-backend aasm-macos-vm` — it has
-no default-selection relationship with the Linux backends and is only reached
-on a macOS host in the first place.
+**Selecting it:** `--isolation auto` considers it after `sandlock` and
+`aasm-native` (on a macOS host both decline, so the walk reaches it and
+refuses naming it until its three `AA_ISOLATION_MACOS_VM_*` variables are
+set); pass `--isolation-backend aasm-macos-vm` to pin it instead.
 
 ## Compatibility and performance relative to Sandlock
 
@@ -370,9 +376,14 @@ own `CapabilityReport`, not asserted):
 | `Syscall` | **Unsupported** | supported |
 | `NetworkEgress` | supported | **Unsupported** |
 | `ProcessCreation` | supported/partial | **Unsupported** |
-| `Resource` | supported/partial | **Unsupported** |
+| `Resource` | supported/partial | partial (file-descriptor and file-size ceilings only) |
 | `Ipc` | partial | **Unsupported** |
 | `Credential` | supported/partial | **Unsupported** |
+
+The `Resource` cell here and the "four of the eight domains" count below come
+from the backends' capability-discovery code, checked by a test against a
+synthetic all-denied probe. They are not a measured kernel run, and the
+`supported`/`partial` wording is prose that no test guards.
 
 Neither backend's supported-domain set contains the other's, so
 AAASM-5805's pre-registered [default-backend selection rule](https://github.com/ai-agent-assembly/agent-assembly/blob/main/benchmarks/isolation/METHODOLOGY.md#default-backend-selection-rule-aaasm-5805)
@@ -384,10 +395,11 @@ every measured dimension and strictly better on several.
 **`aasm run --isolation auto` does not use that recommendation as a fixed
 default.** The mechanical rule optimizes for measured performance alone; it
 has no way to weigh what a faster backend stops enforcing. AASM-native
-enforces only three of the eight domains above (`FilesystemRead`,
-`FilesystemWrite`, `Syscall`) — it enforces nothing for network egress,
-process creation, resource ceilings, IPC, or credential isolation, five
-domains Sandlock does at least partially cover. Unconditionally preferring
+enforces four of the eight domains above (`FilesystemRead`,
+`FilesystemWrite`, `Syscall`, and `Resource` only for file-descriptor and
+file-size ceilings) — it enforces nothing for network egress, process
+creation, IPC, or credential isolation, four domains Sandlock does at least
+partially cover. Unconditionally preferring
 AASM-native to chase the performance win would silently reduce what every
 existing `--isolation auto` policy actually gets enforced, for callers who
 did not ask for that trade-off.
@@ -569,8 +581,9 @@ with process-level isolation required.
 
 3. To require *some* isolation without committing to `process` specifically —
    for example on a fleet where a future backend class might apply — use
-   `--isolation auto` instead. Today it resolves to `process`, and it refuses
-   under the same conditions.
+   `--isolation auto` instead. It selects by capability across the compiled-in
+   backends rather than defaulting to `process`, and it refuses under the same
+   conditions.
 
 For the full flag reference, see the [`aasm run` CLI reference](../cli/run.md).
 For the underlying architectural decision, see
