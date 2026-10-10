@@ -376,6 +376,11 @@ own `CapabilityReport`, not asserted):
 | `Ipc` | partial | **Unsupported** |
 | `Credential` | supported/partial | **Unsupported** |
 
+The `Resource` cell here and the "four of the eight domains" count below come
+from the backends' capability-discovery code, checked by a test against a
+synthetic all-denied probe. They are not a measured kernel run, and the
+`supported`/`partial` wording is prose that no test guards.
+
 Neither backend's supported-domain set contains the other's, so
 AAASM-5805's pre-registered [default-backend selection rule](https://github.com/ai-agent-assembly/agent-assembly/blob/main/benchmarks/isolation/METHODOLOGY.md#default-backend-selection-rule-aaasm-5805)
 resolves on performance alone, mechanically: applying it to the measured
