@@ -463,6 +463,52 @@ mod tests {
         HostFacts::for_test("/nonexistent/aa-isolation-launch", AbiFloor::Met { measured: 5 })
     }
 
+    /// The shipped "Choosing between the two backends" table is a claim about
+    /// what this backend reports (AAASM-6301). Parsing it here, rather than
+    /// restating it, is what makes a capability change that leaves the doc
+    /// saying the old thing fail instead of reaching an operator. Only
+    /// available-vs-`Unsupported` is compared: the doc's `supported`/`partial`
+    /// wording is prose, `Unsupported` is the one cell the contract defines.
+    #[test]
+    fn the_documented_support_matrix_matches_what_discover_reports() {
+        const DOC: &str = include_str!("../../docs/src/security/execution-isolation.md");
+        const NATIVE_COLUMN: usize = 2;
+
+        let rows: Vec<Vec<&str>> = DOC
+            .lines()
+            .skip_while(|l| !l.starts_with("| Capability domain | Sandlock | AASM-native |"))
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| l.split('|').map(str::trim).collect())
+            .collect();
+        assert!(
+            rows.len() >= 8,
+            "the support-matrix table was not found or shrank: {rows:?}"
+        );
+
+        let capabilities = discover(&facts(), &denied_everything());
+        for cells in rows {
+            let documented_domain = cells[1].trim_matches('`');
+            let documented_available = !cells[NATIVE_COLUMN + 1].contains("Unsupported");
+            let report = CapabilityDomain::ALL
+                .iter()
+                .find(|d| format!("{d:?}") == documented_domain)
+                .map(|d| capabilities.report_for(*d).expect("every domain is reported"))
+                .unwrap_or_else(|| panic!("the doc names a domain `{documented_domain}` the contract does not have"));
+            assert_eq!(
+                report.support().is_available(),
+                documented_available,
+                "docs say {documented_domain} is {} for aasm-native; discover() reports {:?}",
+                if documented_available {
+                    "supported"
+                } else {
+                    "Unsupported"
+                },
+                report.support()
+            );
+        }
+    }
+
     /// The load-bearing property of the module. A domain whose probe was
     /// inconclusive must not be able to prevent anything, however complete the
     /// rest of its report looks.
