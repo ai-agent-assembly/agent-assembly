@@ -390,7 +390,9 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_characterizes
     // provenance carries the root's actual revocation generation rather
     // than a hand-asserted one.
     let ledger = DelegationLedger::new();
-    ledger.register_parent(&root_lease);
+    ledger
+        .register_parent(&root_lease)
+        .expect("a provenance-free root lease registers");
 
     let child_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace/a")]);
     let child_lease = ledger
@@ -639,7 +641,9 @@ fn a_grandchild_is_refused_once_any_ancestor_up_to_the_root_is_revoked_target_co
     .with_delegation(DelegationRule::DelegableWithNarrowerScope);
 
     let ledger = DelegationLedger::new();
-    ledger.register_parent(&root_lease);
+    ledger
+        .register_parent(&root_lease)
+        .expect("a provenance-free root lease registers");
 
     let child_scope = RequirementScope::Selectors(vec![permit_only_selector("/workspace/a")]);
     let child_lease = ledger
