@@ -3734,6 +3734,87 @@ mod plan {
             );
         }
 
+        /// AAASM-6301 (founder decision 2026-10-11): `aasm-macos-vm` is
+        /// Experimental. Maturity is a separate axis from capability and from
+        /// availability, so this ties the three places that state it to one
+        /// another and to the backend's real availability: the metadata
+        /// record, the docs that an operator reads (support-matrix section,
+        /// release notes, CHANGELOG, compatibility), and `discover()` --
+        /// which must NOT report the backend ready while its operator-supplied
+        /// substrate is missing. Mutating any one of them turns this red.
+        #[test]
+        fn macos_vm_maturity_is_experimental_in_metadata_docs_and_availability() {
+            use std::path::Path;
+
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+            let read =
+                |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel} unreadable: {e}"));
+
+            // 1. Metadata: the recorded maturity.
+            let metadata: serde_json::Value = serde_json::from_str(&read("metadata/isolation-backends.json")).unwrap();
+            assert_eq!(
+                metadata["backend_maturity"][aa_isolation_macos_vm::BACKEND_ID],
+                "experimental",
+                "metadata/isolation-backends.json no longer records {} as experimental",
+                aa_isolation_macos_vm::BACKEND_ID
+            );
+
+            // 2. ADR 0035 section 4 still defines the tier the metadata cites.
+            assert!(
+                read("docs/src/adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md")
+                    .contains("***Experimental***"),
+                "ADR 0035 no longer defines the Experimental tier"
+            );
+
+            // 3. Docs an operator reads must say Experimental and must not
+            //    say the macOS VM backend simply "ships".
+            let iso = read("docs/src/security/execution-isolation.md");
+            let vm_section = iso
+                .split("### macOS VM runtime prerequisites")
+                .nth(1)
+                .expect("macOS VM section exists")
+                .split("\n## ")
+                .next()
+                .unwrap();
+            assert!(
+                vm_section.contains("**Maturity: Experimental**"),
+                "execution-isolation.md's macOS VM section no longer states the maturity"
+            );
+            for rel in [
+                "docs/release/v0.0.1-rc.7.md",
+                "CHANGELOG.md",
+                "docs/src/compatibility.md",
+            ] {
+                let text = read(rel);
+                assert!(
+                    text.to_lowercase().contains("experimental macos vm backend")
+                        || text.contains("macOS VM backend (Experimental)")
+                        || text.contains("**Experimental** macOS VM backend"),
+                    "{rel} does not describe the macOS VM backend as Experimental"
+                );
+            }
+            assert!(
+                !read("docs/release/v0.0.1-rc.7.md").contains("Three backends ship"),
+                "rc.7 release notes again claim 'Three backends ship'"
+            );
+
+            // 4. Availability: with the operator-supplied substrate missing
+            //    the backend is Unavailable, never ready. Skipped only on a
+            //    host that really has all three variables set.
+            let substrate = [
+                "AA_ISOLATION_MACOS_VM_HELPER",
+                "AA_ISOLATION_MACOS_VM_KERNEL",
+                "AA_ISOLATION_MACOS_VM_ROOTFS",
+            ];
+            if substrate.iter().any(|v| std::env::var_os(v).is_none()) {
+                let backend = aa_isolation_macos_vm::MacosVmBackend::discover();
+                assert!(
+                    !backend.capabilities().availability().is_available(),
+                    "an Experimental backend with no substrate must report Unavailable"
+                );
+            }
+        }
+
         /// The other half of the control: under `Preview`, the same
         /// contradiction warns and carries on (exactly as the pre-existing
         /// `--isolation-backend` contradiction check does) rather than
