@@ -293,6 +293,10 @@ backends above.
 
 **Stated plainly, this backend's real limitations:**
 
+- **Maturity: Experimental** (ADR 0035 §4: implemented, not validated for
+  production use). Maturity is separate from the capability rows and from
+  runtime availability: it does not mean installed or selectable, and a
+  missing guest kernel/rootfs/helper still reports `Unavailable`.
 - **Apple Silicon only.** No Intel build exists through this Epic.
 - **No general toolchain inside the guest.** Only `/usr/local/bin/busybox`
   (`sh`/`cat`/`printf`) and `/usr/local/bin/aa-isolation-launch` are present —
