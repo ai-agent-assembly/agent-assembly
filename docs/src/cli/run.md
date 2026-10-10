@@ -13,6 +13,13 @@ resolved once and applied consistently whether you preview it or run it.
 > the `curl` installer, and the Homebrew formula all ship the unstripped tree
 > and do have it. See [CLI Reference — Overview](overview.md#command-groups).
 
+> **Prerequisite.** A live (non-`--dry-run`) launch first registers the session
+> with the governance gateway. With no reachable gateway it refuses
+> (`refusing to launch unregistered: the governance gateway at … is
+> unreachable`) rather than running ungoverned: start one with `aasm gateway
+> start`, or point `AA_GATEWAY_ENDPOINT` at the gRPC endpoint. An
+> isolation request that no backend can meet is refused before this step.
+
 ## Synopsis
 
 ```text
@@ -56,6 +63,17 @@ flow (ADR 0035 §1):
 | `--observe` | flag | off | Shorthand for `--enforcement-mode observe`. Mutually exclusive with `--enforcement-mode`. |
 | `--isolation <INTENT>` | `none` \| `auto` \| `process` | `none` | How much execution isolation this launch requires. See [Isolation intent](#isolation-intent---isolation) below. |
 | `--isolation-backend <ID>` | string | _(unset — `auto` selects by capability, `process` defaults to `sandlock`)_ | Pin the concrete isolation backend by id. Advanced and diagnostic only — see [Backend pinning](#backend-pinning---isolation-backend). |
+| `--max-memory-bytes <BYTES>` | integer | _(none)_ | Resident-memory ceiling. A launch **refuses** if the selected backend cannot enforce it; it is never silently ignored. |
+| `--max-pids <COUNT>` | integer | _(none)_ | Ceiling on processes in the confined tree. Refuses if the backend cannot enforce it. |
+| `--max-open-files <COUNT>` | integer | _(none)_ | Ceiling on simultaneously open file descriptors. Refuses if the backend cannot enforce it. |
+| `--max-file-size-bytes <BYTES>` | integer | _(none)_ | Ceiling on the size of any single file the agent creates. Refuses if the backend cannot enforce it. |
+| `--max-wall-clock-seconds <SECONDS>` | integer | _(none)_ | Wall-clock lifetime ceiling, enforced by `aasm run`'s own supervisor rather than by a backend. Termination is best-effort, and orphan-freedom is not guaranteed ([ADR 0041](../adr/0041-resource-ceiling-enforcement.md#residual-ac5-orphan-freedom)). |
+| `--max-cpu-seconds <SECONDS>` | integer | _(none)_ | Accumulated CPU-time ceiling. Optional: no backend enforces it as prevention in this version ([ADR 0041](../adr/0041-resource-ceiling-enforcement.md)). |
+
+The `--max-*` ceilings are enforced per backend, not uniformly: the
+`aasm-macos-vm` backend has no resource-ceiling mechanism, so a required
+ceiling is refused at planning time (AAASM-6294), and Linux enforcement is
+described in [ADR 0041](../adr/0041-resource-ceiling-enforcement.md).
 
 ## Isolation intent (`--isolation`)
 
@@ -81,7 +99,7 @@ host, the launch is refused with the reason and a pointer to `--isolation
 none` as the explicit, deliberate way to launch unconfined:
 
 ```text
-Error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
+error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
 backend cannot be selected on this host — <reason>.
 
 There is no fallback. A launch that asked for a boundary and quietly ran without one would
