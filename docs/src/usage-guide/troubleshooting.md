@@ -174,7 +174,7 @@ real block — see the caveat in
 
 ```console
 $ aasm run exec --isolation process -- python agent.py
-Error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
+error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
 backend cannot be selected on this host — no sandlock executable on PATH; install it or set
 AA_SANDLOCK_BIN.
 
@@ -189,9 +189,11 @@ auto` / `--isolation process` never falls back to running unconfined — there
 is no silent degrade.
 
 **Fix.** On Linux, install the backend and put it on `PATH`, or set
-`AA_SANDLOCK_BIN` to its path. On Apple Silicon macOS, pass
-`--isolation-backend aasm-macos-vm` explicitly (not selected by `auto`) and
-set `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` — see
+`AA_SANDLOCK_BIN` to its path. On Apple Silicon macOS, `--isolation process`
+always refuses (it defaults to the Linux-only `sandlock` backend): pass
+`--isolation-backend aasm-macos-vm` and set
+`AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` (`--isolation auto` reaches that
+backend on its own once those are set) — see
 [Execution isolation](../security/execution-isolation.md#platform-and-backend-support-matrix)
 for the full prerequisites and its named limitations. On Intel macOS or
 Windows there is no fix; no backend targets those platforms today. If you
@@ -220,4 +222,4 @@ than requested. Check the per-capability table in `aasm run --dry-run`'s
 | `gateway status` "not running" | Local mode ≠ legacy gRPC; use `status` / `/healthz` |
 | Empty dashboard tables | `--mode local` serves no data routes — run `aa-api-server` |
 | `validate` warnings | Unknown keys ignored — move into a supported section |
-| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? Apple Silicon macOS needs `--isolation-backend aasm-macos-vm` explicitly. Intel macOS/Windows have no backend at all |
+| `aasm run --isolation` refuses to launch | Linux + backend on `PATH`/`AA_SANDLOCK_BIN`? Apple Silicon macOS needs `--isolation-backend aasm-macos-vm` with `process` (`auto` reaches it once configured). Intel macOS/Windows have no backend at all |
