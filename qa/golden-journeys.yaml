@@ -2412,16 +2412,23 @@ journeys:
   # AAASM-6295 (ST-8, independent QA pass): seal tamper detection verified
   # across the ticket's named categories, plus the documented non-tamper-
   # proof control -- but a genuinely confined "real aasm run" receipt could
-  # not be produced on this QA host: aasm-native/aasm-sandlock are Linux-
-  # only, and aasm-macos-vm's guest kernel/rootfs/helper assets are not
-  # wired into this build (aa-isolation-macos-vm-poc/README.md: "exploratory
+  # not be produced on this QA host. Confirmed empirically, not inferred
+  # from crate names: all three backend ids this build compiles in
+  # (`sandlock`, `aasm-native`, `aasm-macos-vm`) plus `--isolation auto`
+  # each refuse on macOS with their own path-specific reason ("backend
+  # cannot be selected on this host" / "walked every backend this build
+  # has and none of them") -- aa-integration-tests/tests/
+  # cli_run_execution_receipt.rs's sandlock_refuses_on_macos,
+  # aasm_native_refuses_on_macos, aasm_macos_vm_refuses_on_macos,
+  # isolation_auto_finds_no_usable_backend_on_macos. `aasm-macos-vm`'s
+  # guest kernel/rootfs/helper assets are additionally not wired into this
+  # build (aa-isolation-macos-vm-poc/README.md: "exploratory
   # proof-of-concept... not shipped in any release") even after AAASM-6287
   # (hardware re-qualification) merged -- that ticket re-verified
-  # Virtualization.framework capability, not this asset chain. Confirmed
-  # empirically: aa-integration-tests::cli_run_execution_receipt's own
-  # macOS-VM test still hits its MACOS_VM_UNAVAILABLE_MARKER branch on this
-  # host, and a new AAASM-6295 test shows aasm-native refuses on macOS too.
-  # So every tamper/positive-control test below runs against a receipt
+  # Virtualization.framework capability, not this asset chain; the same
+  # file's existing macOS-VM test still hits its own
+  # MACOS_VM_UNAVAILABLE_MARKER branch on this host. So every
+  # tamper/positive-control test below runs against a receipt
   # built through the real body_for_run/ReceiptEnvelope::seal/ReceiptStore
   # production pipeline driven by aa_isolation::mock::MockBackend, not a
   # live confined child process -- the closest achievable substitute, not a
@@ -2460,16 +2467,19 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: 'aa-integration-tests/tests/cli_run_execution_receipt.rs: a real
-      --isolation none launch writes zero receipt files; aasm-native refuses
-      on macOS'
+      --isolation none launch writes zero receipt files; sandlock,
+      aasm-native, aasm-macos-vm and --isolation auto all refuse on macOS'
   negative_control: 'AAASM-6295: the ticket''s own stated expectation that
     every tamper category trips a non-zero exit was falsified for two of
-    them by direct testing, not assumed -- an added unknown JSON field and
-    a removed already-null Option field both verify clean (exit 0), traced
-    to no execution_receipt type using #[serde(deny_unknown_fields)] and the
-    seal being recomputed over the parsed struct rather than the raw file
-    bytes. Both are recorded as findings, not relaxed into passing
-    expectations.'
+    them by direct testing, not assumed -- both an added unknown JSON field
+    and a removed already-null Option field verify clean (exit 0), but for
+    two different reasons, not one shared cause: the unknown-field result
+    traces to no execution_receipt type using #[serde(deny_unknown_fields)]
+    and the seal being recomputed over the parsed struct rather than the
+    raw file bytes; the null-field-removal result traces to serde''s
+    implicit None-for-missing-Option-field behavior re-serializing to byte-
+    identical canonical JSON, independent of deny_unknown_fields entirely.
+    Both are recorded as findings, not relaxed into passing expectations.'
 - id: J88
   jira: AAASM-6266
   name: Confirm evidence-aware runtime-class selection picks the backend that actually matches the requested security property
@@ -2583,33 +2593,45 @@ journeys:
   feature_refs:
   - AAASM-6172
   # AAASM-6295 (ST-8, independent QA pass): `aasm receipt inspect`/`list`
-  # exercised (Gate A/B refusal split, redaction, determinism, --re-evaluate,
-  # the CLI surface via assert_cmd -- aa-cli/tests/receipt_inspect.rs, 16
-  # tests, all passing). "Controlled replay" in this journey's name is
-  # confirmed ABSENT, not merely unfound: `ReceiptCommand` in
-  # aa-cli/src/commands/execution_receipt/verify.rs declares exactly three
-  # subcommands (Verify, Inspect, List); grepping aa-cli/src for "replay"
-  # finds only aa-gateway's unrelated HistoricalReplay (policy-decision
-  # replay against audit logs, not execution-receipt replay); and
-  # docs/src/cli/receipt.md's own `--re-evaluate` taxonomy already states
-  # re-execution-in-a-fresh-environment is "not supported" by design (the
-  # receipt stores only digests, never argv/env values to reconstruct an
-  # invocation from). This is a known, documented limitation for this
-  # journey, not a regression to fix here -- out of this ticket's
-  # verification-only scope. Left partial rather than automated for that
-  # reason: the journey's name promises reconstruction via replay, and half
-  # of that (replay) does not exist.
+  # exercised (Gate A/B refusal split, redaction, determinism, the CLI
+  # surface via assert_cmd -- aa-cli/tests/receipt_inspect.rs, 18 tests,
+  # all passing). `--re-evaluate` specifically was previously set to
+  # `false` in every existing test in that file and never actually
+  # exercised true -- this pass added two tests
+  # (cli_receipt_inspect_re_evaluate_prints_the_replay_taxonomy,
+  # cli_receipt_inspect_re_evaluate_json_includes_a_re_evaluate_object)
+  # that genuinely run it in both text and --json mode. "Controlled
+  # replay" in this journey's name is confirmed ABSENT, not merely
+  # unfound: live `aasm receipt --help` (minimal cleared environment,
+  # confirming the behavior, not just the source) lists exactly
+  # verify/inspect/list/help as `aasm receipt`'s subcommands;
+  # `ReceiptCommand` in aa-cli/src/commands/execution_receipt/verify.rs
+  # declares the same three (Verify, Inspect, List); grepping aa-cli/src
+  # for "replay" finds only aa-gateway's unrelated HistoricalReplay
+  # (policy-decision replay against audit logs, not execution-receipt
+  # replay); and docs/src/cli/receipt.md's own `--re-evaluate` taxonomy
+  # already states re-execution-in-a-fresh-environment is "not supported"
+  # by design (the receipt stores only digests, never argv/env values to
+  # reconstruct an invocation from). This is a known, documented
+  # limitation for this journey, not a regression to fix here -- out of
+  # this ticket's verification-only scope. Left partial rather than
+  # automated for that reason: the journey's name promises reconstruction
+  # via replay, and half of that (replay) does not exist.
   lifecycle_state: partial
   gap_owner: AAASM-6270
   evidence:
   - repo: agent-assembly
     kind: test
-    selector: 'aa-cli/tests/receipt_inspect.rs (16 tests: Gate A/B refusal,
-      redaction, determinism, --re-evaluate, the CLI surface)'
+    selector: 'aa-cli/tests/receipt_inspect.rs (18 tests: Gate A/B refusal,
+      redaction, determinism, --re-evaluate in text and --json mode, the
+      CLI surface)'
   negative_control: 'AAASM-6295: confirmed no controlled-replay command exists
-    by reading ReceiptCommand''s exhaustive subcommand list (Verify/Inspect/
-    List only) and by grepping aa-cli/src for every "replay"/"Replay"
-    occurrence -- the only hit is aa-gateway::simulation::HistoricalReplay,
-    a different concept (policy-decision replay, not execution-receipt
-    replay). Not implemented here: building a replay command is out of this
+    both by live observation (`env -i PATH=/usr/bin:/bin ./target/debug/aasm
+    receipt --help` lists verify/inspect/list/help only, returning
+    instantly) and by reading ReceiptCommand''s exhaustive subcommand list
+    (Verify/Inspect/List only) and grepping aa-cli/src for every
+    "replay"/"Replay" occurrence -- the only hit is
+    aa-gateway::simulation::HistoricalReplay, a different concept
+    (policy-decision replay, not execution-receipt replay). Not
+    implemented here: building a replay command is out of this
     verification-only ticket''s scope.'
