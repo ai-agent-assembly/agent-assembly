@@ -93,7 +93,7 @@ its own, narrower platform reach.
 | Platform | `aasm run --isolation process`/`auto` | Requirement |
 |---|---|---|
 | Linux | ✅ | Either a separately-installed Sandlock executable on `PATH` (or `AA_SANDLOCK_BIN`), or the AASM-native backend (Linux 6.2+ with Landlock ABI v3 and the `aa-isolation-launch` binary; syscall filtering is x86_64-only) |
-| macOS (Apple Silicon) | ✅ with `--isolation process --isolation-backend aasm-macos-vm` (`--isolation auto` considers it last) | `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` (built from `aa-isolation-macos-vm-poc/README.md`) + `com.apple.security.virtualization` entitlement; filesystem-only confinement, hardware-qualified for Apple Silicon (see the support matrix linked below) |
+| macOS (Apple Silicon) | ⚠️ Experimental (proof-of-concept substrate, not shipped in any release; operator-built guest kernel/rootfs; no CI lane) — works with `--isolation process --isolation-backend aasm-macos-vm` (`--isolation auto` considers it last) | `AA_ISOLATION_MACOS_VM_{HELPER,KERNEL,ROOTFS}` (built from `aa-isolation-macos-vm-poc/README.md`) + `com.apple.security.virtualization` entitlement; filesystem-only confinement, hardware-qualified for Apple Silicon (see the support matrix linked below) |
 | macOS (Intel) | ❌ Refused, never silently unconfined | Not supported — guest kernel/helper are arm64-only |
 | Windows | ❌ Refused, never silently unconfined | No backend targets Windows |
 
