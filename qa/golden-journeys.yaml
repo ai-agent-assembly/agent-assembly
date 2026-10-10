@@ -2367,7 +2367,32 @@ journeys:
   outcome: See AAASM-6264 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-6165
-  lifecycle_state: gap
+  lifecycle_state: partial
+  gap_owner: AAASM-6264
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'aa-isolation/src/descendant.rs::tests::* (12 tests; `cargo nextest run -p aa-isolation --test wall_clock_deadline --lib descendant::` -- the `descendant::` filter matched only this file''s 12 lib-level tests, 0 tests in the wall_clock_deadline integration-test binary itself) -- process-tree inheritance/authority-widening coverage, pre-existing, re-verified green'
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/wall_clock_deadline.rs::deadline_exceeded_terminates_the_whole_process_group_with_no_orphans
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-macos-vm/tests/resource_ceiling_refusal.rs::a_resource_ceiling_is_refused_even_when_the_backend_is_otherwise_available
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-macos-vm/tests/resource_ceiling_refusal.rs::a_resource_ceiling_is_refused_through_the_real_discover_entrypoint
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/wall_clock_deadline.rs::a_setsid_double_forked_descendant_survives_the_process_group_kill
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/wall_clock_deadline.rs::a_double_forked_descendant_without_setsid_does_not_survive_the_process_group_kill
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real
+  negative_control: 'AAASM-6294 (ST-7, independent QA, macOS-only slice of this journey -- the Linux rlimit AC is tracked separately as ST-12a (AAASM-6299), BLOCKED-NO-INFRA, not attempted here; no VM substrate is configured on this authoring host either, so the `Available`/booted-guest arm of the real `aasm-macos-vm` entrypoint is unverified here too -- see below). Three findings: (1) a `Required` resource-ceiling request against the real `aasm-macos-vm` backend''s actual `plan()` sequence (`aa_isolation_native::capability::narrow_for` then `negotiate`, not `negotiate` alone, and separately via the real `MacosVmBackend::discover()` entrypoint, not a mock) REFUSES outright via `RefusalReason::DomainUnsupported{domain: Resource}` (or `BackendUnavailable` on this unconfigured host) -- it does not silently plan and ignore the ceiling, consistent with ADR 0041''s "No macOS VM-backend resource ceilings (not touched this round)". Confirmed with a live `aasm` binary, not only the library-level tests: `aasm run exec --isolation auto --isolation-backend aasm-macos-vm --max-open-files 16 -- /bin/true` (cleared env, explicit allow-all policy) refused with exit 1 and the exact `BackendUnavailable` text, proving `authority_gate` does not intercept an ordinary lease-free launch before backend selection and that `MacosVmBackend::discover()` is genuinely what the real CLI builds. (2) A documentation/UX-accuracy gap, found while verifying (1): the refusal''s stated reason text ("a `Resource` requirement must carry a `RequirementScope::Limits` value... this one carried a different scope shape") is FALSE for the specific, well-formed `max_open_files`-only request this test sends -- `aa-isolation-native` actually lowers that ceiling successfully (ADR 0041 decision 4, `RLIMIT_NOFILE`); the reason comes from `aa_isolation_macos_vm::capability::discover`''s generic, scope-less probe, which `narrow_for` never overrides when the specific request''s own lowering succeeds. The refusal itself is correct (`Resource` genuinely has no live producer on this backend); on a host where this backend is `Available` (reproduced here only via a hand-built capability set, not a real boot) the operator would be given this misleading diagnostic -- on *this* host, where the backend is `Unavailable`, the operator never sees it at all, per the live CLI run above. Inconsistent with the precise-reason *intent* ADR 0041 decision 2 states for native/sandlock (that decision does not itself govern macos-vm, which it lists as untouched this round). Not filed as a Bug (QA scope); pinned as a known gap in `aa-isolation-macos-vm/tests/resource_ceiling_refusal.rs`. (3) A real `setsid()` + double-forked marker process, run through this crate''s own test-only `ProcessGroupBackend` fixture''s `kill(-pgid)` termination (NOT `aa-isolation-native`''s or `aa-isolation-macos-vm`''s real production `terminate()` -- see the test''s own doc comment), survives that group kill, with a negative control (the identical fixture minus `setsid()`) confirming 0 survivors -- isolating `setsid()` as the actual cause rather than "detached descendants in general survive this fixture". This reproduces, rather than newly discovers, ADR 0041''s own "Residual: AC5, orphan-freedom" disclosure ("no `cgroup.kill`-equivalent group-kill in this round... honestly partial"). Two real-backend facts, read from source (not live-booted) and cited by file:line in the test''s own doc comment: `aa-isolation-native::backend::deliver_termination` (`aa-isolation-native/src/backend.rs:1068`, Linux-only) and the macOS-VM guest-side handler `check_for_terminate` (`aa-isolation-macos-vm-poc/guest-init/src/protocol.rs:511`, with no process-group setup anywhere in that file''s own `fork()` at `protocol.rs:255`) both issue the identical single-pid `kill()`, not even a process-group kill -- if confirmed live, this predicts any forked child, setsid''d or not, survives a wall-clock termination on either backend, a strictly larger gap than (3) demonstrates live. The native half is tracked under ST-12a/AAASM-6299 (Linux, not this ticket); the macOS-VM half remains unverified live here for lack of VM substrate. `lifecycle_state` stays `partial`: the Linux rlimit half of AC1 remains gap/blocked under ST-12a; the booted-guest arm of the macOS-VM backend is unverified on this host; and ADR 0041 itself defers cgroup v2 group-kill, `RLIMIT_CPU`, and macOS-VM-native resource ceilings to a follow-up ticket (AAASM-6252, confirmed filed via Jira, status To Do) not yet implemented.'
 - id: J87
   jira: AAASM-6265
   name: Verify an execution receipt's content-digest seal binds policy, authority, backend and achieved evidence
