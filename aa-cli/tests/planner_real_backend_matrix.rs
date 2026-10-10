@@ -12,6 +12,9 @@
 //! returns `Denied` on a Linux kernel — that is the Linux real-kernel lane, not
 //! measured here.
 //!
+//! **FIXTURES:** every probe and `HostFacts` below is a fabricated, labelled
+//! fixture (`for_test`); nothing here is a live measurement of a kernel or VM.
+//!
 //! The probes are fabricated inputs by design, so the expectations below are
 //! stated as consequences of each backend's *documented* mechanism coverage
 //! (sandlock: filesystem + network + process ceiling, no syscall allow-list;
@@ -269,6 +272,14 @@ fn real_backend_selection_is_deterministic() {
 // every combined-verdict test green). Each test below therefore asserts ONE
 // layer directly on the report a real backend produced, so a one-line
 // regression of that layer reddens its own test.
+//
+// Masking, stated explicitly: mutating exactly ONE of these layers in the
+// backend crate leaves the COMBINED `can_prevent` / `evaluate_candidate` verdict
+// unchanged, because the other two layers still refuse (verified by mutation
+// against sandlock: single-layer edits did not redden the combined-verdict
+// tests above, and the three-layers-together edit did). That redundancy is
+// intentional defence in depth in production, so these tests observe each
+// layer on the report itself and do not go through `can_prevent`.
 
 fn report_of(candidate: &Candidate) -> &aa_isolation::CapabilityReport {
     candidate
@@ -353,4 +364,30 @@ fn layer_descendant_coverage_is_process_tree_only_when_a_grandchild_was_denied()
             );
         }
     }
+}
+
+// --- Changing exactly one requested property changes the result -------------
+
+/// Otherwise-identical request, candidates and probes; only the set of demanded
+/// domains changes, one domain at a time, so each flip is attributable to the
+/// single property that moved.
+#[test]
+fn changing_exactly_one_demanded_property_flips_the_selected_backend() {
+    let (base, _) = select(&prevent(&[FS]), &walk());
+    assert_eq!(selected(&base).as_deref(), Some(aa_isolation_sandlock::BACKEND_ID));
+
+    // Adding NET: sandlock still covers FS+NET, so no flip (control).
+    let (with_net, _) = select(&prevent(&[FS, NET]), &walk());
+    assert_eq!(selected(&with_net).as_deref(), Some(aa_isolation_sandlock::BACKEND_ID));
+
+    // Adding SYS instead: sandlock cannot, so the result flips to native.
+    let (with_sys, _) = select(&prevent(&[FS, SYS]), &walk());
+    assert_eq!(selected(&with_sys).as_deref(), Some(aa_isolation_native::BACKEND_ID));
+
+    // NET+SYS together: no single backend covers both, success flips to
+    // refusal; dropping SYS flips it back.
+    let (refused, _) = select(&prevent(&[NET, SYS]), &walk());
+    assert_eq!(refused, Selection::Refused);
+    let (back, _) = select(&prevent(&[NET]), &walk());
+    assert_eq!(selected(&back).as_deref(), Some(aa_isolation_sandlock::BACKEND_ID));
 }

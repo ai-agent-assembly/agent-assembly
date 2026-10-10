@@ -2,6 +2,9 @@
 //! and incompatible-backend-refusal contract (AAASM-6296, QA ST-9, journey
 //! J88; feature AAASM-6167).
 //!
+//! **FIXTURES:** every candidate here is a synthetic, labelled capability
+//! fixture, not a measurement of a real backend.
+//!
 //! # Why these exist next to `planner::tests`
 //!
 //! The developer-authored unit tests in `src/planner.rs` pin the two headline

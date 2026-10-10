@@ -36,6 +36,12 @@
 //! The live launches run in-process against a real gateway (so a launch that is
 //! *allowed* actually reaches the program), with a positive control proving the
 //! harness can observe the program run.
+//!
+//! The `--isolation none` positive control establishes **harness observability
+//! only**. It is not, and must not be read as, evidence that any confined
+//! backend was selected or that confinement works: no confining cell can run
+//! on this host. Pinned (`--isolation-backend`) cells have no walk record by
+//! design, so their cause is asserted from the pinned backend's own sentence.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -322,6 +328,24 @@ fn every_confining_cell_is_decided_by_the_structured_record_and_runs_nothing_whe
                                 assert_eq!(m[&format!("backend_selection.considered.{n}.id")], *id, "{cell}");
                                 let verdict = &m[&format!("backend_selection.considered.{n}.verdict")];
                                 assert_ne!(verdict, "selected", "{cell}: a refused walk selected {id}");
+                                if verdict == "rejected_requirements_unmet" {
+                                    // A property verdict must name the domain the policy demanded.
+                                    let demanded = match domain {
+                                        "fs-write" => "filesystem_write",
+                                        "network" => "network_egress",
+                                        _ => "syscall",
+                                    };
+                                    let count: usize = m
+                                        [&format!("backend_selection.considered.{n}.unmet_domain_count")]
+                                        .parse()
+                                        .expect("count");
+                                    assert!(
+                                        (0..count)
+                                            .any(|g| m[&format!("backend_selection.considered.{n}.unmet_domain.{g}")]
+                                                == demanded),
+                                        "{cell}: {id} was rejected as unmet but does not name {demanded}"
+                                    );
+                                }
                                 if must_be_unavailable(id) {
                                     assert_eq!(
                                         verdict, "rejected_unavailable",
@@ -362,15 +386,33 @@ fn every_confining_cell_is_decided_by_the_structured_record_and_runs_nothing_whe
                         ))
                         .expect_err(&format!("{cell}: the preview refused but the live launch succeeded"));
                         let live = format!("{err:#}");
-                        assert!(
-                            live.contains("cannot be selected on this host") || live.contains("can plan this launch"),
-                            "{cell}: the live refusal is not the isolation planner's own:\n{live}"
-                        );
+                        // The per-candidate / pinned-backend sentence, never the
+                        // generic "There is no fallback" footer both refusals share.
                         if walk_applies {
                             for id in BACKENDS {
+                                let line = live
+                                    .lines()
+                                    .find(|l| l.trim_start().starts_with(&format!("- {id}:")))
+                                    .unwrap_or_else(|| {
+                                        panic!("{cell}: the live refusal has no line for candidate {id}:\n{live}")
+                                    });
+                                if must_be_unavailable(id) {
+                                    assert!(
+                                        line.contains("the backend cannot be selected on this host"),
+                                        "{cell}: {id} must be refused as unavailable live: {line}"
+                                    );
+                                }
+                            }
+                        } else {
+                            let pinned = backend.unwrap_or(aa_isolation_sandlock::BACKEND_ID);
+                            assert!(
+                                live.contains(&format!("the `{pinned}` backend")),
+                                "{cell}: the live refusal does not name the pinned backend {pinned}:\n{live}"
+                            );
+                            if must_be_unavailable(pinned) {
                                 assert!(
-                                    live.contains(id),
-                                    "{cell}: the live refusal omits candidate {id}:\n{live}"
+                                    live.contains(&format!("the `{pinned}` backend cannot be selected on this host")),
+                                    "{cell}: {live}"
                                 );
                             }
                         }
