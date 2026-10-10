@@ -1340,6 +1340,9 @@ journeys:
   # macos-apple-silicon specifically, not bare macos: Intel is explicitly
   # unverified per verification-report-AAASM-5811-hardware-qualification.md
   # and must not be implied as covered.
+  # 2026-10-10 (AAASM-6301, J93): ADR 0035's "Experimental" tier is used by no
+  # backend; whether this hand-run, #[ignore]d, no-CI backend should carry it is a
+  # product-owner decision, escalated and not decided. See J93.
   release_blocking: true
   lifecycle_state: manual_live
   evidence:
@@ -2538,3 +2541,69 @@ journeys:
   feature_refs:
   - AAASM-6172
   lifecycle_state: gap
+- id: J93
+  jira: AAASM-6301
+  name: Confirm every execution-isolation backend's declared status, support matrix and selectability equals what was measured
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-isolation-native
+  - aa-isolation-sandlock
+  - aa-isolation-macos-vm
+  - aa-cli
+  - docs/src/security
+  - metadata
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6301 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6168
+  - AAASM-6169
+  - AAASM-6170
+  - AAASM-5811
+  release_blocking: true
+  # AAASM-6301 (ST-13, area 13 of AAASM-6174), macOS Apple Silicon host. PARTIAL,
+  # not automated: (a) the Linux-backend halves of the support matrix are only
+  # compared against `discover()` over a synthetic all-denied probe (the real
+  # kernel probe needs Linux; the CI lanes `isolation-backend-linux` /
+  # `isolation-backend-native-linux` were not re-run by this QA pass), (b) ADR
+  # 0035 section 4's "Experimental" tier is used by nothing and whether
+  # `aasm-macos-vm` (hand-run, `#[ignore]`d, no CI) should carry it is a
+  # product-owner decision, escalated and NOT decided here, and (c) ST-9 and
+  # ST-12/12a evidence was not available when this ran.
+  # Corrected while testing (claim text only, no product behavior): the
+  # AASM-native `Resource` row said Unsupported though `discover()` reports
+  # Partial (AAASM-6165); four docs said `aasm-macos-vm` is not reached by
+  # `--isolation auto` though `auto_select` walks it last (live-confirmed with
+  # `aasm run exec --isolation auto --dry-run`); the Linux aarch64 row said
+  # "Sandlock fully available" though no CI lane or pinned artifact covers
+  # aarch64.
+  lifecycle_state: partial
+  gap_owner: AAASM-6301
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-native/src/capability.rs::the_documented_support_matrix_matches_what_discover_reports
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-sandlock/src/capability.rs::the_documented_support_matrix_matches_what_discover_reports
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::evaluation_spike_backend_ids_are_refused_and_never_selected
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::no_operator_facing_surface_names_an_evaluation_spike_backend
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::auto_selection_considers_every_compiled_in_backend_including_macos_vm
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  platforms:
+  - macos-apple-silicon
+  negative_control: 'AAASM-6301 live-mutated each claim and watched its test go red, then reverted (byte-identical to a saved copy). (1) Added a `"gvisor" =>` arm to `explicit_backend` in aa-cli/src/commands/run.rs: `evaluation_spike_backend_ids_are_refused_and_never_selected` failed ("gvisor/Process: ... the `gvisor` backend cannot be selected on this host"). (2) Wrote "Firecracker is available too" into the execution-isolation.md support-matrix lead sentence: `no_operator_facing_surface_names_an_evaluation_spike_backend` failed. (3) Dropped `aasm-macos-vm` from `auto_select`''s CANDIDATES: `auto_selection_considers_every_compiled_in_backend_including_macos_vm` failed ("both Linux backends declined yet auto never considered aasm-macos-vm"). (4) Flipped the Sandlock `Syscall` cell of the support-matrix table to "supported": the sandlock `the_documented_support_matrix_matches_what_discover_reports` failed ("docs say Syscall is supported for sandlock; discover() reports Unsupported"). (5) The AASM-native twin of (4) was red against the UNMODIFIED doc before this pass fixed it: docs said `Resource` Unsupported while `discover()` reports Partial -- a real drift, not a synthetic one. Limit: (4)/(5) run `discover()` over a synthetic all-denied probe, which fixes the available-vs-Unsupported class of each domain but not whether a real Linux kernel actually denies; that stays with the CI lanes named in J62.'
