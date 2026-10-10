@@ -481,6 +481,7 @@ mod tests {
     /// saying the old thing fail instead of reaching an operator. Only
     /// available-vs-`Unsupported` is compared: the doc's `supported`/`partial`
     /// wording is prose, `Unsupported` is the one cell the contract defines.
+    /// The supported-vs-partial distinction is therefore NOT guarded here.
     #[test]
     fn the_documented_support_matrix_matches_what_discover_reports() {
         const DOC: &str = include_str!("../../docs/src/security/execution-isolation.md");

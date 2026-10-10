@@ -3589,7 +3589,11 @@ mod plan {
         /// macOS VM backend is "not selected by `auto`"; this pins the behavior
         /// those sentences describe. The policy must lower a filesystem
         /// requirement, or `auto_select` short-circuits to Sandlock without
-        /// walking anything and proves nothing.
+        /// walking anything and proves nothing. The walk is lazy: on a host
+        /// where an earlier candidate is `Selected` (e.g. Linux CI with
+        /// Sandlock), the macos-vm assertion below is SKIPPED, so the
+        /// "macOS VM is reached" claim is only exercised where both Linux
+        /// backends decline (e.g. a macOS host).
         #[test]
         fn auto_selection_considers_every_compiled_in_backend_including_macos_vm() {
             let resolution = run_policy::classify(
@@ -3625,13 +3629,15 @@ mod plan {
         }
 
         /// AAASM-6301: the evaluation spikes are not backends, so no surface an
-        /// operator reads may name one as if it were available. This scans the
-        /// shipped docs, README, backend-provenance metadata and the CLI source
-        /// for the spike names; the only places allowed to name them are the
-        /// ADR and spike write-ups that exist to say they are not backends.
-        /// The positive control (the ADR must be found naming gVisor) proves
-        /// the scan reads files and matches case-insensitively, so an empty
-        /// result elsewhere is a measurement and not a broken walk.
+        /// operator reads may name one as if it were available. Scanned: the
+        /// README, every `.md/.json/.toml/.yml/.yaml` under `docs/src` and
+        /// `metadata`, and every `.rs` under `aa-cli/src` except this file
+        /// (whose token list would match itself). The only places allowed to
+        /// name a spike are the ADR and spike write-ups that exist to say it
+        /// is not a backend. An unreadable file FAILS the test, and each
+        /// scanned root has its own positive control (a token that must be
+        /// found there), so an empty result is a measurement and not a broken
+        /// walk.
         #[test]
         fn no_operator_facing_surface_names_an_evaluation_spike_backend() {
             use std::path::{Path, PathBuf};
@@ -3644,7 +3650,7 @@ mod plan {
             ];
 
             fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
-                let Ok(entries) = std::fs::read_dir(dir) else { return };
+                let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{} unreadable: {e}", dir.display()));
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_dir() {
@@ -3658,23 +3664,48 @@ mod plan {
                 }
             }
 
+            fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+                let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{} unreadable: {e}", dir.display()));
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk_rs(&path, out);
+                    } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                        out.push(path);
+                    }
+                }
+            }
+
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
             let mut files = vec![root.join("README.md")];
             walk(&root.join("docs/src"), &mut files);
             walk(&root.join("metadata"), &mut files);
+            let mut sources = Vec::new();
+            walk_rs(&root.join("aa-cli/src"), &mut sources);
+            files.extend(sources);
 
             let mut offenders = Vec::new();
-            let mut adr_names_gvisor = false;
+            // (relative path suffix, token that must be found in it)
+            let mut controls: Vec<(&str, &str, bool)> = vec![
+                ("docs/src/adr/0035-", "gvisor", false),
+                ("README.md", "assembly", false),
+                ("metadata/isolation-backends.json", "sandlock", false),
+                ("aa-cli/src/commands/execution_receipt/host.rs", "sandlock", false),
+            ];
             for file in &files {
                 let relative = file.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
-                let Ok(text) = std::fs::read_to_string(file) else {
+                if relative == "aa-cli/src/commands/run.rs" {
                     continue;
-                };
-                let lower = text.to_lowercase();
-                let allowed = ALLOWED_PREFIXES.iter().any(|p| relative.starts_with(p));
-                if relative.starts_with("docs/src/adr/0035-") && lower.contains("gvisor") {
-                    adr_names_gvisor = true;
                 }
+                let text = std::fs::read_to_string(file)
+                    .unwrap_or_else(|e| panic!("{relative} could not be read, so it was not scanned: {e}"));
+                let lower = text.to_lowercase();
+                for (prefix, token, found) in controls.iter_mut() {
+                    if relative.starts_with(*prefix) && lower.contains(*token) {
+                        *found = true;
+                    }
+                }
+                let allowed = ALLOWED_PREFIXES.iter().any(|p| relative.starts_with(p));
                 if !allowed {
                     for token in TOKENS {
                         if lower.contains(token) {
@@ -3683,10 +3714,12 @@ mod plan {
                     }
                 }
             }
-            assert!(
-                adr_names_gvisor,
-                "positive control failed: ADR 0035 was not found naming gVisor, so this scan proves nothing"
-            );
+            for (prefix, token, found) in &controls {
+                assert!(
+                    *found,
+                    "positive control failed: nothing under `{prefix}` was read containing `{token}`, so the scan of that root proves nothing"
+                );
+            }
             assert!(
                 offenders.is_empty(),
                 "an operator-facing surface names an evaluation spike as if it were a backend: {offenders:#?}"
