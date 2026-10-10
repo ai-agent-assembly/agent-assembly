@@ -584,11 +584,9 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_characterizes
          and this test (plus J82's recorded finding) needs to be revisited deliberately, not \
          silently."
     );
-    // ... and a *fresh* grandchild can still be minted from the
-    // still-active child lease through the very same ledger that just
-    // refused a fresh child from the revoked root -- the ledger's
-    // `register_parent`/`revoke` state is keyed per lease id, not
-    // transitively across a derivation chain.
+    // ... but a *fresh* grandchild can no longer be minted from the
+    // still-active child lease: AAASM-6307 made the ledger record parent
+    // edges, so revoking the root reaches every descendant derivation.
     let fresh_grandchild_attempt = ledger.derive_child(
         &child_lease,
         ChildLeaseRequest {
@@ -602,11 +600,10 @@ fn a_three_generation_chain_refuses_widening_at_generation_two_and_characterizes
         },
         t(1_700),
     );
-    assert!(
-        fresh_grandchild_attempt.is_ok(),
-        "documented gap: a fresh grandchild derived from the still-active child lease is not \
-         blocked by the root's revocation -- the ledger tracks revocation per lease id, not \
-         transitively up the ancestry chain"
+    assert_eq!(
+        fresh_grandchild_attempt,
+        Err(DelegationDenied::ParentRevoked),
+        "a fresh grandchild derived under a revoked root must be refused (transitive revocation)"
     );
 }
 

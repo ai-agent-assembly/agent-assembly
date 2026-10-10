@@ -148,6 +148,15 @@ enum Link {
     Unlinked,
 }
 
+/// Why a chain walk could not confirm every hop active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ChainFault {
+    /// `lease` — the lease asked about or one of its ancestors — is revoked.
+    Revoked { lease: LeaseId, reason: String },
+    /// `lease` is unknown to the ledger or has no recorded parent edge.
+    Unverifiable { lease: LeaseId },
+}
+
 #[derive(Debug, Clone)]
 struct LedgerEntry {
     state: RevocationState,
@@ -242,6 +251,35 @@ impl DelegationLedger {
             });
     }
 
+    /// Walk from `start` to its root, requiring every hop to be known,
+    /// active and linked.
+    ///
+    /// Fails closed on anything it cannot positively verify: an id the ledger
+    /// does not know, an [`Link::Unlinked`] entry, or a walk longer than the
+    /// ledger has entries (a cycle is impossible by construction — edges are
+    /// written once, to an already-known parent, for an id that was not
+    /// known — but the bound keeps a corrupted map from looping forever).
+    fn verify_chain_locked(entries: &HashMap<LeaseId, LedgerEntry>, start: &LeaseId) -> Result<(), ChainFault> {
+        let mut current = start;
+        for _ in 0..=entries.len() {
+            let Some(entry) = entries.get(current) else {
+                return Err(ChainFault::Unverifiable { lease: current.clone() });
+            };
+            if let RevocationState::Revoked { reason, .. } = &entry.state {
+                return Err(ChainFault::Revoked {
+                    lease: current.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            match &entry.link {
+                Link::Root => return Ok(()),
+                Link::Parent(parent) => current = parent,
+                Link::Unlinked => return Err(ChainFault::Unverifiable { lease: current.clone() }),
+            }
+        }
+        Err(ChainFault::Unverifiable { lease: start.clone() })
+    }
+
     /// Read `parent`'s current tracked state and derive a child lease under
     /// one lock.
     ///
@@ -272,14 +310,14 @@ impl DelegationLedger {
         if !entries.contains_key(parent.id()) {
             Self::insert_root(&mut entries, parent)?;
         }
-        let state = &entries[parent.id()].state;
-        if !state.is_active() {
-            return Err(DelegationDenied::ParentRevoked);
-        }
+        Self::verify_chain_locked(&entries, parent.id()).map_err(|fault| match fault {
+            ChainFault::Revoked { .. } => DelegationDenied::ParentRevoked,
+            ChainFault::Unverifiable { .. } => DelegationDenied::AncestryUnverifiable,
+        })?;
         if entries.contains_key(&request.child_id) {
             return Err(DelegationDenied::DuplicateLeaseId);
         }
-        let generation = revocation_generation(state);
+        let generation = revocation_generation(&entries[parent.id()].state);
         // The scope order lives in `crate::scope_order` (AAASM-6161's real
         // comparators) rather than being threaded in by the caller — this is
         // the one call site that replaces `UndefinedScopeOrder` with a real
@@ -409,6 +447,84 @@ mod tests {
             t(1_200),
         );
         assert_eq!(after_revoke, Err(DelegationDenied::ParentRevoked));
+    }
+
+    fn request_with_id(id: &str, path: &str, delegation: DelegationRule) -> ChildLeaseRequest {
+        ChildLeaseRequest {
+            child_id: LId::new(id),
+            child_subject: IdentityRef::root("child-agent").with_ancestor("parent-agent"),
+            child_scope: RequirementScope::Selectors(vec![format!("permit-only:{path}")]),
+            child_expires_at: t(4_000),
+            mode: InheritanceMode::Narrower,
+            child_delegation: delegation,
+            child_limits: None,
+        }
+    }
+
+    /// AAASM-6307: revoking the root must stop derivation at every depth, not
+    /// only directly under the revoked lease.
+    #[test]
+    fn revoking_the_root_refuses_a_fresh_grandchild_derivation() {
+        let ledger = DelegationLedger::new();
+        let root = parent_lease();
+        ledger.register_parent(&root).unwrap();
+        let child = ledger
+            .derive_child(
+                &root,
+                request_with_id("c", "/workspace/a", DelegationRule::DelegableWithNarrowerScope),
+                t(1_100),
+            )
+            .unwrap();
+        // Positive control: the grandchild derives while the root is active.
+        ledger
+            .derive_child(
+                &child,
+                request_with_id("g0", "/workspace/a/x", DelegationRule::NotDelegable),
+                t(1_200),
+            )
+            .expect("a grandchild derives under an all-active chain");
+
+        ledger.revoke(root.id(), 1, "operator revoked the root");
+        assert_eq!(
+            ledger.derive_child(
+                &child,
+                request_with_id("g1", "/workspace/a/y", DelegationRule::NotDelegable),
+                t(1_300),
+            ),
+            Err(DelegationDenied::ParentRevoked)
+        );
+    }
+
+    #[test]
+    fn a_known_child_id_is_never_re_derived_and_an_unknown_provenanced_parent_is_unverifiable() {
+        let ledger = DelegationLedger::new();
+        let root = parent_lease();
+        let child = ledger
+            .derive_child(
+                &root,
+                request_with_id("c", "/workspace/a", DelegationRule::DelegableWithNarrowerScope),
+                t(1_100),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger.derive_child(
+                &root,
+                request_with_id("c", "/workspace/b", DelegationRule::NotDelegable),
+                t(1_100),
+            ),
+            Err(DelegationDenied::DuplicateLeaseId)
+        );
+        // `child` carries provenance; a ledger that never saw it cannot verify
+        // what is above it.
+        let other = DelegationLedger::new();
+        assert_eq!(
+            other.derive_child(
+                &child,
+                request_with_id("g", "/workspace/a/x", DelegationRule::NotDelegable),
+                t(1_200),
+            ),
+            Err(DelegationDenied::AncestryUnverifiable)
+        );
     }
 
     /// §4.6: concurrent creation does not race around revocation.
