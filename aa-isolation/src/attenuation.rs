@@ -21,13 +21,16 @@
 //!   and the **child's** own witness, never from the grandparent's, so the
 //!   ceiling a grandchild is compared against can only ever have shrunk on
 //!   the way down.
-//! * [`DelegationLedger`] serializes the one piece of shared mutable state a
-//!   concurrent derivation touches — a parent lease's revocation generation —
-//!   so that a revocation racing a derivation can never be observed as "never
-//!   happened" by the child it produces.
+//! * [`DelegationLedger`] serializes the shared mutable state a concurrent
+//!   derivation touches — each lease's revocation state and the parent edge
+//!   it was derived through — so that a revocation racing a derivation can
+//!   never be observed as "never happened" by the child it produces, and so
+//!   that revoking a lease reaches every descendant, not only its direct
+//!   children (AAASM-6307). [`ParentAuthority`] carries the live ledger so
+//!   the gate can re-read it instead of trusting a snapshot.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::authority::{AuthorityWitness, EffectiveAuthority};
@@ -76,16 +79,24 @@ pub enum Ancestry {
 /// spec whose authority was never actually checked, and cannot backdate one
 /// for a spec that has since changed — a fresh witness is required every
 /// time.
+///
+/// It also carries the live [`DelegationLedger`] its leases were issued
+/// through (AAASM-6307). The lease value captured here is a snapshot, so on
+/// its own it cannot show a revocation recorded after it was taken;
+/// `authority_gate` therefore re-reads the ledger for the parent lease and
+/// every ancestor above it each time it gates a child against this value.
 #[derive(Debug, Clone)]
 pub struct ParentAuthority {
     identity: IdentityRef,
     authority: EffectiveAuthority,
     credentials: CredentialPosture,
+    ledger: Arc<DelegationLedger>,
 }
 
 impl ParentAuthority {
     /// Build the parent authority record from a spec that has already passed
-    /// [`crate::authority::authority_gate`], proven by `witness`.
+    /// [`crate::authority::authority_gate`], proven by `witness`, together
+    /// with the `ledger` its leases are tracked in.
     ///
     /// `witness` is never inspected — its only role is that a caller cannot
     /// have one without having called the gate, which is the whole proof
@@ -94,12 +105,23 @@ impl ParentAuthority {
     /// rebuilding it here cannot fail in practice; a hypothetical `Err` would
     /// mean `spec` was mutated between gating and this call, which no caller
     /// in this codebase does.
-    pub fn from_gated_spec(spec: &ExecutionSpec, _witness: &AuthorityWitness) -> Self {
+    ///
+    /// A parent lease the `ledger` does not know, or whose chain it cannot
+    /// verify, is not an error here: it makes every child gated against this
+    /// value fail closed instead (see
+    /// [`AuthorityRefusal::LedgerUnverifiable`](crate::authority::AuthorityRefusal::LedgerUnverifiable)).
+    pub fn from_gated_spec(spec: &ExecutionSpec, _witness: &AuthorityWitness, ledger: Arc<DelegationLedger>) -> Self {
         Self {
             identity: spec.identity().clone(),
             authority: crate::authority::effective_authority_for_report(spec),
             credentials: spec.credentials().clone(),
+            ledger,
         }
+    }
+
+    /// The live ledger the gate re-reads revocation state from.
+    pub(crate) fn ledger(&self) -> &DelegationLedger {
+        &self.ledger
     }
 
     /// The parent's own identity. Asserted, not verified — see [`IdentityRef`].
@@ -130,54 +152,182 @@ impl ParentAuthority {
     }
 }
 
-/// Serializes the one piece of shared mutable state a concurrent lease
-/// derivation touches: a parent lease's revocation generation.
+/// How a ledger entry is attached to the delegation tree.
+///
+/// Recorded by the ledger itself, never read from a lease value: a lease's own
+/// `provenance` is data a caller can hold or clone, whereas the edge below is
+/// written only inside [`DelegationLedger::derive_child`] under the ledger
+/// lock, so it cannot be re-pointed afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Link {
+    /// A provenance-free lease registered as the top of a chain.
+    Root,
+    /// Derived through the ledger from this lease.
+    Parent(LeaseId),
+    /// Known only because it was revoked before it was ever registered or
+    /// derived. Carries no ancestry, so nothing that depends on walking *up*
+    /// from it can be verified.
+    Unlinked,
+}
+
+/// Why a chain walk could not confirm every hop active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChainFault {
+    /// `lease` — the lease asked about or one of its ancestors — is revoked.
+    Revoked {
+        /// The revoked lease.
+        lease: LeaseId,
+        /// The recorded reason.
+        reason: String,
+    },
+    /// `lease` is unknown to the ledger or has no recorded parent edge.
+    Unverifiable {
+        /// The lease that could not be verified.
+        lease: LeaseId,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct LedgerEntry {
+    state: RevocationState,
+    link: Link,
+}
+
+/// Serializes the shared mutable state a lease derivation depends on — each
+/// lease's revocation state and its parent edge — behind one lock.
 ///
 /// [`CapabilityLease`] values are otherwise immutable and travel by clone —
 /// there is no shared mutable lease object for two derivations to race over.
-/// The one exception is revocation: an issuer can revoke a parent lease at
-/// any time, and two racing calls to [`derive_child`](Self::derive_child)
-/// must agree on whether that revocation had already taken effect before
-/// either of them produced a child. This type is that single point of
-/// agreement.
+/// The one exception is revocation: an issuer can revoke a lease at any time,
+/// and two racing calls to [`derive_child`](Self::derive_child) must agree on
+/// whether that revocation had already taken effect before either of them
+/// produced a child. This type is that single point of agreement.
+///
+/// Revocation is transitive (AAASM-6307): the ledger records which lease each
+/// child was derived from, and a lease is honored only while it **and every
+/// ancestor above it** are active. A revocation is never undone and an id is
+/// never re-linked, so a lease cannot be resurrected by re-registering or
+/// re-deriving it.
 #[derive(Debug, Default)]
 pub struct DelegationLedger {
-    generations: Mutex<HashMap<LeaseId, RevocationState>>,
+    entries: Mutex<HashMap<LeaseId, LedgerEntry>>,
 }
 
 impl DelegationLedger {
-    /// A ledger tracking no parent leases yet.
+    /// A ledger tracking no leases yet.
     pub fn new() -> Self {
         Self {
-            generations: Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Start tracking `lease`'s revocation state, if this ledger has not seen
-    /// it before.
+    /// Start tracking `lease` as the root of a delegation chain.
     ///
-    /// A no-op for a lease id the ledger already tracks: the ledger's own
-    /// state is the one this crate treats as authoritative from that point
-    /// forward, and re-seeding it from a possibly-stale clone of `lease`
-    /// would let a caller resurrect a revoked lease by calling this again
-    /// with an older snapshot.
-    pub fn register_parent(&self, lease: &CapabilityLease) {
-        let mut generations = self.generations.lock().expect("DelegationLedger mutex poisoned");
-        generations
-            .entry(lease.id().clone())
-            .or_insert_with(|| lease.revocation().clone());
+    /// # Errors
+    ///
+    /// * [`DelegationDenied::DuplicateLeaseId`] when the ledger already knows
+    ///   the id. The ledger's own state is authoritative from the first moment
+    ///   it knows an id; re-seeding it from a possibly-stale clone would let a
+    ///   caller resurrect a revoked lease with an older snapshot.
+    /// * [`DelegationDenied::AncestryUnverifiable`] when `lease` carries
+    ///   delegation provenance. Only a provenance-free lease can be a root —
+    ///   registering a mid-chain lease as one would sever its link to the
+    ///   ancestors above it, so revoking those ancestors would no longer
+    ///   reach it.
+    pub fn register_parent(&self, lease: &CapabilityLease) -> Result<(), DelegationDenied> {
+        let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        if entries.contains_key(lease.id()) {
+            return Err(DelegationDenied::DuplicateLeaseId);
+        }
+        Self::insert_root(&mut entries, lease)
     }
 
-    /// Record that `parent` is revoked as of `generation`.
-    pub fn revoke(&self, parent: &LeaseId, generation: u64, reason: impl Into<String>) {
-        let mut generations = self.generations.lock().expect("DelegationLedger mutex poisoned");
-        generations.insert(
-            parent.clone(),
-            RevocationState::Revoked {
-                generation,
-                reason: reason.into(),
+    fn insert_root(
+        entries: &mut HashMap<LeaseId, LedgerEntry>,
+        lease: &CapabilityLease,
+    ) -> Result<(), DelegationDenied> {
+        if lease.provenance().is_some() {
+            return Err(DelegationDenied::AncestryUnverifiable);
+        }
+        entries.insert(
+            lease.id().clone(),
+            LedgerEntry {
+                state: lease.revocation().clone(),
+                link: Link::Root,
             },
         );
+        Ok(())
+    }
+
+    /// Record that `lease` is revoked as of `generation`.
+    ///
+    /// Changes the lease's state only and keeps its parent edge, so a revoked
+    /// lease still sits in its chain and everything below it stays refused.
+    /// An id the ledger does not know yet is inserted as unlinked: the
+    /// revocation is honored (nothing can later register or derive that id),
+    /// but no chain through it can be verified.
+    pub fn revoke(&self, lease: &LeaseId, generation: u64, reason: impl Into<String>) {
+        let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        let state = RevocationState::Revoked {
+            generation,
+            reason: reason.into(),
+        };
+        entries
+            .entry(lease.clone())
+            .and_modify(|entry| entry.state = state.clone())
+            .or_insert(LedgerEntry {
+                state,
+                link: Link::Unlinked,
+            });
+    }
+
+    /// Whether `lease` and every ancestor above it are known, linked and
+    /// active, observed under the ledger lock at the moment of the call.
+    ///
+    /// Observation only: nothing here claims a revocation recorded a moment
+    /// later is seen, and this crate makes no revocation-latency claim.
+    pub(crate) fn verify_chain(&self, lease: &LeaseId) -> Result<(), ChainFault> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        Self::verify_chain_locked(&entries, lease)
+    }
+
+    /// The recorded reason when `lease` itself — not its ancestors — is
+    /// revoked in this ledger; `None` for an unknown or active lease.
+    pub(crate) fn revoked_reason(&self, lease: &LeaseId) -> Option<String> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        match &entries.get(lease)?.state {
+            RevocationState::Revoked { reason, .. } => Some(reason.clone()),
+            RevocationState::Active { .. } => None,
+        }
+    }
+
+    /// Walk from `start` to its root, requiring every hop to be known,
+    /// active and linked.
+    ///
+    /// Fails closed on anything it cannot positively verify: an id the ledger
+    /// does not know, an [`Link::Unlinked`] entry, or a walk longer than the
+    /// ledger has entries (a cycle is impossible by construction — edges are
+    /// written once, to an already-known parent, for an id that was not
+    /// known — but the bound keeps a corrupted map from looping forever).
+    fn verify_chain_locked(entries: &HashMap<LeaseId, LedgerEntry>, start: &LeaseId) -> Result<(), ChainFault> {
+        let mut current = start;
+        for _ in 0..=entries.len() {
+            let Some(entry) = entries.get(current) else {
+                return Err(ChainFault::Unverifiable { lease: current.clone() });
+            };
+            if let RevocationState::Revoked { reason, .. } = &entry.state {
+                return Err(ChainFault::Revoked {
+                    lease: current.clone(),
+                    reason: reason.clone(),
+                });
+            }
+            match &entry.link {
+                Link::Root => return Ok(()),
+                Link::Parent(parent) => current = parent,
+                Link::Unlinked => return Err(ChainFault::Unverifiable { lease: current.clone() }),
+            }
+        }
+        Err(ChainFault::Unverifiable { lease: start.clone() })
     }
 
     /// Read `parent`'s current tracked state and derive a child lease under
@@ -190,29 +340,51 @@ impl DelegationLedger {
     /// the generation observed **inside this critical section**, which is
     /// what lets a caller later distinguish "derived before the revocation"
     /// from "derived after" even though both calls may have started before
-    /// the revoking call returned.
+    /// the revoking call returned. The child is recorded in the ledger with
+    /// an edge to `parent`.
+    ///
+    /// # Errors
+    ///
+    /// Besides the [`CapabilityLease::derive_child`] refusals:
+    /// [`DelegationDenied::AncestryUnverifiable`] for a parent that carries
+    /// provenance but is unknown to this ledger, and
+    /// [`DelegationDenied::DuplicateLeaseId`] when `request.child_id` is
+    /// already known — a known id is never re-derived or re-linked.
     pub fn derive_child(
         &self,
         parent: &CapabilityLease,
         request: ChildLeaseRequest,
         issued_at: SystemTime,
     ) -> Result<CapabilityLease, DelegationDenied> {
-        let mut generations = self.generations.lock().expect("DelegationLedger mutex poisoned");
-        let state = generations
-            .entry(parent.id().clone())
-            .or_insert_with(|| parent.revocation().clone());
-        if !state.is_active() {
-            return Err(DelegationDenied::ParentRevoked);
+        let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        if !entries.contains_key(parent.id()) {
+            Self::insert_root(&mut entries, parent)?;
         }
-        let generation = revocation_generation(state);
+        Self::verify_chain_locked(&entries, parent.id()).map_err(|fault| match fault {
+            ChainFault::Revoked { .. } => DelegationDenied::ParentRevoked,
+            ChainFault::Unverifiable { .. } => DelegationDenied::AncestryUnverifiable,
+        })?;
+        if entries.contains_key(&request.child_id) {
+            return Err(DelegationDenied::DuplicateLeaseId);
+        }
+        let generation = revocation_generation(&entries[parent.id()].state);
         // The scope order lives in `crate::scope_order` (AAASM-6161's real
         // comparators) rather than being threaded in by the caller — this is
         // the one call site that replaces `UndefinedScopeOrder` with a real
         // per-domain comparator, per ADR 0038 §4's promise that AAASM-6161
         // could plug one in without a `derive_child` signature change.
         let order = crate::scope_order::order_for(parent.domain());
-        let child = parent.derive_child(request, order, issued_at)?;
-        Ok(child.with_provenance_generation(generation))
+        let child = parent
+            .derive_child(request, order, issued_at)?
+            .with_provenance_generation(generation);
+        entries.insert(
+            child.id().clone(),
+            LedgerEntry {
+                state: child.revocation().clone(),
+                link: Link::Parent(parent.id().clone()),
+            },
+        );
+        Ok(child)
     }
 }
 
@@ -262,9 +434,13 @@ mod tests {
         .with_delegation(DelegationRule::DelegableWithNarrowerScope)
     }
 
+    /// A fresh lease id per request: the ledger refuses an id it already
+    /// knows, so requests that must all succeed cannot share one.
     fn child_request(scope: RequirementScope) -> ChildLeaseRequest {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         ChildLeaseRequest {
-            child_id: LId::new("child-lease"),
+            child_id: LId::new(format!("child-lease-{n}")),
             child_subject: IdentityRef::root("child-agent").with_ancestor("parent-agent"),
             child_scope: scope,
             child_expires_at: t(4_000),
@@ -282,7 +458,8 @@ mod tests {
     fn parent_authority_requires_a_real_witness_from_the_gate() {
         let spec = ExecutionSpec::new("echo", IdentityRef::root("parent-agent")).with_lease(parent_lease());
         let witness = authority_gate(&spec, &Ancestry::Root, t(1_500)).expect("root launch with its own lease gates");
-        let parent = ParentAuthority::from_gated_spec(&spec, &witness);
+        let ledger = Arc::new(DelegationLedger::new());
+        let parent = ParentAuthority::from_gated_spec(&spec, &witness, ledger);
         assert_eq!(parent.identity().agent_id, "parent-agent");
         assert!(parent.lease_for(CapabilityDomain::FilesystemRead).is_some());
     }
@@ -291,7 +468,9 @@ mod tests {
     fn ledger_registers_and_tracks_revocation() {
         let ledger = DelegationLedger::new();
         let parent = parent_lease();
-        ledger.register_parent(&parent);
+        ledger
+            .register_parent(&parent)
+            .expect("a provenance-free lease registers as a root");
 
         let child = ledger
             .derive_child(
@@ -321,6 +500,84 @@ mod tests {
         assert_eq!(after_revoke, Err(DelegationDenied::ParentRevoked));
     }
 
+    fn request_with_id(id: &str, path: &str, delegation: DelegationRule) -> ChildLeaseRequest {
+        ChildLeaseRequest {
+            child_id: LId::new(id),
+            child_subject: IdentityRef::root("child-agent").with_ancestor("parent-agent"),
+            child_scope: RequirementScope::Selectors(vec![format!("permit-only:{path}")]),
+            child_expires_at: t(4_000),
+            mode: InheritanceMode::Narrower,
+            child_delegation: delegation,
+            child_limits: None,
+        }
+    }
+
+    /// AAASM-6307: revoking the root must stop derivation at every depth, not
+    /// only directly under the revoked lease.
+    #[test]
+    fn revoking_the_root_refuses_a_fresh_grandchild_derivation() {
+        let ledger = DelegationLedger::new();
+        let root = parent_lease();
+        ledger.register_parent(&root).unwrap();
+        let child = ledger
+            .derive_child(
+                &root,
+                request_with_id("c", "/workspace/a", DelegationRule::DelegableWithNarrowerScope),
+                t(1_100),
+            )
+            .unwrap();
+        // Positive control: the grandchild derives while the root is active.
+        ledger
+            .derive_child(
+                &child,
+                request_with_id("g0", "/workspace/a/x", DelegationRule::NotDelegable),
+                t(1_200),
+            )
+            .expect("a grandchild derives under an all-active chain");
+
+        ledger.revoke(root.id(), 1, "operator revoked the root");
+        assert_eq!(
+            ledger.derive_child(
+                &child,
+                request_with_id("g1", "/workspace/a/y", DelegationRule::NotDelegable),
+                t(1_300),
+            ),
+            Err(DelegationDenied::ParentRevoked)
+        );
+    }
+
+    #[test]
+    fn a_known_child_id_is_never_re_derived_and_an_unknown_provenanced_parent_is_unverifiable() {
+        let ledger = DelegationLedger::new();
+        let root = parent_lease();
+        let child = ledger
+            .derive_child(
+                &root,
+                request_with_id("c", "/workspace/a", DelegationRule::DelegableWithNarrowerScope),
+                t(1_100),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger.derive_child(
+                &root,
+                request_with_id("c", "/workspace/b", DelegationRule::NotDelegable),
+                t(1_100),
+            ),
+            Err(DelegationDenied::DuplicateLeaseId)
+        );
+        // `child` carries provenance; a ledger that never saw it cannot verify
+        // what is above it.
+        let other = DelegationLedger::new();
+        assert_eq!(
+            other.derive_child(
+                &child,
+                request_with_id("g", "/workspace/a/x", DelegationRule::NotDelegable),
+                t(1_200),
+            ),
+            Err(DelegationDenied::AncestryUnverifiable)
+        );
+    }
+
     /// §4.6: concurrent creation does not race around revocation.
     ///
     /// A pure lock-acquisition race at microsecond granularity cannot be made
@@ -342,7 +599,9 @@ mod tests {
         const GROUP_SIZE: usize = 16;
         let ledger = Arc::new(DelegationLedger::new());
         let parent = Arc::new(parent_lease());
-        ledger.register_parent(&parent);
+        ledger
+            .register_parent(&parent)
+            .expect("a provenance-free lease registers as a root");
 
         fn spawn_group(
             ledger: &Arc<DelegationLedger>,
@@ -432,6 +691,7 @@ mod tests {
         let stale_ancestry = Ancestry::Parent(Box::new(ParentAuthority::from_gated_spec(
             &parent_spec,
             &parent_witness,
+            Arc::clone(&ledger),
         )));
 
         for child in &oks {
