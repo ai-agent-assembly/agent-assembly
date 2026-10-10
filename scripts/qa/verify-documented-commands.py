@@ -195,46 +195,7 @@ def _strip_quote(line: str) -> str:
 
 
 def extract_blocks(file_rel: str) -> list[Unit]:
-    path = REPO_ROOT / file_rel
-    lines = path.read_text(encoding="utf-8").splitlines()
-
-    units: list[Unit] = []
-    heading = ""
-    i = 0
-    while i < len(lines):
-        raw = lines[i]
-        m = HEADING_RE.match(raw)
-        if m:
-            heading = m.group(2)
-            i += 1
-            continue
-        dt = DATA_TITLE_RE.search(raw)
-        if dt:
-            heading = dt.group(1)
-
-        fm = FENCE_START_RE.match(raw)
-        if fm:
-            lang = fm.group(3).lower()
-            indent = len(fm.group(2))
-            body_lines: list[str] = []
-            i += 1
-            while i < len(lines) and not FENCE_END_RE.match(lines[i]):
-                body = _strip_quote(lines[i])
-                lead = len(body) - len(body.lstrip(" "))
-                body_lines.append(body[min(indent, lead):])
-                i += 1
-            i += 1  # consume closing fence
-            if lang not in FENCE_LANGS:
-                continue
-            if lang == "console":
-                units.extend(_split_console(file_rel, heading, lang, body_lines))
-            else:
-                text = "\n".join(body_lines).strip("\n")
-                if text.strip():
-                    units.append(Block(file_rel, heading, lang, text))
-            continue
-        i += 1
-    return units
+    return _extract_blocks_from_path(REPO_ROOT / file_rel, file_rel)
 
 
 def _split_console(file_rel: str, heading: str, lang: str, body_lines: list[str]) -> list[ConsoleCommand]:
@@ -966,12 +927,29 @@ def selftest() -> int:
     else:
         print("SELFTEST (b) passed: a failing command was correctly reported as a failure")
 
+    # (c) a fence indented under a list item must be extracted. A column-0-only
+    # fence pattern skipped these silently, hiding documented commands from the
+    # gate altogether.
+    indented = fixture_dir / "indented.md"
+    indented.write_text(
+        "# Fixture\n\n## Steps\n\n1. Do the thing:\n\n   ```console\n"
+        "   $ aasm indented-fence-command --flag\n   ```\n",
+        encoding="utf-8",
+    )
+    found = _extract_blocks_from_path(indented, "indented.md")
+    if not any(getattr(u, "command", None) == "aasm indented-fence-command --flag" for u in found):
+        print("SELFTEST FAILED (c): a fence indented under a list item was not extracted")
+        ok = False
+    else:
+        print("SELFTEST (c) passed: an indented fence is extracted")
+
     return 0 if ok else 1
 
 
 def _extract_blocks_from_path(path: Path, label: str) -> list[Unit]:
-    # Same parser as extract_blocks(), but for an arbitrary path (used only
-    # by selftest fixtures, which need not live under REPO_ROOT).
+    # THE parser: extract_blocks() delegates here, so the selftest fixtures
+    # (which need not live under REPO_ROOT) exercise the exact code path the
+    # real docs go through, not a second copy that could drift from it.
     lines = path.read_text(encoding="utf-8").splitlines()
     units: list[Unit] = []
     heading = ""
@@ -983,6 +961,10 @@ def _extract_blocks_from_path(path: Path, label: str) -> list[Unit]:
             heading = m.group(2)
             i += 1
             continue
+        dt = DATA_TITLE_RE.search(raw)
+        if dt:
+            heading = dt.group(1)
+
         fm = FENCE_START_RE.match(raw)
         if fm:
             lang = fm.group(3).lower()
@@ -994,7 +976,7 @@ def _extract_blocks_from_path(path: Path, label: str) -> list[Unit]:
                 lead = len(body) - len(body.lstrip(" "))
                 body_lines.append(body[min(indent, lead):])
                 i += 1
-            i += 1
+            i += 1  # consume closing fence
             if lang not in FENCE_LANGS:
                 continue
             if lang == "console":
