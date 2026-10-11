@@ -417,6 +417,9 @@ mod tests {
             ("1099511627776", Some("0.0.0.0"), Restricted),
             ("6425673729", Some("127.0.0.1"), Restricted),
             ("0x17F000001", Some("127.0.0.1"), Restricted),
+            // Truncates to a PUBLIC address (8.8.8.8): still refused, because
+            // a resolver that rejects instead of truncating would disagree.
+            ("0x108080808", Some("8.8.8.8"), Restricted),
             // Invalid-octal parts: libc falls back to decimal.
             ("0192.0168.0.1", Some("192.168.0.1"), Restricted),
             ("192.168.0.08", Some("192.168.0.8"), Restricted),
