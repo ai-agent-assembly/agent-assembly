@@ -298,8 +298,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a second Linux backend adding seccomp syscall enforcement and `/proc` scoping so
   a delegated child's environment becomes a real credential boundary, with its own
   adversarial suite and three-arm (unconfined / sandlock / native) benchmark.
-- **macOS VM backend (Experimental)** (AAASM-5812, AAASM-5813, AAASM-5814, AAASM-5837) — the
-  guest kernel and rootfs are operator-supplied (not shipped) and no CI lane exercises it;
+- **macOS VM backend (Experimental)** (AAASM-5812, AAASM-5813, AAASM-5814, AAASM-5837) — (corrected
+  in place 2026-10-11, AAASM-6301: the label and the next sentence are new, and the original verb was
+  softened to "includes") the guest kernel and rootfs are operator-supplied (not shipped) and no CI lane exercises it;
   maturity is Experimental, not a statement about capability or availability. Boots a
   real Linux guest via `Virtualization.framework` (virtiofs + vsock transport,
   Landlock-capable guest kernel) and runs `aa-isolation-launch` unmodified inside
