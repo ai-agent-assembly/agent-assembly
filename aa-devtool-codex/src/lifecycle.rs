@@ -191,8 +191,12 @@ impl CodexIntegration {
         let mut rendered = BTreeMap::new();
         for step in &plan.steps {
             match &step.action {
-                StepAction::WriteManagedSettings { .. } => {
-                    rendered.insert(step.id.clone(), managed_settings_toml(plan.profile)?);
+                StepAction::WriteManagedSettings { path, .. } => {
+                    let content = managed_settings_toml(plan.profile)?;
+                    // Re-checked at apply time: the user may have edited the file
+                    // between review and apply (AAASM-6327).
+                    refuse_to_relax(path, &content).await?;
+                    rendered.insert(step.id.clone(), content);
                 }
                 StepAction::MaterialiseTrustMaterial { .. } => {
                     rendered.insert(step.id.clone(), self.read_ca_pem().await?);
@@ -368,6 +372,7 @@ impl DevToolIntegration for CodexIntegration {
         //    surface, and it is always the developer's own file. Domain
         //    lists are not written here — see the `MANAGED_KEYS` comment.
         let settings = managed_settings_toml(request.profile)?;
+        refuse_to_relax(&settings_path, &settings).await?;
         plan = plan.with_step(IntegrationStep::new(
             STEP_MANAGED_SETTINGS,
             StepAction::WriteManagedSettings {
@@ -736,6 +741,50 @@ impl LaunchableTool for CodexIntegration {
         }
         Ok(cmd)
     }
+}
+
+/// Refuses an install that would lower, or replace an unrankable, `sandbox_mode`
+/// / `approval_policy` the user already holds (AAASM-6327).
+///
+/// This refuses rather than quietly skipping the key because a plan whose
+/// receipt says the integration is applied while a managed key was withheld
+/// would misreport what is enforced. The content stays host-independent so its
+/// digest and the removal receipt do not vary by machine.
+async fn refuse_to_relax(path: &std::path::Path, managed_toml: &str) -> Result<(), AdapterError> {
+    let invalid =
+        |msg: String| AdapterError::SettingsApplyFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
+    let existing: toml::Table = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => toml::from_str(&raw).map_err(|e| {
+            invalid(format!(
+                "{} is not valid TOML, refusing to touch it: {e}",
+                path.display()
+            ))
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
+    };
+    let mut managed: toml::Table =
+        toml::from_str(managed_toml).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
+    // A key absent from the user's file is not a relaxation: install writes the
+    // strictest values, so only an existing looser or unrankable value matters.
+    let withheld: Vec<_> = crate::strictness::withhold_relaxations(&existing, &mut managed)
+        .into_iter()
+        .filter(|w| existing.contains_key(w.key))
+        .collect();
+    if let Some(w) = withheld.first() {
+        return Err(invalid(format!(
+            "{} sets `{}` = `{}`, which {}; Agent Assembly will not lower it. Change it yourself if you want the managed value, then re-run",
+            path.display(),
+            w.key,
+            w.existing,
+            if w.unrankable {
+                "Agent Assembly cannot compare with its own"
+            } else {
+                "is stricter than the managed value"
+            }
+        )));
+    }
+    Ok(())
 }
 
 /// The managed settings block one profile resolves to.

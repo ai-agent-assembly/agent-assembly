@@ -193,6 +193,68 @@ async fn codex_remove_restores_the_users_original_values() {
     );
 }
 
+/// AAASM-6327: install over an approval value AA cannot rank (`never`, a granular
+/// table) must refuse and leave the file byte-for-byte alone -- replacing either
+/// could only relax what the user chose.
+#[tokio::test]
+async fn codex_install_refuses_to_replace_an_unrankable_approval_policy() {
+    for cfg in [
+        "approval_policy = \"never\"\n",
+        "[approval_policy.granular]\nsandbox_approval = true\n",
+    ] {
+        let w = World::new();
+        std::fs::write(w.config(), cfg).unwrap();
+        let err = install(&w, 1_000).await.expect_err(cfg);
+        assert!(err.contains("approval_policy"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(w.config()).unwrap(),
+            cfg,
+            "file must be untouched"
+        );
+    }
+}
+
+/// The refusal reads the top level only: `[profiles.work] approval_policy =
+/// "never"` (in `USER_CONFIG`) is user-owned and must not block an install.
+#[tokio::test]
+async fn codex_install_ignores_unrankable_values_inside_profiles() {
+    let w = World::new();
+    std::fs::write(w.config(), USER_CONFIG).unwrap();
+    install(&w, 1_000).await.expect("profiles.* is not compared");
+}
+
+/// Install over a config that is already at the strictest values is a no-op
+/// and must not be mistaken for a relaxation (kills a `>` instead of `>=`).
+#[tokio::test]
+async fn codex_install_over_the_strictest_values_succeeds() {
+    let w = World::new();
+    std::fs::write(
+        w.config(),
+        "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"\n",
+    )
+    .unwrap();
+    install(&w, 1_000).await.unwrap();
+    let t = parse(&w.config());
+    assert_eq!(t["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// An install from before AAASM-6319 wrote retired spellings; update/repair of
+/// it must still go through and write the loadable values.
+#[tokio::test]
+async fn codex_update_of_a_pre_6319_install_writes_loadable_values() {
+    let w = World::new();
+    std::fs::write(
+        w.config(),
+        "sandbox_mode = \"suggest\"\n[approval_policy]\nfile_writes = \"auto\"\nshell_exec = \"prompt\"\nnetwork = \"auto\"\nmcp_calls = \"auto\"\n",
+    )
+    .unwrap();
+    install(&w, 1_000).await.unwrap();
+    let t = parse(&w.config());
+    assert_eq!(t["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
+}
+
 /// CHARACTERISATION: the file after install+remove is NOT the user's original
 /// bytes -- comments are gone and tables are re-serialised in sorted key order
 /// (`args` before `command`). Pins the observed bytes so a change is noticed.

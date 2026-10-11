@@ -26,7 +26,7 @@ pub(crate) struct Withheld {
 
 const SANDBOX: &str = "sandbox_mode";
 const APPROVAL: &str = "approval_policy";
-const TOP: u8 = u8::MAX;
+type Rank = fn(&toml::Value) -> Option<u8>;
 
 fn sandbox_rank(v: &toml::Value) -> Option<u8> {
     match v.as_str()? {
@@ -75,13 +75,12 @@ fn describe(v: &toml::Value) -> String {
 /// overwrite a value that cannot be ranked. Other keys are left alone.
 pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::Table) -> Vec<Withheld> {
     let mut withheld = Vec::new();
-    let checks: [(&'static str, fn(&toml::Value) -> Option<u8>); 2] =
-        [(SANDBOX, sandbox_rank), (APPROVAL, approval_rank)];
+    let checks: [(&'static str, Rank); 2] = [(SANDBOX, sandbox_rank), (APPROVAL, approval_rank)];
     for (key, rank) in checks {
         let Some(aa) = managed.get(key) else { continue };
         let Some(current) = existing.get(key) else {
             // Absent ranks strictest: only the strictest AA value may land.
-            if rank(aa).is_none_or(|r| r < strictest(key)) {
+            if !rank(aa).is_some_and(|r| r >= strictest(key)) {
                 managed.remove(key);
             }
             continue;
