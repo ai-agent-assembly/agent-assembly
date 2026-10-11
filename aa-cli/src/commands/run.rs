@@ -3780,23 +3780,77 @@ mod plan {
                 vm_section.contains("**Maturity: Experimental**"),
                 "execution-isolation.md's macOS VM section no longer states the maturity"
             );
+            // Each document that states the macOS VM backend's status must
+            // (a) call it Experimental, (b) pin the two facts that qualify it,
+            // and (c) carry no paragraph about the macOS VM backend that
+            // claims production support, default availability or shipping.
+            // A tagged release's ORIGINAL wording ("Three backends ship") may
+            // stay only beside the dated erratum.
+            const ERRATUM: &str = "Corrected 2026-10-11 (AAASM-6301)";
+            let forbidden = [
+                "supported for production",
+                "production-ready",
+                "production ready",
+                "production-grade",
+                "available by default",
+                "ci-tested",
+                "ships",
+                "ship and",
+            ];
+            let scoped = |rel: &str, text: &str| {
+                let lower = text.to_lowercase();
+                assert!(
+                    lower.contains("experimental"),
+                    "{rel} does not describe the macOS VM backend as Experimental"
+                );
+                assert!(lower.contains("no ci lane"), "{rel} no longer pins `no CI lane`");
+                assert!(
+                    ["operator-supplied", "operator-built", "operator supplies"]
+                        .iter()
+                        .any(|f| lower.contains(f)),
+                    "{rel} no longer pins that the guest kernel/rootfs are operator-supplied"
+                );
+                // A list item is its own unit, so one bullet cannot hide behind another.
+                for paragraph in text.replace("\n- ", "\n\n- ").split("\n\n") {
+                    let p = paragraph.to_lowercase();
+                    if !(p.contains("macos vm") || p.contains("macos-vm")) {
+                        continue;
+                    }
+                    // The one legitimate use of the word is ADR 0035's definition.
+                    let p = p.replace("not validated for production use", "");
+                    for bad in forbidden {
+                        assert!(
+                            !p.contains(bad),
+                            "{rel}: a macOS VM paragraph contains `{bad}`: {paragraph}"
+                        );
+                    }
+                }
+            };
+            scoped("execution-isolation.md macOS VM section", vm_section);
             for rel in [
                 "docs/release/v0.0.1-rc.7.md",
                 "CHANGELOG.md",
                 "docs/src/compatibility.md",
             ] {
                 let text = read(rel);
-                assert!(
-                    text.to_lowercase().contains("experimental macos vm backend")
-                        || text.contains("macOS VM backend (Experimental)")
-                        || text.contains("**Experimental** macOS VM backend"),
-                    "{rel} does not describe the macOS VM backend as Experimental"
-                );
+                if rel != "docs/src/compatibility.md" {
+                    assert!(text.contains(ERRATUM), "{rel} lost its dated macOS VM erratum");
+                }
+                // Original (tagged) wording is allowed to remain; scan the text
+                // with it removed so only NEW claims are judged.
+                let judged = text.replace("Three backends ship", "Three backends [original wording]");
+                if rel == "CHANGELOG.md" {
+                    // Only the rc.7 programme section is about this backend.
+                    let start = judged
+                        .find("### Execution isolation programme")
+                        .expect("rc.7 programme section");
+                    let section = &judged[start..];
+                    let end = section[10..].find("\n### ").map(|i| i + 10).unwrap_or(section.len());
+                    scoped(rel, &section[..end]);
+                } else {
+                    scoped(rel, &judged);
+                }
             }
-            assert!(
-                !read("docs/release/v0.0.1-rc.7.md").contains("Three backends ship"),
-                "rc.7 release notes again claim 'Three backends ship'"
-            );
 
             // 4. Availability: with the operator-supplied substrate missing
             //    the backend is Unavailable, never ready. Skipped only on a
