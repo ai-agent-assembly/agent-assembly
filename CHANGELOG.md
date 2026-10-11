@@ -280,6 +280,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > their network calls. Three backends ship, each reached only when the host
 > actually supports it — an absent backend is reported absent, never silently
 > upgraded to a stronger one.
+>
+> Corrected 2026-10-11 (AAASM-6301): the macOS VM backend is Experimental; guest kernel/rootfs are operator-supplied and not shipped, no CI lane. (The sentence above is the original rc.7 wording, kept for the record.)
 
 #### Added
 
@@ -296,10 +298,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a second Linux backend adding seccomp syscall enforcement and `/proc` scoping so
   a delegated child's environment becomes a real credential boundary, with its own
   adversarial suite and three-arm (unconfined / sandlock / native) benchmark.
-- **macOS VM backend** (AAASM-5812, AAASM-5813, AAASM-5814, AAASM-5837) — boots a
+- **macOS VM backend (Experimental)** (AAASM-5812, AAASM-5813, AAASM-5814, AAASM-5837) — (corrected
+  in place 2026-10-11, AAASM-6301: the label and the next sentence are new, and the original verb was
+  softened to "includes") the guest kernel and rootfs are operator-supplied (not shipped) and no CI lane exercises it;
+  maturity is Experimental, not a statement about capability or availability. Boots a
   real Linux guest via `Virtualization.framework` (virtiofs + vsock transport,
   Landlock-capable guest kernel) and runs `aa-isolation-launch` unmodified inside
-  it; ships with a host↔guest launch protocol, guest licensing/adversarial
+  it; includes a host↔guest launch protocol, guest licensing/adversarial
   coverage, and an informational cold-start benchmark. This backend measures
   rather than assumes its own capability — AAASM-5813 adds a real capability
   probe instead of inferring support from configuration.

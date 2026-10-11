@@ -1361,6 +1361,9 @@ journeys:
   # macos-apple-silicon specifically, not bare macos: Intel is explicitly
   # unverified per verification-report-AAASM-5811-hardware-qualification.md
   # and must not be implied as covered.
+  # 2026-10-11 (AAASM-6301, J94): the founder classified aasm-macos-vm as
+  # Experimental (ADR 0035 section 4) -- a maturity label, separate from this
+  # row's capability evidence and from runtime availability. See J94.
   release_blocking: true
   lifecycle_state: manual_live
   evidence:
@@ -2838,3 +2841,95 @@ journeys:
   - main
   fidelity: real_local_process
   negative_control: 'AAASM-6297 (ST-10, independent QA, macOS): Claude Code is covered by J70 and not repeated. Codex was driven through the real IntegrationEngine + CodexIntegration over a throwaway HOME (never the real config): user keys/tables preserved (parsed comparison), a second install byte-identical and reported unchanged, remove restores the user''s own values including the user''s own value of a managed key, an unparseable config.toml is refused and left untouched with no receipt, owned paths are disjoint from Claude Code''s. Mutation (reverted): make merge_managed_keys start from an empty document -> 4 tests red. Verdict PARTIAL, findings not fixed (QA scope), each with a passing characterisation and an #[ignore]d desired_* test: (F1) the values Codex install writes are REJECTED by the real codex-cli 0.160.0 (measured with a throwaway CODEX_HOME and `codex mcp list`, a config load: sandbox_mode="suggest" unknown variant; [approval_policy] table unknown variant file_writes; empty config, sandbox_mode="read-only" and approval_policy="on-request" all load), so installing the Codex integration leaves codex unable to load its config (aa-devtool-codex/src/lifecycle.rs managed_settings_toml); (F2) the TOML round-trip permanently drops the user''s comments and re-orders keys, install and remove (aa-core fingerprint.rs merge_managed_keys); (F5) Copilot and Windsurf have no plan/receipt/remove at all (uninstall UNSUPPORTED), Copilot governance writes autoApprove=true and requireApproval=never for a deny-only policy overwriting a stricter user value with no recorded prior value (aa-devtool-copilot/src/lib.rs auto_approve), apply_mcp_governance permanently deletes denied servers, and VS Code JSONC settings make apply refuse. Install-order independence between Codex and Claude Code is shown structurally (disjoint paths), not by installing both through one engine. No real agent was run.'
+- id: J94
+  jira: AAASM-6301
+  name: Confirm every execution-isolation backend's declared status, support matrix and selectability equals what was measured
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-isolation
+  - aa-isolation-native
+  - aa-isolation-sandlock
+  - aa-isolation-macos-vm
+  - aa-cli
+  - docs/src/security
+  - metadata
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6301 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6168
+  - AAASM-6169
+  - AAASM-6170
+  - AAASM-5811
+  release_blocking: true
+  # AAASM-6301 (ST-13, area 13 of AAASM-6174), macOS Apple Silicon host. PARTIAL,
+  # not automated: (a) the Linux-backend halves of the support matrix are only
+  # compared against `discover()` over a synthetic all-denied probe (the real
+  # kernel probe needs Linux; the CI lanes `isolation-backend-linux` /
+  # `isolation-backend-native-linux` were not re-run by this QA pass), (b) ST-9
+  # and ST-12/12a evidence was not available when this ran.
+  # AC3 DECIDED (founder decision, 2026-10-11): `aasm-macos-vm` is classified
+  # EXPERIMENTAL (ADR 0035 section 4: implemented, not validated for production
+  # use). Maturity is a separate axis from capability (Full/Partial/Unsupported
+  # unchanged) and from availability (a missing guest kernel/rootfs/helper still
+  # reports Unavailable; `auto` selection is unchanged). Recorded in
+  # metadata/isolation-backends.json `backend_maturity` (an additive key: the
+  # existing `status` field is provenance pending|active and cannot express
+  # maturity), the macOS VM section of execution-isolation.md, rc.7 release
+  # notes, CHANGELOG and compatibility.md; tied together by
+  # `macos_vm_maturity_is_experimental_in_metadata_docs_and_availability`.
+  # Claim text corrected by THIS PR (no product behavior touched), exact list:
+  # execution-isolation.md -- AASM-native `Resource` cell (said Unsupported;
+  # `discover()` reports Partial, AAASM-6165) and the "four of the eight
+  # domains" count, the Linux aarch64 row ("Sandlock fully available" with no
+  # aarch64 CI lane or pinned artifact; now "Not measured"), the lead sentence
+  # ("ship" -> "are compiled in", third backend flagged Experimental) and the
+  # Maturity bullet; compatibility.md, CHANGELOG.md and the rc.7 release notes.
+  # History policy: the tagged rc.7 notes and the CHANGELOG intro paragraph keep
+  # their original sentence beside a dated erratum; the CHANGELOG rc.7 bullet
+  # and the compatibility.md rc.7 note are living documents and are corrected IN
+  # PLACE (heading label, qualifiers, "ships with" -> "includes"), the latter two
+  # saying so. Four
+  # sentences (execution-isolation.md x2, troubleshooting.md x2) said
+  # `aasm-macos-vm` is not reached by `--isolation auto` though `auto_select`
+  # walks it last (live-confirmed with `aasm run exec --isolation auto
+  # --dry-run`); those were fixed by PR #2633 (its wording won at merge) and
+  # troubleshooting.md is NOT in this PR's diff.
+  # Limits of the guards: the support-matrix tests compare only
+  # available-vs-Unsupported, so the doc's supported/partial prose is UNGUARDED.
+  # The auto-walk test skips its macos-vm assertion whenever a Linux backend is
+  # Selected; CI is ubuntu-only, so in the pr/main lanes that assertion does NOT
+  # run -- it is exercised on macOS developer hosts only (where both Linux
+  # backends decline).
+  lifecycle_state: partial
+  gap_owner: AAASM-6301
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-native/src/capability.rs::the_documented_support_matrix_matches_what_discover_reports
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-sandlock/src/capability.rs::the_documented_support_matrix_matches_what_discover_reports
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::evaluation_spike_backend_ids_are_refused_and_never_selected
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::no_operator_facing_surface_names_an_evaluation_spike_backend
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::auto_selection_considers_every_compiled_in_backend_including_macos_vm
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::macos_vm_maturity_is_experimental_in_metadata_docs_and_availability
+  execution_lanes:
+  - pr
+  - main
+  fidelity: controlled_fake
+  platforms:
+  - macos-apple-silicon
+  negative_control: 'AAASM-6301 live-mutated each claim and watched its test go red, then reverted (byte-identical to a saved copy). (1) Added a `"gvisor" =>` arm to `explicit_backend` in aa-cli/src/commands/run.rs: `evaluation_spike_backend_ids_are_refused_and_never_selected` failed ("gvisor/Process: ... the `gvisor` backend cannot be selected on this host"). (2) Wrote "Firecracker is available too" into the execution-isolation.md support-matrix lead sentence: `no_operator_facing_surface_names_an_evaluation_spike_backend` failed. (3) Dropped `aasm-macos-vm` from `auto_select`''s CANDIDATES: `auto_selection_considers_every_compiled_in_backend_including_macos_vm` failed ("both Linux backends declined yet auto never considered aasm-macos-vm"). (4) Flipped the Sandlock `Syscall` cell of the support-matrix table to "supported": the sandlock `the_documented_support_matrix_matches_what_discover_reports` failed ("docs say Syscall is supported for sandlock; discover() reports Unsupported"). (5) The AASM-native twin of (4) was red against the UNMODIFIED doc before this pass fixed it: docs said `Resource` Unsupported while `discover()` reports Partial -- a real drift, not a synthetic one. Limit: (4)/(5) run `discover()` over a synthetic all-denied probe, which fixes the available-vs-Unsupported class of each domain but not whether a real Linux kernel actually denies; that stays with the CI lanes named in J62. (6) Maturity: flipping metadata `backend_maturity` to "stable", deleting the doc maturity line, removing the rc.7 erratum, restoring "ships with" in the CHANGELOG bullet, or making `MacosVmBackend::unavailable` report Available each turned `macos_vm_maturity_is_experimental_in_metadata_docs_and_availability` red. An independent re-review found that guard initially scanned only one execution-isolation.md section, so replacing "Experimental" with "generally available" in the support-matrix lead, "Production-ready" in the platform row, or "Supported for production" in quick-start/requirements.md stayed green, as did "is shipped"/"is stable"/"ship in rc.7" and dropping the CHANGELOG bullet''s label; the guard now judges every macOS VM paragraph, list item and table row of those files (whole-word match, negations such as "not shipped" allowed), requires the lead paragraph, both platform rows and the CHANGELOG bullet to say Experimental themselves, and each of those mutations plus (7) is now red. (7) Promoting `aasm-macos-vm` to the front of `auto_select`''s CANDIDATES turned `auto_selection_considers_every_compiled_in_backend_including_macos_vm` red (it now pins the walk to sandlock, aasm-native, aasm-macos-vm order). What the guard still does not pin, found by the third review: the wording of the original rc.7 sentence; a claim phrased without any listed phrase (for example "is supported on Apple Silicon", "is available out of the box", "no longer experimental", "has graduated", "reached GA", which also still satisfy the substring check for the word Experimental); any paragraph that never names the backend by the tokens "macos vm", "macos-vm" or "aasm-macos-vm" (for example "the Apple Silicon backend"); and the order pin compares only the walked prefix, so on a host where Sandlock is Selected the walk is just sandlock and a swap of positions two and three goes unseen (promoting the backend ahead of a Linux one is still caught). All mutations reverted.'

@@ -3515,6 +3515,471 @@ mod plan {
             assert_eq!(plan.authority.egress, EgressContract::not_required());
         }
 
+        /// AAASM-6301: gVisor, Firecracker and Apple Containerization are
+        /// evaluation spikes (AAASM-6168/6169/6170), not backends. Naming one
+        /// must refuse in the same words as any unknown id, listing exactly the
+        /// compiled-in backends, and must never resolve to a backend -- under
+        /// either `--isolation process` or `--isolation auto`. The control is
+        /// the compiled-in id, which must still resolve past this arm.
+        #[test]
+        fn evaluation_spike_backend_ids_are_refused_and_never_selected() {
+            let resolution = not_required_resolution();
+            let compiled_in = [
+                aa_isolation_sandlock::BACKEND_ID,
+                aa_isolation_native::BACKEND_ID,
+                aa_isolation_macos_vm::BACKEND_ID,
+            ];
+            for spike in [
+                "gvisor",
+                "runsc",
+                "firecracker",
+                "apple-containerization",
+                "containerization",
+            ] {
+                for intent in [
+                    super::super::IsolationIntent::Process,
+                    super::super::IsolationIntent::Auto,
+                ] {
+                    let mut args = args_with_intent(intent);
+                    args.isolation_backend = Some(spike.to_string());
+
+                    let error = match RunPlanner::resolve_isolation(&args, PlanPosture::Launch, &resolution) {
+                        Ok(_) => panic!("`{spike}` under {intent:?} must refuse, not resolve to a backend"),
+                        Err(e) => e.to_string(),
+                    };
+                    assert!(
+                        error.contains(&format!("--isolation-backend {spike} names no backend this build has")),
+                        "{spike}/{intent:?}: {error}"
+                    );
+                    for id in compiled_in {
+                        assert!(
+                            error.contains(&format!("`{id}`")),
+                            "{spike}: refusal omits `{id}`: {error}"
+                        );
+                    }
+
+                    let preview = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                        .expect("a preview reports the refusal without erroring");
+                    assert!(preview.backend.is_none(), "{spike}/{intent:?} resolved to a backend");
+                    assert!(preview.absent.is_some(), "{spike}/{intent:?} left no recorded reason");
+                }
+            }
+
+            // Control: a compiled-in id is NOT refused by that arm, so the
+            // assertions above are specific to unknown ids and not to every
+            // `--isolation-backend` value.
+            for id in compiled_in {
+                let mut args = args_with_intent(super::super::IsolationIntent::Process);
+                args.isolation_backend = Some(id.to_string());
+                let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                    .expect("a preview never errors");
+                // On a host that cannot run the backend the plan is still
+                // absent, but for the backend's own reason, never the
+                // "no backend answers to the id" arm the spike ids hit.
+                let reason = plan.absent.clone().unwrap_or_default();
+                assert!(
+                    plan.backend.is_some() || !reason.contains("no backend answers to the id"),
+                    "compiled-in backend `{id}` was refused as an unknown id: {reason}"
+                );
+            }
+        }
+
+        /// AAASM-6301: `--isolation auto` walks all three compiled-in backends,
+        /// `aasm-macos-vm` included, on every host. Several docs once said the
+        /// macOS VM backend is "not selected by `auto`"; this pins the behavior
+        /// those sentences describe. The policy must lower a filesystem
+        /// requirement, or `auto_select` short-circuits to Sandlock without
+        /// walking anything and proves nothing. The walk is lazy: on a host
+        /// where an earlier candidate is `Selected` (e.g. Linux CI with
+        /// Sandlock), the macos-vm assertion below is SKIPPED, so the
+        /// "macOS VM is reached" claim is only exercised where both Linux
+        /// backends decline (e.g. a macOS host).
+        #[test]
+        fn auto_selection_considers_every_compiled_in_backend_including_macos_vm() {
+            let resolution = run_policy::classify(
+                Path::new("/auto-walk.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: auto-walk\nspec:\n  tools:\n    bash:\n      allow: true\n  \
+                 filesystem:\n    read:\n      allow:\n        - /workspace\n    write:\n      allow:\n        - /workspace/build\n",
+            );
+            let args = args_with_intent(super::super::IsolationIntent::Auto);
+            let plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &resolution)
+                .expect("a preview never errors");
+            let selection = plan
+                .selection
+                .expect("a policy with a filesystem requirement makes auto walk the candidate list");
+            let walked: Vec<String> = selection.considered.iter().map(|c| c.id.to_string()).collect();
+            assert!(
+                walked.len() <= 3 && walked.contains(&aa_isolation_sandlock::BACKEND_ID.to_string()),
+                "unexpected walk: {walked:?}"
+            );
+            // Pins "auto selection is unchanged": the walk is always an in-order
+            // prefix of sandlock, aasm-native, aasm-macos-vm, so the Experimental
+            // backend can never be promoted ahead of a Linux one.
+            let order = [
+                aa_isolation_sandlock::BACKEND_ID,
+                aa_isolation_native::BACKEND_ID,
+                aa_isolation_macos_vm::BACKEND_ID,
+            ];
+            assert!(
+                walked
+                    .iter()
+                    .map(String::as_str)
+                    .eq(order[..walked.len()].iter().copied()),
+                "auto no longer walks sandlock, aasm-native, aasm-macos-vm in that order: {walked:?}"
+            );
+            // On a host where an earlier candidate is eligible the walk stops
+            // early (it is lazy), so assert the ORDER-preserving prefix property
+            // and that macos-vm is reached whenever both Linux backends declined.
+            let linux_declined = selection
+                .considered
+                .iter()
+                .filter(|c| c.id != aa_isolation_macos_vm::BACKEND_ID)
+                .all(|c| !matches!(c.verdict, aa_isolation::CandidateVerdict::Selected));
+            if linux_declined {
+                assert!(
+                    walked.contains(&aa_isolation_macos_vm::BACKEND_ID.to_string()),
+                    "both Linux backends declined yet auto never considered aasm-macos-vm: {walked:?}"
+                );
+            }
+        }
+
+        /// AAASM-6301: the evaluation spikes are not backends, so no surface an
+        /// operator reads may name one as if it were available. Scanned: the
+        /// README, every `.md/.json/.toml/.yml/.yaml` under `docs/src` and
+        /// `metadata`, and every `.rs` under `aa-cli/src` except this file
+        /// (whose token list would match itself). The only places allowed to
+        /// name a spike are the ADR and spike write-ups that exist to say it
+        /// is not a backend. An unreadable file FAILS the test, and each
+        /// scanned root has its own positive control (a token that must be
+        /// found there), so an empty result is a measurement and not a broken
+        /// walk.
+        #[test]
+        fn no_operator_facing_surface_names_an_evaluation_spike_backend() {
+            use std::path::{Path, PathBuf};
+
+            const TOKENS: [&str; 4] = ["gvisor", "runsc", "firecracker", "containerization"];
+            const ALLOWED_PREFIXES: [&str; 3] = [
+                "docs/src/adr/0035-",
+                "docs/src/research/AAASM-616",
+                "docs/src/SUMMARY.md",
+            ];
+
+            fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+                let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{} unreadable: {e}", dir.display()));
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path, out);
+                    } else if matches!(
+                        path.extension().and_then(|e| e.to_str()),
+                        Some("md" | "json" | "toml" | "yml" | "yaml")
+                    ) {
+                        out.push(path);
+                    }
+                }
+            }
+
+            fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+                let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{} unreadable: {e}", dir.display()));
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk_rs(&path, out);
+                    } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                        out.push(path);
+                    }
+                }
+            }
+
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+            let mut files = vec![root.join("README.md")];
+            walk(&root.join("docs/src"), &mut files);
+            walk(&root.join("metadata"), &mut files);
+            let mut sources = Vec::new();
+            walk_rs(&root.join("aa-cli/src"), &mut sources);
+            files.extend(sources);
+
+            let mut offenders = Vec::new();
+            // (relative path suffix, token that must be found in it)
+            let mut controls: Vec<(&str, &str, bool)> = vec![
+                ("docs/src/adr/0035-", "gvisor", false),
+                ("README.md", "assembly", false),
+                ("metadata/isolation-backends.json", "sandlock", false),
+                ("aa-cli/src/commands/execution_receipt/host.rs", "sandlock", false),
+            ];
+            for file in &files {
+                let relative = file.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+                if relative == "aa-cli/src/commands/run.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(file)
+                    .unwrap_or_else(|e| panic!("{relative} could not be read, so it was not scanned: {e}"));
+                let lower = text.to_lowercase();
+                for (prefix, token, found) in controls.iter_mut() {
+                    if relative.starts_with(*prefix) && lower.contains(*token) {
+                        *found = true;
+                    }
+                }
+                let allowed = ALLOWED_PREFIXES.iter().any(|p| relative.starts_with(p));
+                if !allowed {
+                    for token in TOKENS {
+                        if lower.contains(token) {
+                            offenders.push(format!("{relative} names `{token}`"));
+                        }
+                    }
+                }
+            }
+            for (prefix, token, found) in &controls {
+                assert!(
+                    *found,
+                    "positive control failed: nothing under `{prefix}` was read containing `{token}`, so the scan of that root proves nothing"
+                );
+            }
+            assert!(
+                offenders.is_empty(),
+                "an operator-facing surface names an evaluation spike as if it were a backend: {offenders:#?}"
+            );
+
+            // The count the support matrix leads with must track the compiled-in set.
+            let matrix = std::fs::read_to_string(root.join("docs/src/security/execution-isolation.md")).unwrap();
+            assert!(
+                matrix.contains("**Three execution-isolation backends are compiled in today.**"),
+                "the support matrix no longer states the compiled-in backend count (3: sandlock, aasm-native, \
+                 aasm-macos-vm); update the doc and this test together"
+            );
+        }
+
+        /// AAASM-6301 (founder decision 2026-10-11): `aasm-macos-vm` is
+        /// Experimental. Maturity is a separate axis from capability and from
+        /// availability, so this ties the three places that state it to one
+        /// another and to the backend's real availability: the metadata
+        /// record, the docs that an operator reads (support-matrix section,
+        /// release notes, CHANGELOG, compatibility), and `discover()` --
+        /// which must NOT report the backend ready while its operator-supplied
+        /// substrate is missing. Mutating any one of them turns this red.
+        #[test]
+        fn macos_vm_maturity_is_experimental_in_metadata_docs_and_availability() {
+            use std::path::Path;
+
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+            let read =
+                |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("{rel} unreadable: {e}"));
+
+            // 1. Metadata: the recorded maturity.
+            let metadata: serde_json::Value = serde_json::from_str(&read("metadata/isolation-backends.json")).unwrap();
+            assert_eq!(
+                metadata["backend_maturity"][aa_isolation_macos_vm::BACKEND_ID],
+                "experimental",
+                "metadata/isolation-backends.json no longer records {} as experimental",
+                aa_isolation_macos_vm::BACKEND_ID
+            );
+
+            // 2. ADR 0035 section 4 still defines the tier the metadata cites.
+            assert!(
+                read("docs/src/adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md")
+                    .contains("***Experimental***"),
+                "ADR 0035 no longer defines the Experimental tier"
+            );
+
+            // 3. Docs an operator reads must say Experimental and must not
+            //    say the macOS VM backend simply "ships".
+            let iso = read("docs/src/security/execution-isolation.md");
+            let vm_section = iso
+                .split("### macOS VM runtime prerequisites")
+                .nth(1)
+                .expect("macOS VM section exists")
+                .split("\n## ")
+                .next()
+                .unwrap();
+            assert!(
+                vm_section.contains("**Maturity: Experimental**"),
+                "execution-isolation.md's macOS VM section no longer states the maturity"
+            );
+            // Each document that states the macOS VM backend's status must
+            // (a) call it Experimental, (b) pin the two facts that qualify it,
+            // and (c) carry no paragraph about the macOS VM backend that
+            // claims production support, default availability or shipping.
+            // A tagged release's ORIGINAL wording ("Three backends ship") may
+            // stay only beside the dated erratum.
+            const ERRATUM: &str = "Corrected 2026-10-11 (AAASM-6301)";
+            let forbidden = [
+                "supported for production",
+                "production-ready",
+                "production ready",
+                "production-grade",
+                "production quality",
+                "production-quality",
+                "production use",
+                "recommended for production",
+                "available by default",
+                "generally available",
+                "fully supported",
+                "is stable",
+                "is ga",
+                "ga release",
+                "general availability",
+                "ci-tested",
+                "ships",
+                "is shipped",
+                "are shipped",
+                "shipped in",
+                "shipped with",
+                "shipped as",
+                "ship and",
+                "ship in",
+            ];
+            // Negated uses are the truthful wording this test exists to protect.
+            let allowed_negations = [
+                "not validated for production use", // ADR 0035's own definition
+                "not shipped in any release",
+                "not shipped",
+                "unshipped",
+                "does not ship",
+                // A conditional about a future artifact, not a claim about today.
+                "ships through any aasm channel",
+            ];
+            // Every paragraph, list item and table row about the macOS VM
+            // backend is its own unit, so one cannot hide behind another.
+            // Returns how many units were judged (a positive control: a scan
+            // that judged nothing proves nothing).
+            let judge = |rel: &str, text: &str| -> usize {
+                let mut judged_units = 0;
+                for unit in text.replace("\n- ", "\n\n- ").replace("\n|", "\n\n|").split("\n\n") {
+                    // Match whole words: drop punctuation (keeping hyphens) and line
+                    // wraps, so `not\nshipped` matches its negation and `is ga` does
+                    // not match inside another word.
+                    let lowered = unit.to_lowercase();
+                    let mut p = format!(
+                        " {} ",
+                        lowered
+                            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                            .filter(|w| !w.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                    if !(p.contains(" macos vm ") || p.contains(" macos-vm ") || p.contains(" aasm-macos-vm ")) {
+                        continue;
+                    }
+                    judged_units += 1;
+                    for ok in allowed_negations {
+                        p = p.replace(&format!(" {ok} "), " ");
+                    }
+                    for bad in forbidden {
+                        assert!(
+                            !p.contains(&format!(" {bad} ")),
+                            "{rel}: a macOS VM unit contains `{bad}`: {unit}"
+                        );
+                    }
+                }
+                judged_units
+            };
+            let scoped = |rel: &str, text: &str| {
+                let lower = text.to_lowercase();
+                assert!(
+                    lower.contains("experimental"),
+                    "{rel} does not describe the macOS VM backend as Experimental"
+                );
+                assert!(lower.contains("no ci lane"), "{rel} no longer pins `no CI lane`");
+                assert!(
+                    ["operator-supplied", "operator-built", "operator supplies"]
+                        .iter()
+                        .any(|f| lower.contains(f)),
+                    "{rel} no longer pins that the guest kernel/rootfs are operator-supplied"
+                );
+                assert!(judge(rel, text) > 0, "{rel}: no macOS VM unit was judged");
+            };
+            // The whole of the support matrix and the requirements page, not
+            // just one section: the lead paragraph and the platform rows are
+            // the most operator-visible statements, and each must itself say
+            // Experimental (a positive requirement, not only a blacklist).
+            assert!(
+                judge("execution-isolation.md", &iso) > 0,
+                "execution-isolation.md: nothing judged"
+            );
+            let requirements = read("docs/src/quick-start/requirements.md");
+            assert!(
+                judge("requirements.md", &requirements) > 0,
+                "requirements.md: nothing judged"
+            );
+            let unit_starting = |text: &str, prefix: &str| -> String {
+                text.replace("\n|", "\n\n|")
+                    .replace("\n- ", "\n\n- ")
+                    .split("\n\n")
+                    .find(|u| u.trim_start().starts_with(prefix))
+                    .unwrap_or_else(|| panic!("no unit starting with `{prefix}`"))
+                    .to_lowercase()
+            };
+            let changelog = read("CHANGELOG.md");
+            for (rel, text, prefix, needle) in [
+                (
+                    "execution-isolation.md",
+                    &iso,
+                    "**Three execution-isolation backends are compiled in today.**",
+                    "experimental",
+                ),
+                (
+                    "execution-isolation.md",
+                    &iso,
+                    "| **macOS (Apple Silicon)**",
+                    "experimental",
+                ),
+                (
+                    "requirements.md",
+                    &requirements,
+                    "| macOS (Apple Silicon)",
+                    "experimental",
+                ),
+                // The bullet's own heading carries the label, not only the erratum above it.
+                ("CHANGELOG.md", &changelog, "- **macOS VM backend", "(experimental)"),
+            ] {
+                assert!(
+                    unit_starting(text, prefix).contains(needle),
+                    "{rel}: the unit starting `{prefix}` does not say `{needle}`"
+                );
+            }
+            scoped("execution-isolation.md macOS VM section", vm_section);
+            for rel in [
+                "docs/release/v0.0.1-rc.7.md",
+                "CHANGELOG.md",
+                "docs/src/compatibility.md",
+            ] {
+                let text = read(rel);
+                if rel != "docs/src/compatibility.md" {
+                    assert!(text.contains(ERRATUM), "{rel} lost its dated macOS VM erratum");
+                }
+                // Original (tagged) wording is allowed to remain; scan the text
+                // with it removed so only NEW claims are judged.
+                let judged = text.replace("Three backends ship", "Three backends [original wording]");
+                if rel == "CHANGELOG.md" {
+                    // Only the rc.7 programme section is about this backend.
+                    let start = judged
+                        .find("### Execution isolation programme")
+                        .expect("rc.7 programme section");
+                    let section = &judged[start..];
+                    let end = section[10..].find("\n### ").map(|i| i + 10).unwrap_or(section.len());
+                    scoped(rel, &section[..end]);
+                } else {
+                    scoped(rel, &judged);
+                }
+            }
+
+            // 4. Availability: with the operator-supplied substrate missing
+            //    the backend is Unavailable, never ready. Skipped only on a
+            //    host that really has all three variables set.
+            let substrate = [
+                "AA_ISOLATION_MACOS_VM_HELPER",
+                "AA_ISOLATION_MACOS_VM_KERNEL",
+                "AA_ISOLATION_MACOS_VM_ROOTFS",
+            ];
+            if substrate.iter().any(|v| std::env::var_os(v).is_none()) {
+                let backend = aa_isolation_macos_vm::MacosVmBackend::discover();
+                assert!(
+                    !backend.capabilities().availability().is_available(),
+                    "an Experimental backend with no substrate must report Unavailable"
+                );
+            }
+        }
+
         /// The other half of the control: under `Preview`, the same
         /// contradiction warns and carries on (exactly as the pre-existing
         /// `--isolation-backend` contradiction check does) rather than

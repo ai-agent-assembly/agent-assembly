@@ -177,6 +177,20 @@
     }
   ],
 
+  "backend_maturity": {
+    "_about": [
+      "AAASM-6301 (founder decision 2026-10-11). ADR 0035 section 4's maturity",
+      "vocabulary (`experimental` = implemented but not validated for production",
+      "use), kept SEPARATE from `backends[].status` (provenance: pending|active)",
+      "and from the per-domain SupportLevel (Full|Partial|Unsupported). Maturity",
+      "never implies the backend is installed, selectable or ready: availability is",
+      "decided at run time by `discover()`. Additive: scripts/check-backend-license-",
+      "compliance.sh does not read this key. Only backends with a recorded maturity",
+      "decision are listed."
+    ],
+    "aasm-macos-vm": "experimental"
+  },
+
   "backends": [
     {
       "id": "sandlock",

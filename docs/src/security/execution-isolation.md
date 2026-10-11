@@ -187,7 +187,7 @@ supervisor's own exec-time environment with `ps -Eww -p <supervisor pid>`.
 
 ## Platform and backend support matrix
 
-**Three execution-isolation backends ship today.** Sandlock (`sandlock`) was
+**Three execution-isolation backends are compiled in today.** Sandlock (`sandlock`) was
 the first, on Linux; AASM-native (`aasm-native`,
 [AAASM-5801](https://lightning-dust-mite.atlassian.net/browse/AAASM-5801)–[5804](https://lightning-dust-mite.atlassian.net/browse/AAASM-5804))
 is a second, AASM-owned implementor of the same `IsolationBackend` contract on
@@ -196,7 +196,8 @@ replaces the other — see [Choosing between the two backends](#choosing-between
 for which one `--isolation auto` selects and why, and
 [Compatibility with Sandlock](../adr/0035-agent-execution-isolation-and-pluggable-enforcement-backends.md#compatibility-with-sandlock)
 in Core ADR 035 for the underlying record. The third, `aasm-macos-vm`
-(Epic [AAASM-5811](https://lightning-dust-mite.atlassian.net/browse/AAASM-5811)),
+(**Experimental** — its guest kernel and rootfs are operator-supplied and not
+shipped, and no CI lane exercises it; Epic [AAASM-5811](https://lightning-dust-mite.atlassian.net/browse/AAASM-5811)),
 targets macOS by booting a confined Linux guest via Virtualization.framework
 rather than confining the host process directly — a different platform
 boundary from the other two, not a competing implementation of the same one.
@@ -210,7 +211,7 @@ can plan the policy's requirements (see
 | Platform | Process-level execution isolation | Notes |
 |---|---|---|
 | **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both Linux backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
-| **Linux (aarch64)** | ✅ Sandlock fully available. AASM-native: filesystem confinement only — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
+| **Linux (aarch64)** | ⚠️ **Not measured.** No CI lane or recorded run exercises either backend on aarch64 (the Linux isolation lanes run on `ubuntu-latest` x86_64 and install only Sandlock's x86_64 release asset). The design is that AASM-native offers filesystem confinement only here — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
 | **macOS (Apple Silicon)** | ⚠️ Experimental via `aasm-macos-vm` (proof-of-concept substrate, not shipped in any release; guest kernel/rootfs are operator-built; no CI lane), subject to the runtime probe below — filesystem read/write confinement only, with named platform limitations. | Guest-boundary confinement via Virtualization.framework, not a host-process mechanism — see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites). |
 | **macOS (Intel)** | ❌ **Not supported.** `aasm-macos-vm` requires Apple Silicon. | Not attempted; the guest kernel and helper are built arm64-only through this Epic. |
 | **Windows** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets Windows. |
@@ -306,6 +307,10 @@ backends above.
 
 **Stated plainly, this backend's real limitations:**
 
+- **Maturity: Experimental** (Core ADR 035 §4: implemented, not validated for
+  production use). Maturity is separate from the capability rows and from
+  runtime availability: it does not mean installed or selectable, and a
+  missing guest kernel/rootfs/helper still reports `Unavailable`.
 - **Apple Silicon only.** No Intel build exists through this Epic.
 - **A deliberately small program surface inside the guest.** A program must
   be inside the shared project directory or be one of the guest image's fixed
@@ -392,9 +397,14 @@ own `CapabilityReport`, not asserted):
 | `Syscall` | **Unsupported** | supported |
 | `NetworkEgress` | supported | **Unsupported** |
 | `ProcessCreation` | supported/partial | **Unsupported** |
-| `Resource` | supported/partial | **Unsupported** |
+| `Resource` | supported/partial | partial (file-descriptor and file-size ceilings only) |
 | `Ipc` | partial | **Unsupported** |
 | `Credential` | supported/partial | **Unsupported** |
+
+The `Resource` cell here and the "four of the eight domains" count below come
+from the backends' capability-discovery code, checked by a test against a
+synthetic all-denied probe. They are not a measured kernel run, and the
+`supported`/`partial` wording is prose that no test guards.
 
 Neither backend's supported-domain set contains the other's, so
 AAASM-5805's pre-registered [default-backend selection rule](https://github.com/ai-agent-assembly/agent-assembly/blob/main/benchmarks/isolation/METHODOLOGY.md#default-backend-selection-rule-aaasm-5805)
@@ -406,10 +416,11 @@ every measured dimension and strictly better on several.
 **`aasm run --isolation auto` does not use that recommendation as a fixed
 default.** The mechanical rule optimizes for measured performance alone; it
 has no way to weigh what a faster backend stops enforcing. AASM-native
-enforces only three of the eight domains above (`FilesystemRead`,
-`FilesystemWrite`, `Syscall`) — it enforces nothing for network egress,
-process creation, resource ceilings, IPC, or credential isolation, five
-domains Sandlock does at least partially cover. Unconditionally preferring
+enforces four of the eight domains above (`FilesystemRead`,
+`FilesystemWrite`, `Syscall`, and `Resource` only for file-descriptor and
+file-size ceilings) — it enforces nothing for network egress, process
+creation, IPC, or credential isolation, four domains Sandlock does at least
+partially cover. Unconditionally preferring
 AASM-native to chase the performance win would silently reduce what every
 existing `--isolation auto` policy actually gets enforced, for callers who
 did not ask for that trade-off.
