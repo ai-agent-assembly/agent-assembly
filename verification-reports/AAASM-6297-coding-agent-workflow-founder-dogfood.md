@@ -101,8 +101,11 @@ this revision; all passed.
 ## Part 2 — founder DogFood package (you run these; QA did not)
 
 Conventions: every command is for macOS or Linux, run from a shell **you** open.
-Everything that could touch your real configuration is pointed at a throwaway
-directory. A step that makes macOS show a Keychain, TCC or admin prompt must be
+D1 points the real agent at a throwaway `HOME`. D2, D3 and the Codex leg run
+real `claude` / `codex` with your real `$HOME`, `~/.claude` and `~/.codex`, so
+those agents will write their own session and state files there; aasm's own state
+goes to `$AASM_STATE_DIR`. Do **not** run `aasm integrations install codex` against
+your real `~/.codex` (AAASM-6319). A step that makes macOS show a Keychain, TCC or admin prompt must be
 **denied**, and recorded as BLOCKED with the prompt text. A synthetic sentinel string
 below is not a secret; do **not** put any real secret in these steps.
 
@@ -110,7 +113,7 @@ below is not a secret; do **not** put any real secret in these steps.
 
 ```bash
 cd ~/Bryant-Developments/AI-agent-assembly/agent-assembly   # your checkout of this PR's branch
-git fetch remote && git checkout v0.0.1/AAASM-6297/qa/coding_agent_workflow
+git fetch remote && git worktree add ../agent-assembly-dogfood-6297 v0.0.1/AAASM-6297/qa/coding_agent_workflow && cd ../agent-assembly-dogfood-6297   # a worktree, so local changes in your checkout cannot collide
 export CARGO_TARGET_DIR=$HOME/.cargo/target-aaasm-6297-founder
 cargo build -p aa-cli -p aa-proxy
 export AASM=$CARGO_TARGET_DIR/debug/aasm
@@ -179,7 +182,13 @@ Discard leg (interrupt the agent): start the same command without `-p` (interact
 let it edit the file, then press Ctrl-C. Expected: `workspace_tx.committed=false`,
 and `git status --short` empty (the base is untouched).
 
-Sentinel and receipt checks (macOS):
+Sentinel and receipt checks (macOS). **The sentinel grep below is a vacuous check
+unless the agent was actually given the sentinel**: nothing in the prompt above
+makes the agent read `AASM_DOGFOOD_SENTINEL`, so "absent" only shows aasm did not
+write it. For a real leak test, first give the agent a task that reads the variable
+(for example "print the value of $AASM_DOGFOOD_SENTINEL into src/lib.txt") and
+confirm the sentinel DOES appear where it should; record the check as not run
+otherwise.
 
 ```bash
 grep -rl "$AASM_DOGFOOD_SENTINEL" "$AASM_STATE_DIR" $DF/d2-commit.err || echo "sentinel absent from state and output (good)"
