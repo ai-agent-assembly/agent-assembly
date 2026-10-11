@@ -56,8 +56,11 @@ impl ApprovalPolicy {
     /// `on-failure`, `on-request` and `never` load). The four per-category
     /// levels therefore collapse to one value: any category that needs a
     /// prompt or a refusal selects `on-request`, otherwise `on-failure`.
-    /// A refusal itself is enforced by the sandbox mode and the AA proxy, not
-    /// by this key, so it is never written as `never`.
+    /// This key only decides when Codex asks; it does not refuse. A refusal
+    /// is never written as `never`, and the sandbox mode blocks writes but
+    /// not shell or MCP execution (measured: `read-only` still ran
+    /// `/bin/sh`), so a shell or MCP deny degrades to "ask" here and must be
+    /// enforced by another layer.
     pub fn as_codex_value(&self) -> &'static str {
         let levels = [self.file_writes, self.shell_exec, self.network, self.mcp_calls];
         if levels.iter().any(|l| *l != ApprovalLevel::Auto) {

@@ -872,6 +872,21 @@ pub fn removal_plan_id(receipt: &IntegrationReceipt) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Pins what each profile writes. Membership checks alone let a profile
+    /// be loosened to `workspace-write` unnoticed (AAASM-6319 review).
+    #[test]
+    fn managed_settings_toml_pins_exact_values_per_profile() {
+        for profile in [
+            ProtectionProfile::Strict,
+            ProtectionProfile::Recommended,
+            ProtectionProfile::ObserveOnly,
+        ] {
+            let doc: toml::Table = toml::from_str(&managed_settings_toml(profile).unwrap()).unwrap();
+            assert_eq!(doc["sandbox_mode"].as_str(), Some("read-only"), "{profile:?}");
+            assert_eq!(doc["approval_policy"].as_str(), Some("on-request"), "{profile:?}");
+        }
+    }
+
     use super::*;
     use aa_devtool_contract::{capability_conformance, DevToolKind, IntegrationRequest};
 
