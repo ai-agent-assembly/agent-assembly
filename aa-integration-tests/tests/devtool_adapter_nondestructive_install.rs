@@ -19,7 +19,8 @@
 //!
 //! Tests prefixed `desired_` are `#[ignore]`d on purpose: they pin the
 //! contract the product SHOULD meet and currently does not (a defect found by
-//! this pass). Run with `--ignored` to reproduce.
+//! this pass). Run with `--ignored` to reproduce. (The Codex managed-value
+//! defect, AAASM-6319, is fixed, so its test is no longer ignored.)
 
 use std::path::{Path, PathBuf};
 
@@ -320,49 +321,61 @@ async fn desired_codex_install_preserves_the_users_comments() {
     assert!(after.contains("trailing comment on an unmanaged key"));
 }
 
-/// CHARACTERISATION of what Codex's managed settings actually contain.
+/// The managed values are ones the current Codex CLI accepts.
 ///
-/// MEASURED MANUALLY by this pass against the codex-cli 0.160.0 installed on
-/// the QA host, with a throwaway `CODEX_HOME` holding ONLY these values and
-/// `codex mcp list` (a config-load, no agent run, no account): BOTH values are
-/// rejected, each independently --
-///   `sandbox_mode = "suggest"` -> "unknown variant `suggest`, expected one of
-///        `read-only`, `workspace-write`, `danger-full-access`"
-///   `[approval_policy]` table  -> "unknown variant `file_writes`, expected one
-///        of `untrusted`, `on-failure`, `on-request`, `granular`, `never`"
-/// while an empty config, `sandbox_mode = "read-only"` and
-/// `approval_policy = "on-request"` all load. So installing the Codex
-/// integration leaves the user's `codex` unable to load its configuration.
-/// This test pins the (invalid) values written; it does not run codex.
+/// AAASM-6297 found the install wrote `sandbox_mode = "suggest"` and an
+/// `[approval_policy]` table, each of which makes codex-cli 0.160.0 fail to load
+/// its configuration; AAASM-6319 fixed it. codex-cli 0.160.0 loads exactly
+/// `read-only` / `workspace-write` / `danger-full-access` for `sandbox_mode`
+/// and, for `approval_policy`, a string of `on-failure` / `on-request` /
+/// `never` (or a `granular` object); `untrusted` is "no longer supported".
+/// This pins the written values against that list; the `live_*` test below
+/// runs the real binary over the same file.
 #[tokio::test]
-async fn codex_managed_values_written_today_are_the_ones_codex_0_160_rejects() {
+async fn codex_managed_values_are_accepted_by_the_current_codex_cli() {
     let w = World::new();
     install(&w, 1_000).await.unwrap();
     let t = parse(&w.config());
-    assert_eq!(t["sandbox_mode"].as_str(), Some("suggest"));
+    let sandbox = t["sandbox_mode"].as_str().unwrap_or("<not a string>");
     assert!(
-        t["approval_policy"].is_table(),
-        "approval_policy is written as a table: {:?}",
-        t["approval_policy"]
-    );
-}
-
-/// DESIRED: the managed values are ones the current Codex CLI accepts.
-#[tokio::test]
-#[ignore = "AAASM-6297 finding: aa-devtool-codex lifecycle.rs managed_settings_toml writes sandbox_mode=\"suggest\" and a [approval_policy] table; codex-cli 0.160.0 rejects both and fails to load config (measured manually, see the characterisation test above)"]
-async fn desired_codex_managed_values_are_accepted_by_the_current_codex_cli() {
-    let w = World::new();
-    install(&w, 1_000).await.unwrap();
-    let t = parse(&w.config());
-    let sandbox = t["sandbox_mode"].as_str().unwrap_or("");
-    assert!(
-        ["read-only", "workspace-write", "danger-full-access"].contains(&sandbox),
-        "sandbox_mode={sandbox}"
+        ["read-only", "workspace-write"].contains(&sandbox),
+        "sandbox_mode={sandbox}: must be a value codex 0.160 loads, and never the unsandboxed one"
     );
     let approval = t["approval_policy"].as_str().unwrap_or("<not a string>");
     assert!(
-        ["untrusted", "on-failure", "on-request", "granular", "never"].contains(&approval),
-        "approval_policy={approval}"
+        ["on-failure", "on-request"].contains(&approval),
+        "approval_policy={approval}: must be a string codex 0.160 loads; `never` and the retired `untrusted` are not written"
+    );
+}
+
+/// LIVE: the real `codex` binary loads the config this install writes.
+///
+/// `#[ignore]`d because it needs a `codex` on PATH, and it PANICS when there is
+/// none -- an absent binary must never read as a pass. It uses a throwaway
+/// `CODEX_HOME` holding only the generated file and runs `codex mcp list`, a
+/// configuration load that starts no agent and needs no account, so it never
+/// touches the real `~/.codex`.
+#[tokio::test]
+#[ignore = "needs a codex-cli binary on PATH; run with --run-ignored only (AAASM-6319)"]
+async fn live_codex_loads_the_config_the_install_writes() {
+    let w = World::new();
+    install(&w, 1_000).await.unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::copy(w.config(), home.path().join("config.toml")).unwrap();
+    let out = std::process::Command::new("codex")
+        .args(["mcp", "list"])
+        .env("CODEX_HOME", home.path())
+        .output()
+        .expect("`codex` must be on PATH for this test; it does not skip");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && !text.contains("failed to load"),
+        "codex could not load the installed config: {text}\n--- config ---\n{}",
+        std::fs::read_to_string(home.path().join("config.toml")).unwrap()
     );
 }
 
