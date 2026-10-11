@@ -270,10 +270,22 @@ pub enum DelegationDenied {
         /// The `ResourceLimits` field name that exceeded its parent's ceiling.
         field: String,
     },
-    /// The parent lease's tracked [`RevocationState`] was not active at the
-    /// instant a [`crate::attenuation::DelegationLedger`] attempted the
-    /// derivation — the concurrent-revocation race's losing outcome.
+    /// The parent lease, or any ancestor above it, was not active in the
+    /// [`crate::attenuation::DelegationLedger`] at the instant the derivation
+    /// was attempted — the concurrent-revocation race's losing outcome, and
+    /// (AAASM-6307) the transitive case: revoking a lease revokes every
+    /// descendant derived through the ledger, at every depth.
     ParentRevoked,
+    /// The ledger already knows the requested child lease id (or the lease
+    /// being registered as a root). Refused so a known id can never be
+    /// re-derived, re-registered or have its parent edge re-pointed — either
+    /// would let a revoked or severed lease be resurrected under the same id.
+    DuplicateLeaseId,
+    /// The parent's ancestry cannot be verified from this ledger: the parent
+    /// carries delegation provenance but the ledger has no record of it, or
+    /// some hop of the chain above it is unknown or unlinked. Fails closed —
+    /// "cannot verify the ancestors" is never read as "no ancestor revoked".
+    AncestryUnverifiable,
 }
 
 /// How a child lease relates to its parent's authority — the four modes
