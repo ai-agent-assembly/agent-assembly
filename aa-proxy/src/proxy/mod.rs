@@ -2975,6 +2975,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_deny_reason_blocks_numeric_encodings_of_the_metadata_address() {
+        // AAASM-6304: decimal/hex/octal/short spellings of 169.254.169.254 are
+        // the same address to the resolver, so the CONNECT literal guard must
+        // refuse them rather than read them as names.
+        let server = server_with(vec![], vec![]).await;
+        for host in [
+            "2852039166",
+            "2852039166:443",
+            "0xA9FEA9FE:80",
+            "0251.0376.0251.0376",
+            "169.254.43518:443",
+            "::ffff:a9fe:a9fe",
+            "[::ffff:a9fe:a9fe]:443",
+            // Trailing dot, leading-zero (macOS decimal reading), truncation, zone id.
+            "2852039166.",
+            "2852039166.:443",
+            "0127.0.0.1:443",
+            "4294967296",
+            "[fe80::1%en0]:443",
+        ] {
+            assert_eq!(
+                server.connect_deny_reason(host),
+                Some(EgressDenyReason::SsrfBlockedAddress),
+                "{host}"
+            );
+        }
+        // Control: a numeric spelling of a public address is not SSRF-blocked.
+        assert_ne!(
+            server.connect_deny_reason("134744072:443"),
+            Some(EgressDenyReason::SsrfBlockedAddress)
+        );
+    }
+
+    #[tokio::test]
     async fn connect_deny_reason_denylist_defeats_case_and_trailing_dot_evasion() {
         // AAASM-3983: a lowercase `evil.com` denylist entry must catch the
         // uppercase and trailing-dot variants, which previously slipped past
