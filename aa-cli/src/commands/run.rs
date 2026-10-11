@@ -3612,6 +3612,21 @@ mod plan {
                 walked.len() <= 3 && walked.contains(&aa_isolation_sandlock::BACKEND_ID.to_string()),
                 "unexpected walk: {walked:?}"
             );
+            // Pins "auto selection is unchanged": the walk is always an in-order
+            // prefix of sandlock, aasm-native, aasm-macos-vm, so the Experimental
+            // backend can never be promoted ahead of a Linux one.
+            let order = [
+                aa_isolation_sandlock::BACKEND_ID,
+                aa_isolation_native::BACKEND_ID,
+                aa_isolation_macos_vm::BACKEND_ID,
+            ];
+            assert!(
+                walked
+                    .iter()
+                    .map(String::as_str)
+                    .eq(order[..walked.len()].iter().copied()),
+                "auto no longer walks sandlock, aasm-native, aasm-macos-vm in that order: {walked:?}"
+            );
             // On a host where an earlier candidate is eligible the walk stops
             // early (it is lazy), so assert the ORDER-preserving prefix property
             // and that macos-vm is reached whenever both Linux backends declined.
@@ -3792,11 +3807,72 @@ mod plan {
                 "production-ready",
                 "production ready",
                 "production-grade",
+                "production quality",
+                "production-quality",
+                "production use",
+                "recommended for production",
                 "available by default",
+                "generally available",
+                "fully supported",
+                "is stable",
+                "is ga",
+                "ga release",
+                "general availability",
                 "ci-tested",
                 "ships",
+                "is shipped",
+                "are shipped",
+                "shipped in",
+                "shipped with",
+                "shipped as",
                 "ship and",
+                "ship in",
             ];
+            // Negated uses are the truthful wording this test exists to protect.
+            let allowed_negations = [
+                "not validated for production use", // ADR 0035's own definition
+                "not shipped in any release",
+                "not shipped",
+                "unshipped",
+                "does not ship",
+                // A conditional about a future artifact, not a claim about today.
+                "ships through any aasm channel",
+            ];
+            // Every paragraph, list item and table row about the macOS VM
+            // backend is its own unit, so one cannot hide behind another.
+            // Returns how many units were judged (a positive control: a scan
+            // that judged nothing proves nothing).
+            let judge = |rel: &str, text: &str| -> usize {
+                let mut judged_units = 0;
+                for unit in text.replace("\n- ", "\n\n- ").replace("\n|", "\n\n|").split("\n\n") {
+                    // Match whole words: drop punctuation (keeping hyphens) and line
+                    // wraps, so `not\nshipped` matches its negation and `is ga` does
+                    // not match inside another word.
+                    let lowered = unit.to_lowercase();
+                    let mut p = format!(
+                        " {} ",
+                        lowered
+                            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                            .filter(|w| !w.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    );
+                    if !(p.contains(" macos vm ") || p.contains(" macos-vm ") || p.contains(" aasm-macos-vm ")) {
+                        continue;
+                    }
+                    judged_units += 1;
+                    for ok in allowed_negations {
+                        p = p.replace(&format!(" {ok} "), " ");
+                    }
+                    for bad in forbidden {
+                        assert!(
+                            !p.contains(&format!(" {bad} ")),
+                            "{rel}: a macOS VM unit contains `{bad}`: {unit}"
+                        );
+                    }
+                }
+                judged_units
+            };
             let scoped = |rel: &str, text: &str| {
                 let lower = text.to_lowercase();
                 assert!(
@@ -3810,22 +3886,57 @@ mod plan {
                         .any(|f| lower.contains(f)),
                     "{rel} no longer pins that the guest kernel/rootfs are operator-supplied"
                 );
-                // A list item is its own unit, so one bullet cannot hide behind another.
-                for paragraph in text.replace("\n- ", "\n\n- ").split("\n\n") {
-                    let p = paragraph.to_lowercase();
-                    if !(p.contains("macos vm") || p.contains("macos-vm")) {
-                        continue;
-                    }
-                    // The one legitimate use of the word is ADR 0035's definition.
-                    let p = p.replace("not validated for production use", "");
-                    for bad in forbidden {
-                        assert!(
-                            !p.contains(bad),
-                            "{rel}: a macOS VM paragraph contains `{bad}`: {paragraph}"
-                        );
-                    }
-                }
+                assert!(judge(rel, text) > 0, "{rel}: no macOS VM unit was judged");
             };
+            // The whole of the support matrix and the requirements page, not
+            // just one section: the lead paragraph and the platform rows are
+            // the most operator-visible statements, and each must itself say
+            // Experimental (a positive requirement, not only a blacklist).
+            assert!(
+                judge("execution-isolation.md", &iso) > 0,
+                "execution-isolation.md: nothing judged"
+            );
+            let requirements = read("docs/src/quick-start/requirements.md");
+            assert!(
+                judge("requirements.md", &requirements) > 0,
+                "requirements.md: nothing judged"
+            );
+            let unit_starting = |text: &str, prefix: &str| -> String {
+                text.replace("\n|", "\n\n|")
+                    .replace("\n- ", "\n\n- ")
+                    .split("\n\n")
+                    .find(|u| u.trim_start().starts_with(prefix))
+                    .unwrap_or_else(|| panic!("no unit starting with `{prefix}`"))
+                    .to_lowercase()
+            };
+            let changelog = read("CHANGELOG.md");
+            for (rel, text, prefix, needle) in [
+                (
+                    "execution-isolation.md",
+                    &iso,
+                    "**Three execution-isolation backends are compiled in today.**",
+                    "experimental",
+                ),
+                (
+                    "execution-isolation.md",
+                    &iso,
+                    "| **macOS (Apple Silicon)**",
+                    "experimental",
+                ),
+                (
+                    "requirements.md",
+                    &requirements,
+                    "| macOS (Apple Silicon)",
+                    "experimental",
+                ),
+                // The bullet's own heading carries the label, not only the erratum above it.
+                ("CHANGELOG.md", &changelog, "- **macOS VM backend", "(experimental)"),
+            ] {
+                assert!(
+                    unit_starting(text, prefix).contains(needle),
+                    "{rel}: the unit starting `{prefix}` does not say `{needle}`"
+                );
+            }
             scoped("execution-isolation.md macOS VM section", vm_section);
             for rel in [
                 "docs/release/v0.0.1-rc.7.md",
