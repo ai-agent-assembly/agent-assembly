@@ -7,8 +7,13 @@
 //! scheme (no DerivedData / compile-cache writes) and nothing here touches
 //! keychain, signing identities, TCC-gated locations or the network.
 //!
-//! The suite is skipped (not failed) where no Xcode toolchain is installed,
-//! so it cannot turn a toolchain-less CI host red; the skip is printed.
+//! Every toolchain-dependent test is `#[ignore]`d so a host without Xcode
+//! reports them as SKIPPED, never as passed. `real_local_process` evidence
+//! exists only for a run on a macOS host with Xcode via
+//! `cargo nextest run -p aa-cli --test host_capability_live --run-ignored all -E 'not test(desired_)'`;
+//! on a host without Xcode that run PANICS (a missing toolchain is a failure,
+//! never a silent pass). `AA_REQUIRE_HOST_TOOLCHAIN=1` is also honoured and
+//! has the same effect.
 #![cfg(target_os = "macos")]
 
 use std::path::{Path, PathBuf};
@@ -32,8 +37,13 @@ fn toolchain_present() -> bool {
 macro_rules! require_toolchain {
     () => {
         if !toolchain_present() {
-            eprintln!("SKIP: no Xcode toolchain on this host");
-            return;
+            // Reached only when an ignored test is run on purpose: failing loudly
+            // keeps "passed" meaning "ran against a real toolchain".
+            let required = std::env::var("AA_REQUIRE_HOST_TOOLCHAIN").as_deref() == Ok("1");
+            panic!(
+                "no Xcode toolchain on this host (AA_REQUIRE_HOST_TOOLCHAIN={required}); \
+                 these tests need `xcode-select -p` and `xcrun --find xcodebuild` to succeed"
+            );
         }
     };
 }
@@ -74,6 +84,7 @@ const FAR_FUTURE: u64 = 4_102_444_800; // 2100-01-01
 // ---- AC2 (positive): a granted operation runs for real -----------------------
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn granted_xcode_list_really_runs_and_reports_the_real_scheme() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -96,6 +107,7 @@ fn granted_xcode_list_really_runs_and_reports_the_real_scheme() {
 // ---- AC1 / AC4 (negative controls: each differs from the positive in ONE input) -
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn expired_lease_file_refuses_and_runs_nothing() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -118,6 +130,7 @@ fn expired_lease_file_refuses_and_runs_nothing() {
 }
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn not_yet_valid_lease_file_refuses() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -140,6 +153,7 @@ fn not_yet_valid_lease_file_refuses() {
 }
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn missing_or_malformed_lease_file_fails_closed_not_open() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -171,6 +185,7 @@ fn missing_or_malformed_lease_file_fails_closed_not_open() {
 /// `aasm host` is one process per operation and re-reads the lease each time,
 /// so withdrawing the grant (expiring the file's window) blocks the next use.
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn withdrawing_the_grant_between_two_invocations_blocks_the_second() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -195,6 +210,7 @@ fn withdrawing_the_grant_between_two_invocations_blocks_the_second() {
 }
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn a_build_of_a_scheme_the_container_does_not_declare_is_refused_before_any_build() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -226,6 +242,7 @@ fn a_build_of_a_scheme_the_container_does_not_declare_is_refused_before_any_buil
 }
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn argument_injection_into_the_build_is_rejected_by_the_cli_before_the_gate() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -256,6 +273,7 @@ fn argument_injection_into_the_build_is_rejected_by_the_cli_before_the_gate() {
 // ---- AC3: the typed surface offers no generic-exec path -------------------------
 
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn the_cli_has_no_subcommand_that_runs_an_arbitrary_host_command() {
     for args in [
         vec!["host", "exec", "--", "/usr/bin/true"],
@@ -277,6 +295,7 @@ fn the_cli_has_no_subcommand_that_runs_an_arbitrary_host_command() {
 /// unconditionally. So "no grant" on the CLI is not a refusal: the operation
 /// runs ungated. The ticket requires the opposite; see the `#[ignore]`d test.
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn characterisation_xcode_list_with_no_lease_file_runs_ungated() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -292,6 +311,7 @@ fn characterisation_xcode_list_with_no_lease_file_runs_ungated() {
 /// CHARACTERISATION (defect): `aasm host simulator list` has no `--lease-file`
 /// at all and hard-codes `not_required()`, so it can never be refused.
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn characterisation_simulator_list_has_no_grant_input_and_is_always_ungated() {
     require_toolchain!();
     let out = aasm().args(["host", "simulator", "list", "--help"]).output().unwrap();
@@ -342,6 +362,7 @@ fn desired_simulator_list_without_a_grant_is_refused() {
 /// launch's own identity". So a grant can only ever be attributed to the CLI's
 /// fixed operator id, never to a specific requesting agent.
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn characterisation_only_the_fixed_operator_identity_can_hold_a_lease_on_the_cli() {
     require_toolchain!();
     let pkg = fixture_package();
@@ -361,6 +382,7 @@ fn characterisation_only_the_fixed_operator_identity_can_hold_a_lease_on_the_cli
 /// CHARACTERISATION (defect): a granted, successful operation leaves no record
 /// naming the lease or the identity on any stream the CLI writes.
 #[test]
+#[ignore = "needs an Xcode toolchain; run with --run-ignored all on a macOS host with Xcode"]
 fn characterisation_a_granted_operation_emits_no_attribution_record() {
     require_toolchain!();
     let pkg = fixture_package();
