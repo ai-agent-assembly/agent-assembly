@@ -1344,9 +1344,9 @@ journeys:
   # macos-apple-silicon specifically, not bare macos: Intel is explicitly
   # unverified per verification-report-AAASM-5811-hardware-qualification.md
   # and must not be implied as covered.
-  # 2026-10-10 (AAASM-6301, J93): ADR 0035's "Experimental" tier is used by no
-  # backend; whether this hand-run, #[ignore]d, no-CI backend should carry it is a
-  # decided by the founder on 2026-10-11: Experimental. See J93.
+  # 2026-10-11 (AAASM-6301, J93): the founder classified aasm-macos-vm as
+  # Experimental (ADR 0035 section 4) -- a maturity label, separate from this
+  # row's capability evidence and from runtime availability. See J93.
   release_blocking: true
   lifecycle_state: manual_live
   evidence:
@@ -2818,18 +2818,25 @@ journeys:
   # maturity), the macOS VM section of execution-isolation.md, rc.7 release
   # notes, CHANGELOG and compatibility.md; tied together by
   # `macos_vm_maturity_is_experimental_in_metadata_docs_and_availability`.
-  # Corrected while testing (claim text only, no product behavior): the
-  # AASM-native `Resource` row said Unsupported though `discover()` reports
-  # Partial (AAASM-6165); four sentences in two docs
-  # (execution-isolation.md x2, troubleshooting.md x2) said `aasm-macos-vm` is
-  # not reached by `--isolation auto` though `auto_select` walks it last (superseded in places by PR #2633's wording at merge)
-  # (live-confirmed with `aasm run exec --isolation auto --dry-run`; any
-  # further such wording elsewhere is not fixed by this PR); the Linux aarch64
-  # row said "Sandlock fully available" though no CI lane or pinned artifact
-  # covers aarch64. Limits of the guards: the support-matrix tests compare
-  # only available-vs-Unsupported, so the doc's supported/partial prose is
-  # UNGUARDED; and the auto-walk test skips its macos-vm assertion on a host
-  # where an earlier candidate is Selected (e.g. Linux CI).
+  # Claim text corrected by THIS PR (no product behavior touched), exact list:
+  # execution-isolation.md -- AASM-native `Resource` cell (said Unsupported;
+  # `discover()` reports Partial, AAASM-6165) and the "four of the eight
+  # domains" count, the Linux aarch64 row ("Sandlock fully available" with no
+  # aarch64 CI lane or pinned artifact; now "Not measured"), the lead sentence
+  # ("ship" -> "are compiled in", third backend flagged Experimental) and the
+  # Maturity bullet; compatibility.md, CHANGELOG.md and the rc.7 release notes
+  # (dated erratum beside the original rc.7 wording, which is kept). Four
+  # sentences (execution-isolation.md x2, troubleshooting.md x2) said
+  # `aasm-macos-vm` is not reached by `--isolation auto` though `auto_select`
+  # walks it last (live-confirmed with `aasm run exec --isolation auto
+  # --dry-run`); those were fixed by PR #2633 (its wording won at merge) and
+  # troubleshooting.md is NOT in this PR's diff.
+  # Limits of the guards: the support-matrix tests compare only
+  # available-vs-Unsupported, so the doc's supported/partial prose is UNGUARDED.
+  # The auto-walk test skips its macos-vm assertion whenever a Linux backend is
+  # Selected; CI is ubuntu-only, so in the pr/main lanes that assertion does NOT
+  # run -- it is exercised on macOS developer hosts only (where both Linux
+  # backends decline).
   lifecycle_state: partial
   gap_owner: AAASM-6301
   evidence:
