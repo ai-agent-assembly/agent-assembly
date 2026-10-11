@@ -138,6 +138,20 @@ pub fn parse_ip_literal(host: &str) -> Option<IpAddr> {
 }
 
 fn parse_ip_literal_inner(host: &str) -> Option<IpAddr> {
+    // A zone id only exists on an IPv6 literal and `getaddrinfo` ignores
+    // whatever follows the `%` (even whitespace), so classify the address part.
+    if let Some((addr, _zone)) = host.split_once('%') {
+        if addr.contains(':') {
+            if let Ok(v6) = addr.parse::<Ipv6Addr>() {
+                return Some(IpAddr::V6(v6));
+            }
+            if looks_like_ipv6_text(addr) {
+                return Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            }
+            // Not IPv6 text (e.g. `20<TAB>1:4860::8%x`): fall through so a
+            // whitespace-terminated IPv4 head is still judged.
+        }
+    }
     if host.contains(char::is_whitespace) {
         // `inet_aton`/`inet_addr` stop at the first whitespace and ignore the
         // rest (`127.0.0.1 x`), `getaddrinfo` rejects the whole string. Only a
@@ -148,12 +162,29 @@ fn parse_ip_literal_inner(host: &str) -> Option<IpAddr> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip);
     }
-    if let Some((addr, _zone)) = host.split_once('%') {
-        // A zone id only exists on an IPv6 literal; classify the address itself
-        // (an empty zone, `fe80::1%`, is still that address to `getaddrinfo`).
-        return addr.parse::<Ipv6Addr>().ok().map(IpAddr::V6);
+    // `getaddrinfo` accepts IPv6 spellings `std` rejects: leading zeros in a
+    // group (`0fe80::1`, `::ffff:0a9fe:a9fe`) or in a dotted tail
+    // (`::ffff:127.0.0.001`). Modelling each by hand has failed review three
+    // times, so fail closed structurally: a colon-bearing string of nothing but
+    // hex digits, colons and dots that `std` did not accept is refused, since
+    // it is either one of those spellings or not a usable address at all and
+    // can never be a DNS name.
+    if looks_like_ipv6_text(host) {
+        return Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
     }
     legacy_ipv4(host).map(IpAddr::V4)
+}
+
+/// True for IPv6-shaped text: a colon, only hex digits, `:` and `.`, and not a
+/// `host:port` pair (exactly one colon followed by digits).
+fn looks_like_ipv6_text(s: &str) -> bool {
+    if !s.contains(':') || !s.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.') {
+        return false;
+    }
+    let mut colons = s.split(':');
+    let head_and_tail = (colons.next(), colons.next(), colons.next());
+    let is_port_pair = matches!(head_and_tail, (Some(_), Some(port), None) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()));
+    !is_port_pair
 }
 
 /// How a part with a leading `0` is read.
@@ -185,7 +216,11 @@ fn legacy_ipv4(host: &str) -> Option<Ipv4Addr> {
     }
     let first = readings.iter().flatten().copied().next()?;
     let disagree = readings.iter().flatten().any(|a| *a != first);
-    if truncated || disagree {
+    // A lone leading-zero value with an 8/9 digit (`0123456789`) is invalid
+    // octal and libc rejects it; only the decimal reading survives, which no
+    // resolver backs, so a public result is refused rather than called routable.
+    let decimal_only_lone = readings[0].is_none() && !host.contains('.');
+    if truncated || disagree || decimal_only_lone {
         // Ambiguous between public-looking readings: report an address in a
         // blocked range so the caller refuses rather than guesses.
         return Some(Ipv4Addr::UNSPECIFIED);
@@ -508,6 +543,35 @@ mod tests {
             ("127.0.0.1 x", Some("127.0.0.1"), Restricted),
             ("169.254.169.254 .evil.com", Some("169.254.169.254"), Restricted),
             ("8.8.8.8 x", None, Name),
+            // IPv6 spellings getaddrinfo accepts and `std` rejects (round 3).
+            ("::ffff:169.254.169.0254", Some("::ffff:169.254.169.254"), Restricted),
+            ("::ffff:169.254.169.00254", Some("::ffff:169.254.169.254"), Restricted),
+            ("::ffff:127.0.0.001", Some("::ffff:127.0.0.1"), Restricted),
+            ("::ffff:0127.0.0.1", Some("::ffff:127.0.0.1"), Restricted),
+            ("::0.0.00.1", Some("::1"), Restricted),
+            ("::00.0.0.0", Some("::"), Restricted),
+            ("::01.1.1.1", Some("::1.1.1.1"), Restricted),
+            ("::ffff:0a9fe:a9fe", Some("::ffff:169.254.169.254"), Restricted),
+            ("::ffff:a9fe:0a9fe", Some("::ffff:169.254.169.254"), Restricted),
+            ("::ffff:00000a9fe:a9fe", Some("::ffff:169.254.169.254"), Restricted),
+            ("00000::1", Some("::1"), Restricted),
+            ("0fe80::1", Some("fe80::1"), Restricted),
+            ("00fe80::1%en0", Some("fe80::1"), Restricted),
+            // A zone id is ignored by getaddrinfo whatever it contains.
+            ("fe80::1% en", Some("fe80::1"), Restricted),
+            ("fe80::1%a b", Some("fe80::1"), Restricted),
+            ("fe80::%e\t0", Some("fe80::"), Restricted),
+            // inet_aton stops at whitespace even when an IPv6-looking tail follows.
+            ("20\t1:4860:4860::88%88", Some("0.0.0.20"), Restricted),
+            ("7\t2001:4860:4860:%:8888", Some("0.0.0.7"), Restricted),
+            // A lone leading-zero 8/9 value is invalid octal: libc rejects it, so it
+            // must never be reported as a routable address.
+            ("0123456789", None, Restricted),
+            ("0852039166", None, Restricted),
+            ("016843009", None, Restricted),
+            // `host:port` is not IPv6 text.
+            ("api.openai.com:443", None, Name),
+            ("1.2.3.4:80", None, Name),
             // Unambiguous public and plain names are unchanged.
             ("134744072", Some("8.8.8.8"), Public),
             ("0x08080808", Some("8.8.8.8"), Public),
