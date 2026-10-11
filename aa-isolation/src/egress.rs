@@ -2026,6 +2026,36 @@ mod tests {
     }
 
     #[test]
+    fn resolver_disagreement_forms_are_restricted_not_routable() {
+        // AAASM-6304 review: macOS reads leading-zero dotted parts as decimal,
+        // inet_aton as octal; values >= 2^32 are truncated; zone ids ride on
+        // IPv6. Every one of these resolves to a restricted address somewhere.
+        for host in [
+            "0127.0.0.1",
+            "010.0.0.1",
+            "0172.016.0.1",
+            "0100.0100.0100.0100",
+            "00127.0.0.1",
+            "0127.00.00.01",
+            "4294967296",
+            "0x100000000",
+            "6425673729",
+            "0x17F000001",
+            "0192.0168.0.1",
+            "192.168.0.08",
+            "0.008.0010.0254",
+            "::1%lo0",
+            "fe80::1%1",
+            "fe80::1%lo0",
+        ] {
+            assert!(
+                matches!(classify_destination(host), DestinationClass::RestrictedAddress { .. }),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
     fn numeric_encoded_metadata_destination_is_refused_by_the_broker_required_gate() {
         let contract = EgressContract::broker_required();
         let broker = available_broker();
@@ -2058,13 +2088,9 @@ mod tests {
             classify_destination("93.184.216.34"),
             DestinationClass::RoutableAddress(_)
         ));
-        for name in [
-            "api.openai.com",
-            "evil.com",
-            "0x.example.com",
-            "1.2.3.4.5",
-            "4294967296",
-        ] {
+        // `4294967296` is deliberately absent: macOS truncates it to 0.0.0.0, so
+        // it is refused as restricted (see `resolver_disagreement_forms_are_restricted_not_routable`).
+        for name in ["api.openai.com", "evil.com", "0x.example.com", "1.2.3.4.5"] {
             assert!(
                 matches!(classify_destination(name), DestinationClass::Name(_)),
                 "{name}"

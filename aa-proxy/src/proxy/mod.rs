@@ -2988,6 +2988,12 @@ mod tests {
             "169.254.43518:443",
             "::ffff:a9fe:a9fe",
             "[::ffff:a9fe:a9fe]:443",
+            // Trailing dot, leading-zero (macOS decimal reading), truncation, zone id.
+            "2852039166.",
+            "2852039166.:443",
+            "0127.0.0.1:443",
+            "4294967296",
+            "[fe80::1%en0]:443",
         ] {
             assert_eq!(
                 server.connect_deny_reason(host),

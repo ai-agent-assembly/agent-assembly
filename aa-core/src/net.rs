@@ -93,39 +93,103 @@ pub fn blocked_ip_literal(host: &str) -> Option<bool> {
     parse_ip_literal(host).map(is_blocked_ip)
 }
 
-/// Parse `host` as an IP literal under the same rules the platform resolver
-/// applies, not just `std`'s strict dotted-quad grammar (AAASM-6304).
+/// Parse `host` as an IP literal the way the platform resolver may, not just
+/// `std`'s strict dotted-quad grammar (AAASM-6304).
 ///
-/// `std`'s `FromStr<IpAddr>` rejects the legacy `inet_aton` IPv4 notations that
-/// `getaddrinfo`/`connect` paths (libc, and many HTTP clients) still accept:
-/// a single decimal integer (`2852039166`), hex (`0xA9FEA9FE`), octal
-/// (`0251.0376.0251.0376`) and short forms (`169.254.43518`). Classifying such a
-/// string as a *name* lets `169.254.169.254` reach the dialer without ever being
-/// range-checked, so the check and the use must agree on what an IP literal is.
+/// `std`'s `FromStr<IpAddr>` rejects legacy IPv4 notations that
+/// `getaddrinfo`/`connect` paths still accept: a single decimal integer
+/// (`2852039166`), hex (`0xA9FEA9FE`), octal (`0251.0376.0251.0376`) and short
+/// forms (`169.254.43518`). Classifying such a string as a *name* lets
+/// `169.254.169.254` reach the dialer without a range check, so the check and
+/// the use must agree on what an IP literal is.
 ///
-/// Accepts, after trimming surrounding whitespace and one trailing dot: anything
-/// `std` accepts (including `::ffff:a9fe:a9fe`), plus 1-4 part `inet_aton`
-/// IPv4 (each part decimal, `0`-prefixed octal or `0x`-prefixed hex, the last
-/// part filling the remaining bytes). Returns `None` for everything else, which
-/// is then a name that must be resolved and re-validated.
+/// Resolvers disagree with each other on the edge cases, so the contract is
+/// **fail closed**: a numeric-looking host is reported as a public address only
+/// when every plausible interpretation yields that one public address. When
+/// interpretations differ, the restricted one wins; when they differ and none
+/// is restricted (or a value needed truncation), `0.0.0.0` is returned so the
+/// caller refuses it. The interpretations are:
+///
+/// * `inet_aton`: `0x` hex, leading-`0` octal, otherwise decimal, 1-4 parts,
+///   the last part filling the remaining bytes;
+/// * macOS `getaddrinfo`: a leading-zero part is read as *decimal* (so
+///   `0127.0.0.1` is `127.0.0.1`, not `87.0.0.1`), including parts with the
+///   digits 8/9 that are not valid octal;
+/// * a single value of 2^32 or more, which macOS truncates to its low 32 bits.
+///
+/// Also accepted: surrounding whitespace, one trailing dot, an IPv6 zone id
+/// (`fe80::1%en0`, classified by its address), and anything `std` accepts
+/// (including `::ffff:a9fe:a9fe`). Returns `None` for everything else, which is
+/// a name that must be resolved and re-validated.
 pub fn parse_ip_literal(host: &str) -> Option<IpAddr> {
     let host = host.trim();
     let host = host.strip_suffix('.').unwrap_or(host);
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip);
     }
-    parse_inet_aton(host).map(IpAddr::V4)
+    if let Some((addr, zone)) = host.split_once('%') {
+        // A zone id only exists on an IPv6 literal; classify the address itself.
+        return match addr.parse::<Ipv6Addr>() {
+            Ok(v6) if !zone.is_empty() => Some(IpAddr::V6(v6)),
+            _ => None,
+        };
+    }
+    legacy_ipv4(host).map(IpAddr::V4)
 }
 
-fn parse_inet_aton(host: &str) -> Option<Ipv4Addr> {
+/// How a part with a leading `0` is read.
+#[derive(Clone, Copy)]
+enum LeadingZero {
+    /// `inet_aton`: octal (a part with an 8/9 digit is invalid).
+    Octal,
+    /// macOS `getaddrinfo`: decimal.
+    Decimal,
+}
+
+fn legacy_ipv4(host: &str) -> Option<Ipv4Addr> {
+    let mut readings = [None::<Ipv4Addr>; 2];
+    let mut truncated = false;
+    let mut any = false;
+    for (slot, mode) in readings.iter_mut().zip([LeadingZero::Octal, LeadingZero::Decimal]) {
+        if let Some((addr, t)) = compose_ipv4(host, mode) {
+            *slot = Some(addr);
+            truncated |= t;
+            any = true;
+        }
+    }
+    if !any {
+        return None;
+    }
+    // Fail closed: a blocked reading wins over any public one.
+    if let Some(blocked) = readings.iter().flatten().copied().find(|a| is_blocked_ipv4(*a)) {
+        return Some(blocked);
+    }
+    let first = readings.iter().flatten().copied().next()?;
+    let disagree = readings.iter().flatten().any(|a| *a != first);
+    if truncated || disagree {
+        // Ambiguous between public-looking readings: report an address in a
+        // blocked range so the caller refuses rather than guesses.
+        return Some(Ipv4Addr::UNSPECIFIED);
+    }
+    Some(first)
+}
+
+/// One reading of `host` as 1-4 dot-separated numeric parts. The boolean is
+/// true when the value only fits after truncation to 32 bits.
+fn compose_ipv4(host: &str, mode: LeadingZero) -> Option<(Ipv4Addr, bool)> {
     let mut parts = [0u64; 4];
     let mut n = 0;
     for part in host.split('.') {
         if n == 4 {
             return None;
         }
-        parts[n] = parse_inet_aton_part(part)?;
+        parts[n] = parse_numeric_part(part, mode)?;
         n += 1;
+    }
+    if n == 1 {
+        // A lone value: macOS keeps only the low 32 bits.
+        let v = parts[0];
+        return Some((Ipv4Addr::from(v as u32), v > u64::from(u32::MAX)));
     }
     // Every part but the last is one byte; the last fills the remaining bytes.
     let (leading, last) = parts[..n].split_at(n - 1);
@@ -136,14 +200,17 @@ fn parse_inet_aton(host: &str) -> Option<Ipv4Addr> {
     for (i, &p) in leading.iter().enumerate() {
         value |= p << (8 * (3 - i));
     }
-    Some(Ipv4Addr::from(value as u32))
+    Some((Ipv4Addr::from(value as u32), false))
 }
 
-fn parse_inet_aton_part(part: &str) -> Option<u64> {
+fn parse_numeric_part(part: &str, mode: LeadingZero) -> Option<u64> {
     let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
         (hex, 16)
     } else if part.len() > 1 && part.starts_with('0') {
-        (&part[1..], 8)
+        match mode {
+            LeadingZero::Octal => (&part[1..], 8),
+            LeadingZero::Decimal => (part, 10),
+        }
     } else {
         (part, 10)
     };
@@ -155,9 +222,7 @@ fn parse_inet_aton_part(part: &str) -> Option<u64> {
     if !digits.chars().all(|c| c.is_digit(radix)) {
         return None;
     }
-    u64::from_str_radix(digits, radix)
-        .ok()
-        .filter(|&v| v <= u64::from(u32::MAX))
+    u64::from_str_radix(digits, radix).ok()
 }
 
 /// Strip an optional `:port` suffix from a host, correctly handling a bracketed
@@ -294,11 +359,9 @@ mod tests {
             "api.openai.com",
             "0x.com",
             "1.2.3.4.5",
-            "4294967296",
             "256.1.1.1",
             "1.16777216",
             "1.2.3.65536",
-            "08",
             "0xg1",
             "+1",
             "1..2",
@@ -306,10 +369,112 @@ mod tests {
             ".",
             "1.2.3.4x",
             "-1",
+            "fe80::1%",
+            "1.2.3.4%lo0",
+            "evil.com%lo0",
+            "99999999999999999999999",
             "169.254.169.254/latest",
         ] {
             assert_eq!(blocked_ip_literal(v), None, "{v:?} must remain a name");
         }
+    }
+
+    /// Differential table (AAASM-6304 review). `libc` is what macOS
+    /// `getaddrinfo`/`inet_aton` was OBSERVED to resolve the string to; glibc
+    /// and other resolvers may differ, which is why the classifier fails closed
+    /// instead of copying one platform. `None` = libc rejects it. Invariant
+    /// checked for every row: if libc's address is restricted, the host must be
+    /// classified restricted. `Expect` pins our own (possibly stricter) verdict.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Expect {
+        Restricted,
+        Public,
+        Name,
+    }
+
+    #[test]
+    fn differential_table_against_observed_macos_libc() {
+        use Expect::*;
+        let table: &[(&str, Option<&str>, Expect)] = &[
+            // Ticket spellings of 169.254.169.254.
+            ("2852039166", Some("169.254.169.254"), Restricted),
+            ("0xA9FEA9FE", Some("169.254.169.254"), Restricted),
+            ("0251.0376.0251.0376", Some("169.254.169.254"), Restricted),
+            ("169.254.43518", Some("169.254.169.254"), Restricted),
+            ("169.16689662", Some("169.254.169.254"), Restricted),
+            ("0xA9.0xFE.0xA9.0xFE", Some("169.254.169.254"), Restricted),
+            ("::ffff:a9fe:a9fe", Some("169.254.169.254"), Restricted),
+            // Leading-zero dotted forms: libc reads DECIMAL, inet_aton OCTAL.
+            ("0127.0.0.1", Some("127.0.0.1"), Restricted),
+            ("010.0.0.1", Some("10.0.0.1"), Restricted),
+            ("0172.016.0.1", Some("172.16.0.1"), Restricted),
+            ("0100.0100.0100.0100", Some("100.100.100.100"), Restricted),
+            ("00127.0.0.1", Some("127.0.0.1"), Restricted),
+            ("0127.00.00.01", Some("127.0.0.1"), Restricted),
+            // Values of 2^32 or more: libc keeps the low 32 bits.
+            ("4294967296", Some("0.0.0.0"), Restricted),
+            ("0x100000000", Some("0.0.0.0"), Restricted),
+            ("1099511627776", Some("0.0.0.0"), Restricted),
+            ("6425673729", Some("127.0.0.1"), Restricted),
+            ("0x17F000001", Some("127.0.0.1"), Restricted),
+            // Invalid-octal parts: libc falls back to decimal.
+            ("0192.0168.0.1", Some("192.168.0.1"), Restricted),
+            ("192.168.0.08", Some("192.168.0.8"), Restricted),
+            ("0.008.0010.0254", Some("0.8.10.254"), Restricted),
+            ("08", Some("0.0.0.8"), Restricted),
+            // IPv6 zone ids.
+            ("::1%lo0", Some("::1"), Restricted),
+            ("fe80::1%1", Some("fe80::1"), Restricted),
+            ("fe80::1%lo0", Some("fe80::1"), Restricted),
+            // Over-refusal is acceptable: readings disagree, fail closed.
+            ("0177.0.0.1", Some("177.0.0.1"), Restricted),
+            ("0251.254.169.254", Some("251.254.169.254"), Restricted),
+            ("0100.0.0.1", Some("100.0.0.1"), Restricted),
+            // Unambiguous public and plain names are unchanged.
+            ("134744072", Some("8.8.8.8"), Public),
+            ("0x08080808", Some("8.8.8.8"), Public),
+            ("8.8.8.8", Some("8.8.8.8"), Public),
+            ("93.184.216.34", Some("93.184.216.34"), Public),
+            ("api.openai.com", None, Name),
+            ("0x.com", None, Name),
+            ("1.2.3.4.5", None, Name),
+        ];
+        for &(input, libc, expect) in table {
+            let got = match blocked_ip_literal(input) {
+                Some(true) => Expect::Restricted,
+                Some(false) => Expect::Public,
+                None => Expect::Name,
+            };
+            assert_eq!(got, expect, "{input:?}");
+            if let Some(addr) = libc {
+                let addr: IpAddr = addr.parse().unwrap();
+                if is_blocked_ip(addr) {
+                    assert_eq!(got, Expect::Restricted, "{input:?}: libc says {addr}, restricted");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn zone_id_is_stripped_and_the_address_classified() {
+        assert_eq!(parse_ip_literal("::1%lo0"), Some("::1".parse().unwrap()));
+        assert_eq!(parse_ip_literal("fe80::1%en0"), Some("fe80::1".parse().unwrap()));
+        assert_eq!(blocked_ip_literal("2606:4700:4700::1111%en0"), Some(false));
+    }
+
+    #[test]
+    fn leading_zero_forms_report_the_restricted_reading() {
+        // inet_aton: 87.0.0.1 (public); macOS: 127.0.0.1. Restricted wins.
+        assert_eq!(parse_ip_literal("0127.0.0.1"), Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(
+            parse_ip_literal("0251.254.169.254"),
+            Some("169.254.169.254".parse().unwrap())
+        );
+        // Both readings public but different: ambiguity is refused, not guessed.
+        assert_eq!(blocked_ip_literal("0100.0.0.1"), Some(true));
+        // Only the decimal reading is valid (08 is not octal) and it is public.
+        assert_eq!(blocked_ip_literal("08.8.8.8"), Some(false));
+        assert_eq!(parse_ip_literal("8.8.8.8"), Some("8.8.8.8".parse().unwrap()));
     }
 
     #[test]
