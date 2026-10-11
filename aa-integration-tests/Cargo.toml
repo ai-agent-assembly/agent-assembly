@@ -52,6 +52,11 @@ aa-devtool-claude-code = { path = "../aa-devtool-claude-code" }
 # directly, which the `aa-devtool` registry's `::default()` cannot express.
 aa-devtool-codex = { path = "../aa-devtool-codex" }
 aa-devtool-contract = { path = "../aa-devtool-contract" }
+# AAASM-6297: the non-destructive-install characterisation drives the Copilot and
+# Windsurf adapters through `with_paths` (throwaway roots), which the registry cannot express.
+aa-devtool-copilot = { path = "../aa-devtool-copilot" }
+aa-devtool-windsurf = { path = "../aa-devtool-windsurf" }
+toml = { workspace = true }
 aa-gateway  = { path = "../aa-gateway" }
 # AAASM-5751. The filesystem path-scope round trip crosses three crates that
 # cannot see each other — aa-policy validates, aa-security holds the canonical
