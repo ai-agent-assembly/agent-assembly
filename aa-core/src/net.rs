@@ -257,10 +257,10 @@ fn compose_ipv4(host: &str, mode: LeadingZero) -> Option<(Ipv4Addr, bool)> {
         let (low, big) = parts[0];
         return Some((Ipv4Addr::from(low as u32), big));
     }
-    // A multi-part value never truncates: out-of-range parts are rejected.
-    if parts[..n].iter().any(|&(_, big)| big) {
-        return None;
-    }
+    // Each part wraps modulo 2^64 exactly as macOS `inet_aton` accumulates it,
+    // and only the wrapped value is range-checked below, so
+    // `169.254.169.18446744073709551870` (2^64 + 254) is 169.254.169.254 while
+    // `169.254.169.4294967550` (a value that does not wrap) is out of range.
     // Every part but the last is one byte; the last fills the remaining bytes.
     let (leading, last) = parts[..n].split_at(n - 1);
     if leading.iter().any(|&(p, _)| p > 0xff) || last[0].0 >= 1u64 << (8 * (5 - n)) {
@@ -273,8 +273,8 @@ fn compose_ipv4(host: &str, mode: LeadingZero) -> Option<(Ipv4Addr, bool)> {
     Some((Ipv4Addr::from(value as u32), false))
 }
 
-/// A numeric part as `(low 32 bits, did it exceed 32 bits)`. Arbitrarily long
-/// digit strings wrap modulo 2^32 exactly as libc does, so a value of 2^64 or
+/// A numeric part as `(value wrapped modulo 2^64, did it exceed 32 bits)`.
+/// Arbitrarily long digit strings wrap exactly as libc's accumulator does, so a value of 2^64 or
 /// more is not silently treated as "not a number".
 fn parse_numeric_part(part: &str, mode: LeadingZero, is_last: bool) -> Option<(u64, bool)> {
     let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
@@ -297,16 +297,16 @@ fn parse_numeric_part(part: &str, mode: LeadingZero, is_last: bool) -> Option<(u
             None
         };
     }
-    let mut low = 0u32;
+    let mut low = 0u64;
     let mut exact = Some(0u64);
     for c in digits.chars() {
         // `to_digit` is digits/letters only, so no sign or underscore slips in.
         let d = c.to_digit(radix)?;
-        low = low.wrapping_mul(radix).wrapping_add(d);
+        low = low.wrapping_mul(u64::from(radix)).wrapping_add(u64::from(d));
         exact = exact.and_then(|e| e.checked_mul(u64::from(radix))?.checked_add(u64::from(d)));
     }
     let big = exact.map_or(true, |e| e > u64::from(u32::MAX));
-    Some((u64::from(low), big))
+    Some((low, big))
 }
 
 /// Strip an optional `:port` suffix from a host, correctly handling a bracketed
@@ -515,6 +515,21 @@ mod tests {
             ("0177.0.0.1", Some("177.0.0.1"), Restricted),
             ("0251.254.169.254", Some("251.254.169.254"), Restricted),
             ("0100.0.0.1", Some("100.0.0.1"), Restricted),
+            // A MULTI-part value also wraps modulo 2^64 (round 4): every row is
+            // 169.254.169.254, 127.0.0.1 or 192.168.1.1 to macOS libc.
+            ("169.254.169.18446744073709551870", Some("169.254.169.254"), Restricted),
+            ("169.254.18446744073709595134", Some("169.254.169.254"), Restricted),
+            ("169.18446744073726241278", Some("169.254.169.254"), Restricted),
+            ("18446744073709551785.254.169.254", Some("169.254.169.254"), Restricted),
+            ("0x100000000000000a9.254.169.254", Some("169.254.169.254"), Restricted),
+            ("169.254.169.0x100000000000000fe", Some("169.254.169.254"), Restricted),
+            ("127.0.0.18446744073709551617", Some("127.0.0.1"), Restricted),
+            ("192.168.1.18446744073709551617", Some("192.168.1.1"), Restricted),
+            // 2^32 + k does NOT wrap in a 64-bit accumulator, so libc rejects it.
+            ("169.254.169.4294967550", None, Name),
+            // Single-colon garbage is refused, not a name (only `host:port` is exempt).
+            ("dead:beef", None, Restricted),
+            ("a:b", None, Restricted),
             // 2^64 or more: libc still wraps to the low 32 bits (AAASM-6304 re-review).
             ("18446744076561590782", Some("169.254.169.254"), Restricted),
             ("0x100000000a9fea9fe", Some("169.254.169.254"), Restricted),
