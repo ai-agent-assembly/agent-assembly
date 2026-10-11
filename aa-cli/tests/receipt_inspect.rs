@@ -457,3 +457,58 @@ fn cli_receipt_list_reports_success_on_an_empty_store() {
     cmd.args(["receipt", "list"]);
     cmd.assert().success();
 }
+
+/// AAASM-6295: every other test in this file passes `re_evaluate: false` —
+/// `--re-evaluate` itself was otherwise never exercised by any test in this
+/// crate. Confirms the flag actually runs the replay taxonomy + the
+/// deterministic seal/defect re-evaluation it documents
+/// (`inspect.rs::REPLAY_TAXONOMY`/`render_re_evaluate`), not merely that it
+/// parses as a CLI flag.
+#[test]
+fn cli_receipt_inspect_re_evaluate_prints_the_replay_taxonomy() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("receipt.json");
+    let envelope = sealed(build_body(&[]));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(serde_json::to_string(&envelope).unwrap().as_bytes())
+        .unwrap();
+
+    let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
+    cmd.args(["receipt", "inspect", "--path", path.to_str().unwrap(), "--re-evaluate"]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    assert!(
+        stdout.contains("Deterministic re-evaluation") || stdout.contains("deterministic"),
+        "--re-evaluate must print the replay taxonomy, not just the ordinary inspect body: {stdout}"
+    );
+}
+
+/// JSON-mode companion: `inspect.rs::inspect_report`'s `--json` branch
+/// nests a `re_evaluate` object in the report rather than printing prose —
+/// confirms the machine-readable surface reaches the same code path.
+#[test]
+fn cli_receipt_inspect_re_evaluate_json_includes_a_re_evaluate_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("receipt.json");
+    let envelope = sealed(build_body(&[]));
+    let mut file = std::fs::File::create(&path).unwrap();
+    file.write_all(serde_json::to_string(&envelope).unwrap().as_bytes())
+        .unwrap();
+
+    let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
+    cmd.args([
+        "receipt",
+        "inspect",
+        "--path",
+        path.to_str().unwrap(),
+        "--re-evaluate",
+        "--json",
+    ]);
+    let assert = cmd.assert().success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        value.get("re_evaluate").is_some(),
+        "--re-evaluate --json must include a re_evaluate object: {stdout}"
+    );
+}

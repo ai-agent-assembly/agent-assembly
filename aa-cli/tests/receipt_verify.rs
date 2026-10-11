@@ -494,3 +494,337 @@ fn cli_receipt_verify_reports_failure_for_a_tampered_receipt() {
     cmd.args(["receipt", "verify", path.to_str().unwrap()]);
     cmd.assert().failure();
 }
+
+// ---------------------------------------------------------------------------
+// Test set F (AAASM-6295, ST-8): the CLI exit-code surface for every tamper
+// category the ticket names, plus the positive control and the
+// recompute-the-digest-too control. All of these drive the real `aasm
+// receipt verify` binary end-to-end (`assert_cmd`), not the internal
+// `verify()` function test set A already covers at the library level.
+//
+// AAASM-6287 (macOS hardware re-qualification) merged, but
+// `aa-isolation-macos-vm` remains an unwired PoC on this host — no VM
+// helper/kernel/rootfs assets are configured
+// (`aa-isolation-macos-vm-poc/README.md`). So no isolation backend in this
+// build can establish a confined boundary on this host at all —
+// empirically confirmed for all three compiled-in backend ids (`sandlock`,
+// `aasm-native`, `aasm-macos-vm`) plus `--isolation auto`, each refusing
+// with its own named "backend cannot be selected on this host" (or, for
+// auto, "walked every backend... none of them") reason, never an
+// unrelated failure — by
+// `aa-integration-tests/tests/cli_run_execution_receipt.rs`'s AAASM-6295
+// tests. The receipt these tests tamper with is therefore built through the
+// real
+// `body_for_run`/`ReceiptEnvelope::seal`/`ReceiptStore` production pipeline
+// — the exact functions `aasm run` itself calls — driven by
+// `aa_isolation::mock::MockBackend` rather than a genuinely confined child
+// process, because nothing else can produce a sealed receipt on this host.
+// This is recorded here as a known limitation for AAASM-6295's AC, not
+// silently substituted.
+// ---------------------------------------------------------------------------
+
+fn write_envelope_json(dir: &std::path::Path, name: &str, value: &serde_json::Value) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_string(value).unwrap()).unwrap();
+    path
+}
+
+fn verify_json(path: &std::path::Path) -> (bool, serde_json::Value) {
+    let mut cmd = assert_cmd::Command::cargo_bin("aasm").expect("aasm binary");
+    // AAASM-6295: explicit allow-list, not ambient inheritance — same
+    // discipline as `aa-integration-tests/tests/cli_run_execution_receipt.rs`'s
+    // `aasm_receipt_verify`, per this campaign's AAASM-6293 near-miss
+    // finding. `receipt verify` only ever reads the file at `path`, so a
+    // minimal `PATH` is all it needs.
+    cmd.env_clear().env("PATH", "/usr/bin:/bin");
+    let output = cmd
+        .args(["receipt", "verify", "--json", path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("aasm receipt verify --json did not print valid JSON: {e}\nstdout:\n{stdout}"));
+    (output.status.success(), value)
+}
+
+/// A genuine receipt, as JSON, from the real production pipeline.
+fn genuine_envelope_json(preventing: &[CapabilityDomain]) -> serde_json::Value {
+    let envelope = sealed(build_body(preventing));
+    serde_json::to_value(&envelope).unwrap()
+}
+
+/// Positive control: an untouched receipt must verify with exit code 0, seal
+/// holding, and no defects.
+#[test]
+fn f_an_untouched_receipt_verifies_with_exit_code_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = genuine_envelope_json(&[]);
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(success, "an untouched receipt must exit 0: {report}");
+    assert_eq!(report["seal"], "holds");
+    assert_eq!(report["trustworthy"], true);
+}
+
+/// Tamper category 1: flip a byte inside the `spec` sealed section (one hex
+/// character of its digest) — stays JSON- and type-valid, so this tests the
+/// seal, not the parser.
+#[test]
+fn f_flip_a_byte_in_the_spec_section_trips_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    let digest = json["body"]["spec"]["digest"].as_str().unwrap().to_string();
+    let mut chars: Vec<char> = digest.chars().collect();
+    let last = chars.len() - 1;
+    chars[last] = if chars[last] == 'a' { 'b' } else { 'a' };
+    json["body"]["spec"]["digest"] = serde_json::Value::String(chars.into_iter().collect());
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a flipped byte in the spec section must fail: {report}");
+    assert_eq!(report["seal"], "mismatch");
+}
+
+/// Tamper category 1 (continued): flip a byte inside the `backend` sealed
+/// section.
+#[test]
+fn f_flip_a_byte_in_the_backend_section_trips_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[CapabilityDomain::FilesystemWrite]);
+    assert!(
+        !json["body"]["backend"].is_null(),
+        "fixture must carry a backend binding"
+    );
+    let id = json["body"]["backend"]["id"]["value"].as_str().unwrap().to_string();
+    json["body"]["backend"]["id"]["value"] = serde_json::Value::String(format!("{id}-tampered"));
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a flipped byte in the backend section must fail: {report}");
+    assert_eq!(report["seal"], "mismatch");
+}
+
+/// Tamper category 1 (continued): flip a byte inside the `domains` sealed
+/// section.
+#[test]
+fn f_flip_a_byte_in_the_domains_section_trips_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    let claim = json["body"]["domains"][0]["claim"]["value"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    json["body"]["domains"][0]["claim"]["value"] = serde_json::Value::String(format!("{claim}x"));
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a flipped byte in the domains section must fail: {report}");
+    assert_eq!(report["seal"], "mismatch");
+}
+
+/// Tamper category 1 (continued): flip a byte inside the `execution` sealed
+/// section (the exit code).
+#[test]
+fn f_flip_a_byte_in_the_execution_section_trips_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    let exit_code = json["body"]["execution"]["exit_code"].as_i64().unwrap_or(0);
+    json["body"]["execution"]["exit_code"] = serde_json::Value::from(exit_code + 1);
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a flipped byte in the execution section must fail: {report}");
+    assert_eq!(report["seal"], "mismatch");
+}
+
+/// Negative control for the four flips above: mutating `seal.sealed_by` (a
+/// field the digest does NOT cover, per `mod.rs`'s "What the seal covers")
+/// must leave the seal holding — otherwise the four flip tests above would
+/// mean nothing (they'd pass even if `verify` tripped on every byte change
+/// anywhere in the file, sealed or not).
+#[test]
+fn f_mutating_an_unsealed_seal_metadata_field_does_not_trip_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    json["seal"]["sealed_by"]["value"] = serde_json::Value::String("someone-else".to_string());
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(
+        success,
+        "sealed_by sits outside the digest and must not trip the seal: {report}"
+    );
+    assert_eq!(report["seal"], "holds");
+}
+
+/// Tamper category 2a: removing a required (non-`Option`) field — `run_id`
+/// — must fail to parse at all. A loud, non-silent failure, never a bypass.
+#[test]
+fn f_removing_a_required_field_fails_to_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    json["body"].as_object_mut().unwrap().remove("run_id");
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a missing required field must fail to parse: {report}");
+    assert_eq!(report["trustworthy"], false);
+    assert!(
+        report.get("error").is_some(),
+        "a parse failure must surface as `error`, not a seal verdict: {report}"
+    );
+}
+
+/// Tamper category 2b (AAASM-6295 finding, not a bug): removing an
+/// `Option` field whose stored value is already `null` is UNDETECTABLE —
+/// `runtime_image` is documented as `None` on every backend today
+/// (`schema.rs`), so dropping the key entirely reparses to the same `None`
+/// serde implicitly assigns a missing `Option` field, which re-serializes
+/// to the exact same canonical bytes the digest already covers. This is not
+/// a defect in the design: nothing of substance was removed, because the
+/// field carried no information to begin with. It is recorded here because
+/// the ticket's blanket expectation ("removing a field" always trips a
+/// non-zero exit) does not hold universally — only for a field that
+/// actually carried content.
+#[test]
+fn f_removing_an_already_null_optional_field_is_undetectable_by_design() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    assert!(
+        json["body"]["runtime_image"].is_null(),
+        "fixture precondition: runtime_image must already be null"
+    );
+    json["body"].as_object_mut().unwrap().remove("runtime_image");
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(
+        success,
+        "removing an already-null field changes nothing the digest covers, so this is expected to verify: {report}"
+    );
+    assert_eq!(report["seal"], "holds");
+}
+
+/// Tamper category 3 (AAASM-6295 finding): adding an unknown field still
+/// verifies clean (exit 0), because the seal is recomputed over the
+/// *parsed struct* (`serde_json::to_value(&body)`), and nothing in this
+/// module's types carries `#[serde(deny_unknown_fields)]` — confirmed by
+/// reading every file under `aa-cli/src/commands/execution_receipt/` (no
+/// occurrence). An unrecognized key is silently dropped by
+/// `serde_json::from_str` and never reaches the digest computation at all.
+/// Whether this is acceptable is a question for the ticket owner, not
+/// settled here: `docs/src/cli/receipt.md` states a holding seal proves
+/// "the receipt's content has not changed since `aasm run` wrote it", and
+/// a raw-byte addition that still verifies clean sits in tension with that
+/// sentence as worded — even though nothing a reader of the parsed struct
+/// would ever observe actually changed. This test pins the behavior; it
+/// does not rule on whether the behavior or the doc wording should change.
+#[test]
+fn f_adding_an_unknown_field_still_verifies_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json = genuine_envelope_json(&[]);
+    json["body"]["an_unknown_field_nobody_wrote"] = serde_json::Value::String("injected".to_string());
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(
+        success,
+        "an added unknown field is silently dropped before the digest is recomputed, so this verifies clean \
+         (a real, documented-here finding, not a bypass of anything the design claims to catch): {report}"
+    );
+    assert_eq!(report["seal"], "holds");
+}
+
+/// Tamper category 4: truncating the file mid-write must fail to parse.
+#[test]
+fn f_truncating_the_file_fails_to_parse() {
+    let dir = tempfile::tempdir().unwrap();
+    let json = genuine_envelope_json(&[]);
+    let full = serde_json::to_string(&json).unwrap();
+    let truncated = &full[..full.len() / 2];
+    let path = dir.path().join("receipt.json");
+    std::fs::write(&path, truncated).unwrap();
+
+    let (success, report) = verify_json(&path);
+    assert!(!success, "a truncated file must fail to parse: {report}");
+    assert_eq!(report["trustworthy"], false);
+    assert!(
+        report.get("error").is_some(),
+        "a truncation must surface as `error`: {report}"
+    );
+}
+
+/// Tamper category 5: transplant another receipt's digest onto this one.
+/// Two independently-built, independently-sealed receipts never share a
+/// digest (different `run_id`/`trace_id`/`recorded_at_unix_secs` alone
+/// guarantee different canonical bytes), so swapping one's `seal.digest`
+/// onto the other's envelope must mismatch.
+#[test]
+fn f_transplanting_another_receipts_digest_trips_the_seal() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut json_a = genuine_envelope_json(&[]);
+    let mut body_b = build_body(&[CapabilityDomain::NetworkEgress]);
+    // `preventing` alone is not guaranteed to change the digest (no decision
+    // evidence means it may not surface in any digested field), and both
+    // fixtures are built in the same wall-clock second, so
+    // `recorded_at_unix_secs` doesn't reliably differ either — force a real
+    // content difference directly rather than relying on timing.
+    body_b.run_id = format!("{}-transplant-source", body_b.run_id);
+    let json_b = serde_json::to_value(sealed(body_b)).unwrap();
+    assert_ne!(
+        json_a["seal"]["digest"], json_b["seal"]["digest"],
+        "the two fixtures must genuinely differ for this transplant to mean anything"
+    );
+    json_a["seal"]["digest"] = json_b["seal"]["digest"].clone();
+    let path = write_envelope_json(dir.path(), "receipt.json", &json_a);
+
+    let (success, report) = verify_json(&path);
+    assert!(
+        !success,
+        "a transplanted digest from another receipt must mismatch: {report}"
+    );
+    assert_eq!(report["seal"], "mismatch");
+}
+
+/// The documented non-tamper-proof design point: tamper a sealed section
+/// AND recompute the digest to match the tampered content. The seal is a
+/// content digest, not a signature (see `mod.rs`'s module documentation and
+/// `docs/src/cli/receipt.md`'s "What receipt integrity proves — and does
+/// not prove", which already states this accurately — "tamper-evident, not
+/// tamper-proof" — so no documentation fix is needed here). This is
+/// EXPECTED to verify successfully: the attacker who can rewrite the body
+/// can recompute a holding seal over the rewritten content just as easily
+/// as `aasm` did, because no key exists anywhere in this design.
+#[test]
+fn f_tampering_and_recomputing_the_digest_still_verifies_successfully() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut envelope = sealed(build_body(&[]));
+    // A benign content change — not one that trips any `validate::defects`
+    // truth-downgrade rule — so the only thing under test is the seal
+    // recomputation, not an unrelated validation failure.
+    envelope.body.execution.exit_code = Some(envelope.body.execution.exit_code.unwrap_or(0) + 1);
+    let recomputed = aa_cli::commands::execution_receipt::canonical::digest_of(&envelope.body)
+        .expect("a tampered body built from a real fixture still canonicalizes");
+    envelope.seal.digest = recomputed;
+    assert!(
+        envelope.seal_holds().unwrap(),
+        "the reseal must actually match the tampered content for this control to mean anything"
+    );
+    assert!(
+        defects(&envelope).is_empty(),
+        "this mutation must not trip an unrelated validation rule, or the test would not isolate the seal"
+    );
+
+    let json = serde_json::to_value(&envelope).unwrap();
+    let path = write_envelope_json(dir.path(), "receipt.json", &json);
+
+    let (success, report) = verify_json(&path);
+    assert!(
+        success,
+        "a tampered-then-resealed receipt is EXPECTED to verify successfully — the seal is a content \
+         digest, not a signature, and recomputing it after tampering is exactly as available to an \
+         attacker as it is to `aasm` itself: {report}"
+    );
+    assert_eq!(report["seal"], "holds");
+}

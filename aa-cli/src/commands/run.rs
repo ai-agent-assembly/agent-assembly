@@ -3728,7 +3728,7 @@ mod plan {
             // The count the support matrix leads with must track the compiled-in set.
             let matrix = std::fs::read_to_string(root.join("docs/src/security/execution-isolation.md")).unwrap();
             assert!(
-                matrix.contains("**Three execution-isolation backends ship today.**"),
+                matrix.contains("**Three execution-isolation backends are compiled in today.**"),
                 "the support matrix no longer states the compiled-in backend count (3: sandlock, aasm-native, \
                  aasm-macos-vm); update the doc and this test together"
             );

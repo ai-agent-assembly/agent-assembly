@@ -1,6 +1,7 @@
 # Rust build artifacts
 /target/
 /target-private/
+/target-qa/
 
 # mdBook build output
 docs/book/

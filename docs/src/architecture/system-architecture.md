@@ -23,8 +23,8 @@ they all converge on the same protobuf wire format defined in `aa-proto` and the
 same `PolicyService` RPC.
 
 > **Execution isolation is not a fourth enforcement mechanism.** `aasm run
-> --isolation` (`aa-isolation` + the `aa-isolation-sandlock` backend) confines
-> an agent's whole native process tree at the OS level — it is a set of
+> --isolation` (`aa-isolation` + its Sandlock, AASM-native and macOS-VM
+> backends) confines an agent's whole native process tree at the OS level — it is a set of
 > [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md)
 > elements (E2, E4, E5, E6), not a new one. See
 > [Execution isolation](../security/execution-isolation.md) and
