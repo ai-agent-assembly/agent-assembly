@@ -465,13 +465,23 @@ pub enum DestinationClass {
 /// authority must normalize first, exactly as `aa-proxy`'s own CONNECT guard
 /// does before consulting `aa_core::net::is_blocked_ip`.
 pub fn classify_destination(host: &str) -> DestinationClass {
-    match host.parse::<IpAddr>() {
-        Ok(addr) if aa_core::net::is_blocked_ip(addr) => DestinationClass::RestrictedAddress {
+    // `parse_ip_literal`, not `str::parse::<IpAddr>`: a decimal/hex/octal/short
+    // IPv4 spelling (`2852039166`) is the same address to the resolver and
+    // `connect` path, so it must be range-checked rather than read as a name
+    // (AAASM-6304).
+    match aa_core::net::parse_ip_literal(host) {
+        Some(addr) if aa_core::net::is_blocked_ip(addr) => DestinationClass::RestrictedAddress {
             addr,
-            known_metadata_endpoint: metadata_endpoint_match(host),
+            // Match the metadata list against the spelling `host` actually has
+            // when it is already canonical, else against the canonical IPv4 form
+            // so an alternate encoding of a metadata address is still named.
+            known_metadata_endpoint: metadata_endpoint_match(host).or_else(|| match addr {
+                IpAddr::V4(v4) => metadata_endpoint_match(&v4.to_string()),
+                IpAddr::V6(_) => None,
+            }),
         },
-        Ok(addr) => DestinationClass::RoutableAddress(addr),
-        Err(_) => DestinationClass::Name(host.to_string()),
+        Some(addr) => DestinationClass::RoutableAddress(addr),
+        None => DestinationClass::Name(host.to_string()),
     }
 }
 
@@ -1940,16 +1950,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "AAASM-6292 ST-5 QA finding, not yet filed/fixed: classify_destination parses `host` via \
-                std's FromStr<IpAddr>, which rejects decimal (and octal/hex) numeric IPv4 notation \
-                ('2852039166' for 169.254.169.254) — the destination is classified as \
-                DestinationClass::Name instead of RestrictedAddress, so egress_gate's per-destination \
-                RestrictedDestination check never runs for it; only a NameResolution grant covering the \
-                literal string '2852039166' is required instead. aa_core::net::blocked_ip_literal (which \
-                aa-proxy's own CONNECT literal check uses) shares the identical gap. Left #[ignore]d so \
-                CI stays green; run with `--ignored` to reproduce. See the AAASM-6292 report for the full \
-                chain and why aa-proxy's separate resolved-answer re-validation may still catch a live \
-                dial downstream even though this layer's own classifier does not."]
     fn metadata_address_as_decimal_integer_bypasses_the_classifier() {
         // 2852039166 is 169.254.169.254 as a single base-10 u32 — a classic
         // SSRF bypass encoding some HTTP clients/resolvers still accept.
@@ -1957,6 +1957,125 @@ mod tests {
             classify_destination("2852039166"),
             DestinationClass::RestrictedAddress { .. }
         ));
+    }
+
+    /// Every non-dotted-quad spelling of `169.254.169.254` (AAASM-6304).
+    const METADATA_ALT_ENCODINGS: &[&str] = &[
+        "2852039166",
+        "0xA9FEA9FE",
+        "0Xa9fea9fe",
+        "0251.0376.0251.0376",
+        "169.254.43518",
+        "169.16689662",
+        "0xA9.0xFE.0xA9.0xFE",
+        "025177524776",
+    ];
+
+    #[test]
+    fn every_numeric_ipv4_encoding_of_the_metadata_address_is_restricted_and_named() {
+        for host in METADATA_ALT_ENCODINGS {
+            match classify_destination(host) {
+                DestinationClass::RestrictedAddress {
+                    addr,
+                    known_metadata_endpoint,
+                } => {
+                    assert_eq!(addr.to_string(), "169.254.169.254", "{host}");
+                    assert_eq!(known_metadata_endpoint, Some("169.254.169.254"), "{host}");
+                }
+                other => panic!("{host:?} must be RestrictedAddress, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn normalization_variants_of_a_numeric_metadata_encoding_are_still_restricted() {
+        // Uppercase hex, surrounding whitespace, trailing dot, and the
+        // IPv4-mapped IPv6 spelling of the same address.
+        for raw in ["0XA9FEA9FE", " 2852039166 ", "2852039166.", "::ffff:a9fe:a9fe"] {
+            assert!(
+                matches!(classify_destination(raw), DestinationClass::RestrictedAddress { .. }),
+                "{raw:?}"
+            );
+            let canonical = aa_core::net::canonical_host(raw);
+            assert!(
+                matches!(
+                    classify_destination(&canonical),
+                    DestinationClass::RestrictedAddress { .. }
+                ),
+                "canonical form of {raw:?}: {canonical:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_restricted_ranges_in_numeric_encoding_are_restricted() {
+        for host in [
+            "2130706433",
+            "0x7f000001",
+            "0177.0.0.1",
+            "127.1",
+            "167772161",
+            "0xA000001",
+            "3232235777",
+        ] {
+            assert!(
+                matches!(classify_destination(host), DestinationClass::RestrictedAddress { .. }),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_encoded_metadata_destination_is_refused_by_the_broker_required_gate() {
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        for host in METADATA_ALT_ENCODINGS {
+            let scope = selectors(&[host]);
+            let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+            let authority = egress_authority_for(&spec);
+            assert!(
+                matches!(
+                    egress_gate(&contract, &broker, &authority, &scope),
+                    Err(EgressRefusal::RestrictedDestination {
+                        known_metadata_endpoint: Some("169.254.169.254"),
+                        ..
+                    })
+                ),
+                "{host}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_encoding_of_a_public_address_and_real_names_stay_unrestricted() {
+        // 134744072 is 8.8.8.8: a numeric spelling of a routable address is a
+        // routable address, not a restricted one and not a name.
+        assert!(matches!(
+            classify_destination("134744072"),
+            DestinationClass::RoutableAddress(a) if a.to_string() == "8.8.8.8"
+        ));
+        assert!(matches!(
+            classify_destination("93.184.216.34"),
+            DestinationClass::RoutableAddress(_)
+        ));
+        for name in [
+            "api.openai.com",
+            "evil.com",
+            "0x.example.com",
+            "1.2.3.4.5",
+            "4294967296",
+        ] {
+            assert!(
+                matches!(classify_destination(name), DestinationClass::Name(_)),
+                "{name}"
+            );
+        }
+        let contract = EgressContract::broker_required();
+        let broker = available_broker();
+        let scope = selectors(&["134744072"]);
+        let spec = base_spec().with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        assert!(egress_gate(&contract, &broker, &authority, &scope).is_ok());
     }
 
     #[test]
