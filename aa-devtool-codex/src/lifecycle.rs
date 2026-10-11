@@ -776,7 +776,7 @@ pub fn managed_settings_toml(profile: ProtectionProfile) -> Result<String, Adapt
     );
     doc.insert(
         "approval_policy".to_string(),
-        toml::Value::try_from(approval).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?,
+        toml::Value::String(approval.as_codex_value().to_string()),
     );
     toml::to_string(&doc).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
 }

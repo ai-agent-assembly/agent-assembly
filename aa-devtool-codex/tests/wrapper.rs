@@ -88,9 +88,11 @@ async fn apply_settings_creates_config_toml_with_correct_content() {
 
     assert_eq!(
         parsed["sandbox_mode"].as_str(),
-        Some("ask"),
-        "Deny rule → ask sandbox mode"
+        Some("read-only"),
+        "Deny rule → the strictest sandbox Codex accepts (AA level `ask`)"
     );
+    // Codex's approval_policy is ONE string (a table fails to load, AAASM-6319).
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
     let allowed = parsed["allowed_domains"].as_array().unwrap();
     assert!(
         allowed.contains(&toml::Value::String("api.openai.com".to_string())),
@@ -116,7 +118,7 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     let adapter =
         CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe)).with_home_dir(tmp.path().to_path_buf());
 
-    // Apply an all-Allow policy — sandbox_mode becomes full-auto.
+    // Apply an all-Allow policy — AA level `full-auto`, written as Codex's `workspace-write`.
     let allow_policy = PolicyDocument {
         version: 1,
         name: "allow-all".into(),
@@ -139,7 +141,7 @@ async fn apply_settings_merges_preserving_user_managed_keys() {
     );
     assert_eq!(
         parsed["sandbox_mode"].as_str(),
-        Some("full-auto"),
+        Some("workspace-write"),
         "AA-managed key must be updated"
     );
 }
@@ -159,7 +161,7 @@ async fn apply_settings_is_idempotent() {
 
     let config_path = tmp.path().join(".codex").join("config.toml");
     let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(parsed["sandbox_mode"].as_str(), Some("ask"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
 }
 
 /// A real `config.toml` is not flat: `codex mcp add` writes sub-tables like
@@ -192,7 +194,7 @@ async fn apply_settings_preserves_a_user_written_sub_table() {
     );
     assert_eq!(
         parsed["sandbox_mode"].as_str(),
-        Some("ask"),
+        Some("read-only"),
         "AA-managed key must still be applied"
     );
 }

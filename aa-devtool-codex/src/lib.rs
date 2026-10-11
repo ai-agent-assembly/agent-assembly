@@ -273,7 +273,7 @@ impl DevToolAdapter for CodexAdapter {
         );
         settings.insert(
             "approval_policy".to_string(),
-            toml::Value::try_from(approval_policy).map_err(|e| AdapterError::Serde(e.to_string()))?,
+            toml::Value::String(approval_policy.as_codex_value().to_string()),
         );
         toml::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
