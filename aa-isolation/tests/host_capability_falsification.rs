@@ -310,25 +310,59 @@ fn a_lease_valid_at_one_gate_call_is_refused_at_the_next_once_it_has_expired() {
     assert!(matches!(r, Err(HostCapabilityRefusal::LeaseInvalid(_))), "got {r:?}");
 }
 
-/// Characterisation of a real limit: the authority is a snapshot of the lease
-/// *value*. Marking the lease revoked elsewhere does not reach an authority
-/// already built, because there is no ledger/handle shared with it. "Revoke
-/// mid-run blocks the next use" therefore holds only where the caller rebuilds
-/// the authority per operation (as `aasm host` does, one process per call).
+/// Characterisation of a real limit, stated narrowly: there is NO revocation
+/// channel into a built `HostCapabilityAuthority`. The authority copies the
+/// lease value at construction and holds no ledger or shared handle, so nothing
+/// a revoker could do to the issuer's lease can reach it. "Revoke mid-run blocks
+/// the next use" therefore holds only where the caller rebuilds the authority
+/// from a fresh lease per operation (as `aasm host` does, one process per call).
+///
+/// This test cannot show a revocation being missed (a value copy with no shared
+/// state cannot observe anything by construction); it pins that the admitting
+/// path consults only the snapshot, so a future ledger-aware gate has to change
+/// this expectation deliberately.
 #[test]
-fn characterisation_an_already_built_authority_does_not_observe_a_later_revocation() {
+fn characterisation_there_is_no_revocation_channel_into_a_built_authority() {
     let root = root();
     let who = agent("agent-a");
-    let lease = lease_for(&who, "l1");
-    let auth = authority(&granted_spec(&who, lease.clone()), t(1_500));
-    let _revoked_elsewhere = lease.with_revocation(RevocationState::Revoked {
-        generation: 2,
-        reason: "revoked after the authority was built".to_string(),
-    });
+    let auth = authority(&granted_spec(&who, lease_for(&who, "l1")), t(1_500));
     assert_eq!(
         gate(&all_permitted(), &auth, &list_op(&root), &root, t(1_600)),
         Ok(()),
-        "snapshot authority still admits (documented limitation)"
+        "the built authority admits from its snapshot alone"
+    );
+    // The only revocation the gate can see is one carried on the lease value
+    // the authority was built from (covered by
+    // `a_revoked_lease_is_refused_and_the_same_lease_unrevoked_is_admitted`).
+    assert!(auth.process_creation_lease().unwrap().validate_at(t(1_600)).is_ok());
+}
+
+/// Characterisation (untested-path closure): a spec that states a
+/// `ProcessCreation` requirement but carries no leases at all is not
+/// lease-aware, so authority is `CompatibilityResidual` and
+/// `check_process_creation_grant` admits it with no lease behind it. Not
+/// reachable from `aasm host --lease-file` (a lease file always yields a lease),
+/// but reachable to any in-process caller that builds a spec this way.
+#[test]
+fn characterisation_a_requirement_with_no_leases_is_a_compatibility_residual_that_the_gate_admits() {
+    let root = root();
+    let who = agent("agent-a");
+    let spec = ExecutionSpec::new("qa", who.clone()).with_requirement(
+        ControlRequirement::prevent(CapabilityDomain::ProcessCreation).with_scope(RequirementScope::Whole),
+    );
+    let auth = authority(&spec, t(1_500));
+    assert!(matches!(
+        auth.process_creation_state(),
+        aa_isolation::AuthorityState::CompatibilityResidual
+    ));
+    assert!(auth.process_creation_lease().is_none());
+    assert_eq!(gate(&all_permitted(), &auth, &list_op(&root), &root, t(1_500)), Ok(()));
+    // control: the same spec with no requirement is Denied, so the Ok above is
+    // attributable to the residual state and not to a permissive gate.
+    let bare = authority(&ExecutionSpec::new("qa", who), t(1_500));
+    assert_eq!(
+        gate(&all_permitted(), &bare, &list_op(&root), &root, t(1_500)),
+        Err(HostCapabilityRefusal::NoProcessCreationGrant)
     );
 }
 
