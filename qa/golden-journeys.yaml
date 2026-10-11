@@ -1303,9 +1303,26 @@ journeys:
   fidelity: real_local_process
   platforms:
   - macos-apple-silicon
-  negative_control: deny leg's sentinel-file absence, cross-checked against the persisted
+  negative_control: 'deny leg''s sentinel-file absence, cross-checked against the persisted
     proxy audit.jsonl RefusalRule::McpToolCall/Blocked entry naming why (both must agree
-    the forbidden side effect did not occur, not just that the sentinel is missing)
+    the forbidden side effect did not occur, not just that the sentinel is missing).
+    AAASM-6297 (ST-10, independent QA, macOS Apple Silicon): the REAL-binary legs were NOT run by QA --
+    BLOCKED-ON-FOUNDER-DOGFOOD (AC1 this test: QA could not rule out the real claude binary consulting
+    the login keychain; AC2 live claude+codex: needs the founder''s accounts); package and exact commands in
+    verification-reports/AAASM-6297-coding-agent-workflow-founder-dogfood.md. What QA added is STUB-agent
+    evidence for the governed-launch plumbing only, never a real-agent PASS: aa-integration-tests/tests/
+    cli_run_stub_coding_agent_workflow.rs drives a shell-script stub through aasm run --workspace-tx exec
+    with an allowed and a policy-denied MCP tools/call (real aasm, real per-launch proxy, real gateway
+    PolicyService); denial proven policy-caused by a paired control flipping only the policy, and attested
+    by the persisted audit record. Mutations, each reverted and each reddening its test: gateway Deny mapped
+    to Allow in aa-proxy mcp_enforce (stub deny test red); proxy launched under a constant AA_AGENT_ID
+    (attribution tests red). AC3 (isolation process on macOS refuses cleanly) PARTIAL: a stub claude on a
+    PATH excluding /opt/homebrew/bin is refused before it starts (exit non-zero, no receipt, launch marker
+    absent) with a paired --isolation none control that does start it; the refusal is host availability
+    (sandlock Linux-only, no macOS VM substrate), and the macOS-VM pre-boot gate checks reachability only,
+    never executable format (aa-isolation-macos-vm/src/paths.rs to_guest_path; pinned by
+    aa-isolation-macos-vm/tests/host_agent_binary_reachability.rs, desired contract #[ignore]d).
+    The Linux receipt-verifies leg is BLOCKED-NO-INFRA. lifecycle_state stays partial.'
 - id: J64
   jira: AAASM-5889
   feature_refs:
@@ -2374,11 +2391,17 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-integration-tests/tests/cli_run_workspace_tx.rs::a_live_base_drift_during_an_in_flight_run_refuses_commit_and_applies_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_stub_coding_agent_workflow.rs::stub_coding_agent::stub_concurrent_sessions_do_not_cross_attribute_edits_or_denials
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/cli_run_stub_coding_agent_workflow.rs::stub_coding_agent::stub_failed_session_is_discarded_and_base_stays_untouched
   execution_lanes:
   - pr
   - main
   fidelity: real
-  negative_control: 'AAASM-6291 (ST-4, independent QA) exercised the full commit/discard/protected-path/drift decision sequence plus one new deterministic crash-interruption characterization test and one new live concurrent-conflict test (a real `aasm run` subprocess synchronized via file flags, not a library-level simulation). Found one real gap, documented rather than fixed (QA scope): `aa_isolation::TransactionStatus::InterruptedApply` (tx.rs:326-330) and `aa-workspace-tx/src/lib.rs:44-48`''s own doc comment both describe a leftover apply journal as discoverable on a later run, but no code path anywhere in `aa-workspace-tx` or `aa-cli` ever inspects one -- `WorkspaceTransaction::open` always re-measures the base and re-materializes staged content with no awareness a journal exists, silently clobbering any staged edit that was in flight when the journal was written. `TransactionId`''s own doc comment names `aasm workspace tx show/discard/gc` as the intended recovery surface; it does not exist in `aa-cli::commands::Commands` (confirmed by enumeration, not absence-of-grep-hits) -- there is no operator-visible surfacing of `InterruptedApply` anywhere in `aasm` output or in an execution receipt. The target contract is pinned as an `#[ignore]`d failing test (`reopen_after_a_crash_mid_apply_should_report_interrupted_apply`); candidate Bug not yet filed. `lifecycle_state` moved gap -> partial rather than automated: the crash-recovery leg of this journey remains genuinely uncovered by any passing test, and the Linux-only confined-receipt case (test 4) stays unverified on this macOS host.'
+  negative_control: 'AAASM-6291 (ST-4, independent QA) exercised the full commit/discard/protected-path/drift decision sequence plus one new deterministic crash-interruption characterization test and one new live concurrent-conflict test (a real `aasm run` subprocess synchronized via file flags, not a library-level simulation). Found one real gap, documented rather than fixed (QA scope): `aa_isolation::TransactionStatus::InterruptedApply` (tx.rs:326-330) and `aa-workspace-tx/src/lib.rs:44-48`''s own doc comment both describe a leftover apply journal as discoverable on a later run, but no code path anywhere in `aa-workspace-tx` or `aa-cli` ever inspects one -- `WorkspaceTransaction::open` always re-measures the base and re-materializes staged content with no awareness a journal exists, silently clobbering any staged edit that was in flight when the journal was written. `TransactionId`''s own doc comment names `aasm workspace tx show/discard/gc` as the intended recovery surface; it does not exist in `aa-cli::commands::Commands` (confirmed by enumeration, not absence-of-grep-hits) -- there is no operator-visible surfacing of `InterruptedApply` anywhere in `aasm` output or in an execution receipt. The target contract is pinned as an `#[ignore]`d failing test (`reopen_after_a_crash_mid_apply_should_report_interrupted_apply`); candidate Bug not yet filed. `lifecycle_state` moved gap -> partial rather than automated: the crash-recovery leg of this journey remains genuinely uncovered by any passing test, and the Linux-only confined-receipt case (test 4) stays unverified on this macOS host. AAASM-6297 (ST-10): two STUB-agent (shell script, not a real coding agent) tests extend this journey''s plumbing evidence -- two genuinely concurrent --workspace-tx sessions on distinct bases each receive only their own change set, and a failing session (exit 7) leaves the base byte-identical while the run reports committed=false and states what is not transactional; mutation: commit regardless of exit code in aa-cli run_workspace_tx settle() reddens the failing-session test. Still partial for the unchanged reasons above.'
 - id: J86
   jira: AAASM-6264
   name: Enforce runtime-wide CPU, memory, PID, FD, disk, network and wall-time ceilings
@@ -2774,3 +2797,44 @@ journeys:
     (policy-decision replay, not execution-receipt replay). Not
     implemented here: building a replay command is out of this
     verification-only ticket''s scope.'
+- id: J93
+  jira: AAASM-6297
+  name: Install a coding-agent adapter's configuration without destroying the user's existing config, and be able to undo it
+  priority: P1
+  persona_track: Security
+  surfaces:
+  - aa-devtool-codex
+  - aa-devtool-copilot
+  - aa-devtool-windsurf
+  - aa-core
+  entry_point: cli
+  lanes:
+  - security
+  - functional
+  browser_required: false
+  outcome: See AAASM-6297 for the full acceptance contract; this row is a selection index only.
+  feature_refs:
+  - AAASM-6174
+  lifecycle_state: partial
+  gap_owner: AAASM-6297
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_install_preserves_every_unmanaged_key_and_table
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_second_install_is_a_byte_identical_no_op
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_remove_restores_the_users_original_values
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_install_over_a_malformed_config_refuses_and_changes_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_managed_values_written_today_are_the_ones_codex_0_160_rejects
+  execution_lanes:
+  - pr
+  - main
+  fidelity: real_local_process
+  negative_control: 'AAASM-6297 (ST-10, independent QA, macOS): Claude Code is covered by J70 and not repeated. Codex was driven through the real IntegrationEngine + CodexIntegration over a throwaway HOME (never the real config): user keys/tables preserved (parsed comparison), a second install byte-identical and reported unchanged, remove restores the user''s own values including the user''s own value of a managed key, an unparseable config.toml is refused and left untouched with no receipt, owned paths are disjoint from Claude Code''s. Mutation (reverted): make merge_managed_keys start from an empty document -> 4 tests red. Verdict PARTIAL, findings not fixed (QA scope), each with a passing characterisation and an #[ignore]d desired_* test: (F1) the values Codex install writes are REJECTED by the real codex-cli 0.160.0 (measured with a throwaway CODEX_HOME and `codex mcp list`, a config load: sandbox_mode="suggest" unknown variant; [approval_policy] table unknown variant file_writes; empty config, sandbox_mode="read-only" and approval_policy="on-request" all load), so installing the Codex integration leaves codex unable to load its config (aa-devtool-codex/src/lifecycle.rs managed_settings_toml); (F2) the TOML round-trip permanently drops the user''s comments and re-orders keys, install and remove (aa-core fingerprint.rs merge_managed_keys); (F5) Copilot and Windsurf have no plan/receipt/remove at all (uninstall UNSUPPORTED), Copilot governance writes autoApprove=true and requireApproval=never for a deny-only policy overwriting a stricter user value with no recorded prior value (aa-devtool-copilot/src/lib.rs auto_approve), apply_mcp_governance permanently deletes denied servers, and VS Code JSONC settings make apply refuse. Install-order independence between Codex and Claude Code is shown structurally (disjoint paths), not by installing both through one engine. No real agent was run.'
