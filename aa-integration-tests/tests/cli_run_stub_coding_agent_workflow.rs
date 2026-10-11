@@ -12,7 +12,7 @@
 //! file, runs a shell command, attempts a policy-restricted tool call) is
 //! launched under it. They are NOT evidence that any specific real agent
 //! behaves this way, and must not be cited as a "real coding agent PASS".
-//! The real-agent legs are in `qa/dogfood/AAASM-6297-coding-agent-workflow.md`
+//! The real-agent legs are in `verification-reports/AAASM-6297-coding-agent-workflow-founder-dogfood.md`
 //! (founder DogFood) and are BLOCKED-ON-FOUNDER-DOGFOOD here.
 //!
 //! # The restricted action
@@ -60,6 +60,7 @@ mod proxy_trust_support;
 #[allow(dead_code, unused_imports)]
 mod spike_support;
 
+#[cfg(target_os = "macos")]
 fn stub_coding_agent_tail(s: &str) -> String {
     let lines: Vec<&str> = s.lines().collect();
     lines[lines.len().saturating_sub(40)..].join("\n")
