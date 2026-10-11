@@ -26,6 +26,7 @@ pub mod launch_env;
 pub mod lifecycle;
 mod sandbox;
 pub mod scope;
+mod strictness;
 use approval::map_policy_to_approval;
 use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
 
@@ -338,7 +339,17 @@ impl DevToolAdapter for CodexAdapter {
         };
 
         // AA-managed keys win; user-managed keys not present in `settings` survive.
-        if let toml::Value::Table(new_table) = new_val {
+        // ...except that a security setting the user already holds is never
+        // lowered (AAASM-6327), and one that cannot be ranked is never replaced.
+        if let toml::Value::Table(mut new_table) = new_val {
+            for w in strictness::withhold_relaxations(&merged, &mut new_table) {
+                if w.unrankable {
+                    eprintln!(
+                        "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
+                        w.key, w.existing
+                    );
+                }
+            }
             merged.extend(new_table);
         }
 
