@@ -1,0 +1,688 @@
+//! AAASM-6297 (ST-10, campaign AAASM-6174) -- the governed coding-agent
+//! workflow, driven by a deterministic **STUB** coding agent.
+//!
+//! # STUB, not a real agent -- read this before citing any result here
+//!
+//! Every test in this file launches `fixtures/stub_coding_agent/stub_agent.sh`
+//! (a POSIX script) or an empty `claude` placeholder script. NEITHER is Claude
+//! Code, Codex, Copilot or Windsurf. What these tests evidence is the
+//! *governed-launch plumbing* -- `aasm run` + the transactional workspace + the
+//! dedicated per-launch proxy + the gateway `PolicyService` + per-session
+//! attribution -- when something that behaves like a coding agent (edits a
+//! file, runs a shell command, attempts a policy-restricted tool call) is
+//! launched under it. They are NOT evidence that any specific real agent
+//! behaves this way, and must not be cited as a "real coding agent PASS".
+//! The real-agent legs are in `verification-reports/AAASM-6297-coding-agent-workflow-founder-dogfood.md`
+//! (founder DogFood) and are BLOCKED-ON-FOUNDER-DOGFOOD here.
+//!
+//! # The restricted action
+//!
+//! The policy-denied action is an MCP `tools/call` (`deny_test`) sent over the
+//! governed HTTPS proxy and adjudicated by a real gateway `PolicyService`
+//! (`aa_proxy::mcp_enforce`) -- the same mechanism
+//! `cli_run_claude_deterministic_conformance.rs` (AAASM-5930) proves with the
+//! real `claude` binary. A protected-path commit refusal is deliberately NOT
+//! used as the "policy denies" leg: that is `cli_run_workspace_tx.rs`.
+//!
+//! # Property-specific controls
+//!
+//! * the denial is proven POLICY-caused, not availability-caused, by a paired
+//!   control that flips exactly one property (`deny_test` allow:false -> true)
+//!   with every other input held constant, and observes the call *reach* the
+//!   upstream;
+//! * the denial's cause is the persisted proxy audit record
+//!   (`RefusalRule::McpToolCall`, `Blocked`), not merely "the sentinel is
+//!   missing".
+//!
+//! # Platform
+//!
+//! macOS-hosted and Linux-hosted `--isolation none` launches only. On this
+//! macOS host every confining backend refuses, so there is no execution
+//! receipt to inspect for an executed run (asserted as truthful absence); the
+//! commit-plus-receipt-verifies leg is Linux-only
+//! (`cli_run_workspace_tx.rs` test 4) and is BLOCKED-NO-INFRA here.
+
+#[allow(unused_imports)]
+pub use common::precondition::evidence;
+
+#[allow(unused_imports)]
+mod common;
+#[allow(unused_imports)]
+mod conformance_gateway_support;
+#[allow(dead_code, unused_imports)]
+mod conformance_mcp_support;
+#[allow(dead_code, unused_imports)]
+mod conformance_support;
+#[allow(unused_imports)]
+mod grpc_gateway_support;
+#[allow(unused_imports)]
+mod proxy_trust_support;
+#[allow(dead_code, unused_imports)]
+mod spike_support;
+
+#[cfg(target_os = "macos")]
+fn stub_coding_agent_tail(s: &str) -> String {
+    let lines: Vec<&str> = s.lines().collect();
+    lines[lines.len().saturating_sub(40)..].join("\n")
+}
+
+#[cfg(unix)]
+mod stub_coding_agent {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::io;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+
+    use aa_proxy::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
+    use aa_proxy::tls::CaStore;
+
+    use super::conformance_mcp_support::{sentinel_path, ConformanceUpstream};
+    use super::proxy_trust_support::TrustedProxy;
+    use super::spike_support::proxy_harness::install_crypto_provider;
+
+    const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/stub_coding_agent");
+    const MCP_HOST: &str = "mcp.example.com";
+    const MCP_SERVER: &str = "conformance";
+    const ALLOW_TOOL: &str = "allow_test";
+    const DENY_TOOL: &str = "deny_test";
+
+    /// Same shape as AAASM-5930's policy: `allow_test` allowed, `deny_test`
+    /// denied (or, for the control, allowed -- the ONLY difference).
+    fn write_policy(dir: &Path, name: &str, deny_test_allowed: bool) -> io::Result<PathBuf> {
+        let path = dir.join(format!("{name}.yaml"));
+        std::fs::write(
+            &path,
+            format!(
+                "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nmetadata:\n  name: {name}\n  \
+                 version: \"0.1.0\"\nspec:\n  tools:\n    allow_test:\n      allow: true\n    deny_test:\n      \
+                 allow: {deny_test_allowed}\n"
+            ),
+        )?;
+        Ok(path)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Entry {
+        Dir,
+        File(Vec<u8>),
+    }
+
+    fn snapshot(root: &Path) -> BTreeMap<String, Entry> {
+        let mut out = BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("read_dir") {
+                let path = entry.expect("dir entry").path();
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("under root")
+                    .to_string_lossy()
+                    .into_owned();
+                if path.is_dir() {
+                    out.insert(rel, Entry::Dir);
+                    stack.push(path);
+                } else {
+                    out.insert(rel, Entry::File(std::fs::read(&path).expect("read")));
+                }
+            }
+        }
+        out
+    }
+
+    fn copy_fixture(dst: &Path) -> io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dst.join("src"))?;
+        std::fs::copy(Path::new(FIXTURE).join("src/lib.txt"), dst.join("src/lib.txt"))?;
+        let script = dst.join("stub_agent.sh");
+        std::fs::copy(Path::new(FIXTURE).join("stub_agent.sh"), &script)?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        Ok(())
+    }
+
+    fn tail(s: &str, n: usize) -> String {
+        let lines: Vec<&str> = s.lines().collect();
+        lines[lines.len().saturating_sub(n)..].join("\n")
+    }
+
+    fn read_audit(state: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<ProxyAuditEntry>)>> {
+        let runs = state.join("runs");
+        let mut out = Vec::new();
+        if runs.is_dir() {
+            for e in std::fs::read_dir(&runs)? {
+                let p = e?.path().join("audit.jsonl");
+                if p.is_file() {
+                    let raw = std::fs::read_to_string(&p)?;
+                    let entries = raw
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .map(|l| serde_json::from_str(l).map_err(|e| anyhow::anyhow!("audit line: {e}: {l}")))
+                        .collect::<anyhow::Result<Vec<ProxyAuditEntry>>>()?;
+                    out.push((p, entries));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Everything one test host shares: a CA, the deterministic upstream, a
+    /// real gateway with `PolicyService`, and the trusted-proxy precondition.
+    struct Host {
+        _tmp: tempfile::TempDir,
+        root: PathBuf,
+        ca_dir: PathBuf,
+        sentinel_dir: PathBuf,
+        state: PathBuf,
+        gateway_endpoint: String,
+        policy: PathBuf,
+        upstream: ConformanceUpstream,
+        proxy: TrustedProxy,
+    }
+
+    impl Host {
+        async fn start(deny_test_allowed: bool) -> anyhow::Result<Self> {
+            install_crypto_provider();
+            let tmp = tempfile::tempdir()?;
+            let root = tmp.path().to_path_buf();
+            let ca_dir = root.join("ca");
+            let sentinel_dir = root.join("sentinels");
+            let state = root.join("state");
+            for d in [&ca_dir, &sentinel_dir, &state] {
+                std::fs::create_dir_all(d)?;
+            }
+            let policy = write_policy(&root, "aaasm6297-stub", deny_test_allowed)?;
+            let (gateway_endpoint, _registry) = super::conformance_gateway_support::start_full_gateway(&policy).await?;
+            let ca = CaStore::load_or_create(&ca_dir)
+                .await
+                .map_err(|e| anyhow::anyhow!("certificate authority: {e}"))?;
+            let upstream =
+                ConformanceUpstream::start(&ca, MCP_HOST, MCP_SERVER, ALLOW_TOOL, DENY_TOOL, &sentinel_dir).await?;
+            drop(ca);
+            let proxy = TrustedProxy::start_intercepting(&ca_dir, upstream.addr, &state, &[])?;
+            Ok(Self {
+                _tmp: tmp,
+                root,
+                ca_dir,
+                sentinel_dir,
+                state,
+                gateway_endpoint,
+                policy,
+                upstream,
+                proxy,
+            })
+        }
+
+        /// `aasm run --workspace-tx exec -- sh stub_agent.sh <session> <ca> <mode>`
+        /// with an explicit environment -- nothing ambient crosses in.
+        fn launch(&self, agent_id: &str, project: &Path, mode: &str) -> io::Result<std::process::Child> {
+            let home = self.root.join(format!("home-{agent_id}"));
+            std::fs::create_dir_all(&home)?;
+            let mut cmd = Command::new(self.proxy.aasm());
+            cmd.env_clear()
+                .current_dir(project)
+                .env(
+                    "PATH",
+                    format!("{}:/usr/bin:/bin", self.proxy.proxy_bin_dir().display()),
+                )
+                .env("HOME", &home)
+                .env("AASM_STATE_DIR", &self.state)
+                .env("AA_CA_DIR", &self.ca_dir)
+                .env("AA_DATA_DIR", self.proxy.data_dir())
+                .env("AA_GATEWAY_ENDPOINT", &self.gateway_endpoint)
+                .env("AA_TEST_PROXY_UPSTREAM", self.upstream.addr.to_string())
+                .env("AA_PROXY_LLM_ONLY", "false")
+                .env("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1")
+                .args(["run", "--workspace-tx", "--policy"])
+                .arg(&self.policy)
+                .args(["--agent-id", agent_id, "exec", "--", "sh", "stub_agent.sh", agent_id])
+                .arg(self.ca_dir.join("ca-cert.pem"))
+                .arg(mode)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            cmd.spawn()
+        }
+    }
+
+    fn expected_tree(session: &str, mode: &str) -> BTreeSet<String> {
+        let mut keys: BTreeSet<String> = ["src", "src/lib.txt", "stub_agent.sh", "out.txt", "results"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut tools = vec![ALLOW_TOOL];
+        if mode.starts_with("deny") {
+            tools.push(DENY_TOOL);
+        }
+        for t in tools {
+            for ext in ["status", "body", "curl_err"] {
+                keys.insert(format!("results/{t}.{ext}"));
+            }
+        }
+        let _ = session;
+        keys
+    }
+
+    fn file(tree: &BTreeMap<String, Entry>, key: &str) -> String {
+        match tree.get(key) {
+            Some(Entry::File(b)) => String::from_utf8_lossy(b).into_owned(),
+            other => panic!("expected file at {key}, got {other:?}"),
+        }
+    }
+
+    /// The composite stub workflow: edit + shell + allowed call + DENIED call,
+    /// inside one transactional workspace.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stub_agent_edit_shell_and_denied_call_commit_exactly_the_change_set_and_denial_is_policy_caused(
+    ) -> anyhow::Result<()> {
+        let host = Host::start(false).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+        let initial = snapshot(&project);
+
+        let out = host.launch("aaasm6297-stub-a", &project, "deny")?.wait_with_output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            out.status.success(),
+            "stub run failed; stderr tail:\n{}",
+            tail(&stderr, 60)
+        );
+        assert!(
+            stderr.contains("workspace_tx.committed=true"),
+            "expected a committed workspace_tx block; stderr:\n{}",
+            tail(&stderr, 60)
+        );
+
+        // ── the workspace commit applied exactly this agent's change set ──
+        let after = snapshot(&project);
+        assert_eq!(
+            after.keys().cloned().collect::<BTreeSet<_>>(),
+            expected_tree("a", "deny"),
+            "base tree key set after commit"
+        );
+        assert_eq!(
+            file(&after, "src/lib.txt"),
+            "original content\nstub-edit-by-aaasm6297-stub-a\n"
+        );
+        assert_eq!(file(&after, "out.txt"), "built-by-aaasm6297-stub-a\n");
+        assert_eq!(
+            initial["stub_agent.sh"], after["stub_agent.sh"],
+            "unchanged file stays identical"
+        );
+
+        // ── the allowed call reached the upstream; the denied one did not ──
+        let st = |t: &str| file(&after, &format!("results/{t}.status"));
+        assert_eq!(
+            st(ALLOW_TOOL).trim(),
+            "200",
+            "allowed call must succeed: {}",
+            file(&after, "results/allow_test.curl_err")
+        );
+        assert!(file(&after, "results/allow_test.body").contains("allow_test executed"));
+        assert!(
+            sentinel_path(&host.sentinel_dir, ALLOW_TOOL).exists(),
+            "allowed call must reach the MCP server"
+        );
+        assert!(
+            !sentinel_path(&host.sentinel_dir, DENY_TOOL).exists(),
+            "the DENIED tool call reached the MCP server -- enforcement failed"
+        );
+        assert_eq!(
+            host.upstream.tool_call_names(),
+            [ALLOW_TOOL.to_string()].into_iter().collect(),
+            "exactly the allowed tool reached the upstream"
+        );
+        // The agent saw something other than the success body for the denied call.
+        assert!(
+            !file(&after, "results/deny_test.body").contains("deny_test executed"),
+            "agent-visible response to the denied call must not be the upstream's success"
+        );
+
+        // ── the persisted audit record says WHY (policy), attributed to this session ──
+        let audits = read_audit(&host.state)?;
+        assert_eq!(audits.len(), 1, "one launch => one per-launch audit.jsonl: {audits:?}");
+        let blocked: Vec<_> = audits[0]
+            .1
+            .iter()
+            .filter(|e| e.refusal_rule == Some(RefusalRule::McpToolCall))
+            .collect();
+        assert_eq!(
+            blocked.len(),
+            1,
+            "exactly the one denied call is refused: {:?}",
+            audits[0].1
+        );
+        assert_eq!(blocked[0].decision, ProxyAuditDecision::Blocked);
+        assert_eq!(blocked[0].agent_id.as_deref(), Some("aaasm6297-stub-a"));
+
+        // ── receipt truth: --isolation none => no confinement => NO receipt ──
+        let receipts = host.state.join("execution-receipts");
+        let n = std::fs::read_dir(&receipts).map(|r| r.count()).unwrap_or(0);
+        assert_eq!(
+            n, 0,
+            "an unconfined (--isolation none) launch must not write an execution receipt"
+        );
+        eprintln!("STUB-ONLY evidence. aasm stderr tail:\n{}", tail(&stderr, 25));
+        Ok(())
+    }
+
+    /// Paired control: identical harness, ONE property flipped (`deny_test`
+    /// allow:false -> allow:true). The call must now reach the upstream, which
+    /// proves the denial above is the policy's doing and not an upstream /
+    /// proxy unavailability that would also have kept the sentinel absent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stub_control_flipping_only_the_policy_lets_the_same_call_through() -> anyhow::Result<()> {
+        let host = Host::start(true).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+        let out = host
+            .launch("aaasm6297-stub-ctl", &project, "deny")?
+            .wait_with_output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            out.status.success(),
+            "stub run failed; stderr tail:\n{}",
+            tail(&stderr, 60)
+        );
+        let after = snapshot(&project);
+        assert_eq!(file(&after, "results/deny_test.status").trim(), "200");
+        assert!(
+            sentinel_path(&host.sentinel_dir, DENY_TOOL).exists(),
+            "with the policy flipped the call must reach the upstream"
+        );
+        let blocked = read_audit(&host.state)?
+            .into_iter()
+            .flat_map(|(_, e)| e)
+            .filter(|e| e.refusal_rule == Some(RefusalRule::McpToolCall))
+            .count();
+        assert_eq!(
+            blocked, 0,
+            "no McpToolCall refusal may be recorded when policy allows the call"
+        );
+        Ok(())
+    }
+
+    /// Two genuinely concurrent sessions (distinct agent ids, distinct
+    /// projects, ONE shared state dir): each base receives only its own
+    /// change set, and the denied call -- made by session A only -- is
+    /// attributed to A and never to B.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stub_concurrent_sessions_do_not_cross_attribute_edits_or_denials() -> anyhow::Result<()> {
+        let host = Host::start(false).await?;
+        let (pa, pb) = (host.root.join("project-a"), host.root.join("project-b"));
+        copy_fixture(&pa)?;
+        copy_fixture(&pb)?;
+
+        // both spawned before either is awaited
+        let a = host.launch("aaasm6297-stub-A", &pa, "deny")?;
+        let b = host.launch("aaasm6297-stub-B", &pb, "allow")?;
+        let (oa, ob) = (a.wait_with_output()?, b.wait_with_output()?);
+        for (n, o) in [("A", &oa), ("B", &ob)] {
+            let e = String::from_utf8_lossy(&o.stderr).into_owned();
+            assert!(o.status.success(), "session {n} failed; stderr tail:\n{}", tail(&e, 60));
+            assert!(
+                e.contains("workspace_tx.committed=true"),
+                "session {n} stderr:\n{}",
+                tail(&e, 60)
+            );
+        }
+
+        let (ta, tb) = (snapshot(&pa), snapshot(&pb));
+        assert_eq!(
+            file(&ta, "src/lib.txt"),
+            "original content\nstub-edit-by-aaasm6297-stub-A\n"
+        );
+        assert_eq!(
+            file(&tb, "src/lib.txt"),
+            "original content\nstub-edit-by-aaasm6297-stub-B\n"
+        );
+        assert_eq!(file(&ta, "out.txt"), "built-by-aaasm6297-stub-A\n");
+        assert_eq!(file(&tb, "out.txt"), "built-by-aaasm6297-stub-B\n");
+        assert_eq!(ta.keys().cloned().collect::<BTreeSet<_>>(), expected_tree("A", "deny"));
+        assert_eq!(tb.keys().cloned().collect::<BTreeSet<_>>(), expected_tree("B", "allow"));
+        assert!(
+            !tb.contains_key("results/deny_test.status"),
+            "B never attempted the denied call"
+        );
+
+        // Attribution. A run's audit dir is named after its own agent id, so the
+        // file -> session mapping does not depend on the entries' content. The
+        // proxy audit records only refusals here (an allowed call writes no
+        // entry), so B's file being EMPTY is the expected, positive-shaped
+        // result: B made no denied call and nothing is attributed to it.
+        let audits = read_audit(&host.state)?;
+        assert_eq!(
+            audits.len(),
+            2,
+            "two launches => two per-launch audit files: {audits:?}"
+        );
+        let mut by_agent: BTreeMap<String, Vec<ProxyAuditEntry>> = BTreeMap::new();
+        for (path, entries) in audits {
+            let dir = path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            let who = if dir.starts_with("aaasm6297-stub-A-") {
+                "A"
+            } else if dir.starts_with("aaasm6297-stub-B-") {
+                "B"
+            } else {
+                panic!("unexpected run dir {dir}")
+            };
+            by_agent.insert(who.to_string(), entries);
+        }
+        eprintln!("STUB-ONLY audit entries by session: {by_agent:#?}");
+        let a_refusals: Vec<_> = by_agent["A"]
+            .iter()
+            .filter(|e| e.refusal_rule == Some(RefusalRule::McpToolCall))
+            .collect();
+        assert_eq!(a_refusals.len(), 1, "A's one denied call: {:?}", by_agent["A"]);
+        assert_eq!(a_refusals[0].agent_id.as_deref(), Some("aaasm6297-stub-A"));
+        assert!(
+            by_agent["A"]
+                .iter()
+                .all(|e| e.agent_id.as_deref() == Some("aaasm6297-stub-A")),
+            "every entry in A's file is A's: {:?}",
+            by_agent["A"]
+        );
+        assert!(
+            by_agent["B"]
+                .iter()
+                .all(|e| e.agent_id.as_deref() == Some("aaasm6297-stub-B")),
+            "nothing foreign in B's file: {:?}",
+            by_agent["B"]
+        );
+        assert_eq!(
+            by_agent["B"].iter().filter(|e| e.refusal_rule.is_some()).count(),
+            0,
+            "B made no denied call, so no refusal may be attributed to it: {:?}",
+            by_agent["B"]
+        );
+        assert_eq!(
+            host.upstream.tool_call_names(),
+            [ALLOW_TOOL.to_string()].into_iter().collect(),
+            "only the allowed tool ever reached the upstream across both sessions"
+        );
+        Ok(())
+    }
+
+    /// A failing session leaves the base byte-for-byte unchanged (discard) even
+    /// though it edited, ran a command, was allowed one call and was denied
+    /// another. The out-of-workspace side effect (the allowed call reaching the
+    /// upstream) is NOT rolled back, and the run says so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn stub_failed_session_is_discarded_and_base_stays_untouched() -> anyhow::Result<()> {
+        let host = Host::start(false).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+        let before = snapshot(&project);
+
+        let out = host
+            .launch("aaasm6297-stub-fail", &project, "deny-fail")?
+            .wait_with_output()?;
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(7),
+            "the agent's own exit code is propagated; stderr:\n{}",
+            tail(&stderr, 40)
+        );
+        assert_eq!(
+            snapshot(&project),
+            before,
+            "a failed session must leave the base tree untouched"
+        );
+        assert!(
+            stderr.contains("workspace_tx.committed=false"),
+            "a failed session must report committed=false; stderr:\n{}",
+            tail(&stderr, 40)
+        );
+        assert!(!stderr.contains("workspace_tx.committed=true"));
+        assert!(
+            stderr.contains("workspace_tx.not_transactional"),
+            "non-coverage must be stated:\n{}",
+            tail(&stderr, 40)
+        );
+        // the agent really ran (control: the discard is not 'it never started')
+        assert!(
+            sentinel_path(&host.sentinel_dir, ALLOW_TOOL).exists(),
+            "allowed call happened outside the workspace and is not undone"
+        );
+        assert!(!sentinel_path(&host.sentinel_dir, DENY_TOOL).exists());
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod stub_claude_isolation {
+    //! AAASM-6297 AC3: `aasm run --isolation process -- claude` on macOS must
+    //! refuse CLEANLY. The `claude` here is a STUB shell script placed on a
+    //! PATH that EXCLUDES the real `/opt/homebrew/bin`, so a regression runs
+    //! the stub (leaving a marker), never the real agent.
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::grpc_gateway_support::GrpcGateway;
+    use super::proxy_trust_support::{self, TrustedProxy};
+
+    fn policy(dir: &Path) -> std::path::PathBuf {
+        let path = dir.join("policy.yaml");
+        std::fs::write(
+            &path,
+            "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: aaasm6297-claude-stub\nspec:\n  tools:\n    \
+             read_file:\n      allow: true\n",
+        )
+        .unwrap();
+        path
+    }
+
+    fn run(
+        isolation: &[&str],
+    ) -> (
+        std::process::Output,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let proxy = TrustedProxy::start().unwrap();
+        let gateway = rt.block_on(GrpcGateway::start()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let bin = root.join("stubbin");
+        let project = root.join("project");
+        let state = root.join("state");
+        let home = root.join("home");
+        for d in [&bin, &project, &home] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let stub = bin.join("claude");
+        // Answers the adapter's `--version` detection probe in the real
+        // format but writes the marker ONLY for any other argv, so the marker
+        // proves a LAUNCH, never merely a probe.
+        std::fs::write(
+            &stub,
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo '2.1.236 (Claude Code)'; exit 0; fi\n\
+             echo \"STUB-CLAUDE-LAUNCHED $*\" > \"$PWD/claude-stub-ran.marker\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let aa_proxy_dir = proxy_trust_support::aa_proxy_binary().parent().unwrap().to_path_buf();
+        let policy = policy(root);
+        let out = Command::new(proxy.aasm())
+            .env_clear()
+            .current_dir(&project)
+            .env(
+                "PATH",
+                format!("{}:{}:/usr/bin:/bin", bin.display(), aa_proxy_dir.display()),
+            )
+            .env("HOME", &home)
+            .env("AASM_STATE_DIR", &state)
+            .env("AA_CA_DIR", root.join("ca"))
+            .env("AA_DATA_DIR", proxy.data_dir())
+            .env("AA_GATEWAY_ENDPOINT", gateway.endpoint())
+            .args(["run", "--policy"])
+            .arg(&policy)
+            .args(["--agent-id", "aaasm6297-claude-stub"])
+            .args(isolation)
+            .args(["claude", "--", "--aaasm6297-launch"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        (out, project, state, tmp)
+    }
+
+    /// POSITIVE control: with NO isolation the same stub IS launched through the
+    /// same harness, so "marker absent" under `--isolation process` cannot be
+    /// explained by the harness being unable to run the stub at all.
+    #[test]
+    fn stub_control_isolation_none_launches_the_stub_claude() {
+        let (out, project, _state, _tmp) = run(&["--isolation", "none"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            project.join("claude-stub-ran.marker").exists(),
+            "control: stub must run under --isolation none. status={:?}\nstderr:\n{}",
+            out.status,
+            super::stub_coding_agent_tail(&stderr)
+        );
+    }
+
+    #[test]
+    fn stub_isolation_process_refuses_cleanly_and_never_runs_the_agent() {
+        let (out, project, state, _tmp) = run(&["--isolation", "process"]);
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            !out.status.success(),
+            "must refuse; stderr:\n{}",
+            super::stub_coding_agent_tail(&stderr)
+        );
+        assert!(
+            stderr.contains("backend cannot be selected on this host"),
+            "must refuse with the isolation-specific reason, not an unrelated failure:\n{}",
+            super::stub_coding_agent_tail(&stderr)
+        );
+        assert!(
+            !project.join("claude-stub-ran.marker").exists(),
+            "the (stub) agent must NOT have been started"
+        );
+        let n = std::fs::read_dir(state.join("execution-receipts"))
+            .map(|d| d.count())
+            .unwrap_or(0);
+        assert_eq!(n, 0, "a refused launch writes no receipt");
+        eprintln!(
+            "STUB-ONLY refusal stderr tail:\n{}",
+            super::stub_coding_agent_tail(&stderr)
+        );
+    }
+}
+
+#[cfg(not(unix))]
+#[test]
+fn stub_coding_agent_workflow_is_not_measured_on_this_host() {
+    eprintln!("NOT MEASURED: stub coding-agent workflow requires a unix host");
+}
