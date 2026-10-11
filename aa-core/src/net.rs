@@ -90,7 +90,74 @@ pub fn is_blocked_ipv6(v6: Ipv6Addr) -> bool {
 /// when `host` is not an IP literal (i.e. a name that must be resolved and
 /// re-validated separately).
 pub fn blocked_ip_literal(host: &str) -> Option<bool> {
-    host.parse::<IpAddr>().ok().map(is_blocked_ip)
+    parse_ip_literal(host).map(is_blocked_ip)
+}
+
+/// Parse `host` as an IP literal under the same rules the platform resolver
+/// applies, not just `std`'s strict dotted-quad grammar (AAASM-6304).
+///
+/// `std`'s `FromStr<IpAddr>` rejects the legacy `inet_aton` IPv4 notations that
+/// `getaddrinfo`/`connect` paths (libc, and many HTTP clients) still accept:
+/// a single decimal integer (`2852039166`), hex (`0xA9FEA9FE`), octal
+/// (`0251.0376.0251.0376`) and short forms (`169.254.43518`). Classifying such a
+/// string as a *name* lets `169.254.169.254` reach the dialer without ever being
+/// range-checked, so the check and the use must agree on what an IP literal is.
+///
+/// Accepts, after trimming surrounding whitespace and one trailing dot: anything
+/// `std` accepts (including `::ffff:a9fe:a9fe`), plus 1-4 part `inet_aton`
+/// IPv4 (each part decimal, `0`-prefixed octal or `0x`-prefixed hex, the last
+/// part filling the remaining bytes). Returns `None` for everything else, which
+/// is then a name that must be resolved and re-validated.
+pub fn parse_ip_literal(host: &str) -> Option<IpAddr> {
+    let host = host.trim();
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    parse_inet_aton(host).map(IpAddr::V4)
+}
+
+fn parse_inet_aton(host: &str) -> Option<Ipv4Addr> {
+    let mut parts = [0u64; 4];
+    let mut n = 0;
+    for part in host.split('.') {
+        if n == 4 {
+            return None;
+        }
+        parts[n] = parse_inet_aton_part(part)?;
+        n += 1;
+    }
+    // Every part but the last is one byte; the last fills the remaining bytes.
+    let (leading, last) = parts[..n].split_at(n - 1);
+    if leading.iter().any(|&p| p > 0xff) || last[0] >= 1u64 << (8 * (5 - n)) {
+        return None;
+    }
+    let mut value = last[0];
+    for (i, &p) in leading.iter().enumerate() {
+        value |= p << (8 * (3 - i));
+    }
+    Some(Ipv4Addr::from(value as u32))
+}
+
+fn parse_inet_aton_part(part: &str) -> Option<u64> {
+    let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
+        (hex, 16)
+    } else if part.len() > 1 && part.starts_with('0') {
+        (&part[1..], 8)
+    } else {
+        (part, 10)
+    };
+    if digits.is_empty() {
+        // `0x` alone is zero under inet_aton; a bare empty label is not a number.
+        return if radix == 16 { Some(0) } else { None };
+    }
+    // `from_str_radix` also accepts a leading `+`; a numeric label is digits only.
+    if !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    u64::from_str_radix(digits, radix)
+        .ok()
+        .filter(|&v| v <= u64::from(u32::MAX))
 }
 
 /// Strip an optional `:port` suffix from a host, correctly handling a bracketed
@@ -179,6 +246,70 @@ mod tests {
         // breaking both denylist compares and the SSRF check.
         assert_eq!(canonical_host("[::1]:443"), "::1");
         assert_eq!(canonical_host("[2001:DB8::1]:8443"), "2001:db8::1");
+    }
+
+    #[test]
+    fn numeric_ipv4_encodings_of_the_metadata_address_are_blocked_literals() {
+        // AAASM-6304: every inet_aton spelling of 169.254.169.254.
+        for v in [
+            "2852039166",
+            "0xA9FEA9FE",
+            "0Xa9fea9fe",
+            "0251.0376.0251.0376",
+            "169.254.43518",
+            "169.16689662",
+            "0xA9.0xFE.0xA9.0xFE",
+            "169.0xFE.169.254",
+            "025177524776",
+            "2852039166.",
+            " 2852039166 ",
+            "::ffff:a9fe:a9fe",
+            "::FFFF:169.254.169.254",
+        ] {
+            assert_eq!(blocked_ip_literal(v), Some(true), "{v:?} must be a blocked literal");
+        }
+    }
+
+    #[test]
+    fn numeric_ipv4_encodings_parse_to_the_right_address() {
+        let a = |s: &str| parse_ip_literal(s);
+        assert_eq!(a("2130706433"), Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(a("0x7f.1"), Some("127.0.0.1".parse().unwrap()));
+        assert_eq!(a("0"), Some("0.0.0.0".parse().unwrap()));
+        assert_eq!(a("134744072"), Some("8.8.8.8".parse().unwrap()));
+        assert_eq!(a("4294967295"), Some("255.255.255.255".parse().unwrap()));
+    }
+
+    #[test]
+    fn numeric_encodings_of_a_public_address_are_not_blocked() {
+        assert_eq!(blocked_ip_literal("134744072"), Some(false));
+        assert_eq!(blocked_ip_literal("0x08080808"), Some(false));
+        assert_eq!(blocked_ip_literal("8.8.8.8"), Some(false));
+        assert_eq!(blocked_ip_literal("8.526344"), Some(false));
+    }
+
+    #[test]
+    fn non_numeric_or_malformed_strings_stay_names() {
+        for v in [
+            "api.openai.com",
+            "0x.com",
+            "1.2.3.4.5",
+            "4294967296",
+            "256.1.1.1",
+            "1.16777216",
+            "1.2.3.65536",
+            "08",
+            "0xg1",
+            "+1",
+            "1..2",
+            "",
+            ".",
+            "1.2.3.4x",
+            "-1",
+            "169.254.169.254/latest",
+        ] {
+            assert_eq!(blocked_ip_literal(v), None, "{v:?} must remain a name");
+        }
     }
 
     #[test]
