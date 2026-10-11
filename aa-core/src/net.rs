@@ -122,17 +122,36 @@ pub fn blocked_ip_literal(host: &str) -> Option<bool> {
 /// (including `::ffff:a9fe:a9fe`). Returns `None` for everything else, which is
 /// a name that must be resolved and re-validated.
 pub fn parse_ip_literal(host: &str) -> Option<IpAddr> {
-    let host = host.trim();
-    let host = host.strip_suffix('.').unwrap_or(host);
+    let trimmed = host.trim();
+    let inner = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    // Only a spelling a resolver really accepts may be reported as a public
+    // address. Whitespace padding and a trailing dot are tolerated so a
+    // restricted address is still caught, but a *public* result for such a
+    // spelling is refused (`0.0.0.0`): libc rejects `8.8.8.8.` and ` 64.1`, so
+    // reporting them routable would skip the name-resolution path.
+    let non_canonical = inner.len() != host.len();
+    let ip = parse_ip_literal_inner(inner)?;
+    if non_canonical && !is_blocked_ip(ip) {
+        return Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    }
+    Some(ip)
+}
+
+fn parse_ip_literal_inner(host: &str) -> Option<IpAddr> {
+    if host.contains(char::is_whitespace) {
+        // `inet_aton`/`inet_addr` stop at the first whitespace and ignore the
+        // rest (`127.0.0.1 x`), `getaddrinfo` rejects the whole string. Only a
+        // restricted head matters: anything else is a name.
+        let head = host.split(char::is_whitespace).next().unwrap_or("");
+        return legacy_ipv4(head).map(IpAddr::V4).filter(|a| is_blocked_ip(*a));
+    }
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Some(ip);
     }
-    if let Some((addr, zone)) = host.split_once('%') {
-        // A zone id only exists on an IPv6 literal; classify the address itself.
-        return match addr.parse::<Ipv6Addr>() {
-            Ok(v6) if !zone.is_empty() => Some(IpAddr::V6(v6)),
-            _ => None,
-        };
+    if let Some((addr, _zone)) = host.split_once('%') {
+        // A zone id only exists on an IPv6 literal; classify the address itself
+        // (an empty zone, `fe80::1%`, is still that address to `getaddrinfo`).
+        return addr.parse::<Ipv6Addr>().ok().map(IpAddr::V6);
     }
     legacy_ipv4(host).map(IpAddr::V4)
 }
@@ -177,35 +196,54 @@ fn legacy_ipv4(host: &str) -> Option<Ipv4Addr> {
 /// One reading of `host` as 1-4 dot-separated numeric parts. The boolean is
 /// true when the value only fits after truncation to 32 bits.
 fn compose_ipv4(host: &str, mode: LeadingZero) -> Option<(Ipv4Addr, bool)> {
-    let mut parts = [0u64; 4];
+    if matches!(mode, LeadingZero::Decimal) {
+        // `getaddrinfo` reads leading zeros as decimal only for a lone value or
+        // a full four-part decimal quad (observed on macOS); `08.1` is rejected.
+        let n = host.split('.').count();
+        let all_decimal = host
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        if !(all_decimal && (n == 1 || n == 4)) {
+            return None;
+        }
+    }
+    let mut parts = [(0u64, false); 4];
     let mut n = 0;
+    let total = host.split('.').count();
     for part in host.split('.') {
         if n == 4 {
             return None;
         }
-        parts[n] = parse_numeric_part(part, mode)?;
+        parts[n] = parse_numeric_part(part, mode, n + 1 == total)?;
         n += 1;
     }
     if n == 1 {
-        // A lone value: macOS keeps only the low 32 bits.
-        let v = parts[0];
-        return Some((Ipv4Addr::from(v as u32), v > u64::from(u32::MAX)));
+        // A lone value: libc keeps only the low 32 bits, however long it is.
+        let (low, big) = parts[0];
+        return Some((Ipv4Addr::from(low as u32), big));
+    }
+    // A multi-part value never truncates: out-of-range parts are rejected.
+    if parts[..n].iter().any(|&(_, big)| big) {
+        return None;
     }
     // Every part but the last is one byte; the last fills the remaining bytes.
     let (leading, last) = parts[..n].split_at(n - 1);
-    if leading.iter().any(|&p| p > 0xff) || last[0] >= 1u64 << (8 * (5 - n)) {
+    if leading.iter().any(|&(p, _)| p > 0xff) || last[0].0 >= 1u64 << (8 * (5 - n)) {
         return None;
     }
-    let mut value = last[0];
-    for (i, &p) in leading.iter().enumerate() {
+    let mut value = last[0].0;
+    for (i, &(p, _)) in leading.iter().enumerate() {
         value |= p << (8 * (3 - i));
     }
     Some((Ipv4Addr::from(value as u32), false))
 }
 
-fn parse_numeric_part(part: &str, mode: LeadingZero) -> Option<u64> {
+/// A numeric part as `(low 32 bits, did it exceed 32 bits)`. Arbitrarily long
+/// digit strings wrap modulo 2^32 exactly as libc does, so a value of 2^64 or
+/// more is not silently treated as "not a number".
+fn parse_numeric_part(part: &str, mode: LeadingZero, is_last: bool) -> Option<(u64, bool)> {
     let (digits, radix) = if let Some(hex) = part.strip_prefix("0x").or_else(|| part.strip_prefix("0X")) {
-        (hex, 16)
+        (hex, 16u32)
     } else if part.len() > 1 && part.starts_with('0') {
         match mode {
             LeadingZero::Octal => (&part[1..], 8),
@@ -215,14 +253,25 @@ fn parse_numeric_part(part: &str, mode: LeadingZero) -> Option<u64> {
         (part, 10)
     };
     if digits.is_empty() {
-        // `0x` alone is zero under inet_aton; a bare empty label is not a number.
-        return if radix == 16 { Some(0) } else { None };
+        // Observed on macOS: a bare `0x` is zero in a non-final part (`0x.1` is
+        // 0.0.0.1) but rejected as the final part (`1.0x`); an empty label is
+        // never a number.
+        return if radix == 16 && !is_last {
+            Some((0, false))
+        } else {
+            None
+        };
     }
-    // `from_str_radix` also accepts a leading `+`; a numeric label is digits only.
-    if !digits.chars().all(|c| c.is_digit(radix)) {
-        return None;
+    let mut low = 0u32;
+    let mut exact = Some(0u64);
+    for c in digits.chars() {
+        // `to_digit` is digits/letters only, so no sign or underscore slips in.
+        let d = c.to_digit(radix)?;
+        low = low.wrapping_mul(radix).wrapping_add(d);
+        exact = exact.and_then(|e| e.checked_mul(u64::from(radix))?.checked_add(u64::from(d)));
     }
-    u64::from_str_radix(digits, radix).ok()
+    let big = exact.map_or(true, |e| e > u64::from(u32::MAX));
+    Some((u64::from(low), big))
 }
 
 /// Strip an optional `:port` suffix from a host, correctly handling a bracketed
@@ -369,10 +418,8 @@ mod tests {
             ".",
             "1.2.3.4x",
             "-1",
-            "fe80::1%",
             "1.2.3.4%lo0",
             "evil.com%lo0",
-            "99999999999999999999999",
             "169.254.169.254/latest",
         ] {
             assert_eq!(blocked_ip_literal(v), None, "{v:?} must remain a name");
@@ -433,6 +480,34 @@ mod tests {
             ("0177.0.0.1", Some("177.0.0.1"), Restricted),
             ("0251.254.169.254", Some("251.254.169.254"), Restricted),
             ("0100.0.0.1", Some("100.0.0.1"), Restricted),
+            // 2^64 or more: libc still wraps to the low 32 bits (AAASM-6304 re-review).
+            ("18446744076561590782", Some("169.254.169.254"), Restricted),
+            ("0x100000000a9fea9fe", Some("169.254.169.254"), Restricted),
+            ("0x1000000007f000001", Some("127.0.0.1"), Restricted),
+            ("0x100000000c0a80101", Some("192.168.1.1"), Restricted),
+            ("0x10000000000000000", Some("0.0.0.0"), Restricted),
+            ("18446744073709551617", Some("0.0.0.1"), Restricted),
+            ("02000000000000000000000", Some("0.0.0.0"), Restricted),
+            ("100000000000000000000000000000127", Some("0.0.0.127"), Restricted),
+            // An empty zone id is still that IPv6 address.
+            ("99999999999999999999999", None, Restricted),
+            ("fe80::1%", Some("fe80::1"), Restricted),
+            ("::1%", Some("::1"), Restricted),
+            // No libc accepts these, so they must never be reported as a routable
+            // address (which skips name resolution): Name, or refused.
+            // A bare `0x` is zero in a non-final part (libc: `0x.1` is 0.0.0.1).
+            ("0x.1", Some("0.0.0.1"), Restricted),
+            ("0X.8", Some("0.0.0.8"), Restricted),
+            ("08.1", None, Name),
+            ("09.1", None, Name),
+            ("1.0x", None, Name),
+            ("8.8.8.8.", None, Restricted),
+            ("1.8.", None, Restricted),
+            (" 64.1", None, Restricted),
+            // `inet_aton` ignores text after whitespace; a restricted head is refused.
+            ("127.0.0.1 x", Some("127.0.0.1"), Restricted),
+            ("169.254.169.254 .evil.com", Some("169.254.169.254"), Restricted),
+            ("8.8.8.8 x", None, Name),
             // Unambiguous public and plain names are unchanged.
             ("134744072", Some("8.8.8.8"), Public),
             ("0x08080808", Some("8.8.8.8"), Public),
