@@ -49,7 +49,7 @@ pub use common::precondition::evidence;
 mod common;
 #[allow(unused_imports)]
 mod conformance_gateway_support;
-#[allow(unused_imports)]
+#[allow(dead_code, unused_imports)]
 mod conformance_mcp_support;
 #[allow(dead_code, unused_imports)]
 mod conformance_support;
@@ -76,7 +76,7 @@ mod stub_coding_agent {
     use aa_proxy::tls::CaStore;
 
     use super::conformance_mcp_support::{sentinel_path, ConformanceUpstream};
-    use super::proxy_trust_support::{self, TrustedProxy};
+    use super::proxy_trust_support::TrustedProxy;
     use super::spike_support::proxy_harness::install_crypto_provider;
 
     const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/stub_coding_agent");
@@ -561,7 +561,6 @@ mod stub_claude_isolation {
     use std::path::Path;
     use std::process::{Command, Stdio};
 
-    use super::conformance_mcp_support as _;
     use super::grpc_gateway_support::GrpcGateway;
     use super::proxy_trust_support::{self, TrustedProxy};
 
