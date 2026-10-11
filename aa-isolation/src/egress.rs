@@ -1030,10 +1030,16 @@ pub fn egress_gate(
                     known_metadata_endpoint,
                 } => {
                     let literal = addr.to_string();
-                    let excepted = matches!(
-                        contract.range_policy(),
-                        RangePolicy::RefuseAllExcept { permitted_literals } if permitted_literals.iter().any(|p| p == &literal)
-                    );
+                    // The exception names a literal address, so it applies only to
+                    // a selector that *is* that canonical spelling. An alternate
+                    // spelling (`0127.0.0.1`: 127.0.0.1 to one resolver, 87.0.0.1
+                    // to another) or the `0.0.0.0` refuse-sentinel must never match.
+                    let canonical = host.parse::<IpAddr>().ok() == Some(addr);
+                    let excepted = canonical
+                        && matches!(
+                            contract.range_policy(),
+                            RangePolicy::RefuseAllExcept { permitted_literals } if permitted_literals.iter().any(|p| p == &literal)
+                        );
                     if !excepted {
                         return Err(EgressRefusal::RestrictedDestination {
                             detail: format!("destination `{literal}` is in a range this contract requires be refused"),
@@ -1304,6 +1310,40 @@ mod tests {
         // Anchoring edge case: a longer numeric prefix must not match.
         assert_eq!(metadata_endpoint_match("169.254.169.2540"), None);
         assert_eq!(metadata_endpoint_match("10.0.0.1"), None);
+    }
+
+    #[test]
+    fn refuse_all_except_does_not_admit_an_alternate_spelling_or_the_refuse_sentinel() {
+        // A permitted literal names one canonical address. An alternate spelling
+        // of it resolves differently on different resolvers (`0127.0.0.1` is
+        // 127.0.0.1 to getaddrinfo, 87.0.0.1 to inet_aton), and the `0.0.0.0`
+        // sentinel stands for "ambiguous, refuse": neither may match the exception.
+        let broker = available_broker();
+        let excepted = EgressContract::broker_required().with_range_policy(RangePolicy::RefuseAllExcept {
+            permitted_literals: vec!["127.0.0.1".to_string(), "0.0.0.0".to_string()],
+        });
+        for spelling in ["0127.0.0.1", "2130706433", "0x7f.1", "127.1", "0x108080808"] {
+            let scope = selectors(&[spelling]);
+            let spec = base_spec().with_requirement(
+                ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()),
+            );
+            let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+            let authority = egress_authority_for(&spec);
+            assert!(
+                matches!(
+                    egress_gate(&excepted, &broker, &authority, &scope),
+                    Err(EgressRefusal::RestrictedDestination { .. })
+                ),
+                "{spelling:?} must not match a permitted canonical literal"
+            );
+        }
+        // Control: the canonical spelling IS admitted under the same exception.
+        let scope = selectors(&["127.0.0.1"]);
+        let spec = base_spec()
+            .with_requirement(ControlRequirement::prevent(CapabilityDomain::NetworkEgress).with_scope(scope.clone()));
+        let spec = spec.with_lease(lease_for(CapabilityDomain::NetworkEgress, scope.clone()));
+        let authority = egress_authority_for(&spec);
+        assert!(egress_gate(&excepted, &broker, &authority, &scope).is_ok());
     }
 
     #[test]
