@@ -78,5 +78,16 @@ binary_id(aa-integration-tests::cli_run_claude_deterministic_conformance)
   + binary_id(aa-integration-tests::cli_run_trusted_proxy)
   + binary_id(aa-integration-tests::adversarial_isolation_launch)
   + binary_id(aa-integration-tests::e2e_sensitive_data_reference_journey)
+  + binary_id(aa-integration-tests::cli_run_stub_coding_agent_workflow)
 '''
+test-group = "serial-process"
+
+# AAASM-6297: the stub coding-agent workflow tests each start a real
+# `aasm proxy start` / per-launch proxy. Run six at once on a cold build and
+# `aasm proxy start`'s fixed 5s bind wait expires for some of them (measured:
+# 3 of 6 failed first attempt with "aa-proxy did not bind ... within 5s", all
+# passed on retry). Serialising removes the contention instead of leaning on
+# `retries`, under the default profile as well as `evidence`.
+[[profile.default.overrides]]
+filter = "binary_id(aa-integration-tests::cli_run_stub_coding_agent_workflow)"
 test-group = "serial-process"
