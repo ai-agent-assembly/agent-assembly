@@ -222,6 +222,7 @@
   - [0038 - Capability Leases & the Explicit-Authority Contract](adr/0038-capability-leases-and-explicit-authority-contract.md)
   - [0039 - Personal-Observe Deployment Profile](adr/0039-personal-observe-profile.md)
   - [0040 - Transactional Workspace Mode](adr/0040-transactional-workspace-mode.md)
+  - [0041 - Resource Ceiling Enforcement](adr/0041-resource-ceiling-enforcement.md)
 
 # Research
 

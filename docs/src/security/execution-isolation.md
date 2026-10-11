@@ -1,9 +1,13 @@
 # Execution isolation
 
-`aasm run --isolation` establishes a kernel-enforced boundary around a
+`aasm run --isolation` establishes an execution-isolation boundary around a
 launched agent's **whole native process tree** — its own process and every
 descendant it spawns — as a capability distinct from tool-call governance,
-network mediation, or the WASM tool sandbox. This page is the mental model,
+network mediation, or the WASM tool sandbox. What the boundary actually
+confines depends on the backend and host: the two Linux backends enforce in the
+host kernel; the macOS backend confines inside a Linux guest VM and, today,
+covers filesystem read/write only (see the
+[support matrix](#platform-and-backend-support-matrix)). This page is the mental model,
 the threat boundary, the capability/evidence semantics, the platform/backend
 support matrix, and the troubleshooting reference for that boundary.
 
@@ -50,8 +54,8 @@ claim merely because both use the word "sandbox":
 | | `aa-sandbox` | Execution isolation (`aasm run --isolation`) |
 |---|---|---|
 | **What it confines** | One WASM-marked **tool call**, run under Wasmtime/WASI | The agent's **whole native process tree** — the launched program and every descendant it spawns |
-| **Mechanism** | Userspace WASM runtime: preopened directories, instruction fuel, memory pages, wall-clock deadline | A host-level backend (currently [Sandlock or AASM-native](#platform-and-backend-support-matrix), both Linux-only) confining a real OS process |
-| **Where it runs** | Any platform Wasmtime supports | Only where a backend exists for the host — today, Linux only |
+| **Mechanism** | Userspace WASM runtime: preopened directories, instruction fuel, memory pages, wall-clock deadline | A backend confining a real OS process tree: on Linux [Sandlock or AASM-native](#platform-and-backend-support-matrix) in the host kernel; on Apple Silicon macOS `aasm-macos-vm`, which runs the process inside a confined Linux guest VM |
+| **Where it runs** | Any platform Wasmtime supports | Only where a backend exists for the host — today, Linux and Apple Silicon macOS (see the [support matrix](#platform-and-backend-support-matrix)) |
 | **Invoked via** | `aasm sandbox run <module.wasm>`, or a tool marked for sandboxed execution inside the governed tool-call path | `aasm run --isolation auto\|process` |
 | **ADR 0033 element** | Part of E2 (a WASM-marked tool call is itself a checkpoint) | E2 + E4 + E5 + E6, as above |
 
@@ -150,9 +154,11 @@ independent inputs that must never collapse into one number:
 coverage), observe-only states, and `Degraded` (which always carries both the
 planned and the achieved level as separate fields, never merged).
 
-The nine capability domains this contract covers: filesystem read, filesystem
+The ten capability domains this contract covers: filesystem read, filesystem
 write, network egress, name resolution, syscall, process creation, IPC,
-credential, and resource ceilings. A single boolean `sandbox=true` or
+credential, resource ceilings, and workspace transaction (the staged,
+all-or-nothing `--workspace-tx` commit, decided once after the process exits
+rather than per syscall). A single boolean `sandbox=true` or
 `supported=true` is explicitly rejected by ADR 0035 as insufficient.
 
 **A policy gap is not silence.** Where the policy schema simply has no node
@@ -174,6 +180,10 @@ environment can still be inspected via `/proc/<pid>/environ` by anything with
 credential/environment isolation must carry this caveat rather than silently
 glossing over it (tracked as a known, non-blocking residual gap,
 [AAASM-5785](https://lightning-dust-mite.atlassian.net/browse/AAASM-5785)).
+The macOS analogue was measured under AAASM-6293: with the credential broker
+active a spawned child's own environment, argv, descriptors and written files
+carried no secret, but a same-user descendant could still read the aasm
+supervisor's own exec-time environment with `ps -Eww -p <supervisor pid>`.
 
 ## Platform and backend support matrix
 
@@ -189,15 +199,19 @@ in Core ADR 035 for the underlying record. The third, `aasm-macos-vm`
 (Epic [AAASM-5811](https://lightning-dust-mite.atlassian.net/browse/AAASM-5811)),
 targets macOS by booting a confined Linux guest via Virtualization.framework
 rather than confining the host process directly — a different platform
-boundary from the other two, not a competing implementation of the same one;
-it has no default-selection relationship with them (see [macOS VM runtime
-prerequisites](#macos-vm-runtime-prerequisites) below).
+boundary from the other two, not a competing implementation of the same one.
+`--isolation auto` considers it last, after the two Linux backends (see
+[Choosing between the two backends](#choosing-between-the-two-backends)); on
+a macOS host the Linux backends are unavailable, so it is the only candidate
+`auto` can select there, and only when its prerequisites are in place and it
+can plan the policy's requirements (see
+[macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites) below).
 
 | Platform | Process-level execution isolation | Notes |
 |---|---|---|
 | **Linux (x86_64)** | ✅ Available, subject to the runtime probe below | Both Linux backends: [Sandlock](https://github.com/multikernel/sandlock) (Apache-2.0, external executable) and AASM-native (this repository, Apache-2.0, filesystem + syscall confinement). AASM does not bundle Sandlock — see [Licensing and distribution](#licensing-and-distribution) below. |
 | **Linux (aarch64)** | ✅ Sandlock fully available. AASM-native: filesystem confinement only — syscall filtering is **not available** on this architecture (see [AASM-native runtime prerequisites](#aasm-native-runtime-prerequisites)). | The seccomp filter AASM-native builds is a hand-assembled, architecture-specific cBPF program; only the x86_64 syscall-number table exists today. Landlock (filesystem) has no such restriction. |
-| **macOS (Apple Silicon)** | ✅ Available via `aasm-macos-vm`, subject to the runtime probe below — filesystem read/write confinement only, with named platform limitations. | Guest-boundary confinement via Virtualization.framework, not a host-process mechanism — see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites). |
+| **macOS (Apple Silicon)** | ⚠️ Experimental via `aasm-macos-vm` (proof-of-concept substrate, not shipped in any release; guest kernel/rootfs are operator-built; no CI lane), subject to the runtime probe below — filesystem read/write confinement only, with named platform limitations. | Guest-boundary confinement via Virtualization.framework, not a host-process mechanism — see [macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites). |
 | **macOS (Intel)** | ❌ **Not supported.** `aasm-macos-vm` requires Apple Silicon. | Not attempted; the guest kernel and helper are built arm64-only through this Epic. |
 | **Windows** | ❌ **Not supported.** `--isolation process` or `--isolation auto` is **refused** (`Boundary::Refused`) on this host, never silently downgraded to unconfined. | No backend targets Windows. |
 
@@ -293,11 +307,16 @@ backends above.
 **Stated plainly, this backend's real limitations:**
 
 - **Apple Silicon only.** No Intel build exists through this Epic.
-- **No general toolchain inside the guest.** Only `/usr/local/bin/busybox`
-  (`sh`/`cat`/`printf`) and `/usr/local/bin/aa-isolation-launch` are present —
-  `aasm run python …`, `git …`, or a compiler invocation refuses, tracked as
-  AAASM-5849. This is a materially narrower usable surface than either Linux
-  backend today.
+- **A deliberately small program surface inside the guest.** A program must
+  be inside the shared project directory or be one of the guest image's fixed
+  resident binaries (`GUEST_RESIDENT_PROGRAMS` in
+  `aa-isolation-macos-vm/src/paths.rs`): `aa-isolation-launch`, `busybox`,
+  `/usr/bin/git`, `/usr/bin/python3` and `/bin/sh`. Anything else — a compiler,
+  `node`, or a bare `python` name that does not resolve to one of those
+  paths — refuses before the guest boots. The git/python3/sh entries exist only
+  in a rootfs built with the AAASM-5849 toolchain layer
+  (`scripts/fetch-guest-toolchain.sh`); a busybox-only image has none of them.
+  This is still a materially narrower usable surface than either Linux backend.
 - **Syscall domain is `Unsupported`, not degraded.** The guest is aarch64;
   `aa-isolation-native`'s syscall filter is x86_64-only and this backend never
   attempts a translation — every launch sends `syscall_filter: None`.
@@ -317,9 +336,12 @@ backends above.
   `#[ignore]`d, run explicitly), not by an automated gate. Self-hosted
   macOS CI to close this gap is tracked under AAASM-5814.
 
-**Selecting it explicitly:** pass `--isolation-backend aasm-macos-vm` — it has
-no default-selection relationship with the Linux backends and is only reached
-on a macOS host in the first place.
+**Selecting it explicitly:** pass `--isolation-backend aasm-macos-vm`. This
+is required with `--isolation process`, which defaults to `sandlock` and so
+refuses on a macOS host; `--isolation auto` walks the candidate list and
+considers this backend last; it is selected only if it is configured and can
+plan the policy's requirements (it covers filesystem read/write only). On a
+host with the VM substrate unset, `auto` reports it as rejected (measured).
 
 ## Compatibility and performance relative to Sandlock
 
@@ -425,7 +447,7 @@ above).
 
 ```console
 $ aasm run exec --isolation process -- python agent.py
-Error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
+error: refusing to launch: an execution-isolation boundary was requested and the `sandlock`
 backend cannot be selected on this host — no sandlock executable on PATH; install it or set
 AA_SANDLOCK_BIN.
 
@@ -435,9 +457,13 @@ Install the backend, or re-run with `--isolation none` to launch unconfined deli
 ```
 
 **Fix.** Install the Sandlock executable (see [Licensing and distribution](#licensing-and-distribution))
-and ensure it is on `PATH`, or set `AA_SANDLOCK_BIN` to its path. On macOS or
-Windows there is no fix — no backend exists for those platforms; the only
-options are running on Linux or launching with `--isolation none`.
+and ensure it is on `PATH`, or set `AA_SANDLOCK_BIN` to its path. On Windows
+and Intel macOS there is no fix — no backend exists for those platforms; the
+only options are running on Linux or launching with `--isolation none`. On
+Apple Silicon macOS, `--isolation process` refuses because it defaults to the
+Linux-only `sandlock` backend: pass `--isolation-backend aasm-macos-vm` and
+configure its prerequisites (see
+[macOS VM runtime prerequisites](#macos-vm-runtime-prerequisites)).
 
 ### A required capability is refused rather than degraded
 
@@ -568,9 +594,12 @@ with process-level isolation required.
    unconfined — see [Troubleshooting](#troubleshooting) above.
 
 3. To require *some* isolation without committing to `process` specifically —
-   for example on a fleet where a future backend class might apply — use
-   `--isolation auto` instead. Today it resolves to `process`, and it refuses
-   under the same conditions.
+   for example on a fleet that mixes Linux and Apple Silicon hosts — use
+   `--isolation auto` instead. It selects, per launch, the first backend that
+   can meet the policy's requirements (see
+   [Choosing between the two backends](#choosing-between-the-two-backends)),
+   and refuses when none can. That differs from `process` on macOS, where
+   `process` always refuses unless `--isolation-backend aasm-macos-vm` is given.
 
 For the full flag reference, see the [`aasm run` CLI reference](../cli/run.md).
 For the underlying architectural decision, see
