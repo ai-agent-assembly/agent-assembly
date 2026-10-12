@@ -877,15 +877,17 @@ fn check_attenuation(
                 ScopeOrdering::Narrower | ScopeOrdering::Equal => {
                     if child_lease.expires_at() > parent_lease.expires_at() {
                         Some(AuthorityRefusal::ChildExtendsExpiry { domain })
-                    } else if let Some(child_limits) = child_lease.limits() {
+                    } else {
+                        // AAASM-6334: a child with NO stated limits is unbounded, not
+                        // "no restriction requested". Compare it as the all-`None`
+                        // default so it cannot exceed a parent that has a ceiling.
                         let parent_limits = parent_lease.limits().copied().unwrap_or_default();
-                        if limits_narrower_or_equal(&parent_limits, child_limits) {
+                        let child_limits = child_lease.limits().copied().unwrap_or_default();
+                        if limits_narrower_or_equal(&parent_limits, &child_limits) {
                             None
                         } else {
                             Some(AuthorityRefusal::ChildExceedsLimits { domain })
                         }
-                    } else {
-                        None
                     }
                 }
             }
@@ -1869,6 +1871,77 @@ mod tests {
                     lease: child.id().clone(),
                 })
             );
+        }
+
+        /// AAASM-6334: a child that states no limits is unbounded, so it must
+        /// not pass under a parent that has a ceiling, and a derived child must
+        /// inherit that ceiling instead of dropping it.
+        #[test]
+        fn a_child_without_limits_cannot_exceed_a_parent_that_has_them() {
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let capped = crate::spec::ResourceLimits {
+                max_pids: Some(4),
+                ..Default::default()
+            };
+            let parent_lease = parent_fs_lease(scope.clone()).with_limits(capped);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease.clone())));
+
+            // A hand-built, untracked child stating no limits: refused.
+            let unbounded = CapabilityLease::new(
+                crate::lease::LeaseId::new("hand-built"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            );
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(unbounded, scope.clone()), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::ChildExceedsLimits {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // Positive controls: within the ceiling admits, and a derived child
+            // that states no limits inherits the ceiling and admits.
+            let within = CapabilityLease::new(
+                crate::lease::LeaseId::new("within"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            )
+            .with_limits(crate::spec::ResourceLimits {
+                max_pids: Some(2),
+                ..Default::default()
+            });
+            assert!(authority_gate(&child_spec_with_lease(within, scope.clone()), &ancestry, t(1_500)).is_ok());
+            let derived = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("derived"),
+                        child_subject: child_identity(),
+                        child_scope: scope.clone(),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a child with no stated limits derives");
+            assert_eq!(
+                derived.limits(),
+                Some(&capped),
+                "the derived child inherits the parent's ceiling"
+            );
+            assert!(authority_gate(&child_spec_with_lease(derived, scope), &ancestry, t(1_500)).is_ok());
         }
 
         /// A root launch and a legacy no-lease spec are both unaffected by

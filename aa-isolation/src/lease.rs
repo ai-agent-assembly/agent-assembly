@@ -756,7 +756,9 @@ impl CapabilityLease {
             issued_at,
             not_before: floored_not_before,
             expires_at: capped_expiry,
-            limits: request.child_limits,
+            // AAASM-6334: a child that states no limits inherits its parent's
+            // ceiling instead of becoming unbounded under a bounded parent.
+            limits: request.child_limits.or(self.limits),
             delegation: request.child_delegation,
             revocation: RevocationState::Active { generation: 0 },
             basis: LeaseBasis::new(
