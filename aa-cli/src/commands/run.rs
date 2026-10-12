@@ -3871,7 +3871,16 @@ mod plan {
                             .collect::<Vec<_>>()
                             .join(" ")
                     );
-                    if !(p.contains(" macos vm ") || p.contains(" macos-vm ") || p.contains(" aasm-macos-vm ")) {
+                    // Every name this backend is known by in prose, so a claim cannot
+                    // dodge the guard by calling it "the Apple Silicon backend".
+                    const SUBJECTS: [&str; 5] = [
+                        " macos vm ",
+                        " macos-vm ",
+                        " aasm-macos-vm ",
+                        " apple silicon backend ",
+                        " apple silicon vm ",
+                    ];
+                    if !SUBJECTS.iter().any(|s| p.contains(s)) {
                         continue;
                     }
                     judged_units += 1;
