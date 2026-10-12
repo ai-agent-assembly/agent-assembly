@@ -424,6 +424,169 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
     Ok(Invocation::AgentRun { probe_args, cd })
 }
 
+/// The floor AA requires for a policy: the same read-only / workspace-write
+/// split `generate_managed_settings` writes, so what is verified is what the
+/// policy asked for and not a separately maintained rule.
+pub fn required_floor(policy: &aa_devtool_contract::PolicyDocument) -> Floor {
+    use crate::sandbox::{map_policy_to_sandbox_mode, CodexSandboxMode};
+    match map_policy_to_sandbox_mode(policy) {
+        CodexSandboxMode::FullAuto => Floor::WorkspaceWrite,
+        CodexSandboxMode::Suggest | CodexSandboxMode::Ask => Floor::ReadOnly,
+    }
+}
+
+impl BoundaryReport {
+    /// Every element `Inconclusive` for the same reason (a probe could not run).
+    pub fn inconclusive(reason: impl Into<String>) -> Self {
+        Self::all(Fact::Inconclusive(reason.into()))
+    }
+}
+
+/// Runs one `codex` probe and returns its stdout. The launch's own working
+/// directory, environment and `codex` binary belong to the implementation, so
+/// the probe sees exactly the configuration the launch will.
+pub trait ProbeRunner {
+    /// `cwd_override` is the launch's `-C` directory, if any.
+    fn run(&self, cwd_override: Option<&str>, args: &[String]) -> Result<String, String>;
+}
+
+/// What verification concluded for one launch.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Not an agent run (`login`, `--help`, ...): there is no boundary to verify.
+    NotApplicable,
+    /// The arguments cannot be verified (a flag the probes cannot see).
+    Refused(String),
+    /// Both probes ran (or one failed, which is `Inconclusive`).
+    Checked(BoundaryReport),
+}
+
+/// Verifies the boundary for the argv Codex will be launched with.
+pub fn verify(runner: &dyn ProbeRunner, argv: &[String], floor: Floor) -> Verdict {
+    let (probe_args, cd) = match parse_invocation(argv) {
+        Err(why) => return Verdict::Refused(why),
+        Ok(Invocation::NotAnAgentRun) => return Verdict::NotApplicable,
+        Ok(Invocation::AgentRun { probe_args, cd }) => (probe_args, cd),
+    };
+    let cd = cd.as_deref();
+    // `prompt-input` needs a prompt to render its permissions block; the text
+    // is irrelevant to the boundary.
+    let mut pi = vec!["debug".to_string(), "prompt-input".to_string()];
+    pi.extend(probe_args.iter().cloned());
+    pi.push("boundary-check".to_string());
+    let mut dr = vec!["doctor".to_string(), "--json".to_string()];
+    dr.extend(probe_args);
+    let prompt_input = match runner.run(cd, &pi) {
+        Ok(out) => out,
+        Err(e) => return Verdict::Checked(BoundaryReport::inconclusive(format!("prompt-input probe failed: {e}"))),
+    };
+    let doctor = match runner.run(cd, &dr) {
+        Ok(out) => out,
+        Err(e) => return Verdict::Checked(BoundaryReport::inconclusive(format!("doctor probe failed: {e}"))),
+    };
+    Verdict::Checked(evaluate(
+        floor,
+        ProbeOutput {
+            prompt_input: &prompt_input,
+            doctor: &doctor,
+        },
+    ))
+}
+
+/// What `aasm run` does with a [`Verdict`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum LaunchDecision {
+    /// Launch; the boundary was verified or does not apply.
+    Proceed,
+    /// Launch, but the boundary is NOT verified; the text says what is missing.
+    ProceedDegraded(String),
+    /// Do not launch.
+    Refuse(String),
+}
+
+/// Enforcement requires a verified boundary; observation launches regardless
+/// and says honestly what could not be verified. Never reports an unverified
+/// boundary as met.
+pub fn launch_decision(verdict: &Verdict, enforce: bool) -> LaunchDecision {
+    let problem = match verdict {
+        Verdict::NotApplicable => return LaunchDecision::Proceed,
+        Verdict::Refused(why) => format!("launch arguments cannot be verified: {why}"),
+        Verdict::Checked(r) if r.allows_launch() => return LaunchDecision::Proceed,
+        Verdict::Checked(r) => format!(
+            "effective Codex boundary is not met: filesystem={:?}, network={:?}, approval={:?}",
+            r.filesystem, r.network, r.approval
+        ),
+    };
+    if enforce {
+        LaunchDecision::Refuse(problem)
+    } else {
+        LaunchDecision::ProceedDegraded(problem)
+    }
+}
+
+/// The real runner: `codex` with the launch's cwd and environment, bounded in time.
+pub struct CommandRunner {
+    /// The `codex` executable.
+    pub program: std::path::PathBuf,
+    /// The launch's working directory.
+    pub cwd: Option<std::path::PathBuf>,
+    /// Environment changes the launch applies over the inherited one
+    /// (`None` removes the variable).
+    pub env: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+}
+
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
+
+impl ProbeRunner for CommandRunner {
+    fn run(&self, cwd_override: Option<&str>, args: &[String]) -> Result<String, String> {
+        use std::io::Read;
+        let mut cmd = std::process::Command::new(&self.program);
+        cmd.args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        match (cwd_override, &self.cwd) {
+            (Some(dir), Some(base)) => cmd.current_dir(base.join(dir)),
+            (Some(dir), None) => cmd.current_dir(dir),
+            (None, Some(base)) => cmd.current_dir(base),
+            (None, None) => &mut cmd,
+        };
+        for (k, v) in &self.env {
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            };
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("cannot start codex: {e}"))?;
+        let mut stdout = child.stdout.take().ok_or("no stdout")?;
+        let reader = std::thread::spawn(move || {
+            let mut buf = String::new();
+            stdout.read_to_string(&mut buf).map(|_| buf)
+        });
+        let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+        let status = loop {
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(s) => break s,
+                None if std::time::Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("timed out after {}s", PROBE_TIMEOUT.as_secs()));
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        };
+        let out = reader
+            .join()
+            .map_err(|_| "reader panicked".to_string())?
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(out)
+        } else {
+            Err(format!("exited with {status}"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +852,97 @@ mod tests {
                 cd: Some("/work".to_string())
             }
         );
+    }
+
+    struct Fake {
+        prompt: Result<String, String>,
+        doctor: Result<String, String>,
+        seen: std::cell::RefCell<Vec<(Option<String>, Vec<String>)>>,
+    }
+    impl ProbeRunner for Fake {
+        fn run(&self, cwd: Option<&str>, args: &[String]) -> Result<String, String> {
+            self.seen.borrow_mut().push((cwd.map(str::to_string), args.to_vec()));
+            if args.first().map(String::as_str) == Some("doctor") {
+                self.doctor.clone()
+            } else {
+                self.prompt.clone()
+            }
+        }
+    }
+    fn fake(prompt: Result<String, String>, doctor: Result<String, String>) -> Fake {
+        Fake {
+            prompt,
+            doctor,
+            seen: Default::default(),
+        }
+    }
+
+    #[test]
+    fn verify_runs_both_probes_with_the_launches_own_overrides_and_cwd() {
+        let f = fake(
+            Ok(prompt_input("read-only", "restricted")),
+            Ok(doctor("restricted", "restricted", "OnRequest")),
+        );
+        let v = verify(
+            &f,
+            &s(&["exec", "-C", "/w", "-c", "model=\"o3\"", "do it"]),
+            Floor::ReadOnly,
+        );
+        assert!(matches!(&v, Verdict::Checked(r) if r.allows_launch()), "{v:?}");
+        let seen = f.seen.borrow();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.iter().all(|(cwd, _)| cwd.as_deref() == Some("/w")));
+        assert_eq!(
+            seen[0].1,
+            s(&["debug", "prompt-input", "-c", "model=\"o3\"", "boundary-check"])
+        );
+        assert_eq!(seen[1].1, s(&["doctor", "--json", "-c", "model=\"o3\""]));
+    }
+
+    #[test]
+    fn a_probe_that_cannot_run_is_inconclusive_never_met() {
+        for (p, d) in [
+            (
+                Err("boom".to_string()),
+                Ok(doctor("restricted", "restricted", "OnRequest")),
+            ),
+            (Ok(prompt_input("read-only", "restricted")), Err("boom".to_string())),
+        ] {
+            let v = verify(&fake(p, d), &[], Floor::ReadOnly);
+            assert!(matches!(&v, Verdict::Checked(r) if !r.allows_launch()), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn unverifiable_arguments_never_reach_the_probes() {
+        let f = fake(Err("must not run".into()), Err("must not run".into()));
+        let v = verify(&f, &s(&["--dangerously-bypass-approvals-and-sandbox"]), Floor::ReadOnly);
+        assert!(matches!(v, Verdict::Refused(_)));
+        assert!(f.seen.borrow().is_empty());
+        assert_eq!(verify(&f, &s(&["login"]), Floor::ReadOnly), Verdict::NotApplicable);
+        assert!(f.seen.borrow().is_empty());
+    }
+
+    #[test]
+    fn enforcement_refuses_what_observation_launches_degraded() {
+        let bad = Verdict::Checked(BoundaryReport::inconclusive("x"));
+        assert!(matches!(launch_decision(&bad, true), LaunchDecision::Refuse(_)));
+        assert!(matches!(
+            launch_decision(&bad, false),
+            LaunchDecision::ProceedDegraded(_)
+        ));
+        let refused = Verdict::Refused("flag".into());
+        assert!(matches!(launch_decision(&refused, true), LaunchDecision::Refuse(_)));
+        assert!(matches!(
+            launch_decision(&refused, false),
+            LaunchDecision::ProceedDegraded(_)
+        ));
+        let met = Verdict::Checked(BoundaryReport {
+            filesystem: Fact::Met,
+            network: Fact::NotRequired,
+            approval: Fact::Met,
+        });
+        assert_eq!(launch_decision(&met, true), LaunchDecision::Proceed);
+        assert_eq!(launch_decision(&Verdict::NotApplicable, true), LaunchDecision::Proceed);
     }
 }

@@ -91,3 +91,46 @@ fn live_workspace_write_meets_the_workspace_floor() {
     let r = probe("sandbox_mode = \"workspace-write\"\n", &[], Floor::WorkspaceWrite);
     assert!(r.allows_launch(), "{r:?}");
 }
+
+mod end_to_end {
+    use super::*;
+    use aa_devtool_codex::boundary::{launch_decision, verify, CommandRunner, LaunchDecision};
+
+    /// The runner a real launch uses: the user's file says read-only; the launch's
+    /// own argv decides the rest.
+    fn decide(argv: &[&str], enforce: bool) -> LaunchDecision {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), super::USER).unwrap();
+        let runner = CommandRunner {
+            program: "codex".into(),
+            cwd: Some(cwd.path().to_path_buf()),
+            env: vec![("CODEX_HOME".into(), Some(home.path().into()))],
+        };
+        let argv: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
+        launch_decision(&verify(&runner, &argv, Floor::ReadOnly), enforce)
+    }
+
+    #[test]
+    #[ignore = "needs codex-cli 0.160.0 on PATH"]
+    fn live_unmodified_launch_proceeds() {
+        assert_eq!(decide(&["exec", "do it"], true), LaunchDecision::Proceed);
+    }
+
+    #[test]
+    #[ignore = "needs codex-cli 0.160.0 on PATH"]
+    fn live_c_override_refuses_under_enforce_and_degrades_under_observe() {
+        let argv = ["exec", "-c", "sandbox_mode=\"workspace-write\"", "do it"];
+        assert!(matches!(decide(&argv, true), LaunchDecision::Refuse(_)));
+        assert!(matches!(decide(&argv, false), LaunchDecision::ProceedDegraded(_)));
+    }
+
+    #[test]
+    #[ignore = "needs codex-cli 0.160.0 on PATH"]
+    fn live_flag_after_the_prompt_is_still_caught() {
+        let d = decide(&["exec", "do it", "-s", "danger-full-access"], true);
+        assert!(matches!(d, LaunchDecision::Refuse(_)), "{d:?}");
+        let d = decide(&["exec", "do it", "--dangerously-bypass-approvals-and-sandbox"], true);
+        assert!(matches!(d, LaunchDecision::Refuse(_)), "{d:?}");
+    }
+}

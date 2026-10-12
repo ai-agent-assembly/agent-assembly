@@ -97,6 +97,64 @@ pub fn launch_warnings(tool: &str, tool_args: &[String]) -> Vec<String> {
     }
 }
 
+pub use aa_devtool_codex::boundary::LaunchDecision;
+
+/// What verifying a launch's effective boundary concluded (AAASM-6331).
+#[derive(Debug, PartialEq, Eq)]
+pub struct BoundaryCheck {
+    /// Whether the launch may go ahead.
+    pub decision: LaunchDecision,
+    /// One machine-readable line per fact, for the launch report. Empty when the
+    /// tool has no verification (the launch is then simply not verified).
+    pub report: String,
+}
+
+/// Verifies, before launch, the boundary the tool will ACTUALLY run under —
+/// not the one a written config file claims. Only Codex is verified today; for
+/// every other tool this returns `None` and the caller must not claim a
+/// verified boundary.
+///
+/// `command` is the fully bound launch command (program, argv, working
+/// directory and environment changes), so the probes see the same
+/// configuration the launch will. `enforce` is true under Enforce mode, where
+/// anything short of a verified boundary refuses the launch.
+pub fn verify_launch_boundary(
+    tool: &str,
+    command: &std::process::Command,
+    policy: &aa_devtool_contract::PolicyDocument,
+    enforce: bool,
+) -> Option<BoundaryCheck> {
+    use aa_devtool_codex::boundary::{launch_decision, required_floor, verify, CommandRunner, Verdict};
+    if tool != "codex" {
+        return None;
+    }
+    let argv: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    let runner = CommandRunner {
+        program: command.get_program().into(),
+        cwd: command.get_current_dir().map(std::path::Path::to_path_buf),
+        env: command
+            .get_envs()
+            .map(|(k, v)| (k.to_owned(), v.map(std::ffi::OsStr::to_owned)))
+            .collect(),
+    };
+    let verdict = verify(&runner, &argv, required_floor(policy));
+    let report = match &verdict {
+        Verdict::NotApplicable => "codex_boundary=not_applicable".to_string(),
+        Verdict::Refused(why) => format!("codex_boundary=unverifiable\ncodex_boundary_reason={why}"),
+        Verdict::Checked(r) => format!(
+            "codex_boundary={}\ncodex_boundary_filesystem={:?}\ncodex_boundary_network={:?}\ncodex_boundary_approval={:?}",
+            if r.allows_launch() { "verified" } else { "not_met" },
+            r.filesystem,
+            r.network,
+            r.approval
+        ),
+    };
+    Some(BoundaryCheck {
+        decision: launch_decision(&verdict, enforce),
+        report,
+    })
+}
+
 /// Construct one adapter per [`SUPPORTED_TOOLS`] entry that could be built in
 /// this environment, in that order.
 ///
