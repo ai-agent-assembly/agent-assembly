@@ -64,6 +64,14 @@ fn approval_rank(v: &toml::Value) -> Option<u8> {
     }
 }
 
+/// The line `aasm run` prints when it leaves an unrankable value alone.
+pub(crate) fn warning(w: &Withheld) -> String {
+    format!(
+        "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
+        w.key, w.existing
+    )
+}
+
 fn describe(v: &toml::Value) -> String {
     match v.as_str() {
         Some(s) => s.to_string(),
@@ -208,6 +216,13 @@ mod tests {
         assert!(m.contains_key("approval_policy"));
         let (m, _) = run(legacy, "approval_policy = \"on-failure\"");
         assert!(!m.contains_key("approval_policy"));
+    }
+
+    #[test]
+    fn warning_names_the_key_and_the_value_left_alone() {
+        let (_, w) = run("approval_policy = \"never\"", "approval_policy = \"on-request\"");
+        let line = warning(&w[0]);
+        assert!(line.contains("approval_policy") && line.contains("never"), "{line}");
     }
 
     #[test]

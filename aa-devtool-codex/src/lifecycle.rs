@@ -765,23 +765,18 @@ async fn refuse_to_relax(path: &std::path::Path, managed_toml: &str) -> Result<(
     };
     let mut managed: toml::Table =
         toml::from_str(managed_toml).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
-    // A key absent from the user's file is not a relaxation: install writes the
-    // strictest values, so only an existing looser or unrankable value matters.
-    let withheld: Vec<_> = crate::strictness::withhold_relaxations(&existing, &mut managed)
-        .into_iter()
-        .filter(|w| existing.contains_key(w.key))
-        .collect();
-    if let Some(w) = withheld.first() {
+    // Only keys the user already holds are reported, and install writes the
+    // strictest values AA has, so the one thing it can collide with is a value
+    // AA cannot rank (`never`, a granular table, an unknown string).
+    // `managed_settings_toml_pins_exact_values_per_profile` pins that premise;
+    // if a profile ever writes less than the strictest, a lower-ranked existing
+    // value is refused here with the same message rather than silently kept.
+    if let Some(w) = crate::strictness::withhold_relaxations(&existing, &mut managed).first() {
         return Err(invalid(format!(
-            "{} sets `{}` = `{}`, which {}; Agent Assembly will not lower it. Change it yourself if you want the managed value, then re-run",
+            "{} sets `{}` = `{}`, which Agent Assembly will not lower or replace; change it yourself if you want the managed value, then re-run",
             path.display(),
             w.key,
             w.existing,
-            if w.unrankable {
-                "Agent Assembly cannot compare with its own"
-            } else {
-                "is stricter than the managed value"
-            }
         )));
     }
     Ok(())

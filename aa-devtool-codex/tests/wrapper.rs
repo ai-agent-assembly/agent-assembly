@@ -140,6 +140,16 @@ async fn apply_settings_never_relaxes_the_users_security_settings() {
     assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
 }
 
+/// Each key is protected on its own: seeding only one of them must still stop
+/// AA's looser value for that key (the comparator, not the absent-key rule).
+#[tokio::test]
+async fn apply_settings_protects_each_key_independently() {
+    let parsed = apply_one_rule("sandbox_mode = \"read-only\"\n", "*", PolicyDecision::Allow).await;
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    let parsed = apply_one_rule("approval_policy = \"on-request\"\n", "*", PolicyDecision::Allow).await;
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
+
 /// Positive control for the test above: the rule still lets AA tighten.
 #[tokio::test]
 async fn apply_settings_tightens_a_looser_user_setting() {
