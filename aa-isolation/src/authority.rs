@@ -1827,6 +1827,50 @@ mod tests {
             );
         }
 
+        /// AAASM-6312: a child the ledger tracks is bound by content too. A
+        /// registered NotDelegable child presented with widened delegation
+        /// rights is refused; before the check it passed whenever its scope fit.
+        #[test]
+        fn a_tracked_child_presented_with_widened_delegation_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let child = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("narrower child derives");
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]);
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+            // positive control
+            assert!(authority_gate(
+                &child_spec_with_lease(child.clone(), scope.clone()),
+                &ancestry,
+                t(1_500)
+            )
+            .is_ok());
+            let widened = child
+                .clone()
+                .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(widened, scope), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: child.id().clone(),
+                })
+            );
+        }
+
         /// A root launch and a legacy no-lease spec are both unaffected by
         /// ancestry attenuation — the rc.7 compatibility regression.
         #[test]

@@ -221,7 +221,11 @@ pub struct DelegationLedger {
 }
 
 impl DelegationLedger {
-    /// A ledger tracking no leases yet.
+    /// A ledger tracking no leases yet and trusting ANY root issuer.
+    ///
+    /// Unrestricted on purpose for in-process and test use; no production path
+    /// builds a ledger today (AAASM-6273 will). Anything that seeds a chain from
+    /// outside this process must use [`with_trusted_issuer`](Self::with_trusted_issuer).
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -725,6 +729,95 @@ mod tests {
         // a revocation recorded for the genuine lease is NOT a content change
         ledger.revoke(genuine.id(), 1, "x");
         assert!(ledger.content_matches(&genuine));
+    }
+
+    /// AAASM-6312: every content field is bound, not just the obvious ones. A
+    /// variant differing from the recorded lease in exactly ONE field must be
+    /// refused; ignoring any single field in `same_content` turns one row red.
+    /// (`id` is the lookup key, so it is bound by construction.)
+    #[test]
+    fn each_content_field_is_bound_individually() {
+        let ledger = DelegationLedger::new();
+        let genuine = parent_lease();
+        ledger.register_parent(&genuine).unwrap();
+        let rebuild = |subject: IdentityRef, domain: CapabilityDomain, issued: u64| {
+            CapabilityLease::new(
+                LId::new("parent-lease"),
+                subject,
+                domain,
+                RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+                t(issued),
+                t(5_000),
+                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+            )
+            .with_delegation(DelegationRule::DelegableWithNarrowerScope)
+        };
+        let variants: Vec<(&str, CapabilityLease)> = vec![
+            (
+                "subject",
+                rebuild(
+                    IdentityRef::root("other-agent"),
+                    CapabilityDomain::FilesystemRead,
+                    1_000,
+                ),
+            ),
+            (
+                "domain",
+                rebuild(
+                    IdentityRef::root("parent-agent"),
+                    CapabilityDomain::FilesystemWrite,
+                    1_000,
+                ),
+            ),
+            // issued_at moves while not_before is pinned back, so only issued_at differs.
+            (
+                "issued_at",
+                rebuild(IdentityRef::root("parent-agent"), CapabilityDomain::FilesystemRead, 999)
+                    .with_not_before(t(1_000)),
+            ),
+            ("not_before", parent_lease().with_not_before(t(1))),
+            (
+                "limits",
+                parent_lease().with_limits(crate::spec::ResourceLimits::default()),
+            ),
+            ("schema_version", parent_lease().with_schema_version(99)),
+        ];
+        for (name, forged) in variants {
+            assert!(
+                !ledger.content_matches(&forged),
+                "{name} must not match the recorded content"
+            );
+            assert_eq!(
+                ledger.derive_child(
+                    &forged,
+                    request_with_id("c", "/workspace/a", DelegationRule::NotDelegable),
+                    t(1_100),
+                ),
+                Err(DelegationDenied::ContentMismatch),
+                "{name}"
+            );
+        }
+    }
+
+    /// AAASM-6312: provenance is content. A copy of the recorded child that
+    /// differs ONLY in its recorded parent generation is not the recorded lease.
+    #[test]
+    fn a_child_with_different_provenance_is_not_the_recorded_child() {
+        let ledger = DelegationLedger::new();
+        let genuine_parent = parent_lease();
+        ledger.register_parent(&genuine_parent).unwrap();
+        let recorded = ledger
+            .derive_child(
+                &genuine_parent,
+                request_with_id("c", "/workspace/a", DelegationRule::DelegableWithNarrowerScope),
+                t(1_100),
+            )
+            .unwrap();
+        assert!(ledger.content_matches(&recorded), "positive control");
+        // Identical in every field but the recorded parent generation.
+        let lookalike = recorded.clone().with_provenance_generation(7);
+        assert_ne!(recorded.provenance(), lookalike.provenance());
+        assert!(!ledger.content_matches(&lookalike));
     }
 
     /// AAASM-6312: a ledger built with a trusted issuer takes roots from that
