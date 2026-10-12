@@ -2775,6 +2775,17 @@ mod plan {
         aa_isolation::Candidate::new(backend.identity(), backend.capabilities_for(probe))
     }
 
+    /// The order `--isolation auto` walks the compiled-in backends, most
+    /// established first. It is the ONE definition `auto_select` iterates and the
+    /// regression test pins in full (AAASM-6301): a lazy walk stops at the first
+    /// eligible backend, so on a host where Sandlock is selected the walk itself
+    /// shows only one entry and could not reveal a swap of the other two.
+    pub(super) const AUTO_WALK_ORDER: [&str; 3] = [
+        aa_isolation_sandlock::BACKEND_ID,
+        aa_isolation_native::BACKEND_ID,
+        aa_isolation_macos_vm::BACKEND_ID,
+    ];
+
     /// Walk the fixed, ordered candidate list and select the first backend that
     /// can plan this launch's lowered requirements, or refuse naming every
     /// candidate and why it was rejected.
@@ -2802,11 +2813,7 @@ mod plan {
         resource_requirements: Vec<ControlRequirement>,
         authority: ResolvedAuthority,
     ) -> anyhow::Result<IsolationPlan> {
-        const CANDIDATES: [&str; 3] = [
-            aa_isolation_sandlock::BACKEND_ID,
-            aa_isolation_native::BACKEND_ID,
-            aa_isolation_macos_vm::BACKEND_ID,
-        ];
+        const CANDIDATES: [&str; 3] = AUTO_WALK_ORDER;
 
         let Some(probe) = lowering.as_ref().and_then(|l| probe_spec(l, &resource_requirements)) else {
             // Nothing to lower — the existing `NoRequirementsLowered` refusal
@@ -3615,11 +3622,18 @@ mod plan {
             // Pins "auto selection is unchanged": the walk is always an in-order
             // prefix of sandlock, aasm-native, aasm-macos-vm, so the Experimental
             // backend can never be promoted ahead of a Linux one.
-            let order = [
-                aa_isolation_sandlock::BACKEND_ID,
-                aa_isolation_native::BACKEND_ID,
-                aa_isolation_macos_vm::BACKEND_ID,
-            ];
+            // The full order is pinned from the shared constant, so it holds on
+            // every host, not just those where the lazy walk reaches all three.
+            let order = AUTO_WALK_ORDER;
+            assert_eq!(
+                order,
+                [
+                    aa_isolation_sandlock::BACKEND_ID,
+                    aa_isolation_native::BACKEND_ID,
+                    aa_isolation_macos_vm::BACKEND_ID,
+                ],
+                "the auto walk order changed: the Experimental macOS VM backend must never be promoted ahead of a Linux one"
+            );
             assert!(
                 walked
                     .iter()
