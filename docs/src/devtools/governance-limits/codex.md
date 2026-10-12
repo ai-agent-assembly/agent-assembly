@@ -12,7 +12,7 @@
 
 | Capability | Status | Reason |
 |---|---|---|
-| network deny | Partial — proxy | Corrected by AAASM-5856's security review: `generate_managed_settings`'s `blocked_domains` write has never been reachable through the install executor (`StepAction::ApplyLegacyManagedSettings` is `Unsupported`) and the native lifecycle deliberately omits the key — see the rendered matrix's Codex row for why. Enforcement is `aa-proxy`-only, limited to `llm_only`-classified hosts. |
+| network deny | Partial — proxy | Codex 0.160.0 does not honor top-level `allowed_domains`/`blocked_domains` (AAASM-6330: `unknown configuration field` under `--strict-config`, ignored otherwise), so the adapter writes neither. Enforcement is `aa-proxy`-only, limited to `llm_only`-classified hosts. |
 | network allowlist | Partial — proxy | Same correction and mechanism as network deny. |
 | file read | Partial — eBPF | No SDK integration; eBPF kprobes on `openat` are the only path |
 | file write | Partial — eBPF | Same as file read — eBPF only |
