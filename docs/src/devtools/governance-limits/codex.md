@@ -28,8 +28,10 @@
 
 Codex reaches L2Enforce declaratively via the `~/.codex/config.toml`
 managed-settings surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`),
-which lets the adapter push `sandbox_mode` / `allowed_domains` /
-`blocked_domains` / `approval_policy` without modifying the tool binary —
+which lets the adapter push `sandbox_mode` / `approval_policy` without
+modifying the tool binary (it no longer writes `allowed_domains` /
+`blocked_domains`: codex-cli 0.160.0 does not honor them and rejects them
+under `--strict-config`, AAASM-6330; network egress rests on `aa-proxy`) —
 this page named the file `.codex/config.toml` when first written, was
 changed to `.codex/config.json` in a later correction to match the
 adapter's actual (buggy) write path, and is back to `.toml` now that
