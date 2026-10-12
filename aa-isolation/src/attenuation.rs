@@ -191,6 +191,10 @@ pub(crate) enum ChainFault {
 struct LedgerEntry {
     state: RevocationState,
     link: Link,
+    /// The lease as registered or derived (AAASM-6312). `None` only for an
+    /// entry created by revoking an id the ledger never saw, which can never
+    /// pass a content check.
+    content: Option<CapabilityLease>,
 }
 
 /// Serializes the shared mutable state a lease derivation depends on — each
@@ -211,6 +215,9 @@ struct LedgerEntry {
 #[derive(Debug, Default)]
 pub struct DelegationLedger {
     entries: Mutex<HashMap<LeaseId, LedgerEntry>>,
+    /// When set, only a root whose own claimed issuer is this agent id may be
+    /// registered (AAASM-6312). Asserted-only, not authentication.
+    trusted_issuer: Option<String>,
 }
 
 impl DelegationLedger {
@@ -218,7 +225,20 @@ impl DelegationLedger {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            trusted_issuer: None,
         }
+    }
+
+    /// A ledger that accepts a root only from `issuer` (an agent id).
+    ///
+    /// Without it any caller can register any provenance-free lease as a root.
+    /// The comparison is on the lease's own CLAIMED issuer: it narrows who may
+    /// seed a chain but is not authentication of that issuer (AAASM-5533 owns
+    /// identity). Use this for any ledger a production path builds.
+    #[must_use]
+    pub fn with_trusted_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.trusted_issuer = Some(issuer.into());
+        self
     }
 
     /// Start tracking `lease` as the root of a delegation chain.
@@ -239,21 +259,20 @@ impl DelegationLedger {
         if entries.contains_key(lease.id()) {
             return Err(DelegationDenied::DuplicateLeaseId);
         }
-        Self::insert_root(&mut entries, lease)
-    }
-
-    fn insert_root(
-        entries: &mut HashMap<LeaseId, LedgerEntry>,
-        lease: &CapabilityLease,
-    ) -> Result<(), DelegationDenied> {
         if lease.provenance().is_some() {
             return Err(DelegationDenied::AncestryUnverifiable);
+        }
+        if let Some(trusted) = &self.trusted_issuer {
+            if &lease.basis().issuer.agent_id != trusted {
+                return Err(DelegationDenied::UntrustedIssuer);
+            }
         }
         entries.insert(
             lease.id().clone(),
             LedgerEntry {
                 state: lease.revocation().clone(),
                 link: Link::Root,
+                content: Some(lease.clone()),
             },
         );
         Ok(())
@@ -278,6 +297,7 @@ impl DelegationLedger {
             .or_insert(LedgerEntry {
                 state,
                 link: Link::Unlinked,
+                content: None,
             });
     }
 
@@ -289,6 +309,26 @@ impl DelegationLedger {
     pub(crate) fn verify_chain(&self, lease: &LeaseId) -> Result<(), ChainFault> {
         let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
         Self::verify_chain_locked(&entries, lease)
+    }
+
+    /// Whether the ledger tracks `lease` with exactly this content
+    /// (AAASM-6312). A lease the ledger does not track, or tracks only as an
+    /// unlinked revocation, does not match: absence of a record is never
+    /// agreement.
+    pub(crate) fn content_matches(&self, lease: &CapabilityLease) -> bool {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        entries
+            .get(lease.id())
+            .and_then(|e| e.content.as_ref())
+            .is_some_and(|recorded| recorded.same_content(lease))
+    }
+
+    /// Whether the ledger tracks `id` at all.
+    pub(crate) fn knows(&self, id: &LeaseId) -> bool {
+        self.entries
+            .lock()
+            .expect("DelegationLedger mutex poisoned")
+            .contains_key(id)
     }
 
     /// The recorded reason when `lease` itself — not its ancestors — is
@@ -357,8 +397,17 @@ impl DelegationLedger {
         issued_at: SystemTime,
     ) -> Result<CapabilityLease, DelegationDenied> {
         let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
-        if !entries.contains_key(parent.id()) {
-            Self::insert_root(&mut entries, parent)?;
+        // AAASM-6312: a parent the ledger was never told about is NOT a root —
+        // registering it here would let any caller launder authority by handing
+        // in a forged provenance-free lease. Roots enter only through
+        // `register_parent`, which applies the trusted-issuer rule.
+        match entries.get(parent.id()) {
+            None => return Err(DelegationDenied::AncestryUnverifiable),
+            Some(entry) => {
+                if !entry.content.as_ref().is_some_and(|c| c.same_content(parent)) {
+                    return Err(DelegationDenied::ContentMismatch);
+                }
+            }
         }
         Self::verify_chain_locked(&entries, parent.id()).map_err(|fault| match fault {
             ChainFault::Revoked { .. } => DelegationDenied::ParentRevoked,
@@ -382,6 +431,7 @@ impl DelegationLedger {
             LedgerEntry {
                 state: child.revocation().clone(),
                 link: Link::Parent(parent.id().clone()),
+                content: Some(child.clone()),
             },
         );
         Ok(child)
@@ -550,6 +600,7 @@ mod tests {
     fn a_known_child_id_is_never_re_derived_and_an_unknown_provenanced_parent_is_unverifiable() {
         let ledger = DelegationLedger::new();
         let root = parent_lease();
+        ledger.register_parent(&root).unwrap();
         let child = ledger
             .derive_child(
                 &root,
@@ -576,6 +627,126 @@ mod tests {
             ),
             Err(DelegationDenied::AncestryUnverifiable)
         );
+    }
+
+    /// AAASM-6312: a parent nobody registered is not a root. Before the fix
+    /// `derive_child` registered any unknown provenance-free parent itself, so a
+    /// forged lease handed in from outside seeded its own authority chain.
+    #[test]
+    fn a_forged_unregistered_root_cannot_seed_a_chain() {
+        let ledger = DelegationLedger::new();
+        let forged = parent_lease();
+        assert_eq!(
+            ledger.derive_child(
+                &forged,
+                request_with_id("c", "/workspace/a", DelegationRule::NotDelegable),
+                t(1_100),
+            ),
+            Err(DelegationDenied::AncestryUnverifiable)
+        );
+        assert!(
+            !ledger.knows(forged.id()),
+            "a refused derivation must not register the parent"
+        );
+        // positive control: the same lease, registered, derives
+        ledger.register_parent(&forged).unwrap();
+        assert!(ledger
+            .derive_child(
+                &forged,
+                request_with_id("c", "/workspace/a", DelegationRule::NotDelegable),
+                t(1_100),
+            )
+            .is_ok());
+    }
+
+    /// AAASM-6312: same id, different content. A wider snapshot reusing a
+    /// tracked id must not derive, and must not satisfy the content check.
+    #[test]
+    fn a_snapshot_with_a_tracked_id_but_different_content_is_refused() {
+        let ledger = DelegationLedger::new();
+        let genuine = parent_lease();
+        ledger.register_parent(&genuine).unwrap();
+        assert!(
+            ledger.content_matches(&genuine),
+            "positive control: identical content matches"
+        );
+
+        let wider_scope = CapabilityLease::new(
+            LId::new("parent-lease"),
+            IdentityRef::root("parent-agent"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Selectors(vec!["permit-only:/".to_string()]),
+            t(1_000),
+            t(5_000),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        )
+        .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+        let later_expiry = CapabilityLease::new(
+            LId::new("parent-lease"),
+            IdentityRef::root("parent-agent"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            t(1_000),
+            t(9_999_999),
+            LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+        )
+        .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+        let other_issuer = CapabilityLease::new(
+            LId::new("parent-lease"),
+            IdentityRef::root("parent-agent"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]),
+            t(1_000),
+            t(5_000),
+            LeaseBasis::new(IdentityRef::root("someone-else"), "test fixture"),
+        )
+        .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+        let other_delegation = parent_lease().with_delegation(DelegationRule::NotDelegable);
+        for (name, forged) in [
+            ("wider scope", wider_scope),
+            ("later expiry", later_expiry),
+            ("different issuer", other_issuer),
+            ("different delegation rights", other_delegation),
+        ] {
+            assert!(
+                !ledger.content_matches(&forged),
+                "{name} must not match the recorded content"
+            );
+            assert_eq!(
+                ledger.derive_child(
+                    &forged,
+                    request_with_id("c", "/workspace/a", DelegationRule::NotDelegable),
+                    t(1_100),
+                ),
+                Err(DelegationDenied::ContentMismatch),
+                "{name}"
+            );
+        }
+        // a revocation recorded for the genuine lease is NOT a content change
+        ledger.revoke(genuine.id(), 1, "x");
+        assert!(ledger.content_matches(&genuine));
+    }
+
+    /// AAASM-6312: a ledger built with a trusted issuer takes roots from that
+    /// issuer only.
+    #[test]
+    fn a_root_from_an_untrusted_issuer_is_refused() {
+        let ledger = DelegationLedger::new().with_trusted_issuer("issuer");
+        assert!(
+            ledger.register_parent(&parent_lease()).is_ok(),
+            "the trusted issuer's root registers"
+        );
+        let rogue = CapabilityLease::new(
+            LId::new("rogue-root"),
+            IdentityRef::root("parent-agent"),
+            CapabilityDomain::FilesystemRead,
+            RequirementScope::Selectors(vec!["permit-only:/".to_string()]),
+            t(1_000),
+            t(5_000),
+            LeaseBasis::new(IdentityRef::root("rogue"), "forged"),
+        );
+        assert_eq!(ledger.register_parent(&rogue), Err(DelegationDenied::UntrustedIssuer));
+        assert!(!ledger.knows(rogue.id()));
     }
 
     /// §4.6: concurrent creation does not race around revocation.

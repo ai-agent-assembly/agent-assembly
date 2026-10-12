@@ -419,6 +419,15 @@ pub enum AuthorityRefusal {
         /// The first lease on the chain that could not be verified.
         lease: LeaseId,
     },
+    /// The ledger tracks a lease with this id but not with the content the gate
+    /// was handed (AAASM-6312): a forged or widened snapshot reusing a known id.
+    /// Fails closed; the id matching is no evidence the content is genuine.
+    LedgerContentMismatch {
+        /// The domain whose lease content disagrees with the ledger's record.
+        domain: CapabilityDomain,
+        /// The lease whose content does not match.
+        lease: LeaseId,
+    },
     /// A resolved parent (`Ancestry::Parent`) is in play, but the child's own
     /// spec carries no lease at all for `domain` (AAASM-6282/D4).
     ///
@@ -460,6 +469,7 @@ impl AuthorityRefusal {
             | Self::LeaseSubjectMismatch { domain, .. }
             | Self::RevokedInLedger { domain, .. }
             | Self::LedgerUnverifiable { domain, .. }
+            | Self::LedgerContentMismatch { domain, .. }
             | Self::ChildMustBeLeaseAware { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
             Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
@@ -561,6 +571,13 @@ impl core::fmt::Display for AuthorityRefusal {
                     f,
                     "the delegation chain for domain `{domain}` cannot be verified: lease `{lease}` is unknown \
                      to the ledger or has no recorded parent"
+                )
+            }
+            Self::LedgerContentMismatch { domain, lease } => {
+                write!(
+                    f,
+                    "lease `{lease}` for domain `{domain}` is tracked by the ledger with different content than \
+                     the one presented"
                 )
             }
             Self::ChildMustBeLeaseAware { domain } => {
@@ -821,11 +838,26 @@ fn check_attenuation(
                 ChainFault::Unverifiable { lease } => AuthorityRefusal::LedgerUnverifiable { domain, lease },
             });
         }
+        // AAASM-6312: the id being known is not enough — the snapshot's CONTENT
+        // (scope, expiry, limits, delegation rights, basis) must be the one the
+        // ledger recorded, or a wider lease reusing a tracked id would pass.
+        if !parent.ledger().content_matches(parent_lease) {
+            return Err(AuthorityRefusal::LedgerContentMismatch {
+                domain,
+                lease: parent_lease.id().clone(),
+            });
+        }
     }
     // A child lease the ledger knows and has revoked is refused even when its
     // parent chain is intact. A child the ledger has never seen (hand-built,
     // or independently issued) is not an error here: absence of the child is
     // not absence of authority above it.
+    if parent.ledger().knows(child_lease.id()) && !parent.ledger().content_matches(child_lease) {
+        return Err(AuthorityRefusal::LedgerContentMismatch {
+            domain,
+            lease: child_lease.id().clone(),
+        });
+    }
     if let Some(reason) = parent.ledger().revoked_reason(child_lease.id()) {
         return Err(AuthorityRefusal::RevokedInLedger {
             domain,
@@ -1745,6 +1777,54 @@ mod tests {
             let control_parent = gated_parent(active_parent_lease);
             let control_ancestry = Ancestry::Parent(Box::new(control_parent));
             assert!(authority_gate(&child_spec, &control_ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6312: the gate must compare the parent snapshot's CONTENT with
+        /// the ledger's record. A wider lease reusing the tracked id used to
+        /// pass, because `verify_chain` looked at the id alone.
+        #[test]
+        fn a_forged_parent_snapshot_reusing_a_tracked_id_is_refused_by_content() {
+            let genuine = parent_fs_lease(RequirementScope::Selectors(
+                vec!["permit-only:/workspace/a".to_string()],
+            ));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&genuine).expect("root registers");
+            let child_lease = ledger
+                .derive_child(
+                    &genuine,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a narrower child derives from the genuine parent");
+            let child_spec = child_spec_with_lease(
+                child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+            );
+
+            // Positive control: the genuine parent snapshot admits the child.
+            let genuine_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), genuine.clone())));
+            assert!(authority_gate(&child_spec, &genuine_ancestry, t(1_500)).is_ok());
+
+            // Forged: same id and issuer, wider scope. The id is known to the
+            // ledger and its chain verifies, but the content is not the recorded one.
+            let forged = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/".to_string()]));
+            assert_eq!(forged.id(), genuine.id());
+            let forged_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), forged)));
+            assert_eq!(
+                authority_gate(&child_spec, &forged_ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: genuine.id().clone(),
+                })
+            );
         }
 
         /// A root launch and a legacy no-lease spec are both unaffected by
