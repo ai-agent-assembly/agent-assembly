@@ -281,7 +281,7 @@ const REFUSED_FLAGS: [&str; 6] = [
 ];
 
 /// Harmless flags and their arity (1 = takes a value).
-const ALLOWED_FLAGS: [(&str, usize); 11] = [
+const ALLOWED_FLAGS: [(&str, usize); 9] = [
     ("--model", 1),
     ("-m", 1),
     ("--oss", 0),
@@ -289,8 +289,6 @@ const ALLOWED_FLAGS: [(&str, usize); 11] = [
     ("--json", 0),
     ("--no-daemon", 0),
     ("--color", 1),
-    ("--image", 1),
-    ("-i", 1),
     ("--output-last-message", 1),
     ("--search", 0),
 ];
@@ -352,8 +350,14 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
             return Ok(Invocation::NotAnAgentRun);
         }
         if !a.starts_with('-') {
+            // Codex (clap) honours flags placed AFTER a positional (measured on
+            // 0.160.0: `prompt-input hello -c sandbox_mode="danger-full-access"`
+            // took effect), so a free word does not end flag scanning; only a
+            // literal `--` does. A first positional may be a subcommand; later
+            // ones are prompt text, scanned past.
             if seen_positional {
-                break; // the prompt
+                i += 1;
+                continue;
             }
             seen_positional = true;
             if NON_AGENT_SUBCOMMANDS.contains(&a) {
@@ -367,7 +371,7 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
                     return Err(format!("subcommand {a:?} is not verified"));
                 }
                 // Not a subcommand: this is the prompt.
-                _ => break,
+                _ => {}
             }
             i += 1;
             continue;
@@ -653,8 +657,24 @@ mod tests {
         // After `--` and after the first free word everything is prompt text.
         let got = parse_invocation(&s(&["--", "--dangerously-bypass-approvals-and-sandbox"])).unwrap();
         assert!(matches!(got, Invocation::AgentRun { .. }));
-        let got = parse_invocation(&s(&["fix the bug", "--dangerously-bypass-approvals-and-sandbox"])).unwrap();
-        assert!(matches!(got, Invocation::AgentRun { .. }));
+        // Flags AFTER the prompt are still flags to Codex: refuse them.
+        assert!(parse_invocation(&s(&["fix the bug", "--dangerously-bypass-approvals-and-sandbox"])).is_err());
+        assert!(parse_invocation(&s(&["exec", "fix", "-s", "danger-full-access", "more words"])).is_ok());
+        let got = parse_invocation(&s(&["exec", "fix it", "-c", "a=1"])).unwrap();
+        assert_eq!(
+            got,
+            Invocation::AgentRun {
+                probe_args: s(&["-c", "a=1"]),
+                cd: None
+            }
+        );
+        assert!(parse_invocation(&s(&[
+            "--image",
+            "a.png",
+            "b.png",
+            "--dangerously-bypass-approvals-and-sandbox"
+        ]))
+        .is_err());
         // a flag BEFORE the prompt is still inspected
         assert!(parse_invocation(&s(&["--dangerously-bypass-approvals-and-sandbox", "fix"])).is_err());
     }
