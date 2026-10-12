@@ -214,6 +214,34 @@ async fn codex_install_refuses_to_replace_an_unrankable_approval_policy() {
     }
 }
 
+/// The user may edit the file between reviewing the plan and applying it; the
+/// apply-time content derivation must re-check (TOCTOU), and a refused install
+/// must leave no receipt or state behind.
+#[tokio::test]
+async fn codex_apply_time_recheck_refuses_an_edit_made_after_planning() {
+    let w = World::new();
+    std::fs::write(w.config(), "sandbox_mode = \"workspace-write\"\n").unwrap();
+    let integration = w.integration();
+    let plan = integration
+        .plan_integration(&request())
+        .await
+        .expect("clean at plan time");
+    std::fs::write(w.config(), "approval_policy = \"never\"\n").unwrap();
+    let err = integration
+        .step_content(&plan)
+        .await
+        .expect_err("edited after planning");
+    assert!(err.to_string().contains("approval_policy"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(w.config()).unwrap(),
+        "approval_policy = \"never\"\n"
+    );
+    assert!(
+        !w.state.join("store").exists(),
+        "a refused install must write no receipt"
+    );
+}
+
 /// The refusal reads the top level only: `[profiles.work] approval_policy =
 /// "never"` (in `USER_CONFIG`) is user-owned and must not block an install.
 #[tokio::test]

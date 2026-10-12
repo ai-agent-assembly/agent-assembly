@@ -339,10 +339,7 @@ impl DevToolAdapter for CodexAdapter {
         if let toml::Value::Table(mut new_table) = new_val {
             for w in strictness::withhold_relaxations(&merged, &mut new_table) {
                 if w.unrankable {
-                    eprintln!(
-                        "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
-                        w.key, w.existing
-                    );
+                    eprintln!("{}", strictness::warning(&w));
                 }
             }
             merged.extend(new_table);
