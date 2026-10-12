@@ -6556,6 +6556,11 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // (a trusted project config beats what was just written), and before spawn.
     // Enforce refuses anything short of a verified boundary; Observe launches
     // and says what was not verified. Disabled is hermetic-test-only.
+    if mode == aa_core::EnforcementMode::Disabled && args.tool == "codex" {
+        eprintln!(
+            "note: Codex's effective sandbox/approval/network boundary was NOT measured (enforcement is disabled)"
+        );
+    }
     if mode != aa_core::EnforcementMode::Disabled {
         if let Some(check) = aa_devtool::registry::verify_launch_boundary(
             &args.tool,

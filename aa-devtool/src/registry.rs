@@ -136,13 +136,16 @@ pub fn verify_launch_boundary(
             .get_envs()
             .map(|(k, v)| (k.to_owned(), v.map(std::ffi::OsStr::to_owned)))
             .collect(),
+        timeout: aa_devtool_codex::boundary::DEFAULT_PROBE_TIMEOUT,
     };
     let verdict = verify(&runner, &argv, required_floor(policy));
     let report = match &verdict {
-        Verdict::NotApplicable => "codex_boundary=not_applicable".to_string(),
-        Verdict::Refused(why) => format!("codex_boundary=unverifiable\ncodex_boundary_reason={why}"),
+        Verdict::NotApplicable => "codex_boundary=not_applicable\ncodex_boundary_scope=sandbox_approval_network_only".to_string(),
+        Verdict::Refused(why) => format!(
+            "codex_boundary=unverifiable\ncodex_boundary_scope=sandbox_approval_network_only\ncodex_boundary_reason={why:?}"
+        ),
         Verdict::Checked(r) => format!(
-            "codex_boundary={}\ncodex_boundary_filesystem={:?}\ncodex_boundary_network={:?}\ncodex_boundary_approval={:?}",
+            "codex_boundary={}\ncodex_boundary_scope=sandbox_approval_network_only\ncodex_boundary_filesystem={:?}\ncodex_boundary_network={:?}\ncodex_boundary_approval={:?}",
             if r.allows_launch() { "verified" } else { "not_met" },
             r.filesystem,
             r.network,
@@ -180,6 +183,106 @@ pub fn built_in_adapters() -> Vec<Box<dyn DevToolAdapter>> {
 
 #[cfg(test)]
 mod tests {
+    // ---- AAASM-6331: verify_launch_boundary against fake `codex` scripts ----
+
+    fn fake_codex(dir: &std::path::Path, prompt: &str, doctor: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(dir.join("prompt.json"), prompt).unwrap();
+        std::fs::write(dir.join("doctor.json"), doctor).unwrap();
+        let path = dir.join("codex");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n doctor) cat '{d}/doctor.json';;\n debug) cat '{d}/prompt.json';;\nesac\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Hand-written JSON (no serde_json dev-dependency, so this crate's manifest
+    /// and the lockfile stay untouched).
+    fn read_only_prompt() -> String {
+        r#"[
+  {"role":"developer","content":[{"text":"<permissions instructions>\n`sandbox_mode` is `read-only`: x. Network access is restricted.\n"}]},
+  {"role":"user","content":[{"text":"<environment_context>\n<cwd>/w</cwd><filesystem><workspace_roots><root>/w</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>\n</environment_context>"}]}
+]"#
+        .to_string()
+    }
+
+    fn doctor_json(fs: &str) -> String {
+        format!(
+            r#"{{"codexVersion":"{}","checks":{{"config.load":{{"status":"ok"}},"sandbox.helpers":{{"details":{{"approval policy":"OnRequest","filesystem sandbox":"{fs}","network sandbox":"restricted"}}}}}}}}"#,
+            aa_devtool_codex::boundary::MEASURED_CODEX_VERSION
+        )
+    }
+
+    fn deny_policy() -> aa_devtool_contract::PolicyDocument {
+        aa_devtool_contract::PolicyDocument {
+            version: 1,
+            name: "deny".into(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
+            rules: vec![aa_devtool_contract::PolicyRule {
+                action_pattern: "fs:write".into(),
+                decision: aa_devtool_contract::PolicyDecision::Deny,
+            }],
+        }
+    }
+
+    fn command_for(program: &std::path::Path, args: &[&str]) -> std::process::Command {
+        let mut c = std::process::Command::new(program);
+        c.args(args);
+        c
+    }
+
+    #[test]
+    fn only_codex_has_a_boundary_verdict() {
+        let cmd = std::process::Command::new("true");
+        assert!(verify_launch_boundary("claude", &cmd, &deny_policy(), true).is_none());
+        assert!(verify_launch_boundary("copilot", &cmd, &deny_policy(), true).is_none());
+    }
+
+    #[test]
+    fn a_verified_boundary_proceeds_and_reports_its_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let check = verify_launch_boundary("codex", &command_for(&prog, &["exec", "do it"]), &deny_policy(), true)
+            .expect("codex is verified");
+        assert_eq!(check.decision, LaunchDecision::Proceed, "{}", check.report);
+        assert!(check.report.contains("codex_boundary=verified"));
+        assert!(check
+            .report
+            .contains("codex_boundary_scope=sandbox_approval_network_only"));
+    }
+
+    #[test]
+    fn an_unmet_boundary_is_refused_under_enforce_and_degraded_under_observe() {
+        let dir = tempfile::tempdir().unwrap();
+        // doctor says unrestricted while the prompt says read-only: disagreement.
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("unrestricted"));
+        let cmd = command_for(&prog, &["exec", "do it"]);
+        let enforce = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(enforce.decision, LaunchDecision::Refuse(_)), "{enforce:?}");
+        assert!(enforce.report.contains("codex_boundary=not_met"));
+        let observe = verify_launch_boundary("codex", &cmd, &deny_policy(), false).unwrap();
+        assert!(
+            matches!(observe.decision, LaunchDecision::ProceedDegraded(_)),
+            "{observe:?}"
+        );
+    }
+
+    #[test]
+    fn unverifiable_arguments_never_reach_codex() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), "not even json", "not even json");
+        let cmd = command_for(&prog, &["--dangerously-bypass-approvals-and-sandbox"]);
+        let check = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(check.decision, LaunchDecision::Refuse(_)));
+        assert!(check.report.contains("codex_boundary=unverifiable"));
+    }
+
     use std::sync::Mutex;
 
     use super::*;
