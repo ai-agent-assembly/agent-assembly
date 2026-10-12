@@ -54,6 +54,10 @@ pub enum ScopeError {
 pub struct CodexPaths {
     /// `$HOME`.
     home: Option<PathBuf>,
+    /// `$CODEX_HOME`: where Codex itself keeps `config.toml` when set. It wins
+    /// over `$HOME/.codex` (AAASM-6332) — otherwise a user who sets it has the
+    /// managed settings written to a file Codex never reads.
+    codex_home: Option<PathBuf>,
     /// Root for artifacts Agent Assembly owns outright.
     state: Option<PathBuf>,
     /// The proxy CA certificate this integration copies its trust material
@@ -69,6 +73,7 @@ impl CodexPaths {
     pub fn from_env() -> Self {
         Self {
             home: non_empty_var("HOME"),
+            codex_home: non_empty_var("CODEX_HOME"),
             state: state_root(),
             ca_source: ca_source(),
         }
@@ -78,6 +83,16 @@ impl CodexPaths {
     #[must_use]
     pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
         self.home = Some(home.into());
+        // Pinning HOME is how a test isolates itself; an ambient CODEX_HOME read
+        // by `from_env` must not leak past it into the developer's real config.
+        self.codex_home = None;
+        self
+    }
+
+    /// Pin `$CODEX_HOME`.
+    #[must_use]
+    pub fn with_codex_home(mut self, codex_home: impl Into<PathBuf>) -> Self {
+        self.codex_home = Some(codex_home.into());
         self
     }
 
@@ -95,7 +110,9 @@ impl CodexPaths {
         self
     }
 
-    /// The Codex CLI's own configuration file — `$HOME/.codex/config.toml`.
+    /// The Codex CLI's own configuration file — `$CODEX_HOME/config.toml` when
+    /// `CODEX_HOME` is set (as Codex itself resolves it), else
+    /// `$HOME/.codex/config.toml`.
     ///
     /// TOML, not JSON (AAASM-5336): the real `codex` CLI reads and writes
     /// `config.toml` — confirmed empirically via `codex mcp add` and `codex
@@ -128,9 +145,12 @@ impl CodexPaths {
         if scope != SettingsScope::User {
             return Err(ScopeError::UnsupportedScope { scope });
         }
+        if let Some(codex_home) = &self.codex_home {
+            return Ok(codex_home.join("config.toml"));
+        }
         let home = self.home.as_ref().ok_or_else(|| ScopeError::Unresolvable {
             scope: SettingsScope::User,
-            detail: "HOME is not set".to_string(),
+            detail: "neither CODEX_HOME nor HOME is set".to_string(),
         })?;
         Ok(home.join(".codex").join("config.toml"))
     }
@@ -273,6 +293,34 @@ mod tests {
     fn settings_path_is_home_dot_codex_config_toml() {
         let dir = tempfile::tempdir().unwrap();
         let p = paths(dir.path());
+        assert_eq!(
+            p.settings_path(SettingsScope::User).unwrap(),
+            dir.path().join("home").join(".codex").join("config.toml")
+        );
+    }
+
+    #[test]
+    fn codex_home_wins_over_home_for_the_settings_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(dir.path()).with_codex_home(dir.path().join("elsewhere"));
+        assert_eq!(
+            p.settings_path(SettingsScope::User).unwrap(),
+            dir.path().join("elsewhere").join("config.toml")
+        );
+        // and it needs no HOME at all
+        let only = CodexPaths::default().with_codex_home(dir.path().join("c"));
+        assert_eq!(
+            only.settings_path(SettingsScope::User).unwrap(),
+            dir.path().join("c").join("config.toml")
+        );
+    }
+
+    #[test]
+    fn pinning_home_discards_an_ambient_codex_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = CodexPaths::default()
+            .with_codex_home(dir.path().join("ambient"))
+            .with_home(dir.path().join("home"));
         assert_eq!(
             p.settings_path(SettingsScope::User).unwrap(),
             dir.path().join("home").join(".codex").join("config.toml")
