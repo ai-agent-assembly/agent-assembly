@@ -201,6 +201,11 @@ impl CodexPaths {
         self.ca_source.as_deref()
     }
 
+    /// The pinned or ambient `CODEX_HOME`, when one is set.
+    pub fn codex_home(&self) -> Option<&Path> {
+        self.codex_home.as_deref()
+    }
+
     /// `$HOME`, for detection markers and the adapter's own config resolution.
     pub fn home(&self) -> Option<&Path> {
         self.home.as_deref()

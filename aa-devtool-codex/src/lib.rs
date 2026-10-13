@@ -159,6 +159,12 @@ pub struct CodexAdapter {
     /// Overrides `$HOME` for config-path resolution. `None` → read `$HOME`.
     /// Set via [`Self::with_home_dir`]; intended for integration tests only.
     home_dir_override: Option<PathBuf>,
+    /// Pins `CODEX_HOME`. Needed alongside `home_dir_override` because
+    /// `CodexPaths::with_home` discards an ambient `CODEX_HOME`; without this an
+    /// integration built from paths that name a `CODEX_HOME` would plan against
+    /// `$CODEX_HOME/config.toml` while the adapter wrote `$HOME/.codex` - a file
+    /// Codex does not read (AAASM-6332 review).
+    codex_home_override: Option<PathBuf>,
     /// Overrides `AASM_STATE_DIR` for launch-environment resolution. `None` →
     /// read the environment. Set via [`Self::with_state_dir`]; without it a
     /// unit test would resolve `CodexPaths::from_env`'s state root from the
@@ -175,6 +181,7 @@ impl CodexAdapter {
             locator,
             probe,
             home_dir_override: None,
+            codex_home_override: None,
             state_dir_override: None,
         }
     }
@@ -184,6 +191,13 @@ impl CodexAdapter {
     #[doc(hidden)]
     pub fn with_home_dir(mut self, path: PathBuf) -> Self {
         self.home_dir_override = Some(path);
+        self
+    }
+
+    /// Pin `CODEX_HOME` for config-path resolution (see `codex_home_override`).
+    #[doc(hidden)]
+    pub fn with_codex_home_dir(mut self, path: PathBuf) -> Self {
+        self.codex_home_override = Some(path);
         self
     }
 
@@ -203,10 +217,14 @@ impl CodexAdapter {
     /// `ClaudeCodeAdapter::launch_paths`, plus a state override Claude's does
     /// not need because its unit tests exercise `installed_environment`
     /// directly rather than through `build_launch_command`).
-    fn launch_paths(&self) -> crate::scope::CodexPaths {
+    pub(crate) fn launch_paths(&self) -> crate::scope::CodexPaths {
         let mut paths = crate::scope::CodexPaths::from_env();
         if let Some(home) = &self.home_dir_override {
             paths = paths.with_home(home.clone());
+        }
+        // After `with_home`, which clears any ambient CODEX_HOME.
+        if let Some(codex_home) = &self.codex_home_override {
+            paths = paths.with_codex_home(codex_home.clone());
         }
         if let Some(state) = &self.state_dir_override {
             paths = paths.with_state(state.clone());
@@ -221,6 +239,7 @@ impl Default for CodexAdapter {
             locator: Box::new(DefaultBinaryLocator),
             probe: Box::new(CommandVersionProbe),
             home_dir_override: None,
+            codex_home_override: None,
             state_dir_override: None,
         }
     }
