@@ -152,6 +152,26 @@ impl PolicyValidator {
             vec![err]
         };
 
+        // AAASM-6337: reject a blank document before it can deserialize into an
+        // all-`None` (fully permissive) policy. A bare `null`/`~` already fails
+        // the struct parse below with its own error, so this runs only on
+        // documents that would otherwise succeed. Mirrors
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-3997) so the
+        // two entry points cannot disagree about what an empty policy means.
+        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) {
+            let blank = match &value {
+                serde_yaml::Value::Null => true,
+                serde_yaml::Value::Mapping(map) => map.is_empty(),
+                _ => false,
+            };
+            if blank && serde_yaml::from_str::<RawPolicyDocument>(yaml_str).is_ok() {
+                return Err(vec![ValidationError::new(
+                    "(document)",
+                    "empty or null policy document is not permitted (would be fully permissive)",
+                )]);
+            }
+        }
+
         // Try envelope format: if it has a `spec` key, treat it as wrapped.
         if let Ok(envelope) = serde_yaml::from_str::<GovernancePolicyEnvelope>(yaml_str) {
             if let Some(spec_value) = envelope.spec {
@@ -1367,7 +1387,9 @@ mod tests {
 
     #[test]
     fn capabilities_absent_is_none() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.document.capabilities.is_none());
     }
@@ -1536,20 +1558,25 @@ data:
     }
 
     #[test]
-    fn empty_document_is_valid_with_no_errors() {
-        let yaml = "{}\n";
+    fn minimal_declared_document_is_valid_with_no_errors() {
+        // AAASM-6337: formerly `empty_document_is_valid_with_no_errors`. A blank
+        // document is now rejected (see `blank_policy_documents_are_rejected_*`);
+        // the smallest accepted document declares one section.
+        let yaml = "network:\n  allowlist: []\n";
         let result = PolicyValidator::from_yaml(yaml);
         assert!(result.is_ok());
         let out = result.unwrap();
         assert!(out.warnings.is_empty());
-        assert!(out.document.network.is_none());
+        assert!(out.document.schedule.is_none());
     }
 
     // ── Scope field (F92) ───────────────────────────────────────────────────
 
     #[test]
     fn scope_absent_defaults_to_global_for_backward_compatibility() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Global);
     }
@@ -1635,7 +1662,9 @@ data:
 
     #[test]
     fn approval_timeout_absent_defaults_to_300() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.approval_timeout_secs, 300);
     }

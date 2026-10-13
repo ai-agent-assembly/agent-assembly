@@ -12,8 +12,8 @@
 //! Two entry points own YAML policy parsing and both are exercised:
 //! `aa_policy::PolicyValidator::from_yaml` (gateway/REST) and
 //! `aa_security::policy::PolicyDocument::from_yaml` (cross-layer canonical AST).
-//! Their differing verdicts on the same input (e.g. an empty document) are
-//! pinned as they are today, not as they ought to be.
+//! Where their verdicts on the same input differ, the difference is pinned as it
+//! is. (The empty-document disagreement was closed by AAASM-6337.)
 //!
 //! Every acceptance is paired with a rejection that differs in one respect, so
 //! a parser that accepts or rejects everything cannot satisfy the corpus.
@@ -202,23 +202,27 @@ fn golden_corpus_verdicts() {
             pol: OK,
         },
         // ── empty / null / scalar / sequence documents (AAASM-3997) ─────────
+        // AAASM-6337 deliberately flipped the three blank-document `pol` rows
+        // below from OK to Err: the validator used to turn them into a fully
+        // permissive policy while `aa_security` rejected them. Both entry
+        // points now agree.
         Case {
             name: "empty document",
             yaml: "",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "empty mapping",
             yaml: "{}",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "comment-only document",
             yaml: "# only a comment\n",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "null document",
