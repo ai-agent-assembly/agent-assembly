@@ -150,8 +150,22 @@ pub fn verify_launch_boundary(
                     .unwrap_or_else(|| std::env::var_os(k).map(std::path::PathBuf::from))
             };
             let codex_home = from_env("CODEX_HOME").or_else(|| from_env("HOME").map(|h| h.join(".codex")));
-            let rules =
-                aa_devtool_codex::boundary::execpolicy_rule_files(codex_home.as_deref(), command.get_current_dir());
+            // The launch directory is the command's own, else this process's
+            // (a plain `aasm run codex` sets none); a `-C` target is scanned too.
+            let base = command
+                .get_current_dir()
+                .map(std::path::Path::to_path_buf)
+                .or_else(|| std::env::current_dir().ok());
+            let mut launch_dirs: Vec<std::path::PathBuf> = base.iter().cloned().collect();
+            if let Ok(aa_devtool_codex::boundary::Invocation::AgentRun { cd: Some(cd), .. }) =
+                aa_devtool_codex::boundary::parse_invocation(&argv)
+            {
+                launch_dirs.push(match &base {
+                    Some(b) => b.join(cd),
+                    None => cd.into(),
+                });
+            }
+            let rules = aa_devtool_codex::boundary::execpolicy_rule_files(codex_home.as_deref(), &launch_dirs);
             if !rules.is_empty() {
                 verdict = Verdict::Checked(aa_devtool_codex::boundary::BoundaryReport::below(format!(
                     "{} execpolicy rule file(s) can run commands outside the sandbox (e.g. {})",
@@ -321,6 +335,41 @@ mod tests {
         let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
         assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
         assert!(bad.report.contains("codex_boundary=not_met"), "{}", bad.report);
+    }
+
+    /// AAASM-6331 final review: with `approval_policy=never` Codex lists no allow
+    /// rules, so project rules found only by the directory scan must still void
+    /// the claim - from an ancestor of the launch dir and from a `-C` target.
+    #[test]
+    fn project_rules_void_the_claim_from_an_ancestor_and_from_a_cd_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let proj = tempfile::tempdir().unwrap();
+        let sub = proj.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(proj.path().join(".git")).unwrap();
+
+        let from_sub = || {
+            let mut c = command_for(&prog, &["exec", "x"]);
+            c.current_dir(&sub);
+            c
+        };
+        let via_cd = || command_for(&prog, &["-C", sub.to_str().unwrap(), "exec", "x"]);
+        // Controls: no rules file yet -> both launches verify.
+        for cmd in [from_sub(), via_cd()] {
+            let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+            assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        }
+        std::fs::create_dir_all(proj.path().join(".codex/rules")).unwrap();
+        std::fs::write(
+            proj.path().join(".codex/rules/a.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        for cmd in [from_sub(), via_cd()] {
+            let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+            assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+        }
     }
 
     #[test]
