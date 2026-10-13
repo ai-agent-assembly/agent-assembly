@@ -3,6 +3,7 @@
 mod common;
 
 use aa_api::auth::scope::Scope;
+use aa_gateway::policy::history::PolicyHistoryStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
@@ -331,4 +332,70 @@ async fn get_active_policy_returns_404_when_no_named_policy_loaded() {
         .as_str()
         .unwrap_or_default()
         .contains("no active policy loaded"));
+}
+
+// ── Fail-closed bodies must not replace the live policy (AAASM-6336/6337) ─────
+
+async fn post_policy_yaml(app: axum::Router, yaml: &str) -> StatusCode {
+    let body = serde_json::json!({ "policy_yaml": yaml });
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/policies")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+/// A blank document (AAASM-6337) and a NaN/infinite budget cap (AAASM-6336)
+/// are each answered 400 and leave the live global policy and the version
+/// history exactly as seeded. The seeded policy is non-trivial (2 rules), so a
+/// silent swap to a permissive default is visible as `rule_count == 0`.
+#[tokio::test]
+async fn create_policy_rejects_blank_and_non_finite_budget_without_replacing_live_policy() {
+    for bad in [
+        "",
+        "{}",
+        "# only a comment\n",
+        "budget:\n  daily_limit_usd: .nan\n",
+        "budget:\n  daily_limit_usd: .inf\n",
+        "budget:\n  monthly_limit_usd: -.inf\n",
+        "budget:\n  team_daily_limit_usd: .nan\n",
+        "budget:\n  org_daily_limit_usd: .nan\n",
+    ] {
+        let state = common::test_state();
+        state
+            .policy_engine
+            .apply_yaml(ENVELOPE_POLICY_WITH_TOOLS, Some("seed"), state.policy_history.as_ref())
+            .await
+            .unwrap();
+        let engine = state.policy_engine.clone();
+        let history = state.policy_history.clone();
+        let app = aa_api::server::build_app(state);
+
+        let status = post_policy_yaml(app, bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?} must be rejected with 400");
+
+        let info = engine.active_policy_info();
+        assert_eq!(
+            info.name.as_deref(),
+            Some("production-policy"),
+            "{bad:?}: live policy replaced"
+        );
+        assert_eq!(info.rule_count, 2, "{bad:?}: live policy replaced");
+        assert_eq!(history.list(10).await.unwrap().len(), 1, "{bad:?}: history grew");
+    }
+}
+
+/// Control for the test above: the request shape is identical, only the body
+/// differs, and a finite positive budget is accepted.
+#[tokio::test]
+async fn create_policy_accepts_finite_budget_control() {
+    let app = common::test_app();
+    let status = post_policy_yaml(app, "budget:\n  daily_limit_usd: 5.0\n").await;
+    assert_eq!(status, StatusCode::CREATED);
 }

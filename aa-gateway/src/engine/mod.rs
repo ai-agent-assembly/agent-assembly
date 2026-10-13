@@ -5091,6 +5091,57 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// AAASM-6336/6337: a blank or non-finite-budget body must leave the live
+    /// policy and the history store exactly as they were. Each rejected body is
+    /// paired with the accepted control that follows, so a validator that
+    /// rejects everything cannot pass.
+    #[tokio::test]
+    async fn apply_yaml_rejects_blank_and_non_finite_budget_leaving_live_policy_untouched() {
+        use crate::policy::history::{FsHistoryStore, HistoryConfig, PolicyHistoryStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        let engine = make_engine(empty_doc());
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("seed"), &store)
+            .await
+            .unwrap();
+        let epoch_before = engine.policy_epoch.load(Ordering::Relaxed);
+
+        for bad in [
+            "",
+            "{}",
+            "# only a comment\n",
+            "budget:\n  daily_limit_usd: .nan\n",
+            "budget:\n  monthly_limit_usd: .inf\n",
+            "budget:\n  team_daily_limit_usd: -.inf\n",
+            "budget:\n  org_monthly_limit_usd: .nan\n",
+        ] {
+            let result = engine.apply_yaml(bad, Some("attacker"), &store).await;
+            assert!(result.is_err(), "{bad:?} must be rejected");
+            assert!(
+                !engine.policy.load().tools["bash"].allow,
+                "{bad:?}: live policy must still be the seeded deny-bash policy"
+            );
+            assert_eq!(
+                engine.policy_epoch.load(Ordering::Relaxed),
+                epoch_before,
+                "{bad:?}: a rejected body must not bump the policy epoch"
+            );
+            assert_eq!(store.list(10).await.unwrap().len(), 1, "{bad:?}: no history entry");
+        }
+
+        // Control: a finite positive budget is accepted and does swap the policy.
+        engine
+            .apply_yaml("budget:\n  daily_limit_usd: 5.0\n", Some("control"), &store)
+            .await
+            .unwrap();
+        assert!(engine.policy.load().tools.is_empty());
+    }
+
     #[tokio::test]
     async fn apply_yaml_broadcasts_invalidation_within_100ms() {
         use crate::invalidation::InvalidationHub;
