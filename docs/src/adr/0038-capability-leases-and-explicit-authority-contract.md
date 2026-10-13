@@ -1130,3 +1130,44 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
   therefore means "this ledger has no record", not "this is the issuing ledger".
   Which ledger is authoritative across processes is for AAASM-6273 to settle.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
+
+## Amendment (AAASM-6259): runtime gate seam in `handle_policy_query`
+
+This amendment adds a seam, not an enforcement feature.
+
+### What exists
+
+`aa-runtime/src/pipeline/lease_gate.rs` defines `LeaseGate`, a trait over
+`(server-side agent id, aa_proto ActionType)` that returns `Permit` or a typed denial.
+`pipeline::run_with_lease_gate` takes an `Option<Arc<dyn LeaseGate>>`; `pipeline::run`
+is unchanged and passes `None`. In `handle_policy_query` the gate runs after the
+op-control halt and before the gateway forward.
+
+- **Unconfigured (`None`) behaves exactly as before.** This is not a decision on the
+  compatibility residual of section 3; it is the absence of a gate.
+- **Subject is the server-side `agent_id` parameter**, never the SDK-supplied
+  `CheckActionRequest.agent_id`.
+- **Restrict-only.** `Permit` falls through to the gateway and local policy; it cannot
+  grant over an op-control halt, a gateway deny, or a local `blocked_actions` rule.
+- **Fail closed when a gate is configured.** An unknown action code, an empty subject,
+  a gate error and a gate panic are all denials, as is any typed denial (no lease,
+  expired, revoked, wrong subject, unmapped action).
+
+### What is not enforced
+
+- Nothing implements `LeaseGate` outside tests, so no shipped binary enforces leases
+  through this seam. Nothing supplies leases to the runtime.
+- `aa-runtime` does not depend on `aa-isolation` (a `publish = false` crate), so the
+  trait uses no `aa-isolation` types. A restart is modelled in tests as a fresh
+  in-memory fake, which denies until leases are re-attested; that is a test model, not
+  a product behaviour.
+- The mapping from `ActionType` to a capability domain and scope is undefined.
+
+### Open decisions (unchanged by this amendment)
+
+The `aa-runtime` -> `aa-isolation` manifest edge and its publish-strip treatment; the
+production store (in-memory fail-closed vs durable, and how a durable record would be
+authenticated under the same-UID model, AAASM-5533); the lease source and transport to
+the runtime; and whether a runtime with no gate keeps the compatibility residual.
+
+Golden journey J81 remains `partial`. This seam is not evidence for `automated`.
