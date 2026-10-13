@@ -855,14 +855,10 @@ fn validate_budget_limit_pair(
     errors: &mut Vec<ValidationError>,
 ) {
     if let Some(limit) = daily {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(daily_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, daily_field, errors);
     }
     if let Some(limit) = monthly {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(monthly_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, monthly_field, errors);
         if let Some(daily) = daily {
             if limit < daily {
                 // Cross-message references the daily field by its leaf name.
@@ -870,6 +866,20 @@ fn validate_budget_limit_pair(
                 errors.push(ValidationError::new(monthly_field, format!("must be >= {daily_leaf}")));
             }
         }
+    }
+}
+
+/// A budget cap must be a finite number greater than zero.
+///
+/// `limit <= 0.0` alone is not enough: YAML `.nan` / `.inf` deserialize into
+/// `f64` fine, and every comparison against NaN is false, so a NaN cap would
+/// pass that check and then never trip at enforcement time (AAASM-6336). An
+/// infinite cap is equally "no cap" under a field that claims to be one.
+fn check_budget_limit(limit: f64, field: &'static str, errors: &mut Vec<ValidationError>) {
+    if !limit.is_finite() {
+        errors.push(ValidationError::new(field, "must be a finite number"));
+    } else if limit <= 0.0 {
+        errors.push(ValidationError::new(field, "must be greater than 0"));
     }
 }
 

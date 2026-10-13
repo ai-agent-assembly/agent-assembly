@@ -378,16 +378,16 @@ fn golden_corpus_verdicts() {
             pol: Expect::Err("invalid type: integer `15`, expected f64"),
         },
         Case {
-            name: "budget .inf accepted as infinity",
+            name: "budget .inf rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .inf\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
-            name: "budget .nan accepted as NaN",
+            name: "budget .nan rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .nan\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
             name: "budget u64::MAX accepted",
@@ -487,8 +487,12 @@ fn golden_corpus_typed_results() {
             .daily_limit_usd
             .unwrap()
     };
-    assert!(budget(".inf").is_infinite() && budget(".inf") > 0.0);
-    assert!(budget(".nan").is_nan());
+    // AAASM-6336 flipped `.inf` / `.nan` from accepted to rejected (they still
+    // *parse* as f64; the validator now refuses them), so they are no longer
+    // observable through an accepted document.
+    for non_finite in [".inf", ".nan"] {
+        assert!(run_pol(&format!("budget:\n  daily_limit_usd: {non_finite}\n")).is_err());
+    }
     assert_eq!(budget("18446744073709551615"), u64::MAX as f64);
     assert_eq!(budget("340282366920938463463374607431768211456"), 2f64.powi(128));
     assert_eq!(budget("12.5"), 12.5);
