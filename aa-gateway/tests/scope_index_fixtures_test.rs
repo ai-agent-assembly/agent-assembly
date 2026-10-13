@@ -28,7 +28,8 @@ fn load_fixture(name: &str) -> PolicyDocument {
 /// empty `scope_index` and we exercise it via the new `load_policy`
 /// inherent method.
 fn empty_engine() -> PolicyEngine {
-    let yaml = "{}\n";
+    // A blank document is rejected fail-closed (AAASM-6337); one declared section loads.
+    let yaml = "network:\n  allowlist: []\n";
     let path = std::env::temp_dir().join(format!("aaasm951-empty-{}.yaml", std::process::id()));
     std::fs::write(&path, yaml).unwrap();
     let (alert_tx, _rx) = tokio::sync::broadcast::channel(8);
