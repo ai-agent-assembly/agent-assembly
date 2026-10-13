@@ -113,6 +113,19 @@ async fn ask(
     op_control: OpControlStore,
     use_plain_run: bool,
 ) -> CheckActionResponse {
+    ask_as(gate, action, sdk_agent, SERVER_AGENT, policy, op_control, use_plain_run).await
+}
+
+/// Like [`ask`] but with an explicit server-side (`PipelineConfig`) agent id.
+async fn ask_as(
+    gate: Option<Arc<dyn LeaseGate>>,
+    action: i32,
+    sdk_agent: &str,
+    server_agent: &str,
+    policy: PolicyRules,
+    op_control: OpControlStore,
+    use_plain_run: bool,
+) -> CheckActionResponse {
     let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(8);
     let (broadcast_tx, _keep) = broadcast::channel::<PipelineEvent>(8);
     let router = new_response_router();
@@ -122,7 +135,10 @@ async fn ask(
     let args = (
         rx,
         broadcast_tx,
-        config(),
+        PipelineConfig {
+            agent_id: server_agent.to_string(),
+            ..config()
+        },
         Arc::new(PipelineMetrics::default()),
         token.clone(),
         Arc::new(policy),
@@ -314,7 +330,9 @@ async fn gate_error_and_gate_panic_deny() {
 }
 
 #[tokio::test]
-async fn restart_modelled_as_fresh_store_denies_until_reattested() {
+async fn a_gate_with_no_leases_denies_what_a_leased_gate_allowed() {
+    // NOT restart evidence: this is the no-lease deny under another name. A real
+    // restart test needs a real store and a re-attestation step (open decision).
     let before = FakeGate::with_lease(SERVER_AGENT, LeaseState::Valid, &[ActionType::ToolCall]);
     assert_eq!(decide(gate(before), ActionType::ToolCall, "x").await, ALLOW);
     // The production store design is an open decision; an in-memory store
@@ -324,6 +342,51 @@ async fn restart_modelled_as_fresh_store_denies_until_reattested() {
         ..Default::default()
     };
     assert_eq!(decide(gate(after), ActionType::ToolCall, "x").await, DENY);
+}
+
+#[tokio::test]
+async fn an_empty_server_subject_is_denied_even_if_the_gate_would_permit_it() {
+    // Control: same gate shape, non-empty holder == server subject -> allowed.
+    let ok = FakeGate::with_lease(SERVER_AGENT, LeaseState::Valid, &[ActionType::ToolCall]);
+    assert_eq!(decide(gate(ok), ActionType::ToolCall, "x").await, ALLOW);
+    // The gate holds a valid lease for subject "" and would Permit it; only the
+    // caller's own empty-subject guard stands between that and an allow.
+    let empty_holder = FakeGate::with_lease("", LeaseState::Valid, &[ActionType::ToolCall]);
+    let r = ask_as(
+        gate(empty_holder),
+        ActionType::ToolCall as i32,
+        "x",
+        "",
+        PolicyRules::default(),
+        OpControlStore::new(),
+        false,
+    )
+    .await;
+    assert_eq!(r.decision, DENY);
+    assert!(r.reason.contains("no_subject"), "{}", r.reason);
+}
+
+#[tokio::test]
+async fn an_unspecified_action_is_denied_even_if_the_gate_would_permit_it() {
+    // Control: a leased, mapped ToolCall is allowed.
+    let ok = FakeGate::with_lease(SERVER_AGENT, LeaseState::Valid, &[ActionType::ToolCall]);
+    assert_eq!(decide(gate(ok), ActionType::ToolCall, "x").await, ALLOW);
+    // A gate that maps and permits Unspecified must still be overruled.
+    let mut permissive = FakeGate::with_lease(SERVER_AGENT, LeaseState::Valid, &[ActionType::ActionUnspecified]);
+    // `with_lease` maps only ToolCall/FileOperation, so without this the FAKE
+    // would deny Unspecified itself and the caller's guard would go untested.
+    permissive.mapped.push(ActionType::ActionUnspecified);
+    let r = ask(
+        gate(permissive),
+        ActionType::ActionUnspecified as i32,
+        "x",
+        PolicyRules::default(),
+        OpControlStore::new(),
+        false,
+    )
+    .await;
+    assert_eq!(r.decision, DENY);
+    assert!(r.reason.contains("unmapped_action"), "{}", r.reason);
 }
 
 #[tokio::test]

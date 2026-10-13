@@ -80,6 +80,21 @@ pub enum LeaseVerdict {
 pub struct LeaseGateError(pub String);
 
 /// Supplier of lease verdicts. Implementations live outside this crate.
+///
+/// Contract for implementors (AAASM-6259 review):
+/// * **Non-blocking and cheap.** `check` runs inline in the single pipeline loop,
+///   so a gate that blocks (disk, lock, network) stalls every agent's policy
+///   checks and event ingestion; a hang is neither a deny nor an allow. There is
+///   no timeout here. A gate that needs I/O must answer from an in-memory
+///   snapshot.
+/// * **Point-in-time.** The verdict is taken when the query arrives. A lease
+///   revoked or expired while an approval is pending is not re-checked when the
+///   approval resolves.
+/// * **Panics are only contained under `panic = "unwind"`** (the workspace
+///   default); under `panic = "abort"` a panicking gate takes the runtime down.
+/// * The subject is the runtime-wide `PipelineConfig::agent_id`, shared by every
+///   connection to this runtime, so a lease means "this runtime process", not
+///   "this agent connection".
 pub trait LeaseGate: Send + Sync {
     /// Check whether `subject` (the server-side agent id) may perform `action`.
     fn check(&self, subject: &str, action: ActionType) -> Result<LeaseVerdict, LeaseGateError>;
@@ -91,8 +106,12 @@ pub(crate) fn enforce(gate: &dyn LeaseGate, subject: &str, raw_action_type: i32)
     if subject.is_empty() {
         return Err(LeaseDenial::NoSubject);
     }
-    let Ok(action) = ActionType::try_from(raw_action_type) else {
-        return Err(LeaseDenial::UnmappedAction);
+    // `Unspecified` (wire code 0) is a valid enum value but names no action, so
+    // it can map to no capability domain: deny it here rather than trusting
+    // every future gate to (AAASM-6259 review F4).
+    let action = match ActionType::try_from(raw_action_type) {
+        Ok(ActionType::ActionUnspecified) | Err(_) => return Err(LeaseDenial::UnmappedAction),
+        Ok(action) => action,
     };
     match catch_unwind(AssertUnwindSafe(|| gate.check(subject, action))) {
         Ok(Ok(LeaseVerdict::Permit)) => Ok(()),
