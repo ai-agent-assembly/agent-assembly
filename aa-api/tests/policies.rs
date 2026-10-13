@@ -3,7 +3,6 @@
 mod common;
 
 use aa_api::auth::scope::Scope;
-use aa_gateway::policy::history::PolicyHistoryStore;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
