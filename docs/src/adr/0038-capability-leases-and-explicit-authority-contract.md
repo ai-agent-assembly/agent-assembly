@@ -1153,6 +1153,23 @@ op-control halt and before the gateway forward.
   a gate error and a gate panic are all denials, as is any typed denial (no lease,
   expired, revoked, wrong subject, unmapped action).
 
+### Properties a real gate must settle (independent review of this seam)
+
+- **Point-in-time.** The verdict is taken when the query arrives. A lease revoked or
+  expired while an approval is pending is not re-checked when the approval resolves, so
+  a real gate must re-check at resume or the SDK must treat an approval as not
+  lease-bearing.
+- **Inline and synchronous.** `check` runs in the single pipeline loop with no timeout;
+  a blocking gate stalls every agent's checks and event ingestion (the head-of-line
+  class AAASM-3987 fixed for the gateway). A gate must answer from an in-memory snapshot.
+- **Subject is runtime-wide.** `PipelineConfig::agent_id` is one static string shared by
+  every connection to the runtime, so a lease would mean "this runtime process". The
+  per-connection `VerifiedIdentityStore` identity is not used.
+- **`ActionType::ActionUnspecified` is denied by the caller**, as is an empty subject, so
+  neither depends on every future gate. Panic containment needs `panic = "unwind"`.
+- The restart test is a no-lease deny under another name and is **not** restart
+  evidence.
+
 ### What is not enforced
 
 - Nothing implements `LeaseGate` outside tests, so no shipped binary enforces leases
