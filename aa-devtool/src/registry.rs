@@ -138,7 +138,34 @@ pub fn verify_launch_boundary(
             .collect(),
         timeout: aa_devtool_codex::boundary::DEFAULT_PROBE_TIMEOUT,
     };
-    let verdict = verify(&runner, &argv, required_floor(policy));
+    let mut verdict = verify(&runner, &argv, required_floor(policy));
+    // Allow rules the prompt-input probe does not list still run unsandboxed.
+    if let Verdict::Checked(r) = &verdict {
+        if r.allows_launch() {
+            let from_env = |k: &str| {
+                command
+                    .get_envs()
+                    .find(|(name, _)| *name == std::ffi::OsStr::new(k))
+                    .map(|(_, v)| v.map(std::path::PathBuf::from))
+                    .unwrap_or_else(|| std::env::var_os(k).map(std::path::PathBuf::from))
+            };
+            let codex_home = from_env("CODEX_HOME").or_else(|| from_env("HOME").map(|h| h.join(".codex")));
+            let rules =
+                aa_devtool_codex::boundary::execpolicy_rule_files(codex_home.as_deref(), command.get_current_dir());
+            if !rules.is_empty() {
+                verdict = Verdict::Checked(aa_devtool_codex::boundary::BoundaryReport::below(format!(
+                    "{} execpolicy rule file(s) can run commands outside the sandbox (e.g. {})",
+                    rules.len(),
+                    rules
+                        .iter()
+                        .take(3)
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
     let report = match &verdict {
         Verdict::NotApplicable => "codex_boundary=not_applicable\ncodex_boundary_scope=sandbox_approval_network_only".to_string(),
         Verdict::Refused(why) => format!(
@@ -234,6 +261,8 @@ mod tests {
     fn command_for(program: &std::path::Path, args: &[&str]) -> std::process::Command {
         let mut c = std::process::Command::new(program);
         c.args(args);
+        // Hermetic: never read the developer's real ~/.codex/rules.
+        c.env("CODEX_HOME", program.parent().unwrap());
         c
     }
 
@@ -271,6 +300,27 @@ mod tests {
             matches!(observe.decision, LaunchDecision::ProceedDegraded(_)),
             "{observe:?}"
         );
+    }
+
+    #[test]
+    fn an_execpolicy_rules_file_blocks_a_verified_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let home = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "do it"]);
+        cmd.env("CODEX_HOME", home.path());
+        // Control: no rules file, same probes -> verified.
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed);
+        std::fs::create_dir_all(home.path().join("rules")).unwrap();
+        std::fs::write(
+            home.path().join("rules/default.rules"),
+            "prefix_rule(pattern=[\"bash\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+        assert!(bad.report.contains("codex_boundary=not_met"), "{}", bad.report);
     }
 
     #[test]

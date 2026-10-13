@@ -200,3 +200,33 @@ mod end_to_end {
         assert!(matches!(d, LaunchDecision::Refuse(_)), "{d:?}");
     }
 }
+
+#[test]
+#[ignore = "needs codex-cli 0.160.0 on PATH"]
+fn live_an_execpolicy_allow_rule_is_not_a_verified_boundary() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("config.toml"), USER).unwrap();
+    let run = |home: &Path| {
+        let pi = codex(home, cwd.path(), &["debug", "prompt-input", "hello"]);
+        let dr = codex(home, cwd.path(), &["doctor", "--json"]);
+        evaluate(
+            Floor::ReadOnly,
+            ProbeOutput {
+                prompt_input: &pi,
+                doctor: &dr,
+            },
+        )
+    };
+    // Control: same config, no rules -> verified.
+    assert!(run(home.path()).allows_launch());
+    std::fs::create_dir_all(home.path().join("rules")).unwrap();
+    std::fs::write(
+        home.path().join("rules/default.rules"),
+        "prefix_rule(pattern=[\"curl\"], decision=\"allow\")\n",
+    )
+    .unwrap();
+    let r = run(home.path());
+    assert!(!r.allows_launch(), "an allow rule runs curl outside the sandbox: {r:?}");
+    assert!(matches!(&r.network, Fact::Below(m) if m.contains("curl")), "{r:?}");
+}

@@ -105,6 +105,10 @@ struct PromptFacts {
     /// cross-checked, never trusted on its own (AAASM-6331 review B1).
     sandbox_mode: String,
     network_enabled: bool,
+    /// Execpolicy `allow` rules Codex reports as already approved. A command
+    /// matching one runs OUTSIDE the sandbox, with network and without asking,
+    /// so a non-empty list voids every other fact (AAASM-6331 review round 2).
+    approved_prefixes: Vec<String>,
     /// From Codex's own `<environment_context>`, which config cannot author.
     env: EnvFacts,
 }
@@ -257,8 +261,30 @@ fn parse_prompt_input(raw: &str) -> Result<PromptFacts, String> {
     Ok(PromptFacts {
         sandbox_mode,
         network_enabled,
+        approved_prefixes: approved_prefixes(block),
         env,
     })
+}
+
+/// The prefixes listed under `## Approved command prefixes`, verbatim.
+///
+/// Codex 0.160.0 prints them inline (`... approved: - ["curl"] - ["git","push"]`)
+/// and closes the block with `</permissions instructions>`; the section is
+/// split on each `- [` so one-per-line layouts parse too. An over-split can
+/// only add entries, which fails closed. The section is read from the
+/// Codex-authored developer block; `head` above deliberately ignores it, which
+/// is how an allow rule once read as `Met`.
+fn approved_prefixes(block: &str) -> Vec<String> {
+    let Some(start) = block.find("## Approved command prefixes") else {
+        return Vec::new();
+    };
+    let section = &block[start..];
+    let section = section.split("</permissions instructions>").next().unwrap_or(section);
+    section
+        .split("- [")
+        .skip(1)
+        .map(|piece| format!("[{}", piece.trim()))
+        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -327,6 +353,20 @@ pub fn evaluate(floor: Floor, probes: ProbeOutput<'_>) -> BoundaryReport {
         return BoundaryReport::all(Fact::Inconclusive(format!(
             "probes disagree: prompt-input says sandbox_mode={} network_enabled={}, doctor says filesystem_restricted={} network_enabled={}",
             prompt.sandbox_mode, prompt.network_enabled, doctor.filesystem_restricted, doctor.network_enabled
+        )));
+    }
+
+    if !prompt.approved_prefixes.is_empty() {
+        return BoundaryReport::all(Fact::Below(format!(
+            "{} execpolicy allow rule(s) run commands outside the sandbox, with network and without approval (e.g. {})",
+            prompt.approved_prefixes.len(),
+            prompt
+                .approved_prefixes
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         )));
     }
 
@@ -418,7 +458,7 @@ const REFUSED_FLAGS: [&str; 6] = [
 ];
 
 /// Harmless flags and their arity (1 = takes a value).
-const ALLOWED_FLAGS: [(&str, usize); 9] = [
+const ALLOWED_FLAGS: [(&str, usize); 8] = [
     ("--model", 1),
     ("-m", 1),
     ("--oss", 0),
@@ -427,12 +467,20 @@ const ALLOWED_FLAGS: [(&str, usize); 9] = [
     ("--no-daemon", 0),
     ("--color", 1),
     ("--output-last-message", 1),
-    ("--search", 0),
 ];
 
 /// Config keys whose value the probes do not reflect.
-const REFUSED_CONFIG_KEYS: [&str; 6] = [
+const REFUSED_CONFIG_KEYS: [&str; 12] = [
     "profile",
+    // Egress and execution channels that sit outside the sandbox the probes
+    // measure: live web search, MCP servers (arbitrary unsandboxed processes),
+    // apps/tools, notify hooks, and feature flags that alter approval flow.
+    "web_search",
+    "tools",
+    "mcp_servers",
+    "apps",
+    "notify",
+    "features",
     "approvals_reviewer",
     "sandbox_workspace_write.writable_roots",
     // Config can author developer-role text and suppress the real permissions
@@ -559,10 +607,11 @@ pub fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
             probe_args.extend(["-c".to_string(), format!("approval_policy=\"{v}\"")]);
         } else if let Some(v) = value_of("--cd", "--cd", "-C", &mut i)? {
             cd = Some(v);
-        } else if a == "--enable" || a == "--disable" {
-            i += 1;
-            let v = args.get(i).ok_or_else(|| format!("{a} needs a value"))?;
-            probe_args.extend([a.to_string(), v.clone()]);
+        } else if a == "--enable" || a == "--disable" || a == "--search" {
+            // Feature flags can change approval or egress behaviour (guardian
+            // approval, permission requests, network proxy) in ways neither
+            // probe reports, and `--search` opens live web egress.
+            return Err(format!("flag {a:?} changes behaviour the probes cannot see"));
         } else if let Some((_, arity)) = ALLOWED_FLAGS.iter().find(|(f, _)| a == *f) {
             i += *arity;
         } else if ALLOWED_FLAGS
@@ -596,6 +645,11 @@ pub fn required_floor(policy: &aa_devtool_contract::PolicyDocument) -> Floor {
 }
 
 impl BoundaryReport {
+    /// Every element `Below` for the same reason.
+    pub fn below(reason: impl Into<String>) -> Self {
+        Self::all(Fact::Below(reason.into()))
+    }
+
     /// Every element `Inconclusive` for the same reason (a probe could not run).
     pub fn inconclusive(reason: impl Into<String>) -> Self {
         Self::all(Fact::Inconclusive(reason.into()))
@@ -651,6 +705,37 @@ pub fn verify(runner: &dyn ProbeRunner, argv: &[String], floor: Floor) -> Verdic
             doctor: &doctor,
         },
     ))
+}
+
+/// Execpolicy rule files that could allow commands to run outside the sandbox.
+///
+/// `debug prompt-input` lists only some allow rules (a broad prefix such as
+/// `bash` is filtered from its list), so the rules directories are also
+/// inspected: any `*.rules` file under `<codex_home>/rules` or
+/// `<cwd>/.codex/rules` means the boundary cannot be called verified.
+pub fn execpolicy_rule_files(
+    codex_home: Option<&std::path::Path>,
+    cwd: Option<&std::path::Path>,
+) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(h) = codex_home {
+        dirs.push(h.join("rules"));
+    }
+    if let Some(c) = cwd {
+        dirs.push(c.join(".codex").join("rules"));
+    }
+    let mut found = Vec::new();
+    for d in dirs {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x == "rules") {
+                found.push(p);
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// What `aasm run` does with a [`Verdict`].
@@ -1366,5 +1451,81 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r = runner(script(dir.path(), "printf '\\377\\376'"), 10);
         assert!(r.run(None, &[]).is_err());
+    }
+
+    #[test]
+    fn execpolicy_allow_rules_void_every_fact() {
+        let with_rules = |section: &str| {
+            let text = format!(
+                "<permissions instructions>\nFilesystem sandboxing. `sandbox_mode` is `read-only`: x. Network access is restricted.\n{section}"
+            );
+            serde_json::json!([
+                {"type":"message","role":"developer","content":[{"type":"input_text","text":text}]},
+                {"type":"message","role":"user","content":[{"type":"input_text","text":environment_context("read-only", &[])}]}
+            ])
+            .to_string()
+        };
+        let d = doctor("restricted", "restricted", "OnRequest");
+        // Control: the same probe output without the section meets the floor.
+        assert!(eval(Floor::ReadOnly, &with_rules(""), &d).allows_launch());
+        let r = eval(
+            Floor::ReadOnly,
+            &with_rules(
+                "## Approved command prefixes\nThe following prefix rules have already been approved:\n- [\"curl\"]\n",
+            ),
+            &d,
+        );
+        assert!(!r.allows_launch());
+        for f in [&r.filesystem, &r.network, &r.approval] {
+            assert!(
+                matches!(f, Fact::Below(m) if m.contains("curl") && m.starts_with("1 ")),
+                "{f:?}"
+            );
+        }
+        // Real Codex lists several prefixes inline; each counts.
+        let many = eval(
+            Floor::ReadOnly,
+            &with_rules("\n## Approved command prefixes\nThe following prefix rules have already been approved: - [\"curl\"] - [\"git\", \"push\"]\n</permissions instructions>"),
+            &d,
+        );
+        assert!(
+            matches!(&many.network, Fact::Below(m) if m.starts_with("2 ")),
+            "{many:?}"
+        );
+        // A heading with no bullets is not a rule.
+        assert!(eval(Floor::ReadOnly, &with_rules("## Approved command prefixes\n"), &d).allows_launch());
+    }
+
+    #[test]
+    fn egress_and_feature_channels_the_probes_cannot_see_are_refused() {
+        for bad in [
+            s(&["exec", "--search", "x"]),
+            s(&["--enable", "guardian_approval", "exec", "x"]),
+            s(&["exec", "--disable", "x", "y"]),
+            s(&["-c", "features.guardian_approval=true", "exec", "x"]),
+            s(&["-c", "web_search=\"live\"", "exec", "x"]),
+            s(&["-c", "mcp_servers.x.command=\"sh\"", "exec", "x"]),
+            s(&["-c", "tools.web_search=true", "exec", "x"]),
+            s(&["-c", "notify=[\"sh\"]", "exec", "x"]),
+        ] {
+            assert!(parse_invocation(&bad).is_err(), "{bad:?} must be refused");
+        }
+        // Controls: the parser still accepts an ordinary run and harmless config.
+        assert!(parse_invocation(&s(&["exec", "x"])).is_ok());
+        assert!(parse_invocation(&s(&["-c", "model=\"o3\"", "exec", "x"])).is_ok());
+    }
+
+    #[test]
+    fn execpolicy_rule_files_are_found_in_home_and_project_only() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        assert!(execpolicy_rule_files(Some(home.path()), Some(cwd.path())).is_empty());
+        std::fs::create_dir_all(home.path().join("rules")).unwrap();
+        std::fs::write(home.path().join("rules/notes.txt"), "x").unwrap();
+        assert!(execpolicy_rule_files(Some(home.path()), Some(cwd.path())).is_empty());
+        std::fs::write(home.path().join("rules/default.rules"), "x").unwrap();
+        std::fs::create_dir_all(cwd.path().join(".codex/rules")).unwrap();
+        std::fs::write(cwd.path().join(".codex/rules/p.rules"), "x").unwrap();
+        assert_eq!(execpolicy_rule_files(Some(home.path()), Some(cwd.path())).len(), 2);
     }
 }
