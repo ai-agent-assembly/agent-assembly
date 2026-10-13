@@ -148,24 +148,46 @@ pub fn verify_launch_boundary(
                     .find(|(name, _)| *name == std::ffi::OsStr::new(k))
                     .map(|(_, v)| v.map(std::path::PathBuf::from))
                     .unwrap_or_else(|| std::env::var_os(k).map(std::path::PathBuf::from))
+                    .filter(|p| !p.as_os_str().is_empty())
             };
-            let codex_home = from_env("CODEX_HOME").or_else(|| from_env("HOME").map(|h| h.join(".codex")));
-            // The launch directory is the command's own, else this process's
-            // (a plain `aasm run codex` sets none); a `-C` target is scanned too.
-            let base = command
-                .get_current_dir()
-                .map(std::path::Path::to_path_buf)
-                .or_else(|| std::env::current_dir().ok());
-            let mut launch_dirs: Vec<std::path::PathBuf> = base.iter().cloned().collect();
+            // A relative path is resolved by the OS against the process cwd at
+            // spawn, and (for CODEX_HOME) by Codex against its own cwd, so both
+            // spellings are candidates; the scan is a superset on purpose.
+            let process_cwd = std::env::current_dir().ok();
+            let absolutise = |p: &std::path::Path| -> Vec<std::path::PathBuf> {
+                if p.is_absolute() {
+                    vec![p.to_path_buf()]
+                } else {
+                    process_cwd.iter().map(|c| c.join(p)).collect()
+                }
+            };
+            let mut bases: Vec<std::path::PathBuf> = match command.get_current_dir() {
+                Some(d) => absolutise(d),
+                None => process_cwd.iter().cloned().collect(),
+            };
             if let Ok(aa_devtool_codex::boundary::Invocation::AgentRun { cd: Some(cd), .. }) =
                 aa_devtool_codex::boundary::parse_invocation(&argv)
             {
-                launch_dirs.push(match &base {
-                    Some(b) => b.join(cd),
-                    None => cd.into(),
-                });
+                let joined: Vec<_> = bases.iter().map(|b| b.join(&cd)).collect();
+                bases.extend(joined);
             }
-            let rules = aa_devtool_codex::boundary::execpolicy_rule_files(codex_home.as_deref(), &launch_dirs);
+            let mut homes: Vec<std::path::PathBuf> = Vec::new();
+            match (from_env("CODEX_HOME"), from_env("HOME")) {
+                (Some(h), _) if h.is_absolute() => homes.push(h),
+                (Some(h), _) => {
+                    homes.extend(bases.iter().map(|b| b.join(&h)));
+                    homes.extend(absolutise(&h));
+                }
+                (None, Some(h)) => homes.extend(absolutise(&h.join(".codex"))),
+                (None, None) => {}
+            }
+            let rules = if homes.is_empty() {
+                // Neither CODEX_HOME nor HOME resolves: the user rules cannot be
+                // located, so the boundary cannot be called verified.
+                vec![std::path::PathBuf::from("<CODEX_HOME not locatable>")]
+            } else {
+                aa_devtool_codex::boundary::execpolicy_rule_files(&homes, &bases)
+            };
             if !rules.is_empty() {
                 verdict = Verdict::Checked(aa_devtool_codex::boundary::BoundaryReport::below(format!(
                     "{} execpolicy rule file(s) can run commands outside the sandbox (e.g. {})",
@@ -275,8 +297,10 @@ mod tests {
     fn command_for(program: &std::path::Path, args: &[&str]) -> std::process::Command {
         let mut c = std::process::Command::new(program);
         c.args(args);
-        // Hermetic: never read the developer's real ~/.codex/rules.
+        // Hermetic: never read the developer's real ~/.codex/rules, and never
+        // walk up from the repository checkout (which lives under $HOME).
         c.env("CODEX_HOME", program.parent().unwrap());
+        c.current_dir(program.parent().unwrap());
         c
     }
 
@@ -370,6 +394,41 @@ mod tests {
             let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
             assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
         }
+    }
+
+    /// AAASM-6331 final review F4: a relative CODEX_HOME is resolved by Codex
+    /// against the launch directory, not the aasm process's.
+    #[test]
+    fn a_relative_codex_home_is_resolved_against_the_launch_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let lab = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.current_dir(lab.path()).env("CODEX_HOME", "home");
+        // Control: no rules under lab/home -> verified.
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        std::fs::create_dir_all(lab.path().join("home/rules")).unwrap();
+        std::fs::write(
+            lab.path().join("home/rules/u.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+    }
+
+    /// With neither CODEX_HOME nor HOME the user rules cannot be located, so the
+    /// claim is withheld rather than assumed clean.
+    #[test]
+    fn an_unlocatable_codex_home_is_not_a_verified_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.env_remove("CODEX_HOME").env_remove("HOME");
+        let r = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(r.decision, LaunchDecision::Refuse(_)), "{:?}", r.decision);
+        assert!(r.report.contains("codex_boundary=not_met"), "{}", r.report);
     }
 
     #[test]

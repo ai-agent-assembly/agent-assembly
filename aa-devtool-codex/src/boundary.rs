@@ -711,30 +711,33 @@ pub fn verify(runner: &dyn ProbeRunner, argv: &[String], floor: Floor) -> Verdic
 ///
 /// `debug prompt-input` lists only some allow rules, and lists none at all when
 /// `approval_policy` is `never` (measured on codex 0.160.0), so this directory
-/// scan is the only detector in that case and must be complete: any `*.rules`
-/// file under `<codex_home>/rules`, or under `.codex/rules` of a launch
-/// directory or any ancestor up to and including the nearest one holding `.git`
-/// (the project root), means the boundary cannot be called verified. Codex loads
-/// project rules from the project root down to the cwd. With no `.git` above, only
-/// the launch directory itself is scanned: climbing to `$HOME` would pick up the
-/// user's own `~/.codex/rules` as if it were project config.
+/// scan is the only detector in that case. It therefore must not re-implement
+/// Codex's rule discovery: a re-implementation was measured to miss rules when
+/// `project_root_markers` moves the project root, when the launch directory is a
+/// symlink (Codex walks the physical cwd), when it is relative, and when
+/// `CODEX_HOME` is relative (AAASM-6331 final review F1-F4).
+///
+/// Instead this is a deliberate SUPERSET: every `rules` directory under each
+/// `codex_homes` entry, `/etc/codex/rules`, and `.codex/rules` of each launch
+/// directory and EVERY ancestor of it up to the filesystem root, in both the
+/// lexical and the physical (canonicalised) spelling. Any `*.rules` file found
+/// means the boundary cannot be called verified. The price is over-refusal: a
+/// user whose `~/.codex/rules` exists while `CODEX_HOME` points elsewhere is
+/// refused for a directory Codex would not have loaded.
 pub fn execpolicy_rule_files(
-    codex_home: Option<&std::path::Path>,
+    codex_homes: &[std::path::PathBuf],
     launch_dirs: &[std::path::PathBuf],
 ) -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(h) = codex_home {
-        dirs.push(h.join("rules"));
-    }
+    let mut dirs: Vec<std::path::PathBuf> = codex_homes.iter().map(|h| h.join("rules")).collect();
+    dirs.push(std::path::PathBuf::from("/etc/codex/rules"));
     for d in launch_dirs {
-        let root = d.ancestors().find(|a| a.join(".git").exists());
-        for ancestor in d.ancestors() {
-            dirs.push(ancestor.join(".codex").join("rules"));
-            if Some(ancestor) == root {
-                break;
-            }
-            if root.is_none() {
-                break;
+        let mut spellings = vec![d.clone()];
+        if let Ok(real) = std::fs::canonicalize(d) {
+            spellings.push(real);
+        }
+        for spelling in spellings {
+            for ancestor in spelling.ancestors() {
+                dirs.push(ancestor.join(".codex").join("rules"));
             }
         }
     }
@@ -744,7 +747,9 @@ pub fn execpolicy_rule_files(
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "rules") {
-                found.push(p);
+                // The lexical and physical spellings of one directory reach the
+                // same file (macOS /var -> /private/var): count it once.
+                found.push(std::fs::canonicalize(&p).unwrap_or(p));
             }
         }
     }
@@ -1534,15 +1539,15 @@ mod tests {
     fn execpolicy_rule_files_are_found_in_home_and_project_only() {
         let home = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
-        assert!(execpolicy_rule_files(Some(home.path()), &[cwd.path().to_path_buf()]).is_empty());
+        assert!(execpolicy_rule_files(&[home.path().to_path_buf()], &[cwd.path().to_path_buf()]).is_empty());
         std::fs::create_dir_all(home.path().join("rules")).unwrap();
         std::fs::write(home.path().join("rules/notes.txt"), "x").unwrap();
-        assert!(execpolicy_rule_files(Some(home.path()), &[cwd.path().to_path_buf()]).is_empty());
+        assert!(execpolicy_rule_files(&[home.path().to_path_buf()], &[cwd.path().to_path_buf()]).is_empty());
         std::fs::write(home.path().join("rules/default.rules"), "x").unwrap();
         std::fs::create_dir_all(cwd.path().join(".codex/rules")).unwrap();
         std::fs::write(cwd.path().join(".codex/rules/p.rules"), "x").unwrap();
         assert_eq!(
-            execpolicy_rule_files(Some(home.path()), &[cwd.path().to_path_buf()]).len(),
+            execpolicy_rule_files(&[home.path().to_path_buf()], &[cwd.path().to_path_buf()]).len(),
             2
         );
     }
@@ -1555,25 +1560,33 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::create_dir_all(proj.path().join(".git")).unwrap();
         // Control: no rules anywhere above the launch dir.
-        assert!(execpolicy_rule_files(Some(home.path()), std::slice::from_ref(&sub)).is_empty());
+        assert!(execpolicy_rule_files(&[home.path().to_path_buf()], std::slice::from_ref(&sub)).is_empty());
         std::fs::create_dir_all(proj.path().join(".codex/rules")).unwrap();
         std::fs::write(proj.path().join(".codex/rules/p.rules"), "x").unwrap();
-        let found = execpolicy_rule_files(Some(home.path()), &[sub]);
+        let found = execpolicy_rule_files(&[home.path().to_path_buf()], &[sub]);
         assert_eq!(found.len(), 1, "{found:?}");
     }
 
     #[test]
-    fn rules_above_the_project_root_are_not_project_rules() {
-        let outer = tempfile::tempdir().unwrap();
-        let proj = outer.path().join("proj");
-        std::fs::create_dir_all(proj.join(".git")).unwrap();
-        std::fs::create_dir_all(outer.path().join(".codex/rules")).unwrap();
-        std::fs::write(outer.path().join(".codex/rules/u.rules"), "x").unwrap();
-        // The outer dir is above the project root, so it is not scanned...
-        assert!(execpolicy_rule_files(None, std::slice::from_ref(&proj)).is_empty());
-        // ...and with no .git at all only the launch dir itself counts.
-        let bare = outer.path().join("bare");
-        std::fs::create_dir_all(&bare).unwrap();
-        assert!(execpolicy_rule_files(None, &[bare]).is_empty());
+    fn rules_are_found_without_trusting_a_git_root_symlinks_or_relative_homes() {
+        let root = tempfile::tempdir().unwrap();
+        let outer = root.path().join("outer");
+        let inner = outer.join("inner/sub");
+        std::fs::create_dir_all(&inner).unwrap();
+        std::fs::create_dir_all(outer.join(".codex/rules")).unwrap();
+        std::fs::write(outer.join(".codex/rules/o.rules"), "x").unwrap();
+        // F1: a `.git` between the launch dir and the rules does NOT hide them
+        // (project_root_markers can move Codex's root past it).
+        std::fs::create_dir_all(outer.join("inner/.git")).unwrap();
+        assert_eq!(execpolicy_rule_files(&[], std::slice::from_ref(&inner)).len(), 1);
+        // F2: a symlinked launch dir is followed to its physical ancestors.
+        let elsewhere = tempfile::tempdir().unwrap();
+        let link = elsewhere.path().join("link");
+        std::os::unix::fs::symlink(&inner, &link).unwrap();
+        assert_eq!(execpolicy_rule_files(&[], &[link]).len(), 1);
+        // Control: a directory with no rules above it finds none.
+        let clean = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(clean.path().join("a")).unwrap();
+        assert!(execpolicy_rule_files(&[], &[clean.path().join("a")]).is_empty());
     }
 }
