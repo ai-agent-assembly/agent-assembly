@@ -178,7 +178,12 @@ pub fn verify_launch_boundary(
                     homes.extend(bases.iter().map(|b| b.join(&h)));
                     homes.extend(absolutise(&h));
                 }
-                (None, Some(h)) => homes.extend(absolutise(&h.join(".codex"))),
+                (None, Some(h)) => {
+                    // A relative HOME is resolved by Codex against the launch
+                    // directory, like a relative CODEX_HOME (review F1).
+                    homes.extend(bases.iter().map(|b| b.join(&h).join(".codex")));
+                    homes.extend(absolutise(&h.join(".codex")));
+                }
                 (None, None) => {}
             }
             let rules = if homes.is_empty() {
@@ -411,6 +416,27 @@ mod tests {
         std::fs::create_dir_all(lab.path().join("home/rules")).unwrap();
         std::fs::write(
             lab.path().join("home/rules/u.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+    }
+
+    /// Final-delta review F1: a relative HOME (no CODEX_HOME) is resolved by
+    /// Codex against the launch directory.
+    #[test]
+    fn a_relative_home_is_resolved_against_the_launch_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let lab = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.current_dir(lab.path()).env_remove("CODEX_HOME").env("HOME", "hh");
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        std::fs::create_dir_all(lab.path().join("hh/.codex/rules")).unwrap();
+        std::fs::write(
+            lab.path().join("hh/.codex/rules/a.rules"),
             "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
         )
         .unwrap();
