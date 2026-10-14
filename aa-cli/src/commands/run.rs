@@ -2813,8 +2813,26 @@ mod plan {
         resource_requirements: Vec<ControlRequirement>,
         authority: ResolvedAuthority,
     ) -> anyhow::Result<IsolationPlan> {
-        const CANDIDATES: [&str; 3] = AUTO_WALK_ORDER;
+        auto_select_with(lowering, posture, resource_requirements, authority, consult_backend)
+    }
 
+    /// What consulting one candidate in the walk produced.
+    enum Consulted {
+        Declined(aa_isolation::ConsideredBackend),
+        Selected(aa_isolation::ConsideredBackend, Box<SelectedBackend>),
+    }
+
+    /// [`auto_select`] with the per-candidate consultation injected, so a test
+    /// can record the order in which the walk consults candidates on any host
+    /// (AAASM-6301) instead of depending on which backends this host declines.
+    /// The order itself comes only from [`AUTO_WALK_ORDER`].
+    fn auto_select_with(
+        lowering: &Option<aa_isolation::PolicyLowering>,
+        posture: PlanPosture,
+        resource_requirements: Vec<ControlRequirement>,
+        authority: ResolvedAuthority,
+        mut consult: impl FnMut(&str, &ExecutionSpec, &aa_isolation::RuntimeRequirements) -> Consulted,
+    ) -> anyhow::Result<IsolationPlan> {
         let Some(probe) = lowering.as_ref().and_then(|l| probe_spec(l, &resource_requirements)) else {
             // Nothing to lower — the existing `NoRequirementsLowered` refusal
             // in `resolve_boundary` fires downstream against today's default
@@ -2848,62 +2866,13 @@ mod plan {
             .fold(aa_isolation::RuntimeRequirements::new(), |r, c| r.with_confinement(c));
 
         let mut considered = Vec::new();
-        for id in CANDIDATES {
-            let backend = if id == aa_isolation_sandlock::BACKEND_ID {
-                SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
-            } else if id == aa_isolation_native::BACKEND_ID {
-                SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
-            } else {
-                debug_assert_eq!(
-                    id,
-                    aa_isolation_macos_vm::BACKEND_ID,
-                    "CANDIDATES names every arm below"
-                );
-                SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover())
-            };
-
-            // The candidate's own advertised identity, not the loop's literal
-            // — a considered-backend record must name the backend that was
-            // actually probed, not merely the id the walk expected it under.
-            let backend_id = backend.identity().id;
-
-            if let aa_isolation::BackendAvailability::Unavailable { reason } =
-                backend.capabilities().availability().clone()
-            {
-                considered.push(aa_isolation::ConsideredBackend {
-                    id: backend_id,
-                    verdict: aa_isolation::CandidateVerdict::RejectedUnavailable,
-                    detail: format!("the backend cannot be selected on this host — {reason}"),
-                    unmet_domains: Vec::new(),
-                });
-                continue;
-            }
-
-            let candidate = candidate_for(&backend, &probe);
-            let verdict = aa_isolation::planner::evaluate_candidate(&requirements, &candidate);
-            // Pins planner-vs-`plan()` verdict equivalence for every
-            // candidate this build actually probes. A future backend added
-            // to `CANDIDATES` without its own `SelectedBackend::capabilities_for`
-            // arm would fall through to raw, unnarrowed capabilities here and
-            // fail this in debug/CI rather than silently selecting a backend
-            // that then refuses the real launch.
-            debug_assert_eq!(
-                verdict.is_ok(),
-                backend.plan(&probe).is_ok(),
-                "auto_select's planner-backed eligibility decision disagreed with {backend_id}'s own \
-                 plan()/negotiate() verdict"
-            );
-            match verdict {
-                Ok(_) => {
-                    considered.push(aa_isolation::ConsideredBackend {
-                        id: backend_id,
-                        verdict: aa_isolation::CandidateVerdict::Selected,
-                        detail: "this candidate could plan the launch's lowered requirements".to_string(),
-                        unmet_domains: Vec::new(),
-                    });
+        for id in AUTO_WALK_ORDER {
+            match consult(id, &probe, &requirements) {
+                Consulted::Selected(record, backend) => {
+                    considered.push(record);
                     return Ok(IsolationPlan {
                         lowering: lowering.clone(),
-                        backend: Some(backend),
+                        backend: Some(*backend),
                         absent: None,
                         selection: Some(aa_isolation::BackendSelection {
                             mode: aa_isolation::SelectionMode::Automatic,
@@ -2913,19 +2882,7 @@ mod plan {
                         authority: authority.clone(),
                     });
                 }
-                Err(refusal) => {
-                    let unmet_domains = refusal
-                        .unmet()
-                        .iter()
-                        .filter_map(|(_, reason)| reason.domain())
-                        .collect();
-                    considered.push(aa_isolation::ConsideredBackend {
-                        id: backend_id,
-                        verdict: aa_isolation::CandidateVerdict::RejectedRequirementsUnmet,
-                        detail: super::describe_refusal(&refusal),
-                        unmet_domains,
-                    });
-                }
+                Consulted::Declined(record) => considered.push(record),
             }
         }
 
@@ -2957,6 +2914,77 @@ mod plan {
             resource_requirements: resource_requirements.clone(),
             authority,
         })
+    }
+
+    /// Discover the backend named `id` and judge it against the lowered
+    /// requirements: the real per-candidate step of [`auto_select_with`].
+    fn consult_backend(id: &str, probe: &ExecutionSpec, requirements: &aa_isolation::RuntimeRequirements) -> Consulted {
+        let backend = if id == aa_isolation_sandlock::BACKEND_ID {
+            SelectedBackend::Sandlock(aa_isolation_sandlock::SandlockBackend::discover())
+        } else if id == aa_isolation_native::BACKEND_ID {
+            SelectedBackend::Native(aa_isolation_native::NativeBackend::discover())
+        } else {
+            debug_assert_eq!(
+                id,
+                aa_isolation_macos_vm::BACKEND_ID,
+                "AUTO_WALK_ORDER names every arm above"
+            );
+            SelectedBackend::MacosVm(aa_isolation_macos_vm::MacosVmBackend::discover())
+        };
+
+        // The candidate's own advertised identity, not the loop's literal
+        // — a considered-backend record must name the backend that was
+        // actually probed, not merely the id the walk expected it under.
+        let backend_id = backend.identity().id;
+
+        if let aa_isolation::BackendAvailability::Unavailable { reason } = backend.capabilities().availability().clone()
+        {
+            return Consulted::Declined(aa_isolation::ConsideredBackend {
+                id: backend_id,
+                verdict: aa_isolation::CandidateVerdict::RejectedUnavailable,
+                detail: format!("the backend cannot be selected on this host — {reason}"),
+                unmet_domains: Vec::new(),
+            });
+        }
+
+        let candidate = candidate_for(&backend, probe);
+        let verdict = aa_isolation::planner::evaluate_candidate(requirements, &candidate);
+        // Pins planner-vs-`plan()` verdict equivalence for every
+        // candidate this build actually probes. A future backend added
+        // to `AUTO_WALK_ORDER` without its own `SelectedBackend::capabilities_for`
+        // arm would fall through to raw, unnarrowed capabilities here and
+        // fail this in debug/CI rather than silently selecting a backend
+        // that then refuses the real launch.
+        debug_assert_eq!(
+            verdict.is_ok(),
+            backend.plan(probe).is_ok(),
+            "auto_select's planner-backed eligibility decision disagreed with {backend_id}'s own \
+             plan()/negotiate() verdict"
+        );
+        match verdict {
+            Ok(_) => Consulted::Selected(
+                aa_isolation::ConsideredBackend {
+                    id: backend_id,
+                    verdict: aa_isolation::CandidateVerdict::Selected,
+                    detail: "this candidate could plan the launch's lowered requirements".to_string(),
+                    unmet_domains: Vec::new(),
+                },
+                Box::new(backend),
+            ),
+            Err(refusal) => {
+                let unmet_domains = refusal
+                    .unmet()
+                    .iter()
+                    .filter_map(|(_, reason)| reason.domain())
+                    .collect();
+                Consulted::Declined(aa_isolation::ConsideredBackend {
+                    id: backend_id,
+                    verdict: aa_isolation::CandidateVerdict::RejectedRequirementsUnmet,
+                    detail: super::describe_refusal(&refusal),
+                    unmet_domains,
+                })
+            }
+        }
     }
 
     impl PlanPosture {
@@ -3859,28 +3887,8 @@ mod plan {
             let judge = |rel: &str, text: &str| -> usize {
                 let mut judged_units = 0;
                 for unit in text.replace("\n- ", "\n\n- ").replace("\n|", "\n\n|").split("\n\n") {
-                    // Match whole words: drop punctuation (keeping hyphens) and line
-                    // wraps, so `not\nshipped` matches its negation and `is ga` does
-                    // not match inside another word.
-                    let lowered = unit.to_lowercase();
-                    let mut p = format!(
-                        " {} ",
-                        lowered
-                            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
-                            .filter(|w| !w.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
-                    // Every name this backend is known by in prose, so a claim cannot
-                    // dodge the guard by calling it "the Apple Silicon backend".
-                    const SUBJECTS: [&str; 5] = [
-                        " macos vm ",
-                        " macos-vm ",
-                        " aasm-macos-vm ",
-                        " apple silicon backend ",
-                        " apple silicon vm ",
-                    ];
-                    if !SUBJECTS.iter().any(|s| p.contains(s)) {
+                    let mut p = normalize_prose(unit);
+                    if !names_macos_vm_backend(unit) {
                         continue;
                     }
                     judged_units += 1;
