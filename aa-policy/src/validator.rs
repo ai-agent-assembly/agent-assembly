@@ -113,11 +113,14 @@ impl PolicyValidator {
         // section (`version: 1`, `scope: global`, `spec: {}`, a bare-null
         // `network:`, a tagged `!foo {}`) would load as a fully permissive
         // policy: the open-by-omission case AAASM-6337 closed only for the
-        // literally blank document. Mirrors
-        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-4020): a key
-        // that is *present* counts, even when empty (`network: {}` is an empty
-        // allowlist, i.e. deny-all), but `tools: {}` and a `filesystem:` that
-        // states neither verb say nothing. `approval`, `approval_timeout_secs`,
+        // literally blank document. Modelled on
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-4020) but not
+        // identical to it: a key that is *present* counts, even when empty
+        // (`network: {}` is an empty allowlist, i.e. deny-all), but `tools: {}`
+        // and a `filesystem:` that states neither verb say nothing. This check
+        // also counts schedule/budget/data/authority/egress, which aa_security
+        // does not, so an empty `budget: {}` or `authority: {}` still loads as a
+        // no-op section (known residual, tracked separately). `approval`, `approval_timeout_secs`,
         // `version`, `scope` and `metadata` tune or describe a policy; none
         // constrains an action. Only checked when everything else is valid so
         // the operator sees real errors first.
