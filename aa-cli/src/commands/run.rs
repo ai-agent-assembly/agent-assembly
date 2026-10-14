@@ -3619,6 +3619,156 @@ mod plan {
             }
         }
 
+        /// Drives `auto_select_with` with an injected consultation that records
+        /// the id of every candidate the walk asks about and selects the one at
+        /// `select_at` (or declines them all). Host-independent: no real backend
+        /// is probed, so the recorded order is a property of the walk alone.
+        fn consulted_order(select_at: Option<usize>) -> (Vec<String>, IsolationPlan) {
+            let resolution = run_policy::classify(
+                Path::new("/auto-walk-injected.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: auto-walk-injected\nspec:\n  tools:\n    bash:\n      allow: true\n  \
+                 filesystem:\n    read:\n      allow:\n        - /workspace\n",
+            );
+            let lowering = resolution
+                .canonical()
+                .map(|document| aa_isolation::lower_policy(document, &aa_isolation::LoweringOptions::strict()));
+            let mut order = Vec::new();
+            let plan = auto_select_with(
+                &lowering,
+                PlanPosture::Preview,
+                Vec::new(),
+                ResolvedAuthority::default(),
+                |id, _probe, _requirements| {
+                    let record = |verdict| aa_isolation::ConsideredBackend {
+                        id: id.to_string(),
+                        verdict,
+                        detail: "injected".to_string(),
+                        unmet_domains: Vec::new(),
+                    };
+                    let index = order.len();
+                    order.push(id.to_string());
+                    if select_at == Some(index) {
+                        Consulted::Selected(
+                            record(aa_isolation::CandidateVerdict::Selected),
+                            Box::new(SelectedBackend::Sandlock(
+                                aa_isolation_sandlock::SandlockBackend::discover(),
+                            )),
+                        )
+                    } else {
+                        Consulted::Declined(record(aa_isolation::CandidateVerdict::RejectedUnavailable))
+                    }
+                },
+            )
+            .expect("a preview never errors");
+            (order, plan)
+        }
+
+        /// AAASM-6301: the order `auto_select_with` CONSULTS candidates in is
+        /// `AUTO_WALK_ORDER` on every host. Unlike the real-backend test below,
+        /// this does not depend on which backends the host declines, so a swapped
+        /// literal inside the walk cannot hide behind an early Sandlock selection.
+        #[test]
+        fn auto_walk_consults_candidates_in_auto_walk_order_when_all_decline() {
+            let (consulted, plan) = consulted_order(None);
+            assert_eq!(consulted, AUTO_WALK_ORDER, "the walk consulted candidates out of order");
+            assert!(
+                plan.backend.is_none(),
+                "every candidate declined, so none may be selected"
+            );
+            let recorded: Vec<_> = plan
+                .selection
+                .expect("selection recorded")
+                .considered
+                .into_iter()
+                .map(|c| c.id)
+                .collect();
+            assert_eq!(
+                recorded, AUTO_WALK_ORDER,
+                "considered records disagree with the consultation order"
+            );
+        }
+
+        #[test]
+        fn auto_walk_stops_at_first_available_and_never_consults_later_candidates() {
+            let (consulted, plan) = consulted_order(Some(0));
+            assert_eq!(
+                consulted,
+                AUTO_WALK_ORDER[..1],
+                "later candidates were consulted after the first won"
+            );
+            assert!(plan.backend.is_some());
+        }
+
+        #[test]
+        fn auto_walk_stops_at_a_middle_winner() {
+            let (consulted, plan) = consulted_order(Some(1));
+            assert_eq!(
+                consulted,
+                AUTO_WALK_ORDER[..2],
+                "walk must consult 0 and 1 only, in order"
+            );
+            let verdicts: Vec<_> = plan
+                .selection
+                .expect("selection recorded")
+                .considered
+                .into_iter()
+                .map(|c| c.verdict)
+                .collect();
+            assert_eq!(
+                verdicts,
+                [
+                    aa_isolation::CandidateVerdict::RejectedUnavailable,
+                    aa_isolation::CandidateVerdict::Selected
+                ]
+            );
+        }
+
+        /// Lower-cased words of `unit` joined by single spaces and padded with
+        /// spaces, so a phrase is matched as whole words. Punctuation and line
+        /// wraps are dropped but hyphens are kept (`production-ready`,
+        /// `not\nshipped`).
+        fn normalize_prose(unit: &str) -> String {
+            format!(
+                " {} ",
+                unit.to_lowercase()
+                    .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                    .filter(|w| !w.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        }
+
+        /// Does `unit` talk about the macOS VM backend, under any of its names?
+        ///
+        /// Words are split on EVERY non-alphanumeric character, so `macos-vm`,
+        /// `Apple-silicon` and `Virtualization.framework` tokenise exactly like
+        /// their spaced spellings. The backend id is taken from the crate, not
+        /// retyped. "Apple Silicon" and "Virtualization.framework" name the
+        /// backend only when a `backend`/`vm` word sits within
+        /// `NAME_PROXIMITY` words of them, in either order, so unrelated prose
+        /// about Apple Silicon hosts is not swept in.
+        fn names_macos_vm_backend(unit: &str) -> bool {
+            const NAME_PROXIMITY: usize = 3;
+            let lowered = unit.to_lowercase();
+            let words: Vec<&str> = lowered
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect();
+            let id_words: Vec<&str> = aa_isolation_macos_vm::BACKEND_ID.split('-').collect();
+            let phrase_at = |i: usize, phrase: &[&str]| words.get(i..i + phrase.len()) == Some(phrase);
+            let near_head = |start: usize, len: usize| {
+                let lo = start.saturating_sub(NAME_PROXIMITY);
+                let hi = (start + len + NAME_PROXIMITY).min(words.len());
+                words[lo..hi].iter().any(|w| matches!(*w, "backend" | "vm"))
+            };
+            (0..words.len()).any(|i| {
+                phrase_at(i, &id_words)
+                    || phrase_at(i, &["macos", "vm"])
+                    || (phrase_at(i, &["apple", "silicon"]) && near_head(i, 2))
+                    || (phrase_at(i, &["virtualization", "framework"]) && near_head(i, 2))
+            })
+        }
+
         /// AAASM-6301: `--isolation auto` walks all three compiled-in backends,
         /// `aasm-macos-vm` included, on every host. Several docs once said the
         /// macOS VM backend is "not selected by `auto`"; this pins the behavior
