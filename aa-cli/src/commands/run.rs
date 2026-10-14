@@ -3619,6 +3619,134 @@ mod plan {
             }
         }
 
+        /// Drives `auto_select_with` with an injected consultation that records
+        /// the id of every candidate the walk asks about and selects the one at
+        /// `select_at` (or declines them all). Host-independent: no real backend
+        /// is probed, so the recorded order is a property of the walk alone.
+        fn consulted_order(select_at: Option<usize>) -> (Vec<String>, IsolationPlan) {
+            let resolution = run_policy::classify(
+                Path::new("/auto-walk-injected.yaml"),
+                "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: auto-walk-injected\nspec:\n  tools:\n    bash:\n      allow: true\n  \
+                 filesystem:\n    read:\n      allow:\n        - /workspace\n",
+            );
+            let lowering = resolution
+                .canonical()
+                .map(|document| aa_isolation::lower_policy(document, &aa_isolation::LoweringOptions::strict()));
+            let mut order = Vec::new();
+            let plan = auto_select_with(
+                &lowering,
+                PlanPosture::Preview,
+                Vec::new(),
+                ResolvedAuthority::default(),
+                |id, _probe, _requirements| {
+                    let record = |verdict| aa_isolation::ConsideredBackend {
+                        id: id.to_string(),
+                        verdict,
+                        detail: "injected".to_string(),
+                        unmet_domains: Vec::new(),
+                    };
+                    let index = order.len();
+                    order.push(id.to_string());
+                    if select_at == Some(index) {
+                        Consulted::Selected(
+                            record(aa_isolation::CandidateVerdict::Selected),
+                            Box::new(SelectedBackend::Sandlock(
+                                aa_isolation_sandlock::SandlockBackend::discover(),
+                            )),
+                        )
+                    } else {
+                        Consulted::Declined(record(aa_isolation::CandidateVerdict::RejectedUnavailable))
+                    }
+                },
+            )
+            .expect("a preview never errors");
+            (order, plan)
+        }
+
+        /// AAASM-6301: the order `auto_select_with` CONSULTS candidates in is
+        /// `AUTO_WALK_ORDER` on every host. Unlike the real-backend test below,
+        /// this does not depend on which backends the host declines, so a swapped
+        /// literal inside the walk cannot hide behind an early Sandlock selection.
+        #[test]
+        fn auto_walk_consults_candidates_in_auto_walk_order_when_all_decline() {
+            let (consulted, plan) = consulted_order(None);
+            assert_eq!(consulted, AUTO_WALK_ORDER, "the walk consulted candidates out of order");
+            assert!(
+                plan.backend.is_none(),
+                "every candidate declined, so none may be selected"
+            );
+            let recorded: Vec<_> = plan
+                .selection
+                .expect("selection recorded")
+                .considered
+                .into_iter()
+                .map(|c| c.id)
+                .collect();
+            assert_eq!(
+                recorded, AUTO_WALK_ORDER,
+                "considered records disagree with the consultation order"
+            );
+        }
+
+        #[test]
+        fn auto_walk_stops_at_first_available_and_never_consults_later_candidates() {
+            let (consulted, plan) = consulted_order(Some(0));
+            assert_eq!(
+                consulted,
+                AUTO_WALK_ORDER[..1],
+                "later candidates were consulted after the first won"
+            );
+            assert!(plan.backend.is_some());
+        }
+
+        #[test]
+        fn auto_walk_stops_at_a_middle_winner() {
+            let (consulted, plan) = consulted_order(Some(1));
+            assert_eq!(
+                consulted,
+                AUTO_WALK_ORDER[..2],
+                "walk must consult 0 and 1 only, in order"
+            );
+            let verdicts: Vec<_> = plan
+                .selection
+                .expect("selection recorded")
+                .considered
+                .into_iter()
+                .map(|c| c.verdict)
+                .collect();
+            assert_eq!(
+                verdicts,
+                [
+                    aa_isolation::CandidateVerdict::RejectedUnavailable,
+                    aa_isolation::CandidateVerdict::Selected
+                ]
+            );
+        }
+
+        /// AAASM-6301: the id a backend advertises (what plan and status output
+        /// print), the id the walk consults, and the id the operator docs name are
+        /// one string per backend, taken from each crate's `BACKEND_ID`.
+        #[test]
+        fn backend_ids_agree_across_walk_identity_and_docs() {
+            let docs = std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/src/security/execution-isolation.md"),
+            )
+            .expect("execution-isolation.md readable");
+            for id in AUTO_WALK_ORDER {
+                let (Consulted::Declined(record) | Consulted::Selected(record, _)) =
+                    consult_backend(id, &probe_for_id_check(), &aa_isolation::RuntimeRequirements::new());
+                assert_eq!(record.id, id, "the backend discovered for `{id}` advertises another id");
+                assert!(
+                    docs.contains(&format!("`{id}`")),
+                    "execution-isolation.md never names the backend id `{id}`"
+                );
+            }
+        }
+
+        fn probe_for_id_check() -> ExecutionSpec {
+            ExecutionSpec::new("probe", IdentityRef::root("probe"))
+        }
+
         /// AAASM-6301: `--isolation auto` walks all three compiled-in backends,
         /// `aasm-macos-vm` included, on every host. Several docs once said the
         /// macOS VM backend is "not selected by `auto`"; this pins the behavior
