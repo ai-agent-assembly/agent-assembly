@@ -3723,6 +3723,85 @@ mod plan {
             );
         }
 
+        /// Lower-cased words of `unit` joined by single spaces and padded with
+        /// spaces, so a phrase is matched as whole words. Punctuation and line
+        /// wraps are dropped but hyphens are kept (`production-ready`,
+        /// `not\nshipped`).
+        fn normalize_prose(unit: &str) -> String {
+            format!(
+                " {} ",
+                unit.to_lowercase()
+                    .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+                    .filter(|w| !w.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+        }
+
+        /// Does `unit` talk about the macOS VM backend, under any of its names?
+        ///
+        /// Words are split on EVERY non-alphanumeric character, so `macos-vm`,
+        /// `Apple-silicon` and `Virtualization.framework` tokenise exactly like
+        /// their spaced spellings. The backend id is taken from the crate, not
+        /// retyped. "Apple Silicon" and "Virtualization.framework" name the
+        /// backend only when a `backend`/`vm` word sits within
+        /// `NAME_PROXIMITY` words of them, in either order, so unrelated prose
+        /// about Apple Silicon hosts is not swept in.
+        fn names_macos_vm_backend(unit: &str) -> bool {
+            const NAME_PROXIMITY: usize = 3;
+            let lowered = unit.to_lowercase();
+            let words: Vec<&str> = lowered
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .collect();
+            let id_words: Vec<&str> = aa_isolation_macos_vm::BACKEND_ID.split('-').collect();
+            let phrase_at = |i: usize, phrase: &[&str]| words.get(i..i + phrase.len()) == Some(phrase);
+            let near_head = |start: usize, len: usize| {
+                let lo = start.saturating_sub(NAME_PROXIMITY);
+                let hi = (start + len + NAME_PROXIMITY).min(words.len());
+                words[lo..hi].iter().any(|w| matches!(*w, "backend" | "vm"))
+            };
+            (0..words.len()).any(|i| {
+                phrase_at(i, &id_words)
+                    || phrase_at(i, &["macos", "vm"])
+                    || (phrase_at(i, &["apple", "silicon"]) && near_head(i, 2))
+                    || (phrase_at(i, &["virtualization", "framework"]) && near_head(i, 2))
+            })
+        }
+
+        /// AAASM-6301: the maturity guard recognises every spelling of the macOS VM
+        /// backend's name (positive controls) and leaves unrelated prose alone
+        /// (negative controls). Without this, a claim worded "the Apple-silicon
+        /// backend ships" would skip the guard entirely.
+        #[test]
+        fn macos_vm_subject_detection_covers_name_variants_without_flagging_unrelated_prose() {
+            for flagged in [
+                "The macOS VM backend is production-ready.",
+                "The macos-vm backend is production-ready.",
+                "The aasm-macos-vm backend ships.",
+                "The Apple Silicon backend ships.",
+                "The Apple-silicon backend ships.",
+                "The APPLE SILICON backend is generally available.",
+                "The Apple Silicon VM is fully supported.",
+                "The Virtualization.framework backend is production-ready.",
+                "The Virtualization framework backend ships.",
+                "Our VM backend on Apple Silicon is generally available.",
+                "The VM backend on Apple-Silicon ships",
+                "Apple's Virtualization.framework VM ships",
+            ] {
+                assert!(names_macos_vm_backend(flagged), "variant not recognised: {flagged}");
+            }
+            for ignored in [
+                "The Python SDK ships universal wheels and runs natively on Apple Silicon.",
+                "Build the CLI on an Apple Silicon laptop; the release ships a signed binary.",
+                "Sandlock is the production-ready backend on Linux.",
+                "The Virtualization of the build farm is generally available.",
+                "The framework ships with Apple Silicon support in the node SDK.",
+            ] {
+                assert!(!names_macos_vm_backend(ignored), "unrelated prose flagged: {ignored}");
+            }
+        }
+
         /// AAASM-6301: the id a backend advertises (what plan and status output
         /// print), the id the walk consults, and the id the operator docs name are
         /// one string per backend, taken from each crate's `BACKEND_ID`.
@@ -4015,28 +4094,8 @@ mod plan {
             let judge = |rel: &str, text: &str| -> usize {
                 let mut judged_units = 0;
                 for unit in text.replace("\n- ", "\n\n- ").replace("\n|", "\n\n|").split("\n\n") {
-                    // Match whole words: drop punctuation (keeping hyphens) and line
-                    // wraps, so `not\nshipped` matches its negation and `is ga` does
-                    // not match inside another word.
-                    let lowered = unit.to_lowercase();
-                    let mut p = format!(
-                        " {} ",
-                        lowered
-                            .split(|c: char| !(c.is_alphanumeric() || c == '-'))
-                            .filter(|w| !w.is_empty())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    );
-                    // Every name this backend is known by in prose, so a claim cannot
-                    // dodge the guard by calling it "the Apple Silicon backend".
-                    const SUBJECTS: [&str; 5] = [
-                        " macos vm ",
-                        " macos-vm ",
-                        " aasm-macos-vm ",
-                        " apple silicon backend ",
-                        " apple silicon vm ",
-                    ];
-                    if !SUBJECTS.iter().any(|s| p.contains(s)) {
+                    let mut p = normalize_prose(unit);
+                    if !names_macos_vm_backend(unit) {
                         continue;
                     }
                     judged_units += 1;
