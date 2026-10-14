@@ -303,6 +303,143 @@ async fn gateway_policy_hot_reload_takes_effect_without_proxy_restart() {
     abort.abort();
 }
 
+// ── E2. Inverse reload: deny -> allow takes effect on the next connection ──
+//
+// AAASM-6261 (J83 part b). E above proves narrowing; this is the paired
+// opposite so a proxy that remembered its FIRST decision for a host (deny or
+// allow) cannot pass both. The two tests differ in exactly one variable: the
+// direction of the policy change.
+
+const POLICY_ALLOW_HOT: &str = "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  network:\n    allowlist:\n      - hot-reload-target.example.com\n";
+const POLICY_DENY_ALL: &str =
+    "apiVersion: agent-assembly.dev/v1alpha1\nkind: GovernancePolicy\nspec:\n  network:\n    allowlist: []\n";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gateway_policy_reload_widening_takes_effect_on_the_next_connection() {
+    let (gateway_addr, engine) = start_gateway(POLICY_DENY_ALL).await;
+    let dir = tempfile::tempdir().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let config = proxy_config_with_gateway(dir.path(), gateway_addr, false);
+    let (proxy_addr, _rx, abort) = start_proxy(config, ca).await;
+
+    let before = connect_to_proxy(proxy_addr, "hot-reload-target.example.com:443").await;
+    assert!(
+        before.contains("403"),
+        "host must be denied before reload, got: {before}"
+    );
+
+    let history_dir = tempfile::tempdir().unwrap();
+    let history = aa_gateway::policy::history::FsHistoryStore::new(aa_gateway::policy::history::HistoryConfig {
+        history_dir: history_dir.path().to_path_buf(),
+        max_versions: 10,
+    });
+    engine
+        .apply_yaml(POLICY_ALLOW_HOT, Some("test"), &history)
+        .await
+        .expect("apply_yaml must succeed");
+
+    // New connection, same proxy process, same host: now admitted. A proxy
+    // that cached the first (deny) verdict would still answer 403.
+    let after = connect_to_proxy(proxy_addr, "hot-reload-target.example.com:443").await;
+    assert!(
+        after.contains("200"),
+        "host must be allowed on the next connection after a widening reload, got: {after}"
+    );
+
+    abort.abort();
+}
+
+// ── E3. Cascade (directory) engine: reload on disk, both directions ────────
+//
+// The single-file engine above evaluates uncached; the directory-cascade
+// engine routes through `resolve_merge_verdict`'s epoch-keyed decision cache,
+// the one place a stale verdict could survive a reload. Drives the real
+// production trigger (a rewritten policy file observed by the directory
+// watcher), so the wait is bounded-poll, not a fixed sleep.
+
+async fn start_cascade_gateway(dir: &Path) -> SocketAddr {
+    let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+    let engine = Arc::new(PolicyEngine::load_cascade_from_dir(dir, alert_tx).expect("cascade dir must load"));
+    let registry = Arc::new(AgentRegistry::new());
+    let (audit_tx, _audit_rx) = mpsc::channel::<AuditEntry>(4096);
+    std::mem::forget(_audit_rx);
+    let service = PolicyServiceImpl::with_registry(engine, registry, audit_tx, Arc::new(AtomicU64::new(0)), [0u8; 32]);
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind gateway");
+    let addr = listener.local_addr().expect("local_addr");
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(PolicyServiceServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .expect("tonic Server::serve_with_incoming");
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    addr
+}
+
+/// Rewrite `file` with `yaml` and open fresh CONNECTs until one returns
+/// `expected` (e.g. "403"), or the bound elapses. Returns the last response.
+async fn rewrite_until_connect_shows(
+    file: &Path,
+    yaml: &str,
+    proxy_addr: SocketAddr,
+    target: &str,
+    expected: &str,
+) -> String {
+    // 20s = the watcher's 5s reconcile poll with margin. Deliberately well
+    // under the gateway decision cache's 60s TTL, so a verdict cached across
+    // the reload (stale epoch) cannot hide behind the cache simply expiring.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        // Re-applied every round: a single macOS FSEvent write can be missed.
+        tokio::fs::write(file, yaml).await.expect("rewrite policy file");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let resp = connect_to_proxy(proxy_addr, target).await;
+        if resp.contains(expected) || tokio::time::Instant::now() >= deadline {
+            return resp;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cascade_gateway_file_reload_narrows_then_widens_on_the_next_connection() {
+    let policy_dir = tempfile::tempdir().unwrap();
+    let policy_file = policy_dir.path().join("000-global.yaml");
+    tokio::fs::write(&policy_file, POLICY_ALLOW_HOT).await.unwrap();
+    let gateway_addr = start_cascade_gateway(policy_dir.path()).await;
+
+    let ca_dir = tempfile::tempdir().unwrap();
+    let ca = CaStore::load_or_create(ca_dir.path()).await.unwrap();
+    let config = proxy_config_with_gateway(ca_dir.path(), gateway_addr, false);
+    let (proxy_addr, _rx, abort) = start_proxy(config, ca).await;
+    let target = "hot-reload-target.example.com:443";
+
+    // Control: under the launch policy the host is admitted (and this first
+    // verdict is what a caching proxy/gateway would remember).
+    let first = connect_to_proxy(proxy_addr, target).await;
+    assert!(
+        first.contains("200"),
+        "host must be allowed under policy A, got: {first}"
+    );
+
+    // Narrow: allow -> deny.
+    let narrowed = rewrite_until_connect_shows(&policy_file, POLICY_DENY_ALL, proxy_addr, target, "403").await;
+    assert!(
+        narrowed.contains("403"),
+        "a narrowing reload must refuse the next connection, got: {narrowed}"
+    );
+
+    // Widen: deny -> allow.
+    let widened = rewrite_until_connect_shows(&policy_file, POLICY_ALLOW_HOT, proxy_addr, target, "200").await;
+    assert!(
+        widened.contains("200"),
+        "a widening reload must admit the next connection, got: {widened}"
+    );
+
+    abort.abort();
+}
+
 // ── F. Gateway RPC failure fails closed by default, fails open when opted in ─
 
 #[tokio::test(flavor = "multi_thread")]
