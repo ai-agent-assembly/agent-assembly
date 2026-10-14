@@ -86,6 +86,54 @@ fn golden_corpus_verdicts() {
             sec: Expect::Err("no enforcement section"),
             pol: Expect::Err("unknown top-level key 'kind'"),
         },
+        // ── parses, but declares nothing to enforce (AAASM-6338) ────────────
+        // Both entry points reject these. Before AAASM-6338 only the canonical
+        // AST did; the gateway validator loaded each as a fully permissive
+        // policy. Added rows, not changed ones: no earlier expectation moved.
+        Case {
+            name: "version-only document rejected",
+            yaml: "version: 1\n",
+            // The canonical AST has no `version` key at all, so it refuses
+            // earlier and for a different reason; the verdict still agrees.
+            sec: Expect::Err("unknown policy key \"version\""),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "scope-only document rejected",
+            yaml: "scope: global\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "envelope with an empty spec rejected",
+            yaml: "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "bare-null network section rejected",
+            yaml: "network:\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "empty tools map rejected",
+            yaml: "tools: {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "tagged empty map rejected",
+            yaml: "!foo {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "an explicitly empty network allowlist is a declared section (deny-all)",
+            yaml: "network:\n  allowlist: []\n",
+            sec: OK,
+            pol: OK,
+        },
         // ── anchors, aliases, merge keys ────────────────────────────────────
         Case {
             name: "alias reusing an anchor inside a known section accepted",
