@@ -741,7 +741,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Upload dashboard dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -1253,7 +1253,7 @@ jobs:
           verbose: true
           fail_ci_if_error: false
       - name: Upload Rust coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-coverage-lcov
           path: lcov.info
@@ -2585,7 +2585,7 @@ jobs:
       - name: Build production bundle
         run: pnpm build
       - name: Upload dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -2617,7 +2617,7 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
       - name: Upload TypeScript coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage/lcov.info
@@ -2694,14 +2694,14 @@ jobs:
       # mode this gate is meant to remove.
       - name: Upload Playwright HTML report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-report
           path: dashboard/playwright-report/
           retention-days: 14
       - name: Upload Playwright traces, screenshots + JUnit XML
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-results
           path: dashboard/test-results/
@@ -3017,7 +3017,7 @@ jobs:
 
       - name: Upload real-backend report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-real-backend-results
           path: dashboard/test-results/
@@ -4265,7 +4265,7 @@ jobs:
         # not captured in the result JSON) — without these a failed family's
         # exit code has no accompanying diagnostic.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: isolation-benchmark-three-arm-results
           path: |
@@ -4405,7 +4405,7 @@ jobs:
         run: $AABENCH_AASM_BIN gateway stop || true
       - name: Upload dogfood evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: isolation-dogfood-scenarios-results
           path: |
