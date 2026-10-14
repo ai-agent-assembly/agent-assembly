@@ -2391,4 +2391,54 @@ approval:
         assert!(PolicyValidator::from_yaml("capabilities:\n  deny: [terminal_exec]\n").is_ok());
         assert!(PolicyValidator::from_yaml("network:\n  allowlist: []\n").is_ok());
     }
+
+    // ── Documents that parse but declare no enforcement (AAASM-6338) ───────
+
+    /// Documents that deserialize to an all-`None` policy. Each differs from an
+    /// accepted control only in carrying no enforcement-bearing section.
+    const NO_ENFORCEMENT_DOCS: [&str; 10] = [
+        "version: 1\n",
+        "version: \"1\"\n",
+        "scope: global\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  scope: global\n",
+        "network:\n",
+        "budget:\n",
+        "!foo {}\n",
+        "tools: {}\n",
+        "filesystem: {}\n",
+    ];
+
+    #[test]
+    fn documents_declaring_no_enforcement_section_are_rejected() {
+        // Collect every offender so one run names the whole accepted class.
+        let accepted: Vec<&str> = NO_ENFORCEMENT_DOCS
+            .into_iter()
+            .filter(|doc| match PolicyValidator::from_yaml(doc) {
+                Ok(_) => true,
+                Err(errs) => !errs.iter().any(|e| e.message.contains("no enforcement section")),
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "documents with no enforcement section were not rejected as such: {accepted:?}",
+        );
+    }
+
+    #[test]
+    fn each_enforcement_bearing_section_alone_is_accepted_control() {
+        // Control for the test above: one declared section is the only variable.
+        for doc in [
+            "version: \"1\"\nnetwork:\n  allowlist: []\n",
+            "network: {}\n",
+            "capabilities:\n  deny: [terminal_exec]\n",
+            "tools:\n  t:\n    allow: true\n",
+            "budget:\n  daily_limit_usd: 5.0\n",
+            "syscalls:\n  allow: []\n",
+            "filesystem:\n  read:\n    allow: []\n",
+            "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  network:\n    allowlist: []\n",
+        ] {
+            PolicyValidator::from_yaml(doc).unwrap_or_else(|e| panic!("{doc:?} declares a section: {e:?}"));
+        }
+    }
 }

@@ -4884,6 +4884,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_from_file_rejects_documents_declaring_no_enforcement_section() {
+        // AAASM-6338: file load (and hot reload, which shares it) must not turn
+        // a document with nothing to enforce into a fully permissive engine.
+        // Control: the same file shape with one declared section loads.
+        use std::io::Write;
+        let load = |yaml: &str| {
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            write!(tmp, "{yaml}").unwrap();
+            tmp.flush().unwrap();
+            let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+            PolicyEngine::load_from_file(tmp.path(), alert_tx)
+        };
+        for bad in ["version: \"1\"\n", "scope: global\n", "network:\n", "!foo {}\n"] {
+            let result = load(bad);
+            assert!(
+                matches!(result, Err(PolicyLoadError::Validation(_))),
+                "{bad:?}: expected fail-closed Validation error, got: {:?}",
+                result.err()
+            );
+        }
+        assert!(load("version: \"1\"\nnetwork:\n  allowlist: []\n").is_ok());
+    }
+
     // ── PolicyEvaluator trait impl ────────────────────────────────────────────
 
     #[test]
@@ -5137,6 +5161,57 @@ mod tests {
         // Control: a finite positive budget is accepted and does swap the policy.
         engine
             .apply_yaml("budget:\n  daily_limit_usd: 5.0\n", Some("control"), &store)
+            .await
+            .unwrap();
+        assert!(engine.policy.load().tools.is_empty());
+    }
+
+    /// AAASM-6338: a body that parses but declares no enforcement section must
+    /// leave the live policy, epoch and history exactly as they were. The
+    /// accepted control differs only in carrying one enforcement section.
+    #[tokio::test]
+    async fn apply_yaml_rejects_no_enforcement_documents_leaving_live_policy_untouched() {
+        use crate::policy::history::{FsHistoryStore, HistoryConfig, PolicyHistoryStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        let engine = make_engine(empty_doc());
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("seed"), &store)
+            .await
+            .unwrap();
+        let epoch_before = engine.policy_epoch.load(Ordering::Relaxed);
+
+        for bad in [
+            "version: 1\n",
+            "version: \"1\"\n",
+            "scope: global\n",
+            "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+            "network:\n",
+            "budget:\n",
+            "!foo {}\n",
+            "tools: {}\n",
+        ] {
+            let result = engine.apply_yaml(bad, Some("attacker"), &store).await;
+            assert!(result.is_err(), "{bad:?} must be rejected");
+            assert!(
+                !engine.policy.load().tools["bash"].allow,
+                "{bad:?}: live policy must still be the seeded deny-bash policy"
+            );
+            assert_eq!(
+                engine.policy_epoch.load(Ordering::Relaxed),
+                epoch_before,
+                "{bad:?}: a rejected body must not bump the policy epoch"
+            );
+            assert_eq!(store.list(10).await.unwrap().len(), 1, "{bad:?}: no history entry");
+        }
+
+        // Control: one declared section is accepted and does swap the policy.
+        engine
+            .apply_yaml("version: \"1\"\nnetwork:\n  allowlist: []\n", Some("control"), &store)
             .await
             .unwrap();
         assert!(engine.policy.load().tools.is_empty());

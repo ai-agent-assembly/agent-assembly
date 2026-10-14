@@ -398,3 +398,58 @@ async fn create_policy_accepts_finite_budget_control() {
     let status = post_policy_yaml(app, "budget:\n  daily_limit_usd: 5.0\n").await;
     assert_eq!(status, StatusCode::CREATED);
 }
+
+// ── Documents with no enforcement section must not replace the live policy (AAASM-6338) ──
+
+/// Each body parses cleanly but declares nothing to enforce, so accepting it
+/// would swap the seeded 2-rule policy for a fully permissive one.
+const NO_ENFORCEMENT_BODIES: [&str; 8] = [
+    "version: 1\n",
+    "version: \"1\"\n",
+    "scope: global\n",
+    "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+    "network:\n",
+    "budget:\n",
+    "!foo {}\n",
+    "tools: {}\n",
+];
+
+#[tokio::test]
+async fn create_policy_rejects_no_enforcement_bodies_without_replacing_live_policy() {
+    for bad in NO_ENFORCEMENT_BODIES {
+        let state = common::test_state();
+        state
+            .policy_engine
+            .apply_yaml(ENVELOPE_POLICY_WITH_TOOLS, Some("seed"), state.policy_history.as_ref())
+            .await
+            .unwrap();
+        let engine = state.policy_engine.clone();
+        let history = state.policy_history.clone();
+        let app = aa_api::server::build_app(state);
+
+        let status = post_policy_yaml(app, bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?} must be rejected with 400");
+
+        let info = engine.active_policy_info();
+        assert_eq!(
+            info.name.as_deref(),
+            Some("production-policy"),
+            "{bad:?}: live policy replaced"
+        );
+        assert_eq!(info.rule_count, 2, "{bad:?}: live policy replaced");
+        assert_eq!(history.list(10).await.unwrap().len(), 1, "{bad:?}: history grew");
+    }
+}
+
+/// Control for the test above: same request shape and seeding, but the body
+/// declares one enforcement section, and is accepted.
+#[tokio::test]
+async fn create_policy_accepts_minimal_enforcement_bodies_control() {
+    for ok in [
+        "version: \"1\"\nnetwork:\n  allowlist: []\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  network:\n    allowlist: []\n",
+    ] {
+        let status = post_policy_yaml(common::test_app(), ok).await;
+        assert_eq!(status, StatusCode::CREATED, "{ok:?} declares a section");
+    }
+}
