@@ -43,7 +43,7 @@ const AGENT_BYTES: [u8; 16] = [1u8; 16];
 
 fn make_engine() -> PolicyEngine {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap()

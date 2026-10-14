@@ -43,7 +43,7 @@ fn allow_doc(scope: PolicyScope) -> PolicyDocument {
 
 fn make_engine() -> PolicyEngine {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     let mut engine = PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap();

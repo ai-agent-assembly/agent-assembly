@@ -5681,13 +5681,14 @@ mod tests {
     #[test]
     fn binary_loader_cascades_org_scoped_deny_over_global_allow() {
         let tmp = tempfile::tempdir().unwrap();
-        // Global baseline — empty tools = allow-by-default.
+        // Global baseline — explicit allow-all tool entry (a bare `tools: {}` is
+        // refused, AAASM-6338).
         std::fs::write(
             tmp.path().join("000-global-allow-all.yaml"),
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global-allow-all\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         // Org-alpha-scoped deny of `bash`. `scope:` lives INSIDE `spec:`.
@@ -5743,7 +5744,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         std::fs::write(
@@ -5790,7 +5791,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let budget = Arc::new(BudgetTracker::new(
@@ -5846,7 +5847,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-global-allow-all\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha.yaml");
@@ -5911,7 +5912,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-add-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
 
@@ -5965,7 +5966,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-inv-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
@@ -6026,7 +6027,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: empty-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
@@ -6344,7 +6345,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: t-global-allow\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         std::fs::write(

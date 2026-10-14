@@ -20,9 +20,7 @@ use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, LlmCallC
 use tokio::sync::mpsc;
 use tonic::Request;
 
-const ALLOW_ALL_YAML: &str = r#"
-version: "1"
-"#;
+const ALLOW_ALL_YAML: &str = aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE;
 
 fn make_service(audit_tx: mpsc::Sender<AuditEntry>) -> PolicyServiceImpl {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
