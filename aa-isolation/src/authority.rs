@@ -1944,6 +1944,95 @@ mod tests {
             assert!(authority_gate(&child_spec_with_lease(derived, scope), &ancestry, t(1_500)).is_ok());
         }
 
+        /// AAASM-6334: every `ResourceLimits` ceiling is attenuated on its own.
+        /// Each case isolates one field so dropping any single field from the
+        /// comparison turns a named case red, and each refusal differs from its
+        /// positive control in exactly one variable.
+        #[test]
+        fn every_resource_limit_field_is_attenuated_independently() {
+            use crate::spec::ResourceLimits;
+
+            type Set = fn(&mut ResourceLimits, u32);
+            let cases: [(&str, Set); 6] = [
+                ("max_memory_bytes", |l, v| l.max_memory_bytes = Some(v.into())),
+                ("max_cpu_seconds", |l, v| l.max_cpu_seconds = Some(v.into())),
+                ("max_pids", |l, v| l.max_pids = Some(v)),
+                ("max_wall_clock_seconds", |l, v| {
+                    l.max_wall_clock_seconds = Some(v.into())
+                }),
+                ("max_file_size_bytes", |l, v| l.max_file_size_bytes = Some(v.into())),
+                ("max_open_files", |l, v| l.max_open_files = Some(v)),
+            ];
+
+            // Adding a `ResourceLimits` field breaks this literal at compile time;
+            // the setter check below then fails until the new field gets a case.
+            let every_field = ResourceLimits {
+                max_memory_bytes: Some(1),
+                max_cpu_seconds: Some(1),
+                max_pids: Some(1),
+                max_wall_clock_seconds: Some(1),
+                max_file_size_bytes: Some(1),
+                max_open_files: Some(1),
+            };
+            let mut covered = ResourceLimits::default();
+            for (_, set) in &cases {
+                set(&mut covered, 1);
+            }
+            assert_eq!(covered, every_field, "every ResourceLimits field needs a case");
+
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let gate = |parent: Option<ResourceLimits>, child: Option<ResourceLimits>| {
+                let mut parent_lease = parent_fs_lease(scope.clone());
+                if let Some(limits) = parent {
+                    parent_lease = parent_lease.with_limits(limits);
+                }
+                let ledger = Arc::new(DelegationLedger::new());
+                ledger.register_parent(&parent_lease).expect("root registers");
+                let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+                let mut child_lease = CapabilityLease::new(
+                    crate::lease::LeaseId::new("hand-built"),
+                    child_identity(),
+                    CapabilityDomain::FilesystemRead,
+                    scope.clone(),
+                    t(1_000),
+                    t(4_000),
+                    crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+                );
+                if let Some(limits) = child {
+                    child_lease = child_lease.with_limits(limits);
+                }
+                authority_gate(&child_spec_with_lease(child_lease, scope.clone()), &ancestry, t(1_500)).map(|_| ())
+            };
+            let refused = Err(AuthorityRefusal::ChildExceedsLimits {
+                domain: CapabilityDomain::FilesystemRead,
+            });
+            let only = |set: Set, v: u32| {
+                let mut l = ResourceLimits::default();
+                set(&mut l, v);
+                l
+            };
+
+            // (e) Nothing bounded on either side admits.
+            assert_eq!(gate(None, None), Ok(()), "unbounded parent, limitless child");
+            assert_eq!(gate(Some(ResourceLimits::default()), None), Ok(()));
+
+            for (name, set) in &cases {
+                let parent = Some(only(*set, 4));
+                // (a) child states no limits, (b) child explicitly unbounded.
+                assert_eq!(gate(parent, None), refused, "{name}: limitless child");
+                assert_eq!(
+                    gate(parent, Some(ResourceLimits::default())),
+                    refused,
+                    "{name}: explicitly unbounded child"
+                );
+                // (c) positive controls: below and equal to the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 3))), Ok(()), "{name}: below ceiling");
+                assert_eq!(gate(parent, Some(only(*set, 4))), Ok(()), "{name}: at ceiling");
+                // (d) above the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 5))), refused, "{name}: above ceiling");
+            }
+        }
+
         /// A root launch and a legacy no-lease spec are both unaffected by
         /// ancestry attenuation — the rc.7 compatibility regression.
         #[test]
