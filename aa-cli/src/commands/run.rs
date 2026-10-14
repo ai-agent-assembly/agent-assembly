@@ -3769,6 +3769,63 @@ mod plan {
             })
         }
 
+        /// AAASM-6301: the maturity guard recognises every spelling of the macOS VM
+        /// backend's name (positive controls) and leaves unrelated prose alone
+        /// (negative controls). Without this, a claim worded "the Apple-silicon
+        /// backend ships" would skip the guard entirely.
+        #[test]
+        fn macos_vm_subject_detection_covers_name_variants_without_flagging_unrelated_prose() {
+            for flagged in [
+                "The macOS VM backend is production-ready.",
+                "The macos-vm backend is production-ready.",
+                "The aasm-macos-vm backend ships.",
+                "The Apple Silicon backend ships.",
+                "The Apple-silicon backend ships.",
+                "The APPLE SILICON backend is generally available.",
+                "The Apple Silicon VM is fully supported.",
+                "The Virtualization.framework backend is production-ready.",
+                "The Virtualization framework backend ships.",
+                "Our VM backend on Apple Silicon is generally available.",
+                "The VM backend on Apple-Silicon ships",
+                "Apple's Virtualization.framework VM ships",
+            ] {
+                assert!(names_macos_vm_backend(flagged), "variant not recognised: {flagged}");
+            }
+            for ignored in [
+                "The Python SDK ships universal wheels and runs natively on Apple Silicon.",
+                "Build the CLI on an Apple Silicon laptop; the release ships a signed binary.",
+                "Sandlock is the production-ready backend on Linux.",
+                "The Virtualization of the build farm is generally available.",
+                "The framework ships with Apple Silicon support in the node SDK.",
+            ] {
+                assert!(!names_macos_vm_backend(ignored), "unrelated prose flagged: {ignored}");
+            }
+        }
+
+        /// AAASM-6301: the id a backend advertises (what plan and status output
+        /// print), the id the walk consults, and the id the operator docs name are
+        /// one string per backend, taken from each crate's `BACKEND_ID`.
+        #[test]
+        fn backend_ids_agree_across_walk_identity_and_docs() {
+            let docs = std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/src/security/execution-isolation.md"),
+            )
+            .expect("execution-isolation.md readable");
+            for id in AUTO_WALK_ORDER {
+                let (Consulted::Declined(record) | Consulted::Selected(record, _)) =
+                    consult_backend(id, &probe_for_id_check(), &aa_isolation::RuntimeRequirements::new());
+                assert_eq!(record.id, id, "the backend discovered for `{id}` advertises another id");
+                assert!(
+                    docs.contains(&format!("`{id}`")),
+                    "execution-isolation.md never names the backend id `{id}`"
+                );
+            }
+        }
+
+        fn probe_for_id_check() -> ExecutionSpec {
+            ExecutionSpec::new("probe", IdentityRef::root("probe"))
+        }
+
         /// AAASM-6301: `--isolation auto` walks all three compiled-in backends,
         /// `aasm-macos-vm` included, on every host. Several docs once said the
         /// macOS VM backend is "not selected by `auto`"; this pins the behavior
