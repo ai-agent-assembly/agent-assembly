@@ -336,12 +336,20 @@ impl RawDataPolicy {
     }
 }
 
-impl RawAuthorityPolicy {
-    /// Whether this section states a `leases` list. An explicit empty list is
-    /// kept: it says "grant nothing", which is a statement. A bare `authority:`
-    /// says nothing (AAASM-6343).
+impl RawEgressPolicy {
+    /// Whether this section demands brokered egress. `not_required` is the
+    /// default posture and restricts nothing (AAASM-6343).
     pub fn constrains(&self) -> bool {
-        self.leases.is_some()
+        self.posture.as_deref() == Some("broker_required")
+    }
+}
+
+impl RawAuthorityPolicy {
+    /// Whether this section grants at least one lease. An empty list is not
+    /// "grant nothing": with no leases the runtime stays on the lease-less
+    /// compatibility path (ADR 0038), which permits (AAASM-6343).
+    pub fn constrains(&self) -> bool {
+        self.leases.as_ref().is_some_and(|l| !l.is_empty())
     }
 }
 

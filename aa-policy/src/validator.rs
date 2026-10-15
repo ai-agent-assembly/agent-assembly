@@ -88,7 +88,7 @@ impl PolicyValidator {
         // Presence of these two is read before the sections are consumed: their
         // validated forms (`Vec`/enum) cannot say whether the key was written.
         let declares_authority = raw.authority.as_ref().is_some_and(RawAuthorityPolicy::constrains);
-        let declares_egress = raw.egress.is_some();
+        let declares_egress = raw.egress.as_ref().is_some_and(RawEgressPolicy::constrains);
         let network = Self::validate_network(raw.network, &mut errors);
         // AAASM-6343: an empty `schedule:`/`budget:`/`data:` validates into a
         // `Some` section that restricts nothing. Read what each states before
@@ -1777,6 +1777,8 @@ spec:
             "budget:\n  timezone: UTC\n  action_on_exceed: deny\n",
             "data:\n  sensitive_patterns: []\n  locale_packs: []\n",
             "budget: {}\nschedule: {}\ndata: {}\nauthority: {}\n",
+            "authority:\n  leases: []\n",
+            "egress:\n  posture: not_required\n",
         ] {
             let errs = PolicyValidator::from_yaml(body).expect_err(body);
             assert!(
@@ -1794,7 +1796,7 @@ spec:
             "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
             "data:\n  credential_action: block\n",
             "data:\n  sensitive_patterns: [\"x\"]\n",
-            "authority:\n  leases: []\n",
+            "egress:\n  posture: broker_required\n",
         ] {
             PolicyValidator::from_yaml(body).unwrap_or_else(|e| panic!("{body:?} should load: {e:?}"));
         }
@@ -2326,7 +2328,7 @@ approval:
 
     #[test]
     fn empty_leases_list_is_also_an_empty_lease_list() {
-        let out = PolicyValidator::from_yaml("authority:\n  leases: []\n").expect("valid");
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\nauthority:\n  leases: []\n").expect("valid");
         assert!(out.document.leases.is_empty());
     }
 
@@ -2431,7 +2433,8 @@ approval:
 
     #[test]
     fn a_not_required_posture_round_trips_through_validation() {
-        let out = PolicyValidator::from_yaml("egress:\n  posture: not_required\n").expect("valid egress document");
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\negress:\n  posture: not_required\n")
+            .expect("valid egress document");
         assert_eq!(out.document.egress, EgressPosture::NotRequired);
     }
 
@@ -2573,7 +2576,7 @@ approval:
             "filesystem:\n  read:\n    allow: []\n",
             "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
             "data:\n  sensitive_patterns: [\"sk-[A-Za-z0-9]{20,}\"]\n",
-            "authority:\n  leases: []\n",
+            "authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: r\n",
             "egress:\n  posture: broker_required\n",
             "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  network:\n    allowlist: []\n",
         ] {
