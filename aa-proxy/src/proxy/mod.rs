@@ -1135,9 +1135,30 @@ impl ProxyServer {
         req: &HttpRequest,
         host: &str,
     ) -> McpEvalOutcome {
-        let Some(call) = parse_mcp_request(&req.body) else {
+        // AAASM-6354: inspect the *decoded* body. A `gzip`/`deflate` JSON-RPC
+        // `tools/call` is opaque bytes to the parser, so it used to fall into
+        // `Skip` and reach the upstream with no `CheckAction`. An encoding the
+        // proxy cannot decode (br, zstd, layered, corrupt, over the size cap)
+        // is denied rather than forwarded unevaluated.
+        let decoded: std::borrow::Cow<'_, [u8]> = match req
+            .header("content-encoding")
+            .map(str::trim)
+            .filter(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
+        {
+            None => std::borrow::Cow::Borrowed(req.body.as_slice()),
+            Some(enc) => match http::decompress_content_encoding(enc, &req.body) {
+                Ok(plain) => std::borrow::Cow::Owned(plain),
+                Err(e) => {
+                    let reason = "MCP request body has a Content-Encoding the proxy cannot decode, so it cannot be enforced and was rejected (fail-closed)";
+                    tracing::warn!(%host, error = %e, "{reason}");
+                    self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+                    return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+                }
+            },
+        };
+        let Some(call) = parse_mcp_request(&decoded) else {
             // Not a parseable MCP call — check for bypass attempt.
-            if is_unenforceable_tool_call(&req.body) {
+            if is_unenforceable_tool_call(&decoded) {
                 let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
                 tracing::warn!(
                     %host,
@@ -1174,9 +1195,8 @@ impl ProxyServer {
             // secret with a gateway-only value), so no scan outcome can
             // authorize the forward.
             //
-            // Not covered here (follow-ups): the response direction
-            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only)
-            // and the compressed-body scan bypass (AAASM-6354).
+            // Not covered here (follow-up): the response direction
+            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only).
             Ok(McpDecision::Redact { .. }) => {
                 let reason = "gateway required redaction of this MCP call that the proxy cannot apply (fail-closed); \
                               change the policy to alert/allow, or wait for proxy redaction support";
