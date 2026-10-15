@@ -308,6 +308,10 @@ async fn open_tunnel(proxy: SocketAddr, host: &str) -> Result<BufReader<TcpStrea
 /// Complete the MitM TLS handshake on an open tunnel, send `request`, and
 /// return whatever the client saw.
 async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> String {
+    mitm_send_bytes(reader, host, request.as_bytes()).await
+}
+
+async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8]) -> String {
     let client_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
@@ -316,7 +320,7 @@ async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> S
     let server_name = ServerName::try_from(host.to_string()).unwrap();
     let mut tls = connector.connect(server_name, reader.into_inner()).await.unwrap();
 
-    tls.write_all(request.as_bytes()).await.unwrap();
+    tls.write_all(request).await.unwrap();
     let mut out = Vec::new();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
     String::from_utf8_lossy(&out).into_owned()
@@ -1251,4 +1255,124 @@ async fn the_same_policy_only_body_under_gateway_allow_is_forwarded() {
         upstream_saw.contains(POLICY_ONLY_VALUE),
         "under Allow the body is forwarded unchanged, upstream saw: {upstream_saw:?}"
     );
+}
+
+// ── Content-Encoded MCP request bodies are evaluated, not skipped (AAASM-6354) ──
+
+fn gzip_bytes(plain: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(plain).unwrap();
+    enc.finish().unwrap()
+}
+
+fn zlib_bytes(plain: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(plain).unwrap();
+    enc.finish().unwrap()
+}
+
+fn post_encoded(host: &str, encoding: &str, body: &[u8]) -> Vec<u8> {
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    req.extend_from_slice(body);
+    req
+}
+
+/// Send one MCP `tools/call` body (already encoded) through a proxy backed by
+/// `gateway` and return (client response, bytes that reached upstream).
+async fn send_encoded_mcp(gateway: String, encoding: &str, body: &[u8]) -> (String, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, &post_encoded(MITM_HOST, encoding, body)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    (response, seen)
+}
+
+#[tokio::test]
+async fn a_gzip_mcp_call_the_gateway_denies_is_denied_and_never_forwarded() {
+    let body = mcp_body_with("anything");
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        "gzip",
+        &gzip_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(
+        response.contains("-32000"),
+        "gateway Deny must reach the client, got: {response:?}"
+    );
+    assert!(
+        seen.is_empty(),
+        "a denied call must not reach upstream, saw {} bytes",
+        seen.len()
+    );
+}
+
+#[tokio::test]
+async fn a_deflate_mcp_call_the_gateway_denies_is_denied_and_never_forwarded() {
+    let body = mcp_body_with("anything");
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        "deflate",
+        &zlib_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+#[tokio::test]
+async fn a_gzip_mcp_call_the_gateway_redacts_is_denied_not_forwarded_raw() {
+    let body = mcp_body_with(POLICY_ONLY_VALUE);
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_redacting_gateway().await,
+        "gzip",
+        &gzip_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(response.contains("cannot apply"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+#[tokio::test]
+async fn an_undecodable_mcp_body_encoding_is_denied_fail_closed() {
+    for (encoding, body) in [
+        ("br", mcp_body_with("x").into_bytes()),
+        ("zstd", mcp_body_with("x").into_bytes()),
+        ("gzip, br", gzip_bytes(mcp_body_with("x").as_bytes())),
+        ("gzip", b"not actually gzip".to_vec()),
+    ] {
+        let (response, seen) = send_encoded_mcp(gateway_stub::spawn_allowing_gateway().await, encoding, &body).await;
+        assert!(
+            response.contains("cannot be enforced") || response.contains("cannot decode"),
+            "{encoding}: must be rejected, got: {response:?}"
+        );
+        assert!(seen.is_empty(), "{encoding}: saw {} bytes upstream", seen.len());
+    }
+}
+
+/// Controls: the same call is forwarded when the gateway allows it, whether
+/// plain, `identity`, or gzip - so the denials above come from the gateway
+/// verdict on the decoded call, not from a blanket refusal of encoded bodies.
+#[tokio::test]
+async fn an_allowed_mcp_call_is_forwarded_plain_identity_and_gzip() {
+    let body = mcp_body_with("harmless");
+    for (encoding, wire) in [
+        ("identity", body.clone().into_bytes()),
+        ("gzip", gzip_bytes(body.as_bytes())),
+    ] {
+        let (response, seen) = send_encoded_mcp(gateway_stub::spawn_allowing_gateway().await, encoding, &wire).await;
+        assert!(
+            !seen.is_empty(),
+            "{encoding}: an allowed call must reach upstream, got: {response:?}"
+        );
+    }
 }
