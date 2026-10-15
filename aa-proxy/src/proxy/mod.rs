@@ -1154,11 +1154,7 @@ impl ProxyServer {
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
 
         match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-            // `Redact` is bucketed with `Allow` as a forward: the proxy's own
-            // DLP scanner redacts both request and upstream response (see the
-            // `McpDecision::Redact` doc), so the gateway's `RedactInstructions`
-            // need no separate replay here.
-            Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+            Ok(McpDecision::Allow) => {
                 tracing::info!(
                     tool_name = %call.tool_name,
                     %host,
@@ -1168,6 +1164,48 @@ impl ProxyServer {
                     .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
                     .await;
                 McpEvalOutcome::Forward(call, args_bytes)
+            }
+            // AAASM-6353: the gateway says the payload needs redaction, but the
+            // proxy never receives the gateway's patterns (custom
+            // `sensitive_patterns`, locale packs), so its own scanner may be
+            // unable to reproduce the finding. Forward only when that scanner
+            // actually redacts this request body, so the bytes forwarded below
+            // are the redacted ones; otherwise the raw value would go upstream.
+            // Same fail-closed mapping as `network_enforce` (Redact -> Deny).
+            //
+            // Scope: request direction only. The upstream response is still
+            // scanned by the built-in scanner alone (`relay_mcp_response`), so
+            // a gateway-only pattern in a response is not covered here.
+            Ok(McpDecision::Redact { .. }) => {
+                let verdict = self.interceptor.intercept_request(
+                    &req.body,
+                    req.header("content-encoding"),
+                    self.config.credential_action,
+                );
+                if verdict.decision == VerdictDecision::ForwardRedacted {
+                    tracing::info!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        "MCP call needs redaction per gateway; proxy scanner redacted the request body, forwarding",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
+                        .await;
+                    McpEvalOutcome::Forward(call, args_bytes)
+                } else {
+                    let reason =
+                        "gateway required redaction of this MCP call that the proxy could not apply (fail-closed)";
+                    tracing::warn!(
+                        tool_name = %call.tool_name,
+                        %host,
+                        proxy_scan = ?verdict.decision,
+                        "{reason}",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                        .await;
+                    McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, reason))
+                }
             }
             Ok(McpDecision::Deny { reason }) => {
                 tracing::info!(
