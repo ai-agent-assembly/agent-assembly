@@ -142,7 +142,13 @@ EXPECTED: dict[str, frozenset[str]] = {
             "aho-corasick",
             "memchr",
             # `serde = ["dep:serde", "dep:serde_yaml"]` — the canonical policy
-            # AST's YAML parsing. serde_yaml brings the rest.
+            # AST's YAML parsing. The workspace `serde_yaml` is an alias for the
+            # `serde_norway` package (AAASM-6335: serde_yaml is unmaintained,
+            # RUSTSEC-2024-0449). serde_norway is a pure parser over
+            # `unsafe-libyaml-norway` (a c2rust libyaml translation): both are
+            # in-memory text parsers with no socket, DNS, TLS or HTTP dependency,
+            # so the closure still cannot reach the network. serde_norway brings
+            # the rest.
             "equivalent",
             "hashbrown",
             "indexmap",
@@ -153,10 +159,10 @@ EXPECTED: dict[str, frozenset[str]] = {
             "serde",
             "serde_core",
             "serde_derive",
-            "serde_yaml",
+            "serde_norway",
             "syn",
             "unicode-ident",
-            "unsafe-libyaml",
+            "unsafe-libyaml-norway",
         }
     ),
 }
