@@ -292,6 +292,57 @@ pub struct GovernancePolicyEnvelope {
     /// The inner spec section, kept as an opaque YAML value so it can be
     /// re-parsed as [`RawPolicyDocument`] by the validator.
     pub spec: Option<serde_yaml::Value>,
+    /// Any other top-level key. The envelope format reads only the four above,
+    /// so a policy section written beside `spec:` would be dropped without a
+    /// word; the validator refuses the document instead (AAASM-6344).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
+impl RawSchedulePolicy {
+    /// Whether this section states a window. A bare `schedule:` / `schedule: {}`
+    /// restricts nothing (AAASM-6343).
+    pub fn constrains(&self) -> bool {
+        self.active_hours.is_some()
+    }
+}
+
+impl RawBudgetPolicy {
+    /// Whether this section states at least one spend limit. `timezone`,
+    /// `action_on_exceed` and `window` only tune a limit that is not there
+    /// (AAASM-6343).
+    pub fn constrains(&self) -> bool {
+        [
+            self.daily_limit_usd,
+            self.monthly_limit_usd,
+            self.team_daily_limit_usd,
+            self.team_monthly_limit_usd,
+            self.org_daily_limit_usd,
+            self.org_monthly_limit_usd,
+        ]
+        .iter()
+        .any(Option::is_some)
+    }
+}
+
+impl RawDataPolicy {
+    /// Whether this section states a pattern, an action or a locale pack.
+    /// `data: {}` states none of them and would only ever run the defaults
+    /// (AAASM-6343).
+    pub fn constrains(&self) -> bool {
+        self.sensitive_patterns.as_ref().is_some_and(|p| !p.is_empty())
+            || self.credential_action.is_some()
+            || self.locale_packs.as_ref().is_some_and(|l| !l.is_empty())
+    }
+}
+
+impl RawAuthorityPolicy {
+    /// Whether this section states a `leases` list. An explicit empty list is
+    /// kept: it says "grant nothing", which is a statement. A bare `authority:`
+    /// says nothing (AAASM-6343).
+    pub fn constrains(&self) -> bool {
+        self.leases.is_some()
+    }
 }
 
 /// Raw (unvalidated) deserialization target for the `approval` policy section.

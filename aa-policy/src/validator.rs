@@ -9,7 +9,8 @@ use crate::{
     },
     error::{ValidationError, ValidationWarning},
     raw::{
-        GovernancePolicyEnvelope, RawAuthorityPolicy, RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument,
+        GovernancePolicyEnvelope, RawAuthorityPolicy, RawBudgetPolicy, RawDataPolicy, RawEgressPolicy, RawLeaseGrant,
+        RawLeaseScope, RawPolicyDocument, RawSchedulePolicy,
     },
     scope::PolicyScope,
 };
@@ -86,9 +87,16 @@ impl PolicyValidator {
         //
         // Presence of these two is read before the sections are consumed: their
         // validated forms (`Vec`/enum) cannot say whether the key was written.
-        let declares_authority = raw.authority.is_some();
+        let declares_authority = raw.authority.as_ref().is_some_and(RawAuthorityPolicy::constrains);
         let declares_egress = raw.egress.is_some();
         let network = Self::validate_network(raw.network, &mut errors);
+        // AAASM-6343: an empty `schedule:`/`budget:`/`data:` validates into a
+        // `Some` section that restricts nothing. Read what each states before
+        // the raw form is consumed, so the check below counts only sections
+        // that say something.
+        let declares_schedule = raw.schedule.as_ref().is_some_and(RawSchedulePolicy::constrains);
+        let declares_budget = raw.budget.as_ref().is_some_and(RawBudgetPolicy::constrains);
+        let declares_data = raw.data.as_ref().is_some_and(RawDataPolicy::constrains);
         let schedule = Self::validate_schedule(raw.schedule, &mut errors);
         let budget = Self::validate_budget(raw.budget, &mut errors);
         let data = Self::validate_data(raw.data, &mut errors);
@@ -119,16 +127,16 @@ impl PolicyValidator {
         // (`network: {}` is an empty allowlist, i.e. deny-all), but `tools: {}`
         // and a `filesystem:` that states neither verb say nothing. This check
         // also counts schedule/budget/data/authority/egress, which aa_security
-        // does not, so an empty `budget: {}` or `authority: {}` still loads as a
-        // no-op section (known residual, tracked separately). `approval`, `approval_timeout_secs`,
+        // does not, but only when they state something (AAASM-6343): a bare
+        // `budget: {}` is a no-op, not a policy. `approval`, `approval_timeout_secs`,
         // `version`, `scope` and `metadata` tune or describe a policy; none
         // constrains an action. Only checked when everything else is valid so
         // the operator sees real errors first.
         if errors.is_empty()
             && network.is_none()
-            && schedule.is_none()
-            && budget.is_none()
-            && data.is_none()
+            && !declares_schedule
+            && !declares_budget
+            && !declares_data
             && tools.is_empty()
             && capabilities.is_none()
             && filesystem.is_none()
@@ -216,6 +224,25 @@ impl PolicyValidator {
         if let Ok(envelope) = serde_yaml::from_str::<GovernancePolicyEnvelope>(yaml_str) {
             if let Some(spec_value) = envelope.spec {
                 let raw: RawPolicyDocument = serde_yaml::from_value(spec_value).map_err(make_parse_error)?;
+                // AAASM-6344: only apiVersion/kind/metadata/spec are read from
+                // an envelope. A section written beside `spec:` (a common
+                // mis-indent) was dropped silently, taking its denial with it.
+                if !envelope.unknown.is_empty() {
+                    let mut keys: Vec<&String> = envelope.unknown.keys().collect();
+                    keys.sort();
+                    return Err(keys
+                        .into_iter()
+                        .map(|k| {
+                            ValidationError::new(
+                                k.as_str(),
+                                format!(
+                                    "top-level key `{k}` sits beside `spec:` and would be ignored; \
+                                     move it under `spec:` or remove it"
+                                ),
+                            )
+                        })
+                        .collect());
+                }
                 return Ok((raw, envelope.metadata));
             }
         }
@@ -1736,6 +1763,72 @@ spec:
         assert_eq!(out.document.name, Some("my-policy".to_string()));
         assert_eq!(out.document.policy_version, Some("2.0.0".to_string()));
         assert_eq!(out.document.budget.unwrap().daily_limit_usd, Some(10.0));
+    }
+
+    // ── AAASM-6343: empty sections are not enforcement ──────────────────────
+
+    #[test]
+    fn a_document_of_only_empty_sections_is_refused() {
+        for body in [
+            "budget: {}\n",
+            "schedule: {}\n",
+            "data: {}\n",
+            "authority: {}\n",
+            "budget:\n  timezone: UTC\n  action_on_exceed: deny\n",
+            "data:\n  sensitive_patterns: []\n  locale_packs: []\n",
+            "budget: {}\nschedule: {}\ndata: {}\nauthority: {}\n",
+        ] {
+            let errs = PolicyValidator::from_yaml(body).expect_err(body);
+            assert!(
+                errs.iter().any(|e| e.message.contains("no enforcement section")),
+                "{body:?} must be refused as declaring nothing, got {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_section_that_states_something_still_counts() {
+        // Positive control: each of these says something, so each loads.
+        for body in [
+            "budget:\n  daily_limit_usd: 1.0\n",
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
+            "data:\n  credential_action: block\n",
+            "data:\n  sensitive_patterns: [\"x\"]\n",
+            "authority:\n  leases: []\n",
+        ] {
+            PolicyValidator::from_yaml(body).unwrap_or_else(|e| panic!("{body:?} should load: {e:?}"));
+        }
+    }
+
+    // ── AAASM-6344: sections beside `spec:` are not silently dropped ───────
+
+    #[test]
+    fn a_section_written_beside_spec_is_refused_not_dropped() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: misindented
+spec:
+  tools:
+    "*":
+      allow: true
+network:
+  allowlist: []
+capabilities:
+  deny: [file_write]
+"#;
+        let errs = PolicyValidator::from_yaml(yaml).expect_err("siblings of spec must not be dropped");
+        let fields: Vec<&str> = errs.iter().map(|e| e.field.as_str()).collect();
+        assert_eq!(fields, ["capabilities", "network"], "{errs:?}");
+        assert!(errs[0].message.contains("beside `spec:`"));
+    }
+
+    #[test]
+    fn a_well_formed_envelope_still_loads() {
+        // Negative control for the sibling check: apiVersion/kind/metadata/spec only.
+        let yaml = "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: ok\nspec:\n  tools:\n    \"*\":\n      allow: true\n";
+        PolicyValidator::from_yaml(yaml).expect("well-formed envelope loads");
     }
 
     #[test]
