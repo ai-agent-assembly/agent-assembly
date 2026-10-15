@@ -1005,9 +1005,13 @@ mod plan {
         /// `PolicyResolution` states read `NotRequired`).
         egress: aa_isolation::EgressContract,
         /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
-        /// amendment). [`CredentialContract::not_required`] for every launch
-        /// today — no policy path issues a stronger contract yet — but
-        /// threaded through `resolve_boundary` exactly as `egress` is.
+        /// amendment), lowered from the effective policy's `credentials:` node
+        /// (AAASM-6348): [`CredentialContract::broker_required`] when the
+        /// policy states `posture: broker_required`,
+        /// [`CredentialContract::not_required`] otherwise. Threaded through
+        /// `resolve_boundary` exactly as `egress` is; the posture states a
+        /// requirement only and never supplies the explicit credential lease
+        /// `credential_gate` also needs.
         credential_contract: CredentialContract,
         /// This launch's host-capability contract (AAASM-6171, ADR 0038
         /// amendment). [`HostCapabilityContract::not_required`] for every
@@ -1259,7 +1263,7 @@ mod plan {
             lease_grants: authored,
             ancestry: resolve_ancestry(args, posture)?,
             egress,
-            credential_contract: CredentialContract::not_required(),
+            credential_contract: credential_contract_for(resolution),
             host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
         })
     }
@@ -1901,9 +1905,9 @@ mod plan {
             // mediating component (or explicit authority) cannot actually
             // provide, or whose posture shows a "secretless" name still
             // reaching the child, is refused before backend capability is in
-            // the picture. `self.authority.credential_contract` is
-            // `CredentialContract::not_required()` for every launch today, so
-            // this is inert until a policy source issues a stronger contract.
+            // the picture. `self.authority.credential_contract` is lowered
+            // from the policy's `credentials:` node (AAASM-6348), so this is
+            // inert for a policy that does not state `broker_required`.
             let credential_authority = CredentialAuthority::from_gated_spec(&spec, &witness);
             let credential_scope = spec
                 .requirements()
@@ -2725,6 +2729,21 @@ mod plan {
         match resolution.egress_posture() {
             aa_policy::EgressPosture::NotRequired => aa_isolation::EgressContract::not_required(),
             aa_policy::EgressPosture::BrokerRequired => aa_isolation::EgressContract::broker_required(),
+        }
+    }
+
+    /// Lower a resolved policy's authored credentials posture (AAASM-6348,
+    /// ADR 0038 amendment) into the contract type
+    /// [`IsolationPlan::authority`] carries.
+    ///
+    /// Only the posture is read. The weakest contract `broker_required()`
+    /// builds is used as-is: no required mode, raw-fallback permission or
+    /// ceiling is authorable, and the egress posture is never consulted, so
+    /// brokered egress can never be read as credential authority.
+    pub(super) fn credential_contract_for(resolution: &run_policy::PolicyResolution) -> CredentialContract {
+        match resolution.credentials_posture() {
+            aa_policy::CredentialBrokeragePosture::NotRequired => CredentialContract::not_required(),
+            aa_policy::CredentialBrokeragePosture::BrokerRequired => CredentialContract::broker_required(),
         }
     }
 
@@ -4175,8 +4194,8 @@ mod plan {
             }
         }
 
-        fn identity_and_handle() -> (IdentityPlan, RegistrationHandle) {
-            let args = RunArgs {
+        fn none_args() -> RunArgs {
+            RunArgs {
                 tool: "claude".to_string(),
                 tool_args: vec![],
                 // Pinned: a lease's subject must equal the launch identity.
@@ -4202,7 +4221,11 @@ mod plan {
                 max_file_size_bytes: None,
                 max_wall_clock_seconds: None,
                 max_cpu_seconds: None,
-            };
+            }
+        }
+
+        fn identity_and_handle() -> (IdentityPlan, RegistrationHandle) {
+            let args = none_args();
             let identity = IdentityPlan::of(&args);
             let handle = identity.preview_handle();
             (identity, handle)
@@ -4492,6 +4515,58 @@ mod plan {
                 &command,
             );
             assert!(matches!(control, Boundary::Absent), "{}", describe(&control));
+        }
+
+        /// The policy side end to end: a document whose only content is
+        /// `credentials: broker_required` plus the explicit credential lease
+        /// resolves through the real parse path into the contract and the
+        /// lease, and the launch it describes is admitted; the identical
+        /// document minus the lease is refused for exactly that reason.
+        #[test]
+        fn a_credentials_only_policy_admits_with_a_lease_and_refuses_without_one() {
+            let with_lease = run_policy::classify(
+                std::path::Path::new("/credentials-only-with-lease.yaml"),
+                "credentials:\n  posture: broker_required\nauthority:\n  leases:\n    - domain: credential\n      \
+                 scope: whole\n      reason: test\n",
+            );
+            let without_lease = run_policy::classify(
+                std::path::Path::new("/credentials-only-without-lease.yaml"),
+                "credentials:\n  posture: broker_required\n",
+            );
+            let boundary_for = |resolution: &run_policy::PolicyResolution| {
+                let _guard = crate::test_support::env_guard();
+                let _env = EnvRestore::apply(Some("api.anthropic.com=placeholder"), false);
+                let mut plan = RunPlanner::resolve_isolation(&none_args(), PlanPosture::Launch, resolution)
+                    .unwrap_or_else(|e| panic!("a credentials-only policy must plan under --isolation none: {e}"));
+                assert_eq!(
+                    plan.authority.credential_contract,
+                    CredentialContract::broker_required()
+                );
+                let (identity, handle) = identity_and_handle();
+                let network = NetworkPlan {
+                    endpoint: Some("127.0.0.1:9".to_string()),
+                    no_proxy: false,
+                };
+                plan.resolve_boundary(
+                    &identity,
+                    &handle,
+                    &std::process::Command::new("echo"),
+                    &std::collections::BTreeMap::new(),
+                    posture(false),
+                    &network,
+                )
+                .2
+            };
+
+            let admitted = boundary_for(&with_lease);
+            assert!(matches!(admitted, Boundary::Absent), "{}", describe(&admitted));
+
+            let refused = boundary_for(&without_lease);
+            assert!(
+                refusal_text(&refused).is_some_and(|d| d.contains(&CredentialRefusal::NoCredentialGrant.to_string())),
+                "{}",
+                describe(&refused)
+            );
         }
     }
 
@@ -7722,6 +7797,47 @@ mod tests {
         assert_eq!(
             plan::egress_contract_for(&unconfigured),
             aa_isolation::EgressContract::not_required()
+        );
+    }
+
+    /// AAASM-6348 -- `credential_contract_for` reads only the `credentials:`
+    /// node, and the `egress:` node reads only into the egress contract.
+    #[test]
+    fn credential_contract_for_reads_only_the_credentials_node() {
+        let classify = |yaml: &str| run_policy::classify(std::path::Path::new("/contract-for.yaml"), yaml);
+        let not_required = aa_isolation::CredentialContract::not_required();
+        let broker_required = aa_isolation::CredentialContract::broker_required();
+
+        let plain = classify("tools:\n  bash:\n    allow: true\n");
+        assert_eq!(plan::credential_contract_for(&plain), not_required);
+
+        let authored = classify("credentials:\n  posture: broker_required\n");
+        assert_eq!(plan::credential_contract_for(&authored), broker_required);
+        assert_eq!(
+            plan::egress_contract_for(&authored),
+            aa_isolation::EgressContract::not_required()
+        );
+
+        let egress_only = classify("egress:\n  posture: broker_required\n");
+        assert_eq!(
+            plan::credential_contract_for(&egress_only),
+            not_required,
+            "brokered egress must never be read as a credential requirement"
+        );
+        assert_eq!(
+            plan::egress_contract_for(&egress_only),
+            aa_isolation::EgressContract::broker_required()
+        );
+    }
+
+    /// The two non-launching states lower to the safe default.
+    #[test]
+    fn credential_contract_for_is_not_required_for_non_launching_states() {
+        let unconfigured =
+            run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] });
+        assert_eq!(
+            plan::credential_contract_for(&unconfigured),
+            aa_isolation::CredentialContract::not_required()
         );
     }
 
