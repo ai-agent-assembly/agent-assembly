@@ -904,7 +904,15 @@ fn check_attenuation(
             // already computed above is the more actionable answer than a
             // generic "not independently approved".
             Err(refusal)
-        } else if basis.is_independently_attributable(child_identity, parent.identity()) {
+        } else if basis.is_independently_attributable(child_identity, parent.identity())
+            // AAASM-6346: `basis.issuer` is self-asserted by whoever built the
+            // lease, so a same-UID child can forge an "independent" issuer and
+            // approval_ref. Only a lease the ledger itself issued/recorded
+            // carries independent attribution; a never-recorded lease skips
+            // the content check above, so require presence and equality here.
+            && parent.ledger().knows(child_lease.id())
+            && parent.ledger().content_matches(child_lease)
+        {
             // An independent issuer explicitly granted authority beyond what
             // the parent held — this is escalation, not attenuation, and it
             // is authorized. Provenance-integrity checks below are about a
@@ -912,8 +920,9 @@ fn check_attenuation(
             // grant is not, so they do not apply here.
             Ok(())
         } else {
-            // Attribution was attempted, but the issuer is the parent's own
-            // subject or the child's own — self-approval, refused under the
+            // Attribution was attempted but not established: the issuer is the
+            // parent's or child's own subject (self-approval), or the ledger
+            // never issued this lease (forged basis). Refused under the
             // specific name for that failure rather than the generic one.
             Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
         };
@@ -2179,7 +2188,9 @@ mod tests {
         #[test]
         fn a_wider_child_lease_is_refused_unless_an_independent_issuer_approved_it() {
             let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
-            let parent = gated_parent(parent_lease);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
             let ancestry = Ancestry::Parent(Box::new(parent));
 
             let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
@@ -2233,8 +2244,52 @@ mod tests {
                 crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "explicit break-glass approval")
                     .with_approval_ref("approval-3"),
             );
+            // AAASM-6346: admission now requires the supervisor to have
+            // recorded this exact lease; the issuer string alone is forgeable.
+            ledger
+                .register_parent(&issuer_is_third_party)
+                .expect("supervisor records the independently issued lease");
             let spec_iii = child_spec_with_lease(issuer_is_third_party, wider_scope);
             assert!(authority_gate(&spec_iii, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6346: a child that forges an independent `LeaseBasis` on a
+        /// lease the ledger never issued must not be admitted as an
+        /// escalation; recording the identical grant (supervisor-issued) is
+        /// the positive control that shows the refusal is about provenance,
+        /// not the grant's shape.
+        #[test]
+        fn a_forged_independent_basis_on_an_unrecorded_lease_is_refused_unless_ledger_issued() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
+
+            let forged = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-forged"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "self-asserted approval")
+                    .with_approval_ref("approval-forged"),
+            );
+            let spec = child_spec_with_lease(forged.clone(), wider_scope);
+
+            // (a) negative: never recorded by the ledger.
+            assert_eq!(
+                authority_gate(&spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // (b) positive control: the identical grant, recorded by the supervisor.
+            ledger.register_parent(&forged).expect("supervisor records the grant");
+            assert!(authority_gate(&spec, &ancestry, t(1_500)).is_ok());
         }
 
         /// §4.3: a child cannot reuse a parent credential lease unless
