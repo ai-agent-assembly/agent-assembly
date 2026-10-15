@@ -31,10 +31,9 @@ writable, otherwise to `~/.local/bin` (always user-writable, no `sudo` needed).
 The installer script lives in the repo at
 [`scripts/install-cli.sh`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/scripts/install-cli.sh).
 
-> **Hosted installer endpoint.** The one-liner above fetches from the canonical
+> **Hosted installer endpoint.** The one-liner above fetches from the sole canonical
 > `https://agent-assembly.com/install.sh` (served by the official website — see
-> [ADR 0007](../adr/0007-public-domain-and-url-contract.md)); `https://tool.agent-assembly.dev`
-> is a kept alternate that serves the same script. Prefer to fetch the installer
+> [ADR 0007](../adr/0007-public-domain-and-url-contract.md)). Prefer to fetch the installer
 > straight from GitHub? The
 > [`raw.githubusercontent.com`](https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/HEAD/scripts/install-cli.sh)
 > URL serves the identical script.
