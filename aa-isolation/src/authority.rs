@@ -910,6 +910,9 @@ fn check_attenuation(
             // approval_ref. Only a lease the ledger itself issued/recorded
             // carries independent attribution; a never-recorded lease skips
             // the content check above, so require presence and equality here.
+            // On a ledger built with `with_trusted_issuer`, an escalation is
+            // therefore reachable only for grants whose issuer is that trusted
+            // issuer; any other claimed issuer is refused (fail closed).
             && parent.ledger().knows(child_lease.id())
             && parent.ledger().content_matches(child_lease)
         {
