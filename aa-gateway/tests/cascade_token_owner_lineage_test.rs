@@ -36,7 +36,7 @@ fn write_cascade(dir: &std::path::Path) {
         "apiVersion: agent-assembly.dev/v1alpha1\n\
          kind: GovernancePolicy\n\
          metadata:\n  name: t-global-allow\n  version: \"0.1.0\"\n\
-         spec:\n  tools: {}\n",
+         spec:\n  tools:\n    \"*\":\n      allow: true\n",
     )
     .unwrap();
     std::fs::write(

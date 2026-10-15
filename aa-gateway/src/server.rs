@@ -1638,7 +1638,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: srv-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         std::fs::write(
@@ -1688,7 +1688,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: srv-single\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
 

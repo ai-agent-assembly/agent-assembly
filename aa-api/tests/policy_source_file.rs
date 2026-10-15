@@ -17,7 +17,7 @@ fn file_source_keeps_primary_slot_behaviour() {
         "apiVersion: agent-assembly.dev/v1alpha1\n\
          kind: GovernancePolicy\n\
          metadata:\n  name: local-file-policy\n  version: \"0.1.0\"\n\
-         spec:\n  tools: {}\n",
+         spec:\n  tools:\n    \"*\":\n      allow: true\n",
     )
     .expect("write policy file");
 

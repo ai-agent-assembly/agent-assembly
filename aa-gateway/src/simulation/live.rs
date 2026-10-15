@@ -69,7 +69,7 @@ mod tests {
         // AAASM-3351: a minimal valid section-based document allows by default
         // (no section restricts any action). Previously this fixture used the
         // unsupported top-level `rules:` schema, now rejected by the validator.
-        let policy_yaml = "version: \"1.0\"\n";
+        let policy_yaml = crate::policy::resolve::ALLOW_ALL_TEMPLATE;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
         tmp.write_all(policy_yaml.as_bytes()).unwrap();
         tmp.flush().unwrap();

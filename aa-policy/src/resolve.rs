@@ -526,7 +526,15 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
     };
 
     let document = project_rules(&validated);
-    if document.rules.is_empty() {
+    // A document with no tool rule is "empty" only when it also states none of
+    // the launch-time constraints `aasm run` itself enforces. A policy whose
+    // whole content is `credentials: broker_required` (or a required egress
+    // posture, or a lease) is a complete, supported policy; calling it empty
+    // would refuse the one way of authoring it (AAASM-6347).
+    let states_launch_constraint = validated.egress != crate::document::EgressPosture::NotRequired
+        || validated.credentials != crate::document::CredentialBrokeragePosture::NotRequired
+        || !validated.leases.is_empty();
+    if document.rules.is_empty() && !states_launch_constraint {
         return PolicyResolution::Unconfigured(Unconfigured::EmptyDocument {
             source: source.to_path_buf(),
         });
@@ -928,8 +936,43 @@ mod tests {
         assert_eq!(load(&not_required).state_token(), "permissive");
     }
 
+    /// AAASM-6347 positive path: `credentials: broker_required` is a complete
+    /// enforcing policy on its own, and resolves to `Enforced` carrying the
+    /// posture a launcher reads. It must not need a sibling section to load.
+    #[test]
+    fn a_document_of_only_broker_required_credentials_resolves_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "p.yaml", "credentials:\n  posture: broker_required\n");
+
+        let resolution = load(&path);
+
+        assert_eq!(resolution.state_token(), "enforced", "got {resolution:?}");
+        assert_eq!(
+            resolution.credentials_posture(),
+            crate::document::CredentialBrokeragePosture::BrokerRequired
+        );
+        assert!(resolution.into_enforceable().is_ok());
+    }
+
+    /// The same class for the egress node (AAASM-6278): a required egress
+    /// posture is the whole policy, not an empty document.
+    #[test]
+    fn a_document_of_only_broker_required_egress_resolves_enforced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "p.yaml", "egress:\n  posture: broker_required\n");
+
+        let resolution = load(&path);
+
+        assert_eq!(resolution.state_token(), "enforced", "got {resolution:?}");
+        assert_eq!(
+            resolution.egress_posture(),
+            crate::document::EgressPosture::BrokerRequired
+        );
+    }
+
     /// A document that states only `credentials: not_required` carries no
-    /// enforcement at all, so it stays refused exactly like an empty one.
+    /// enforcement at all, so the validator refuses it exactly like any other
+    /// document with no enforcement section (AAASM-6338).
     #[test]
     fn a_document_of_only_credentials_not_required_is_refused_as_no_enforcement() {
         let dir = tempfile::tempdir().unwrap();
@@ -937,7 +980,7 @@ mod tests {
 
         let resolution = load(&path);
 
-        assert_eq!(resolution.state_token(), "unconfigured");
+        assert_eq!(resolution.state_token(), "load_failed");
         assert!(resolution.into_enforceable().is_err());
     }
 

@@ -17,7 +17,7 @@ use aa_cli::commands::policy::history::{self, DiffArgs, HistoryArgs, RollbackArg
 use aa_cli::commands::policy::simulate::{self, SimulateArgs};
 
 /// Minimal allow-everything policy (section-based schema, AAASM-3351).
-const ALLOW_ALL_POLICY: &str = "version: \"1.0\"\n";
+const ALLOW_ALL_POLICY: &str = aa_policy::resolve::ALLOW_ALL_TEMPLATE;
 /// Policy that denies the `bash` tool, forcing a simulated denial.
 const DENY_BASH_POLICY: &str = "version: \"1.0\"\ntools:\n  bash:\n    allow: false\n";
 
