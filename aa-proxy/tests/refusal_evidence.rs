@@ -256,11 +256,19 @@ async fn recording_tls_upstream() -> (SocketAddr, Arc<std::sync::Mutex<Vec<u8>>>
                 let Ok(mut tls) = acceptor.accept(stream).await else {
                     return;
                 };
+                // Read until the peer closes or goes idle, so a request split
+                // across TLS records is recorded whole.
                 let mut chunk = [0u8; 8192];
-                if let Ok(Ok(n)) =
-                    tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut chunk)).await
+                while let Ok(Ok(n)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(300), tls.read(&mut chunk)).await
                 {
+                    if n == 0 {
+                        break;
+                    }
                     sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+                    if sink.lock().unwrap().windows(4).any(|w| w == b"\r\n\r\n") && n < chunk.len() {
+                        break;
+                    }
                 }
                 let _ = tls
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
@@ -1120,12 +1128,21 @@ async fn redact_fixture_proxy(
     upstream: SocketAddr,
     dir: &std::path::Path,
 ) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
+    redact_fixture_proxy_with(gateway, upstream, dir, CredentialAction::RedactOnly).await
+}
+
+async fn redact_fixture_proxy_with(
+    gateway: String,
+    upstream: SocketAddr,
+    dir: &std::path::Path,
+    action: CredentialAction,
+) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
     start_proxy(
         Fixture {
             mitm_hosts: vec![MITM_HOST.to_string()],
             gateway_endpoint: Some(gateway),
             upstream_override: Some(upstream),
-            credential_action: Some(CredentialAction::RedactOnly),
+            credential_action: Some(action),
             ..Fixture::default()
         },
         dir,
@@ -1134,33 +1151,7 @@ async fn redact_fixture_proxy(
 }
 
 #[tokio::test]
-async fn gateway_redact_forwards_only_the_proxy_redacted_body() {
-    let dir = tempfile::tempdir().unwrap();
-    let gateway = gateway_stub::spawn_redacting_gateway().await;
-    let (upstream, received) = recording_tls_upstream().await;
-    let (proxy, _audit) = redact_fixture_proxy(gateway, upstream, dir.path()).await;
-
-    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
-    let response = mitm_send(
-        tunnel,
-        MITM_HOST,
-        &post(MITM_HOST, "/mcp", &mcp_body_with(BUILTIN_SECRET)),
-    )
-    .await;
-
-    let upstream_saw = String::from_utf8_lossy(&received.lock().unwrap()).into_owned();
-    assert!(
-        upstream_saw.contains("tools/call"),
-        "non-vacuity: the call must have been forwarded, upstream saw: {upstream_saw:?} (client: {response:?})"
-    );
-    assert!(
-        !upstream_saw.contains(BUILTIN_SECRET),
-        "the raw secret must not reach upstream, upstream saw: {upstream_saw:?}"
-    );
-}
-
-#[tokio::test]
-async fn gateway_redact_the_proxy_cannot_reproduce_is_denied_and_never_forwarded() {
+async fn gateway_redact_with_a_policy_only_value_is_denied_and_never_forwarded() {
     let dir = tempfile::tempdir().unwrap();
     let gateway = gateway_stub::spawn_redacting_gateway().await;
     let (upstream, received) = recording_tls_upstream().await;
@@ -1175,7 +1166,7 @@ async fn gateway_redact_the_proxy_cannot_reproduce_is_denied_and_never_forwarded
     .await;
 
     assert!(
-        response.contains("could not apply"),
+        response.contains("cannot apply"),
         "the client must get a JSON-RPC error naming the unappliable redaction, got: {response:?}"
     );
     tokio::time::sleep(std::time::Duration::from_millis(700)).await;
@@ -1184,6 +1175,57 @@ async fn gateway_redact_the_proxy_cannot_reproduce_is_denied_and_never_forwarded
         "nothing may reach upstream, upstream saw: {:?}",
         String::from_utf8_lossy(&received.lock().unwrap())
     );
+}
+
+/// Gateway Redact must be denied and nothing may reach upstream, for `body`
+/// under scanner action `action`.
+async fn assert_redact_denied_and_not_forwarded(body: &str, action: CredentialAction) {
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = gateway_stub::spawn_redacting_gateway().await;
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), action).await;
+
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", body)).await;
+
+    assert!(
+        response.contains("cannot apply"),
+        "{action:?}: the client must get the fail-closed JSON-RPC error, got: {response:?}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let saw = received.lock().unwrap().clone();
+    assert!(
+        saw.is_empty(),
+        "{action:?}: nothing may reach upstream, upstream saw: {:?}",
+        String::from_utf8_lossy(&saw)
+    );
+}
+
+/// A built-in secret alone is also denied: the proxy finding something does not
+/// show it covered what the gateway found.
+#[tokio::test]
+async fn gateway_redact_with_a_builtin_only_secret_is_denied() {
+    assert_redact_denied_and_not_forwarded(&mcp_body_with(BUILTIN_SECRET), CredentialAction::RedactOnly).await;
+}
+
+/// Regression for the review exploit: one body carrying a built-in secret AND a
+/// gateway-only value. A "proxy scan redacted something" predicate would forward
+/// it with the gateway-only value raw.
+#[tokio::test]
+async fn gateway_redact_with_a_mixed_body_is_denied_not_partially_redacted() {
+    let mixed = mcp_body_with(&format!("{BUILTIN_SECRET} {POLICY_ONLY_VALUE}"));
+    assert_redact_denied_and_not_forwarded(&mixed, CredentialAction::RedactOnly).await;
+}
+
+#[tokio::test]
+async fn gateway_redact_is_denied_under_credential_action_block() {
+    let mixed = mcp_body_with(&format!("{BUILTIN_SECRET} {POLICY_ONLY_VALUE}"));
+    assert_redact_denied_and_not_forwarded(&mixed, CredentialAction::Block).await;
+}
+
+#[tokio::test]
+async fn gateway_redact_is_denied_under_credential_action_alert_only() {
+    assert_redact_denied_and_not_forwarded(&mcp_body_with(POLICY_ONLY_VALUE), CredentialAction::AlertOnly).await;
 }
 
 /// Paired control for the test above: the SAME body under gateway Allow is
