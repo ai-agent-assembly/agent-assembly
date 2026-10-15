@@ -2310,6 +2310,9 @@ journeys:
     selector: aa-core/src/net.rs::tests::differential_table_against_observed_macos_libc
   - repo: agent-assembly
     kind: test
+    selector: aa-gateway/tests/network_policy_change_next_connection_test.rs::policy_swap_changes_the_verdict_for_the_next_connection_of_the_same_agent
+  - repo: agent-assembly
+    kind: test
     selector: aa-isolation/src/egress.rs::tests::resolver_disagreement_forms_are_restricted_not_routable
   execution_lanes:
   - pr
