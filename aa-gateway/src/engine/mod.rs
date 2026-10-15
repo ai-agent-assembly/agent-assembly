@@ -808,6 +808,7 @@ impl PolicyEngine {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -944,6 +945,7 @@ impl PolicyEngine {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         };
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
@@ -2768,6 +2770,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -5252,6 +5255,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 

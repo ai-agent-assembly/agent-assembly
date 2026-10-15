@@ -45,6 +45,7 @@ fn data_doc(scope: PolicyScope, pattern: &str, action: CredentialAction) -> Poli
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 

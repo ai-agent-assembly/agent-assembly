@@ -229,6 +229,19 @@
           "enum": ["not_required", "broker_required"]
         }
       }
+    },
+    "credentials": {
+      "description": "Required credential-brokerage posture (AAASM-6347, ADR 0038). States whether this launch must have its credentials brokered by a fail-closed broker, or whether no such property is required (the default when this section is absent). It states a requirement only and grants no authority: brokering still needs an explicit authority.leases entry with domain 'credential' and scope 'whole'.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture"],
+      "properties": {
+        "posture": {
+          "description": "The required credential-brokerage posture. 'not_required' states no property is required; 'broker_required' requires a fail-closed credential broker or the launch is refused.",
+          "type": "string",
+          "enum": ["not_required", "broker_required"]
+        }
+      }
     }
   },
   "examples": [

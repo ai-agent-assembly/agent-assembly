@@ -37,6 +37,7 @@ fn allow_doc(scope: PolicyScope) -> PolicyDocument {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 

@@ -247,6 +247,21 @@ pub struct RawAuthorityPolicy {
     pub unknown: HashMap<String, serde_yaml::Value>,
 }
 
+/// Raw (unvalidated) deserialization target for the `credentials` policy
+/// section (AAASM-6347).
+#[derive(Debug, Deserialize)]
+pub struct RawCredentialsPolicy {
+    /// The required credential-brokerage posture: `"not_required"` or
+    /// `"broker_required"`. Required when this section is present at all,
+    /// for the same AAASM-4330 fail-closed reason `RawEgressPolicy::posture`
+    /// is.
+    pub posture: Option<String>,
+    /// Stray keys captured so the validator can reject them (e.g. a
+    /// `raw_fallback` or ceiling key must not be silently dropped).
+    #[serde(flatten)]
+    pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
 /// Raw (unvalidated) deserialization target for the `egress` policy section
 /// (AAASM-6278).
 #[derive(Debug, Deserialize)]
@@ -336,6 +351,8 @@ pub struct RawPolicyDocument {
     pub authority: Option<RawAuthorityPolicy>,
     /// Required egress-mediation posture (AAASM-6278).
     pub egress: Option<RawEgressPolicy>,
+    /// Required credential-brokerage posture (AAASM-6347).
+    pub credentials: Option<RawCredentialsPolicy>,
     /// Seconds before an approval request times out.
     /// Defaults to 300 when absent.
     pub approval_timeout_secs: Option<u32>,
@@ -719,6 +736,17 @@ mod tests {
     fn raw_egress_absent_posture_is_none() {
         let raw: RawPolicyDocument = serde_yaml::from_str("egress: {}\n").unwrap();
         assert!(raw.egress.as_ref().unwrap().posture.is_none());
+    }
+
+    #[test]
+    fn raw_credentials_deserializes_posture_and_captures_unknown_keys() {
+        let raw: RawPolicyDocument =
+            serde_yaml::from_str("credentials:\n  posture: broker_required\n  raw_fallback: true\n").unwrap();
+        let creds = raw.credentials.as_ref().unwrap();
+        assert_eq!(creds.posture, Some("broker_required".to_string()));
+        assert!(creds.unknown.contains_key("raw_fallback"));
+        let absent: RawPolicyDocument = serde_yaml::from_str("{}\n").unwrap();
+        assert!(absent.credentials.is_none());
     }
 
     #[test]

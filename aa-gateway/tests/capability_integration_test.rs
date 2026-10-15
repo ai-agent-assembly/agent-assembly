@@ -63,6 +63,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 
@@ -84,6 +85,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 

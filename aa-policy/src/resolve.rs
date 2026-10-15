@@ -125,6 +125,11 @@ pub enum PolicyResolution {
         /// [`crate::document::PolicyDocument::egress`]'s own doc comment for
         /// why.
         egress: crate::document::EgressPosture,
+        /// AAASM-6347 — this document's required credential-brokerage
+        /// posture, captured at the same point and for the same reason as
+        /// `egress`. It states a requirement only; authority still comes from
+        /// an explicit `authority.leases` credential lease.
+        credentials: crate::document::CredentialBrokeragePosture,
         /// AAASM-6277 — this document's authored capability-lease grants
         /// (`authority.leases`), captured at the same point `canonical` and
         /// `egress` are: the last point the rich validated document exists.
@@ -156,6 +161,8 @@ pub enum PolicyResolution {
         /// in the first place, but a future, narrower permissiveness check
         /// must not have to re-derive this from a document that is gone.
         egress: crate::document::EgressPosture,
+        /// AAASM-6347 — see [`Self::Enforced`]'s `credentials` field.
+        credentials: crate::document::CredentialBrokeragePosture,
         /// AAASM-6277 — see [`Self::Enforced`]'s `leases` field. A lease
         /// grant is additive authority, not a restriction, so its presence
         /// never affects `is_explicit_allow_all`'s verdict the way `egress`
@@ -335,6 +342,17 @@ impl PolicyResolution {
         match self {
             Self::Enforced { egress, .. } | Self::Permissive { egress, .. } => *egress,
             Self::Unconfigured(_) | Self::LoadFailed { .. } => crate::document::EgressPosture::NotRequired,
+        }
+    }
+
+    /// This resolution's required credential-brokerage posture (AAASM-6347).
+    ///
+    /// [`crate::document::CredentialBrokeragePosture::NotRequired`] for the
+    /// two refusing states, for the same reason as [`Self::egress_posture`].
+    pub fn credentials_posture(&self) -> crate::document::CredentialBrokeragePosture {
+        match self {
+            Self::Enforced { credentials, .. } | Self::Permissive { credentials, .. } => *credentials,
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => crate::document::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -519,6 +537,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
     // which is how the execution boundary came to have no policy source at all.
     let canonical = validated.to_canonical();
     let egress = validated.egress;
+    let credentials = validated.credentials;
     // AAASM-6277 — derived here for the same reason `canonical`/`egress`
     // are: this is the last point the rich validated document exists.
     let leases = validated.to_canonical_leases();
@@ -528,6 +547,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
             document,
             canonical,
             egress,
+            credentials,
             leases,
         };
     }
@@ -536,6 +556,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
         document,
         canonical,
         egress,
+        credentials,
         leases,
     }
 }
@@ -565,6 +586,10 @@ fn is_explicit_allow_all(doc: &crate::PolicyDocument) -> bool {
         // *something* even when its tool ruleset is wildcard-allow, so it
         // must not read as "nothing is restricted".
         && doc.egress == crate::document::EgressPosture::NotRequired
+        // AAASM-6347: likewise a required credential broker restricts
+        // something; only `broker_required` counts, `not_required` states
+        // no constraint and must not make an allow-all document enforced.
+        && doc.credentials == crate::document::CredentialBrokeragePosture::NotRequired
 }
 
 /// Project the gateway's validated document onto the rule list the dev-tool
@@ -867,6 +892,88 @@ mod tests {
             resolution.egress_posture(),
             crate::document::EgressPosture::BrokerRequired
         );
+    }
+
+    /// AAASM-6347 — the same control as the egress wildcard-allow test, for
+    /// the credentials node: `broker_required` restricts something even with
+    /// a wildcard-allow tool ruleset, while `not_required` states nothing and
+    /// must leave an allow-all document permissive.
+    #[test]
+    fn wildcard_allow_beside_broker_required_credentials_is_enforced_not_permissive() {
+        let dir = tempfile::tempdir().unwrap();
+        let wildcard = "tools:\n  \"*\":\n    allow: true\n";
+        let required = write(
+            &dir,
+            "r.yaml",
+            &format!("credentials:\n  posture: broker_required\n{wildcard}"),
+        );
+        let not_required = write(
+            &dir,
+            "n.yaml",
+            &format!("credentials:\n  posture: not_required\n{wildcard}"),
+        );
+
+        let resolution = load(&required);
+        assert_eq!(
+            resolution.state_token(),
+            "enforced",
+            "a policy that requires a credential broker is not permissive; got {resolution:?}"
+        );
+        assert_eq!(
+            resolution.credentials_posture(),
+            crate::document::CredentialBrokeragePosture::BrokerRequired
+        );
+        assert_eq!(resolution.egress_posture(), crate::document::EgressPosture::NotRequired);
+
+        assert_eq!(load(&not_required).state_token(), "permissive");
+    }
+
+    /// A document that states only `credentials: not_required` carries no
+    /// enforcement at all, so it stays refused exactly like an empty one.
+    #[test]
+    fn a_document_of_only_credentials_not_required_is_refused_as_no_enforcement() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "p.yaml", "credentials:\n  posture: not_required\n");
+
+        let resolution = load(&path);
+
+        assert_eq!(resolution.state_token(), "unconfigured");
+        assert!(resolution.into_enforceable().is_err());
+    }
+
+    #[test]
+    fn credentials_posture_defaults_to_not_required_for_non_launching_states() {
+        assert_eq!(
+            PolicyResolution::Unconfigured(Unconfigured::NoSource { searched: vec![] }).credentials_posture(),
+            crate::document::CredentialBrokeragePosture::NotRequired
+        );
+        assert_eq!(
+            PolicyResolution::LoadFailed {
+                source: PathBuf::from("/p.yaml"),
+                detail: "bad".to_string(),
+            }
+            .credentials_posture(),
+            crate::document::CredentialBrokeragePosture::NotRequired
+        );
+    }
+
+    #[test]
+    fn credentials_posture_reads_the_authored_value_for_an_enforced_document() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "p.yaml",
+            "credentials:\n  posture: broker_required\ntools:\n  bash:\n    allow: false\n",
+        );
+
+        let resolution = load(&path);
+
+        assert_eq!(resolution.state_token(), "enforced");
+        assert_eq!(
+            resolution.credentials_posture(),
+            crate::document::CredentialBrokeragePosture::BrokerRequired
+        );
+        assert_eq!(resolution.egress_posture(), crate::document::EgressPosture::NotRequired);
     }
 
     /// The refusal has to be actionable. An operator who is told only "no"

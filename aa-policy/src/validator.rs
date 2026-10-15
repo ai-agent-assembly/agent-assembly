@@ -4,12 +4,14 @@ use std::collections::HashMap;
 
 use crate::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, EgressPosture,
-        LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, CredentialBrokeragePosture,
+        DataPolicy, EgressPosture, LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy,
+        ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{
-        GovernancePolicyEnvelope, RawAuthorityPolicy, RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument,
+        GovernancePolicyEnvelope, RawAuthorityPolicy, RawCredentialsPolicy, RawEgressPolicy, RawLeaseGrant,
+        RawLeaseScope, RawPolicyDocument,
     },
     scope::PolicyScope,
 };
@@ -75,7 +77,7 @@ impl PolicyValidator {
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
                          schedule, budget, data, tools, capabilities, filesystem, syscalls, \
-                         authority, egress, approval_timeout_secs, approval",
+                         authority, egress, credentials, approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -93,6 +95,7 @@ impl PolicyValidator {
         let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
         let leases = Self::validate_authority(raw.authority, &mut errors);
         let egress = Self::validate_egress(raw.egress, &mut errors);
+        let credentials = Self::validate_credentials(raw.credentials, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -131,6 +134,7 @@ impl PolicyValidator {
                 syscall_allowlist,
                 leases,
                 egress,
+                credentials,
             },
             warnings,
         })
@@ -717,6 +721,48 @@ impl PolicyValidator {
                         ),
                     ));
                     EgressPosture::NotRequired
+                }
+            },
+        }
+    }
+
+    /// Validate the `credentials:` section into a
+    /// [`CredentialBrokeragePosture`] (AAASM-6347).
+    ///
+    /// Same shape as [`validate_egress`](Self::validate_egress): absent reads
+    /// as `NotRequired`, while a present section must state `posture:` and
+    /// may state nothing else. Stray keys (`raw_fallback`, ceilings, ...) are
+    /// rejected so no authored key can silently soften the requirement.
+    fn validate_credentials(
+        raw: Option<RawCredentialsPolicy>,
+        errors: &mut Vec<ValidationError>,
+    ) -> CredentialBrokeragePosture {
+        let Some(raw) = raw else {
+            return CredentialBrokeragePosture::NotRequired;
+        };
+
+        reject_unknown_keys("credentials", &raw.unknown, errors);
+
+        match raw.posture.as_deref() {
+            None => {
+                errors.push(ValidationError::new(
+                    "credentials.posture",
+                    "is required when a `credentials:` section is present; write \"not_required\" or \
+                     \"broker_required\"",
+                ));
+                CredentialBrokeragePosture::NotRequired
+            }
+            Some(word) => match CredentialBrokeragePosture::parse(word) {
+                Some(posture) => posture,
+                None => {
+                    errors.push(ValidationError::new(
+                        "credentials.posture",
+                        format!(
+                            "unrecognised credentials posture '{word}'; valid postures are: not_required, \
+                             broker_required"
+                        ),
+                    ));
+                    CredentialBrokeragePosture::NotRequired
                 }
             },
         }
@@ -2291,5 +2337,58 @@ approval:
     fn an_unknown_top_level_key_lists_egress_as_valid() {
         let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
         assert!(errs.iter().any(|e| e.message.contains("egress")));
+    }
+
+    // ── AAASM-6347 — credentials ────────────────────────────────────────────
+
+    #[test]
+    fn a_broker_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: broker_required\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::BrokerRequired);
+        // It must not leak into the egress node.
+        assert_eq!(out.document.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn a_not_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: not_required\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn absent_credentials_section_is_not_required() {
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn a_credentials_section_with_no_posture_is_rejected() {
+        let errs = PolicyValidator::from_yaml("credentials: {}\n").expect_err("missing posture");
+        assert!(errs.iter().any(|e| e.field == "credentials.posture"));
+    }
+
+    #[test]
+    fn a_credentials_section_with_an_unrecognised_posture_is_rejected() {
+        for word in ["raw_fallback", "broker_preferred", "Broker_Required"] {
+            let errs = PolicyValidator::from_yaml(&format!("credentials:\n  posture: {word}\n"))
+                .expect_err("an unknown posture must be rejected");
+            assert!(errs.iter().any(|e| e.field == "credentials.posture"), "{word}");
+        }
+    }
+
+    #[test]
+    fn unknown_credentials_keys_are_rejected_rather_than_dropped() {
+        for key in ["raw_fallback", "required_mode", "ceilings", "posturee"] {
+            let errs =
+                PolicyValidator::from_yaml(&format!("credentials:\n  posture: broker_required\n  {key}: true\n"))
+                    .expect_err("an unknown nested key must fail closed");
+            assert!(errs.iter().any(|e| e.field.starts_with("credentials")), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_lists_credentials_as_valid() {
+        let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
+        assert!(errs.iter().any(|e| e.message.contains("credentials")));
     }
 }
