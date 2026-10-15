@@ -1165,47 +1165,30 @@ impl ProxyServer {
                     .await;
                 McpEvalOutcome::Forward(call, args_bytes)
             }
-            // AAASM-6353: the gateway says the payload needs redaction, but the
-            // proxy never receives the gateway's patterns (custom
-            // `sensitive_patterns`, locale packs), so its own scanner may be
-            // unable to reproduce the finding. Forward only when that scanner
-            // actually redacts this request body, so the bytes forwarded below
-            // are the redacted ones; otherwise the raw value would go upstream.
-            // Same fail-closed mapping as `network_enforce` (Redact -> Deny).
+            // AAASM-6353: every gateway `Redact` is denied, fail-closed, like
+            // `network_enforce` (Redact -> Deny). The proxy cannot apply the
+            // gateway's redaction: it never receives the gateway's patterns
+            // (custom `sensitive_patterns`, locale packs) and does not replay
+            // `RedactInstructions`. Its own scan finding *something* does not
+            // show it covered what the gateway found (a body can mix a built-in
+            // secret with a gateway-only value), so no scan outcome can
+            // authorize the forward.
             //
-            // Scope: request direction only. The upstream response is still
-            // scanned by the built-in scanner alone (`relay_mcp_response`), so
-            // a gateway-only pattern in a response is not covered here.
+            // Not covered here (follow-ups): the response direction
+            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only)
+            // and the compressed-body scan bypass (AAASM-6354).
             Ok(McpDecision::Redact { .. }) => {
-                let verdict = self.interceptor.intercept_request(
-                    &req.body,
-                    req.header("content-encoding"),
-                    self.config.credential_action,
+                let reason = "gateway required redaction of this MCP call that the proxy cannot apply (fail-closed); \
+                              change the policy to alert/allow, or wait for proxy redaction support";
+                tracing::warn!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    "{reason}",
                 );
-                if verdict.decision == VerdictDecision::ForwardRedacted {
-                    tracing::info!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        "MCP call needs redaction per gateway; proxy scanner redacted the request body, forwarding",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
-                        .await;
-                    McpEvalOutcome::Forward(call, args_bytes)
-                } else {
-                    let reason =
-                        "gateway required redaction of this MCP call that the proxy could not apply (fail-closed)";
-                    tracing::warn!(
-                        tool_name = %call.tool_name,
-                        %host,
-                        proxy_scan = ?verdict.decision,
-                        "{reason}",
-                    );
-                    self.interceptor
-                        .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
-                        .await;
-                    McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, reason))
-                }
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                    .await;
+                McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, reason))
             }
             Ok(McpDecision::Deny { reason }) => {
                 tracing::info!(
@@ -1355,8 +1338,10 @@ impl ProxyServer {
     ///
     /// Branches:
     ///
-    /// * **MCP detected, gateway returns `Allow` or `Redact`** — forward the
+    /// * **MCP detected, gateway returns `Allow`** — forward the
     ///   (DLP-scanned) body to upstream and relay the redacted response.
+    /// * **MCP detected, gateway returns `Redact`** — deny fail-closed
+    ///   (AAASM-6353): the proxy cannot apply the gateway's redaction.
     /// * **MCP detected, gateway returns `Deny`** — write a JSON-RPC 2.0
     ///   error envelope to the client TLS stream, do not dial upstream.
     /// * **MCP detected, gateway RPC failed** — deny (fail-closed) unless

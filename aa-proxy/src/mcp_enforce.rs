@@ -65,16 +65,13 @@ pub enum McpDecision {
     Deny { reason: String },
     /// The gateway requires the payload to be redacted before it leaves.
     ///
-    /// The proxy does NOT replay `instructions`, and its own scanner holds
-    /// built-in patterns only (no gateway `sensitive_patterns` / locale
-    /// packs), so it cannot be assumed to reproduce the gateway's finding.
-    /// The data path therefore forwards a `Redact` call only when its own
-    /// scan of the request body redacted something, and denies fail-closed
-    /// otherwise (AAASM-6353) — see `ProxyServer::evaluate_mcp_request`.
-    /// Response-direction scanning is likewise built-in patterns only.
-    ///
-    /// `instructions` carries the gateway's field-path / replacement rules
-    /// verbatim for audit and any future instruction-driven rewriting.
+    /// The proxy cannot apply this: it does not replay `instructions` and its
+    /// scanner holds built-in patterns only (no gateway `sensitive_patterns` /
+    /// locale packs). The data path therefore ALWAYS denies a `Redact` call
+    /// fail-closed (AAASM-6353), whatever its own scan finds, mirroring
+    /// `network_enforce`. `instructions` is advisory and currently unused.
+    /// Response-direction scanning is likewise built-in patterns only
+    /// (follow-up AAASM-6355).
     Redact { instructions: RedactInstructions },
 }
 
