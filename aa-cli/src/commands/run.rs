@@ -1148,9 +1148,11 @@ mod plan {
     /// any registration exists — `posture.refuse(...)`, exactly like the
     /// pre-existing `--isolation-backend`/`broker_required` contradiction
     /// checks in `resolve_isolation`'s `IsolationIntent::None` arm. Relying
-    /// on the gate alone would leave two gaps: `--isolation none` never
-    /// reaches `authority_gate` at all (`resolve_boundary` returns from the
-    /// no-backend arm before it), and every other path reaches the gate only
+    /// on the gate alone would leave two gaps: `--isolation none` does not
+    /// reach `authority_gate` over the lowered requirements (`resolve_boundary`'s
+    /// no-backend arm runs it only when the policy states `credentials:
+    /// posture: broker_required`, AAASM-6348, and then over a spec that
+    /// carries no lowered requirements), and every other path reaches the gate only
     /// *after* `bind()`, which runs after registration — a gate-only refusal
     /// would abandon a registration `resolve()`'s own contract says must
     /// never be created for a launch that is going to refuse.
@@ -1224,9 +1226,11 @@ mod plan {
         // has no such variant). Refuse early, by name, rather than letting
         // an operator who combined a lease with a resource ceiling hit a
         // confusing refusal three gates downstream. `--isolation none`
-        // never reaches a `Resource` requirement at all (it is refused, or
-        // establishes no boundary, before any requirement is checked), so
-        // this check is intentionally independent of that one.
+        // does not run this refusal: with no `credentials: broker_required`
+        // it checks no requirement at all, and with it the none-arm
+        // `authority_gate` (AAASM-6348) can still refuse a `--max-*`
+        // `Resource` requirement at bind time, reported with the policy
+        // named in the detail.
         if !authored.is_empty()
             && args.isolation != super::IsolationIntent::None
             && !super::resource_requirements(args).is_empty()
@@ -1308,11 +1312,13 @@ mod plan {
     /// `CompatibilityResidual`.
     ///
     /// AAASM-6285 — `isolation_establishes_boundary` must be
-    /// `args.isolation != IsolationIntent::None`: under `--isolation none`,
-    /// `resolve_isolation` never calls `resolve_boundary`, so
-    /// `authority_gate` is never reached at all. The warning text is worded
-    /// differently for that case rather than claiming a refusal that cannot
-    /// happen — see this ticket for the wording bug this replaced.
+    /// `args.isolation != IsolationIntent::None`: under `--isolation none`
+    /// no backend arm runs, so `authority_gate` does not check the lowered
+    /// domains' requirements. It does run, over a spec with no lowered
+    /// requirements, when the policy states `credentials: posture:
+    /// broker_required` (AAASM-6348). The warning text is worded differently
+    /// for that case rather than claiming a refusal that cannot happen —
+    /// see AAASM-6285 for the wording bug this replaced.
     fn warn_on_uncovered_lease_domains(
         lowering: &aa_isolation::PolicyLowering,
         authored: &[AuthoredLease],
@@ -1332,8 +1338,9 @@ mod plan {
     /// AAASM-6285 — the two branches must stay behaviorally distinct: the
     /// `true` branch's claim ("refuses this launch at the authority gate")
     /// is only true when an isolation boundary is actually established,
-    /// since `--isolation none` never reaches `resolve_boundary`/
-    /// `authority_gate` at all. Collapsing them back into one wording for
+    /// since under `--isolation none` the gate never checks the lowered
+    /// domains (it runs only for a `broker_required` credentials posture,
+    /// over a spec without them). Collapsing them back into one wording for
     /// both cases would reintroduce this ticket's bug.
     fn uncovered_lease_domains_warning(
         missing: &[CapabilityDomain],
@@ -1357,8 +1364,10 @@ mod plan {
                 "warning: this policy authors at least one capability lease, which puts every domain its \
                  own requirements name under ADR 0038's all-or-nothing rule. Not covered by any authored \
                  lease: {}. Under `--isolation none`, no execution-isolation boundary is established, so \
-                 `authority_gate` is never reached and this launch proceeds unconfined despite the gap — \
-                 it will refuse once an `--isolation process`/`auto` boundary is established instead. \
+                 `authority_gate` does not check these domains and this launch proceeds unconfined despite \
+                 the gap (the gate runs under `--isolation none` only for a `credentials: posture: \
+                 broker_required` policy, and then only over the credential contract and any `--max-*` \
+                 ceilings) — it will refuse once an `--isolation process`/`auto` boundary is established. \
                  Author a lease for each, or remove every authored lease to opt back into the rc.7 \
                  compatibility residual.",
                 names.join(", "),
@@ -1558,6 +1567,13 @@ mod plan {
         /// the credential state is `Leased` only for an authored
         /// `credential`/`whole` lease; nothing else — including an egress
         /// posture — can supply one.
+        ///
+        /// Invariant this relies on: `spec` carries no `Credential`
+        /// requirement (lowering marks the domain unrepresentable, and this
+        /// path never applies the lowering). A spec that carried one, with no
+        /// lease, would read `CompatibilityResidual` and `check_credential_grant`
+        /// would admit it; the no-lease refusal is `Denied`, which holds only
+        /// because that requirement is absent.
         fn unconfined_credential_refusal(
             &self,
             spec: &ExecutionSpec,
@@ -1570,6 +1586,21 @@ mod plan {
                 Err(refusal) => return Some(refusal.to_string()),
             };
             let authority = CredentialAuthority::from_gated_spec(spec, &witness);
+            // `authority_gate` validates a lease only for a domain the spec
+            // requires, and this spec requires no `Credential` (see the
+            // invariant above), so the credential lease's validity and
+            // subject are checked here, as the gate would for a requirement.
+            if let Some(lease) = authority.credential_lease() {
+                if let Err(reason) = lease.validate_at(now) {
+                    return Some(format!("the credential lease is not valid for this launch: {reason:?}"));
+                }
+                if lease.subject().agent_id != spec.identity().agent_id {
+                    return Some(format!(
+                        "the credential lease was issued to `{}`, not to this launch",
+                        lease.subject().agent_id
+                    ));
+                }
+            }
             let scope = spec
                 .requirements()
                 .iter()
@@ -1735,11 +1766,19 @@ mod plan {
                 // service, an explicit credential lease, brokered env names
                 // withheld), and nothing here confines the child or removes
                 // an ambient credential the broker does not cover.
+                //
+                // Timing: this runs at bind time, after registration, the
+                // proxy guard and the launch audit record. A refused run
+                // therefore still leaves a registered identity and a launch
+                // record behind; only the child process is never started.
                 if self.authority.credential_contract.posture() == BrokeragePosture::BrokerRequired {
                     if let Some(refusal) =
                         self.unconfined_credential_refusal(&base, now, &credential_broker, &credentials)
                     {
-                        let detail = format!("the launch is refused: {refusal}");
+                        let detail = format!(
+                            "the launch is refused: the effective policy requires brokered credentials \
+                             (`credentials: posture: broker_required`): {refusal}"
+                        );
                         let mut report = IsolationReport::no_boundary(
                             session,
                             identity_ref,
@@ -4316,6 +4355,10 @@ mod plan {
             let detail = refusal_text(&refused)
                 .unwrap_or_else(|| panic!("expected a refusal for `{reason}`, got {}", describe(&refused)));
             assert!(
+                detail.contains("credentials: posture: broker_required"),
+                "the refusal must name the policy statement that caused it: {detail}"
+            );
+            assert!(
                 detail.contains(&reason.to_string()),
                 "refused, but not for `{reason}`: {detail}"
             );
@@ -4432,6 +4475,126 @@ mod plan {
                 detail.contains(&CredentialRefusal::NoCredentialGrant.to_string()),
                 "{}",
                 describe(&boundary)
+            );
+        }
+
+        /// A spec carrying the fixture credential lease, issued to
+        /// `lease_subject` at `issued_at`, for a launch identified as
+        /// `spec_agent`. Used to drive `unconfined_credential_refusal`'s
+        /// `authority_gate` branch directly, since the live path always
+        /// issues a matching, just-issued lease.
+        fn leased_spec(spec_agent: &str, lease_subject: &str, issued_at: std::time::SystemTime) -> ExecutionSpec {
+            let base = ExecutionSpec::new("echo", IdentityRef::root(spec_agent));
+            lower_leases(
+                &[credential_lease()],
+                &LeaseIssuance {
+                    subject: IdentityRef::root(lease_subject),
+                    default_issuer: IdentityRef::root(DEFAULT_LEASE_ISSUER),
+                    issued_at,
+                    default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                    id_prefix: "authority-gate-test".to_string(),
+                },
+            )
+            .expect("fixture lease lowers")
+            .into_iter()
+            .fold(base, ExecutionSpec::with_lease)
+        }
+
+        fn healthy_broker() -> CredentialBrokerReport {
+            CredentialBrokerReport::new(FailurePosture::FailClosed).with_service(BrokeredService {
+                service: "api.anthropic.com".to_string(),
+                env_names: vec![BROKERED_NAME.to_string()],
+                mode: BrokerageMode::BrokerPerformsRequest {
+                    mechanism_detail: "test fixture".to_string(),
+                },
+            })
+        }
+
+        /// The `authority_gate` half of the none arm: a `--max-*` ceiling
+        /// lowers to a `Resource` requirement no lease covers, so a
+        /// `broker_required` launch that otherwise satisfies every credential
+        /// fact is refused for the Resource domain; under `not_required` the
+        /// identical launch is admitted because no gate runs.
+        #[test]
+        fn a_max_ceiling_with_a_credential_lease_is_refused_by_the_authority_gate() {
+            let run_with_ceiling = |contract: CredentialContract| {
+                let scenario = Scenario {
+                    contract,
+                    ..Default::default()
+                };
+                let _guard = crate::test_support::env_guard();
+                let _env = EnvRestore::apply(scenario.provider_keys, scenario.fail_open);
+                let (identity, handle) = identity_and_handle();
+                let mut plan = none_plan(&scenario);
+                plan.resource_requirements = vec![ControlRequirement::prevent(CapabilityDomain::Resource)];
+                let network = NetworkPlan {
+                    endpoint: scenario.endpoint.map(str::to_string),
+                    no_proxy: false,
+                };
+                plan.resolve_boundary(
+                    &identity,
+                    &handle,
+                    &std::process::Command::new("echo"),
+                    &std::collections::BTreeMap::new(),
+                    posture(false),
+                    &network,
+                )
+                .2
+            };
+            let refused = run_with_ceiling(CredentialContract::broker_required());
+            let detail = refusal_text(&refused).unwrap_or_default();
+            assert!(
+                detail.contains("credentials: posture: broker_required") && detail.contains("resource"),
+                "{}",
+                describe(&refused)
+            );
+            let control = run_with_ceiling(CredentialContract::not_required());
+            assert!(matches!(control, Boundary::Absent), "{}", describe(&control));
+        }
+
+        /// A lease past its TTL, or issued to a different subject than the
+        /// launch, is refused by `authority_gate` before the credential gate
+        /// runs; the same lease valid and matching is admitted.
+        #[test]
+        fn an_expired_or_mismatched_credential_lease_is_refused_by_the_authority_gate() {
+            let scenario = Scenario::default();
+            let plan = none_plan(&scenario);
+            let now = std::time::SystemTime::now();
+            let broker = healthy_broker();
+
+            let valid = leased_spec("agent-a", "agent-a", now);
+            assert_eq!(
+                plan.unconfined_credential_refusal(&valid, now, &broker, &posture(false)),
+                None,
+                "control: a valid, matching lease must be admitted"
+            );
+
+            let expired_at = now + std::time::Duration::from_secs(DEFAULT_LEASE_TTL_SECONDS.max(3_600) + 3_600);
+            let expired = plan.unconfined_credential_refusal(&valid, expired_at, &broker, &posture(false));
+            assert!(expired.is_some(), "an expired lease must be refused");
+
+            let mismatched = leased_spec("agent-a", "agent-b", now);
+            let refusal = plan.unconfined_credential_refusal(&mismatched, now, &broker, &posture(false));
+            assert!(refusal.is_some(), "a lease issued to another subject must be refused");
+        }
+
+        /// The no-lease refusal relies on the none-arm spec carrying no
+        /// `Credential` requirement (see `unconfined_credential_refusal`).
+        #[test]
+        fn lowering_never_produces_a_credential_requirement() {
+            let scenario = Scenario::default();
+            let plan = none_plan(&scenario);
+            let lowering = plan.lowering.as_ref().expect("fixture lowering");
+            let carries_credential = match lowering.apply_to(ExecutionSpec::new("echo", IdentityRef::root("agent-a"))) {
+                Ok(spec) => spec
+                    .requirements()
+                    .iter()
+                    .any(|r| r.domain() == CapabilityDomain::Credential),
+                Err(_) => false,
+            };
+            assert!(
+                !carries_credential,
+                "lowering must never produce a Credential requirement"
             );
         }
 
@@ -4936,8 +5099,7 @@ mod plan {
         }
 
         /// AAASM-6285 regression (the bug itself) — under `--isolation
-        /// none`, `resolve_isolation` never calls `resolve_boundary`, so
-        /// `authority_gate` is never reached at all. The warning must not
+        /// none`, `authority_gate` does not check the lowered domains. The warning must not
         /// claim a gate refusal that cannot happen, and must say so
         /// explicitly instead of silently omitting the distinction.
         #[test]
@@ -4949,7 +5111,8 @@ mod plan {
                 "message must not claim a refusal that cannot happen under --isolation none: {message}"
             );
             assert!(
-                message.contains("--isolation none") && message.contains("authority_gate` is never reached"),
+                message.contains("--isolation none")
+                    && message.contains("authority_gate` does not check these domains"),
                 "message must explain why the gate is unreachable: {message}"
             );
             assert!(message.contains("filesystem_write"));
