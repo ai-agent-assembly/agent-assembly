@@ -2,9 +2,11 @@
 
 pub mod enforcement;
 pub mod event;
+pub mod lease_gate;
 pub mod metrics;
 
 pub use event::{EnrichedEvent, EventSource, LayerDegradationInfo, PipelineEvent};
+pub use lease_gate::{LeaseDenial, LeaseGate, LeaseGateError, LeaseVerdict};
 pub use metrics::PipelineMetrics;
 
 use crate::approval::{ApprovalDecision as RuntimeApprovalDecision, ApprovalQueue, ApprovalRequest};
@@ -81,6 +83,43 @@ impl PipelineConfig {
 /// Returns when `token` is cancelled — flushing any pending batch first.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
+    rx: mpsc::Receiver<(u64, IpcFrame)>,
+    broadcast_tx: broadcast::Sender<PipelineEvent>,
+    config: PipelineConfig,
+    metrics: Arc<PipelineMetrics>,
+    token: CancellationToken,
+    policy: Arc<PolicyRules>,
+    response_router: ResponseRouter,
+    approval_queue: Arc<ApprovalQueue>,
+    gateway_client: Option<Arc<Mutex<GatewayClient>>>,
+    op_control: crate::op_control::OpControlStore,
+    seq: Arc<AtomicU64>,
+    verified_identities: VerifiedIdentityStore,
+) {
+    run_with_lease_gate(
+        rx,
+        broadcast_tx,
+        config,
+        metrics,
+        token,
+        policy,
+        response_router,
+        approval_queue,
+        gateway_client,
+        op_control,
+        seq,
+        verified_identities,
+        None,
+    )
+    .await
+}
+
+/// [`run`] with an optional capability-lease gate (AAASM-6259).
+///
+/// `lease_gate = None` is identical to [`run`]. See [`lease_gate`] for what the
+/// seam does and does not establish.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_lease_gate(
     mut rx: mpsc::Receiver<(u64, IpcFrame)>,
     broadcast_tx: broadcast::Sender<PipelineEvent>,
     config: PipelineConfig,
@@ -93,6 +132,7 @@ pub async fn run(
     op_control: crate::op_control::OpControlStore,
     seq: Arc<AtomicU64>,
     verified_identities: VerifiedIdentityStore,
+    lease_gate: Option<Arc<dyn LeaseGate>>,
 ) {
     let mut batch: Vec<EnrichedEvent> = Vec::with_capacity(config.batch_size);
     let mut ticker = tokio::time::interval(config.flush_interval);
@@ -165,6 +205,7 @@ pub async fn run(
                             &response_router,
                             &gateway_client,
                             &op_control,
+                            lease_gate.as_deref(),
                             &config.agent_id,
                             config.gateway_fail_closed,
                             config.gateway_timeout,
@@ -398,6 +439,10 @@ async fn send_ipc_response(connection_id: u64, response: IpcResponse, router: &R
 /// configured at all, or when `fail_closed` is `false` (observe / disabled
 /// posture).
 ///
+/// **Lease gate (AAASM-6259):** when a [`LeaseGate`] is installed it runs after
+/// the op-control halt and before the gateway forward, keyed by the server-side
+/// `agent_id`; anything but an explicit permit is a deny. `None` skips it.
+///
 /// Local decision priority (first match wins):
 /// 1. `requires_approval_actions` → `PENDING` + submit to [`ApprovalQueue`]; spawn a task to
 ///    push an [`IpcResponse::ApprovalDecision`] back once the request is resolved.
@@ -412,6 +457,7 @@ async fn handle_policy_query(
     response_router: &ResponseRouter,
     gateway_client: &Option<Arc<Mutex<GatewayClient>>>,
     op_control: &crate::op_control::OpControlStore,
+    lease_gate: Option<&dyn LeaseGate>,
     agent_id: &str,
     fail_closed: bool,
     gateway_timeout: Duration,
@@ -447,6 +493,28 @@ async fn handle_policy_query(
     }
     if op_control_halts(connection_id, &halt_op_ids, op_control, response_router).await {
         return;
+    }
+
+    // ── Capability-lease gate (AAASM-6259) ──────────────────────────────
+    // After the op-control halt, before the gateway: restrict-only. The subject
+    // is the server-side `agent_id` parameter, never `req.agent_id`, which the
+    // SDK controls. No gate installed => this block is skipped entirely.
+    if let Some(gate) = lease_gate {
+        if let Err(why) = lease_gate::enforce(gate, agent_id, req.action_type) {
+            ::metrics::counter!("aa_lease_gate_denials_total").increment(1);
+            tracing::warn!(connection_id, reason = %why, "capability lease gate denied action");
+            send_ipc_response(
+                connection_id,
+                IpcResponse::PolicyResponse(CheckActionResponse {
+                    decision: Decision::Deny as i32,
+                    reason: format!("capability lease required: {why}"),
+                    ..Default::default()
+                }),
+                response_router,
+            )
+            .await;
+            return;
+        }
     }
 
     // ── Gateway forwarding path ─────────────────────────────────────────

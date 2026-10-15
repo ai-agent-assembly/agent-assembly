@@ -1077,15 +1077,20 @@ changes, and no production caller changes (production passes only `Ancestry::Roo
 
 ### §11 (amended): parent edges, a transitive check, and the new refusals
 
-- **Edges.** Each ledger entry is `{state, link}` with `link` one of `Root`,
+- **Edges.** Each ledger entry is `{state, link, content}` (content added by AAASM-6312) with `link` one of `Root`,
   `Parent(LeaseId)` or `Unlinked`. `derive_child` inserts the child with a `Parent`
   edge under the ledger lock. `revoke` changes state only and keeps the edge; revoking
   an id the ledger does not know inserts it as `Unlinked`.
 - **No resurrection, no severing.** `derive_child` refuses a child id the ledger already
-  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) and the auto-registration
-  of an unknown parent accept only a lease with no delegation provenance; a mid-chain
-  lease is refused (`AncestryUnverifiable`), because registering it as a root would cut
-  its link to the ancestors above it. Registering a known id is `DuplicateLeaseId`.
+  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) accepts only a lease with
+  no delegation provenance; a mid-chain lease is refused (`AncestryUnverifiable`),
+  because registering it as a root would cut its link to the ancestors above it.
+  Registering a known id is `DuplicateLeaseId`. Since AAASM-6312 `derive_child` no
+  longer auto-registers an unknown parent (that let any caller seed its own chain with a
+  forged lease); an unknown parent is `AncestryUnverifiable`, and roots enter only
+  through `register_parent`. A ledger built with `with_trusted_issuer` accepts a root
+  only when the lease's own claimed issuer matches (`UntrustedIssuer`); `new()` is
+  unrestricted and is for in-process/test use.
 - **Derive time.** `derive_child` walks the parent's whole chain and returns
   `ParentRevoked` ("the parent or any ancestor") if any hop is revoked and
   `AncestryUnverifiable` if a hop is unknown or unlinked. The walk is bounded by the
@@ -1113,12 +1118,73 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
 - The chain is observed under the ledger lock at gate time. A revocation recorded a
   moment later is not seen by a gate call already past that point, and this ADR still
   makes no revocation-latency claim.
-- A ledger entry does not copy a lease's scope, expiry or limits; those are still taken
-  from the lease value in the `ParentAuthority`. The ledger authenticates *state and
-  ancestry by id*, not lease content.
+- Since AAASM-6312 the ledger records each lease's content (every field except the
+  mutable revocation state) and the gate refuses a parent or tracked child whose content
+  differs from the record (`LedgerContentMismatch`, `DelegationDenied::ContentMismatch`),
+  so a wider snapshot reusing a tracked id no longer passes. This binds content to the
+  ledger's record; it does not authenticate the issuer, which is asserted-only
+  (AAASM-5533), and the ledger is still chosen by the caller of `from_gated_spec`.
 - The ledger is chosen by the caller of `from_gated_spec`. Nothing ties a lease to the
   ledger that issued it: a provenance-free lease can be registered as a root in any
   ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`
   therefore means "this ledger has no record", not "this is the issuing ledger".
   Which ledger is authoritative across processes is for AAASM-6273 to settle.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
+
+## Amendment (AAASM-6259): runtime gate seam in `handle_policy_query`
+
+This amendment adds a seam, not an enforcement feature.
+
+### What exists
+
+`aa-runtime/src/pipeline/lease_gate.rs` defines `LeaseGate`, a trait over
+`(server-side agent id, aa_proto ActionType)` that returns `Permit` or a typed denial.
+`pipeline::run_with_lease_gate` takes an `Option<Arc<dyn LeaseGate>>`; `pipeline::run`
+is unchanged and passes `None`. In `handle_policy_query` the gate runs after the
+op-control halt and before the gateway forward.
+
+- **Unconfigured (`None`) behaves exactly as before.** This is not a decision on the
+  compatibility residual of section 3; it is the absence of a gate.
+- **Subject is the server-side `agent_id` parameter**, never the SDK-supplied
+  `CheckActionRequest.agent_id`.
+- **Restrict-only.** `Permit` falls through to the gateway and local policy; it cannot
+  grant over an op-control halt, a gateway deny, or a local `blocked_actions` rule.
+- **Fail closed when a gate is configured.** An unknown action code, an empty subject,
+  a gate error and a gate panic are all denials, as is any typed denial (no lease,
+  expired, revoked, wrong subject, unmapped action).
+
+### Properties a real gate must settle (independent review of this seam)
+
+- **Point-in-time.** The verdict is taken when the query arrives. A lease revoked or
+  expired while an approval is pending is not re-checked when the approval resolves, so
+  a real gate must re-check at resume or the SDK must treat an approval as not
+  lease-bearing.
+- **Inline and synchronous.** `check` runs in the single pipeline loop with no timeout;
+  a blocking gate stalls every agent's checks and event ingestion (the head-of-line
+  class AAASM-3987 fixed for the gateway). A gate must answer from an in-memory snapshot.
+- **Subject is runtime-wide.** `PipelineConfig::agent_id` is one static string shared by
+  every connection to the runtime, so a lease would mean "this runtime process". The
+  per-connection `VerifiedIdentityStore` identity is not used.
+- **`ActionType::ActionUnspecified` is denied by the caller**, as is an empty subject, so
+  neither depends on every future gate. Panic containment needs `panic = "unwind"`.
+- The restart test is a no-lease deny under another name and is **not** restart
+  evidence.
+
+### What is not enforced
+
+- Nothing implements `LeaseGate` outside tests, so no shipped binary enforces leases
+  through this seam. Nothing supplies leases to the runtime.
+- `aa-runtime` does not depend on `aa-isolation` (a `publish = false` crate), so the
+  trait uses no `aa-isolation` types. A restart is modelled in tests as a fresh
+  in-memory fake, which denies until leases are re-attested; that is a test model, not
+  a product behaviour.
+- The mapping from `ActionType` to a capability domain and scope is undefined.
+
+### Open decisions (unchanged by this amendment)
+
+The `aa-runtime` -> `aa-isolation` manifest edge and its publish-strip treatment; the
+production store (in-memory fail-closed vs durable, and how a durable record would be
+authenticated under the same-UID model, AAASM-5533); the lease source and transport to
+the runtime; and whether a runtime with no gate keeps the compatibility residual.
+
+Golden journey J81 remains `partial`. This seam is not evidence for `automated`.
