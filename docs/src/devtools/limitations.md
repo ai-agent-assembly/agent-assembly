@@ -227,12 +227,15 @@ Without a connected gateway there is no gateway evaluation of responses at all;
 only the proxy's built-in-pattern redaction applies.
 
 The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
-every JSON escape, SSE framing, 200-deep or `NaN` bodies, UTF-16/32), denies a
-`tools/call` whose keys collide after Go-style case folding, and withholds a
-UTF-16/32 response that reads as sensitive. **Not covered:** JSON5/JSONC peers,
-first-key-wins duplicate keys inside `arguments` that are not case collisions, and
-a secret split across separate `content[]` parts. See "MCP tool results through
-`aa-proxy`" in the policy reference.
+every JSON escape, SSE framing, 200-deep or `NaN` bodies) and denies a `tools/call`
+whose keys collide after Go-style case folding. It **denies JSON it cannot decode
+identically to every peer**: `utf-7` or any unknown charset, repeated `charset`
+parameters, UTF-16/32, and JSON declared ISO-8859-1 / us-ascii / windows-1252 with
+non-ASCII bytes; MCP responses are withheld under the same rules. **Not covered:**
+JSON5/JSONC peers; inexact-case argument keys that do not collide (e.g. only
+`"PATH"` for a Go or .NET binder); first-key-wins duplicate keys inside
+`arguments`; and a secret split across separate `content[]` parts. See "MCP tool
+results through `aa-proxy`" in the policy reference.
 
 ## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
 

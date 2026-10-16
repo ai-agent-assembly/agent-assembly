@@ -501,19 +501,33 @@ is no response-side fail-open setting.
 - A UTF-8 BOM and invalid UTF-8 bytes are tolerated, and every JSON string escape
   (`\uXXXX`, `\/`, ...) is decoded by a linear lexical decoder that needs no
   successful parse: deeply nested, `NaN`, `1e400`, repeated-key and SSE
-  `data:` framed bodies are covered. The raw text and the decoded text are both
-  scanned and, when they differ, both sent to the gateway.
+  `data:` framed bodies are covered. The raw and decoded texts are both scanned
+  and, when they differ, both sent to the gateway (one request per distinct text).
 - A `tools/call` request is denied (fail-closed) when its keys collide after
   Go-style case folding (ASCII case, U+017F, U+212A) or spell an envelope field
-  inexactly, including collisions nested inside `arguments`; when a repeated
-  `method` key or an unparseable body carries a `tools/call` token; or when the
-  body is UTF-16/32 or declares a non-UTF-8 charset.
-- A UTF-16/32 response is scanned with its NUL bytes removed and is withheld when
-  that reading is sensitive.
+  inexactly, including collisions nested inside `arguments`; or when a repeated
+  `method` key or an unparseable body carries a `tools/call` token.
+
+**Encodings.** Peers disagree on how to decode a JSON body (Node honours the
+declared charset, Python auto-detects UTF-16/32, httpx honours the declared
+charset), so the proxy judges only bodies every peer reads identically. A request
+is *JSON-typed* when its media type is `application/json` or `*+json`, an
+`Mcp-Session-Id` / `MCP-Protocol-Version` header is present, or the body reads as
+a JSON document under the encoding Python would detect. A JSON-typed request is
+denied unless it has at most one `charset` parameter, that charset is absent,
+`utf-8`, or ASCII-compatible (`us-ascii`, `iso-8859-1`, `latin1`, `windows-1252`)
+with a pure 7-bit body, and the body is UTF-8 (BOM allowed). So `utf-7`, any
+unknown charset, repeated charset parameters and UTF-16/32 are denied, **and JSON
+declared as ISO-8859-1 with non-ASCII bytes is denied** (it cannot be told apart
+from an evasion). Binary, multipart and form bodies are not JSON-typed and are
+untouched. An MCP response is withheld under the same rules, applied
+unconditionally, including `text/event-stream; charset=...`.
 
 **Not covered:** peers that accept JSON5/JSONC (comments, single-quoted strings);
-a first-key-wins duplicate key *inside* `arguments` that is not a case collision;
-and a secret split across separate `content[]` parts or string tokens.
+*inexact-case* argument keys with no collision (a Go struct binder or .NET binder
+reading only `"PATH"` for a policy written against `path`) -- only collisions are
+detected; a first-key-wins duplicate key inside `arguments` that is not a case
+collision; and a secret split across separate `content[]` parts or string tokens.
 
 `alert_only` is the exception that is not enforcement. The gateway records the
 detection and raises an alert, then allows, so the matching content **continues
