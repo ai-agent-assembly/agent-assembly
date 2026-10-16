@@ -319,4 +319,36 @@ mod tests {
         assert!(!is_unenforceable_tool_call(b""));
         assert!(!is_unenforceable_tool_call(b"[1, 2, 3]"));
     }
+
+    // AAASM-6355 review V4: the proxy must be as lenient as the peers it fronts.
+    fn tools_call_bytes() -> Vec<u8> {
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"a":"x"}}}"#.to_vec()
+    }
+
+    #[test]
+    fn a_bom_prefixed_tools_call_still_parses() {
+        let mut body = b"\xEF\xBB\xBF".to_vec();
+        body.extend(tools_call_bytes());
+        assert_eq!(parse_mcp_request(&body).expect("BOM is skipped").tool_name, "t");
+    }
+
+    #[test]
+    fn an_invalid_utf8_byte_in_a_string_still_parses() {
+        let mut body = tools_call_bytes();
+        let at = body.iter().position(|b| *b == b'x').unwrap();
+        body[at] = 0xFF;
+        assert!(parse_mcp_request(&body).is_some());
+    }
+
+    #[test]
+    fn an_unparseable_json_looking_body_naming_tools_call_is_unenforceable() {
+        assert!(is_unenforceable_tool_call(br#"{"method":"tools\/call", BROKEN"#));
+        assert!(is_unenforceable_tool_call(br#"[{"method":"tools/call" BROKEN"#));
+    }
+
+    #[test]
+    fn unparseable_bodies_that_do_not_name_tools_call_stay_forwardable() {
+        assert!(!is_unenforceable_tool_call(br#"{"method":"tools/list", BROKEN"#));
+        assert!(!is_unenforceable_tool_call(b"plain text mentioning tools/call"));
+    }
 }

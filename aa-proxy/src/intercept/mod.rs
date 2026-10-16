@@ -122,42 +122,71 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
     }
 }
 
-/// How a response body reads once the client's JSON parser has run.
-enum JsonForm {
-    /// Not a JSON document: only the raw text exists.
-    NotJson,
-    /// Parsed; the compact re-serialisation with escapes resolved.
-    Normalized(String),
-    /// Looks like a JSON document and carries `\u` escapes yet does not parse
-    /// even leniently, so what a lenient client decodes cannot be judged.
-    Unjudgeable,
-}
-
-/// The escape-resolved view of `text`. Only used to *scan* and to show the
-/// gateway: re-serialising drops duplicate keys (serde keeps the last) and
-/// rewrites numbers, so it is never the form forwarded to the client.
-fn json_form(text: &str) -> JsonForm {
-    match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(value) => JsonForm::Normalized(value.to_string()),
-        Err(_) if mcp::looks_like_json_document(text) && text.contains("\\u") => JsonForm::Unjudgeable,
-        Err(_) => JsonForm::NotJson,
-    }
-}
-
-/// Every text form a response body can be read as: the raw (BOM-stripped, lossy)
-/// text and, when it differs, the escape-resolved one. `None` when the body
-/// cannot be judged (see [`JsonForm::Unjudgeable`]).
+/// Every way a response body can be read: the raw (BOM-stripped, lossy) text
+/// and, when the client's JSON parser would produce something different, the
+/// escape-resolved reading.
 ///
 /// Both are needed because they hide different things: a repeated JSON key keeps
 /// only its last value after normalisation, while `\uXXXX` escapes hide a value
 /// from the raw text (AAASM-6355 review F4/V1).
-fn scan_forms(bytes: &[u8]) -> Option<Vec<String>> {
+struct ResponseForms {
+    raw: String,
+    /// `(compact re-serialisation for the gateway, decoded string contents for
+    /// the scanner)`. Scanning the contents rather than the re-serialisation
+    /// keeps number rewriting (`1.2e+29`) from producing entropy false positives.
+    resolved: Option<(String, String)>,
+}
+
+impl ResponseForms {
+    /// Texts the built-in scanner must find clean.
+    fn scan_texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.raw.as_str()).chain(self.resolved.iter().map(|(_, strings)| strings.as_str()))
+    }
+
+    /// Texts the gateway must `Allow`, each as its own request.
+    fn gateway_texts(self) -> Vec<String> {
+        std::iter::once(self.raw)
+            .chain(self.resolved.map(|(json, _)| json))
+            .collect()
+    }
+}
+
+fn push_strings(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::String(s) => {
+            out.push_str(s);
+            out.push('\n');
+        }
+        serde_json::Value::Array(items) => items.iter().for_each(|v| push_strings(v, out)),
+        serde_json::Value::Object(map) => map.iter().for_each(|(k, v)| {
+            out.push_str(k);
+            out.push('\n');
+            push_strings(v, out);
+        }),
+        _ => {}
+    }
+}
+
+/// `None` when the body cannot be judged: it looks like a JSON document and
+/// carries `\u` escapes yet does not parse even leniently, so what a lenient
+/// client decodes is unknown.
+fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
     let raw = mcp::lenient_json_text(bytes).into_owned();
-    match json_form(&raw) {
-        JsonForm::NotJson => Some(vec![raw]),
-        JsonForm::Normalized(norm) if norm == raw => Some(vec![raw]),
-        JsonForm::Normalized(norm) => Some(vec![raw, norm]),
-        JsonForm::Unjudgeable => None,
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => {
+            let json = value.to_string();
+            if json == raw {
+                return Some(ResponseForms { raw, resolved: None });
+            }
+            let mut strings = String::new();
+            push_strings(&value, &mut strings);
+            Some(ResponseForms {
+                raw,
+                resolved: Some((json, strings)),
+            })
+        }
+        Err(_) if mcp::looks_like_json_document(&raw) && raw.contains("\\u") => None,
+        Err(_) => Some(ResponseForms { raw, resolved: None }),
     }
 }
 
@@ -420,13 +449,12 @@ impl Interceptor {
         // text, which keeps the rest of the body byte-faithful; a finding only the
         // escape-resolved text shows cannot be redacted without forwarding a
         // re-serialisation, so it withholds (AAASM-6355 review V1/V2/L1).
-        let Some(forms) = scan_forms(&bytes) else {
+        let Some(forms) = response_forms(&bytes) else {
             return ResponseScan::Withhold;
         };
-        let raw = &forms[0];
-        let raw_scan = scanner.scan(raw);
+        let raw_scan = scanner.scan(&forms.raw);
         if raw_scan.is_clean() {
-            let hidden_in_escapes = forms.iter().skip(1).any(|f| !scanner.scan(f).is_clean());
+            let hidden_in_escapes = forms.scan_texts().skip(1).any(|t| !scanner.scan(t).is_clean());
             return if hidden_in_escapes {
                 ResponseScan::Withhold
             } else {
@@ -439,11 +467,11 @@ impl Interceptor {
             // compressed bytes would relay the secret. Withhold (fail closed).
             return ResponseScan::Withhold;
         }
-        let redacted = raw_scan.redact(raw);
+        let redacted = raw_scan.redact(&forms.raw);
         // Redaction can leave an escape-hidden or duplicate-shadowed secret
         // behind; whatever is still findable in what would be sent withholds.
-        match scan_forms(redacted.as_bytes()) {
-            Some(after) if after.iter().all(|f| scanner.scan(f).is_clean()) => {
+        match response_forms(redacted.as_bytes()) {
+            Some(after) if after.scan_texts().all(|t| scanner.scan(t).is_clean()) => {
                 ResponseScan::Redact(redacted.into_bytes())
             }
             _ => ResponseScan::Withhold,
@@ -463,13 +491,13 @@ impl Interceptor {
         sent: Option<&[u8]>,
     ) -> Option<Vec<Vec<u8>>> {
         let forms = match sent {
-            Some(redacted) => scan_forms(redacted),
+            Some(redacted) => response_forms(redacted),
             None => match scan_source(body, content_encoding) {
-                ScanSource::Plaintext { bytes, .. } => scan_forms(&bytes),
+                ScanSource::Plaintext { bytes, .. } => response_forms(&bytes),
                 ScanSource::Uninspectable => None,
             },
         }?;
-        Some(forms.into_iter().map(String::into_bytes).collect())
+        Some(forms.gateway_texts().into_iter().map(String::into_bytes).collect())
     }
 
     /// Emit an audit event recording the gateway's decision for an MCP
@@ -1106,6 +1134,91 @@ mod tests {
     }
 
     // ── redact_response_body ────────────────────────────────────────────────
+
+    fn response_scan(body: &[u8]) -> ResponseScan {
+        make_interceptor().redact_response_body(body, None)
+    }
+
+    const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    // AAASM-6355 review V1: a shadowed duplicate key is invisible once
+    // normalised, so the raw text must be scanned and redacted losslessly.
+    #[test]
+    fn response_secret_in_a_shadowed_duplicate_key_is_redacted_on_the_raw_text() {
+        let body = format!(r#"{{"result":{{"text":"{AWS_KEY}","text":"ok"}}}}"#);
+        let ResponseScan::Redact(out) = response_scan(body.as_bytes()) else {
+            panic!("expected Redact");
+        };
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains(AWS_KEY));
+        assert!(out.contains(r#""text":"ok""#), "later key kept: {out}");
+    }
+
+    #[test]
+    fn response_clean_duplicate_keys_forward() {
+        assert_eq!(
+            response_scan(br#"{"result":{"text":"a","text":"ok"}}"#),
+            ResponseScan::Forward
+        );
+    }
+
+    // L1: redaction must not re-serialise the rest of the body.
+    #[test]
+    fn response_redaction_keeps_big_integers_and_spacing() {
+        let body = format!(r#"{{ "id": 123456789012345678901234567890, "t": "{AWS_KEY}" }}"#);
+        let ResponseScan::Redact(out) = response_scan(body.as_bytes()) else {
+            panic!("expected Redact");
+        };
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"{ "id": 123456789012345678901234567890, "t": ""#),
+            "{out}"
+        );
+    }
+
+    // V2: a secret visible only after escape resolution withholds (not forwarded
+    // re-serialised); BOM / invalid bytes do not stop the decode.
+    #[test]
+    fn response_escape_hidden_secret_withholds_even_with_bom_or_invalid_byte() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let json = format!(r#"{{"t":"{escaped}"}}"#);
+        assert_eq!(response_scan(json.as_bytes()), ResponseScan::Withhold);
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend(json.as_bytes());
+        assert_eq!(response_scan(&bom), ResponseScan::Withhold);
+        let with_ff = format!(r#"{{"p":"\u00ff","q":"\xFF","t":"{escaped}"}}"#).replace("\\xFF", "\u{fffd}");
+        let mut raw = with_ff.into_bytes();
+        raw.insert(7, 0xFF);
+        assert_eq!(response_scan(&raw), ResponseScan::Withhold);
+    }
+
+    #[test]
+    fn response_clean_escapes_with_bom_forward() {
+        let mut body = b"\xEF\xBB\xBF".to_vec();
+        body.extend(br#"{"t":"harmless \u0041"}"#);
+        assert_eq!(response_scan(&body), ResponseScan::Forward);
+    }
+
+    // V2: JSON-looking, has \u, cannot be parsed even leniently -> cannot judge.
+    #[test]
+    fn response_unparseable_json_with_unicode_escape_withholds() {
+        assert_eq!(response_scan(br#"{"t":"\u0041" BROKEN"#), ResponseScan::Withhold);
+        // controls: no escape, or not JSON-looking
+        assert_eq!(response_scan(br#"{"t":"a" BROKEN"#), ResponseScan::Forward);
+        assert_eq!(response_scan(br#"plain \u0041 text"#), ResponseScan::Forward);
+    }
+
+    #[test]
+    fn gateway_candidates_include_raw_and_escape_resolved_forms() {
+        let i = make_interceptor();
+        let body = br#"{"a":"x","a":"\u0041"}"#;
+        let forms = i.gateway_candidates(body, None, None).unwrap();
+        assert_eq!(forms.len(), 2);
+        assert_eq!(forms[0], body.to_vec());
+        assert!(String::from_utf8_lossy(&forms[1]).contains(r#""a":"A""#));
+        // A body with no difference yields one candidate.
+        assert_eq!(i.gateway_candidates(b"plain", None, None).unwrap().len(), 1);
+    }
 
     #[test]
     fn redact_response_body_disabled_scanner_forwards() {
