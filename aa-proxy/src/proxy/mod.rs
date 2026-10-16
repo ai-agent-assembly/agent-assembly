@@ -2831,6 +2831,28 @@ fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
 mod tests {
     use super::*;
 
+    // AAASM-6355 review L2: header-name matching is case-insensitive and
+    // tolerates whitespace before the colon.
+    #[test]
+    fn plain_http_content_encoding_tolerates_case_and_space_before_colon() {
+        let h = |s: &str| vec![format!("{s}\r\n")];
+        for line in [
+            "Content-Encoding: gzip",
+            "content-encoding : gzip",
+            "CONTENT-ENCODING\t: gzip",
+        ] {
+            assert_eq!(plain_http_content_encoding(&h(line)).as_deref(), Some("gzip"), "{line}");
+        }
+        // Controls: other headers, and a header merely containing the name.
+        assert_eq!(plain_http_content_encoding(&h("Content-Length: 4")), None);
+        assert_eq!(plain_http_content_encoding(&h("X-Content-Encoding: gzip")), None);
+        let two = vec![
+            "Content-Encoding: gzip\r\n".to_string(),
+            "content-encoding : br\r\n".to_string(),
+        ];
+        assert_eq!(plain_http_content_encoding(&two).as_deref(), Some("gzip, br"));
+    }
+
     #[test]
     fn unparseable_mcp_response_is_fail_closed_and_carries_no_upstream_bytes() {
         // AAASM-3997: the fail-closed response for an unparseable MCP upstream
