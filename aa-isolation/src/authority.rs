@@ -419,6 +419,15 @@ pub enum AuthorityRefusal {
         /// The first lease on the chain that could not be verified.
         lease: LeaseId,
     },
+    /// The ledger tracks a lease with this id but not with the content the gate
+    /// was handed (AAASM-6312): a forged or widened snapshot reusing a known id.
+    /// Fails closed; the id matching is no evidence the content is genuine.
+    LedgerContentMismatch {
+        /// The domain whose lease content disagrees with the ledger's record.
+        domain: CapabilityDomain,
+        /// The lease whose content does not match.
+        lease: LeaseId,
+    },
     /// A resolved parent (`Ancestry::Parent`) is in play, but the child's own
     /// spec carries no lease at all for `domain` (AAASM-6282/D4).
     ///
@@ -460,6 +469,7 @@ impl AuthorityRefusal {
             | Self::LeaseSubjectMismatch { domain, .. }
             | Self::RevokedInLedger { domain, .. }
             | Self::LedgerUnverifiable { domain, .. }
+            | Self::LedgerContentMismatch { domain, .. }
             | Self::ChildMustBeLeaseAware { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
             Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
@@ -561,6 +571,13 @@ impl core::fmt::Display for AuthorityRefusal {
                     f,
                     "the delegation chain for domain `{domain}` cannot be verified: lease `{lease}` is unknown \
                      to the ledger or has no recorded parent"
+                )
+            }
+            Self::LedgerContentMismatch { domain, lease } => {
+                write!(
+                    f,
+                    "lease `{lease}` for domain `{domain}` is tracked by the ledger with different content than \
+                     the one presented"
                 )
             }
             Self::ChildMustBeLeaseAware { domain } => {
@@ -821,11 +838,26 @@ fn check_attenuation(
                 ChainFault::Unverifiable { lease } => AuthorityRefusal::LedgerUnverifiable { domain, lease },
             });
         }
+        // AAASM-6312: the id being known is not enough — the snapshot's CONTENT
+        // (scope, expiry, limits, delegation rights, basis) must be the one the
+        // ledger recorded, or a wider lease reusing a tracked id would pass.
+        if !parent.ledger().content_matches(parent_lease) {
+            return Err(AuthorityRefusal::LedgerContentMismatch {
+                domain,
+                lease: parent_lease.id().clone(),
+            });
+        }
     }
     // A child lease the ledger knows and has revoked is refused even when its
     // parent chain is intact. A child the ledger has never seen (hand-built,
     // or independently issued) is not an error here: absence of the child is
     // not absence of authority above it.
+    if parent.ledger().knows(child_lease.id()) && !parent.ledger().content_matches(child_lease) {
+        return Err(AuthorityRefusal::LedgerContentMismatch {
+            domain,
+            lease: child_lease.id().clone(),
+        });
+    }
     if let Some(reason) = parent.ledger().revoked_reason(child_lease.id()) {
         return Err(AuthorityRefusal::RevokedInLedger {
             domain,
@@ -845,15 +877,17 @@ fn check_attenuation(
                 ScopeOrdering::Narrower | ScopeOrdering::Equal => {
                     if child_lease.expires_at() > parent_lease.expires_at() {
                         Some(AuthorityRefusal::ChildExtendsExpiry { domain })
-                    } else if let Some(child_limits) = child_lease.limits() {
+                    } else {
+                        // AAASM-6334: a child with NO stated limits is unbounded, not
+                        // "no restriction requested". Compare it as the all-`None`
+                        // default so it cannot exceed a parent that has a ceiling.
                         let parent_limits = parent_lease.limits().copied().unwrap_or_default();
-                        if limits_narrower_or_equal(&parent_limits, child_limits) {
+                        let child_limits = child_lease.limits().copied().unwrap_or_default();
+                        if limits_narrower_or_equal(&parent_limits, &child_limits) {
                             None
                         } else {
                             Some(AuthorityRefusal::ChildExceedsLimits { domain })
                         }
-                    } else {
-                        None
                     }
                 }
             }
@@ -870,7 +904,18 @@ fn check_attenuation(
             // already computed above is the more actionable answer than a
             // generic "not independently approved".
             Err(refusal)
-        } else if basis.is_independently_attributable(child_identity, parent.identity()) {
+        } else if basis.is_independently_attributable(child_identity, parent.identity())
+            // AAASM-6346: `basis.issuer` is self-asserted by whoever built the
+            // lease, so a same-UID child can forge an "independent" issuer and
+            // approval_ref. Only a lease the ledger itself issued/recorded
+            // carries independent attribution; a never-recorded lease skips
+            // the content check above, so require presence and equality here.
+            // On a ledger built with `with_trusted_issuer`, an escalation is
+            // therefore reachable only for grants whose issuer is that trusted
+            // issuer; any other claimed issuer is refused (fail closed).
+            && parent.ledger().knows(child_lease.id())
+            && parent.ledger().content_matches(child_lease)
+        {
             // An independent issuer explicitly granted authority beyond what
             // the parent held — this is escalation, not attenuation, and it
             // is authorized. Provenance-integrity checks below are about a
@@ -878,8 +923,9 @@ fn check_attenuation(
             // grant is not, so they do not apply here.
             Ok(())
         } else {
-            // Attribution was attempted, but the issuer is the parent's own
-            // subject or the child's own — self-approval, refused under the
+            // Attribution was attempted but not established: the issuer is the
+            // parent's or child's own subject (self-approval), or the ledger
+            // never issued this lease (forged basis). Refused under the
             // specific name for that failure rather than the generic one.
             Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
         };
@@ -1747,6 +1793,258 @@ mod tests {
             assert!(authority_gate(&child_spec, &control_ancestry, t(1_500)).is_ok());
         }
 
+        /// AAASM-6312: the gate must compare the parent snapshot's CONTENT with
+        /// the ledger's record. A wider lease reusing the tracked id used to
+        /// pass, because `verify_chain` looked at the id alone.
+        #[test]
+        fn a_forged_parent_snapshot_reusing_a_tracked_id_is_refused_by_content() {
+            let genuine = parent_fs_lease(RequirementScope::Selectors(
+                vec!["permit-only:/workspace/a".to_string()],
+            ));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&genuine).expect("root registers");
+            let child_lease = ledger
+                .derive_child(
+                    &genuine,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a narrower child derives from the genuine parent");
+            let child_spec = child_spec_with_lease(
+                child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+            );
+
+            // Positive control: the genuine parent snapshot admits the child.
+            let genuine_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), genuine.clone())));
+            assert!(authority_gate(&child_spec, &genuine_ancestry, t(1_500)).is_ok());
+
+            // Forged: same id and issuer, wider scope. The id is known to the
+            // ledger and its chain verifies, but the content is not the recorded one.
+            let forged = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/".to_string()]));
+            assert_eq!(forged.id(), genuine.id());
+            let forged_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), forged)));
+            assert_eq!(
+                authority_gate(&child_spec, &forged_ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: genuine.id().clone(),
+                })
+            );
+        }
+
+        /// AAASM-6312: a child the ledger tracks is bound by content too. A
+        /// registered NotDelegable child presented with widened delegation
+        /// rights is refused; before the check it passed whenever its scope fit.
+        #[test]
+        fn a_tracked_child_presented_with_widened_delegation_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let child = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("narrower child derives");
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]);
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+            // positive control
+            assert!(authority_gate(
+                &child_spec_with_lease(child.clone(), scope.clone()),
+                &ancestry,
+                t(1_500)
+            )
+            .is_ok());
+            let widened = child
+                .clone()
+                .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(widened, scope), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: child.id().clone(),
+                })
+            );
+        }
+
+        /// AAASM-6334: a child that states no limits is unbounded, so it must
+        /// not pass under a parent that has a ceiling, and a derived child must
+        /// inherit that ceiling instead of dropping it.
+        #[test]
+        fn a_child_without_limits_cannot_exceed_a_parent_that_has_them() {
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let capped = crate::spec::ResourceLimits {
+                max_pids: Some(4),
+                ..Default::default()
+            };
+            let parent_lease = parent_fs_lease(scope.clone()).with_limits(capped);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease.clone())));
+
+            // A hand-built, untracked child stating no limits: refused.
+            let unbounded = CapabilityLease::new(
+                crate::lease::LeaseId::new("hand-built"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            );
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(unbounded, scope.clone()), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::ChildExceedsLimits {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // Positive controls: within the ceiling admits, and a derived child
+            // that states no limits inherits the ceiling and admits.
+            let within = CapabilityLease::new(
+                crate::lease::LeaseId::new("within"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            )
+            .with_limits(crate::spec::ResourceLimits {
+                max_pids: Some(2),
+                ..Default::default()
+            });
+            assert!(authority_gate(&child_spec_with_lease(within, scope.clone()), &ancestry, t(1_500)).is_ok());
+            let derived = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("derived"),
+                        child_subject: child_identity(),
+                        child_scope: scope.clone(),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a child with no stated limits derives");
+            assert_eq!(
+                derived.limits(),
+                Some(&capped),
+                "the derived child inherits the parent's ceiling"
+            );
+            assert!(authority_gate(&child_spec_with_lease(derived, scope), &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6334: every `ResourceLimits` ceiling is attenuated on its own.
+        /// Each case isolates one field so dropping any single field from the
+        /// comparison turns a named case red, and each refusal differs from its
+        /// positive control in exactly one variable.
+        #[test]
+        fn every_resource_limit_field_is_attenuated_independently() {
+            use crate::spec::ResourceLimits;
+
+            type Set = fn(&mut ResourceLimits, u32);
+            let cases: [(&str, Set); 6] = [
+                ("max_memory_bytes", |l, v| l.max_memory_bytes = Some(v.into())),
+                ("max_cpu_seconds", |l, v| l.max_cpu_seconds = Some(v.into())),
+                ("max_pids", |l, v| l.max_pids = Some(v)),
+                ("max_wall_clock_seconds", |l, v| {
+                    l.max_wall_clock_seconds = Some(v.into())
+                }),
+                ("max_file_size_bytes", |l, v| l.max_file_size_bytes = Some(v.into())),
+                ("max_open_files", |l, v| l.max_open_files = Some(v)),
+            ];
+
+            // Adding a `ResourceLimits` field breaks this literal at compile time;
+            // the setter check below then fails until the new field gets a case.
+            let every_field = ResourceLimits {
+                max_memory_bytes: Some(1),
+                max_cpu_seconds: Some(1),
+                max_pids: Some(1),
+                max_wall_clock_seconds: Some(1),
+                max_file_size_bytes: Some(1),
+                max_open_files: Some(1),
+            };
+            let mut covered = ResourceLimits::default();
+            for (_, set) in &cases {
+                set(&mut covered, 1);
+            }
+            assert_eq!(covered, every_field, "every ResourceLimits field needs a case");
+
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let gate = |parent: Option<ResourceLimits>, child: Option<ResourceLimits>| {
+                let mut parent_lease = parent_fs_lease(scope.clone());
+                if let Some(limits) = parent {
+                    parent_lease = parent_lease.with_limits(limits);
+                }
+                let ledger = Arc::new(DelegationLedger::new());
+                ledger.register_parent(&parent_lease).expect("root registers");
+                let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+                let mut child_lease = CapabilityLease::new(
+                    crate::lease::LeaseId::new("hand-built"),
+                    child_identity(),
+                    CapabilityDomain::FilesystemRead,
+                    scope.clone(),
+                    t(1_000),
+                    t(4_000),
+                    crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+                );
+                if let Some(limits) = child {
+                    child_lease = child_lease.with_limits(limits);
+                }
+                authority_gate(&child_spec_with_lease(child_lease, scope.clone()), &ancestry, t(1_500)).map(|_| ())
+            };
+            let refused = Err(AuthorityRefusal::ChildExceedsLimits {
+                domain: CapabilityDomain::FilesystemRead,
+            });
+            let only = |set: Set, v: u32| {
+                let mut l = ResourceLimits::default();
+                set(&mut l, v);
+                l
+            };
+
+            // (e) Nothing bounded on either side admits.
+            assert_eq!(gate(None, None), Ok(()), "unbounded parent, limitless child");
+            assert_eq!(gate(Some(ResourceLimits::default()), None), Ok(()));
+
+            for (name, set) in &cases {
+                let parent = Some(only(*set, 4));
+                // (a) child states no limits, (b) child explicitly unbounded.
+                assert_eq!(gate(parent, None), refused, "{name}: limitless child");
+                assert_eq!(
+                    gate(parent, Some(ResourceLimits::default())),
+                    refused,
+                    "{name}: explicitly unbounded child"
+                );
+                // (c) positive controls: below and equal to the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 3))), Ok(()), "{name}: below ceiling");
+                assert_eq!(gate(parent, Some(only(*set, 4))), Ok(()), "{name}: at ceiling");
+                // (d) above the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 5))), refused, "{name}: above ceiling");
+            }
+        }
+
         /// A root launch and a legacy no-lease spec are both unaffected by
         /// ancestry attenuation — the rc.7 compatibility regression.
         #[test]
@@ -1893,7 +2191,9 @@ mod tests {
         #[test]
         fn a_wider_child_lease_is_refused_unless_an_independent_issuer_approved_it() {
             let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
-            let parent = gated_parent(parent_lease);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
             let ancestry = Ancestry::Parent(Box::new(parent));
 
             let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
@@ -1947,8 +2247,52 @@ mod tests {
                 crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "explicit break-glass approval")
                     .with_approval_ref("approval-3"),
             );
+            // AAASM-6346: admission now requires the supervisor to have
+            // recorded this exact lease; the issuer string alone is forgeable.
+            ledger
+                .register_parent(&issuer_is_third_party)
+                .expect("supervisor records the independently issued lease");
             let spec_iii = child_spec_with_lease(issuer_is_third_party, wider_scope);
             assert!(authority_gate(&spec_iii, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6346: a child that forges an independent `LeaseBasis` on a
+        /// lease the ledger never issued must not be admitted as an
+        /// escalation; recording the identical grant (supervisor-issued) is
+        /// the positive control that shows the refusal is about provenance,
+        /// not the grant's shape.
+        #[test]
+        fn a_forged_independent_basis_on_an_unrecorded_lease_is_refused_unless_ledger_issued() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
+
+            let forged = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-forged"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "self-asserted approval")
+                    .with_approval_ref("approval-forged"),
+            );
+            let spec = child_spec_with_lease(forged.clone(), wider_scope);
+
+            // (a) negative: never recorded by the ledger.
+            assert_eq!(
+                authority_gate(&spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // (b) positive control: the identical grant, recorded by the supervisor.
+            ledger.register_parent(&forged).expect("supervisor records the grant");
+            assert!(authority_gate(&spec, &ancestry, t(1_500)).is_ok());
         }
 
         /// §4.3: a child cannot reuse a parent credential lease unless

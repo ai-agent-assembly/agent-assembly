@@ -286,6 +286,16 @@ pub enum DelegationDenied {
     /// some hop of the chain above it is unknown or unlinked. Fails closed —
     /// "cannot verify the ancestors" is never read as "no ancestor revoked".
     AncestryUnverifiable,
+    /// The lease presented to the ledger has the id of a lease it tracks but not
+    /// its recorded content (AAASM-6312): same id, different scope, expiry,
+    /// limits, subject, delegation rights or basis. A forged or widened
+    /// snapshot is refused here instead of being believed because its id is
+    /// known.
+    ContentMismatch,
+    /// A root lease named an issuer the ledger was not built to trust
+    /// (AAASM-6312). Asserted-only: this compares the lease's own claimed
+    /// issuer id and is not authentication of that issuer.
+    UntrustedIssuer,
 }
 
 /// How a child lease relates to its parent's authority — the four modes
@@ -392,6 +402,55 @@ pub struct CapabilityLease {
 }
 
 impl CapabilityLease {
+    /// Whether `other` has exactly this lease's content: every field EXCEPT the
+    /// mutable revocation state (AAASM-6312). Destructured exhaustively on both
+    /// sides, so adding a field to the lease is a compile error here until it is
+    /// compared, rather than a silent hole in the ledger's content binding.
+    pub(crate) fn same_content(&self, other: &Self) -> bool {
+        let Self {
+            id,
+            schema_version,
+            subject,
+            domain,
+            scope,
+            issued_at,
+            not_before,
+            expires_at,
+            limits,
+            delegation,
+            revocation: _,
+            basis,
+            provenance,
+        } = self;
+        let Self {
+            id: o_id,
+            schema_version: o_schema_version,
+            subject: o_subject,
+            domain: o_domain,
+            scope: o_scope,
+            issued_at: o_issued_at,
+            not_before: o_not_before,
+            expires_at: o_expires_at,
+            limits: o_limits,
+            delegation: o_delegation,
+            revocation: _,
+            basis: o_basis,
+            provenance: o_provenance,
+        } = other;
+        id == o_id
+            && schema_version == o_schema_version
+            && subject == o_subject
+            && domain == o_domain
+            && scope == o_scope
+            && issued_at == o_issued_at
+            && not_before == o_not_before
+            && expires_at == o_expires_at
+            && limits == o_limits
+            && delegation == o_delegation
+            && basis == o_basis
+            && provenance == o_provenance
+    }
+
     /// A lease for `domain`, covering `scope`, honored from `issued_at` until
     /// `expires_at`.
     ///
@@ -697,7 +756,9 @@ impl CapabilityLease {
             issued_at,
             not_before: floored_not_before,
             expires_at: capped_expiry,
-            limits: request.child_limits,
+            // AAASM-6334: a child that states no limits inherits its parent's
+            // ceiling instead of becoming unbounded under a bounded parent.
+            limits: request.child_limits.or(self.limits),
             delegation: request.child_delegation,
             revocation: RevocationState::Active { generation: 0 },
             basis: LeaseBasis::new(

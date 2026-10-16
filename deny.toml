@@ -42,7 +42,7 @@ allow = [
     "Zlib",
     "Unicode-DFS-2016",
     # Unicode License v3 — used by ICU crates (icu_collections, icu_properties,
-    # icu_normalizer, yoke, zerovec, …) pulled in transitively via utoipa-swagger-ui
+    # icu_normalizer, yoke, zerovec, …) pulled in transitively (e.g. via url → idna)
     "Unicode-3.0",
     # CC0-1.0 — public domain dedication used by notify 6.x
     "CC0-1.0",
