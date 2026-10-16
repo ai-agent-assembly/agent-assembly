@@ -555,6 +555,24 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-gateway/tests/serve_secret_alert_e2e_test.rs::tool_call_with_credential_over_live_grpc_fires_secret_alert
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::redact_only_returns_redact_decision_without_the_raw_secret
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::block_denies_with_credential_reason_and_no_raw_secret
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::same_secret_is_deny_under_block_and_redact_under_redact_only
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::pii_ssn_is_redacted_under_redact_only
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::pii_ssn_is_denied_under_block
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::custom_sensitive_pattern_is_redacted_or_denied_per_mode
   execution_lanes:
   - pr
   - main
