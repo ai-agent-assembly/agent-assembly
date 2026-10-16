@@ -2571,7 +2571,9 @@ async fn binary_multipart_and_form_bodies_are_still_forwarded() {
 /// -32600) while the same body under utf-8 or no charset is forwarded.
 #[tokio::test]
 async fn a_declared_exotic_charset_is_denied_for_any_media_type() {
-    let body = mcp_json();
+    // A UTF-7 body (`+AHs-` is `{`) is NOT JSON-looking under UTF-8 and no MCP
+    // header is sent, so only the charset rule can stop it.
+    let body = b"+AHsAIg-jsonrpc+ACIAOgAi-2.0+ACIALAAi-method+ACIAOgAi-tools/call+ACIAfQ-".to_vec();
     for media in [
         "application/jsonx",
         "application/json5",
