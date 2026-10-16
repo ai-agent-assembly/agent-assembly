@@ -19,7 +19,8 @@
 //!
 //! Tests prefixed `desired_` are `#[ignore]`d on purpose: they pin the
 //! contract the product SHOULD meet and currently does not (a defect found by
-//! this pass). Run with `--ignored` to reproduce.
+//! this pass). Run with `--ignored` to reproduce. (The Codex managed-value
+//! defect, AAASM-6319, is fixed, so its test is no longer ignored.)
 
 use std::path::{Path, PathBuf};
 
@@ -192,6 +193,146 @@ async fn codex_remove_restores_the_users_original_values() {
     );
 }
 
+/// AAASM-6327: install over an approval value AA cannot rank (`never`, a granular
+/// table) must refuse and leave the file byte-for-byte alone -- replacing either
+/// could only relax what the user chose.
+#[tokio::test]
+async fn codex_install_refuses_to_replace_an_unrankable_approval_policy() {
+    for cfg in [
+        "approval_policy = \"never\"\n",
+        "[approval_policy.granular]\nsandbox_approval = true\n",
+    ] {
+        let w = World::new();
+        std::fs::write(w.config(), cfg).unwrap();
+        let err = install(&w, 1_000).await.expect_err(cfg);
+        assert!(err.contains("approval_policy"), "{err}");
+        assert_eq!(
+            std::fs::read_to_string(w.config()).unwrap(),
+            cfg,
+            "file must be untouched"
+        );
+    }
+}
+
+/// The user may edit the file between reviewing the plan and applying it; the
+/// apply-time content derivation must re-check (TOCTOU), and a refused install
+/// must leave no receipt or state behind.
+#[tokio::test]
+async fn codex_apply_time_recheck_refuses_an_edit_made_after_planning() {
+    let w = World::new();
+    std::fs::write(w.config(), "sandbox_mode = \"workspace-write\"\n").unwrap();
+    let integration = w.integration();
+    let plan = integration
+        .plan_integration(&request())
+        .await
+        .expect("clean at plan time");
+    std::fs::write(w.config(), "approval_policy = \"never\"\n").unwrap();
+    let err = integration
+        .step_content(&plan)
+        .await
+        .expect_err("edited after planning");
+    assert!(err.to_string().contains("approval_policy"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(w.config()).unwrap(),
+        "approval_policy = \"never\"\n"
+    );
+    assert!(
+        !w.state.join("store").exists(),
+        "a refused install must write no receipt"
+    );
+}
+
+/// The refusal reads the top level only: `[profiles.work] approval_policy =
+/// "never"` (in `USER_CONFIG`) is user-owned and must not block an install.
+#[tokio::test]
+async fn codex_install_ignores_unrankable_values_inside_profiles() {
+    let w = World::new();
+    std::fs::write(w.config(), USER_CONFIG).unwrap();
+    install(&w, 1_000).await.expect("profiles.* is not compared");
+}
+
+/// Install over a config that is already at the strictest values is a no-op
+/// and must not be mistaken for a relaxation (kills a `>` instead of `>=`).
+#[tokio::test]
+async fn codex_install_over_the_strictest_values_succeeds() {
+    let w = World::new();
+    std::fs::write(
+        w.config(),
+        "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"\n",
+    )
+    .unwrap();
+    install(&w, 1_000).await.unwrap();
+    let t = parse(&w.config());
+    assert_eq!(t["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// An install from before AAASM-6319 wrote retired spellings; update/repair of
+/// it must still go through and write the loadable values.
+#[tokio::test]
+async fn codex_update_of_a_pre_6319_install_writes_loadable_values() {
+    let w = World::new();
+    std::fs::write(
+        w.config(),
+        "sandbox_mode = \"suggest\"\n[approval_policy]\nfile_writes = \"auto\"\nshell_exec = \"prompt\"\nnetwork = \"auto\"\nmcp_calls = \"auto\"\n",
+    )
+    .unwrap();
+    install(&w, 1_000).await.unwrap();
+    let t = parse(&w.config());
+    assert_eq!(t["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// AAASM-6331 rollback: the user's own `read-only` / `on-request` must survive a
+/// full `aasm run codex` -> install -> remove cycle unchanged. The run path
+/// (`apply_settings` with an all-Allow policy) is the one that used to lower them.
+#[tokio::test]
+async fn codex_run_then_install_then_remove_never_relaxes_and_restores_the_users_values() {
+    use aa_devtool_codex::CodexAdapter;
+    use aa_devtool_contract::{DevToolAdapter, PolicyDecision, PolicyDocument, PolicyRule};
+
+    let w = World::new();
+    let cfg = "model = \"o4-mini\"\nsandbox_mode = \"read-only\"\napproval_policy = \"on-request\"\n";
+    std::fs::write(w.config(), cfg).unwrap();
+    let original: toml::Table = cfg.parse().unwrap();
+
+    // 1. `aasm run codex` under a permissive policy.
+    let adapter = CodexAdapter::default().with_home_dir(w.home.clone());
+    let allow_all = PolicyDocument {
+        version: 1,
+        name: "allow-all".into(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
+        rules: vec![PolicyRule {
+            action_pattern: "*".into(),
+            decision: PolicyDecision::Allow,
+        }],
+    };
+    let settings = adapter.generate_managed_settings(&allow_all).await.unwrap();
+    adapter.apply_settings(&settings).await.unwrap();
+    let after_run = parse(&w.config());
+    assert_eq!(
+        after_run["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "run must not relax"
+    );
+    assert_eq!(
+        after_run["approval_policy"].as_str(),
+        Some("on-request"),
+        "run must not relax"
+    );
+    assert_eq!(after_run["model"].as_str(), Some("o4-mini"));
+
+    // 2. install, then 3. remove: back to exactly what the user had.
+    install(&w, 1_000).await.unwrap();
+    let out = remove(&w);
+    assert!(out.residual.is_empty(), "{:?}", out.residual);
+    assert_eq!(
+        parse(&w.config()),
+        original,
+        "the user's original values must come back"
+    );
+}
+
 /// CHARACTERISATION: the file after install+remove is NOT the user's original
 /// bytes -- comments are gone and tables are re-serialised in sorted key order
 /// (`args` before `command`). Pins the observed bytes so a change is noticed.
@@ -320,49 +461,61 @@ async fn desired_codex_install_preserves_the_users_comments() {
     assert!(after.contains("trailing comment on an unmanaged key"));
 }
 
-/// CHARACTERISATION of what Codex's managed settings actually contain.
+/// The managed values are ones the current Codex CLI accepts.
 ///
-/// MEASURED MANUALLY by this pass against the codex-cli 0.160.0 installed on
-/// the QA host, with a throwaway `CODEX_HOME` holding ONLY these values and
-/// `codex mcp list` (a config-load, no agent run, no account): BOTH values are
-/// rejected, each independently --
-///   `sandbox_mode = "suggest"` -> "unknown variant `suggest`, expected one of
-///        `read-only`, `workspace-write`, `danger-full-access`"
-///   `[approval_policy]` table  -> "unknown variant `file_writes`, expected one
-///        of `untrusted`, `on-failure`, `on-request`, `granular`, `never`"
-/// while an empty config, `sandbox_mode = "read-only"` and
-/// `approval_policy = "on-request"` all load. So installing the Codex
-/// integration leaves the user's `codex` unable to load its configuration.
-/// This test pins the (invalid) values written; it does not run codex.
+/// AAASM-6297 found the install wrote `sandbox_mode = "suggest"` and an
+/// `[approval_policy]` table, each of which makes codex-cli 0.160.0 fail to load
+/// its configuration; AAASM-6319 fixed it. codex-cli 0.160.0 loads exactly
+/// `read-only` / `workspace-write` / `danger-full-access` for `sandbox_mode`
+/// and, for `approval_policy`, a string of `on-failure` / `on-request` /
+/// `never` (or a `granular` object); `untrusted` is "no longer supported".
+/// This pins the written values against that list; the `live_*` test below
+/// runs the real binary over the same file.
 #[tokio::test]
-async fn codex_managed_values_written_today_are_the_ones_codex_0_160_rejects() {
+async fn codex_managed_values_are_accepted_by_the_current_codex_cli() {
     let w = World::new();
     install(&w, 1_000).await.unwrap();
     let t = parse(&w.config());
-    assert_eq!(t["sandbox_mode"].as_str(), Some("suggest"));
+    let sandbox = t["sandbox_mode"].as_str().unwrap_or("<not a string>");
     assert!(
-        t["approval_policy"].is_table(),
-        "approval_policy is written as a table: {:?}",
-        t["approval_policy"]
-    );
-}
-
-/// DESIRED: the managed values are ones the current Codex CLI accepts.
-#[tokio::test]
-#[ignore = "AAASM-6297 finding: aa-devtool-codex lifecycle.rs managed_settings_toml writes sandbox_mode=\"suggest\" and a [approval_policy] table; codex-cli 0.160.0 rejects both and fails to load config (measured manually, see the characterisation test above)"]
-async fn desired_codex_managed_values_are_accepted_by_the_current_codex_cli() {
-    let w = World::new();
-    install(&w, 1_000).await.unwrap();
-    let t = parse(&w.config());
-    let sandbox = t["sandbox_mode"].as_str().unwrap_or("");
-    assert!(
-        ["read-only", "workspace-write", "danger-full-access"].contains(&sandbox),
-        "sandbox_mode={sandbox}"
+        ["read-only", "workspace-write"].contains(&sandbox),
+        "sandbox_mode={sandbox}: must be a value codex 0.160 loads, and never the unsandboxed one"
     );
     let approval = t["approval_policy"].as_str().unwrap_or("<not a string>");
     assert!(
-        ["untrusted", "on-failure", "on-request", "granular", "never"].contains(&approval),
-        "approval_policy={approval}"
+        ["on-failure", "on-request"].contains(&approval),
+        "approval_policy={approval}: must be a string codex 0.160 loads; `never` and the retired `untrusted` are not written"
+    );
+}
+
+/// LIVE: the real `codex` binary loads the config this install writes.
+///
+/// `#[ignore]`d because it needs a `codex` on PATH, and it PANICS when there is
+/// none -- an absent binary must never read as a pass. It uses a throwaway
+/// `CODEX_HOME` holding only the generated file and runs `codex mcp list`, a
+/// configuration load that starts no agent and needs no account, so it never
+/// touches the real `~/.codex`.
+#[tokio::test]
+#[ignore = "needs a codex-cli binary on PATH; run with --run-ignored only (AAASM-6319)"]
+async fn live_codex_loads_the_config_the_install_writes() {
+    let w = World::new();
+    install(&w, 1_000).await.unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::copy(w.config(), home.path().join("config.toml")).unwrap();
+    let out = std::process::Command::new("codex")
+        .args(["mcp", "list"])
+        .env("CODEX_HOME", home.path())
+        .output()
+        .expect("`codex` must be on PATH for this test; it does not skip");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && !text.contains("failed to load"),
+        "codex could not load the installed config: {text}\n--- config ---\n{}",
+        std::fs::read_to_string(home.path().join("config.toml")).unwrap()
     );
 }
 

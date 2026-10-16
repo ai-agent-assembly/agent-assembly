@@ -1,8 +1,10 @@
 //! Codex sandbox-mode mapping from Agent Assembly policy.
 //!
 //! Provides [`CodexSandboxMode`] and pure functions that translate a
-//! [`PolicyDocument`] into the three values Codex's native config accepts:
-//! `full-auto`, `suggest`, and `ask`.
+//! [`PolicyDocument`] into the value Codex's `sandbox_mode` key accepts.
+//! Agent Assembly keeps its own three-level vocabulary (`full-auto`, `suggest`,
+//! `ask`, still accepted in policy overrides); the config file gets one of the
+//! three values codex-cli 0.160.0 actually loads (AAASM-6319).
 //!
 //! No I/O is performed here — all functions are pure and deterministic.
 //!
@@ -11,65 +13,46 @@
 use aa_devtool_contract::{PolicyDecision, PolicyDocument};
 use serde::Serialize;
 
-/// Codex sandbox mode, mapping to Codex's `sandbox_mode` config key.
+/// Agent Assembly's three enforcement levels for a Codex install.
 ///
-/// Serializes to Codex's wire format via [`serde::Serialize`]:
-/// - [`FullAuto`] → `"full-auto"`
-/// - [`Suggest`] → `"suggest"`
-/// - [`Ask`] → `"ask"`
+/// This is AA's own vocabulary, not Codex's. Codex's `sandbox_mode` key only
+/// accepts `read-only`, `workspace-write` and `danger-full-access`
+/// (measured against codex-cli 0.160.0 with `codex mcp list`; anything else,
+/// including the old `full-auto`/`suggest`/`ask` names, makes Codex fail to
+/// load its configuration). [`as_codex_value`] is therefore the only thing
+/// that may be written to `config.toml`, and [`Serialize`] goes through it.
 ///
-/// [`FullAuto`]: CodexSandboxMode::FullAuto
-/// [`Suggest`]: CodexSandboxMode::Suggest
-/// [`Ask`]: CodexSandboxMode::Ask
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
+/// The levels keep their strictness order and never reach
+/// `danger-full-access`: a permissive policy must not switch the sandbox off.
+///
+/// [`as_codex_value`]: CodexSandboxMode::as_codex_value
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodexSandboxMode {
-    /// Permissive mode — Codex runs commands without prompting.
-    /// Corresponds to AA enforcement level `log`.
+    /// Permissive: AA enforcement level `log`. Codex still confines writes to
+    /// the workspace (`workspace-write`).
     FullAuto,
-    /// Suggestion mode — Codex proposes commands and waits for confirmation.
-    /// Corresponds to AA enforcement level `alert`.
+    /// AA enforcement level `alert`. Codex gets a read-only sandbox.
     Suggest,
-    /// Approval mode — Codex requires explicit approval before each command.
-    /// Corresponds to AA enforcement level `enforce`.
+    /// AA enforcement level `enforce`. Codex gets a read-only sandbox; what
+    /// separates it from [`Suggest`](CodexSandboxMode::Suggest) is the
+    /// approval policy, which is derived separately.
     Ask,
 }
 
-/// Action-pattern prefix that marks a network-domain rule.
-///
-/// Rules whose `action_pattern` starts with `"network:"` carry a domain
-/// (or glob) immediately after the colon. The domain is extracted into
-/// the allow list when `decision` is [`Allow`], or into the block list
-/// when `decision` is [`Deny`].
-///
-/// [`Allow`]: PolicyDecision::Allow
-/// [`Deny`]: PolicyDecision::Deny
-const NETWORK_PREFIX: &str = "network:";
-
-/// Extract network domains from policy rules that should be **allowed**.
-///
-/// Returns every domain (or glob) `D` where a rule with
-/// `action_pattern = "network:<D>"` and `decision = Allow` exists.
-pub fn network_allow_list(policy: &PolicyDocument) -> Vec<String> {
-    policy
-        .rules
-        .iter()
-        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Allow)
-        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
-        .collect()
+impl CodexSandboxMode {
+    /// The `sandbox_mode` value to write into Codex's `config.toml`.
+    pub fn as_codex_value(self) -> &'static str {
+        match self {
+            CodexSandboxMode::FullAuto => "workspace-write",
+            CodexSandboxMode::Suggest | CodexSandboxMode::Ask => "read-only",
+        }
+    }
 }
 
-/// Extract network domains from policy rules that should be **blocked**.
-///
-/// Returns every domain (or glob) `D` where a rule with
-/// `action_pattern = "network:<D>"` and `decision = Deny` exists.
-pub fn network_block_list(policy: &PolicyDocument) -> Vec<String> {
-    policy
-        .rules
-        .iter()
-        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Deny)
-        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
-        .collect()
+impl Serialize for CodexSandboxMode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_codex_value())
+    }
 }
 
 /// Action-pattern prefix used in [`PolicyRule`]s to express an explicit
@@ -210,67 +193,35 @@ mod tests {
     }
 
     #[test]
-    fn network_allow_list_extracted() {
-        let policy = make_policy(vec![
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.example.com", PolicyDecision::Deny),
-            ("network:cdn.example.com", PolicyDecision::Allow),
-            ("fs:read", PolicyDecision::Allow),
-        ]);
-        let mut allow = network_allow_list(&policy);
-        allow.sort();
-        assert_eq!(allow, vec!["api.openai.com", "cdn.example.com"]);
-    }
-
-    #[test]
-    fn network_block_list_extracted() {
-        let policy = make_policy(vec![
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.example.com", PolicyDecision::Deny),
-            ("network:malware.io", PolicyDecision::Deny),
-        ]);
-        let mut block = network_block_list(&policy);
-        block.sort();
-        assert_eq!(block, vec!["evil.example.com", "malware.io"]);
-    }
-
-    #[test]
     fn empty_policy_maps_to_full_auto() {
         let policy = make_policy(vec![]);
         assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::FullAuto);
     }
 
     #[test]
-    fn sandbox_mode_serializes_to_wire_format() {
+    fn sandbox_mode_serializes_to_values_codex_0_160_accepts() {
+        // codex-cli 0.160.0 loads exactly read-only, workspace-write and
+        // danger-full-access; the old full-auto/suggest/ask names make Codex
+        // fail to load its config (AAASM-6319).
         assert_eq!(
             serde_json::to_string(&CodexSandboxMode::FullAuto).unwrap(),
-            r#""full-auto""#
+            r#""workspace-write""#
         );
         assert_eq!(
             serde_json::to_string(&CodexSandboxMode::Suggest).unwrap(),
-            r#""suggest""#
+            r#""read-only""#
         );
-        assert_eq!(serde_json::to_string(&CodexSandboxMode::Ask).unwrap(), r#""ask""#);
+        assert_eq!(serde_json::to_string(&CodexSandboxMode::Ask).unwrap(), r#""read-only""#);
     }
 
     #[test]
-    fn generate_managed_settings_snapshot() {
-        let policy = make_policy(vec![
-            ("shell:exec", PolicyDecision::Deny),
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.io", PolicyDecision::Deny),
-        ]);
-        let sandbox_mode = map_policy_to_sandbox_mode(&policy);
-        let allowed = network_allow_list(&policy);
-        let blocked = network_block_list(&policy);
-        let settings = serde_json::json!({
-            "sandbox_mode": sandbox_mode,
-            "allowed_domains": allowed,
-            "blocked_domains": blocked,
-        });
-        let json = serde_json::to_string_pretty(&settings).unwrap();
-        assert!(json.contains(r#""sandbox_mode": "ask""#));
-        assert!(json.contains("api.openai.com"));
-        assert!(json.contains("evil.io"));
+    fn no_level_ever_selects_the_unsandboxed_mode() {
+        for mode in [
+            CodexSandboxMode::FullAuto,
+            CodexSandboxMode::Suggest,
+            CodexSandboxMode::Ask,
+        ] {
+            assert_ne!(mode.as_codex_value(), "danger-full-access", "{mode:?}");
+        }
     }
 }

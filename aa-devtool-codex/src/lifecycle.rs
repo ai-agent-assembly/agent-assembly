@@ -191,8 +191,12 @@ impl CodexIntegration {
         let mut rendered = BTreeMap::new();
         for step in &plan.steps {
             match &step.action {
-                StepAction::WriteManagedSettings { .. } => {
-                    rendered.insert(step.id.clone(), managed_settings_toml(plan.profile)?);
+                StepAction::WriteManagedSettings { path, .. } => {
+                    let content = managed_settings_toml(plan.profile)?;
+                    // Re-checked at apply time: the user may have edited the file
+                    // between review and apply (AAASM-6327).
+                    refuse_to_relax(path, &content).await?;
+                    rendered.insert(step.id.clone(), content);
                 }
                 StepAction::MaterialiseTrustMaterial { .. } => {
                     rendered.insert(step.id.clone(), self.read_ca_pem().await?);
@@ -368,6 +372,7 @@ impl DevToolIntegration for CodexIntegration {
         //    surface, and it is always the developer's own file. Domain
         //    lists are not written here — see the `MANAGED_KEYS` comment.
         let settings = managed_settings_toml(request.profile)?;
+        refuse_to_relax(&settings_path, &settings).await?;
         plan = plan.with_step(IntegrationStep::new(
             STEP_MANAGED_SETTINGS,
             StepAction::WriteManagedSettings {
@@ -738,6 +743,45 @@ impl LaunchableTool for CodexIntegration {
     }
 }
 
+/// Refuses an install that would lower, or replace an unrankable, `sandbox_mode`
+/// / `approval_policy` the user already holds (AAASM-6327).
+///
+/// This refuses rather than quietly skipping the key because a plan whose
+/// receipt says the integration is applied while a managed key was withheld
+/// would misreport what is enforced. The content stays host-independent so its
+/// digest and the removal receipt do not vary by machine.
+async fn refuse_to_relax(path: &std::path::Path, managed_toml: &str) -> Result<(), AdapterError> {
+    let invalid =
+        |msg: String| AdapterError::SettingsApplyFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, msg));
+    let existing: toml::Table = match tokio::fs::read_to_string(path).await {
+        Ok(raw) => toml::from_str(&raw).map_err(|e| {
+            invalid(format!(
+                "{} is not valid TOML, refusing to touch it: {e}",
+                path.display()
+            ))
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
+    };
+    let mut managed: toml::Table =
+        toml::from_str(managed_toml).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
+    // Only keys the user already holds are reported, and install writes the
+    // strictest values AA has, so the one thing it can collide with is a value
+    // AA cannot rank (`never`, a granular table, an unknown string).
+    // `managed_settings_toml_pins_exact_values_per_profile` pins that premise;
+    // if a profile ever writes less than the strictest, a lower-ranked existing
+    // value is refused here with the same message rather than silently kept.
+    if let Some(w) = crate::strictness::withhold_relaxations(&existing, &mut managed).first() {
+        return Err(invalid(format!(
+            "{} sets `{}` = `{}`, which Agent Assembly will not lower or replace; change it yourself if you want the managed value, then re-run",
+            path.display(),
+            w.key,
+            w.existing,
+        )));
+    }
+    Ok(())
+}
+
 /// The managed settings block one profile resolves to.
 ///
 /// Derived from the **profile**, not from a full policy document: a plan
@@ -776,7 +820,7 @@ pub fn managed_settings_toml(profile: ProtectionProfile) -> Result<String, Adapt
     );
     doc.insert(
         "approval_policy".to_string(),
-        toml::Value::try_from(approval).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?,
+        toml::Value::String(approval.as_codex_value().to_string()),
     );
     toml::to_string(&doc).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))
 }
@@ -872,6 +916,21 @@ pub fn removal_plan_id(receipt: &IntegrationReceipt) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Pins what each profile writes. Membership checks alone let a profile
+    /// be loosened to `workspace-write` unnoticed (AAASM-6319 review).
+    #[test]
+    fn managed_settings_toml_pins_exact_values_per_profile() {
+        for profile in [
+            ProtectionProfile::Strict,
+            ProtectionProfile::Recommended,
+            ProtectionProfile::ObserveOnly,
+        ] {
+            let doc: toml::Table = toml::from_str(&managed_settings_toml(profile).unwrap()).unwrap();
+            assert_eq!(doc["sandbox_mode"].as_str(), Some("read-only"), "{profile:?}");
+            assert_eq!(doc["approval_policy"].as_str(), Some("on-request"), "{profile:?}");
+        }
+    }
+
     use super::*;
     use aa_devtool_contract::{capability_conformance, DevToolKind, IntegrationRequest};
 

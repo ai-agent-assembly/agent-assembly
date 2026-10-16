@@ -88,60 +88,94 @@ async fn apply_settings_creates_config_toml_with_correct_content() {
 
     assert_eq!(
         parsed["sandbox_mode"].as_str(),
-        Some("ask"),
-        "Deny rule → ask sandbox mode"
+        Some("read-only"),
+        "Deny rule → the strictest sandbox Codex accepts (AA level `ask`)"
     );
-    let allowed = parsed["allowed_domains"].as_array().unwrap();
-    assert!(
-        allowed.contains(&toml::Value::String("api.openai.com".to_string())),
-        "allowed_domains must include api.openai.com"
-    );
+    // Codex's approval_policy is ONE string (a table fails to load, AAASM-6319).
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+    // AAASM-6330: codex 0.160 does not honor these keys and rejects them under
+    // `--strict-config`, so they must not be written.
+    assert!(parsed.get("allowed_domains").is_none());
+    assert!(parsed.get("blocked_domains").is_none());
 }
 
-#[tokio::test]
-async fn apply_settings_merges_preserving_user_managed_keys() {
+/// Seeds `~/.codex/config.toml`, applies a one-rule policy through the real
+/// generate+apply path, and returns the parsed result.
+async fn apply_one_rule(seed: &str, pattern: &str, decision: PolicyDecision) -> toml::Value {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("codex");
     std::fs::write(&bin, "").unwrap();
-
-    // Pre-seed the config with a user-managed key.
     let codex_dir = tmp.path().join(".codex");
     std::fs::create_dir_all(&codex_dir).unwrap();
-    std::fs::write(
-        codex_dir.join("config.toml"),
-        "user_theme = \"dark\"\nsandbox_mode = \"stale\"\n",
-    )
-    .unwrap();
-
+    std::fs::write(codex_dir.join("config.toml"), seed).unwrap();
     let adapter =
         CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe)).with_home_dir(tmp.path().to_path_buf());
-
-    // Apply an all-Allow policy — sandbox_mode becomes full-auto.
-    let allow_policy = PolicyDocument {
+    let policy = PolicyDocument {
         version: 1,
-        name: "allow-all".into(),
+        name: "one-rule".into(),
         enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
         rules: vec![PolicyRule {
-            action_pattern: "*".into(),
-            decision: PolicyDecision::Allow,
+            action_pattern: pattern.into(),
+            decision,
         }],
     };
-    let settings = adapter.generate_managed_settings(&allow_policy).await.unwrap();
+    let settings = adapter.generate_managed_settings(&policy).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap();
+    toml::from_str(&std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()).unwrap()
+}
 
-    let config_path = codex_dir.join("config.toml");
-    let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+/// AAASM-6327: a permissive all-Allow policy must not lower the user's own
+/// security settings, and must not disturb their other keys.
+#[tokio::test]
+async fn apply_settings_never_relaxes_the_users_security_settings() {
+    let parsed = apply_one_rule(
+        "user_theme = \"dark\"\nsandbox_mode = \"read-only\"\napproval_policy = \"on-request\"\n",
+        "*",
+        PolicyDecision::Allow,
+    )
+    .await;
+    assert_eq!(parsed["user_theme"].as_str(), Some("dark"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
 
-    assert_eq!(
-        parsed["user_theme"].as_str(),
-        Some("dark"),
-        "user-managed key must be preserved"
-    );
-    assert_eq!(
-        parsed["sandbox_mode"].as_str(),
-        Some("full-auto"),
-        "AA-managed key must be updated"
-    );
+/// Each key is protected on its own: seeding only one of them must still stop
+/// AA's looser value for that key (the comparator, not the absent-key rule).
+#[tokio::test]
+async fn apply_settings_protects_each_key_independently() {
+    let parsed = apply_one_rule("sandbox_mode = \"read-only\"\n", "*", PolicyDecision::Allow).await;
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    let parsed = apply_one_rule("approval_policy = \"on-request\"\n", "*", PolicyDecision::Allow).await;
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// Positive control for the test above: the rule still lets AA tighten.
+#[tokio::test]
+async fn apply_settings_tightens_a_looser_user_setting() {
+    let parsed = apply_one_rule(
+        "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-failure\"\n",
+        "fs:write",
+        PolicyDecision::Deny,
+    )
+    .await;
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// `never` can only auto-reject prompts, so replacing it could only relax.
+#[tokio::test]
+async fn apply_settings_leaves_a_value_it_cannot_rank_alone() {
+    let parsed = apply_one_rule("approval_policy = \"never\"\n", "fs:write", PolicyDecision::Deny).await;
+    assert_eq!(parsed["approval_policy"].as_str(), Some("never"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+}
+
+/// An empty config ranks strictest: a permissive value must not land on it.
+#[tokio::test]
+async fn apply_settings_writes_no_permissive_value_onto_an_empty_config() {
+    let parsed = apply_one_rule("", "*", PolicyDecision::Allow).await;
+    assert!(parsed.get("sandbox_mode").is_none());
+    assert!(parsed.get("approval_policy").is_none());
 }
 
 #[tokio::test]
@@ -159,7 +193,7 @@ async fn apply_settings_is_idempotent() {
 
     let config_path = tmp.path().join(".codex").join("config.toml");
     let parsed: toml::Value = toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-    assert_eq!(parsed["sandbox_mode"].as_str(), Some("ask"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
 }
 
 /// A real `config.toml` is not flat: `codex mcp add` writes sub-tables like
@@ -192,7 +226,7 @@ async fn apply_settings_preserves_a_user_written_sub_table() {
     );
     assert_eq!(
         parsed["sandbox_mode"].as_str(),
-        Some("ask"),
+        Some("read-only"),
         "AA-managed key must still be applied"
     );
 }

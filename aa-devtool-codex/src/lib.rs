@@ -21,13 +21,15 @@ use aa_devtool_contract::{
 use async_trait::async_trait;
 
 mod approval;
+pub mod boundary;
 pub mod executor;
 pub mod launch_env;
 pub mod lifecycle;
 mod sandbox;
 pub mod scope;
+mod strictness;
 use approval::map_policy_to_approval;
-use sandbox::{map_policy_to_sandbox_mode, network_allow_list, network_block_list};
+use sandbox::map_policy_to_sandbox_mode;
 
 pub use lifecycle::CodexIntegration;
 pub use scope::{CodexPaths, ScopeError};
@@ -254,8 +256,6 @@ impl DevToolAdapter for CodexAdapter {
 
     async fn generate_managed_settings(&self, policy: &PolicyDocument) -> Result<String, AdapterError> {
         let sandbox_mode = map_policy_to_sandbox_mode(policy);
-        let allowed_domains = network_allow_list(policy);
-        let blocked_domains = network_block_list(policy);
         let approval_policy = map_policy_to_approval(policy);
 
         let mut settings = toml::value::Table::new();
@@ -263,17 +263,14 @@ impl DevToolAdapter for CodexAdapter {
             "sandbox_mode".to_string(),
             toml::Value::try_from(sandbox_mode).map_err(|e| AdapterError::Serde(e.to_string()))?,
         );
-        settings.insert(
-            "allowed_domains".to_string(),
-            toml::Value::try_from(allowed_domains).map_err(|e| AdapterError::Serde(e.to_string()))?,
-        );
-        settings.insert(
-            "blocked_domains".to_string(),
-            toml::Value::try_from(blocked_domains).map_err(|e| AdapterError::Serde(e.to_string()))?,
-        );
+        // No `allowed_domains` / `blocked_domains` (AAASM-6330): codex-cli 0.160.0
+        // rejects them as `unknown configuration field` under `--strict-config` and
+        // otherwise ignores them, so writing them enforced nothing and made the
+        // file unloadable for strict users. Codex network egress is enforced by
+        // `aa-proxy`, not by this file.
         settings.insert(
             "approval_policy".to_string(),
-            toml::Value::try_from(approval_policy).map_err(|e| AdapterError::Serde(e.to_string()))?,
+            toml::Value::String(approval_policy.as_codex_value().to_string()),
         );
         toml::to_string_pretty(&settings).map_err(|e| AdapterError::Serde(e.to_string()))
     }
@@ -338,7 +335,14 @@ impl DevToolAdapter for CodexAdapter {
         };
 
         // AA-managed keys win; user-managed keys not present in `settings` survive.
-        if let toml::Value::Table(new_table) = new_val {
+        // ...except that a security setting the user already holds is never
+        // lowered (AAASM-6327), and one that cannot be ranked is never replaced.
+        if let toml::Value::Table(mut new_table) = new_val {
+            for w in strictness::withhold_relaxations(&merged, &mut new_table) {
+                if w.unrankable {
+                    eprintln!("{}", strictness::warning(&w));
+                }
+            }
             merged.extend(new_table);
         }
 

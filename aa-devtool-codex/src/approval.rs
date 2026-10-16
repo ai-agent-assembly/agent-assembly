@@ -31,7 +31,8 @@ pub enum ApprovalLevel {
 
 /// Approval policy applied per action category in the Codex CLI.
 ///
-/// Maps directly to Codex's `approval_policy` config key. Construct via
+/// This is AA's per-category model; Codex's `approval_policy` key takes one
+/// string, produced by [`ApprovalPolicy::as_codex_value`]. Construct via
 /// [`map_policy_to_approval`]; the default (all `Auto`) is also available
 /// through [`Default`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -44,6 +45,30 @@ pub struct ApprovalPolicy {
     pub network: ApprovalLevel,
     /// Approval level for MCP tool calls.
     pub mcp_calls: ApprovalLevel,
+}
+
+impl ApprovalPolicy {
+    /// The `approval_policy` value to write into Codex's `config.toml`.
+    ///
+    /// Codex's key is a single global string, not a per-category table
+    /// (measured against codex-cli 0.160.0: a table is rejected with
+    /// "unknown variant `level`", and `untrusted` is "no longer supported";
+    /// `on-failure`, `on-request` and `never` load). The four per-category
+    /// levels therefore collapse to one value: any category that needs a
+    /// prompt or a refusal selects `on-request`, otherwise `on-failure`.
+    /// This key only decides when Codex asks; it does not refuse. A refusal
+    /// is never written as `never`, and the sandbox mode blocks writes but
+    /// not shell or MCP execution (measured: `read-only` still ran
+    /// `/bin/sh`), so a shell or MCP deny degrades to "ask" here and must be
+    /// enforced by another layer.
+    pub fn as_codex_value(&self) -> &'static str {
+        let levels = [self.file_writes, self.shell_exec, self.network, self.mcp_calls];
+        if levels.iter().any(|l| *l != ApprovalLevel::Auto) {
+            "on-request"
+        } else {
+            "on-failure"
+        }
+    }
 }
 
 /// Translate a [`PolicyDocument`] into an [`ApprovalPolicy`] for Codex.
@@ -205,5 +230,44 @@ mod tests {
         assert_eq!(serde_json::to_string(&ApprovalLevel::Auto).unwrap(), r#""auto""#);
         assert_eq!(serde_json::to_string(&ApprovalLevel::Prompt).unwrap(), r#""prompt""#);
         assert_eq!(serde_json::to_string(&ApprovalLevel::Deny).unwrap(), r#""deny""#);
+    }
+
+    #[test]
+    fn approval_policy_is_one_string_codex_0_160_accepts() {
+        // Codex loads on-failure / on-request / never; `untrusted` is "no
+        // longer supported" and a table is rejected (AAASM-6319).
+        let all_auto = ApprovalPolicy::default();
+        assert_eq!(all_auto.as_codex_value(), "on-failure");
+        for one in [
+            ApprovalPolicy {
+                file_writes: ApprovalLevel::Prompt,
+                ..Default::default()
+            },
+            ApprovalPolicy {
+                shell_exec: ApprovalLevel::Deny,
+                ..Default::default()
+            },
+            ApprovalPolicy {
+                network: ApprovalLevel::Prompt,
+                ..Default::default()
+            },
+            ApprovalPolicy {
+                mcp_calls: ApprovalLevel::Deny,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(one.as_codex_value(), "on-request", "{one:?}");
+        }
+    }
+
+    #[test]
+    fn approval_value_is_never_a_value_that_disables_asking() {
+        let strict = ApprovalPolicy {
+            file_writes: ApprovalLevel::Deny,
+            shell_exec: ApprovalLevel::Deny,
+            network: ApprovalLevel::Deny,
+            mcp_calls: ApprovalLevel::Deny,
+        };
+        assert_ne!(strict.as_codex_value(), "never");
     }
 }

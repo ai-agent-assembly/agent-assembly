@@ -7102,6 +7102,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
 
     if args.dry_run {
         print!("{}", dry_run_preview(target, adapter, args));
+        // AAASM-6331: a dry run starts no probe (`codex doctor` writes under
+        // CODEX_HOME), so it must not read as a verified boundary.
+        if args.tool == "codex" {
+            eprintln!(
+                "note: Codex's effective sandbox/approval/network boundary was NOT measured (--dry-run runs no probes)"
+            );
+        }
         return Ok(0);
     }
 
@@ -7278,6 +7285,38 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // always has: after the managed settings have been applied, not before.
     if let Some(e) = bound.adapter_error() {
         anyhow::bail!("failed to build launch command: {e}");
+    }
+
+    // AAASM-6331: a managed-settings file is not evidence of the boundary the
+    // tool will run under — a `-c` flag, a trusted project config or a profile
+    // can override it. Ask the tool itself, after the settings were applied
+    // (a trusted project config beats what was just written), and before spawn.
+    // Enforce refuses anything short of a verified boundary; Observe launches
+    // and says what was not verified. Disabled is hermetic-test-only.
+    if mode == aa_core::EnforcementMode::Disabled && args.tool == "codex" {
+        eprintln!(
+            "note: Codex's effective sandbox/approval/network boundary was NOT measured (enforcement is disabled)"
+        );
+    }
+    if mode != aa_core::EnforcementMode::Disabled {
+        if let Some(check) = aa_devtool::registry::verify_launch_boundary(
+            &args.tool,
+            bound.command(),
+            &managed_policy,
+            mode == aa_core::EnforcementMode::Enforce,
+        ) {
+            eprintln!("--- {} boundary (machine-readable) ---", args.tool);
+            eprintln!("{}", check.report);
+            match check.decision {
+                aa_devtool::registry::LaunchDecision::Refuse(why) => {
+                    anyhow::bail!("refusing to launch: {why}")
+                }
+                aa_devtool::registry::LaunchDecision::ProceedDegraded(why) => {
+                    eprintln!("warning: boundary NOT verified (degraded coverage): {why}");
+                }
+                aa_devtool::registry::LaunchDecision::Proceed => {}
+            }
+        }
     }
 
     // AAASM-6166: captured before `resolved`/`bound` are consumed below. Mirrors

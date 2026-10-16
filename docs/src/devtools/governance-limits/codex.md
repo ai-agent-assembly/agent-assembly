@@ -28,8 +28,10 @@
 
 Codex reaches L2Enforce declaratively via the `~/.codex/config.toml`
 managed-settings surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`),
-which lets the adapter push `sandbox_mode` / `allowed_domains` /
-`blocked_domains` / `approval_policy` without modifying the tool binary —
+which lets the adapter push `sandbox_mode` / `approval_policy` without
+modifying the tool binary (it no longer writes `allowed_domains` /
+`blocked_domains`: codex-cli 0.160.0 does not honor them and rejects them
+under `--strict-config`, AAASM-6330; network egress rests on `aa-proxy`) —
 this page named the file `.codex/config.toml` when first written, was
 changed to `.codex/config.json` in a later correction to match the
 adapter's actual (buggy) write path, and is back to `.toml` now that
@@ -45,3 +47,14 @@ response redaction, and budget enforcement above now read `Partial — proxy`,
 not `Yes`, because coverage is limited to `llm_only`-classified hosts and the
 evidence is a stand-in client, not the shipped `codex` binary; see the
 rendered matrix for the full caveat and citation.
+
+## Launch-time boundary verification (`aasm run codex`)
+
+Before launching, `aasm run codex` asks Codex itself what boundary the launch will have (`codex debug prompt-input` and `codex doctor --json`, run with the launch's own working directory, environment and `-c` flags) and compares the resolved filesystem, network and approval state with what the policy requires. Under Enforce an unmet or unmeasurable boundary refuses the launch; under Observe it launches and says the boundary was not verified. It is measured against codex-cli 0.160.0 only; any other version is reported as unverifiable.
+
+What a `codex_boundary=verified` line covers is the **sandboxed shell**: sandbox mode, shell network, approval policy. It does not cover:
+
+- **Execpolicy allow rules.** A command matching an `allow` rule runs outside the sandbox with network and without approval. Any rule Codex lists as approved, or any `*.rules` file in the scan, makes the boundary *not met*. With `approval_policy=never` Codex lists no rules at all, so the scan is then the only detector; it is deliberately a superset of Codex's own discovery rather than a copy of it (a copy was measured to miss `project_root_markers`, symlinked and relative launch directories, and a relative `CODEX_HOME`). The scan covers `$CODEX_HOME/rules` (or `~/.codex/rules`), `/etc/codex/rules` (scanned defensively: Codex reading rules from there was not confirmed), and `.codex/rules` of the launch directory, the `-C` target and **every** ancestor up to `/`, in both the lexical and the physical (symlink-resolved) spelling. If neither `CODEX_HOME` nor `HOME` is set the home cannot be located and the boundary is not met. Codex writes these files itself when a command is approved with "always allow", so an ordinary long-lived Codex home can refuse under Enforce; run with a clean `CODEX_HOME` to enforce.
+- **Other egress and execution channels.** Live web search, MCP servers, apps/tools, notify hooks and feature flags are not visible to either probe, so `--search`, `--enable`/`--disable` and the matching `-c` keys are refused rather than judged.
+- **A different environment.** The probes run on the host with the launch's environment; they do not run inside an isolation backend, whose view of `HOME`/`CODEX_HOME` may differ.
+- **Time of check.** Configuration, project config and rules are read again at launch; a change between the probe and the launch is not detected.
