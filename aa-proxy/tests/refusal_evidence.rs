@@ -998,6 +998,79 @@ mod gateway_stub {
         }
     }
 
+    /// Allows every `tools/call`; answers `verdict` to a `ToolResult` whose body
+    /// carries the gateway-only marker, `Allow` otherwise (`Error` fails the RPC).
+    #[derive(Clone, Copy)]
+    pub enum ResultVerdict {
+        Redact,
+        Deny,
+        Allow,
+        Error,
+    }
+
+    struct JudgeResults(ResultVerdict);
+
+    #[tonic::async_trait]
+    impl PolicyService for JudgeResults {
+        async fn check_action(
+            &self,
+            req: Request<CheckActionRequest>,
+        ) -> Result<Response<CheckActionResponse>, Status> {
+            use aa_proto::assembly::common::v1::Decision;
+            use aa_proto::assembly::policy::v1::action_context::Action;
+            let decision = match req.get_ref().context.as_ref().and_then(|c| c.action.as_ref()) {
+                Some(Action::ToolResult(r)) => {
+                    if matches!(self.0, ResultVerdict::Error) {
+                        return Err(Status::internal("stub result failure"));
+                    }
+                    let marked = r
+                        .result_json
+                        .windows(super::POLICY_ONLY_VALUE.len())
+                        .any(|w| w == super::POLICY_ONLY_VALUE.as_bytes());
+                    match (marked, self.0) {
+                        (true, ResultVerdict::Redact) => Decision::Redact,
+                        (true, ResultVerdict::Deny) => Decision::Deny,
+                        _ => Decision::Allow,
+                    }
+                }
+                _ => Decision::Allow,
+            };
+            Ok(Response::new(CheckActionResponse {
+                decision: decision as i32,
+                redact: matches!(decision, Decision::Redact).then(Default::default),
+                reason: "stub result verdict".into(),
+                ..Default::default()
+            }))
+        }
+
+        async fn batch_check(&self, _req: Request<BatchCheckRequest>) -> Result<Response<BatchCheckResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+
+        type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+        async fn op_control_stream(
+            &self,
+            _req: Request<OpControlSubscribeRequest>,
+        ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    pub async fn spawn_result_judging_gateway(verdict: ResultVerdict) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(PolicyServiceServer::new(JudgeResults(verdict)))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        format!("http://{addr}")
+    }
+
     /// Bind a gateway that allows everything.
     pub async fn spawn_allowing_gateway() -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1375,4 +1448,181 @@ async fn an_allowed_mcp_call_is_forwarded_plain_identity_and_gzip() {
             "{encoding}: an allowed call must reach upstream, got: {response:?}"
         );
     }
+}
+
+// ── MCP response direction is evaluated by the gateway (AAASM-6355) ──────────
+
+/// A TLS upstream answering one fixed body (optionally `Content-Encoding`-ed).
+async fn fixed_body_tls_upstream(body: Vec<u8>, content_encoding: Option<&'static str>) -> SocketAddr {
+    install_crypto();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut chunk = [0u8; 8192];
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut chunk)).await;
+                let enc = content_encoding
+                    .map(|e| format!("Content-Encoding: {e}\r\n"))
+                    .unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{enc}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = tls.write_all(head.as_bytes()).await;
+                let _ = tls.write_all(&body).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    addr
+}
+
+/// Send an allowed `tools/call` whose upstream answers `upstream_body`; return
+/// what the client received.
+async fn client_view_of_response(
+    gateway: String,
+    upstream_body: Vec<u8>,
+    content_encoding: Option<&'static str>,
+) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(upstream_body, content_encoding).await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await
+}
+
+fn result_body(text: &str) -> Vec<u8> {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#).into_bytes()
+}
+
+#[tokio::test]
+async fn a_gateway_only_value_in_a_response_is_withheld_when_the_gateway_redacts_it() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE),
+        "the gateway-only value reached the client: {view:?}"
+    );
+    assert!(!view.contains("200 OK"), "the response must be withheld, got: {view:?}");
+}
+
+#[tokio::test]
+async fn a_gateway_only_value_in_a_response_is_withheld_when_the_gateway_denies_it() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Deny).await,
+        result_body(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(!view.contains(POLICY_ONLY_VALUE), "got: {view:?}");
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+#[tokio::test]
+async fn an_encoded_response_carrying_a_gateway_only_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        gzip_bytes(&result_body(POLICY_ONLY_VALUE)),
+        Some("gzip"),
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an encoded body the gateway objects to must be withheld, got: {view:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_mixed_response_is_withheld_not_partially_redacted() {
+    use gateway_stub::ResultVerdict;
+    // The proxy redacts the built-in secret itself; the gateway still sees the
+    // policy-only value in what would be sent, so the response is withheld.
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(&format!("{BUILTIN_SECRET} and {POLICY_ONLY_VALUE}")),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE) && !view.contains(BUILTIN_SECRET),
+        "got: {view:?}"
+    );
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+#[tokio::test]
+async fn a_failed_response_evaluation_withholds_fail_closed() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Error).await,
+        result_body("harmless"),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an unevaluable response must not be forwarded, got: {view:?}"
+    );
+}
+
+/// Controls: the withholds above come from the gateway's verdict, not from a
+/// blanket refusal. Same upstream bodies, forwarded when the gateway allows.
+#[tokio::test]
+async fn responses_the_gateway_allows_are_forwarded() {
+    use gateway_stub::ResultVerdict;
+    for (body, enc) in [
+        (result_body(POLICY_ONLY_VALUE), None),
+        (gzip_bytes(&result_body("harmless")), Some("gzip")),
+        (result_body("harmless"), None),
+    ] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            body,
+            enc,
+        )
+        .await;
+        assert!(
+            view.contains("200 OK"),
+            "an allowed response must be forwarded, got: {view:?}"
+        );
+    }
+}
+
+/// The proxy's own built-in redaction still applies before the gateway sees the
+/// body, so a built-in secret alone is redacted and forwarded (no regression).
+#[tokio::test]
+async fn a_builtin_secret_in_a_response_is_still_redacted_and_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(BUILTIN_SECRET),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+    assert!(
+        !view.contains(BUILTIN_SECRET),
+        "the built-in secret must be redacted, got: {view:?}"
+    );
 }
