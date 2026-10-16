@@ -390,6 +390,16 @@ impl Interceptor {
         ResponseScan::Redact(scan.redact(&text).into_bytes())
     }
 
+    /// The response body as the gateway should see it: decoded per
+    /// `content_encoding`, or `None` when it cannot be decoded (callers must
+    /// then withhold, not forward). AAASM-6355.
+    pub fn decoded_response_body(&self, body: &[u8], content_encoding: Option<&str>) -> Option<Vec<u8>> {
+        match scan_source(body, content_encoding) {
+            ScanSource::Plaintext { bytes, .. } => Some(bytes.into_owned()),
+            ScanSource::Uninspectable => None,
+        }
+    }
+
     /// Emit an audit event recording the gateway's decision for an MCP
     /// `tools/call` intercept.
     ///

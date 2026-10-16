@@ -28,7 +28,7 @@ use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
 use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
@@ -1260,6 +1260,8 @@ impl ProxyServer {
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
         let mut upstream_reader = BufReader::new(upstream_read);
         let read_result =
@@ -1271,12 +1273,7 @@ impl ProxyServer {
             };
         match read_result {
             Ok(Some(resp)) => {
-                let content_encoding = resp
-                    .headers
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
-                    .map(|(_, v)| v.as_str());
-                self.handle_mcp_response_body(&resp, content_encoding, client_tls, call, args_bytes)
+                self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
                     .await
             }
             Ok(None) => Ok(()), // Upstream closed without writing a response.
@@ -1304,12 +1301,54 @@ impl ProxyServer {
     async fn handle_mcp_response_body(
         &self,
         resp: &http::HttpResponse,
-        content_encoding: Option<&str>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
-        match self.interceptor.redact_response_body(&resp.body, content_encoding) {
+        let content_encoding = resp
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+            .map(|(_, v)| v.as_str());
+        let scan = self.interceptor.redact_response_body(&resp.body, content_encoding);
+        // AAASM-6355: the proxy's scanner holds built-in patterns only, so after
+        // its own redaction the gateway evaluates what would actually be sent
+        // (the redacted body, or the decoded original when the scan was clean).
+        // Anything but `Allow` withholds: the gateway's `Redact` cannot be
+        // applied here (no replayable instructions, no gateway patterns).
+        if let (Some(gw), false) = (gateway, matches!(scan, ResponseScan::Withhold)) {
+            let candidate = match &scan {
+                ResponseScan::Redact(bytes) => Some(bytes.clone()),
+                _ => self.interceptor.decoded_response_body(&resp.body, content_encoding),
+            };
+            let verdict = match candidate {
+                None => Err("response body could not be decoded for gateway evaluation".to_string()),
+                Some(body) => match evaluate_mcp_result(gw, call, &body, source_url, "", "").await {
+                    Ok(McpDecision::Allow) => Ok(()),
+                    Ok(McpDecision::Deny { reason }) => Err(format!("gateway denied the MCP response: {reason}")),
+                    Ok(McpDecision::Redact { .. }) => Err(
+                        "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
+                            .to_string(),
+                    ),
+                    Err(e) if self.config.mcp_fail_open => {
+                        tracing::warn!(error = %e, "gateway response evaluation failed; forwarding (AA_PROXY_MCP_FAIL_OPEN)");
+                        Ok(())
+                    }
+                    Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
+                },
+            };
+            if let Err(reason) = verdict {
+                tracing::warn!(tool_name = %call.tool_name, "{reason}; withholding response");
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, args_bytes, true, &reason)
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                return Ok(());
+            }
+        }
+        match scan {
             ResponseScan::Withhold => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
@@ -1507,8 +1546,15 @@ impl ProxyServer {
 
         if let Some((call, args_bytes)) = mcp_call {
             // MCP response path: read, scan, and relay the upstream response.
-            self.relay_mcp_response(upstream_read, &mut client_tls, &call, &args_bytes)
-                .await?;
+            self.relay_mcp_response(
+                upstream_read,
+                &mut client_tls,
+                &call,
+                &args_bytes,
+                gateway,
+                &format!("https://{host}{}", req.target),
+            )
+            .await?;
         } else {
             // Not MCP — relay only the upstream response back to the client.
             let mut upstream_read = upstream_read;
