@@ -495,6 +495,26 @@ this: it governs only the request-side `tools/call` check and proxy start-up
 without a gateway, and never causes a failed response check to be forwarded. There
 is no response-side fail-open setting.
 
+**What the proxy decodes the way a lenient peer does** (so a value or a
+`tools/call` hidden from a strict JSON parser is still judged):
+
+- A UTF-8 BOM and invalid UTF-8 bytes are tolerated, and every JSON string escape
+  (`\uXXXX`, `\/`, ...) is decoded by a linear lexical decoder that needs no
+  successful parse: deeply nested, `NaN`, `1e400`, repeated-key and SSE
+  `data:` framed bodies are covered. The raw text and the decoded text are both
+  scanned and, when they differ, both sent to the gateway.
+- A `tools/call` request is denied (fail-closed) when its keys collide after
+  Go-style case folding (ASCII case, U+017F, U+212A) or spell an envelope field
+  inexactly, including collisions nested inside `arguments`; when a repeated
+  `method` key or an unparseable body carries a `tools/call` token; or when the
+  body is UTF-16/32 or declares a non-UTF-8 charset.
+- A UTF-16/32 response is scanned with its NUL bytes removed and is withheld when
+  that reading is sensitive.
+
+**Not covered:** peers that accept JSON5/JSONC (comments, single-quoted strings);
+a first-key-wins duplicate key *inside* `arguments` that is not a case collision;
+and a secret split across separate `content[]` parts or string tokens.
+
 `alert_only` is the exception that is not enforcement. The gateway records the
 detection and raises an alert, then allows, so the matching content **continues
 unchanged to the client**. It does not prevent disclosure and does not mask the

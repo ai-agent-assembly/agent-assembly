@@ -226,6 +226,14 @@ not protecting: it does not prevent disclosure and it does not mask the value.
 Without a connected gateway there is no gateway evaluation of responses at all;
 only the proxy's built-in-pattern redaction applies.
 
+The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
+every JSON escape, SSE framing, 200-deep or `NaN` bodies, UTF-16/32), denies a
+`tools/call` whose keys collide after Go-style case folding, and withholds a
+UTF-16/32 response that reads as sensitive. **Not covered:** JSON5/JSONC peers,
+first-key-wins duplicate keys inside `arguments` that are not case collisions, and
+a secret split across separate `content[]` parts. See "MCP tool results through
+`aa-proxy`" in the policy reference.
+
 ## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
 
 A governed `aasm run` launch strips ambient `HTTP_PROXY`/`HTTPS_PROXY`/
