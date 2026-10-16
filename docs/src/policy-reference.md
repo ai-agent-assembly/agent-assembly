@@ -511,16 +511,20 @@ is no response-side fail-open setting.
 **Encodings.** Peers disagree on how to decode a JSON body (Node honours the
 declared charset, Python auto-detects UTF-16/32, httpx honours the declared
 charset), so the proxy judges only bodies every peer reads identically. A request
-is *JSON-typed* when its media type is `application/json` or `*+json`, an
-`Mcp-Session-Id` / `MCP-Protocol-Version` header is present, or the body reads as
-a JSON document under the encoding Python would detect. A JSON-typed request is
-denied unless it has at most one `charset` parameter, that charset is absent,
-`utf-8`, or ASCII-compatible (`us-ascii`, `iso-8859-1`, `latin1`, `windows-1252`)
-with a pure 7-bit body, and the body is UTF-8 (BOM allowed). So `utf-7`, any
-unknown charset, repeated charset parameters and UTF-16/32 are denied, **and JSON
-declared as ISO-8859-1 with non-ASCII bytes is denied** (it cannot be told apart
-from an evasion). Binary, multipart and form bodies are not JSON-typed and are
-untouched. An MCP response is withheld under the same rules, applied
+is *JSON-typed* when any `Content-Type` value mentions `json` (a near-miss such as
+`application/json5`, or a quoted parameter, counts: the Node MCP SDK accepts any
+value merely containing `application/json`), an `Mcp-Session-Id` /
+`MCP-Protocol-Version` header is present, or the body reads as a JSON document
+under the encoding Python would detect. A JSON-typed request is denied unless it
+has at most one `charset` parameter, that charset is absent, `utf-8`, or
+ASCII-compatible (`us-ascii`, `iso-8859-1`, `latin1`, `windows-1252`) with a pure
+7-bit body, and the body is UTF-8 (BOM allowed). **The charset rule applies to any
+request that declares a charset, whatever its media type**, so a form or text POST
+declaring `charset=utf-7` is denied too (negligible cost). Compatibility denials:
+non-ASCII JSON declared ISO-8859-1/latin1/windows-1252; two `Content-Type` headers
+on JSON; any POST declaring a non-allowlisted charset; `utf-7`, unknown charsets,
+repeated charset parameters and UTF-16/32. Binary, multipart and form bodies
+without a charset parameter are untouched. An MCP response is withheld under the same rules, applied
 unconditionally, including `text/event-stream; charset=...`.
 
 **Not covered:** peers that accept JSON5/JSONC (comments, single-quoted strings);

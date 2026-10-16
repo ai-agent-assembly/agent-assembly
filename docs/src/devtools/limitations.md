@@ -230,8 +230,9 @@ The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
 every JSON escape, SSE framing, 200-deep or `NaN` bodies) and denies a `tools/call`
 whose keys collide after Go-style case folding. It **denies JSON it cannot decode
 identically to every peer**: `utf-7` or any unknown charset, repeated `charset`
-parameters, UTF-16/32, and JSON declared ISO-8859-1 / us-ascii / windows-1252 with
-non-ASCII bytes; MCP responses are withheld under the same rules. **Not covered:**
+parameters, UTF-16/32, JSON declared ISO-8859-1 / us-ascii / windows-1252 with
+non-ASCII bytes, two `Content-Type` headers on JSON, and any request (whatever its
+media type) declaring a charset outside the allowlist; MCP responses are withheld under the same rules. **Not covered:**
 JSON5/JSONC peers; inexact-case argument keys that do not collide (e.g. only
 `"PATH"` for a Go or .NET binder); first-key-wins duplicate keys inside
 `arguments`; and a secret split across separate `content[]` parts. See "MCP tool
