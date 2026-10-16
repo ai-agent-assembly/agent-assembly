@@ -1,0 +1,570 @@
+//! AAASM-6355 - end-to-end proof that an MCP *response* is withheld unless the
+//! real gateway allows it.
+//!
+//! Chain under test, nothing stubbed: TLS MCP upstream -> `aa-proxy` (MitM) ->
+//! a real `aa_gateway::PolicyEngine` served over a real gRPC socket -> a client
+//! inside the MitM TLS tunnel. Assertions are on the exact bytes the client
+//! receives. `aa-proxy`'s own unit tests use a stub gateway; only a gateway
+//! with operator `data.sensitive_patterns` can tell the proxy something its
+//! built-in scanner cannot, so that is what these tests exercise.
+//!
+//! Every negative case is paired with a control that differs in exactly one
+//! variable (the sensitive value, the policy action, the encoding, or whether
+//! the gateway answers).
+//!
+//! Synthetic values only: `AKIAABCDEFGHIJKLMNOP` (fake AWS key shape) and
+//! `PATIENT-424242` (matches the test policy's operator pattern).
+
+use std::io::Write as _;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::atomic::AtomicU64;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use base64::Engine as _;
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
+use rustls::{ClientConfig, RootCertStore, ServerConfig};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::{AbortHandle, JoinSet};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+use aa_core::AuditEntry;
+use aa_gateway::registry::AgentRegistry;
+use aa_gateway::service::PolicyServiceImpl;
+use aa_gateway::PolicyEngine;
+use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
+use aa_proxy::config::{CredentialAction, ProxyConfig};
+use aa_proxy::proxy::ProxyServer;
+use aa_proxy::tls::CaStore;
+use tonic::transport::Server;
+
+const MCP_HOSTNAME: &str = "mcp.example.com";
+const FAKE_AWS_KEY: &str = "AKIAABCDEFGHIJKLMNOP";
+const PATIENT_ID: &str = "PATIENT-424242";
+const TOOL_CALL: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/home/user/file.txt"}}}"#;
+
+fn text_result(text: &str) -> String {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#)
+}
+
+fn policy(credential_action: &str) -> String {
+    format!(
+        r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: aaasm-6355-e2e-{credential_action}
+  version: "1.0.0"
+spec:
+  data:
+    credential_action: {credential_action}
+    sensitive_patterns:
+      - "PATIENT-[0-9]{{6}}"
+  tools:
+    "*":
+      allow: true
+"#
+    )
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(bytes).unwrap();
+    enc.finish().unwrap()
+}
+
+fn install_crypto_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+// ── Upstream ────────────────────────────────────────────────────────────────
+
+/// Called when the upstream has received the request, before it replies. The
+/// RPC-failure tests use it to kill the gateway *after* the request-side
+/// `tools/call` has been allowed.
+type OnRequest = Arc<dyn Fn() + Send + Sync>;
+
+struct Upstream {
+    addr: SocketAddr,
+    request_count: Arc<Mutex<usize>>,
+    _abort: AbortHandle,
+}
+
+impl Upstream {
+    async fn start(ca: &CaStore, body: Vec<u8>, gzip_encoded: bool, on_request: Option<OnRequest>) -> Self {
+        let ck = ca.sign_cert(MCP_HOSTNAME).expect("ca sign_cert");
+        let cert = CertificateDer::from(ck.cert_der.clone());
+        let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .expect("server config");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind upstream");
+        let addr = listener.local_addr().unwrap();
+        let request_count = Arc::new(Mutex::new(0usize));
+        let count = Arc::clone(&request_count);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let acceptor = acceptor.clone();
+                let body = body.clone();
+                let count = Arc::clone(&count);
+                let on_request = on_request.clone();
+                tokio::spawn(async move {
+                    let Ok(mut tls) = acceptor.accept(stream).await else {
+                        return;
+                    };
+                    let mut buf = Vec::new();
+                    let mut tmp = [0u8; 4096];
+                    let head_end = loop {
+                        match tls.read(&mut tmp).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                        }
+                        if let Some(p) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break p;
+                        }
+                    };
+                    let head = std::str::from_utf8(&buf[..head_end]).unwrap_or("").to_ascii_lowercase();
+                    let cl: usize = head
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:").and_then(|v| v.trim().parse().ok()))
+                        .unwrap_or(0);
+                    while buf.len() < head_end + 4 + cl {
+                        match tls.read(&mut tmp).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                        }
+                    }
+                    *count.lock().unwrap() += 1;
+                    if let Some(hook) = on_request {
+                        hook();
+                        // Let the abort land before the proxy sees the response.
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+                    let encoding = if gzip_encoded { "Content-Encoding: gzip\r\n" } else { "" };
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{encoding}Content-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = tls.write_all(head.as_bytes()).await;
+                    let _ = tls.write_all(&body).await;
+                    let _ = tls.flush().await;
+                });
+            }
+        });
+        Self {
+            addr,
+            request_count,
+            _abort: handle.abort_handle(),
+        }
+    }
+
+    fn request_count(&self) -> usize {
+        *self.request_count.lock().unwrap()
+    }
+}
+
+// ── Gateway (real engine + real gRPC), behind a killable TCP forwarder ─────
+
+struct Gateway {
+    /// Address the proxy dials; aborting the forwarder severs every live
+    /// connection and refuses new ones, i.e. a gateway outage.
+    forwarder_addr: SocketAddr,
+    forwarder: AbortHandle,
+    _server: AbortHandle,
+}
+
+impl Gateway {
+    async fn start(policy_yaml: &str) -> Self {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "{policy_yaml}").unwrap();
+        tmp.flush().unwrap();
+        let (alert_tx, _) = broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+        let engine = Arc::new(PolicyEngine::load_from_file(tmp.path(), alert_tx).expect("policy must load"));
+        let (audit_tx, _audit_rx) = mpsc::channel::<AuditEntry>(4096);
+        let service = PolicyServiceImpl::with_registry(
+            engine,
+            Arc::new(AgentRegistry::new()),
+            audit_tx,
+            Arc::new(AtomicU64::new(0)),
+            [0u8; 32],
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let real_addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let _keep_alive = _audit_rx;
+            let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+            Server::builder()
+                .add_service(PolicyServiceServer::new(service))
+                .serve_with_incoming(incoming)
+                .await
+                .expect("gateway serve");
+        });
+
+        let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let forwarder_addr = front.local_addr().unwrap();
+        let forwarder = tokio::spawn(async move {
+            // Dropping the JoinSet when this task is aborted aborts every connection.
+            let mut conns = JoinSet::new();
+            loop {
+                let Ok((mut inbound, _)) = front.accept().await else {
+                    return;
+                };
+                conns.spawn(async move {
+                    if let Ok(mut outbound) = TcpStream::connect(real_addr).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                });
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        Self {
+            forwarder_addr,
+            forwarder: forwarder.abort_handle(),
+            _server: server.abort_handle(),
+        }
+    }
+
+    fn killer(&self) -> OnRequest {
+        let h = self.forwarder.clone();
+        Arc::new(move || h.abort())
+    }
+}
+
+// ── Proxy + client ──────────────────────────────────────────────────────────
+
+async fn start_proxy(
+    ca_dir: &Path,
+    ca: CaStore,
+    upstream: SocketAddr,
+    gateway: SocketAddr,
+    mcp_fail_open: bool,
+) -> (SocketAddr, AbortHandle) {
+    let port = portpicker::pick_unused_port().expect("free port");
+    let config = ProxyConfig {
+        bind_addr: SocketAddr::from(([127, 0, 0, 1], port)),
+        ca_dir: ca_dir.to_path_buf(),
+        cert_cache_capacity: 10,
+        llm_only: false,
+        mitm_hosts: Vec::new(),
+        denied_hosts: Vec::new(),
+        network_allowlist: Vec::new(),
+        skip_upstream_tls_verify: true,
+        credential_action: CredentialAction::default(),
+        upstream_override: Some(upstream),
+        gateway_endpoint: Some(format!("http://{gateway}")),
+        mcp_fail_open,
+        network_fail_open: false,
+        agent_id: None,
+        ready_file: None,
+        parent_pid: None,
+        allow_private_connect_targets: false,
+        trusted_config_path: None,
+    };
+    let bind_addr = config.bind_addr;
+    let (tx, _rx) = broadcast::channel(64);
+    let server = ProxyServer::new(config, ca, tx);
+    let jh = tokio::spawn(async move { server.run().await.unwrap() });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while TcpStream::connect(bind_addr).await.is_err() {
+        assert!(tokio::time::Instant::now() < deadline, "proxy did not start");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Gateway connect completes just after the listener binds; without this
+    // the first request can take the no-gateway fallback instead.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    (bind_addr, jh.abort_handle())
+}
+
+async fn client_config(ca_dir: &Path) -> Arc<ClientConfig> {
+    let pem = tokio::fs::read_to_string(ca_dir.join("ca-cert.pem")).await.unwrap();
+    let b64: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+    let der = base64::engine::general_purpose::STANDARD.decode(b64).unwrap();
+    let mut roots = RootCertStore::empty();
+    roots.add(CertificateDer::from(der)).unwrap();
+    Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
+/// Everything the downstream client received for one `tools/call`, raw.
+async fn call_through_proxy(proxy: SocketAddr, cfg: Arc<ClientConfig>) -> Vec<u8> {
+    let mut tcp = TcpStream::connect(proxy).await.unwrap();
+    let target = format!("{MCP_HOSTNAME}:443");
+    tcp.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(tcp);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "CONNECT refused: {status}");
+    loop {
+        let mut h = String::new();
+        reader.read_line(&mut h).await.unwrap();
+        if h.trim().is_empty() {
+            break;
+        }
+    }
+    let mut tls = TlsConnector::from(cfg)
+        .connect(
+            ServerName::try_from(MCP_HOSTNAME.to_string()).unwrap(),
+            reader.into_inner(),
+        )
+        .await
+        .expect("TLS to MitM");
+    let req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {MCP_HOSTNAME}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{TOOL_CALL}",
+        TOOL_CALL.len()
+    );
+    tls.write_all(req.as_bytes()).await.unwrap();
+    let mut out = Vec::new();
+    let mut tmp = [0u8; 8192];
+    // Read until EOF or the stream goes idle (a forwarded response may keep-alive).
+    while let Ok(Ok(n)) = tokio::time::timeout(Duration::from_millis(1500), tls.read(&mut tmp)).await {
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&tmp[..n]);
+    }
+    out
+}
+
+/// What the client actually sees: head + body text, gunzipping a gzip body.
+fn visible(raw: &[u8]) -> String {
+    use std::io::Read as _;
+    let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return String::from_utf8_lossy(raw).into_owned();
+    };
+    let head = String::from_utf8_lossy(&raw[..p]).into_owned();
+    let body = &raw[p + 4..];
+    let text = if head.to_ascii_lowercase().contains("content-encoding: gzip") {
+        let mut s = String::new();
+        match flate2::read::GzDecoder::new(body).read_to_string(&mut s) {
+            Ok(_) => s,
+            Err(_) => String::from_utf8_lossy(body).into_owned(),
+        }
+    } else {
+        String::from_utf8_lossy(body).into_owned()
+    };
+    format!("{head}\r\n\r\n{text}")
+}
+
+struct Run {
+    seen: String,
+    raw: Vec<u8>,
+    upstream_requests: usize,
+}
+
+/// Drive one call through the whole chain. `kill_gateway_on_request` severs the
+/// gateway once the upstream has the (already-allowed) request.
+async fn run(policy_action: &str, body: Vec<u8>, gzip_encoded: bool, fail_open: bool, kill_gateway: bool) -> Run {
+    install_crypto_provider();
+    let dir = tempfile::TempDir::new().unwrap();
+    let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+    let cfg = client_config(dir.path()).await;
+    let gateway = Gateway::start(&policy(policy_action)).await;
+    let hook = kill_gateway.then(|| gateway.killer());
+    let upstream = Upstream::start(&ca, body, gzip_encoded, hook).await;
+    let (proxy, abort) = start_proxy(dir.path(), ca, upstream.addr, gateway.forwarder_addr, fail_open).await;
+    let raw = call_through_proxy(proxy, cfg).await;
+    let upstream_requests = upstream.request_count();
+    abort.abort();
+    Run {
+        seen: visible(&raw),
+        raw,
+        upstream_requests,
+    }
+}
+
+fn assert_withheld(r: &Run, secrets: &[&str]) {
+    assert_eq!(r.upstream_requests, 1, "request must have reached the upstream");
+    assert!(
+        r.seen.starts_with("HTTP/1.1 502"),
+        "expected withheld 502, got: {}",
+        r.seen
+    );
+    assert!(r.seen.contains("withheld"), "got: {}", r.seen);
+    for s in secrets {
+        assert!(!r.seen.contains(s), "{s} reached the client: {}", r.seen);
+        assert!(!String::from_utf8_lossy(&r.raw).contains(s));
+    }
+}
+
+fn assert_forwarded(r: &Run, must_contain: &str) {
+    assert_eq!(r.upstream_requests, 1);
+    assert!(r.seen.starts_with("HTTP/1.1 200"), "expected 200, got: {}", r.seen);
+    assert!(r.seen.contains(must_contain), "got: {}", r.seen);
+}
+
+// ── Cases ───────────────────────────────────────────────────────────────────
+
+/// (1) control for 2/3/5/6: a clean response is forwarded unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn clean_response_is_forwarded() {
+    let r = run(
+        "redact_only",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_forwarded(&r, "nothing sensitive");
+}
+
+/// (2) operator-pattern value + `redact_only`: gateway answers Redact, which the
+/// proxy cannot apply, so the response is withheld. Control: case 1.
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_pattern_under_redact_only_is_withheld() {
+    let r = run(
+        "redact_only",
+        text_result(&format!("id {PATIENT_ID}")).into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_withheld(&r, &[PATIENT_ID]);
+}
+
+/// (3) same value under `block`: gateway answers Deny, withheld. Control: the
+/// same policy with a clean body.
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_pattern_under_block_is_withheld() {
+    let r = run(
+        "block",
+        text_result(&format!("id {PATIENT_ID}")).into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_withheld(&r, &[PATIENT_ID]);
+    let control = run(
+        "block",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_forwarded(&control, "nothing sensitive");
+}
+
+/// (4) built-in secret only: the proxy redacts it itself and the gateway then
+/// evaluates the already-redacted body. Observed behaviour is asserted.
+#[tokio::test(flavor = "multi_thread")]
+async fn builtin_secret_is_redacted_by_proxy_then_forwarded() {
+    let r = run(
+        "redact_only",
+        text_result(&format!("key {FAKE_AWS_KEY} end")).into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    eprintln!("CASE4 observed: {}", r.seen);
+    assert_eq!(r.upstream_requests, 1);
+    assert!(
+        !r.seen.contains(FAKE_AWS_KEY),
+        "built-in secret reached the client: {}",
+        r.seen
+    );
+    assert!(r.seen.starts_with("HTTP/1.1 200"), "got: {}", r.seen);
+    assert!(r.seen.contains("[REDACTED:"), "got: {}", r.seen);
+}
+
+/// (5) built-in + operator value together: withheld, neither value present.
+#[tokio::test(flavor = "multi_thread")]
+async fn mixed_builtin_and_operator_values_are_withheld() {
+    let body = text_result(&format!("key {FAKE_AWS_KEY} id {PATIENT_ID}"));
+    let r = run("redact_only", body.into_bytes(), false, false, false).await;
+    assert_withheld(&r, &[FAKE_AWS_KEY, PATIENT_ID]);
+}
+
+/// (6) gzip response: the proxy decodes it for evaluation, so an operator value
+/// inside is withheld; the clean gzip control is forwarded.
+#[tokio::test(flavor = "multi_thread")]
+async fn gzip_response_with_operator_value_is_withheld() {
+    let dirty = gzip(text_result(&format!("id {PATIENT_ID}")).as_bytes());
+    let r = run("redact_only", dirty, true, false, false).await;
+    assert_withheld(&r, &[PATIENT_ID]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gzip_clean_response_is_forwarded() {
+    let clean = gzip(text_result("nothing sensitive").as_bytes());
+    let r = run("redact_only", clean, true, false, false).await;
+    assert_forwarded(&r, "nothing sensitive");
+}
+
+/// (7) the gateway dies after allowing the request: RPC failure on the response
+/// is withheld whatever `mcp_fail_open` says. Control for each: gateway alive.
+#[tokio::test(flavor = "multi_thread")]
+async fn response_rpc_failure_is_withheld_with_fail_open_false() {
+    let r = run(
+        "redact_only",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        false,
+        true,
+    )
+    .await;
+    assert_withheld(&r, &["nothing sensitive"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn response_rpc_failure_is_withheld_with_fail_open_true() {
+    let r = run(
+        "redact_only",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        true,
+        true,
+    )
+    .await;
+    assert_withheld(&r, &["nothing sensitive"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn same_clean_response_is_forwarded_when_gateway_stays_up_with_fail_open_true() {
+    let r = run(
+        "redact_only",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        true,
+        false,
+    )
+    .await;
+    assert_forwarded(&r, "nothing sensitive");
+}
+
+/// (8) `alert_only` is the operator's explicit "observe, don't enforce" choice:
+/// the gateway allows (and raises an alert), so the value is forwarded. Pinned
+/// so a change to that contract is a visible decision. Control: `redact_only`
+/// (case 2) withholds the identical body.
+#[tokio::test(flavor = "multi_thread")]
+async fn alert_only_forwards_operator_pattern_value_by_design() {
+    let r = run(
+        "alert_only",
+        text_result(&format!("id {PATIENT_ID}")).into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_forwarded(&r, PATIENT_ID);
+}
