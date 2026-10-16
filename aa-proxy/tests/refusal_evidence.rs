@@ -2558,13 +2558,31 @@ async fn binary_multipart_and_form_bodies_are_still_forwarded() {
             "multipart/form-data; boundary=b",
             b"--b\r\n\0\0\0\r\n--b--\r\n".to_vec(),
         ),
-        (
-            "form",
-            "application/x-www-form-urlencoded; charset=utf-7",
-            b"a=1&b=%00".to_vec(),
-        ),
+        ("form", "application/x-www-form-urlencoded", b"a=1&b=%00".to_vec()),
     ] {
         let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
         assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+/// Round 6: the Node MCP SDK accepts any Content-Type merely containing
+/// `application/json` and decodes with the declared charset, so a near-miss media
+/// type with charset=utf-7 must be stopped by the encoding gate (allowing gateway,
+/// -32600) while the same body under utf-8 or no charset is forwarded.
+#[tokio::test]
+async fn a_declared_exotic_charset_is_denied_for_any_media_type() {
+    let body = mcp_json();
+    for media in [
+        "application/jsonx",
+        "application/json5",
+        "text/plain; x=\"application/json\"",
+        "application/x-www-form-urlencoded",
+    ] {
+        assert_encoding_denied(media, &format!("{media}; charset=utf-7"), &body).await;
+        for ct in [format!("{media}; charset=utf-8"), media.to_string()] {
+            let (response, seen) =
+                send_with_content_type(gateway_stub::spawn_allowing_gateway().await, &ct, &body).await;
+            assert!(!seen.is_empty(), "control {ct}: got {response:?}");
+        }
     }
 }
