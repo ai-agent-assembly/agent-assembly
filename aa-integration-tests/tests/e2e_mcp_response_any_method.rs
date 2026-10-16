@@ -811,14 +811,18 @@ async fn event_stream_response_on_an_enforcing_host_is_withheld() {
     let events = format!("id: 1\ndata: {}\n\n", dirty());
     let sse = sse_response("text/event-stream", &events);
 
+    // The recognised POST streams *clean* events: if the gateway were what
+    // withheld it, it would be forwarded, so only the event-stream rule can
+    // produce the 502.
+    let clean_sse = sse_response("text/event-stream", &format!("id: 1\ndata: {}\n\n", clean()));
     let post = Scenario::new(
         "redact_only",
         ClientRequest::post(&jsonrpc("resources/read")),
-        sse.clone(),
+        clean_sse,
     )
     .run()
     .await;
-    assert_withheld(&post, &[PATIENT_ID, "id: 1", "data: "]);
+    assert_withheld(&post, &["id: 1", "data: ", "nothing sensitive"]);
 
     let get = Scenario::new(
         "redact_only",
