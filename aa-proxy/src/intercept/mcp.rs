@@ -347,29 +347,20 @@ fn declared_charsets(content_types: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// True when a `Content-Type` media type is JSON (`application/json`, `*+json`).
-fn is_json_media_type(content_type: &str) -> bool {
-    let media = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
-    media == "application/json" || media.ends_with("+json")
+/// True when any `Content-Type` value mentions `json` anywhere (media type or
+/// parameters). The official Node MCP SDK accepts any value merely containing
+/// `application/json`, so near-miss media types must be treated as JSON.
+fn mentions_json(content_types: &[&str]) -> bool {
+    content_types.iter().any(|ct| ct.to_ascii_lowercase().contains("json"))
 }
 
-/// True when the proxy cannot say how a peer will decode `body` given its
-/// declared `Content-Type` values (AAASM-6355 review round 5): peers disagree
-/// (Node honours any declared charset via iconv, Python auto-detects UTF-16/32,
-/// httpx honours the declared charset), so only a body every peer reads as the
-/// same bytes is judged.
-///
-/// Judgeable means all of: at most one charset parameter in total (peers pick
-/// the first or the last); that charset absent, `utf-8`/`utf8`, or an
-/// ASCII-compatible single-byte one (`us-ascii`, `iso-8859-1`, `latin1`,
-/// `windows-1252`) with a pure 7-bit body; and a detected encoding of UTF-8.
-/// Anything else, `utf-7` and unknown charsets included, is unjudgeable.
-pub fn encoding_unjudgeable(body: &[u8], content_types: &[&str]) -> bool {
+/// The charset half of [`encoding_unjudgeable`]: at most one `charset` parameter
+/// across all `Content-Type` values, absent / `utf-8` / `utf8`, or an
+/// ASCII-compatible single-byte charset (`us-ascii`, `iso-8859-1`, `latin1`,
+/// `windows-1252`) with a pure 7-bit body. Anything else, `utf-7` included, fails.
+fn charset_unjudgeable(body: &[u8], content_types: &[&str]) -> bool {
     let charsets = declared_charsets(content_types);
     if charsets.len() > 1 {
-        return true;
-    }
-    if detect_json_encoding(body) != DetectedEncoding::Utf8 {
         return true;
     }
     match charsets.first().map(String::as_str) {
@@ -379,17 +370,34 @@ pub fn encoding_unjudgeable(body: &[u8], content_types: &[&str]) -> bool {
     }
 }
 
-/// Request-side gate: for a JSON-typed request, true when
-/// [`encoding_unjudgeable`]. JSON-typed means a JSON media type, an MCP
-/// transport header (`has_mcp_header`), or a body that reads as a JSON document
-/// under the encoding Python would detect. More than one JSON-typed
-/// `Content-Type` is itself unjudgeable. Binary, multipart and form bodies are
-/// not JSON-typed and are untouched; non-ASCII JSON declared as a single-byte
-/// charset is denied (documented limitation).
+/// True when the proxy cannot say how a peer will decode `body` given its
+/// declared `Content-Type` values (AAASM-6355 review round 5): peers disagree
+/// (Node honours any declared charset via iconv, Python auto-detects UTF-16/32,
+/// httpx honours the declared charset), so only a body every peer reads as the
+/// same bytes is judged: [`charset_unjudgeable`] is false and the detected
+/// encoding is UTF-8.
+pub fn encoding_unjudgeable(body: &[u8], content_types: &[&str]) -> bool {
+    charset_unjudgeable(body, content_types) || detect_json_encoding(body) != DetectedEncoding::Utf8
+}
+
+/// Request-side gate (rounds 5-6). The charset rules apply to ANY request that
+/// declares a charset, whatever its media type: the Node MCP SDK decodes with the
+/// declared charset (UTF-7 included) for any `Content-Type` containing
+/// `application/json`, and a near-miss type must not slip past. A request is
+/// *JSON-typed* when any `Content-Type` value mentions `json`, an MCP transport
+/// header is present (`has_mcp_header`), or the body reads as a JSON document
+/// under the encoding Python would detect; those also get the encoding-detection
+/// check, and more than one JSON `Content-Type` is itself unjudgeable. Binary,
+/// multipart and form bodies WITHOUT a charset parameter are untouched; one
+/// declaring a non-allowlisted charset is denied (negligible cost, documented).
 pub fn request_encoding_hazard(body: &[u8], content_types: &[&str], has_mcp_header: bool) -> bool {
-    let json_media = content_types.iter().any(|ct| is_json_media_type(ct));
-    let typed = json_media || has_mcp_header || looks_like_json_document(&decode_as(body, detect_json_encoding(body)));
-    typed && (content_types.len() > 1 && json_media || encoding_unjudgeable(body, content_types))
+    let json_ct = mentions_json(content_types);
+    let typed = json_ct || has_mcp_header || looks_like_json_document(&decode_as(body, detect_json_encoding(body)));
+    if typed {
+        (content_types.len() > 1 && json_ct) || encoding_unjudgeable(body, content_types)
+    } else {
+        charset_unjudgeable(body, content_types)
+    }
 }
 
 /// True when some decoded string token of `text` is exactly `tools/call`.
@@ -887,7 +895,7 @@ mod tests {
         ));
         assert!(!request_encoding_hazard(
             b"a=1&b=%00",
-            &["application/x-www-form-urlencoded; charset=utf-7"],
+            &["application/x-www-form-urlencoded"],
             false
         ));
         assert!(!request_encoding_hazard(
@@ -913,5 +921,31 @@ mod tests {
             &["text/event-stream; charset=utf-8"]
         ));
         assert!(!encoding_unjudgeable(b"data: {}", &["text/event-stream"]));
+    }
+
+    // Round 6: the charset rules apply whatever the media type says.
+    #[test]
+    fn declared_exotic_charsets_are_hazards_for_any_media_type() {
+        let body = b"+AHs-";
+        for ct in [
+            "application/jsonx; charset=utf-7",
+            "application/json5; charset=utf-7",
+            "text/plain; x=\"application/json\"; charset=utf-7",
+            "application/x-www-form-urlencoded; charset=utf-7",
+            "text/plain; charset=utf-7",
+        ] {
+            assert!(request_encoding_hazard(body, &[ct], false), "{ct}");
+        }
+        // controls: same media types, utf-8 or no charset
+        for ct in [
+            "application/jsonx; charset=utf-8",
+            "application/json5",
+            "text/plain; x=\"application/json\"",
+            "application/x-www-form-urlencoded",
+            "application/x-www-form-urlencoded; charset=UTF-8",
+            "text/plain; charset=\"UTF-8\"",
+        ] {
+            assert!(!request_encoding_hazard(body, &[ct], false), "{ct}");
+        }
     }
 }
