@@ -2479,9 +2479,10 @@ fn mcp_json() -> Vec<u8> {
 
 async fn assert_encoding_denied(label: &str, content_type: &str, body: &[u8]) {
     let (response, seen) =
-        send_with_content_type(gateway_stub::spawn_denying_gateway().await, content_type, body).await;
+        send_with_content_type(gateway_stub::spawn_allowing_gateway().await, content_type, body).await;
+    // ALLOWING gateway above: only the encoding gate can stop the request.
     assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
-    assert!(response.contains("-32"), "{label}: got {response:?}");
+    assert!(response.contains("-32600"), "{label}: got {response:?}");
 }
 
 #[tokio::test]
