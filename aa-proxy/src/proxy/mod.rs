@@ -1374,16 +1374,8 @@ impl ProxyServer {
         });
         match read_result {
             Ok(Upstream::Buffered(resp)) => {
-                self.handle_mcp_response_body(
-                    &resp,
-                    client_tls,
-                    call,
-                    args_bytes,
-                    gateway,
-                    self.config.gateway_endpoint.is_some(),
-                    source_url,
-                )
-                .await
+                self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
+                    .await
             }
             Ok(Upstream::EventStream) => {
                 self.withhold_event_stream(client_tls, &call.tool_name, args_bytes)
@@ -1549,9 +1541,9 @@ impl ProxyServer {
 
     /// Handle MCP response body scanning and forwarding.
     ///
-    /// `enforcing` is whether a gateway endpoint is configured. When it is but
-    /// `gateway` is `None` (no live client), the required evaluator is missing
-    /// and the response is withheld; `mcp_fail_open` does not apply to responses.
+    /// When a gateway endpoint is configured but `gateway` is `None` (no live
+    /// client), the required evaluator is missing and the response is
+    /// withheld; `mcp_fail_open` does not apply to responses.
     async fn handle_mcp_response_body(
         &self,
         resp: &http::HttpResponse,
@@ -1559,9 +1551,9 @@ impl ProxyServer {
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
         gateway: Option<&Arc<Mutex<GatewayClient>>>,
-        enforcing: bool,
         source_url: &str,
     ) -> Result<(), ProxyError> {
+        let enforcing = self.config.gateway_endpoint.is_some();
         let response_encoding = http::joined_content_encoding(&resp.headers);
         let content_encoding = response_encoding.as_deref();
         // A bodiless reply (a `202 Accepted` to a notification, a `204`) carries
