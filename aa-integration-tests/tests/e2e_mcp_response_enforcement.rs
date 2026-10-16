@@ -436,7 +436,9 @@ fn assert_withheld(r: &Run, secrets: &[&str]) {
     );
     assert!(r.seen.contains("withheld"), "got: {}", r.seen);
     for s in secrets {
-        assert!(!r.seen.contains(s), "{s} reached the client: {}", r.seen);
+        // Never print the synthetic value or the body that might contain it:
+        // a failure message must not itself be a cleartext-logging sink.
+        assert!(!r.seen.contains(s), "a withheld secret reached the client");
         assert!(!String::from_utf8_lossy(&r.raw).contains(s));
     }
 }
@@ -718,9 +720,9 @@ fn assert_no_leak(r: &Run, logs: &str, secrets: &[&str]) {
         "no withheld (violation) audit event captured: {audit}"
     );
     for s in secrets {
-        assert!(!logs.contains(s), "{s} leaked into tracing output: {logs}");
-        assert!(!audit.contains(s), "{s} leaked into an audit event: {audit}");
-        assert!(!r.seen.contains(s), "{s} leaked into the 502 envelope: {}", r.seen);
+        assert!(!logs.contains(s), "a secret leaked into tracing output");
+        assert!(!audit.contains(s), "a secret leaked into an audit event");
+        assert!(!r.seen.contains(s), "a secret leaked into the 502 envelope");
     }
 }
 
