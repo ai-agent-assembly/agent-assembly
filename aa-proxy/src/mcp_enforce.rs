@@ -123,6 +123,12 @@ pub fn build_check_action_request(
 /// (AAASM-6355): the gateway's `ToolResult` evaluation applies its own policy
 /// data (`sensitive_patterns`, locale packs, `tool_result.*` predicates) to the
 /// body, which the proxy's built-in-only scanner cannot do.
+///
+/// The request carries [`PROXY_AGENT_ID`], not `ProxyConfig::agent_id`, on
+/// purpose: the gateway rejects a registered agent id that arrives with an empty
+/// credential token, and the proxy holds no per-agent token. A `SecretAlert`
+/// the gateway raises for a response is therefore attributed to the proxy
+/// (`aa-proxy`), not to the agent whose traffic it was.
 pub fn build_tool_result_request(
     call: &McpToolCall,
     result_body: &[u8],
