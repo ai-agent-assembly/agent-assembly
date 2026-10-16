@@ -24,8 +24,6 @@ use tonic::transport::{Channel, Server};
 
 /// Fabricated AWS-style access key (pattern-matching only, not a credential).
 const FAKE_AWS_KEY: &str = "AKIAABCDEFGHIJKLMNOP";
-/// Fabricated US SSN in the `DDD-DD-DDDD` shape the built-in PII scanner flags.
-const FAKE_SSN: &str = "123-45-6789";
 /// Operator-defined PII-style pattern (`data.sensitive_patterns`) and a value matching it.
 const CUSTOM_PATTERN: &str = "PATIENT-[0-9]{6}";
 const FAKE_PATIENT_ID: &str = "PATIENT-424242";
