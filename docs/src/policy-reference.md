@@ -486,9 +486,16 @@ gateway as a `ToolResult` action, so `sensitive_patterns`, `locale_packs` and
 `tools/call` and every other JSON-RPC method (`resources/read`, `prompts/get`,
 batches, and requests carrying an `Mcp-Session-Id` or `MCP-Protocol-Version`
 header). For a `tools/call` the action's `tool_name` is the real tool name; for any
-other exchange it is a reserved label, `mcp-method:<method>` (also
-`mcp-method:batch`, `mcp-method:unknown`), which cannot collide with a real tool
-name. The proxy's own scanner holds only the built-in patterns; it redacts those
+other exchange it is a label starting with `mcp-method:`: `mcp-method:<method>` with
+the method restricted to `[A-Za-z0-9/_.-]` (other characters become `_`, at most 64
+characters), or one of the reserved `mcp-method:#batch`, `mcp-method:#unknown`,
+`mcp-method:#stream` (`#` cannot appear in a sanitised method, so a literal method
+named `batch` is `mcp-method:batch`). A `tools/call` whose tool name starts with
+`mcp-method:` is refused, so a label is never also a tool name. A JSON-RPC batch is
+evaluated only under its `#batch` label, never per element, so a rule that targets a
+method inside a batch does not match it. A JSON-looking request body the proxy cannot
+parse at all (for example nested deeper than 128 levels) is `#unknown`, so its
+response is still evaluated. The proxy's own scanner holds only the built-in patterns; it redacts those
 itself and the gateway evaluates what would actually be sent.
 
 Response-direction evaluation **always fails closed**. The proxy withholds the

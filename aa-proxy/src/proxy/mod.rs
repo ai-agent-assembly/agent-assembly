@@ -27,13 +27,14 @@ use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
 use crate::intercept::mcp::{
-    classify_mcp_exchange, is_unenforceable_tool_call, parse_mcp_request, request_encoding_hazard, MCP_LABEL_PREFIX,
+    classify_mcp_exchange, has_reserved_label_prefix, is_unenforceable_tool_call, parse_mcp_request,
+    request_encoding_hazard, MCP_LABEL_STREAM, MCP_LABEL_UNKNOWN,
 };
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
-    read_http_request, read_http_response_body, read_http_response_head, read_line_capped, serialize_http_request,
+    read_http_request, read_http_response_body, read_line_capped, serialize_http_request,
     serialize_http_request_with_auth, serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES,
     MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
@@ -71,15 +72,21 @@ const TRUSTED_PROXY_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// explicit fail-closed withhold rather than a silent hang.
 const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long one gateway `ToolResult` evaluation of an MCP response may take
-/// before the response is withheld (AAASM-6356).
+/// Bound on one RESPONSE-side gateway `ToolResult` evaluation (AAASM-6356): the
+/// whole `evaluate_mcp_result` future, so it covers waiting for the shared
+/// `Mutex<GatewayClient>` as well as the `CheckAction` RPC itself. On expiry the
+/// response is withheld; a response RPC failure always withholds.
 ///
-/// The gateway RPC client has no timeout of its own and every connection task
-/// shares one `Mutex<GatewayClient>`, so without this bound a gateway that
-/// accepts the connection and never answers would hold the response — and,
-/// through the lock, every other MCP exchange — indefinitely. A timeout is an
-/// RPC failure, and a response RPC failure always withholds.
+/// It bounds nothing else. In particular the request-side `evaluate_mcp_call`
+/// (the `tools/call` decision) has no timeout of its own: that is pre-existing
+/// behaviour this constant does not change. The gateway client has no timeout
+/// either, and every connection task shares the one mutex, which is why the
+/// response side needs the bound.
 const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Interim `1xx` heads tolerated before the real response head; more is treated
+/// as an evasion attempt and withheld (AAASM-6356).
+const MAX_INTERIM_HEADS: usize = 16;
 
 /// A transport this proxy can lay TLS over, type-erased.
 ///
@@ -1225,7 +1232,7 @@ impl ProxyServer {
                 ["mcp-session-id", "mcp-protocol-version"]
                     .iter()
                     .any(|h| req.header(h).is_some())
-                    .then(|| format!("{MCP_LABEL_PREFIX}unknown"))
+                    .then(|| MCP_LABEL_UNKNOWN.to_string())
             });
             return match label {
                 Some(tool_name) => McpEvalOutcome::ForwardResponseOnly(crate::intercept::mcp::McpToolCall {
@@ -1235,6 +1242,16 @@ impl ProxyServer {
                 None => McpEvalOutcome::Skip,
             };
         };
+
+        if has_reserved_label_prefix(&call.tool_name) {
+            // `mcp-method:` names the gateway-evaluation label of non-`tools/call`
+            // exchanges; a tool called that would be indistinguishable from one.
+            let reason =
+                "MCP tools/call names a tool in the reserved `mcp-method:` namespace and was rejected (fail-closed)";
+            tracing::warn!(%host, "{reason}");
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+        }
 
         let target_url = format!("https://{host}{path}", path = req.target);
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
@@ -1351,8 +1368,29 @@ impl ProxyServer {
             Buffered(http::HttpResponse),
         }
         let read_result = tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, async {
-            let Some(head) = read_http_response_head(&mut upstream_reader).await? else {
-                return Ok(Upstream::Closed);
+            // Interim `1xx` heads (100, 103) precede the real response on the
+            // same connection; judge the head that follows, not the interim one.
+            let mut interim = 0usize;
+            let head = loop {
+                let Some(raw) = http::read_raw_response_head(&mut upstream_reader, http::MAX_RAW_HEAD_BYTES).await?
+                else {
+                    return Ok(Upstream::Closed);
+                };
+                // The lenient byte scan runs on the raw head so an odd head the
+                // strict parser rejects cannot hide an event stream.
+                if http::raw_head_is_event_stream(&raw) {
+                    return Ok(Upstream::EventStream);
+                }
+                if http::raw_head_is_interim(&raw) {
+                    interim += 1;
+                    if interim > MAX_INTERIM_HEADS {
+                        return Err(ProxyError::Config(
+                            "upstream sent too many interim 1xx heads; refusing (fail-closed)".into(),
+                        ));
+                    }
+                    continue;
+                }
+                break http::parse_raw_response_head(&raw)?;
             };
             if head.is_event_stream() {
                 return Ok(Upstream::EventStream);
@@ -1407,9 +1445,12 @@ impl ProxyServer {
     /// rest as a stream) with no gateway call, except `text/event-stream`,
     /// which is withheld (see [`Self::relay_enforced_response`]).
     ///
-    /// The head must parse to make that call, so a head the parser rejects is
-    /// withheld rather than relayed blind: the proxy cannot show it is not an
-    /// event stream. There is deliberately no read timeout here — this is
+    /// "Is this an event stream" is decided by a lenient byte scan of the raw
+    /// head (see [`http::raw_head_is_event_stream`]), so a head the strict
+    /// parser would refuse (oversized header, Latin-1 bytes, obs-fold, odd
+    /// status line) is still relayed unchanged; only a head past
+    /// [`http::MAX_RAW_HEAD_BYTES`] is withheld. Interim `1xx` heads are
+    /// relayed and the next head judged. There is deliberately no read timeout here — this is
     /// ordinary traffic, whose first-byte latency the proxy must not start
     /// capping.
     async fn relay_unrecognised_response(
@@ -1417,33 +1458,43 @@ impl ProxyServer {
         upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
     ) -> Result<(), ProxyError> {
-        let stream_label = format!("{MCP_LABEL_PREFIX}stream");
-        match read_http_response_head(upstream_reader).await {
-            Ok(None) => Ok(()),
-            Ok(Some(head)) if head.is_event_stream() => {
-                self.withhold_event_stream(client_tls, &stream_label, &[]).await
+        let stream_label = MCP_LABEL_STREAM;
+        let mut interim = 0usize;
+        loop {
+            let raw = match http::read_raw_response_head(upstream_reader, http::MAX_RAW_HEAD_BYTES).await {
+                Ok(None) => return Ok(()),
+                Ok(Some(raw)) => raw,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "upstream response head exceeds the raw-head cap on an enforcing host; withholding (fail-closed)",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(
+                            stream_label,
+                            &[],
+                            true,
+                            "response head too large to inspect, withheld (fail-closed)",
+                        )
+                        .await;
+                    client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                    return Ok(());
+                }
+            };
+            if http::raw_head_is_event_stream(&raw) {
+                return self.withhold_event_stream(client_tls, stream_label, &[]).await;
             }
-            Ok(Some(head)) => {
-                client_tls.write_all(&head.raw).await?;
-                tokio::io::copy(upstream_reader, client_tls).await?;
-                Ok(())
+            // Not an event stream: relay the head unchanged, whatever its shape.
+            client_tls.write_all(&raw).await?;
+            if http::raw_head_is_interim(&raw) {
+                interim += 1;
+                if interim > MAX_INTERIM_HEADS {
+                    return self.withhold_event_stream(client_tls, stream_label, &[]).await;
+                }
+                continue;
             }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "upstream response head unparseable on an enforcing host; withholding (fail-closed)",
-                );
-                self.interceptor
-                    .emit_mcp_decision(
-                        &stream_label,
-                        &[],
-                        true,
-                        "response head unparseable, withheld (fail-closed)",
-                    )
-                    .await;
-                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
-                Ok(())
-            }
+            tokio::io::copy(upstream_reader, client_tls).await?;
+            return Ok(());
         }
     }
 

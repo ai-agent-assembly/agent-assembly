@@ -629,7 +629,7 @@ async fn batch_response_is_gateway_evaluated() {
     .run()
     .await;
     assert_withheld(&r, &[PATIENT_ID]);
-    assert_eq!(tool_result_labels(&r), vec!["mcp-method:batch".to_string()]);
+    assert_eq!(tool_result_labels(&r), vec!["mcp-method:#batch".to_string()]);
 
     let control = Scenario::new(
         "redact_only",
@@ -656,7 +656,7 @@ async fn mcp_session_headers_make_a_bodyless_request_recognised() {
         assert_withheld(&r, &[PATIENT_ID]);
         assert_eq!(
             tool_result_labels(&r),
-            vec!["mcp-method:unknown".to_string()],
+            vec!["mcp-method:#unknown".to_string()],
             "{header}"
         );
     }
@@ -921,4 +921,246 @@ async fn hung_gateway_rpc_withholds_within_the_timeout() {
     .await;
     assert_forwarded(&control, "200", "nothing sensitive");
     assert!(control.elapsed < Duration::from_secs(5), "took {:?}", control.elapsed);
+}
+
+// ── Review round 1 (F1-F4) ──────────────────────────────────────────────────
+
+/// A valid JSON-RPC `resources/read` whose params nest `depth` arrays deep.
+fn nested_resources_read(depth: usize) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{}0{}}}"#,
+        "[".repeat(depth),
+        "]".repeat(depth)
+    )
+}
+
+/// (F1) serde refuses JSON nested past 128 levels, Node/Python/pydantic accept
+/// ~150. A request the proxy cannot parse but a peer runs must still have its
+/// response gateway-evaluated. Controls: depth 100 (parses) is evaluated under
+/// its method label; a clean response to the deep request is forwarded (so the
+/// gateway, not the depth, decides); a non-JSON body stays byte-identical.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_nested_past_serdes_limit_has_its_response_evaluated() {
+    let deep = nested_resources_read(150);
+    let r = Scenario::new("redact_only", ClientRequest::post(&deep), ok_json(&dirty()))
+        .run()
+        .await;
+    assert_withheld(&r, &[PATIENT_ID]);
+    assert_eq!(tool_result_labels(&r), vec!["mcp-method:#unknown".to_string()]);
+
+    let shallow = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&nested_resources_read(100)),
+        ok_json(&dirty()),
+    )
+    .run()
+    .await;
+    assert_withheld(&shallow, &[PATIENT_ID]);
+    assert_eq!(
+        tool_result_labels(&shallow),
+        vec!["mcp-method:resources/read".to_string()]
+    );
+
+    let clean_deep = Scenario::new("redact_only", ClientRequest::post(&deep), ok_json(&clean()))
+        .run()
+        .await;
+    assert_forwarded(&clean_deep, "200", "nothing sensitive");
+    assert_eq!(tool_result_labels(&clean_deep).len(), 1);
+
+    let dirty_bytes = ok_json(&dirty());
+    let not_json = Scenario::new(
+        "redact_only",
+        ClientRequest::post("plainly not json"),
+        dirty_bytes.clone(),
+    )
+    .run()
+    .await;
+    assert_eq!(not_json.raw, dirty_bytes, "non-JSON exchange stays byte-identical");
+    assert!(tool_result_labels(&not_json).is_empty());
+}
+
+fn head_with(extra_headers: &[u8], body: &str) -> Vec<u8> {
+    let mut v = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n".to_vec();
+    v.extend_from_slice(extra_headers);
+    v.extend_from_slice(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes());
+    v
+}
+
+/// (F2) Ordinary non-MCP responses whose head the strict parser refuses must be
+/// relayed byte-identical with no gateway call. Control: the same heads on a
+/// RECOGNISED MCP exchange are withheld, per the plan (a recognised exchange
+/// needs the parsed head), still with no evaluation.
+#[tokio::test(flavor = "multi_thread")]
+async fn odd_response_heads_on_an_unrecognised_exchange_are_relayed_byte_identical() {
+    let body = dirty();
+    let many_headers: Vec<u8> = (0..250).flat_map(|i| format!("X-H{i}: v\r\n").into_bytes()).collect();
+    let mut latin1 = b"Content-Disposition: attachment; filename=\"caf".to_vec();
+    latin1.push(0xE9);
+    latin1.extend_from_slice(b".txt\"\r\n");
+    let mut obs_fold = b"X-Folded: a\r\n b\r\n".to_vec();
+    obs_fold.extend_from_slice(b"X-After: c\r\n");
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "oversized Set-Cookie",
+            head_with(format!("Set-Cookie: s={}\r\n", "a".repeat(9000)).as_bytes(), &body),
+        ),
+        ("200+ headers", head_with(&many_headers, &body)),
+        (
+            "head over 64KiB",
+            head_with(
+                (0..10)
+                    .flat_map(|i| format!("X-Big{i}: {}\r\n", "b".repeat(7000)).into_bytes())
+                    .collect::<Vec<u8>>()
+                    .as_slice(),
+                &body,
+            ),
+        ),
+        ("Latin-1 header", head_with(&latin1, &body)),
+        ("obs-fold", head_with(&obs_fold, &body)),
+        (
+            "status line without a space",
+            format!("HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len()).into_bytes(),
+        ),
+    ];
+    for (name, response) in cases {
+        let r = Scenario::new(
+            "redact_only",
+            ClientRequest::post(r#"{"name":"x","items":[1]}"#),
+            response.clone(),
+        )
+        .run()
+        .await;
+        assert_eq!(r.raw, response, "{name}: must be byte-identical");
+        assert!(tool_result_labels(&r).is_empty(), "{name}");
+
+        let recognised = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("ping")), response)
+            .run()
+            .await;
+        assert_withheld(&recognised, &[PATIENT_ID]);
+        assert!(tool_result_labels(&recognised).is_empty(), "{name} (recognised)");
+    }
+}
+
+/// (F3) A `tools/call` whose tool name sits in the reserved `mcp-method:`
+/// namespace is refused before the upstream is dialled; control: a normal name
+/// is forwarded. Literal methods named like a reserved label get their own label.
+#[tokio::test(flavor = "multi_thread")]
+async fn labels_cannot_be_steered_by_tool_names_or_method_text() {
+    let call = |name: &str| {
+        format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{name}","arguments":{{}}}}}}"#)
+    };
+    let steered = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&call("mcp-method:resources/read")),
+        ok_json(&clean()),
+    )
+    .run()
+    .await;
+    assert_eq!(steered.upstream_requests, 0, "must not reach the upstream");
+    assert!(steered.seen.contains("reserved"), "got: {}", steered.seen);
+    let control = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&call("read_file")),
+        ok_json(&clean()),
+    )
+    .run()
+    .await;
+    assert_forwarded(&control, "200", "nothing sensitive");
+
+    for (method, want) in [
+        ("batch", "mcp-method:batch"),
+        ("unknown", "mcp-method:unknown"),
+        ("stream", "mcp-method:stream"),
+        ("a b;c", "mcp-method:a_b_c"),
+    ] {
+        let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc(method)), ok_json(&clean()))
+            .run()
+            .await;
+        assert_eq!(tool_result_labels(&r), vec![want.to_string()], "method {method:?}");
+    }
+}
+
+/// (F4) The event-stream rule survives an interim `1xx` head and Content-Type
+/// lists. Every stream carries CLEAN events, so only the event-stream rule can
+/// withhold. Controls: the same wrappers around `application/json` pass.
+#[tokio::test(flavor = "multi_thread")]
+async fn interim_heads_and_content_type_lists_do_not_hide_an_event_stream() {
+    let events = format!("id: 1\ndata: {}\n\n", clean());
+    let hidden = ["id: 1", "data: ", "nothing sensitive"];
+    for interim in [
+        "HTTP/1.1 100 Continue\r\n\r\n",
+        "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n",
+    ] {
+        let stream = [interim.as_bytes(), &sse_response("text/event-stream", &events)].concat();
+        let recognised = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            stream.clone(),
+        )
+        .run()
+        .await;
+        assert_withheld(&recognised, &hidden);
+        let unrecognised = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), stream)
+            .run()
+            .await;
+        assert!(unrecognised.seen.contains("withheld"), "got: {}", unrecognised.seen);
+        for h in hidden {
+            assert!(!unrecognised.seen.contains(h), "{h} leaked: {}", unrecognised.seen);
+        }
+
+        // control: the interim head before an ordinary JSON response
+        let json = [interim.as_bytes(), &ok_json(&clean())].concat();
+        let ok = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            json.clone(),
+        )
+        .run()
+        .await;
+        assert_forwarded(&ok, "200", "nothing sensitive");
+        let raw = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), json.clone())
+            .run()
+            .await;
+        assert_eq!(raw.raw, json, "unrecognised exchange stays byte-identical");
+    }
+
+    for ct in [
+        "application/json, text/event-stream",
+        "TEXT/EVENT-STREAM",
+        "x/y;z=\"text/event-stream\"",
+    ] {
+        let r = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            sse_response(ct, &events),
+        )
+        .run()
+        .await;
+        assert_withheld(&r, &hidden);
+        let u = Scenario::new(
+            "redact_only",
+            ClientRequest::post(r#"{"a":1}"#),
+            sse_response(ct, &events),
+        )
+        .run()
+        .await;
+        assert!(u.seen.contains("withheld"), "{ct}: {}", u.seen);
+    }
+    // a second Content-Type header
+    let two =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-type: text/event-stream\r\n\r\n{events}")
+            .into_bytes();
+    let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("resources/read")), two)
+        .run()
+        .await;
+    assert_withheld(&r, &hidden);
+    // control: a Content-Type list with no event stream is just evaluated
+    let ok = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        json_response("200 OK", &clean()),
+    )
+    .run()
+    .await;
+    assert_forwarded(&ok, "200", "nothing sensitive");
 }

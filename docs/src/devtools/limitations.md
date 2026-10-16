@@ -241,6 +241,10 @@ Boundaries of this check, stated plainly:
   before any event byte is forwarded). Streamed MCP responses are not yet
   evaluated; until they are, this closes the bypass rather than inspecting the
   stream. This applies to any request on the host, including a bodyless `GET`.
+  The check is a case-insensitive search for `text/event-stream` in any
+  `Content-Type` value, and looks past interim `1xx` heads. Other responses to
+  an unrecognised request are relayed byte-for-byte even when their head is
+  unusual (oversized headers, Latin-1 bytes), up to a 1 MiB head.
 - **Plain-HTTP (non-TLS) MCP is not covered**; only traffic decrypted inside a
   `CONNECT` tunnel is.
 - **A secret split across separate messages** is evaluated one message at a time.
