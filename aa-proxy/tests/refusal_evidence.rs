@@ -102,6 +102,8 @@ struct Fixture {
     /// AAASM-6353: override the scanner's action. `None` keeps the permissive
     /// `AlertOnly` every refusal test above relies on.
     credential_action: Option<CredentialAction>,
+    /// AAASM-6355: `ProxyConfig::mcp_fail_open`.
+    mcp_fail_open: bool,
 }
 
 /// Start a proxy with a live audit sink; hand back its address and the sink's
@@ -129,7 +131,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         credential_action: fixture.credential_action.unwrap_or(CredentialAction::AlertOnly),
         upstream_override: fixture.upstream_override,
         gateway_endpoint: fixture.gateway_endpoint,
-        mcp_fail_open: false,
+        mcp_fail_open: fixture.mcp_fail_open,
         network_fail_open: false,
         agent_id: fixture.agent_id,
         ready_file: None,
@@ -1624,5 +1626,51 @@ async fn a_builtin_secret_in_a_response_is_still_redacted_and_forwarded() {
     assert!(
         !view.contains(BUILTIN_SECRET),
         "the built-in secret must be redacted, got: {view:?}"
+    );
+}
+
+/// `mcp_fail_open` is the operator opt-in for forwarding a `tools/call` when the
+/// gateway is unreachable. It must not extend to the response direction.
+#[tokio::test]
+async fn a_failed_response_evaluation_is_withheld_even_with_mcp_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body(POLICY_ONLY_VALUE), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::Error).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+    assert!(!view.contains(POLICY_ONLY_VALUE), "got: {view:?}");
+    assert!(
+        !view.contains("200 OK"),
+        "fail-open must not forward an unevaluated response, got: {view:?}"
+    );
+}
+
+/// A gzip body that expands past the proxy's cap is un-inspectable and withheld,
+/// even though the gateway would allow everything.
+#[tokio::test]
+async fn a_decompression_bomb_response_is_withheld_not_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let bomb = gzip_bytes(&vec![b'a'; 70 * 1024 * 1024]);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        bomb,
+        Some("gzip"),
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an over-cap encoded response must be withheld, got a forward"
     );
 }
