@@ -1130,3 +1130,76 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
   therefore means "this ledger has no record", not "this is the issuing ledger".
   Which ledger is authoritative across processes is for AAASM-6273 to settle.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
+
+## Amendment (AAASM-6347/6348/6349): `credentials: posture` — authoring the credential-brokerage requirement
+
+The AAASM-6164 amendment built `credential_gate` but left no way to ask for it:
+`aasm run` constructed `CredentialContract::not_required()` for every launch. J84
+(golden journey, AAASM-6262) therefore had a brokerage mechanism no operator could
+require. This amendment adds the authoring surface and the one enforcement point
+that reads it.
+
+### 22. A two-value `credentials:` policy node
+
+`credentials: { posture: not_required | broker_required }` (`aa-policy`, AAASM-6347)
+lowers to `CredentialContract::not_required()` or `CredentialContract::broker_required()`
+(`credential_contract_for` in `aa-cli/src/commands/run.rs`). Only the posture is
+authorable. The required mode, raw-fallback policy and ceilings stay at the weakest
+contract `broker_required()` builds (`AnySecretlessMode`, raw fallback refused, no
+ceilings); a stronger contract needs a schema change, not a reinterpretation. The node
+counts as an enforcement section, so a `credentials:`-only document loads, while a
+document with nothing but `posture: not_required` is still "no enforcement section".
+
+### 23. `--isolation none` runs the credential gates, and says it is not a boundary
+
+Credential brokerage is a statement about which secrets reach the child, not about
+confinement, so `--isolation none` no longer drops it. When the policy states
+`broker_required`, the none arm runs `authority_gate` and then `credential_gate`
+(`unconfined_credential_refusal`) and refuses the launch if either refuses. The
+refusal text names `credentials: posture: broker_required` and the gate's reason.
+The backend arm runs the same two gates before it consults a backend. The none arm
+establishes no boundary and claims none.
+
+`credential_gate` admits only when all four facts hold:
+
+1. the broker is available and does not fail open;
+2. at least one upstream service is brokered (`no upstream service is covered by any
+   credential brokerage` otherwise);
+3. an explicit `authority.leases` entry for domain `credential` covers the launch
+   (`no explicit grant authorizes credential brokerage for this run` otherwise), and
+   that lease is valid at launch time and was issued to this launch's identity;
+4. every brokered env name is withheld from the child's environment.
+
+### 24. Egress authority is never credential authority
+
+A brokered-egress posture (`egress: broker_required`) or an egress lease does not
+supply fact 3. `credential_contract_for` reads only the credentials node, and the
+none-arm spec carries no `Credential` requirement, so the no-lease state is `Denied`
+rather than `CompatibilityResidual`. That second property is an invariant of the
+none-arm spec, documented on `unconfined_credential_refusal`; a spec that gained a
+`Credential` requirement without a lease would read as the compatibility residual and
+`check_credential_grant` would admit it.
+
+### What this amendment claims, and does not
+
+- **Verified live** (AAASM-6349, macOS, real `aasm run`, default `--isolation none`):
+  with `broker_required` and no credential lease, or a lease but no brokered service,
+  the launch is refused and the child never starts; with a lease and a brokered
+  service the launch is admitted and a synthetic sentinel in the ambient provider-key
+  variable is absent from the child's env, argv and open descriptors and from every
+  state, receipt and log file the run wrote. A `not_required` control shows the same
+  sentinel does reach the child, so the absence is not an artifact of the detector.
+- **Not verified live**: an isolated backend. None is usable on the macOS host used
+  for that evidence; the backend-arm gates are covered by unit tests only.
+- **Residual, not solved**: the withholding is by env *name* the broker covers. An
+  ambient credential under any other name still reaches an unconfined child, and the
+  gate does not look at values. The `aasm` supervisor's own exec-time environment
+  still holds the operator's real key, and a same-uid descendant can read it (`ps
+  -Eww -p <supervisor pid>` on macOS, `/proc/<pid>/environ` on Linux). Nothing here
+  makes the secret unreadable by a same-uid process, and no plaintext-secret
+  isolation is claimed.
+- **Timing**: the none-arm refusal happens at bind time, after registration and the
+  launch audit record. A refused run leaves a registered identity and a launch record;
+  only the child is never started.
+- J84 stays `partial`: the live evidence is macOS-only, the isolated-backend arm has
+  none, and the `ps -E` channel is open.

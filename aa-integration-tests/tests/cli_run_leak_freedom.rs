@@ -61,11 +61,12 @@ pub use common::precondition::evidence;
 #[cfg(unix)]
 mod leak_freedom {
     use std::collections::BTreeMap;
+    use std::os::unix::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use super::grpc_gateway_support::GrpcGateway;
-    use super::proxy_trust_support::{aasm_binary, cargo_target_dir, TrustedProxy};
+    use super::proxy_trust_support::{aasm_binary, TrustedProxy};
 
     const AGENT_ID: &str = "aaasm5866-agent";
 
@@ -617,15 +618,17 @@ fi
             std::env::join_paths(parts)?
         };
 
-        // A baseline snapshot of every `aa-proxy`-named process on the
-        // system, taken before the launch — the assertion below is that
-        // this set is **unchanged** afterward, which is a stronger, more
-        // honest claim than "no aa-proxy child of this pid", since a launch
-        // that never got as far as recording its own child relationship
-        // would trivially pass the weaker check.
-        let before = all_aa_proxy_pids();
+        // Ownership, not a system-wide snapshot: the launcher runs as the
+        // leader of its own process group, so every process it (or anything
+        // it spawns) starts stays in that group even after being orphaned
+        // and reparented to init. Another session's — or a sibling test's —
+        // `aa-proxy` is in a different group and can never be mistaken for
+        // this launch's leak, however many are running.
 
-        let out = std::process::Command::new(&aasm_alone)
+        let child = std::process::Command::new(&aasm_alone)
+            .process_group(0)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .current_dir(&project)
             .env("HOME", &home)
             .env("PATH", &path_var)
@@ -643,8 +646,12 @@ fi
                 "--agent-id",
                 AGENT_ID,
             ])
-            .output()
+            .spawn()
             .expect("aasm run claude should execute (and refuse)");
+        let launch_group = child.id();
+        let out = child
+            .wait_with_output()
+            .expect("aasm run claude should exit (and refuse)");
 
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
@@ -666,60 +673,94 @@ fi
         // table — this is not waiting for cleanup, only for the negative
         // result to be reliably observable.
         std::thread::sleep(Duration::from_millis(200));
-        let after = all_aa_proxy_pids();
-        // Subset, not equality: this machine runs several concurrent
-        // sessions, each free to start or stop its own `aa-proxy` processes
-        // (standalone or dedicated) between the two snapshots below — that
-        // churn is real and expected, and is not this test's subject.
-        // What *is* this test's subject is whether this refused launch
-        // itself added anything, so the only sound assertion is "nothing
-        // new appeared", not "the whole system-wide set held still".
-        let newly_appeared: std::collections::BTreeSet<u32> = after.difference(&before).copied().collect();
+        let leaked = processes_in_group(launch_group);
         assert!(
-            newly_appeared.is_empty(),
-            "new aa-proxy-named process(es) appeared across a refused launch that spawned no tool: \
-             {newly_appeared:?} (before: {before:?}, after: {after:?}) — a launch that cannot start \
-             its dedicated proxy must not have started anything at all",
+            leaked.is_empty(),
+            "process(es) {leaked:?} survive in the refused launch's own process group — a launch \
+             that cannot start its dedicated proxy must not have started anything at all",
         );
 
         Ok(())
     }
 
-    /// Every pid whose command line contains `aa-proxy` **and** was spawned
-    /// from this test's own build tree. Used only as a before/after
-    /// set-equality check, never to identify a specific launch's own proxy
-    /// (that is [`find_proxy_child_pid`]'s job).
+    /// Every live (non-zombie) pid in process group `pgid`.
     ///
-    /// Scoped to this tree's own `cargo_target_dir()`, not matched by name
-    /// alone system-wide: this machine runs several concurrent, unrelated
-    /// sessions, each free to start and stop its own `aa-proxy` processes
-    /// (built from its own worktree's `target/`) between the two snapshots
-    /// this function feeds a before/after diff — a name-only match cannot
-    /// tell that churn apart from this refused launch's own. `resolve_binary`
-    /// (`aa-cli/src/commands/proxy/guard.rs`, via `which`/`~/.cargo/bin`) and
-    /// this harness's own `aasm_binary`/`aa_proxy_binary` both resolve to an
-    /// absolute, canonicalized path, so a genuine leak from *this* launch's
-    /// `aa-proxy` always carries this tree's `cargo_target_dir()` in its
-    /// command line, while another session's own `aa-proxy` (built from a
-    /// different `target/`, even a differently-named sibling worktree) never
-    /// does — unless that session's `aa-proxy` happens to be a
-    /// `~/.cargo/bin`-installed copy with no target-dir path in its argv at
-    /// all, which this scoping cannot distinguish from a leak either; that
-    /// residual gap is why this stays a diff (a pre-existing installed copy
-    /// churning would appear in both `before` and `after`) rather than a bare
-    /// "is the set nonempty" check.
-    fn all_aa_proxy_pids() -> std::collections::BTreeSet<u32> {
-        let tree_marker = cargo_target_dir().to_string_lossy().into_owned();
+    /// A launch is attributed by the group it leads, which its descendants
+    /// keep even once orphaned, rather than by name or by a before/after
+    /// diff of the whole machine: other sessions and sibling tests start and
+    /// stop `aa-proxy` processes at will, and none of them can be in this
+    /// launch's group. A descendant that deliberately `setsid`s out of the
+    /// group would escape this accounting; `aasm run`'s proxy does not.
+    fn processes_in_group(pgid: u32) -> std::collections::BTreeSet<u32> {
         let out = std::process::Command::new("ps")
-            .args(["-eo", "pid,command"])
+            .args(["-axo", "pid=,pgid=,stat="])
             .output()
             .expect("ps must be available on the platforms this test runs on");
-        let text = String::from_utf8_lossy(&out.stdout);
-        text.lines()
-            .skip(1)
-            .filter(|l| l.contains("aa-proxy") && l.contains(&tree_marker))
-            .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let pid: u32 = f.next()?.parse().ok()?;
+                let group: u32 = f.next()?.parse().ok()?;
+                let stat = f.next()?;
+                (group == pgid && !stat.starts_with('Z')).then_some(pid)
+            })
             .collect()
+    }
+
+    /// Run `script` under `sh -c` as the leader of a fresh process group and
+    /// return that group id once the leader has exited.
+    fn run_in_own_group(script: &str) -> u32 {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", script])
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("sh must spawn");
+        let pgid = child.id();
+        child.wait().expect("sh must exit");
+        pgid
+    }
+
+    fn kill_group(pgid: u32) {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &format!("-{pgid}")])
+            .status();
+    }
+
+    /// Positive control: an orphan left behind by a group's leader IS seen,
+    /// so an empty result in the real test is a measurement, not blindness.
+    #[test]
+    fn group_accounting_sees_an_orphan_left_by_the_leader() {
+        let pgid = run_in_own_group("sleep 60 & exit 0");
+        let seen = processes_in_group(pgid);
+        kill_group(pgid);
+        assert!(
+            !seen.is_empty(),
+            "the orphaned child must be attributed to its launcher's group"
+        );
+    }
+
+    /// Negative control: a peer's long-lived process in another group (the
+    /// stand-in for an unrelated session's `aa-proxy`) is NOT attributed.
+    #[test]
+    fn group_accounting_ignores_a_peer_process_in_another_group() {
+        let mut peer = std::process::Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .expect("sleep must spawn");
+        let launcher_group = run_in_own_group("exit 0");
+        let attributed = processes_in_group(launcher_group);
+        let peer_alive = processes_in_group(peer.id()).contains(&peer.id());
+        let _ = peer.kill();
+        let _ = peer.wait();
+        assert!(peer_alive, "the peer must be running for this control to mean anything");
+        assert!(
+            attributed.is_empty(),
+            "a peer in another group must not be attributed: {attributed:?}"
+        );
     }
 
     /// Scenario E, honestly scoped: `aasm run` has no mid-session liveness
