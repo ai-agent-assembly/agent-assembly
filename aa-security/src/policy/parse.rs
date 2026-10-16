@@ -237,6 +237,11 @@ fn parse_path_scope(raw: Option<raw::PathScope>, node: &str) -> Result<Option<Pa
     Ok(Some(scope))
 }
 
+/// The only root keys an envelope (`spec:` present) reads. Anything else beside
+/// `spec:` is dropped by `from_yaml`, taking its denial with it (AAASM-6344).
+#[cfg(feature = "serde")]
+const ENVELOPE_KEYS: &[&str] = &["apiVersion", "kind", "metadata", "spec"];
+
 /// Top-level / flat-form keys. The flat form lets `spec` fields sit at the top
 /// level, so the spec section names are also accepted here.
 #[cfg(feature = "serde")]
@@ -314,6 +319,7 @@ fn validate_schema(root: &serde_yaml::Value) -> Result<(), PolicyParseError> {
     // otherwise treat the top-level mapping as the flat spec.
     let effective = match map.get("spec").and_then(|v| v.as_mapping()) {
         Some(spec_map) => {
+            check_keys(map, ENVELOPE_KEYS, "(root, beside spec)")?;
             check_keys(spec_map, SPEC_KEYS, "spec")?;
             spec_map
         }
@@ -373,6 +379,21 @@ fn check_keys(map: &serde_yaml::Mapping, allowed: &[&str], path: &str) -> Result
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_written_beside_spec_is_refused_not_dropped() {
+        // AAASM-6344: the deny beside `spec:` used to vanish and the document loaded.
+        let yaml = "metadata: {name: a}\nspec:\n  tools:\n    x: {allow: true}\ncapabilities: {deny: [file_write]}\n";
+        let err = PolicyDocument::from_yaml(yaml).expect_err("sibling of spec must be refused");
+        assert!(err.to_string().contains("capabilities"), "{err}");
+    }
+
+    #[test]
+    fn a_well_formed_envelope_still_parses() {
+        let yaml =
+            "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata: {name: a}\nspec:\n  tools:\n    x: {allow: true}\n";
+        PolicyDocument::from_yaml(yaml).expect("envelope with only envelope keys parses");
+    }
 
     #[test]
     fn parses_envelope_capability_policy() {
