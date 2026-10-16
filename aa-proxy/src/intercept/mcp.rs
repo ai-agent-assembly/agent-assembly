@@ -501,39 +501,78 @@ fn mentions_tools_call(value: &serde_json::Value) -> bool {
 /// label, so an attacker-chosen `method` cannot bloat gateway requests or logs.
 const MAX_METHOD_LABEL_LEN: usize = 64;
 
-/// Reserved prefix of every label [`classify_mcp_exchange`] returns. A real MCP
-/// tool name cannot carry it, so a label never collides with a `tools/call`
-/// tool a policy rule names.
+/// Prefix of every label [`classify_mcp_exchange`] returns. A `tools/call`
+/// whose `params.name` starts with it is refused (see
+/// [`has_reserved_label_prefix`]), so a label is never also a real tool name a
+/// policy rule could be written against by accident or steered into.
 pub const MCP_LABEL_PREFIX: &str = "mcp-method:";
+
+/// Label of a JSON-RPC batch. The `#` cannot survive [`sanitize_method`], so no
+/// literal method name can spell it.
+pub const MCP_LABEL_BATCH: &str = "mcp-method:#batch";
+/// Label of a body recognised as JSON-RPC (or JSON the proxy could not parse)
+/// that has no usable `method`. Reserved the same way as [`MCP_LABEL_BATCH`].
+pub const MCP_LABEL_UNKNOWN: &str = "mcp-method:#unknown";
+/// Label of a `text/event-stream` response withheld without a recognised request.
+pub const MCP_LABEL_STREAM: &str = "mcp-method:#stream";
+
+/// True when `tool_name` starts with the reserved [`MCP_LABEL_PREFIX`]. A
+/// `tools/call` naming such a tool is attacker-chosen label steering and is
+/// denied rather than evaluated under a name that reads as a method label.
+pub fn has_reserved_label_prefix(tool_name: &str) -> bool {
+    tool_name.starts_with(MCP_LABEL_PREFIX)
+}
+
+/// `method` restricted to `[A-Za-z0-9/_.-]` (anything else becomes `_`) and
+/// truncated, so a hostile `method` cannot inject separators, whitespace or
+/// the reserved `#` into a label.
+fn sanitize_method(method: &str) -> String {
+    method
+        .chars()
+        .take(MAX_METHOD_LABEL_LEN)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
 /// Decide whether `body` (already `Content-Encoding`-decoded) is a JSON-RPC
 /// exchange that is not a `tools/call`, and name it for the gateway.
 ///
-/// Recognition is deliberately lenient (AAASM-6356): an MCP server that tolerates
-/// a missing or odd `jsonrpc` value would otherwise have its response ride out
-/// unevaluated. A body is recognised when it is a JSON object, or an array with
-/// any object element, that carries a `jsonrpc` key or a string `method`.
-/// Returns `mcp-method:<method>` for a single object with a string `method`,
-/// `mcp-method:batch` for an array, `mcp-method:unknown` for an object with
-/// `jsonrpc` but no string `method`; `None` for anything else (non-JSON, bare
-/// scalars, arrays without object elements, JSON with neither key).
+/// Recognition is deliberately lenient (AAASM-6356), with the same leniency as
+/// [`parse_mcp_request`] (BOM stripped, invalid UTF-8 replaced): an MCP server
+/// that tolerates a missing or odd `jsonrpc` value would otherwise have its
+/// response ride out unevaluated. A body is recognised when it is a JSON
+/// object, or an array with any object element, that carries a `jsonrpc` key
+/// or a string `method`. Returns `mcp-method:<sanitized method>` for a single
+/// object with a string `method`, [`MCP_LABEL_BATCH`] for an array,
+/// [`MCP_LABEL_UNKNOWN`] for an object with `jsonrpc` but no string `method`.
+///
+/// A JSON-looking body (`{` / `[`) that does not parse at all (nested deeper
+/// than serde's limit, `NaN`, trailing garbage, ...) is also
+/// [`MCP_LABEL_UNKNOWN`]: a lenient peer may well run it as a request, so its
+/// response is evaluated rather than relayed raw. `None` for anything else
+/// (non-JSON, bare scalars, arrays without object elements, JSON with neither key).
 pub fn classify_mcp_exchange(body: &[u8]) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let text = lenient_json_text(body);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return looks_like_json_document(&text).then(|| MCP_LABEL_UNKNOWN.to_string());
+    };
     let recognised = |v: &serde_json::Value| {
         v.as_object()
             .is_some_and(|o| o.contains_key("jsonrpc") || o.get("method").is_some_and(serde_json::Value::is_string))
     };
     match &value {
-        serde_json::Value::Array(elements) => elements
-            .iter()
-            .any(recognised)
-            .then(|| format!("{MCP_LABEL_PREFIX}batch")),
+        serde_json::Value::Array(elements) => elements.iter().any(recognised).then(|| MCP_LABEL_BATCH.to_string()),
         serde_json::Value::Object(_) if recognised(&value) => {
-            let label = match value.get("method").and_then(serde_json::Value::as_str) {
-                Some(method) => method.chars().take(MAX_METHOD_LABEL_LEN).collect(),
-                None => "unknown".to_string(),
-            };
-            Some(format!("{MCP_LABEL_PREFIX}{label}"))
+            Some(match value.get("method").and_then(serde_json::Value::as_str) {
+                Some(method) => format!("{MCP_LABEL_PREFIX}{}", sanitize_method(method)),
+                None => MCP_LABEL_UNKNOWN.to_string(),
+            })
         }
         _ => None,
     }
@@ -847,22 +886,22 @@ mod tests {
             (
                 "jsonrpc only",
                 br#"{"jsonrpc":"2.0","id":3,"result":{}}"#,
-                Some("mcp-method:unknown"),
+                Some("mcp-method:#unknown"),
             ),
             (
                 "jsonrpc with non-string method",
                 br#"{"jsonrpc":"2.0","method":7}"#,
-                Some("mcp-method:unknown"),
+                Some("mcp-method:#unknown"),
             ),
             (
                 "batch with an object",
                 br#"[{"jsonrpc":"2.0","method":"resources/read"}]"#,
-                Some("mcp-method:batch"),
+                Some("mcp-method:#batch"),
             ),
             (
                 "batch mixed scalars",
                 br#"[1,{"method":"x"}]"#,
-                Some("mcp-method:batch"),
+                Some("mcp-method:#batch"),
             ),
             ("batch of scalars", b"[1,2,3]", None),
             ("empty batch", b"[]", None),
@@ -1053,5 +1092,97 @@ mod tests {
         let body = format!(r#"{{"jsonrpc":"2.0","method":"{long}"}}"#);
         let label = classify_mcp_exchange(body.as_bytes()).expect("recognised");
         assert_eq!(label.len(), MCP_LABEL_PREFIX.len() + MAX_METHOD_LABEL_LEN);
+    }
+
+    fn nested(depth: usize) -> String {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{}0{}}}"#,
+            "[".repeat(depth),
+            "]".repeat(depth)
+        )
+    }
+
+    // F1: serde refuses nesting past 128, peers (Node, Python) accept ~150.
+    #[test]
+    fn classify_recognises_a_request_nested_past_serdes_limit() {
+        assert!(serde_json::from_str::<serde_json::Value>(&nested(150)).is_err());
+        assert_eq!(
+            classify_mcp_exchange(nested(150).as_bytes()).as_deref(),
+            Some(MCP_LABEL_UNKNOWN)
+        );
+        // control: within the limit it is named by its method
+        assert_eq!(
+            classify_mcp_exchange(nested(100).as_bytes()).as_deref(),
+            Some("mcp-method:resources/read")
+        );
+    }
+
+    #[test]
+    fn classify_treats_unparseable_json_looking_bodies_as_unknown_and_non_json_as_none() {
+        for body in [
+            &b"{\"a\": NaN"[..],
+            b"[1, 2,",
+            b"\xEF\xBB\xBF  {\"method\": 1e999999999 x",
+        ] {
+            assert_eq!(classify_mcp_exchange(body).as_deref(), Some(MCP_LABEL_UNKNOWN));
+        }
+        for body in [&b"hello"[..], b"", b"   ", b"<html>{</html>"] {
+            assert_eq!(classify_mcp_exchange(body), None);
+        }
+    }
+
+    #[test]
+    fn classify_is_lenient_like_parse_mcp_request_about_bom_and_invalid_utf8() {
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend_from_slice(br#"{"jsonrpc":"2.0","method":"ping"}"#);
+        assert_eq!(classify_mcp_exchange(&bom).as_deref(), Some("mcp-method:ping"));
+        let bad = b"{\"jsonrpc\":\"2.0\",\"method\":\"ping\",\"x\":\"\xff\"}";
+        assert_eq!(classify_mcp_exchange(bad).as_deref(), Some("mcp-method:ping"));
+    }
+
+    // F3: a literal method can never spell a reserved label, nor inject characters.
+    #[test]
+    fn literal_methods_named_like_reserved_labels_cannot_equal_them() {
+        for (method, reserved) in [
+            ("batch", MCP_LABEL_BATCH),
+            ("unknown", MCP_LABEL_UNKNOWN),
+            ("stream", MCP_LABEL_STREAM),
+            ("#batch", MCP_LABEL_BATCH),
+            ("#unknown", MCP_LABEL_UNKNOWN),
+        ] {
+            let body = format!(r#"{{"jsonrpc":"2.0","method":"{method}"}}"#);
+            let label = classify_mcp_exchange(body.as_bytes()).unwrap();
+            assert_ne!(label, reserved, "method {method:?}");
+        }
+        // control: a real batch and a method-less envelope do get the reserved labels
+        assert_eq!(
+            classify_mcp_exchange(br#"[{"jsonrpc":"2.0"}]"#).as_deref(),
+            Some(MCP_LABEL_BATCH)
+        );
+        assert_eq!(
+            classify_mcp_exchange(br#"{"jsonrpc":"2.0"}"#).as_deref(),
+            Some(MCP_LABEL_UNKNOWN)
+        );
+    }
+
+    #[test]
+    fn labels_carry_only_the_sanitized_character_set() {
+        let body = "{\"jsonrpc\":\"2.0\",\"method\":\"a b\\n\\u0000;`$(x)\u{e9}/ok_1.2-3\"}";
+        let label = classify_mcp_exchange(body.as_bytes()).unwrap();
+        let tail = label.strip_prefix(MCP_LABEL_PREFIX).unwrap();
+        assert!(
+            tail.chars().all(|c| c.is_ascii_alphanumeric() || "/_.-".contains(c)),
+            "{tail:?}"
+        );
+        assert!(tail.ends_with("/ok_1.2-3"));
+        assert!(!tail.contains('#'));
+    }
+
+    #[test]
+    fn reserved_prefix_detection() {
+        assert!(has_reserved_label_prefix("mcp-method:resources/read"));
+        assert!(has_reserved_label_prefix("mcp-method:"));
+        assert!(!has_reserved_label_prefix("read_file"));
+        assert!(!has_reserved_label_prefix("x-mcp-method:y"));
     }
 }
