@@ -466,6 +466,13 @@ impl Interceptor {
         }
     }
 
+    /// True when the response body decodes (per `content_encoding`) to nothing:
+    /// a bodiless reply carries nothing to leak or for the gateway to judge.
+    /// An undecodable body is not empty.
+    pub fn response_body_is_empty(&self, body: &[u8], content_encoding: Option<&str>) -> bool {
+        matches!(scan_source(body, content_encoding), ScanSource::Plaintext { bytes, .. } if bytes.is_empty())
+    }
+
     /// The texts the gateway should judge for a response that will be sent as
     /// `sent` (the redacted body when the scan redacted, else the decoded
     /// original): the raw form and, when it carries escapes, the decoded strings.

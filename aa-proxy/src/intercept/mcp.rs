@@ -822,7 +822,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn classify_mcp_exchange_table() {
         let cases: &[(&str, &[u8], Option<&str>)] = &[
             (

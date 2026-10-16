@@ -26,13 +26,16 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request, request_encoding_hazard};
+use crate::intercept::mcp::{
+    classify_mcp_exchange, is_unenforceable_tool_call, parse_mcp_request, request_encoding_hazard, MCP_LABEL_PREFIX,
+};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
-    read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
-    serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
+    read_http_request, read_http_response_body, read_http_response_head, read_line_capped, serialize_http_request,
+    serialize_http_request_with_auth, serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES,
+    MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
 use crate::transmission_evidence::{self, DecisionRecord, ForwardAuthorized, ForwardObservation};
@@ -67,6 +70,16 @@ const TRUSTED_PROXY_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// immediately. Bounding the read keeps a stalled upstream a bounded,
 /// explicit fail-closed withhold rather than a silent hang.
 const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long one gateway `ToolResult` evaluation of an MCP response may take
+/// before the response is withheld (AAASM-6356).
+///
+/// The gateway RPC client has no timeout of its own and every connection task
+/// shares one `Mutex<GatewayClient>`, so without this bound a gateway that
+/// accepts the connection and never answers would hold the response — and,
+/// through the lock, every other MCP exchange — indefinitely. A timeout is an
+/// RPC failure, and a response RPC failure always withholds.
+const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A transport this proxy can lay TLS over, type-erased.
 ///
@@ -315,10 +328,13 @@ fn build_jsonrpc_error_response(code: i32, message: &str) -> String {
 /// envelope so the agent gets a clean, secret-free failure. The returned bytes
 /// never contain any upstream content.
 fn mcp_unparseable_response_bytes() -> Vec<u8> {
-    let body = build_jsonrpc_error_response(
-        -32000,
-        "MCP response could not be inspected for secrets and was withheld (fail-closed)",
-    );
+    mcp_withheld_response_bytes("MCP response could not be inspected for secrets and was withheld (fail-closed)")
+}
+
+/// The 502 JSON-RPC error envelope for a withheld MCP response. `message` is a
+/// fixed string chosen by the caller; no upstream content ever reaches it.
+fn mcp_withheld_response_bytes(message: &str) -> Vec<u8> {
+    let body = build_jsonrpc_error_response(-32000, message);
     format!(
         "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -347,7 +363,12 @@ enum McpEvalOutcome {
     /// unevaluated (the documented request-side opt-in), but the response must
     /// still be scanned and gateway-evaluated, which always fails closed.
     ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
-    /// No MCP call detected — proceed without MCP handling.
+    /// A recognised MCP exchange that is not a `tools/call` (AAASM-6356): there
+    /// is nothing to authorise on the request side, so no request RPC and no
+    /// `ToolCall` event, but the response is still scanned and
+    /// gateway-evaluated under the call's reserved `mcp-method:` label.
+    ForwardResponseOnly(crate::intercept::mcp::McpToolCall),
+    /// Not recognised as MCP — proceed without MCP handling.
     Skip,
 }
 
@@ -1133,9 +1154,14 @@ impl ProxyServer {
     /// Evaluate an MCP call against the gateway and return the routing outcome.
     ///
     /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
+    ///
+    /// `gateway` is `None` when an endpoint is configured but no live client
+    /// exists (the startup connect failed under `mcp_fail_open`). That is
+    /// treated exactly like a failed RPC for a `tools/call`: forwarded
+    /// unevaluated only under `mcp_fail_open`, denied otherwise.
     async fn evaluate_mcp_request(
         &self,
-        gateway: &Arc<Mutex<GatewayClient>>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
         req: &HttpRequest,
         host: &str,
     ) -> McpEvalOutcome {
@@ -1192,13 +1218,34 @@ impl ProxyServer {
                 self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
                 return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
             }
-            return McpEvalOutcome::Skip;
+            // AAASM-6356: any other JSON-RPC exchange (resources/read,
+            // prompts/get, a batch, ...) has no request-side decision to make,
+            // but its response can carry the same secrets a tool result can.
+            let label = classify_mcp_exchange(&decoded).or_else(|| {
+                ["mcp-session-id", "mcp-protocol-version"]
+                    .iter()
+                    .any(|h| req.header(h).is_some())
+                    .then(|| format!("{MCP_LABEL_PREFIX}unknown"))
+            });
+            return match label {
+                Some(tool_name) => McpEvalOutcome::ForwardResponseOnly(crate::intercept::mcp::McpToolCall {
+                    tool_name,
+                    arguments: serde_json::Value::Null,
+                }),
+                None => McpEvalOutcome::Skip,
+            };
         };
 
         let target_url = format!("https://{host}{path}", path = req.target);
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
 
-        match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
+        let decision = match gateway {
+            Some(gw) => evaluate_mcp_call(gw, &call, &target_url, "", "").await,
+            None => Err(anyhow::anyhow!(
+                "no live gateway client (the startup connect to the configured endpoint failed)"
+            )),
+        };
+        match decision {
             Ok(McpDecision::Allow) => {
                 tracing::info!(
                     tool_name = %call.tool_name,
@@ -1219,8 +1266,8 @@ impl ProxyServer {
             // secret with a gateway-only value), so no scan outcome can
             // authorize the forward.
             //
-            // Not covered here (follow-up): the response direction
-            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only).
+            // The response direction is evaluated separately and withholds on
+            // `Redact` for the same reason (AAASM-6355).
             Ok(McpDecision::Redact { .. }) => {
                 let reason = "gateway required redaction of this MCP call that the proxy cannot apply (fail-closed); \
                               change the policy to alert/allow, or wait for proxy redaction support";
@@ -1272,35 +1319,77 @@ impl ProxyServer {
         }
     }
 
-    /// Handle MCP response scanning and relay to the client.
+    /// Relay the upstream response of an enforcing proxy (a gateway endpoint is
+    /// configured) back to the client, on a MitM'd non-LLM host.
     ///
-    /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
-    async fn relay_mcp_response(
+    /// `mcp_call` is `Some` for a recognised MCP exchange; its response is
+    /// buffered, scanned and gateway-evaluated. For anything else the response
+    /// is relayed byte-for-byte, except a `text/event-stream` response, which
+    /// is withheld before any byte of it is forwarded: an SSE stream is
+    /// unbounded and cannot be buffered, and relaying it raw would let any MCP
+    /// server (or a bodyless `GET` carrying `Last-Event-ID`) bypass response
+    /// enforcement. Interim until streaming evaluation lands (AAASM-6356 PR2).
+    async fn relay_enforced_response(
         &self,
         // AAASM-5922: was `TlsStream<TcpStream>` — `dial_upstream_tls`'s
         // transport is now type-erased (`BoxedTransport`) so its chained arm
         // (ADR 0036 N2) type-checks against the same call sites as before.
         upstream_read: tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
-        call: &crate::intercept::mcp::McpToolCall,
-        args_bytes: &[u8],
+        mcp_call: Option<&(crate::intercept::mcp::McpToolCall, Vec<u8>)>,
         gateway: Option<&Arc<Mutex<GatewayClient>>>,
         source_url: &str,
     ) -> Result<(), ProxyError> {
         let mut upstream_reader = BufReader::new(upstream_read);
-        let read_result =
-            match tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, read_http_response(&mut upstream_reader)).await {
-                Ok(result) => result,
-                Err(_elapsed) => Err(ProxyError::Config(format!(
-                    "MCP response not read within {MCP_RESPONSE_READ_TIMEOUT:?}; refusing (fail-closed)"
-                ))),
+        let Some((call, args_bytes)) = mcp_call else {
+            return self.relay_unrecognised_response(&mut upstream_reader, client_tls).await;
+        };
+
+        enum Upstream {
+            Closed,
+            EventStream,
+            Buffered(http::HttpResponse),
+        }
+        let read_result = tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, async {
+            let Some(head) = read_http_response_head(&mut upstream_reader).await? else {
+                return Ok(Upstream::Closed);
             };
+            if head.is_event_stream() {
+                return Ok(Upstream::EventStream);
+            }
+            let body = read_http_response_body(&head, &mut upstream_reader).await?;
+            Ok(Upstream::Buffered(http::HttpResponse {
+                version: head.version,
+                status_code: head.status_code,
+                reason: head.reason,
+                headers: head.headers,
+                body,
+            }))
+        })
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(ProxyError::Config(format!(
+                "MCP response not read within {MCP_RESPONSE_READ_TIMEOUT:?}; refusing (fail-closed)"
+            )))
+        });
         match read_result {
-            Ok(Some(resp)) => {
-                self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
+            Ok(Upstream::Buffered(resp)) => {
+                self.handle_mcp_response_body(
+                    &resp,
+                    client_tls,
+                    call,
+                    args_bytes,
+                    gateway,
+                    self.config.gateway_endpoint.is_some(),
+                    source_url,
+                )
+                .await
+            }
+            Ok(Upstream::EventStream) => {
+                self.withhold_event_stream(client_tls, &call.tool_name, args_bytes)
                     .await
             }
-            Ok(None) => Ok(()), // Upstream closed without writing a response.
+            Ok(Upstream::Closed) => Ok(()), // Upstream closed without writing a response.
             Err(e) => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
@@ -1321,7 +1410,148 @@ impl ProxyServer {
         }
     }
 
+    /// Response relay for a request an enforcing proxy did not recognise as
+    /// MCP: the upstream bytes are forwarded unchanged (head verbatim, then the
+    /// rest as a stream) with no gateway call, except `text/event-stream`,
+    /// which is withheld (see [`Self::relay_enforced_response`]).
+    ///
+    /// The head must parse to make that call, so a head the parser rejects is
+    /// withheld rather than relayed blind: the proxy cannot show it is not an
+    /// event stream. There is deliberately no read timeout here — this is
+    /// ordinary traffic, whose first-byte latency the proxy must not start
+    /// capping.
+    async fn relay_unrecognised_response(
+        &self,
+        upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+    ) -> Result<(), ProxyError> {
+        let stream_label = format!("{MCP_LABEL_PREFIX}stream");
+        match read_http_response_head(upstream_reader).await {
+            Ok(None) => Ok(()),
+            Ok(Some(head)) if head.is_event_stream() => {
+                self.withhold_event_stream(client_tls, &stream_label, &[]).await
+            }
+            Ok(Some(head)) => {
+                client_tls.write_all(&head.raw).await?;
+                tokio::io::copy(upstream_reader, client_tls).await?;
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "upstream response head unparseable on an enforcing host; withholding (fail-closed)",
+                );
+                self.interceptor
+                    .emit_mcp_decision(
+                        &stream_label,
+                        &[],
+                        true,
+                        "response head unparseable, withheld (fail-closed)",
+                    )
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Answer the client with the withheld envelope in place of an SSE stream,
+    /// before any event byte has been forwarded.
+    async fn withhold_event_stream(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        tool_name: &str,
+        args_bytes: &[u8],
+    ) -> Result<(), ProxyError> {
+        tracing::warn!(
+            %tool_name,
+            "text/event-stream response on an enforcing host cannot be inspected yet; withholding (fail-closed)",
+        );
+        self.interceptor
+            .emit_mcp_decision(
+                tool_name,
+                args_bytes,
+                true,
+                "event-stream response not inspectable, withheld (fail-closed)",
+            )
+            .await;
+        client_tls
+            .write_all(&mcp_withheld_response_bytes(
+                "MCP event-stream response cannot be inspected for secrets and was withheld (fail-closed)",
+            ))
+            .await?;
+        Ok(())
+    }
+
+    /// Scan one buffered response and have the gateway evaluate what would be
+    /// sent, returning the final verdict: [`ResponseScan::Forward`] or
+    /// [`ResponseScan::Redact`] (the built-in redaction to send). `Err` carries
+    /// the reason to withhold.
+    ///
+    /// The proxy's scanner holds built-in patterns only, so after its own
+    /// redaction the gateway evaluates the candidate (the redacted body, or the
+    /// decoded original when the scan was clean) — AAASM-6355. Anything but
+    /// `Allow` withholds: the gateway's `Redact` cannot be applied here (no
+    /// replayable instructions, no gateway patterns). An already-`Withhold`
+    /// scan passes through untouched, with no gateway call.
+    ///
+    /// Deliberately NOT governed by `mcp_fail_open`: that knob is the documented
+    /// opt-in for forwarding a `tools/call` when the gateway is unreachable.
+    /// Failing a response evaluation open would let a gateway-only sensitive
+    /// value reach the client during an outage. The RPC is bounded by
+    /// [`MCP_GATEWAY_RPC_TIMEOUT`]; a timeout is a failure.
+    async fn evaluate_response_candidate(
+        &self,
+        gateway: &Arc<Mutex<GatewayClient>>,
+        call: &crate::intercept::mcp::McpToolCall,
+        scan: ResponseScan,
+        resp: &http::HttpResponse,
+        content_encoding: Option<&str>,
+        source_url: &str,
+    ) -> Result<ResponseScan, String> {
+        if matches!(scan, ResponseScan::Withhold) {
+            return Ok(scan);
+        }
+        let sent = match &scan {
+            ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        };
+        let Some(bodies) = self.interceptor.gateway_candidates(&resp.body, content_encoding, sent) else {
+            return Err("response body could not be decoded for gateway evaluation".to_string());
+        };
+        for body in &bodies {
+            let evaluation = tokio::time::timeout(
+                MCP_GATEWAY_RPC_TIMEOUT,
+                evaluate_mcp_result(gateway, call, body, source_url, "", ""),
+            )
+            .await;
+            match evaluation {
+                Ok(Ok(McpDecision::Allow)) => {}
+                Ok(Ok(McpDecision::Deny { reason })) => {
+                    return Err(format!("gateway denied the MCP response: {reason}"));
+                }
+                Ok(Ok(McpDecision::Redact { .. })) => {
+                    return Err(
+                        "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
+                            .to_string(),
+                    );
+                }
+                Ok(Err(e)) => return Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
+                Err(_elapsed) => {
+                    return Err(format!(
+                        "MCP response enforcement unavailable: gateway did not answer within {MCP_GATEWAY_RPC_TIMEOUT:?} (fail-closed)"
+                    ));
+                }
+            }
+        }
+        Ok(scan)
+    }
+
     /// Handle MCP response body scanning and forwarding.
+    ///
+    /// `enforcing` is whether a gateway endpoint is configured. When it is but
+    /// `gateway` is `None` (no live client), the required evaluator is missing
+    /// and the response is withheld; `mcp_fail_open` does not apply to responses.
     async fn handle_mcp_response_body(
         &self,
         resp: &http::HttpResponse,
@@ -1329,10 +1559,17 @@ impl ProxyServer {
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
         gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        enforcing: bool,
         source_url: &str,
     ) -> Result<(), ProxyError> {
         let response_encoding = http::joined_content_encoding(&resp.headers);
         let content_encoding = response_encoding.as_deref();
+        // A bodiless reply (a `202 Accepted` to a notification, a `204`) carries
+        // nothing to leak and nothing for the gateway to judge.
+        if self.interceptor.response_body_is_empty(&resp.body, content_encoding) {
+            client_tls.write_all(&serialize_http_response(resp, &resp.body)).await?;
+            return Ok(());
+        }
         let response_types: Vec<&str> = resp
             .headers
             .iter()
@@ -1347,44 +1584,19 @@ impl ProxyServer {
         } else {
             self.interceptor.redact_response_body(&resp.body, content_encoding)
         };
-        // AAASM-6355: the proxy's scanner holds built-in patterns only, so after
-        // its own redaction the gateway evaluates what would actually be sent
-        // (the redacted body, or the decoded original when the scan was clean).
-        // Anything but `Allow` withholds: the gateway's `Redact` cannot be
-        // applied here (no replayable instructions, no gateway patterns).
-        if let (Some(gw), false) = (gateway, matches!(scan, ResponseScan::Withhold)) {
-            let sent = match &scan {
-                ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
-                _ => None,
-            };
-            let candidates = self.interceptor.gateway_candidates(&resp.body, content_encoding, sent);
-            let verdict = match candidates {
-                None => Err("response body could not be decoded for gateway evaluation".to_string()),
-                Some(bodies) => {
-                    let mut verdict = Ok(());
-                    for body in &bodies {
-                        verdict = match evaluate_mcp_result(gw, call, body, source_url, "", "").await {
-                            Ok(McpDecision::Allow) => Ok(()),
-                            Ok(McpDecision::Deny { reason }) => Err(format!("gateway denied the MCP response: {reason}")),
-                            Ok(McpDecision::Redact { .. }) => Err(
-                                "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
-                                    .to_string(),
-                            ),
-                            // Deliberately NOT governed by `mcp_fail_open`: that knob is the
-                            // documented opt-in for forwarding a `tools/call` when the
-                            // gateway is unreachable. Response evaluation is a new gateway
-                            // dependency, and failing it open would let a gateway-only
-                            // sensitive value reach the client during an outage.
-                            Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
-                        };
-                        if verdict.is_err() {
-                            break;
-                        }
-                    }
-                    verdict
-                }
-            };
-            if let Err(reason) = verdict {
+        let verdict = match (gateway, enforcing) {
+            (Some(gw), _) => {
+                self.evaluate_response_candidate(gw, call, scan, resp, content_encoding, source_url)
+                    .await
+            }
+            (None, true) => {
+                Err("gateway configured for MCP enforcement but no live client is connected (fail-closed)".to_string())
+            }
+            (None, false) => Ok(scan),
+        };
+        let scan = match verdict {
+            Ok(scan) => scan,
+            Err(reason) => {
                 tracing::warn!(tool_name = %call.tool_name, "{reason}; withholding response");
                 self.interceptor
                     .emit_mcp_decision(&call.tool_name, args_bytes, true, &reason)
@@ -1392,7 +1604,7 @@ impl ProxyServer {
                 client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
                 return Ok(());
             }
-        }
+        };
         match scan {
             ResponseScan::Withhold => {
                 tracing::warn!(
@@ -1450,9 +1662,16 @@ impl ProxyServer {
     ///   error envelope to the client TLS stream, do not dial upstream.
     /// * **MCP detected, gateway RPC failed** — deny (fail-closed) unless
     ///   `mcp_fail_open` is set.
-    /// * **Body is not MCP (or no gateway)** — DLP-scan, then forward the
-    ///   (possibly redacted) body and relay the upstream response. A `Block`
-    ///   verdict returns 403 without dialing upstream.
+    /// * **MCP exchange that is not a `tools/call`** (AAASM-6356) — no request
+    ///   decision; the response is still scanned and gateway-evaluated.
+    /// * **Gateway endpoint configured, no live client** — a `tools/call` is
+    ///   treated like a failed RPC (`mcp_fail_open` decides); every recognised
+    ///   MCP response is withheld.
+    /// * **Body is not MCP (or no gateway endpoint)** — DLP-scan, then forward
+    ///   the (possibly redacted) body and relay the upstream response
+    ///   unchanged. A `Block` verdict returns 403 without dialing upstream.
+    ///   On an enforcing proxy only a `text/event-stream` response differs: it
+    ///   is withheld (interim, see [`Self::relay_enforced_response`]).
     async fn handle_non_llm_mitm(
         self: &Arc<Self>,
         client_tls: tokio_rustls::server::TlsStream<TcpStream>,
@@ -1496,12 +1715,16 @@ impl ProxyServer {
             return Ok(());
         }
 
-        // MCP detection — only when a gateway is configured.
-        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match gateway {
-            Some(gw) => match self.evaluate_mcp_request(gw, &req, host).await {
+        // MCP detection — whenever a gateway endpoint is configured, even if no
+        // client is live: `enforcing` is the operator's configuration, not the
+        // connection's health, so an outage cannot quietly switch it off.
+        let enforcing = self.config.gateway_endpoint.is_some();
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match enforcing {
+            true => match self.evaluate_mcp_request(gateway, &req, host).await {
                 McpEvalOutcome::Forward(call, args_bytes) | McpEvalOutcome::ForwardUnevaluated(call, args_bytes) => {
                     Some((call, args_bytes))
                 }
+                McpEvalOutcome::ForwardResponseOnly(call) => Some((call, Vec::new())),
                 McpEvalOutcome::Deny(resp) => {
                     tracing::info!(
                         %host,
@@ -1524,7 +1747,7 @@ impl ProxyServer {
                 }
                 McpEvalOutcome::Skip => None,
             },
-            None => None,
+            false => None,
         };
 
         // AAASM-4126: run credential-DLP on the request body for EVERY MitM'd
@@ -1591,19 +1814,19 @@ impl ProxyServer {
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
-        if let Some((call, args_bytes)) = mcp_call {
-            // MCP response path: read, scan, and relay the upstream response.
-            self.relay_mcp_response(
+        if enforcing {
+            // Enforcing proxy: recognised MCP responses are scanned and
+            // gateway-evaluated; everything else is relayed unchanged.
+            self.relay_enforced_response(
                 upstream_read,
                 &mut client_tls,
-                &call,
-                &args_bytes,
+                mcp_call.as_ref(),
                 gateway,
                 &format!("https://{host}{}", req.target),
             )
             .await?;
         } else {
-            // Not MCP — relay only the upstream response back to the client.
+            // No gateway configured — relay only the upstream response back to the client.
             let mut upstream_read = upstream_read;
             tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
         }
