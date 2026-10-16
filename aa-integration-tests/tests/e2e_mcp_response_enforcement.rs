@@ -40,6 +40,7 @@ use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proxy::config::{CredentialAction, ProxyConfig};
 use aa_proxy::proxy::ProxyServer;
 use aa_proxy::tls::CaStore;
+use aa_runtime::pipeline::PipelineEvent;
 use tonic::transport::Server;
 
 const MCP_HOSTNAME: &str = "mcp.example.com";
@@ -268,6 +269,7 @@ async fn start_proxy(
     upstream: SocketAddr,
     gateway: SocketAddr,
     mcp_fail_open: bool,
+    tx: broadcast::Sender<PipelineEvent>,
 ) -> (SocketAddr, AbortHandle) {
     let port = portpicker::pick_unused_port().expect("free port");
     let config = ProxyConfig {
@@ -291,7 +293,6 @@ async fn start_proxy(
         trusted_config_path: None,
     };
     let bind_addr = config.bind_addr;
-    let (tx, _rx) = broadcast::channel(64);
     let server = ProxyServer::new(config, ca, tx);
     let jh = tokio::spawn(async move { server.run().await.unwrap() });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -385,6 +386,8 @@ struct Run {
     raw: Vec<u8>,
     upstream_requests: usize,
     alerts: Vec<SecretAlert>,
+    /// Every audit/pipeline event the proxy broadcast for the call.
+    events: Vec<PipelineEvent>,
 }
 
 /// Drive one call through the whole chain. `kill_gateway_on_request` severs the
@@ -397,13 +400,27 @@ async fn run(policy_action: &str, body: Vec<u8>, gzip_encoded: bool, fail_open: 
     let gateway = Gateway::start(&policy(policy_action)).await;
     let hook = kill_gateway.then(|| gateway.killer());
     let upstream = Upstream::start(&ca, body, gzip_encoded, hook).await;
-    let (proxy, abort) = start_proxy(dir.path(), ca, upstream.addr, gateway.forwarder_addr, fail_open).await;
+    let (event_tx, mut event_rx) = broadcast::channel::<PipelineEvent>(64);
+    let (proxy, abort) = start_proxy(
+        dir.path(),
+        ca,
+        upstream.addr,
+        gateway.forwarder_addr,
+        fail_open,
+        event_tx,
+    )
+    .await;
     let raw = call_through_proxy(proxy, cfg).await;
     let upstream_requests = upstream.request_count();
     let alerts = gateway.drain_alerts();
+    let mut events = Vec::new();
+    while let Ok(e) = event_rx.try_recv() {
+        events.push(e);
+    }
     abort.abort();
     Run {
         alerts,
+        events,
         seen: visible(&raw),
         raw,
         upstream_requests,
@@ -626,4 +643,105 @@ async fn alert_only_records_a_secret_alert_for_the_response_detection() {
     assert_withheld(&enforced, &[PATIENT_ID]);
     assert_eq!(enforced.alerts.len(), 1, "got {:?}", enforced.alerts);
     assert!(!format!("{:?}", enforced.alerts).contains(PATIENT_ID));
+}
+
+// ── Leak surface: envelope, tracing output, audit events ───────────────────
+
+/// `tracing_subscriber` writer that appends into a shared buffer.
+#[derive(Clone, Default)]
+struct LogBuf(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuf {
+    fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(b);
+        Ok(b.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuf {
+    type Writer = LogBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl LogBuf {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// Text of every audit event, including the protobuf wire bytes: `Debug` prints
+/// a `bytes` field as a list of integers, which would never contain a secret.
+fn events_text(events: &[PipelineEvent]) -> String {
+    use prost::Message as _;
+    let mut out = String::new();
+    for e in events {
+        out.push_str(&format!("{e:?}\n"));
+        if let PipelineEvent::Audit(enriched) = e {
+            out.push_str(&String::from_utf8_lossy(&enriched.inner.encode_to_vec()));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Run one call with a thread-local tracing capture. Only a current-thread
+/// runtime makes that capture complete: every task (upstream, gateway, proxy)
+/// then logs on this thread, and the capture cannot see another test's output.
+async fn run_captured(policy_action: &str, body: Vec<u8>, fail_open: bool, kill_gateway: bool) -> (Run, String) {
+    let buf = LogBuf::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buf.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let r = run(policy_action, body, false, fail_open, kill_gateway).await;
+    (r, buf.text())
+}
+
+fn assert_no_leak(r: &Run, logs: &str, secrets: &[&str]) {
+    // The capture is real, not vacuous: the proxy's withhold line and the
+    // withheld audit event for this very call are present.
+    assert!(logs.contains("read_file"), "tracing capture saw no tool name: {logs}");
+    assert!(
+        logs.contains("withholding response"),
+        "tracing capture missed the withhold log line: {logs}"
+    );
+    let audit = events_text(&r.events);
+    assert!(
+        audit.contains("Violation(") && audit.contains("blocked_action: \"tools/call read_file\""),
+        "no withheld (violation) audit event captured: {audit}"
+    );
+    for s in secrets {
+        assert!(!logs.contains(s), "{s} leaked into tracing output: {logs}");
+        assert!(!audit.contains(s), "{s} leaked into an audit event: {audit}");
+        assert!(!r.seen.contains(s), "{s} leaked into the 502 envelope: {}", r.seen);
+    }
+}
+
+#[tokio::test]
+async fn withheld_response_does_not_leak_into_envelope_logs_or_audit_events() {
+    let secrets = [PATIENT_ID, FAKE_AWS_KEY];
+    let mixed = text_result(&format!("key {FAKE_AWS_KEY} id {PATIENT_ID}")).into_bytes();
+
+    // Gateway answers Redact (unappliable) -> withheld.
+    let (r, logs) = run_captured("redact_only", mixed.clone(), false, false).await;
+    assert_withheld(&r, &secrets);
+    assert_no_leak(&r, &logs, &secrets);
+
+    // Gateway answers Deny -> withheld.
+    let (r, logs) = run_captured("block", mixed.clone(), false, false).await;
+    assert_withheld(&r, &secrets);
+    assert_no_leak(&r, &logs, &secrets);
+
+    // Gateway dies after allowing the request -> RPC failure, withheld even
+    // with `mcp_fail_open`.
+    let (r, logs) = run_captured("redact_only", mixed, true, true).await;
+    assert_withheld(&r, &secrets);
+    assert_no_leak(&r, &logs, &secrets);
 }
