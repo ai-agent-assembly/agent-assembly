@@ -99,6 +99,9 @@ struct Fixture {
     /// AAASM-5855: the value read from this proxy process's own `AA_AGENT_ID`
     /// env var (`ProxyConfig::agent_id`). `None` reproduces the pre-fix default.
     agent_id: Option<String>,
+    /// AAASM-6353: override the scanner's action. `None` keeps the permissive
+    /// `AlertOnly` every refusal test above relies on.
+    credential_action: Option<CredentialAction>,
 }
 
 /// Start a proxy with a live audit sink; hand back its address and the sink's
@@ -123,7 +126,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         // Every refusal under test here fires before the credential scanner has
         // any say, so the scanner is left in its most permissive mode: a record
         // that appears anyway cannot have come from the credential verdict.
-        credential_action: CredentialAction::AlertOnly,
+        credential_action: fixture.credential_action.unwrap_or(CredentialAction::AlertOnly),
         upstream_override: fixture.upstream_override,
         gateway_endpoint: fixture.gateway_endpoint,
         mcp_fail_open: false,
@@ -225,6 +228,56 @@ async fn chunked_tls_upstream() -> SocketAddr {
         }
     });
     addr
+}
+
+/// AAASM-6353: a TLS upstream that records the request bytes it receives, so a
+/// test can assert on what actually reached the wire (or that nothing did).
+async fn recording_tls_upstream() -> (SocketAddr, Arc<std::sync::Mutex<Vec<u8>>>) {
+    install_crypto();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let received = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+    let sink = received.clone();
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let sink = sink.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                // Read until the peer closes or goes idle, so a request split
+                // across TLS records is recorded whole.
+                let mut chunk = [0u8; 8192];
+                while let Ok(Ok(n)) =
+                    tokio::time::timeout(std::time::Duration::from_millis(300), tls.read(&mut chunk)).await
+                {
+                    if n == 0 {
+                        break;
+                    }
+                    sink.lock().unwrap().extend_from_slice(&chunk[..n]);
+                    if sink.lock().unwrap().windows(4).any(|w| w == b"\r\n\r\n") && n < chunk.len() {
+                        break;
+                    }
+                }
+                let _ = tls
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                    .await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    (addr, received)
 }
 
 /// Open a CONNECT tunnel and return the proxy's answer to the CONNECT itself.
@@ -851,6 +904,63 @@ mod gateway_stub {
         format!("http://{addr}")
     }
 
+    /// AAASM-6353: allows `NetworkCall`, answers `Redact` to every MCP
+    /// `tools/call` — the gateway finding the proxy's scanner may not share.
+    #[derive(Default)]
+    struct RedactToolCalls;
+
+    #[tonic::async_trait]
+    impl PolicyService for RedactToolCalls {
+        async fn check_action(
+            &self,
+            req: Request<CheckActionRequest>,
+        ) -> Result<Response<CheckActionResponse>, Status> {
+            use aa_proto::assembly::policy::v1::action_context::Action;
+            let is_tool_call = matches!(
+                req.get_ref().context.as_ref().and_then(|c| c.action.as_ref()),
+                Some(Action::ToolCall(_))
+            );
+            let decision = if is_tool_call {
+                aa_proto::assembly::common::v1::Decision::Redact
+            } else {
+                aa_proto::assembly::common::v1::Decision::Allow
+            };
+            Ok(Response::new(CheckActionResponse {
+                decision: decision as i32,
+                redact: is_tool_call.then(Default::default),
+                ..Default::default()
+            }))
+        }
+
+        async fn batch_check(&self, _req: Request<BatchCheckRequest>) -> Result<Response<BatchCheckResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+
+        type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+        async fn op_control_stream(
+            &self,
+            _req: Request<OpControlSubscribeRequest>,
+        ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    /// Bind a gateway that answers `Redact` to MCP `tools/call`.
+    pub async fn spawn_redacting_gateway() -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(PolicyServiceServer::new(RedactToolCalls))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        format!("http://{addr}")
+    }
+
     /// Allows every `CheckAction` unconditionally. Neither `DenyEverything`
     /// nor `AllowOnlyNetworkHost` lets an MCP `tools/call` reach the upstream
     /// (AAASM-5645 needs a real, decoded response body from a live upstream,
@@ -997,5 +1107,148 @@ async fn an_mcp_response_using_chunked_transfer_encoding_is_relayed_whole() {
     assert!(
         response.contains("chunk-boundary-marker"),
         "the full body, reassembled across the chunk boundary, must reach the client, got: {response:?}"
+    );
+}
+
+// ── MCP gateway Redact is fail-closed unless the proxy can redact (AAASM-6353) ──
+
+const BUILTIN_SECRET: &str = "AKIAIOSFODNN7EXAMPLE";
+/// A value only a gateway policy pattern would match: no built-in rule in the
+/// proxy's scanner fires on it.
+const POLICY_ONLY_VALUE: &str = "ACME-PROJECT-ZEBRA-7731";
+
+fn mcp_body_with(value: &str) -> String {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"send_note","arguments":{{"text":"{value}"}}}}}}"#
+    )
+}
+
+async fn redact_fixture_proxy(
+    gateway: String,
+    upstream: SocketAddr,
+    dir: &std::path::Path,
+) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
+    redact_fixture_proxy_with(gateway, upstream, dir, CredentialAction::RedactOnly).await
+}
+
+async fn redact_fixture_proxy_with(
+    gateway: String,
+    upstream: SocketAddr,
+    dir: &std::path::Path,
+    action: CredentialAction,
+) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
+    start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway),
+            upstream_override: Some(upstream),
+            credential_action: Some(action),
+            ..Fixture::default()
+        },
+        dir,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn gateway_redact_with_a_policy_only_value_is_denied_and_never_forwarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = gateway_stub::spawn_redacting_gateway().await;
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy(gateway, upstream, dir.path()).await;
+
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send(
+        tunnel,
+        MITM_HOST,
+        &post(MITM_HOST, "/mcp", &mcp_body_with(POLICY_ONLY_VALUE)),
+    )
+    .await;
+
+    assert!(
+        response.contains("cannot apply"),
+        "the client must get a JSON-RPC error naming the unappliable redaction, got: {response:?}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    assert!(
+        received.lock().unwrap().is_empty(),
+        "nothing may reach upstream, upstream saw: {:?}",
+        String::from_utf8_lossy(&received.lock().unwrap())
+    );
+}
+
+/// Gateway Redact must be denied and nothing may reach upstream, for `body`
+/// under scanner action `action`.
+async fn assert_redact_denied_and_not_forwarded(body: &str, action: CredentialAction) {
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = gateway_stub::spawn_redacting_gateway().await;
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), action).await;
+
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", body)).await;
+
+    assert!(
+        response.contains("cannot apply"),
+        "{action:?}: the client must get the fail-closed JSON-RPC error, got: {response:?}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let saw = received.lock().unwrap().clone();
+    assert!(
+        saw.is_empty(),
+        "{action:?}: nothing may reach upstream, upstream saw: {:?}",
+        String::from_utf8_lossy(&saw)
+    );
+}
+
+/// A built-in secret alone is also denied: the proxy finding something does not
+/// show it covered what the gateway found.
+#[tokio::test]
+async fn gateway_redact_with_a_builtin_only_secret_is_denied() {
+    assert_redact_denied_and_not_forwarded(&mcp_body_with(BUILTIN_SECRET), CredentialAction::RedactOnly).await;
+}
+
+/// Regression for the review exploit: one body carrying a built-in secret AND a
+/// gateway-only value. A "proxy scan redacted something" predicate would forward
+/// it with the gateway-only value raw.
+#[tokio::test]
+async fn gateway_redact_with_a_mixed_body_is_denied_not_partially_redacted() {
+    let mixed = mcp_body_with(&format!("{BUILTIN_SECRET} {POLICY_ONLY_VALUE}"));
+    assert_redact_denied_and_not_forwarded(&mixed, CredentialAction::RedactOnly).await;
+}
+
+#[tokio::test]
+async fn gateway_redact_is_denied_under_credential_action_block() {
+    let mixed = mcp_body_with(&format!("{BUILTIN_SECRET} {POLICY_ONLY_VALUE}"));
+    assert_redact_denied_and_not_forwarded(&mixed, CredentialAction::Block).await;
+}
+
+#[tokio::test]
+async fn gateway_redact_is_denied_under_credential_action_alert_only() {
+    assert_redact_denied_and_not_forwarded(&mcp_body_with(POLICY_ONLY_VALUE), CredentialAction::AlertOnly).await;
+}
+
+/// Paired control for the test above: the SAME body under gateway Allow is
+/// forwarded, so the deny there is caused by the Redact decision and not by
+/// the body or the fixture.
+#[tokio::test]
+async fn the_same_policy_only_body_under_gateway_allow_is_forwarded() {
+    let dir = tempfile::tempdir().unwrap();
+    let gateway = gateway_stub::spawn_allowing_gateway().await;
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy(gateway, upstream, dir.path()).await;
+
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let _ = mitm_send(
+        tunnel,
+        MITM_HOST,
+        &post(MITM_HOST, "/mcp", &mcp_body_with(POLICY_ONLY_VALUE)),
+    )
+    .await;
+
+    let upstream_saw = String::from_utf8_lossy(&received.lock().unwrap()).into_owned();
+    assert!(
+        upstream_saw.contains(POLICY_ONLY_VALUE),
+        "under Allow the body is forwarded unchanged, upstream saw: {upstream_saw:?}"
     );
 }

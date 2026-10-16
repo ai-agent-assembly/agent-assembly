@@ -63,19 +63,15 @@ pub enum McpDecision {
     /// to the client and never dials upstream. `reason` is copied from the
     /// gateway response so the client sees the policy rule that fired.
     Deny { reason: String },
-    /// Forward the call to upstream. Redaction of sensitive payloads is
-    /// enforced independently by the proxy's own DLP scanner — request
-    /// bodies via `intercept::intercept_request` and upstream responses via
-    /// `intercept::redact_response_body` — not by replaying these gateway
-    /// instructions field-by-field. The proxy data path therefore buckets
-    /// `Redact` together with [`Allow`](McpDecision::Allow) as a forward.
+    /// The gateway requires the payload to be redacted before it leaves.
     ///
-    /// `instructions` carries the gateway's field-path / replacement rules
-    /// verbatim so they survive the response and remain available to
-    /// consumers (audit, future instruction-driven rewriting). At this layer
-    /// they are advisory: the proxy does not separately apply them, because
-    /// its scanner already redacts both directions of the tunnel regardless
-    /// of what the gateway matched.
+    /// The proxy cannot apply this: it does not replay `instructions` and its
+    /// scanner holds built-in patterns only (no gateway `sensitive_patterns` /
+    /// locale packs). The data path therefore ALWAYS denies a `Redact` call
+    /// fail-closed (AAASM-6353), whatever its own scan finds, mirroring
+    /// `network_enforce`. `instructions` is advisory and currently unused.
+    /// Response-direction scanning is likewise built-in patterns only
+    /// (follow-up AAASM-6355).
     Redact { instructions: RedactInstructions },
 }
 
