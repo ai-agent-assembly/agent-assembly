@@ -2155,3 +2155,124 @@ async fn an_escaped_gateway_only_value_in_a_shadowed_duplicate_key_is_withheld()
     let view = client_view_of_response(gateway, duplicate_key_response("harmless \\u0041"), None).await;
     assert!(view.contains("200 OK"), "got: {view:?}");
 }
+
+// ── round 3: bodies serde rejects but real peers accept (depth, NaN, 1e400) ──
+
+fn deep_arrays(n: usize) -> String {
+    format!("{}{}", "[".repeat(n), "]".repeat(n))
+}
+
+fn tools_call_with(method: &str, tail: &str) -> Vec<u8> {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"name":"send_note","arguments":{{"text":"x"}}}},{tail}}}"#
+    )
+    .into_bytes()
+}
+
+/// Each variant must be stopped (never reach upstream) by a DENYING gateway.
+async fn assert_mcp_body_stopped(label: &str, body: &[u8]) {
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, body).await;
+    assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+    assert!(
+        response.contains("-32"),
+        "{label}: expected a JSON-RPC error, got: {response:?}"
+    );
+}
+
+/// F1: depth-200 / NaN / 1e400 defeat serde; every spelling of the method is
+/// still a tools/call to Node and Python.
+#[tokio::test]
+async fn serde_rejected_tools_calls_are_denied_in_every_spelling() {
+    let deep = format!(r#""d":{}"#, deep_arrays(200));
+    for method in ["tools/call", r"tools\u002fcall", r"\u0074ools/call", r"tools\/call"] {
+        for tail in [deep.as_str(), r#""n":NaN"#, r#""n":1e400"#] {
+            assert_mcp_body_stopped(&format!("{method} {tail:.10}"), &tools_call_with(method, tail)).await;
+        }
+    }
+}
+
+/// F1 controls: the depth-100 body is parsed normally and denied by the gateway
+/// verdict; allowed, it is forwarded, as is the same deep shape naming another
+/// method, and a valid tools/list that merely mentions "tools/call".
+#[tokio::test]
+async fn controls_for_serde_rejected_tools_calls() {
+    let d100 = format!(r#""d":{}"#, deep_arrays(100));
+    assert_mcp_body_stopped("depth-100", &tools_call_with("tools/call", &d100)).await;
+
+    let d200 = format!(r#""d":{}"#, deep_arrays(200));
+    let list_deep = tools_call_with("tools/list", &d200);
+    let list_mention = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"q":"tools/call"}}"#.to_vec();
+    for (label, body) in [
+        ("deep tools/list", list_deep),
+        ("tools/list mentioning tools/call", list_mention),
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, &body).await;
+        assert!(!seen.is_empty(), "{label}: must be forwarded, got: {response:?}");
+    }
+}
+
+/// F3: a repeated `method` key, either order.
+#[tokio::test]
+async fn a_repeated_method_key_is_denied_in_either_order() {
+    for (a, b) in [("tools/call", "tools/list"), ("tools/list", "tools/call")] {
+        let body =
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{a}","method":"{b}","params":{{"name":"send_note"}}}}"#);
+        assert_mcp_body_stopped(&format!("{a} then {b}"), body.as_bytes()).await;
+    }
+}
+
+/// F2: a fake DB URL whose slashes are escaped (`\/`) in a body serde cannot
+/// parse. Under an ALLOWING built-in-only path the proxy's own scan must stop it.
+#[tokio::test]
+async fn an_escaped_secret_in_a_serde_rejected_response_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let hidden = "postgres:\\/\\/user:pw@localhost\\/db";
+    let ok = "a\\/b";
+    for (label, tail) in [
+        ("depth-200", format!(r#""d":{}"#, deep_arrays(200))),
+        ("NaN", r#""n":NaN"#.to_string()),
+    ] {
+        let make = |text: &str| {
+            format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"text":"{text}"}}]}},{tail}}}"#).into_bytes()
+        };
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            make(hidden),
+            None,
+        )
+        .await;
+        assert!(
+            !view.contains("200 OK") && !view.contains("postgres"),
+            "{label}: got {view:?}"
+        );
+        // control: same shape with a harmless escaped value is forwarded
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            make(ok),
+            None,
+        )
+        .await;
+        assert!(view.contains("200 OK"), "{label} control: got {view:?}");
+    }
+}
+
+/// F2: a raw built-in secret next to an escaped one is withheld, not partially
+/// redacted and forwarded with the escaped secret intact.
+#[tokio::test]
+async fn a_raw_plus_escaped_secret_is_withheld_not_partially_redacted() {
+    use gateway_stub::ResultVerdict;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"result":{{"a":"{BUILTIN_SECRET}","b":"postgres:\/\/user:pw@localhost\/db"}},"d":{}}}"#,
+        deep_arrays(200)
+    );
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        body.into_bytes(),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK") && !view.contains(BUILTIN_SECRET) && !view.contains("postgres"),
+        "got: {view:?}"
+    );
+}
