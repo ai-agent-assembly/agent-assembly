@@ -489,18 +489,182 @@ pub struct HttpResponseHead {
 }
 
 impl HttpResponseHead {
-    /// Whether the response is a Server-Sent Events stream
-    /// (`Content-Type: text/event-stream`, parameters and case ignored).
+    /// Whether the response is a Server-Sent Events stream: `text/event-stream`
+    /// appears (case-insensitively) anywhere in ANY `Content-Type` value, so a
+    /// list such as `application/json, text/event-stream` is caught too.
     pub fn is_event_stream(&self) -> bool {
         self.headers
             .iter()
             .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-            .any(|(_, v)| {
-                v.split(';')
-                    .next()
-                    .is_some_and(|m| m.trim().eq_ignore_ascii_case("text/event-stream"))
-            })
+            .any(|(_, v)| v.to_ascii_lowercase().contains(EVENT_STREAM_TYPE))
     }
+}
+
+/// Media type of a Server-Sent Events stream.
+const EVENT_STREAM_TYPE: &str = "text/event-stream";
+
+/// Largest raw response head [`read_raw_response_head`] will buffer. Far above
+/// the parser's own caps ([`MAX_HEADER_BYTES`]) on purpose: ordinary non-MCP
+/// responses the parser would refuse must still be relayed, and the only
+/// question asked of them is "is this an event stream".
+pub const MAX_RAW_HEAD_BYTES: usize = 1024 * 1024;
+
+/// Read the response head as raw bytes through the blank line (`CRLF CRLF`, or
+/// the bare-`LF` form), leaving the body unread in `reader`. No UTF-8, header
+/// count or line-length rule is applied: this is what lets an unrecognised
+/// exchange be relayed byte-for-byte when its head is odd. `Ok(None)` is a
+/// clean EOF before any byte; EOF mid-head returns the bytes read. Errors only
+/// when the head exceeds `cap` (the caller then fails closed).
+pub async fn read_raw_response_head<R>(reader: &mut BufReader<R>, cap: usize) -> Result<Option<Vec<u8>>, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut head: Vec<u8> = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok((!head.is_empty()).then_some(head));
+        }
+        // Consume byte-wise up to the terminator so the body stays in `reader`.
+        let mut used = 0;
+        let mut done = false;
+        for &b in available {
+            used += 1;
+            head.push(b);
+            if b == b'\n' && (head.ends_with(b"\r\n\r\n") || head.ends_with(b"\n\n")) {
+                done = true;
+                break;
+            }
+            if head.len() > cap {
+                break;
+            }
+        }
+        reader.consume(used);
+        if head.len() > cap && !done {
+            return Err(ProxyError::Config(format!(
+                "HTTP response head exceeds maximum {cap} bytes; refusing (fail-closed)"
+            )));
+        }
+        if done {
+            return Ok(Some(head));
+        }
+    }
+}
+
+/// Lenient BYTE-level check whether a raw response head declares an event
+/// stream: any `Content-Type` header line (name ASCII-case-insensitive, an
+/// obs-fold continuation counted as part of its header, non-UTF-8 bytes
+/// tolerated) whose value contains `text/event-stream` in any case.
+pub fn raw_head_is_event_stream(raw: &[u8]) -> bool {
+    let mut in_content_type = false;
+    for line in raw.split(|&b| b == b'\n').skip(1) {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let value: &[u8] = if line.first().is_some_and(|b| matches!(b, b' ' | b'\t')) {
+            if !in_content_type {
+                continue;
+            }
+            line
+        } else {
+            match line.iter().position(|&b| b == b':') {
+                Some(colon) if trim_ows(&line[..colon]).eq_ignore_ascii_case(b"content-type") => {
+                    in_content_type = true;
+                    &line[colon + 1..]
+                }
+                _ => {
+                    in_content_type = false;
+                    continue;
+                }
+            }
+        };
+        if value
+            .windows(EVENT_STREAM_TYPE.len())
+            .any(|w| w.eq_ignore_ascii_case(EVENT_STREAM_TYPE.as_bytes()))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// `bytes` without leading/trailing space or tab (`<[u8]>::trim_ascii` is above the MSRV).
+fn trim_ows(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(start, |i| i + 1);
+    &bytes[start..end]
+}
+
+/// True when the raw head's status line is an interim `1xx` response other than
+/// `101` (`100 Continue`, `103 Early Hints`): a head that precedes the real
+/// response on the same connection.
+pub fn raw_head_is_interim(raw: &[u8]) -> bool {
+    let first = raw.split(|&b| b == b'\n').next().unwrap_or(&[]);
+    let first = first.strip_suffix(b"\r").unwrap_or(first);
+    let mut parts = first.split(|&b| b == b' ').filter(|p| !p.is_empty());
+    let (_version, status) = (parts.next(), parts.next());
+    matches!(status, Some(code) if code.len() == 3 && code[0] == b'1' && code != b"101"
+        && code.iter().all(u8::is_ascii_digit))
+}
+
+/// Parse a raw head (as returned by [`read_raw_response_head`]) with the same
+/// caps and strictness as [`read_http_response_head`].
+pub fn parse_raw_response_head(raw: &[u8]) -> Result<HttpResponseHead, ProxyError> {
+    let text = std::str::from_utf8(raw)
+        .map_err(|_| ProxyError::Config("invalid UTF-8 in HTTP response head; refusing (fail-closed)".into()))?;
+    if raw.len() > MAX_HEADER_BYTES {
+        return Err(ProxyError::Config(format!(
+            "HTTP response head exceeds maximum {MAX_HEADER_BYTES} bytes; refusing (fail-closed)"
+        )));
+    }
+    let mut lines = text.split_inclusive('\n');
+    let status_line = lines.next().unwrap_or("");
+    let mut terminated = false;
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for line in std::iter::once(status_line).chain(lines.clone()) {
+        if line.len() > MAX_HEADER_LINE_LEN {
+            return Err(ProxyError::Config(format!(
+                "HTTP header line exceeds maximum {MAX_HEADER_LINE_LEN} bytes; refusing (fail-closed)"
+            )));
+        }
+    }
+    let trimmed = status_line.trim_end_matches(['\r', '\n']);
+    let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return Err(ProxyError::Config(format!("malformed HTTP status line: {trimmed:?}")));
+    }
+    for line in lines {
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            terminated = true;
+            break;
+        }
+        if headers.len() >= MAX_HEADER_COUNT {
+            return Err(ProxyError::Config(format!(
+                "HTTP response exceeds maximum {MAX_HEADER_COUNT} header lines; refusing (fail-closed)"
+            )));
+        }
+        let Some((k, v)) = trimmed.split_once(':') else {
+            return Err(ProxyError::Config(format!(
+                "malformed response header line: {trimmed:?}"
+            )));
+        };
+        headers.push((k.trim().to_string(), v.trim().to_string()));
+    }
+    if !terminated {
+        return Err(ProxyError::Config("unexpected EOF reading response headers".into()));
+    }
+    Ok(HttpResponseHead {
+        version: parts[0].to_string(),
+        status_code: parts[1].to_string(),
+        reason: parts.get(2).copied().unwrap_or("").to_string(),
+        headers,
+        raw: raw.to_vec(),
+    })
 }
 
 /// Read and parse an HTTP/1.1 response from `reader`.
@@ -1588,13 +1752,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn event_stream_detection_ignores_case_and_parameters_but_not_lookalikes() {
+    async fn event_stream_detection_is_a_case_insensitive_substring_match() {
         let cases: &[(&str, bool)] = &[
             ("text/event-stream", true),
             ("Text/Event-Stream; charset=utf-8", true),
             ("application/json", false),
-            ("text/event-streamx", false),
-            ("application/x-ndjson; note=text/event-stream", false),
+            ("application/json, text/event-stream", true),
+            // Substring matching over-matches on purpose: withholding a lookalike
+            // is the fail-closed side of an interim rule, missing a list is not.
+            ("text/event-streamx", true),
+            ("application/x-ndjson; note=text/event-stream", true),
         ];
         for (ct, want) in cases {
             let raw = format!("HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: 0\r\n\r\n");
@@ -1604,5 +1771,80 @@ mod tests {
                 .unwrap();
             assert_eq!(head.is_event_stream(), *want, "content-type: {ct}");
         }
+    }
+
+    // ── Raw response head (AAASM-6356 review F2/F4) ────────────────────────
+
+    #[test]
+    fn raw_head_event_stream_scan_is_lenient_and_case_insensitive() {
+        let hit = |h: &[u8]| raw_head_is_event_stream(h);
+        assert!(hit(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"));
+        assert!(hit(
+            b"HTTP/1.1 200 OK\r\ncontent-type : Application/JSON, TEXT/Event-Stream; q=1\r\n\r\n"
+        ));
+        assert!(hit(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Type: text/event-stream\r\n\r\n"
+        ));
+        // obs-fold continuation of Content-Type, and a non-UTF-8 byte elsewhere
+        assert!(hit(
+            b"HTTP/1.1 200 OK\r\nX-A: \xE9\r\nContent-Type: application/json,\r\n text/event-stream\r\n\r\n"
+        ));
+        // controls
+        assert!(!hit(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"));
+        assert!(!hit(b"HTTP/1.1 200 OK\r\nX-Note: text/event-stream\r\n\r\n"));
+        assert!(!hit(
+            b"HTTP/1.1 200 OK\r\nX-Note: a\r\n text/event-stream\r\nContent-Type: text/plain\r\n\r\n"
+        ));
+        assert!(!hit(b"text/event-stream"));
+    }
+
+    #[test]
+    fn raw_head_interim_detection() {
+        assert!(raw_head_is_interim(b"HTTP/1.1 100 Continue\r\n\r\n"));
+        assert!(raw_head_is_interim(b"HTTP/1.1 103\r\n\r\n"));
+        assert!(!raw_head_is_interim(b"HTTP/1.1 101 Switching Protocols\r\n\r\n"));
+        assert!(!raw_head_is_interim(b"HTTP/1.1 200 OK\r\n\r\n"));
+        assert!(!raw_head_is_interim(b"HTTP/1.1\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn read_raw_response_head_stops_at_the_blank_line_and_leaves_the_body() {
+        let mut r = BufReader::new(&b"HTTP/1.1 200 OK\r\nX: \xFF\r\n\r\nBODY"[..]);
+        let head = read_raw_response_head(&mut r, 1024).await.unwrap().unwrap();
+        assert_eq!(head, b"HTTP/1.1 200 OK\r\nX: \xFF\r\n\r\n");
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).await.unwrap();
+        assert_eq!(rest, b"BODY");
+        // EOF before any byte is a clean None; an over-cap head is an error
+        let mut empty = BufReader::new(&b""[..]);
+        assert!(read_raw_response_head(&mut empty, 16).await.unwrap().is_none());
+        let mut big = BufReader::new(&b"HTTP/1.1 200 OK\r\nX: aaaaaaaaaaaaaaaaaaaaaaaa\r\n\r\n"[..]);
+        assert!(read_raw_response_head(&mut big, 16).await.is_err());
+    }
+
+    #[test]
+    fn parse_raw_response_head_keeps_the_strict_caps() {
+        assert!(parse_raw_response_head(b"HTTP/1.1 200 OK\r\nA: b\r\n\r\n").is_ok());
+        assert!(parse_raw_response_head(b"HTTP/1.1\r\n\r\n").is_err());
+        assert!(parse_raw_response_head(b"HTTP/1.1 200 OK\r\nA: \xE9\r\n\r\n").is_err());
+        let long = format!("HTTP/1.1 200 OK\r\nA: {}\r\n\r\n", "a".repeat(MAX_HEADER_LINE_LEN));
+        assert!(parse_raw_response_head(long.as_bytes()).is_err());
+        let many = format!("HTTP/1.1 200 OK\r\n{}\r\n", "A: b\r\n".repeat(MAX_HEADER_COUNT + 1));
+        assert!(parse_raw_response_head(many.as_bytes()).is_err());
+        assert!(parse_raw_response_head(b"HTTP/1.1 200 OK\r\nA: b\r\n").is_err());
+    }
+
+    #[test]
+    fn parsed_head_event_stream_matches_any_content_type_value() {
+        let head = |ct: &[(&str, &str)]| HttpResponseHead {
+            version: "HTTP/1.1".into(),
+            status_code: "200".into(),
+            reason: "OK".into(),
+            headers: ct.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            raw: Vec::new(),
+        };
+        assert!(head(&[("Content-Type", "application/json, text/event-stream")]).is_event_stream());
+        assert!(head(&[("content-type", "a/b"), ("Content-Type", "TEXT/EVENT-STREAM")]).is_event_stream());
+        assert!(!head(&[("Content-Type", "application/json")]).is_event_stream());
     }
 }
