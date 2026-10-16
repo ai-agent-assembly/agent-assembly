@@ -23,6 +23,8 @@
 //! gateway, enforcing allow/deny/redact at the wire, and emitting structured
 //! `ToolCall` audit events) is tracked under AAASM-1930.
 
+use std::borrow::Cow;
+
 use serde::Deserialize;
 
 /// Method name for the JSON-RPC 2.0 envelope this parser recognises.
@@ -48,6 +50,29 @@ pub struct McpToolCall {
     pub arguments: serde_json::Value,
 }
 
+/// The text of `bytes` as a lenient JSON peer reads it: a leading UTF-8 BOM
+/// stripped and invalid UTF-8 replaced, rather than the whole body rejected.
+///
+/// `serde_json::from_slice` refuses both, but Node and Python MCP servers accept
+/// a BOM-prefixed body and tolerate a stray byte inside a string. A proxy that
+/// is stricter than its peers decides on "not JSON" while the peer runs the
+/// call (AAASM-6355 review V2/V4), so every interception decision parses this.
+pub fn lenient_json_text(bytes: &[u8]) -> Cow<'_, str> {
+    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes)
+}
+
+/// Parse `bytes` with the peers' leniency (see [`lenient_json_text`]).
+pub fn parse_json_lenient(bytes: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_str(&lenient_json_text(bytes)).ok()
+}
+
+/// True when `text` is not valid JSON yet looks like a JSON document
+/// (`{` / `[`): the shape a fail-closed caller must not treat as "not JSON".
+pub fn looks_like_json_document(text: &str) -> bool {
+    matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'['))
+}
+
 /// Try to interpret `body` as a JSON-RPC 2.0 MCP `tools/call` request and
 /// extract the [`McpToolCall`].
 ///
@@ -55,7 +80,7 @@ pub struct McpToolCall {
 /// conditions the policy engine relies on to avoid false-positive matches
 /// against arbitrary JSON traffic flowing through the proxy):
 ///
-/// * `body` is not valid JSON.
+/// * `body` is not valid JSON (after BOM stripping and lossy UTF-8 decoding).
 /// * The top-level object lacks `jsonrpc`, or `jsonrpc != "2.0"`.
 /// * `method` is missing or not `"tools/call"`.
 /// * `params` is missing.
@@ -78,7 +103,7 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
         arguments: serde_json::Value,
     }
 
-    let envelope: Envelope = serde_json::from_slice(body).ok()?;
+    let envelope: Envelope = serde_json::from_str(&lenient_json_text(body)).ok()?;
     if envelope.jsonrpc.as_deref() != Some(JSONRPC_VERSION) {
         return None;
     }
@@ -108,13 +133,18 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
 ///   strict extraction (wrong/missing `jsonrpc`, missing `params.name`) — a
 ///   steered agent could malform these to slip a tool call past enforcement.
 ///
-/// Non-JSON bodies, and JSON carrying no `tools/call` method, return `false` so
+/// Non-JSON bodies (unless JSON-looking and naming `tools/call`), and JSON
+/// carrying no `tools/call` method, return `false` so
 /// ordinary non-MCP HTTPS traffic on this route still flows through untouched.
 /// This is deliberately a *detector*, not a parser: it does not change the
 /// `None`-on-false-positive contract [`parse_mcp_request`] relies on.
 pub fn is_unenforceable_tool_call(body: &[u8]) -> bool {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return false;
+    let text = lenient_json_text(body);
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        // Unparseable even leniently, so the proxy cannot say what the peer will
+        // decode. A JSON-looking body that names `tools/call` (backslashes
+        // removed so `tools\/call` is caught) is denied rather than skipped.
+        return looks_like_json_document(&text) && text.replace('\\', "").contains(MCP_TOOLS_CALL_METHOD);
     };
     match &value {
         serde_json::Value::Array(elements) => elements.iter().any(mentions_tools_call),
