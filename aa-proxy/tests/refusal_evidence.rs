@@ -2371,26 +2371,78 @@ async fn utf8_bodies_and_escaped_nul_are_forwarded() {
     }
 }
 
-/// V2 (response): a UTF-16LE result carrying a builtin secret is withheld.
+/// V2 (response): a UTF-16LE result is withheld outright (round 5: no NUL-strip
+/// heuristic), including one whose non-ASCII code unit (U+4122 = bytes 22 41)
+/// would desync a naive byte filter. Control: UTF-8 is forwarded.
 #[tokio::test]
-async fn a_utf16_response_carrying_a_secret_is_withheld() {
+async fn a_utf16_response_is_withheld() {
     use gateway_stub::ResultVerdict;
-    let secret = String::from_utf8(result_body(BUILTIN_SECRET)).unwrap();
+    let secret = format!(r#"{{"x":"\u{{4122}}","t":"{BUILTIN_SECRET}"}}"#);
     let clean = String::from_utf8(result_body("harmless")).unwrap();
+    for (label, body) in [("secret+U+4122", secret), ("clean", clean.clone())] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            utf16le_bytes(&body),
+            None,
+        )
+        .await;
+        assert!(!view.contains("200 OK"), "{label}: got: {view:?}");
+    }
     let view = client_view_of_response(
         gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
-        utf16le_bytes(&secret),
+        clean.into_bytes(),
         None,
     )
     .await;
-    assert!(!view.contains("200 OK"), "got: {view:?}");
-    let view = client_view_of_response(
-        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
-        utf16le_bytes(&clean),
-        None,
+    assert!(view.contains("200 OK"), "utf-8 control: got {view:?}");
+}
+
+/// Round 5 (response): a declared utf-7 charset on an SSE response, and two
+/// charset declarations, are withheld; utf-8 and ISO-8859-1 with a 7-bit body are not.
+#[tokio::test]
+async fn response_charsets_outside_the_allowlist_are_withheld() {
+    use gateway_stub::ResultVerdict;
+    let body = format!(
+        "event: message\ndata: {}\n\n",
+        String::from_utf8(result_body("+AHs-")).unwrap()
     )
-    .await;
-    assert!(view.contains("200 OK"), "control: got {view:?}");
+    .into_bytes();
+    for (label, headers, forwarded) in [
+        ("utf-7 sse", "Content-Type: text/event-stream; charset=utf-7\r\n", false),
+        (
+            "two charsets",
+            "Content-Type: text/event-stream; charset=utf-8; charset=utf-16le\r\n",
+            false,
+        ),
+        (
+            "non-ascii latin1",
+            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            false,
+        ),
+        ("utf-8 sse", "Content-Type: text/event-stream; charset=utf-8\r\n", true),
+        (
+            "latin1 7-bit sse",
+            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            true,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = body.clone();
+        if label == "non-ascii latin1" {
+            b.push(0xE9);
+        }
+        let upstream = fixed_body_tls_upstream_raw_headers(b, headers).await;
+        let (proxy, _audit) = redact_fixture_proxy_with(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            upstream,
+            dir.path(),
+            CredentialAction::AlertOnly,
+        )
+        .await;
+        let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+        let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+        assert_eq!(view.contains("200 OK"), forwarded, "{label}: got {view:?}");
+    }
 }
 
 /// V3: an SSE-framed response keeps its escapes decoded for the scan and the gateway.
@@ -2416,5 +2468,102 @@ async fn an_sse_framed_escaped_value_is_withheld() {
         )
         .await;
         assert!(view.contains("200 OK"), "control: got {view:?}");
+    }
+}
+
+// ── round 5: encodings (inverted gate) ──
+
+fn mcp_json() -> Vec<u8> {
+    mcp_body_with("x").into_bytes()
+}
+
+async fn assert_encoding_denied(label: &str, content_type: &str, body: &[u8]) {
+    let (response, seen) =
+        send_with_content_type(gateway_stub::spawn_denying_gateway().await, content_type, body).await;
+    assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+    assert!(response.contains("-32"), "{label}: got {response:?}");
+}
+
+#[tokio::test]
+async fn exotic_or_conflicting_charsets_on_json_requests_are_denied() {
+    let utf7 = b"+AHsAIg-jsonrpc+ACIAOgAi-2.0+ACIALAAi-method+ACIAOgAi-tools/call+ACIAfQ-".to_vec();
+    assert_encoding_denied("utf-7", "application/json; charset=utf-7", &utf7).await;
+    assert_encoding_denied("utf-7 real body", "application/json; charset=utf-7", &mcp_json()).await;
+    assert_encoding_denied(
+        "dup charset a",
+        "application/json; charset=utf-8; charset=utf-16le",
+        &mcp_json(),
+    )
+    .await;
+    assert_encoding_denied(
+        "dup charset b",
+        "application/json; charset=utf-16le; charset=utf-8",
+        &mcp_json(),
+    )
+    .await;
+    assert_encoding_denied(
+        "latin1 non-ascii",
+        "application/json; charset=ISO-8859-1",
+        b"{\"a\":\"\xe9\"}",
+    )
+    .await;
+}
+
+/// Control for the above: the very same body under utf-8 is forwarded.
+#[tokio::test]
+async fn the_same_json_body_under_utf8_or_7bit_latin1_is_forwarded() {
+    for (label, ct, body) in [
+        ("utf-8", "application/json; charset=utf-8", mcp_json()),
+        ("latin1 7-bit mcp", "application/json; charset=iso-8859-1", mcp_json()),
+        (
+            "latin1 7-bit non-mcp",
+            "application/json; charset=ISO-8859-1",
+            br#"{"hello":1}"#.to_vec(),
+        ),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+#[tokio::test]
+async fn utf16_and_utf32_json_requests_are_denied_with_or_without_desync() {
+    let json = String::from_utf8(mcp_json()).unwrap();
+    // U+4122 encodes as bytes 22 41: a stray quote for a NUL-stripping reader.
+    let desync = json.replacen("\"jsonrpc\"", "\"jsonrpc\":\"\u{4122}\",\"x\"", 1);
+    let u32le: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+    let u32be: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+    let mut bom = vec![0xFF, 0xFE];
+    bom.extend(utf16le_bytes(&json));
+    for (label, body) in [
+        ("utf-16le", utf16le_bytes(&json)),
+        ("utf-16le desync", utf16le_bytes(&desync)),
+        ("utf-16 bom", bom),
+        ("utf-32le", u32le),
+        ("utf-32be", u32be),
+    ] {
+        assert_encoding_denied(label, "application/json", &body).await;
+    }
+}
+
+/// Compat controls: bodies that are not JSON-typed are untouched even with NULs
+/// or an exotic declared charset.
+#[tokio::test]
+async fn binary_multipart_and_form_bodies_are_still_forwarded() {
+    for (label, ct, body) in [
+        ("binary", "application/octet-stream", b"\x89PNG\0\0\0\rIHDR".to_vec()),
+        (
+            "multipart",
+            "multipart/form-data; boundary=b",
+            b"--b\r\n\0\0\0\r\n--b--\r\n".to_vec(),
+        ),
+        (
+            "form",
+            "application/x-www-form-urlencoded; charset=utf-7",
+            b"a=1&b=%00".to_vec(),
+        ),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
     }
 }
