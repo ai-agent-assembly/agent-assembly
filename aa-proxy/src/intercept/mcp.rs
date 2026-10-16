@@ -167,6 +167,134 @@ pub fn decode_json_strings(text: &str) -> Option<String> {
     decode_json_strings_capped(text, MAX_DECODED_JSON_STRINGS)
 }
 
+/// Fold a JSON object key the way the most permissive struct decoder does: Go's
+/// `encoding/json` matches keys case-insensitively and also folds U+017F (long
+/// s) onto `s` and U+212A (Kelvin) onto `k`.
+fn fold_key(key: &str) -> String {
+    key.chars()
+        .map(|c| match c {
+            '\u{17F}' => 's',
+            '\u{212A}' => 'k',
+            c => c.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+/// True when two distinct keys of `obj` are equal after [`fold_key`]: a
+/// case-insensitive, last-wins peer would pick one, the proxy another.
+fn has_fold_collision(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let mut seen = std::collections::HashSet::with_capacity(obj.len());
+    !obj.keys().all(|k| seen.insert(fold_key(k)))
+}
+
+/// `has_fold_collision` anywhere under `value` (recursion is bounded by serde's
+/// own nesting limit, since `value` came from a successful parse).
+fn has_nested_fold_collision(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => has_fold_collision(map) || map.values().any(has_nested_fold_collision),
+        serde_json::Value::Array(items) => items.iter().any(has_nested_fold_collision),
+        _ => false,
+    }
+}
+
+/// A key that is not byte-exact `canonical` yet folds onto it.
+fn is_inexact_spelling(key: &str, canonical: &str) -> bool {
+    key != canonical && fold_key(key) == canonical
+}
+
+/// True when `obj` is a `tools/call` request that a case-insensitive peer could
+/// read differently from the exact-key parser the proxy evaluates (AAASM-6355
+/// review round 4): a colliding key pair, or an inexact spelling of an envelope
+/// field. Applies only to objects that spell `tools/call` as a `method` value,
+/// so ordinary JSON with differently-cased keys is untouched. Collisions
+/// anywhere inside `params` (including `arguments`) are denied too, so a tool
+/// argument such as `{"path":"/ok","PATH":"/etc/passwd"}` cannot differ between
+/// the proxy and the tool server.
+fn is_case_ambiguous_tools_call(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
+    let names_tools_call = obj
+        .iter()
+        .any(|(k, v)| fold_key(k) == "method" && v.as_str() == Some(MCP_TOOLS_CALL_METHOD));
+    if !names_tools_call {
+        return false;
+    }
+    if has_fold_collision(obj)
+        || obj.keys().any(|k| {
+            ["jsonrpc", "method", "params", "id"]
+                .iter()
+                .any(|c| is_inexact_spelling(k, c))
+        })
+    {
+        return true;
+    }
+    obj.iter().filter(|(k, _)| fold_key(k) == "params").any(|(_, params)| {
+        has_nested_fold_collision(params)
+            || params.as_object().is_some_and(|p| {
+                p.keys()
+                    .any(|k| ["name", "arguments"].iter().any(|c| is_inexact_spelling(k, c)))
+            })
+    })
+}
+
+/// [`is_case_ambiguous_tools_call`] for a top-level object or each batch element.
+fn has_case_ambiguity(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => is_case_ambiguous_tools_call(map),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|v| v.as_object().is_some_and(is_case_ambiguous_tools_call)),
+        _ => false,
+    }
+}
+
+/// True when `body` may be JSON-RPC in an encoding the proxy does not parse but
+/// a peer does (AAASM-6355 review round 4): Node's body-parser honours any
+/// `utf-*` charset and Python's `json.loads(bytes)` detects UTF-16/32 without a
+/// BOM, so a UTF-16 `tools/call` is invisible to a UTF-8 parser.
+///
+/// * A JSON-looking body whose declared `Content-Type` charset is not UTF-8 is
+///   unenforceable.
+/// * A body with NUL bytes or a UTF-16/32 BOM is read with the NULs and BOM
+///   removed (what remains of ASCII text) and is unenforceable when that reads
+///   as JSON carrying a `tools/call` token. Binary bodies and plain UTF-8 or
+///   UTF-8-BOM JSON are unaffected; an escaped `\u0000` is not a NUL byte.
+pub fn is_unparsed_encoding_tool_call(body: &[u8], content_type: Option<&str>) -> bool {
+    let text = nul_stripped_text(body);
+    if !looks_like_json_document(&text) {
+        return false;
+    }
+    if content_type
+        .and_then(declared_charset)
+        .is_some_and(|c| !c.eq_ignore_ascii_case("utf-8") && !c.eq_ignore_ascii_case("utf8"))
+    {
+        return true;
+    }
+    has_wide_encoding_markers(body) && has_tools_call_token(&text)
+}
+
+/// True for a UTF-16/32 BOM or any NUL byte.
+pub fn has_wide_encoding_markers(body: &[u8]) -> bool {
+    body.contains(&0) || body.starts_with(&[0xFF, 0xFE]) || body.starts_with(&[0xFE, 0xFF])
+}
+
+/// `body` with NUL bytes and a leading UTF-16 / UTF-8 BOM removed, decoded lossily.
+pub fn nul_stripped_text(body: &[u8]) -> String {
+    let body = body
+        .strip_prefix(&[0xFF, 0xFE])
+        .or_else(|| body.strip_prefix(&[0xFE, 0xFF]))
+        .unwrap_or(body);
+    let stripped: Vec<u8> = body.iter().copied().filter(|b| *b != 0).collect();
+    lenient_json_text(&stripped).into_owned()
+}
+
+fn declared_charset(content_type: &str) -> Option<String> {
+    content_type.split(';').skip(1).find_map(|param| {
+        let (name, value) = param.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })
+}
+
 /// True when some decoded string token of `text` is exactly `tools/call`.
 fn has_tools_call_token(text: &str) -> bool {
     // Unjudgeable (over the cap) counts as "might be": fail closed.
@@ -189,7 +317,12 @@ fn has_tools_call_token(text: &str) -> bool {
 /// When `params.arguments` is missing it is normalised to `Value::Null` so
 /// callers can always treat it as a structured value.
 pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
-    let envelope: Envelope = serde_json::from_str(&lenient_json_text(body)).ok()?;
+    let text = lenient_json_text(body);
+    // A case-ambiguous request is left to `is_unenforceable_tool_call`, which denies it.
+    if serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| has_case_ambiguity(&v)) {
+        return None;
+    }
+    let envelope: Envelope = serde_json::from_str(&text).ok()?;
     if envelope.jsonrpc.as_deref() != Some(JSONRPC_VERSION) {
         return None;
     }
@@ -233,6 +366,9 @@ pub fn is_unenforceable_tool_call(body: &[u8]) -> bool {
         // denied rather than skipped.
         return looks_like_json_document(&text) && has_tools_call_token(&text);
     };
+    if has_case_ambiguity(&value) {
+        return true;
+    }
     let framing_mentions = match &value {
         serde_json::Value::Array(elements) => elements.iter().any(mentions_tools_call),
         serde_json::Value::Object(_) => mentions_tools_call(&value),
@@ -513,5 +649,83 @@ mod tests {
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"q":"tools/call"}}"#;
         assert!(parse_mcp_request(body).is_none());
         assert!(!is_unenforceable_tool_call(body));
+    }
+
+    // ── round 4 V1: case-insensitive peers (Go encoding/json) ──
+    #[test]
+    fn case_ambiguous_tools_calls_are_unenforceable() {
+        for body in [
+            // (a) envelope field spelled differently
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","Method":"tools/call","params":{"name":"evil"}}"#,
+            // (b) params / name / arguments collisions and inexact spellings
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe","NAME":"evil"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"PARAMS":{"name":"evil"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"param\u017f":{"name":"evil"}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"p":"ok"},"Arguments":{"p":"/etc/passwd"}}}"#,
+            // (c) collision inside arguments
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"path":"/ok","PATH":"/etc/passwd"}}}"#,
+            // Kelvin sign folds onto k
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"k":1,"\u212a":2}}}"#,
+            // batch element
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","NAME":"e"}}]"#,
+        ] {
+            assert!(parse_mcp_request(body.as_bytes()).is_none(), "{body}");
+            assert!(is_unenforceable_tool_call(body.as_bytes()), "{body}");
+        }
+    }
+
+    #[test]
+    fn non_colliding_differently_cased_keys_still_parse() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","Meta":1,"params":{"name":"t","arguments":{"Path":"/ok","mode":"r"}}}"#;
+        assert_eq!(parse_mcp_request(body).expect("must parse").tool_name, "t");
+        // Non-tools/call JSON with colliding keys is not ours to refuse.
+        let other = br#"{"jsonrpc":"2.0","method":"tools/list","a":1,"A":2}"#;
+        assert!(!is_unenforceable_tool_call(other));
+    }
+
+    // ── round 4 V2: wide encodings ──
+    fn utf16le(s: &str) -> Vec<u8> {
+        s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn utf16_tools_calls_are_unenforceable_with_or_without_bom_or_content_type() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#;
+        let plain = utf16le(json);
+        let mut bom = vec![0xFF, 0xFE];
+        bom.extend(&plain);
+        let escaped = utf16le(&json.replace("tools/call", r"tools\u002fcall"));
+        assert!(is_unparsed_encoding_tool_call(&plain, None));
+        assert!(is_unparsed_encoding_tool_call(
+            &plain,
+            Some("application/json; charset=utf-16le")
+        ));
+        assert!(is_unparsed_encoding_tool_call(&bom, None));
+        assert!(is_unparsed_encoding_tool_call(&escaped, None));
+        // UTF-32LE
+        let utf32: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+        assert!(is_unparsed_encoding_tool_call(&utf32, None));
+        // declared non-UTF-8 charset on a JSON-looking body
+        assert!(is_unparsed_encoding_tool_call(
+            json.as_bytes(),
+            Some("application/json; charset=\"iso-8859-1\"")
+        ));
+    }
+
+    #[test]
+    fn utf8_bodies_and_escaped_nul_are_unaffected_by_the_encoding_check() {
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"s":"a\u0000b"}}}"#;
+        assert!(!is_unparsed_encoding_tool_call(json.as_bytes(), None));
+        assert!(!is_unparsed_encoding_tool_call(
+            json.as_bytes(),
+            Some("application/json; charset=UTF-8")
+        ));
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend(json.as_bytes());
+        assert!(!is_unparsed_encoding_tool_call(&bom, None));
+        // binary with NULs that is not JSON-looking, and UTF-16 JSON without tools/call
+        assert!(!is_unparsed_encoding_tool_call(b"\x89PNG\0\0\0tools/call", None));
+        assert!(!is_unparsed_encoding_tool_call(&utf16le(r#"{"a":"b"}"#), None));
     }
 }

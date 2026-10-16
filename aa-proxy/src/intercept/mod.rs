@@ -122,42 +122,47 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
     }
 }
 
-/// Every way a response body can be read: the raw (BOM-stripped, lossy) text
-/// and, when it carries backslash escapes, every string token with those escapes
-/// decoded.
+/// Every way a response body can be read by a peer: the raw (BOM-stripped,
+/// lossy) text, the same text with NUL bytes removed when the body is UTF-16/32
+/// (ASCII survives; a secret in UTF-16LE is otherwise NUL-interleaved and
+/// invisible), and, for each of those carrying backslash escapes, every string
+/// token with the escapes decoded.
 ///
-/// Both are needed because they hide different things: escapes (`\uXXXX`,
-/// `\/`) hide a value from the raw text. The decoded form comes from a lexical
-/// decoder, never from a JSON parse, so a body serde rejects but a peer accepts
-/// (200-deep nesting, `NaN`, `1e400`) and repeated keys cannot hide anything. It
-/// exists only when escapes do, so an escape-free body reaches the gateway
-/// exactly once, as sent (AAASM-6355 review F4/V1/round 3).
+/// The decoded forms come from a lexical decoder, never from a JSON parse, so a
+/// body serde rejects but a peer accepts (200-deep nesting, `NaN`, `1e400`),
+/// repeated keys, and non-JSON framing such as SSE `data: {...}` cannot hide
+/// anything. A form exists only when it differs in kind, so an ordinary body
+/// reaches the gateway exactly once, as sent (AAASM-6355 review F4/V1/rounds 3-4).
 struct ResponseForms {
     raw: String,
-    /// Every decoded key and string value, one per line, duplicates included.
-    decoded: Option<String>,
+    extra: Vec<String>,
 }
 
 impl ResponseForms {
     /// Texts the built-in scanner must find clean, and the gateway must `Allow`
     /// each as its own request.
     fn texts(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.raw.as_str()).chain(self.decoded.as_deref())
+        std::iter::once(self.raw.as_str()).chain(self.extra.iter().map(String::as_str))
     }
 }
 
-/// `None` when the body cannot be judged: it looks like a JSON document and its
-/// decoded strings exceed the decoder's cap.
+/// `None` when the body cannot be judged: its decoded strings exceed the
+/// decoder's cap.
 fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
     let raw = mcp::lenient_json_text(bytes).into_owned();
-    if !raw.contains('\\') || !mcp::looks_like_json_document(&raw) {
-        return Some(ResponseForms { raw, decoded: None });
+    let mut extra = Vec::new();
+    let mut bases = vec![raw.clone()];
+    if mcp::has_wide_encoding_markers(bytes) {
+        let stripped = mcp::nul_stripped_text(bytes);
+        extra.push(stripped.clone());
+        bases.push(stripped);
     }
-    let decoded = mcp::decode_json_strings(&raw)?;
-    Some(ResponseForms {
-        raw,
-        decoded: Some(decoded),
-    })
+    for base in &bases {
+        if base.contains('\\') {
+            extra.push(mcp::decode_json_strings(base)?);
+        }
+    }
+    Some(ResponseForms { raw, extra })
 }
 
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
@@ -1227,6 +1232,36 @@ mod tests {
         let started = std::time::Instant::now();
         assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    // Round 4 V2 (response): UTF-16 hides ASCII behind NULs.
+    #[test]
+    fn response_utf16_secret_withholds_and_clean_utf16_forwards() {
+        let le = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        assert_eq!(
+            response_scan(&le(&format!(r#"{{"t":"{AWS_KEY}"}}"#))),
+            ResponseScan::Withhold
+        );
+        let mut bom = vec![0xFF, 0xFE];
+        bom.extend(le(&format!(r#"{{"t":"{AWS_KEY}"}}"#)));
+        assert_eq!(response_scan(&bom), ResponseScan::Withhold);
+        assert_eq!(response_scan(&le(r#"{"t":"harmless"}"#)), ResponseScan::Forward);
+    }
+
+    // Round 4 V3: non-JSON framing (SSE) still gets its escapes decoded.
+    #[test]
+    fn response_sse_framed_escaped_secret_withholds() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let sse = format!("event: message\ndata: {{\"t\":\"{escaped}\"}}\n\n");
+        assert_eq!(response_scan(sse.as_bytes()), ResponseScan::Withhold);
+        assert_eq!(
+            response_scan(b"event: message\ndata: {\"t\":\"ok \\u0041\"}\n\n"),
+            ResponseScan::Forward
+        );
+        assert_eq!(
+            response_scan(b"event: message\ndata: {\"t\":\"ok\"}\n\n"),
+            ResponseScan::Forward
+        );
     }
 
     #[test]

@@ -26,7 +26,7 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
+use crate::intercept::mcp::{is_unenforceable_tool_call, is_unparsed_encoding_tool_call, parse_mcp_request};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
@@ -1161,6 +1161,14 @@ impl ProxyServer {
                 }
             },
         };
+        // Round 4: a UTF-16/32 or non-UTF-8-charset JSON-RPC body is read by
+        // Node/Python peers but not by the UTF-8 parser below.
+        if is_unparsed_encoding_tool_call(&decoded, req.header("content-type")) {
+            let reason = "MCP request body is in an encoding the proxy cannot parse (UTF-16/32 or a non-UTF-8 charset), so it cannot be enforced and was rejected (fail-closed)";
+            tracing::warn!(%host, "{reason}");
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+        }
         let Some(call) = parse_mcp_request(&decoded) else {
             // Not a parseable MCP call — check for bypass attempt.
             if is_unenforceable_tool_call(&decoded) {
