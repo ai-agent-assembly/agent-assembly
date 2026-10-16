@@ -497,6 +497,48 @@ fn mentions_tools_call(value: &serde_json::Value) -> bool {
     value.get("method").and_then(serde_json::Value::as_str) == Some(MCP_TOOLS_CALL_METHOD)
 }
 
+/// Upper bound on the method text copied into a [`classify_mcp_exchange`]
+/// label, so an attacker-chosen `method` cannot bloat gateway requests or logs.
+const MAX_METHOD_LABEL_LEN: usize = 64;
+
+/// Reserved prefix of every label [`classify_mcp_exchange`] returns. A real MCP
+/// tool name cannot carry it, so a label never collides with a `tools/call`
+/// tool a policy rule names.
+pub const MCP_LABEL_PREFIX: &str = "mcp-method:";
+
+/// Decide whether `body` (already `Content-Encoding`-decoded) is a JSON-RPC
+/// exchange that is not a `tools/call`, and name it for the gateway.
+///
+/// Recognition is deliberately lenient (AAASM-6356): an MCP server that tolerates
+/// a missing or odd `jsonrpc` value would otherwise have its response ride out
+/// unevaluated. A body is recognised when it is a JSON object, or an array with
+/// any object element, that carries a `jsonrpc` key or a string `method`.
+/// Returns `mcp-method:<method>` for a single object with a string `method`,
+/// `mcp-method:batch` for an array, `mcp-method:unknown` for an object with
+/// `jsonrpc` but no string `method`; `None` for anything else (non-JSON, bare
+/// scalars, arrays without object elements, JSON with neither key).
+pub fn classify_mcp_exchange(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let recognised = |v: &serde_json::Value| {
+        v.as_object()
+            .is_some_and(|o| o.contains_key("jsonrpc") || o.get("method").is_some_and(serde_json::Value::is_string))
+    };
+    match &value {
+        serde_json::Value::Array(elements) => elements
+            .iter()
+            .any(recognised)
+            .then(|| format!("{MCP_LABEL_PREFIX}batch")),
+        serde_json::Value::Object(_) if recognised(&value) => {
+            let label = match value.get("method").and_then(serde_json::Value::as_str) {
+                Some(method) => method.chars().take(MAX_METHOD_LABEL_LEN).collect(),
+                None => "unknown".to_string(),
+            };
+            Some(format!("{MCP_LABEL_PREFIX}{label}"))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +822,63 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn classify_mcp_exchange_table() {
+        let cases: &[(&str, &[u8], Option<&str>)] = &[
+            (
+                "resources/read",
+                br#"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{}}"#,
+                Some("mcp-method:resources/read"),
+            ),
+            (
+                "prompts/get",
+                br#"{"jsonrpc":"2.0","method":"prompts/get"}"#,
+                Some("mcp-method:prompts/get"),
+            ),
+            (
+                "lenient jsonrpc value",
+                br#"{"jsonrpc":"1.0","method":"ping"}"#,
+                Some("mcp-method:ping"),
+            ),
+            (
+                "method only, no jsonrpc",
+                br#"{"method":"ping"}"#,
+                Some("mcp-method:ping"),
+            ),
+            (
+                "jsonrpc only",
+                br#"{"jsonrpc":"2.0","id":3,"result":{}}"#,
+                Some("mcp-method:unknown"),
+            ),
+            (
+                "jsonrpc with non-string method",
+                br#"{"jsonrpc":"2.0","method":7}"#,
+                Some("mcp-method:unknown"),
+            ),
+            (
+                "batch with an object",
+                br#"[{"jsonrpc":"2.0","method":"resources/read"}]"#,
+                Some("mcp-method:batch"),
+            ),
+            (
+                "batch mixed scalars",
+                br#"[1,{"method":"x"}]"#,
+                Some("mcp-method:batch"),
+            ),
+            ("batch of scalars", b"[1,2,3]", None),
+            ("empty batch", b"[]", None),
+            ("plain JSON object", br#"{"name":"x","items":[1]}"#, None),
+            ("non-string method only", br#"{"method":7}"#, None),
+            ("scalar", b"42", None),
+            ("not JSON", b"hello", None),
+            ("empty", b"", None),
+        ];
+        for (name, body, want) in cases {
+            assert_eq!(classify_mcp_exchange(body).as_deref(), *want, "case: {name}");
+        }
+    }
+
+    #[test]
     fn non_colliding_differently_cased_keys_still_parse() {
         let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","Meta":1,"params":{"name":"t","arguments":{"Path":"/ok","mode":"r"}}}"#;
         assert_eq!(parse_mcp_request(body).expect("must parse").tool_name, "t");
@@ -947,5 +1046,13 @@ mod tests {
         ] {
             assert!(!request_encoding_hazard(body, &[ct], false), "{ct}");
         }
+    }
+
+    #[test]
+    fn classify_mcp_exchange_truncates_hostile_method_text() {
+        let long = "a".repeat(10_000);
+        let body = format!(r#"{{"jsonrpc":"2.0","method":"{long}"}}"#);
+        let label = classify_mcp_exchange(body.as_bytes()).expect("recognised");
+        assert_eq!(label.len(), MCP_LABEL_PREFIX.len() + MAX_METHOD_LABEL_LEN);
     }
 }
