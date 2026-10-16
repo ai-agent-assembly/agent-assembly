@@ -75,7 +75,6 @@ binary_id(aa-integration-tests::cli_run_claude_deterministic_conformance)
   + binary_id(aa-integration-tests::cli_run_codex_launch_env)
   + binary_id(aa-integration-tests::cli_run_concurrent_isolation)
   + binary_id(aa-integration-tests::cli_run_leak_freedom)
-  + binary_id(aa-integration-tests::cli_run_credential_broker_sentinel)
   + binary_id(aa-integration-tests::cli_run_trusted_proxy)
   + binary_id(aa-integration-tests::adversarial_isolation_launch)
   + binary_id(aa-integration-tests::e2e_sensitive_data_reference_journey)
@@ -90,16 +89,5 @@ test-group = "serial-process"
 # passed on retry). Serialising removes the contention instead of leaning on
 # `retries`, under the default profile as well as `evidence`.
 [[profile.default.overrides]]
-filter = '''
-binary_id(aa-integration-tests::cli_run_stub_coding_agent_workflow)
-  + binary_id(aa-integration-tests::cli_run_leak_freedom)
-  + binary_id(aa-integration-tests::cli_run_credential_broker_sentinel)
-'''
+filter = "binary_id(aa-integration-tests::cli_run_stub_coding_agent_workflow)"
 test-group = "serial-process"
-
-# AAASM-6349: `cli_run_leak_freedom` asserts that a refused launch added no
-# `aa-proxy` process, by diffing every `aa-proxy` pid from this build tree
-# before and after. `cli_run_credential_broker_sentinel` starts real
-# per-launch proxies, so run concurrently its proxies appear in that diff
-# and read as a leak (3/3 attempts failed on PR #2686). The two binaries
-# share the serial group under the default profile, as under `evidence`.
