@@ -2276,3 +2276,145 @@ async fn a_raw_plus_escaped_secret_is_withheld_not_partially_redacted() {
         "got: {view:?}"
     );
 }
+
+// ── round 4: case-insensitive peers, wide encodings, SSE framing ──
+
+async fn send_with_content_type(gateway: String, content_type: &str, body: &[u8]) -> (String, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {MITM_HOST}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    req.extend_from_slice(body);
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, &req).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    (response, seen)
+}
+
+/// V1: Go's encoding/json would run the second spelling; the proxy must not
+/// judge a different call than the peer runs.
+#[tokio::test]
+async fn case_ambiguous_tools_calls_are_denied() {
+    for body in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","Method":"tools/call","params":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe","NAME":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"PARAMS":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"param\u017f":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"p":"ok"},"Arguments":{"p":"/etc/passwd"}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"path":"/ok","PATH":"/etc/passwd"}}}"#,
+    ] {
+        assert_mcp_body_stopped(body, body.as_bytes()).await;
+    }
+}
+
+/// V1 control: differently-cased keys that do not collide, and a plain call,
+/// are evaluated and forwarded by an allowing gateway.
+#[tokio::test]
+async fn non_colliding_differently_cased_keys_are_forwarded() {
+    for body in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","Meta":1,"params":{"name":"t","arguments":{"Path":"/ok"}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"path":"/ok"}}}"#,
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, body.as_bytes()).await;
+        assert!(!seen.is_empty(), "{body}: got {response:?}");
+    }
+}
+
+fn utf16le_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// V2 (request): a UTF-16 tools/call, with and without a BOM or charset.
+#[tokio::test]
+async fn utf16_tools_calls_are_denied() {
+    let json = String::from_utf8(mcp_body_with("x").into_bytes()).unwrap();
+    let mut bom = vec![0xFF, 0xFE];
+    bom.extend(utf16le_bytes(&json));
+    for (label, ct, body) in [
+        (
+            "utf-16le charset",
+            "application/json; charset=utf-16le",
+            utf16le_bytes(&json),
+        ),
+        ("no charset", "application/json", utf16le_bytes(&json)),
+        ("bom", "application/json", bom),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+        assert!(response.contains("-32600"), "{label}: got {response:?}");
+    }
+}
+
+/// V2 controls: UTF-8, UTF-8 with BOM, and an escaped \u0000 (not a NUL byte)
+/// are evaluated and forwarded.
+#[tokio::test]
+async fn utf8_bodies_and_escaped_nul_are_forwarded() {
+    let plain = mcp_body_with("x");
+    let escaped_nul = mcp_body_with("a\\u0000b");
+    for (label, body) in [
+        ("utf-8", plain.clone().into_bytes()),
+        ("utf-8 bom", bytes_of(&[BOM, plain.as_bytes()])),
+        ("escaped nul", escaped_nul.into_bytes()),
+    ] {
+        let (response, seen) = send_with_content_type(
+            gateway_stub::spawn_allowing_gateway().await,
+            "application/json; charset=utf-8",
+            &body,
+        )
+        .await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+/// V2 (response): a UTF-16LE result carrying a builtin secret is withheld.
+#[tokio::test]
+async fn a_utf16_response_carrying_a_secret_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let secret = String::from_utf8(result_body(BUILTIN_SECRET)).unwrap();
+    let clean = String::from_utf8(result_body("harmless")).unwrap();
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        utf16le_bytes(&secret),
+        None,
+    )
+    .await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        utf16le_bytes(&clean),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "control: got {view:?}");
+}
+
+/// V3: an SSE-framed response keeps its escapes decoded for the scan and the gateway.
+#[tokio::test]
+async fn an_sse_framed_escaped_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let sse = |text: &str| format!("event: message\ndata: {{\"t\":\"{text}\"}}\n\n").into_bytes();
+    let builtin = BUILTIN_SECRET.replacen('A', "\\u0041", 1);
+    let marker = POLICY_ONLY_VALUE.replacen('A', "\\u0041", 1);
+    for (label, body, verdict) in [
+        ("builtin", sse(&builtin), ResultVerdict::Allow),
+        ("gateway marker", sse(&marker), ResultVerdict::Redact),
+    ] {
+        let view = client_view_of_response(gateway_stub::spawn_result_judging_gateway(verdict).await, body, None).await;
+        assert!(!view.contains("200 OK"), "{label}: got {view:?}");
+    }
+    // controls: escape-free and harmlessly escaped SSE bodies are forwarded
+    for body in [sse("ok"), sse("ok \\u0041")] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+            body,
+            None,
+        )
+        .await;
+        assert!(view.contains("200 OK"), "control: got {view:?}");
+    }
+}
