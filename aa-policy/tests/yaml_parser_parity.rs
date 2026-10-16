@@ -12,8 +12,8 @@
 //! Two entry points own YAML policy parsing and both are exercised:
 //! `aa_policy::PolicyValidator::from_yaml` (gateway/REST) and
 //! `aa_security::policy::PolicyDocument::from_yaml` (cross-layer canonical AST).
-//! Their differing verdicts on the same input (e.g. an empty document) are
-//! pinned as they are today, not as they ought to be.
+//! Where their verdicts on the same input differ, the difference is pinned as it
+//! is. (The empty-document disagreement was closed by AAASM-6337.)
 //!
 //! Every acceptance is paired with a rejection that differs in one respect, so
 //! a parser that accepts or rejects everything cannot satisfy the corpus.
@@ -202,23 +202,27 @@ fn golden_corpus_verdicts() {
             pol: OK,
         },
         // ── empty / null / scalar / sequence documents (AAASM-3997) ─────────
+        // AAASM-6337 deliberately flipped the three blank-document `pol` rows
+        // below from OK to Err: the validator used to turn them into a fully
+        // permissive policy while `aa_security` rejected them. Both entry
+        // points now agree.
         Case {
             name: "empty document",
             yaml: "",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "empty mapping",
             yaml: "{}",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "comment-only document",
             yaml: "# only a comment\n",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "null document",
@@ -378,16 +382,16 @@ fn golden_corpus_verdicts() {
             pol: Expect::Err("invalid type: integer `15`, expected f64"),
         },
         Case {
-            name: "budget .inf accepted as infinity",
+            name: "budget .inf rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .inf\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
-            name: "budget .nan accepted as NaN",
+            name: "budget .nan rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .nan\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
             name: "budget u64::MAX accepted",
@@ -487,8 +491,12 @@ fn golden_corpus_typed_results() {
             .daily_limit_usd
             .unwrap()
     };
-    assert!(budget(".inf").is_infinite() && budget(".inf") > 0.0);
-    assert!(budget(".nan").is_nan());
+    // AAASM-6336 flipped `.inf` / `.nan` from accepted to rejected (they still
+    // *parse* as f64; the validator now refuses them), so they are no longer
+    // observable through an accepted document.
+    for non_finite in [".inf", ".nan"] {
+        assert!(run_pol(&format!("budget:\n  daily_limit_usd: {non_finite}\n")).is_err());
+    }
     assert_eq!(budget("18446744073709551615"), u64::MAX as f64);
     assert_eq!(budget("340282366920938463463374607431768211456"), 2f64.powi(128));
     assert_eq!(budget("12.5"), 12.5);

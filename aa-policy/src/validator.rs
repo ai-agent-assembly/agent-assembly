@@ -152,6 +152,26 @@ impl PolicyValidator {
             vec![err]
         };
 
+        // AAASM-6337: reject a blank document before it can deserialize into an
+        // all-`None` (fully permissive) policy. A bare `null`/`~` already fails
+        // the struct parse below with its own error, so this runs only on
+        // documents that would otherwise succeed. Mirrors
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-3997) so the
+        // two entry points cannot disagree about what an empty policy means.
+        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) {
+            let blank = match &value {
+                serde_yaml::Value::Null => true,
+                serde_yaml::Value::Mapping(map) => map.is_empty(),
+                _ => false,
+            };
+            if blank && serde_yaml::from_str::<RawPolicyDocument>(yaml_str).is_ok() {
+                return Err(vec![ValidationError::new(
+                    "(document)",
+                    "empty or null policy document is not permitted (would be fully permissive)",
+                )]);
+            }
+        }
+
         // Try envelope format: if it has a `spec` key, treat it as wrapped.
         if let Ok(envelope) = serde_yaml::from_str::<GovernancePolicyEnvelope>(yaml_str) {
             if let Some(spec_value) = envelope.spec {
@@ -855,14 +875,10 @@ fn validate_budget_limit_pair(
     errors: &mut Vec<ValidationError>,
 ) {
     if let Some(limit) = daily {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(daily_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, daily_field, errors);
     }
     if let Some(limit) = monthly {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(monthly_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, monthly_field, errors);
         if let Some(daily) = daily {
             if limit < daily {
                 // Cross-message references the daily field by its leaf name.
@@ -870,6 +886,20 @@ fn validate_budget_limit_pair(
                 errors.push(ValidationError::new(monthly_field, format!("must be >= {daily_leaf}")));
             }
         }
+    }
+}
+
+/// A budget cap must be a finite number greater than zero.
+///
+/// `limit <= 0.0` alone is not enough: YAML `.nan` / `.inf` deserialize into
+/// `f64` fine, and every comparison against NaN is false, so a NaN cap would
+/// pass that check and then never trip at enforcement time (AAASM-6336). An
+/// infinite cap is equally "no cap" under a field that claims to be one.
+fn check_budget_limit(limit: f64, field: &'static str, errors: &mut Vec<ValidationError>) {
+    if !limit.is_finite() {
+        errors.push(ValidationError::new(field, "must be a finite number"));
+    } else if limit <= 0.0 {
+        errors.push(ValidationError::new(field, "must be greater than 0"));
     }
 }
 
@@ -1357,7 +1387,9 @@ mod tests {
 
     #[test]
     fn capabilities_absent_is_none() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.document.capabilities.is_none());
     }
@@ -1526,20 +1558,25 @@ data:
     }
 
     #[test]
-    fn empty_document_is_valid_with_no_errors() {
-        let yaml = "{}\n";
+    fn minimal_declared_document_is_valid_with_no_errors() {
+        // AAASM-6337: formerly `empty_document_is_valid_with_no_errors`. A blank
+        // document is now rejected (see `blank_policy_documents_are_rejected_*`);
+        // the smallest accepted document declares one section.
+        let yaml = "network:\n  allowlist: []\n";
         let result = PolicyValidator::from_yaml(yaml);
         assert!(result.is_ok());
         let out = result.unwrap();
         assert!(out.warnings.is_empty());
-        assert!(out.document.network.is_none());
+        assert!(out.document.schedule.is_none());
     }
 
     // ── Scope field (F92) ───────────────────────────────────────────────────
 
     #[test]
     fn scope_absent_defaults_to_global_for_backward_compatibility() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Global);
     }
@@ -1625,7 +1662,9 @@ data:
 
     #[test]
     fn approval_timeout_absent_defaults_to_300() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.approval_timeout_secs, 300);
     }
@@ -2291,5 +2330,65 @@ approval:
     fn an_unknown_top_level_key_lists_egress_as_valid() {
         let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
         assert!(errs.iter().any(|e| e.message.contains("egress")));
+    }
+
+    // ── Fail-closed budget numbers and blank documents (AAASM-6336/6337) ──
+
+    /// Every f64 budget field the validator owns, so a new field cannot be
+    /// added to the schema without this list being the thing that fails.
+    const BUDGET_F64_FIELDS: [&str; 6] = [
+        "daily_limit_usd",
+        "monthly_limit_usd",
+        "team_daily_limit_usd",
+        "team_monthly_limit_usd",
+        "org_daily_limit_usd",
+        "org_monthly_limit_usd",
+    ];
+
+    #[test]
+    fn every_budget_limit_field_accepts_a_finite_positive_value() {
+        // Control for the rejection test below: the only variable is the value.
+        for field in BUDGET_F64_FIELDS {
+            let yaml = format!("budget:\n  {field}: 100.0\n");
+            assert!(
+                PolicyValidator::from_yaml(&yaml).is_ok(),
+                "{field}: a finite positive limit must be accepted",
+            );
+        }
+    }
+
+    #[test]
+    fn every_budget_limit_field_rejects_non_finite_zero_and_negative_values() {
+        for field in BUDGET_F64_FIELDS {
+            for bad in [".nan", ".NaN", ".inf", "-.inf", "0", "0.0", "-1", "-0.5"] {
+                let yaml = format!("budget:\n  {field}: {bad}\n");
+                let errs = PolicyValidator::from_yaml(&yaml).expect_err(&format!("{field}: {bad} must be rejected"));
+                assert!(
+                    errs.iter().any(|e| e.field == format!("budget.{field}")),
+                    "{field}: {bad} must be reported on budget.{field}, got {errs:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn blank_policy_documents_are_rejected_not_validated_into_allow_all() {
+        // AAASM-6337: `aa_security::policy::PolicyDocument::from_yaml` already
+        // rejects these (AAASM-3997); the validator must not disagree.
+        for blank in ["", "{}", "# only a comment\n", "\n\n", "---\n", "{ }\n"] {
+            let errs =
+                PolicyValidator::from_yaml(blank).expect_err(&format!("blank document {blank:?} must be rejected"));
+            assert!(
+                errs.iter().any(|e| e.message.contains("empty or null policy document")),
+                "{blank:?}: expected the AAASM-3997 message, got {errs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_minimal_declared_policy_is_still_accepted_unlike_a_blank_one() {
+        // Paired control: one declared section is the only difference.
+        assert!(PolicyValidator::from_yaml("capabilities:\n  deny: [terminal_exec]\n").is_ok());
+        assert!(PolicyValidator::from_yaml("network:\n  allowlist: []\n").is_ok());
     }
 }
