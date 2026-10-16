@@ -123,14 +123,15 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
 }
 
 /// Every way a response body can be read: the raw (BOM-stripped, lossy) text
-/// and, when it carries backslash escapes, the text with those escapes decoded.
+/// and, when it carries backslash escapes, every string token with those escapes
+/// decoded.
 ///
-/// Both are needed because they hide different things: `\uXXXX` escapes hide a
-/// value from the raw text, and a re-serialising parser would hide a repeated
-/// JSON key from the decoded one (serde keeps the last). The decoded form is
-/// therefore built by a parse that keeps every key and value in order, and it is
-/// only produced when escapes exist, so an escape-free body reaches the gateway
-/// exactly once, as sent (AAASM-6355 review F4/V1).
+/// Both are needed because they hide different things: escapes (`\uXXXX`,
+/// `\/`) hide a value from the raw text. The decoded form comes from a lexical
+/// decoder, never from a JSON parse, so a body serde rejects but a peer accepts
+/// (200-deep nesting, `NaN`, `1e400`) and repeated keys cannot hide anything. It
+/// exists only when escapes do, so an escape-free body reaches the gateway
+/// exactly once, as sent (AAASM-6355 review F4/V1/round 3).
 struct ResponseForms {
     raw: String,
     /// Every decoded key and string value, one per line, duplicates included.
@@ -145,71 +146,18 @@ impl ResponseForms {
     }
 }
 
-/// Accumulates every string in a JSON document, duplicate keys included.
-struct AllStrings(String);
-
-impl<'de> serde::Deserialize<'de> for AllStrings {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = AllStrings;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                f.write_str("any JSON value")
-            }
-            fn visit_str<E>(self, v: &str) -> Result<AllStrings, E> {
-                Ok(AllStrings(format!("{v}\n")))
-            }
-            fn visit_bool<E>(self, _: bool) -> Result<AllStrings, E> {
-                Ok(AllStrings(String::new()))
-            }
-            fn visit_i64<E>(self, _: i64) -> Result<AllStrings, E> {
-                Ok(AllStrings(String::new()))
-            }
-            fn visit_u64<E>(self, _: u64) -> Result<AllStrings, E> {
-                Ok(AllStrings(String::new()))
-            }
-            fn visit_f64<E>(self, _: f64) -> Result<AllStrings, E> {
-                Ok(AllStrings(String::new()))
-            }
-            fn visit_unit<E>(self) -> Result<AllStrings, E> {
-                Ok(AllStrings(String::new()))
-            }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<AllStrings, A::Error> {
-                let mut out = String::new();
-                while let Some(AllStrings(s)) = seq.next_element()? {
-                    out.push_str(&s);
-                }
-                Ok(AllStrings(out))
-            }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<AllStrings, A::Error> {
-                let mut out = String::new();
-                while let Some((AllStrings(k), AllStrings(v))) = map.next_entry()? {
-                    out.push_str(&k);
-                    out.push_str(&v);
-                }
-                Ok(AllStrings(out))
-            }
-        }
-        deserializer.deserialize_any(V)
-    }
-}
-
-/// `None` when the body cannot be judged: it looks like a JSON document and
-/// carries `\u` escapes yet does not parse even leniently, so what a lenient
-/// client decodes is unknown.
+/// `None` when the body cannot be judged: it looks like a JSON document and its
+/// decoded strings exceed the decoder's cap.
 fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
     let raw = mcp::lenient_json_text(bytes).into_owned();
-    if !raw.contains('\\') {
+    if !raw.contains('\\') || !mcp::looks_like_json_document(&raw) {
         return Some(ResponseForms { raw, decoded: None });
     }
-    match serde_json::from_str::<AllStrings>(&raw) {
-        Ok(AllStrings(decoded)) => Some(ResponseForms {
-            raw,
-            decoded: Some(decoded),
-        }),
-        Err(_) if mcp::looks_like_json_document(&raw) && raw.contains("\\u") => None,
-        Err(_) => Some(ResponseForms { raw, decoded: None }),
-    }
+    let decoded = mcp::decode_json_strings(&raw)?;
+    Some(ResponseForms {
+        raw,
+        decoded: Some(decoded),
+    })
 }
 
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
@@ -1222,13 +1170,63 @@ mod tests {
         assert_eq!(response_scan(&body), ResponseScan::Forward);
     }
 
-    // V2: JSON-looking, has \u, cannot be parsed even leniently -> cannot judge.
+    const FAKE_DB_URL: &str = "postgres://user:pw@localhost/db";
+
+    fn deep(n: usize) -> String {
+        format!("{}{}", "[".repeat(n), "]".repeat(n))
+    }
+
+    // Round 3 F2: bodies serde rejects (nesting > 128, NaN, 1e400) but real
+    // peers accept must still have their escapes decoded and scanned.
     #[test]
-    fn response_unparseable_json_with_unicode_escape_withholds() {
-        assert_eq!(response_scan(br#"{"t":"\u0041" BROKEN"#), ResponseScan::Withhold);
-        // controls: no escape, or not JSON-looking
-        assert_eq!(response_scan(br#"{"t":"a" BROKEN"#), ResponseScan::Forward);
+    fn response_escape_hidden_secret_withholds_when_serde_would_reject_the_body() {
+        let hidden = FAKE_DB_URL.replace('/', "\\/");
+        for tail in [
+            format!(r#""d":{}"#, deep(200)),
+            r#""n":NaN"#.to_string(),
+            r#""n":1e400"#.to_string(),
+        ] {
+            let body = format!(r#"{{"t":"{hidden}",{tail}}}"#);
+            assert!(serde_json::from_str::<serde_json::Value>(&body).is_err() || tail.contains("1e400"));
+            assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold, "{tail:.20}");
+            // control: same shape, harmless escaped value
+            let ok = format!(r#"{{"t":"a\/b",{tail}}}"#);
+            assert_eq!(response_scan(ok.as_bytes()), ResponseScan::Forward, "{tail:.20}");
+        }
+    }
+
+    // A raw finding plus an escape-hidden one: never partially redacted.
+    #[test]
+    fn response_raw_secret_plus_escaped_secret_withholds_instead_of_partial_redact() {
+        let hidden = FAKE_DB_URL.replace('/', "\\/");
+        let body = format!(r#"{{"a":"{AWS_KEY}","t":"{hidden}","d":{}}}"#, deep(200));
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        // control: raw secret alone is redacted
+        let alone = format!(r#"{{"a":"{AWS_KEY}","d":{}}}"#, deep(200));
+        assert!(matches!(response_scan(alone.as_bytes()), ResponseScan::Redact(_)));
+    }
+
+    // Unparseable JSON-looking body: escapes are still decoded and judged.
+    #[test]
+    fn response_unparseable_json_is_judged_by_its_decoded_strings() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        assert_eq!(
+            response_scan(format!(r#"{{"t":"{escaped}" BROKEN"#).as_bytes()),
+            ResponseScan::Withhold
+        );
+        assert_eq!(response_scan(br#"{"t":"\u0041" BROKEN"#), ResponseScan::Forward);
         assert_eq!(response_scan(br#"plain \u0041 text"#), ResponseScan::Forward);
+    }
+
+    // A huge run of escapes is linear work and still judged.
+    #[test]
+    fn response_escape_bomb_is_bounded_and_withheld() {
+        let mut body = String::from(r#"{"pad":""#);
+        body.push_str(&"\\u0041".repeat(1_500_000));
+        body.push_str(&format!(r#"","t":"{}"}}"#, AWS_KEY.replacen('A', "\\u0041", 1)));
+        let started = std::time::Instant::now();
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

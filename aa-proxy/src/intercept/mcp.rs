@@ -73,6 +73,106 @@ pub fn looks_like_json_document(text: &str) -> bool {
     matches!(text.trim_start().as_bytes().first(), Some(b'{' | b'['))
 }
 
+#[derive(Deserialize)]
+struct Envelope {
+    jsonrpc: Option<String>,
+    method: Option<String>,
+    params: Option<Params>,
+}
+
+#[derive(Deserialize)]
+struct Params {
+    name: Option<String>,
+    #[serde(default)]
+    arguments: serde_json::Value,
+}
+
+/// Upper bound on [`decode_json_strings`] output. Decoding only shrinks escapes,
+/// so this is reached only by an input already near the body cap.
+const MAX_DECODED_JSON_STRINGS: usize = 64 * 1024 * 1024;
+
+/// Every JSON string token in `text` (object keys and values alike, duplicates
+/// kept, in order), each with all escapes decoded and followed by `\n`.
+///
+/// This is deliberately LEXICAL: it needs no successful parse, so nesting depth,
+/// `NaN`, `1e400`, trailing garbage or duplicate keys cannot make the proxy see
+/// less than a lenient peer (Node, Python) decodes. Invalid escapes keep the
+/// escaped character; unterminated strings end at end of input; time and
+/// memory are linear. `None` when the output would exceed `cap`, which callers
+/// must treat as "cannot judge" and fail closed on (AAASM-6355 review round 3).
+pub fn decode_json_strings_capped(text: &str, cap: usize) -> Option<String> {
+    fn hex4(it: &mut std::str::Chars<'_>) -> Option<u32> {
+        let mut probe = it.clone();
+        let mut v = 0u32;
+        for _ in 0..4 {
+            v = v * 16 + probe.next()?.to_digit(16)?;
+        }
+        *it = probe;
+        Some(v)
+    }
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '"' {
+            continue;
+        }
+        loop {
+            if out.len() > cap {
+                return None;
+            }
+            match chars.next() {
+                None => break,
+                Some('"') => break,
+                Some('\\') => match chars.next() {
+                    None => break,
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('b') => out.push('\u{8}'),
+                    Some('f') => out.push('\u{c}'),
+                    Some('u') => match hex4(&mut chars) {
+                        None => out.push('u'),
+                        Some(hi @ 0xD800..=0xDBFF) => {
+                            let mut probe = chars.clone();
+                            let low = (probe.next() == Some('\\') && probe.next() == Some('u'))
+                                .then(|| hex4(&mut probe))
+                                .flatten()
+                                .filter(|l| (0xDC00..=0xDFFF).contains(l));
+                            match low {
+                                Some(lo) => {
+                                    chars = probe;
+                                    out.push(
+                                        char::from_u32(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
+                                            .unwrap_or('\u{FFFD}'),
+                                    );
+                                }
+                                None => out.push('\u{FFFD}'),
+                            }
+                        }
+                        Some(cp) => out.push(char::from_u32(cp).unwrap_or('\u{FFFD}')),
+                    },
+                    // `\"`, `\\`, `\/` and any invalid escape keep the character.
+                    Some(other) => out.push(other),
+                },
+                Some(c) => out.push(c),
+            }
+        }
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// [`decode_json_strings_capped`] with the production cap.
+pub fn decode_json_strings(text: &str) -> Option<String> {
+    decode_json_strings_capped(text, MAX_DECODED_JSON_STRINGS)
+}
+
+/// True when some decoded string token of `text` is exactly `tools/call`.
+fn has_tools_call_token(text: &str) -> bool {
+    // Unjudgeable (over the cap) counts as "might be": fail closed.
+    decode_json_strings(text).is_none_or(|d| d.lines().any(|t| t == MCP_TOOLS_CALL_METHOD))
+}
+
 /// Try to interpret `body` as a JSON-RPC 2.0 MCP `tools/call` request and
 /// extract the [`McpToolCall`].
 ///
@@ -89,20 +189,6 @@ pub fn looks_like_json_document(text: &str) -> bool {
 /// When `params.arguments` is missing it is normalised to `Value::Null` so
 /// callers can always treat it as a structured value.
 pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
-    #[derive(Deserialize)]
-    struct Envelope {
-        jsonrpc: Option<String>,
-        method: Option<String>,
-        params: Option<Params>,
-    }
-
-    #[derive(Deserialize)]
-    struct Params {
-        name: Option<String>,
-        #[serde(default)]
-        arguments: serde_json::Value,
-    }
-
     let envelope: Envelope = serde_json::from_str(&lenient_json_text(body)).ok()?;
     if envelope.jsonrpc.as_deref() != Some(JSONRPC_VERSION) {
         return None;
@@ -133,7 +219,7 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
 ///   strict extraction (wrong/missing `jsonrpc`, missing `params.name`) — a
 ///   steered agent could malform these to slip a tool call past enforcement.
 ///
-/// Non-JSON bodies (unless JSON-looking and naming `tools/call`), and JSON
+/// Non-JSON bodies (unless JSON-looking and carrying a `tools/call` token), and JSON
 /// carrying no `tools/call` method, return `false` so
 /// ordinary non-MCP HTTPS traffic on this route still flows through untouched.
 /// This is deliberately a *detector*, not a parser: it does not change the
@@ -141,16 +227,27 @@ pub fn parse_mcp_request(body: &[u8]) -> Option<McpToolCall> {
 pub fn is_unenforceable_tool_call(body: &[u8]) -> bool {
     let text = lenient_json_text(body);
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-        // Unparseable even leniently, so the proxy cannot say what the peer will
-        // decode. A JSON-looking body that names `tools/call` (backslashes
-        // removed so `tools\/call` is caught) is denied rather than skipped.
-        return looks_like_json_document(&text) && text.replace('\\', "").contains(MCP_TOOLS_CALL_METHOD);
+        // Unparseable even leniently (too deep, NaN, 1e400, ...): the proxy
+        // cannot say what a more tolerant peer decodes. A JSON-looking body with
+        // a `tools/call` string token, spelled however (`tools\u002fcall`), is
+        // denied rather than skipped.
+        return looks_like_json_document(&text) && has_tools_call_token(&text);
     };
-    match &value {
+    let framing_mentions = match &value {
         serde_json::Value::Array(elements) => elements.iter().any(mentions_tools_call),
         serde_json::Value::Object(_) => mentions_tools_call(&value),
         _ => false,
+    };
+    if framing_mentions {
+        return true;
     }
+    // A body serde parses leniently but whose envelope the strict parser
+    // rejects (a repeated `method` key: serde keeps the last, a first-wins peer
+    // runs the first) is judged by tokens. Well-formed envelopes that merely
+    // mention `tools/call` in a string (e.g. a `tools/list` param) pass.
+    matches!(&value, serde_json::Value::Array(_) | serde_json::Value::Object(_))
+        && serde_json::from_str::<Envelope>(&text).is_err()
+        && has_tools_call_token(&text)
 }
 
 /// True when `value` is a JSON object whose `method` field is exactly
@@ -350,5 +447,71 @@ mod tests {
     fn unparseable_bodies_that_do_not_name_tools_call_stay_forwardable() {
         assert!(!is_unenforceable_tool_call(br#"{"method":"tools/list", BROKEN"#));
         assert!(!is_unenforceable_tool_call(b"plain text mentioning tools/call"));
+    }
+
+    // ── lexical decoder ──
+    #[test]
+    fn decoder_handles_escapes_surrogates_keys_and_duplicates() {
+        let d = decode_json_strings(r#"{"k\u0041":"a\/b\n","k\u0041":"\ud83d\ude00"}"#).unwrap();
+        assert_eq!(d, "kA\na/b\n\nkA\n\u{1F600}\n");
+    }
+
+    #[test]
+    fn decoder_keeps_invalid_escapes_and_survives_truncation() {
+        assert_eq!(
+            decode_json_strings(r#"["\q\u12","\ud800x","\udc00"]"#).unwrap(),
+            "qu12\n\u{FFFD}x\n\u{FFFD}\n"
+        );
+        // unterminated string, trailing lone backslash, no panic
+        assert_eq!(
+            decode_json_strings(r#"{"a":"unterminated\"#).unwrap(),
+            "a\nunterminated\n"
+        );
+        assert_eq!(decode_json_strings("no strings here").unwrap(), "");
+    }
+
+    #[test]
+    fn decoder_fails_closed_above_its_cap() {
+        assert!(decode_json_strings_capped(&format!("\"{}\"", "x".repeat(100)), 10).is_none());
+        assert!(decode_json_strings_capped("\"xx\"", 10).is_some());
+    }
+
+    // ── round 3: serde-rejected requests a lenient peer still runs ──
+    fn deep(n: usize) -> String {
+        format!("{}{}", "[".repeat(n), "]".repeat(n))
+    }
+
+    #[test]
+    fn unparseable_tools_call_is_unenforceable_however_the_method_is_spelled() {
+        for method in ["tools/call", r"tools\u002fcall", r"\u0074ools/call", r"tools\/call"] {
+            for tail in [
+                format!(r#""d":{}"#, deep(200)),
+                r#""n":NaN"#.into(),
+                r#""n":1e400"#.into(),
+            ] {
+                let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"name":"x"}},{tail}}}"#);
+                assert!(is_unenforceable_tool_call(body.as_bytes()), "{method} {tail:.12}");
+            }
+        }
+        // controls: same shapes naming another method are not refused
+        let other = format!(r#"{{"jsonrpc":"2.0","method":"tools/list","d":{}}}"#, deep(200));
+        assert!(!is_unenforceable_tool_call(other.as_bytes()));
+    }
+
+    #[test]
+    fn a_repeated_method_key_is_unenforceable_in_either_order() {
+        for (a, b) in [("tools/call", "tools/list"), ("tools/list", "tools/call")] {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{a}","method":"{b}","params":{{"name":"x"}}}}"#);
+            assert!(is_unenforceable_tool_call(body.as_bytes()), "{a} then {b}");
+        }
+        let both_list = br#"{"jsonrpc":"2.0","method":"tools/list","method":"tools/list"}"#;
+        assert!(!is_unenforceable_tool_call(both_list));
+    }
+
+    #[test]
+    fn a_valid_non_tools_call_request_mentioning_the_string_is_forwardable() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"q":"tools/call"}}"#;
+        assert!(parse_mcp_request(body).is_none());
+        assert!(!is_unenforceable_tool_call(body));
     }
 }
