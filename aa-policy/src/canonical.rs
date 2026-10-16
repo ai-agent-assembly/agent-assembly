@@ -201,6 +201,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::document::EgressPosture::NotRequired,
+            credentials: crate::document::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -466,5 +467,19 @@ mod tests {
         with_egress.egress = EgressPosture::BrokerRequired;
 
         assert_eq!(without, with_egress.to_canonical());
+    }
+
+    /// AAASM-6347 — a credentials posture is likewise a fact the credential
+    /// gate reads, never a `ControlRequirement` input.
+    #[test]
+    fn authoring_a_credentials_posture_does_not_change_the_control_requirement_bridge() {
+        use crate::document::CredentialBrokeragePosture;
+
+        let without = base_doc().to_canonical();
+
+        let mut with_creds = base_doc();
+        with_creds.credentials = CredentialBrokeragePosture::BrokerRequired;
+
+        assert_eq!(without, with_creds.to_canonical());
     }
 }

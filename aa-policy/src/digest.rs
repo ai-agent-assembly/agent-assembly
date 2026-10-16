@@ -361,6 +361,19 @@ fn hash_egress(hasher: &mut Sha256, posture: crate::document::EgressPosture) {
     hash_str(hasher, posture.as_str());
 }
 
+/// Hash the AAASM-6347 required credential-brokerage posture.
+///
+/// Emitted only when non-default, for the same byte-compatibility reason as
+/// [`hash_egress`]. The `crd\x01` tag is distinct from `egr\x01` so the two
+/// postures can never be confused for one another.
+fn hash_credentials(hasher: &mut Sha256, posture: crate::document::CredentialBrokeragePosture) {
+    if posture == crate::document::CredentialBrokeragePosture::NotRequired {
+        return;
+    }
+    hasher.update(b"crd\x01");
+    hash_str(hasher, posture.as_str());
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -394,6 +407,7 @@ impl PolicyDocument {
         hash_syscalls(&mut hasher, self.syscall_allowlist.as_ref());
         hash_leases(&mut hasher, &self.leases);
         hash_egress(&mut hasher, self.egress);
+        hash_credentials(&mut hasher, self.credentials);
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -476,6 +490,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::document::EgressPosture::NotRequired,
+            credentials: crate::document::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -729,6 +744,47 @@ mod tests {
 
         let same = broker_required.clone();
         assert_eq!(same.content_digest(), broker_required.content_digest());
+    }
+
+    /// AAASM-6347 — same migration question as the egress pin above, for the
+    /// credentials node. The pinned value is the one both earlier pins use,
+    /// so an absent `credentials:` section is byte-identical by construction.
+    #[test]
+    fn legacy_documents_keep_their_pre_credentials_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert_eq!(
+            doc.credentials,
+            crate::document::CredentialBrokeragePosture::NotRequired
+        );
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding the credentials posture node re-keyed a document that does not use it"
+        );
+    }
+
+    /// Requiring a credential broker is a different policy from not
+    /// requiring one, and is distinct from requiring an egress broker.
+    #[test]
+    fn credentials_posture_is_part_of_the_documents_identity() {
+        use crate::document::{CredentialBrokeragePosture, EgressPosture};
+
+        let none = base_doc();
+
+        let mut creds = base_doc();
+        creds.credentials = CredentialBrokeragePosture::BrokerRequired;
+
+        let mut egress = base_doc();
+        egress.egress = EgressPosture::BrokerRequired;
+
+        assert_ne!(none.content_digest(), creds.content_digest());
+        assert_ne!(creds.content_digest(), egress.content_digest());
+        assert_eq!(creds.content_digest(), creds.clone().content_digest());
     }
 
     #[test]

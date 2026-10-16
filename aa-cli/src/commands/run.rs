@@ -7169,6 +7169,7 @@ mod tests {
             // give every one of them an execution boundary they never asked for.
             canonical: aa_security::policy::PolicyDocument::default(),
             egress: aa_policy::EgressPosture::NotRequired,
+            credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
         }
     }
@@ -7203,6 +7204,7 @@ mod tests {
             },
             canonical: aa_security::policy::PolicyDocument::default(),
             egress: aa_policy::EgressPosture::BrokerRequired,
+            credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
         };
         assert_eq!(resolution.egress_posture(), aa_policy::EgressPosture::BrokerRequired);
@@ -8701,6 +8703,7 @@ mod tests {
                 },
                 canonical: aa_security::policy::PolicyDocument::default(),
                 egress: aa_policy::EgressPosture::NotRequired,
+                credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
             },
             run_policy::PolicyResolution::Permissive {
@@ -8716,6 +8719,7 @@ mod tests {
                 },
                 canonical: aa_security::policy::PolicyDocument::default(),
                 egress: aa_policy::EgressPosture::NotRequired,
+                credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
             },
             run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),

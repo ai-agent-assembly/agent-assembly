@@ -4,13 +4,14 @@ use std::collections::HashMap;
 
 use crate::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, EgressPosture,
-        LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, CredentialBrokeragePosture,
+        DataPolicy, EgressPosture, LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy,
+        ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{
-        GovernancePolicyEnvelope, RawAuthorityPolicy, RawBudgetPolicy, RawDataPolicy, RawEgressPolicy, RawLeaseGrant,
-        RawLeaseScope, RawPolicyDocument, RawSchedulePolicy,
+        GovernancePolicyEnvelope, RawAuthorityPolicy, RawBudgetPolicy, RawCredentialsPolicy, RawDataPolicy,
+        RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument, RawSchedulePolicy,
     },
     scope::PolicyScope,
 };
@@ -76,7 +77,7 @@ impl PolicyValidator {
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
                          schedule, budget, data, tools, capabilities, filesystem, syscalls, \
-                         authority, egress, approval_timeout_secs, approval",
+                         authority, egress, credentials, approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -89,6 +90,7 @@ impl PolicyValidator {
         // validated forms (`Vec`/enum) cannot say whether the key was written.
         let declares_authority = raw.authority.as_ref().is_some_and(RawAuthorityPolicy::constrains);
         let declares_egress = raw.egress.as_ref().is_some_and(RawEgressPolicy::constrains);
+        let declares_credentials = raw.credentials.as_ref().is_some_and(RawCredentialsPolicy::constrains);
         let network = Self::validate_network(raw.network, &mut errors);
         // AAASM-6343: an empty `schedule:`/`budget:`/`data:` validates into a
         // `Some` section that restricts nothing. Read what each states before
@@ -106,6 +108,7 @@ impl PolicyValidator {
         let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
         let leases = Self::validate_authority(raw.authority, &mut errors);
         let egress = Self::validate_egress(raw.egress, &mut errors);
+        let credentials = Self::validate_credentials(raw.credentials, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -143,11 +146,12 @@ impl PolicyValidator {
             && syscall_allowlist.is_none()
             && !declares_authority
             && !declares_egress
+            && !declares_credentials
         {
             errors.push(ValidationError::new(
                 "(document)",
                 "policy declares no enforcement section \
-                 (network/schedule/budget/data/tools/capabilities/filesystem/syscalls/authority/egress); \
+                 (network/schedule/budget/data/tools/capabilities/filesystem/syscalls/authority/egress/credentials); \
                  it would be fully permissive",
             ));
         }
@@ -179,6 +183,7 @@ impl PolicyValidator {
                 syscall_allowlist,
                 leases,
                 egress,
+                credentials,
             },
             warnings,
         })
@@ -804,6 +809,48 @@ impl PolicyValidator {
                         ),
                     ));
                     EgressPosture::NotRequired
+                }
+            },
+        }
+    }
+
+    /// Validate the `credentials:` section into a
+    /// [`CredentialBrokeragePosture`] (AAASM-6347).
+    ///
+    /// Same shape as [`validate_egress`](Self::validate_egress): absent reads
+    /// as `NotRequired`, while a present section must state `posture:` and
+    /// may state nothing else. Stray keys (`raw_fallback`, ceilings, ...) are
+    /// rejected so no authored key can silently soften the requirement.
+    fn validate_credentials(
+        raw: Option<RawCredentialsPolicy>,
+        errors: &mut Vec<ValidationError>,
+    ) -> CredentialBrokeragePosture {
+        let Some(raw) = raw else {
+            return CredentialBrokeragePosture::NotRequired;
+        };
+
+        reject_unknown_keys("credentials", &raw.unknown, errors);
+
+        match raw.posture.as_deref() {
+            None => {
+                errors.push(ValidationError::new(
+                    "credentials.posture",
+                    "is required when a `credentials:` section is present; write \"not_required\" or \
+                     \"broker_required\"",
+                ));
+                CredentialBrokeragePosture::NotRequired
+            }
+            Some(word) => match CredentialBrokeragePosture::parse(word) {
+                Some(posture) => posture,
+                None => {
+                    errors.push(ValidationError::new(
+                        "credentials.posture",
+                        format!(
+                            "unrecognised credentials posture '{word}'; valid postures are: not_required, \
+                             broker_required"
+                        ),
+                    ));
+                    CredentialBrokeragePosture::NotRequired
                 }
             },
         }
@@ -1797,6 +1844,7 @@ spec:
             "data:\n  credential_action: block\n",
             "data:\n  sensitive_patterns: [\"x\"]\n",
             "egress:\n  posture: broker_required\n",
+            "credentials:\n  posture: broker_required\n",
         ] {
             PolicyValidator::from_yaml(body).unwrap_or_else(|e| panic!("{body:?} should load: {e:?}"));
         }
@@ -2534,7 +2582,7 @@ approval:
 
     /// Documents that deserialize to an all-`None` policy. Each differs from an
     /// accepted control only in carrying no enforcement-bearing section.
-    const NO_ENFORCEMENT_DOCS: [&str; 10] = [
+    const NO_ENFORCEMENT_DOCS: [&str; 11] = [
         "version: 1\n",
         "version: \"1\"\n",
         "scope: global\n",
@@ -2545,6 +2593,7 @@ approval:
         "!foo {}\n",
         "tools: {}\n",
         "filesystem: {}\n",
+        "credentials:\n  posture: not_required\n",
     ];
 
     #[test]
@@ -2582,5 +2631,74 @@ approval:
         ] {
             PolicyValidator::from_yaml(doc).unwrap_or_else(|e| panic!("{doc:?} declares a section: {e:?}"));
         }
+    }
+
+    // ── AAASM-6347 — credentials ────────────────────────────────────────────
+
+    #[test]
+    fn a_broker_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: broker_required\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::BrokerRequired);
+        // It must not leak into the egress node.
+        assert_eq!(out.document.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn a_not_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: not_required\nnetwork:\n  allowlist: []\n")
+            .expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn absent_credentials_section_is_not_required() {
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn a_not_required_credentials_posture_alone_is_refused_as_declaring_nothing() {
+        // The default posture restricts nothing, exactly like `egress`.
+        let errs = PolicyValidator::from_yaml("credentials:\n  posture: not_required\n").expect_err("no enforcement");
+        assert!(errs.iter().any(|e| e.message.contains("no enforcement section")));
+    }
+
+    #[test]
+    fn a_broker_required_credentials_posture_alone_is_an_enforcing_policy() {
+        // Positive path: the posture is a supported way to author a policy,
+        // not something that only validates when a sibling section rescues it.
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: broker_required\n").expect("enforcing");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::BrokerRequired);
+    }
+
+    #[test]
+    fn a_credentials_section_with_no_posture_is_rejected() {
+        let errs = PolicyValidator::from_yaml("credentials: {}\n").expect_err("missing posture");
+        assert!(errs.iter().any(|e| e.field == "credentials.posture"));
+    }
+
+    #[test]
+    fn a_credentials_section_with_an_unrecognised_posture_is_rejected() {
+        for word in ["raw_fallback", "broker_preferred", "Broker_Required"] {
+            let errs = PolicyValidator::from_yaml(&format!("credentials:\n  posture: {word}\n"))
+                .expect_err("an unknown posture must be rejected");
+            assert!(errs.iter().any(|e| e.field == "credentials.posture"), "{word}");
+        }
+    }
+
+    #[test]
+    fn unknown_credentials_keys_are_rejected_rather_than_dropped() {
+        for key in ["raw_fallback", "required_mode", "ceilings", "posturee"] {
+            let errs =
+                PolicyValidator::from_yaml(&format!("credentials:\n  posture: broker_required\n  {key}: true\n"))
+                    .expect_err("an unknown nested key must fail closed");
+            assert!(errs.iter().any(|e| e.field.starts_with("credentials")), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_lists_credentials_as_valid() {
+        let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
+        assert!(errs.iter().any(|e| e.message.contains("credentials")));
     }
 }
