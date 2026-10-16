@@ -122,6 +122,17 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
     }
 }
 
+/// The text a scanner (and the gateway) should inspect for `bytes`: the compact
+/// re-serialisation when the body is JSON (escapes resolved), else the lossy
+/// UTF-8 text. Never used for the bytes forwarded, except as the redacted form
+/// when the scan finds something.
+fn normalize_json_for_scan(bytes: &[u8]) -> Cow<'_, str> {
+    match serde_json::from_slice::<serde_json::Value>(bytes) {
+        Ok(value) => Cow::Owned(value.to_string()),
+        Err(_) => String::from_utf8_lossy(bytes),
+    }
+}
+
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
 /// LLM API call, and extracts audit-relevant fields from the body.
 ///
@@ -376,7 +387,10 @@ impl Interceptor {
             ScanSource::Plaintext { bytes, encoded } => (bytes, encoded),
             ScanSource::Uninspectable => return ResponseScan::Withhold,
         };
-        let text = String::from_utf8_lossy(&bytes);
+        // Scan the JSON-normalised text: a value sent as `\uXXXX` escapes is
+        // invisible to a raw-text pattern but decoded by the client (AAASM-6355
+        // review F4). The request side already scans a re-serialisation.
+        let text = normalize_json_for_scan(&bytes);
         let scan = scanner.scan(&text);
         if scan.is_clean() {
             return ResponseScan::Forward;
@@ -395,7 +409,7 @@ impl Interceptor {
     /// then withhold, not forward). AAASM-6355.
     pub fn decoded_response_body(&self, body: &[u8], content_encoding: Option<&str>) -> Option<Vec<u8>> {
         match scan_source(body, content_encoding) {
-            ScanSource::Plaintext { bytes, .. } => Some(bytes.into_owned()),
+            ScanSource::Plaintext { bytes, .. } => Some(normalize_json_for_scan(&bytes).into_owned().into_bytes()),
             ScanSource::Uninspectable => None,
         }
     }

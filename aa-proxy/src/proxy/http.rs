@@ -20,7 +20,7 @@
 
 use std::io::Read;
 
-use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
+use flate2::bufread::{DeflateDecoder, MultiGzDecoder, ZlibDecoder};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 use crate::error::ProxyError;
@@ -136,22 +136,62 @@ pub fn decompress_content_encoding(encoding: &str, body: &[u8]) -> Result<Vec<u8
             "layered Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
         )));
     }
+    // Every decoder reads from a `&mut &[u8]` so leftover input is observable:
+    // a decoder that stops at the end of its first stream would otherwise let
+    // trailing bytes (a second gzip member, garbage) go uninspected while the
+    // peer's decoder still inflates them (AAASM-6354 review F2).
     if token.eq_ignore_ascii_case("gzip") || token.eq_ignore_ascii_case("x-gzip") {
-        read_bounded(GzDecoder::new(body), token)
+        let mut src: &[u8] = body;
+        let out = read_bounded(MultiGzDecoder::new(&mut src), token)?;
+        require_fully_consumed(src, token)?;
+        Ok(out)
     } else if token.eq_ignore_ascii_case("deflate") {
         // HTTP `deflate` is ambiguous: RFC 7230 means zlib-wrapped (RFC 1950),
         // but some servers send raw DEFLATE (RFC 1951). Try zlib first, then
         // fall back to raw; if neither decodes cleanly (or either exceeds the
         // cap), fail closed below.
-        match read_bounded(ZlibDecoder::new(body), token) {
-            Ok(plain) => Ok(plain),
-            Err(_) => read_bounded(DeflateDecoder::new(body), token),
+        let mut src: &[u8] = body;
+        match read_bounded(ZlibDecoder::new(&mut src), token) {
+            Ok(plain) => {
+                require_fully_consumed(src, token)?;
+                Ok(plain)
+            }
+            Err(_) => {
+                let mut raw: &[u8] = body;
+                let out = read_bounded(DeflateDecoder::new(&mut raw), token)?;
+                require_fully_consumed(raw, token)?;
+                Ok(out)
+            }
         }
     } else {
         Err(ProxyError::Config(format!(
             "unsupported Content-Encoding {token:?} is not inspectable; refusing (fail-closed)"
         )))
     }
+}
+
+fn require_fully_consumed(remaining: &[u8], token: &str) -> Result<(), ProxyError> {
+    if remaining.is_empty() {
+        Ok(())
+    } else {
+        Err(ProxyError::Config(format!(
+            "{} trailing bytes after the {token} stream are not inspectable; refusing (fail-closed)",
+            remaining.len()
+        )))
+    }
+}
+
+/// Join every `Content-Encoding` header value (`a`, `b` -> `a, b`) so repeated
+/// headers read as the layered encoding a client will apply, which
+/// [`decompress_content_encoding`] refuses. Reading only the first header let
+/// `gzip` + `gzip` look like one layer (AAASM-6354 review F3).
+pub fn joined_content_encoding(headers: &[(String, String)]) -> Option<String> {
+    let values: Vec<&str> = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
+        .map(|(_, v)| v.trim())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
 }
 
 /// Read a decoder to completion, bounded by [`MAX_BODY_LEN`]. Returns
@@ -191,6 +231,11 @@ pub struct HttpRequest {
 }
 
 impl HttpRequest {
+    /// All `Content-Encoding` values joined; see [`joined_content_encoding`].
+    pub fn content_encoding(&self) -> Option<String> {
+        joined_content_encoding(&self.headers)
+    }
+
     /// Lookup the first header value matching `name` (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers

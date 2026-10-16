@@ -343,7 +343,11 @@ enum McpEvalOutcome {
     Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// Denied — connection should be closed after writing the given response.
     Deny(String),
-    /// No MCP call detected, or gateway unavailable with fail-open — proceed without MCP handling.
+    /// The request RPC failed under `mcp_fail_open`: the call is forwarded
+    /// unevaluated (the documented request-side opt-in), but the response must
+    /// still be scanned and gateway-evaluated, which always fails closed.
+    ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
+    /// No MCP call detected — proceed without MCP handling.
     Skip,
 }
 
@@ -1140,8 +1144,9 @@ impl ProxyServer {
         // `Skip` and reach the upstream with no `CheckAction`. An encoding the
         // proxy cannot decode (br, zstd, layered, corrupt, over the size cap)
         // is denied rather than forwarded unevaluated.
-        let decoded: std::borrow::Cow<'_, [u8]> = match req
-            .header("content-encoding")
+        let request_encoding = req.content_encoding();
+        let decoded: std::borrow::Cow<'_, [u8]> = match request_encoding
+            .as_deref()
             .map(str::trim)
             .filter(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
         {
@@ -1229,7 +1234,7 @@ impl ProxyServer {
                     error = %e,
                     "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
-                McpEvalOutcome::Skip
+                McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
             Err(e) => {
                 let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
@@ -1307,11 +1312,8 @@ impl ProxyServer {
         gateway: Option<&Arc<Mutex<GatewayClient>>>,
         source_url: &str,
     ) -> Result<(), ProxyError> {
-        let content_encoding = resp
-            .headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
-            .map(|(_, v)| v.as_str());
+        let response_encoding = http::joined_content_encoding(&resp.headers);
+        let content_encoding = response_encoding.as_deref();
         let scan = self.interceptor.redact_response_body(&resp.body, content_encoding);
         // AAASM-6355: the proxy's scanner holds built-in patterns only, so after
         // its own redaction the gateway evaluates what would actually be sent
@@ -1455,7 +1457,9 @@ impl ProxyServer {
         // MCP detection — only when a gateway is configured.
         let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match gateway {
             Some(gw) => match self.evaluate_mcp_request(gw, &req, host).await {
-                McpEvalOutcome::Forward(call, args_bytes) => Some((call, args_bytes)),
+                McpEvalOutcome::Forward(call, args_bytes) | McpEvalOutcome::ForwardUnevaluated(call, args_bytes) => {
+                    Some((call, args_bytes))
+                }
                 McpEvalOutcome::Deny(resp) => {
                     tracing::info!(
                         %host,
@@ -1485,7 +1489,7 @@ impl ProxyServer {
         // non-LLM host.
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
         if verdict.decision == VerdictDecision::Block {
@@ -1828,7 +1832,7 @@ impl ProxyServer {
 
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
 
@@ -2578,7 +2582,7 @@ impl ProxyServer {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body).await?;
 
-        let content_encoding = plain_http_header_value(headers, "content-encoding");
+        let content_encoding = plain_http_content_encoding(headers);
         let scanned =
             self.interceptor
                 .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
@@ -2747,6 +2751,17 @@ fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
 /// Find the value of a plain-HTTP header by name (case-insensitive) from the
 /// raw header lines captured in [`ProxyServer::handle_plain_http`]. Each line
 /// still carries its trailing CRLF, so the value is trimmed.
+/// Every `Content-Encoding` line joined, so a repeated header reads as the
+/// layered encoding it is (see `http::joined_content_encoding`).
+fn plain_http_content_encoding(headers: &[String]) -> Option<String> {
+    let values: Vec<String> = headers
+        .iter()
+        .filter(|h| h.to_ascii_lowercase().starts_with("content-encoding:"))
+        .map(|h| h["content-encoding:".len()..].trim().to_string())
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
 fn plain_http_header_value(headers: &[String], name: &str) -> Option<String> {
     let prefix = format!("{}:", name.to_ascii_lowercase());
     headers.iter().find_map(|h| {
