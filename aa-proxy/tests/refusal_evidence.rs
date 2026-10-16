@@ -1901,3 +1901,242 @@ async fn fixed_body_tls_upstream_raw_headers(body: Vec<u8>, extra_headers: &'sta
     });
     addr
 }
+
+// ── review round 2: duplicate keys, BOM/invalid bytes, lenient request parse (V1/V2/V4/L1) ──
+
+fn bytes_of(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
+}
+
+const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// A response whose `text` key appears twice: serde keeps the LAST, other JSON
+/// parsers may keep either, and the forwarded bytes carry both.
+fn duplicate_key_response(first: &str) -> Vec<u8> {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"text":"{first}","text":"ok"}}}}"#).into_bytes()
+}
+
+/// V1: the built-in secret sits in the shadowed first `text`. The normalised
+/// body is clean, so only a raw scan sees it; it must not reach the client.
+#[tokio::test]
+async fn a_builtin_secret_in_a_shadowed_duplicate_key_is_redacted() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        duplicate_key_response(BUILTIN_SECRET),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(BUILTIN_SECRET),
+        "the shadowed secret reached the client: {view:?}"
+    );
+}
+
+/// V1 control: the same duplicate-key shape without a secret is forwarded, so
+/// the redaction above comes from the secret and not from duplicate keys.
+#[tokio::test]
+async fn a_clean_duplicate_key_response_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        duplicate_key_response("harmless"),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V1: a gateway-only value in the shadowed key is judged on the raw form.
+#[tokio::test]
+async fn a_gateway_only_value_in_a_shadowed_duplicate_key_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        duplicate_key_response(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE) && !view.contains("200 OK"),
+        "got: {view:?}"
+    );
+}
+
+/// V1 control: the identical body is forwarded when the gateway allows it.
+#[tokio::test]
+async fn the_same_shadowed_gateway_only_body_is_forwarded_under_allow() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        duplicate_key_response(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2: a BOM defeated `serde_json::from_slice`, leaving escapes undecoded.
+#[tokio::test]
+async fn a_bom_prefixed_escaped_gateway_only_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[BOM, &escaped_policy_value_response()]),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "a BOM must not hide an escaped value, got: {view:?}"
+    );
+}
+
+/// V2 control: a BOM-prefixed body whose escaped value is clean is forwarded.
+#[tokio::test]
+async fn a_bom_prefixed_escaped_clean_value_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[BOM, &result_body("harmless \\u0041")]),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2: one invalid UTF-8 byte elsewhere in the body must not hide an escape.
+#[tokio::test]
+async fn an_invalid_byte_does_not_hide_an_escaped_gateway_only_value() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[b"{\"pad\":\"\xFF\",", &escaped_policy_value_response()[1..]]),
+        None,
+    )
+    .await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2 control: the same invalid byte with a clean escaped value is forwarded.
+#[tokio::test]
+async fn an_invalid_byte_with_a_clean_escaped_value_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[b"{\"pad\":\"\xFF\",", &result_body("harmless \\u0041")[1..]]),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// F4/V2: a built-in secret hidden by an escape is withheld by the proxy's own
+/// scan (no gateway involved in the decision); the plain secret is redacted.
+#[tokio::test]
+async fn an_escaped_builtin_secret_is_withheld_not_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let escaped = BUILTIN_SECRET.replacen('A', "\\u0041", 1);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        bytes_of(&[BOM, &result_body(&escaped)]),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(BUILTIN_SECRET) && !view.contains("200 OK"),
+        "got: {view:?}"
+    );
+}
+
+/// L1: redacting a built-in secret must not re-serialise the rest of the body.
+#[tokio::test]
+async fn redaction_keeps_big_integers_byte_faithful() {
+    use gateway_stub::ResultVerdict;
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","id":123456789012345678901234567890,"result":{{"text":"{BUILTIN_SECRET}"}}}}"#);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        body.into_bytes(),
+        None,
+    )
+    .await;
+    assert!(!view.contains(BUILTIN_SECRET), "got: {view:?}");
+    assert!(
+        view.contains("123456789012345678901234567890"),
+        "the integer must keep every digit, got: {view:?}"
+    );
+}
+
+/// Send `body` (identity-encoded) as an MCP request; return (client view, bytes
+/// that reached upstream).
+async fn send_raw_mcp(gateway: String, body: &[u8]) -> (String, Vec<u8>) {
+    send_encoded_mcp(gateway, "identity", body).await
+}
+
+/// V4: a BOM-prefixed `tools/call` is evaluated, so a denying gateway stops it.
+#[tokio::test]
+async fn a_bom_prefixed_mcp_call_is_denied_and_never_forwarded() {
+    let (response, seen) = send_raw_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        &bytes_of(&[BOM, mcp_body_with("x").as_bytes()]),
+    )
+    .await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: one 0xFF byte inside an argument string must not turn the call into
+/// "not JSON".
+#[tokio::test]
+async fn an_invalid_byte_in_an_mcp_argument_is_still_denied() {
+    let body = bytes_of(&[
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_note","arguments":{"text":"a"#,
+        b"\xFF",
+        br#"b"}}}"#,
+    ]);
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, &body).await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: an unparseable JSON-looking body naming `tools\/call` (escaped slash) is
+/// refused rather than skipped.
+#[tokio::test]
+async fn an_unparseable_escaped_slash_tools_call_is_refused() {
+    let body = br#"{"jsonrpc":"2.0","method":"tools\/call","params":{"name":"x" BROKEN"#;
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, body).await;
+    assert!(response.contains("cannot be enforced"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: a well-formed `tools\/call` (escaped slash) decodes to the real method
+/// and is evaluated.
+#[tokio::test]
+async fn a_well_formed_escaped_slash_tools_call_is_evaluated() {
+    let body = mcp_body_with("x").replace("tools/call", "tools\\/call");
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, body.as_bytes()).await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4 controls: the BOM, 0xFF and plain bodies reach upstream when the gateway
+/// allows (evaluated, not blanket-refused), and unparseable non-MCP JSON that
+/// never names `tools/call` is not refused.
+#[tokio::test]
+async fn allowed_lenient_mcp_bodies_and_non_mcp_garbage_are_forwarded() {
+    let with_ff = bytes_of(&[
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_note","arguments":{"text":"a"#,
+        b"\xFF",
+        br#"b"}}}"#,
+    ]);
+    for (label, body) in [
+        ("plain", mcp_body_with("x").into_bytes()),
+        ("bom", bytes_of(&[BOM, mcp_body_with("x").as_bytes()])),
+        ("0xff", with_ff),
+        ("non-mcp garbage", br#"{"hello": BROKEN"#.to_vec()),
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, &body).await;
+        assert!(!seen.is_empty(), "{label}: must reach upstream, got: {response:?}");
+    }
+}
