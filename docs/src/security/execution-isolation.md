@@ -185,6 +185,48 @@ active a spawned child's own environment, argv, descriptors and written files
 carried no secret, but a same-user descendant could still read the aasm
 supervisor's own exec-time environment with `ps -Eww -p <supervisor pid>`.
 
+### Credential brokerage: `credentials: posture: broker_required`
+
+A policy can require that provider credentials reach the agent only through the
+credential broker:
+
+```yaml
+credentials:
+  posture: broker_required
+authority:
+  leases:
+    - domain: credential
+      scope: whole
+      reason: this agent may use brokered provider credentials
+```
+
+The launch is admitted only if the broker is available and does not fail open, at least
+one upstream service is brokered, the policy authors an explicit `credential` lease,
+and every brokered environment variable name is withheld from the child. Otherwise
+`aasm run` refuses before starting the child, with a message naming
+`credentials: posture: broker_required` and the missing fact. This applies under the
+default `--isolation none` as well as with a backend. An egress lease or
+`egress: broker_required` never counts as the credential lease.
+
+What was verified: on macOS, against a real `aasm run` on the default `--isolation
+none`, the refusal cases, an admitted case whose child environment, arguments and
+open descriptors contain none of a synthetic sentinel value (nor any file the run
+wrote), and a `not_required` control where the sentinel does reach the child.
+
+What this does not give you:
+
+- **No boundary under `--isolation none`.** The gate admits or refuses the launch; it
+  does not confine the child. An ambient credential held under a name the broker does
+  not cover still reaches the child.
+- **The secret stays readable by a same-user process.** The supervisor's own
+  environment contains the operator's real key, and a same-user descendant can read
+  it (`ps -Eww -p <supervisor pid>` on macOS, `/proc/<pid>/environ` on Linux). See
+  [the `/proc` caveat](#the-proc-caveat-on-credential-isolation).
+- **No live evidence for an isolated backend** on macOS. Backend-arm behavior is
+  covered by unit tests only.
+- A refused launch has already registered an identity and written a launch record
+  before refusing; only the child process is never started.
+
 ## Platform and backend support matrix
 
 **Three execution-isolation backends are compiled in today.** Sandlock (`sandlock`) was
