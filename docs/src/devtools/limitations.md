@@ -247,6 +247,17 @@ Boundaries of this check, stated plainly:
   unusual (oversized headers, Latin-1 bytes), up to a 1 MiB head.
 - **Plain-HTTP (non-TLS) MCP is not covered**; only traffic decrypted inside a
   `CONNECT` tunnel is.
+- **A host the proxy treats as an LLM endpoint is not checked as MCP.** A built-in
+  LLM provider host, or an operator-declared enterprise LLM endpoint, takes the LLM
+  interception path, whose responses are relayed without the MCP checks above. An
+  MCP server served from the same host as an LLM gateway (for example an `/mcp`
+  route on it) therefore gets no MCP response evaluation.
+- **Tool-scoped rules also see `mcp-method:*` names.** A non-`tools/call` response
+  is evaluated under a synthetic tool name of the form `mcp-method:<method>` (for
+  example `mcp-method:resources/read`). A policy with a tool allowlist or a
+  default-deny on tool names will judge those names too, and can withhold MCP
+  traffic such as `initialize` or `tools/list`. Allow the `mcp-method:*` names you
+  intend to permit.
 - **A secret split across separate messages** is evaluated one message at a time.
 - **A non-JSON-RPC body** sent to a server that tolerates it is not recognised as
   MCP, so its response is relayed unchanged. Recognition is lenient (a `jsonrpc`
