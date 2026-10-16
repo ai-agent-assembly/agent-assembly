@@ -123,10 +123,9 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
 }
 
 /// Every way a response body can be read by a peer: the raw (BOM-stripped,
-/// lossy) text, the same text with NUL bytes removed when the body is UTF-16/32
-/// (ASCII survives; a secret in UTF-16LE is otherwise NUL-interleaved and
-/// invisible), and, for each of those carrying backslash escapes, every string
-/// token with the escapes decoded.
+/// lossy) text and, when it carries backslash escapes, every string token with
+/// the escapes decoded. Non-UTF-8 responses never reach here: they are withheld
+/// by [`Interceptor::response_encoding_unjudgeable`].
 ///
 /// The decoded forms come from a lexical decoder, never from a JSON parse, so a
 /// body serde rejects but a peer accepts (200-deep nesting, `NaN`, `1e400`),
@@ -151,15 +150,11 @@ impl ResponseForms {
 fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
     let raw = mcp::lenient_json_text(bytes).into_owned();
     let mut extra = Vec::new();
-    let mut bases = vec![raw.clone()];
-    if mcp::has_wide_encoding_markers(bytes) {
-        let stripped = mcp::nul_stripped_text(bytes);
-        extra.push(stripped.clone());
-        bases.push(stripped);
-    }
-    for base in &bases {
-        if base.contains('\\') {
-            extra.push(mcp::decode_json_strings(base)?);
+    if raw.contains('\\') {
+        let decoded = mcp::decode_json_strings(&raw)?;
+        // One gateway request per distinct text (no duplicate alerts).
+        if decoded != raw {
+            extra.push(decoded);
         }
     }
     Some(ResponseForms { raw, extra })
@@ -450,6 +445,24 @@ impl Interceptor {
                 ResponseScan::Redact(redacted.into_bytes())
             }
             _ => ResponseScan::Withhold,
+        }
+    }
+
+    /// True when the response's encoding cannot be judged (round 5): more than one
+    /// declared charset, a charset outside the allowlist, a non-7-bit body under a
+    /// single-byte charset, or a body Python would detect as UTF-16/32. `body` is
+    /// decoded per `content_encoding` first; an undecodable body is left to the
+    /// caller's existing withhold. Unconditional because the response already
+    /// belongs to a recognised MCP `tools/call`.
+    pub fn response_encoding_unjudgeable(
+        &self,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        content_types: &[&str],
+    ) -> bool {
+        match scan_source(body, content_encoding) {
+            ScanSource::Plaintext { bytes, .. } => mcp::encoding_unjudgeable(&bytes, content_types),
+            ScanSource::Uninspectable => false,
         }
     }
 
@@ -1234,18 +1247,20 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
-    // Round 4 V2 (response): UTF-16 hides ASCII behind NULs.
+    // Rounds 4-5 (response): non-UTF-8 responses are withheld, not NUL-stripped.
     #[test]
-    fn response_utf16_secret_withholds_and_clean_utf16_forwards() {
+    fn response_encoding_gate_withholds_unjudgeable_encodings_only() {
+        let i = make_interceptor();
         let le = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
-        assert_eq!(
-            response_scan(&le(&format!(r#"{{"t":"{AWS_KEY}"}}"#))),
-            ResponseScan::Withhold
-        );
-        let mut bom = vec![0xFF, 0xFE];
-        bom.extend(le(&format!(r#"{{"t":"{AWS_KEY}"}}"#)));
-        assert_eq!(response_scan(&bom), ResponseScan::Withhold);
-        assert_eq!(response_scan(&le(r#"{"t":"harmless"}"#)), ResponseScan::Forward);
+        let secret = le(&format!(r#"{{"x":"\u{{4122}}","t":"{AWS_KEY}"}}"#));
+        assert!(i.response_encoding_unjudgeable(&secret, None, &[]));
+        assert!(i.response_encoding_unjudgeable(b"data: +AHs-", None, &["text/event-stream; charset=utf-7"]));
+        assert!(i.response_encoding_unjudgeable(b"{}", None, &["a; charset=utf-8; charset=utf-16le"]));
+        assert!(i.response_encoding_unjudgeable(b"{\"a\":\"\xe9\"}", None, &["application/json; charset=iso-8859-1"]));
+        // controls
+        assert!(!i.response_encoding_unjudgeable(br#"{"t":"ok"}"#, None, &["application/json; charset=utf-8"]));
+        assert!(!i.response_encoding_unjudgeable(b"data: {}", None, &["text/event-stream"]));
+        assert!(!i.response_encoding_unjudgeable(br#"{"t":"ok"}"#, None, &["application/json; charset=iso-8859-1"]));
     }
 
     // Round 4 V3: non-JSON framing (SSE) still gets its escapes decoded.

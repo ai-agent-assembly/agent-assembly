@@ -246,53 +246,150 @@ fn has_case_ambiguity(value: &serde_json::Value) -> bool {
     }
 }
 
-/// True when `body` may be JSON-RPC in an encoding the proxy does not parse but
-/// a peer does (AAASM-6355 review round 4): Node's body-parser honours any
-/// `utf-*` charset and Python's `json.loads(bytes)` detects UTF-16/32 without a
-/// BOM, so a UTF-16 `tools/call` is invisible to a UTF-8 parser.
-///
-/// * A JSON-looking body whose declared `Content-Type` charset is not UTF-8 is
-///   unenforceable.
-/// * A body with NUL bytes or a UTF-16/32 BOM is read with the NULs and BOM
-///   removed (what remains of ASCII text) and is unenforceable when that reads
-///   as JSON carrying a `tools/call` token. Binary bodies and plain UTF-8 or
-///   UTF-8-BOM JSON are unaffected; an escaped `\u0000` is not a NUL byte.
-pub fn is_unparsed_encoding_tool_call(body: &[u8], content_type: Option<&str>) -> bool {
-    let text = nul_stripped_text(body);
-    if !looks_like_json_document(&text) {
-        return false;
+/// The encoding Python's `json.loads(bytes)` would read `bytes` as; a faithful
+/// port of `json.detect_encoding`. Node's body parser instead honours the
+/// declared charset, so both views are checked (see [`encoding_unjudgeable`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectedEncoding {
+    /// `utf-8` or `utf-8-sig`.
+    Utf8,
+    Utf16 {
+        little_endian: bool,
+    },
+    Utf32 {
+        little_endian: bool,
+    },
+}
+
+/// Port of CPython's `json.detect_encoding` (BOMs, then NUL-position patterns).
+pub fn detect_json_encoding(b: &[u8]) -> DetectedEncoding {
+    use DetectedEncoding::*;
+    if b.starts_with(&[0xFF, 0xFE, 0, 0]) {
+        return Utf32 { little_endian: true };
     }
-    if content_type
-        .and_then(declared_charset)
-        .is_some_and(|c| !c.eq_ignore_ascii_case("utf-8") && !c.eq_ignore_ascii_case("utf8"))
-    {
+    if b.starts_with(&[0, 0, 0xFE, 0xFF]) {
+        return Utf32 { little_endian: false };
+    }
+    if b.starts_with(&[0xFF, 0xFE]) {
+        return Utf16 { little_endian: true };
+    }
+    if b.starts_with(&[0xFE, 0xFF]) {
+        return Utf16 { little_endian: false };
+    }
+    if b.len() >= 4 {
+        if b[0] == 0 {
+            return if b[1] != 0 {
+                Utf16 { little_endian: false }
+            } else {
+                Utf32 { little_endian: false }
+            };
+        }
+        if b[1] == 0 {
+            return if b[2] != 0 || b[3] != 0 {
+                Utf16 { little_endian: true }
+            } else {
+                Utf32 { little_endian: true }
+            };
+        }
+    } else if b.len() == 2 {
+        if b[0] == 0 {
+            return Utf16 { little_endian: false };
+        }
+        if b[1] == 0 {
+            return Utf16 { little_endian: true };
+        }
+    }
+    Utf8
+}
+
+/// `bytes` decoded as `enc` (lossy), without any BOM character.
+fn decode_as(bytes: &[u8], enc: DetectedEncoding) -> String {
+    let text = match enc {
+        DetectedEncoding::Utf8 => lenient_json_text(bytes).into_owned(),
+        DetectedEncoding::Utf16 { little_endian } => {
+            let units = bytes.chunks_exact(2).map(|c| {
+                if little_endian {
+                    u16::from_le_bytes([c[0], c[1]])
+                } else {
+                    u16::from_be_bytes([c[0], c[1]])
+                }
+            });
+            char::decode_utf16(units).map(|r| r.unwrap_or('\u{FFFD}')).collect()
+        }
+        DetectedEncoding::Utf32 { little_endian } => bytes
+            .chunks_exact(4)
+            .map(|c| {
+                let a = [c[0], c[1], c[2], c[3]];
+                let v = if little_endian {
+                    u32::from_le_bytes(a)
+                } else {
+                    u32::from_be_bytes(a)
+                };
+                char::from_u32(v).unwrap_or('\u{FFFD}')
+            })
+            .collect(),
+    };
+    text.trim_start_matches('\u{FEFF}').to_string()
+}
+
+/// Charset parameters of every `Content-Type` value, in order (case-insensitive
+/// name, quotes stripped, lowercased value).
+fn declared_charsets(content_types: &[&str]) -> Vec<String> {
+    content_types
+        .iter()
+        .flat_map(|ct| ct.split(';').skip(1))
+        .filter_map(|param| {
+            let (name, value) = param.split_once('=')?;
+            name.trim()
+                .eq_ignore_ascii_case("charset")
+                .then(|| value.trim().trim_matches('"').trim().to_ascii_lowercase())
+        })
+        .collect()
+}
+
+/// True when a `Content-Type` media type is JSON (`application/json`, `*+json`).
+fn is_json_media_type(content_type: &str) -> bool {
+    let media = content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    media == "application/json" || media.ends_with("+json")
+}
+
+/// True when the proxy cannot say how a peer will decode `body` given its
+/// declared `Content-Type` values (AAASM-6355 review round 5): peers disagree
+/// (Node honours any declared charset via iconv, Python auto-detects UTF-16/32,
+/// httpx honours the declared charset), so only a body every peer reads as the
+/// same bytes is judged.
+///
+/// Judgeable means all of: at most one charset parameter in total (peers pick
+/// the first or the last); that charset absent, `utf-8`/`utf8`, or an
+/// ASCII-compatible single-byte one (`us-ascii`, `iso-8859-1`, `latin1`,
+/// `windows-1252`) with a pure 7-bit body; and a detected encoding of UTF-8.
+/// Anything else, `utf-7` and unknown charsets included, is unjudgeable.
+pub fn encoding_unjudgeable(body: &[u8], content_types: &[&str]) -> bool {
+    let charsets = declared_charsets(content_types);
+    if charsets.len() > 1 {
         return true;
     }
-    has_wide_encoding_markers(body) && has_tools_call_token(&text)
+    if detect_json_encoding(body) != DetectedEncoding::Utf8 {
+        return true;
+    }
+    match charsets.first().map(String::as_str) {
+        None | Some("utf-8" | "utf8") => false,
+        Some("us-ascii" | "iso-8859-1" | "latin1" | "windows-1252") => !body.is_ascii(),
+        Some(_) => true,
+    }
 }
 
-/// True for a UTF-16/32 BOM or any NUL byte.
-pub fn has_wide_encoding_markers(body: &[u8]) -> bool {
-    body.contains(&0) || body.starts_with(&[0xFF, 0xFE]) || body.starts_with(&[0xFE, 0xFF])
-}
-
-/// `body` with NUL bytes and a leading UTF-16 / UTF-8 BOM removed, decoded lossily.
-pub fn nul_stripped_text(body: &[u8]) -> String {
-    let body = body
-        .strip_prefix(&[0xFF, 0xFE])
-        .or_else(|| body.strip_prefix(&[0xFE, 0xFF]))
-        .unwrap_or(body);
-    let stripped: Vec<u8> = body.iter().copied().filter(|b| *b != 0).collect();
-    lenient_json_text(&stripped).into_owned()
-}
-
-fn declared_charset(content_type: &str) -> Option<String> {
-    content_type.split(';').skip(1).find_map(|param| {
-        let (name, value) = param.split_once('=')?;
-        name.trim()
-            .eq_ignore_ascii_case("charset")
-            .then(|| value.trim().trim_matches('"').to_string())
-    })
+/// Request-side gate: for a JSON-typed request, true when
+/// [`encoding_unjudgeable`]. JSON-typed means a JSON media type, an MCP
+/// transport header (`has_mcp_header`), or a body that reads as a JSON document
+/// under the encoding Python would detect. More than one JSON-typed
+/// `Content-Type` is itself unjudgeable. Binary, multipart and form bodies are
+/// not JSON-typed and are untouched; non-ASCII JSON declared as a single-byte
+/// charset is denied (documented limitation).
+pub fn request_encoding_hazard(body: &[u8], content_types: &[&str], has_mcp_header: bool) -> bool {
+    let json_media = content_types.iter().any(|ct| is_json_media_type(ct));
+    let typed = json_media || has_mcp_header || looks_like_json_document(&decode_as(body, detect_json_encoding(body)));
+    typed && (content_types.len() > 1 && json_media || encoding_unjudgeable(body, content_types))
 }
 
 /// True when some decoded string token of `text` is exactly `tools/call`.
@@ -683,49 +780,138 @@ mod tests {
         assert!(!is_unenforceable_tool_call(other));
     }
 
-    // ── round 4 V2: wide encodings ──
+    // ── rounds 4-5: encodings ──
     fn utf16le(s: &str) -> Vec<u8> {
         s.encode_utf16().flat_map(u16::to_le_bytes).collect()
     }
 
+    const CALL: &str = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#;
+
     #[test]
-    fn utf16_tools_calls_are_unenforceable_with_or_without_bom_or_content_type() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t"}}"#;
-        let plain = utf16le(json);
-        let mut bom = vec![0xFF, 0xFE];
-        bom.extend(&plain);
-        let escaped = utf16le(&json.replace("tools/call", r"tools\u002fcall"));
-        assert!(is_unparsed_encoding_tool_call(&plain, None));
-        assert!(is_unparsed_encoding_tool_call(
-            &plain,
-            Some("application/json; charset=utf-16le")
+    fn detect_matches_pythons_json_detect_encoding() {
+        use DetectedEncoding::*;
+        let utf32le: Vec<u8> = "{\"a\"}".chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+        let utf32be: Vec<u8> = "{\"a\"}".chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+        let mut bom16 = vec![0xFF, 0xFE];
+        bom16.extend(utf16le("{}"));
+        assert_eq!(detect_json_encoding(&utf16le(CALL)), Utf16 { little_endian: true });
+        assert_eq!(
+            detect_json_encoding(&CALL.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<_>>()),
+            Utf16 { little_endian: false }
+        );
+        assert_eq!(detect_json_encoding(&utf32le), Utf32 { little_endian: true });
+        assert_eq!(detect_json_encoding(&utf32be), Utf32 { little_endian: false });
+        assert_eq!(detect_json_encoding(&bom16), Utf16 { little_endian: true });
+        assert_eq!(detect_json_encoding(b"\xEF\xBB\xBF{}"), Utf8);
+        assert_eq!(detect_json_encoding(CALL.as_bytes()), Utf8);
+        assert_eq!(detect_json_encoding(b""), Utf8);
+        assert_eq!(detect_json_encoding(b"\0{"), Utf16 { little_endian: false });
+    }
+
+    #[test]
+    fn json_typed_requests_with_unjudgeable_encodings_are_hazards() {
+        let json = ["application/json"];
+        // utf-7 and unknown charsets, even when the body is not JSON-looking (`+AHs` is utf-7 for `{`)
+        assert!(request_encoding_hazard(
+            b"+AHs-",
+            &["application/json; charset=utf-7"],
+            false
         ));
-        assert!(is_unparsed_encoding_tool_call(&bom, None));
-        assert!(is_unparsed_encoding_tool_call(&escaped, None));
-        // UTF-32LE
-        let utf32: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
-        assert!(is_unparsed_encoding_tool_call(&utf32, None));
-        // declared non-UTF-8 charset on a JSON-looking body
-        assert!(is_unparsed_encoding_tool_call(
-            json.as_bytes(),
-            Some("application/json; charset=\"iso-8859-1\"")
+        assert!(request_encoding_hazard(
+            CALL.as_bytes(),
+            &["application/json; charset=klingon"],
+            false
+        ));
+        // duplicate charsets, either order
+        assert!(request_encoding_hazard(
+            CALL.as_bytes(),
+            &["application/json; charset=utf-8; charset=utf-16le"],
+            false
+        ));
+        assert!(request_encoding_hazard(
+            CALL.as_bytes(),
+            &["application/json; charset=utf-16le; charset=utf-8"],
+            false
+        ));
+        // UTF-16 (incl. a code unit with two non-zero bytes that desyncs a NUL strip), UTF-32
+        let desync = utf16le(&CALL.replacen("\"jsonrpc\"", "\"jsonrpc\":\"\u{4122}\",\"x\"", 1));
+        assert!(request_encoding_hazard(&desync, &json, false));
+        assert!(request_encoding_hazard(&utf16le(CALL), &[], false));
+        let u32le: Vec<u8> = CALL.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+        let u32be: Vec<u8> = CALL.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+        assert!(request_encoding_hazard(&u32le, &[], false));
+        assert!(request_encoding_hazard(&u32be, &[], false));
+        // latin1 with a non-ASCII byte is denied; MCP header makes any body JSON-typed
+        assert!(request_encoding_hazard(
+            b"{\"a\":\"\xe9\"}",
+            &["application/json; charset=ISO-8859-1"],
+            false
+        ));
+        assert!(request_encoding_hazard(b"+AHs-", &["text/plain; charset=utf-7"], true));
+    }
+
+    #[test]
+    fn untyped_and_ascii_compatible_requests_are_not_hazards() {
+        assert!(!request_encoding_hazard(CALL.as_bytes(), &["application/json"], false));
+        assert!(!request_encoding_hazard(
+            CALL.as_bytes(),
+            &["application/json; charset=\"UTF-8\""],
+            false
+        ));
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend(CALL.as_bytes());
+        assert!(!request_encoding_hazard(&bom, &["application/json"], false));
+        let escaped_nul = CALL.replace("\"t\"", "\"a\\u0000b\"");
+        assert!(!request_encoding_hazard(
+            escaped_nul.as_bytes(),
+            &["application/json"],
+            false
+        ));
+        // F4 control: ASCII-compatible charset with a 7-bit body is fine
+        assert!(!request_encoding_hazard(
+            b"{\"a\":1}",
+            &["application/json; charset=iso-8859-1"],
+            false
+        ));
+        assert!(!request_encoding_hazard(
+            b"{\"a\":1}",
+            &["application/json; charset=us-ascii"],
+            false
+        ));
+        // not JSON-typed: binary, multipart, form
+        assert!(!request_encoding_hazard(b"\x89PNG\0\0\0\rIHDR", &["image/png"], false));
+        assert!(!request_encoding_hazard(
+            b"--b\r\n\0\0\0\r\n--b--",
+            &["multipart/form-data; boundary=b"],
+            false
+        ));
+        assert!(!request_encoding_hazard(
+            b"a=1&b=%00",
+            &["application/x-www-form-urlencoded; charset=utf-7"],
+            false
+        ));
+        assert!(!request_encoding_hazard(
+            b"plain text",
+            &["text/plain; charset=ISO-8859-1"],
+            false
         ));
     }
 
     #[test]
-    fn utf8_bodies_and_escaped_nul_are_unaffected_by_the_encoding_check() {
-        let json =
-            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"s":"a\u0000b"}}}"#;
-        assert!(!is_unparsed_encoding_tool_call(json.as_bytes(), None));
-        assert!(!is_unparsed_encoding_tool_call(
-            json.as_bytes(),
-            Some("application/json; charset=UTF-8")
+    fn response_encoding_judgement_is_unconditional() {
+        assert!(encoding_unjudgeable(&utf16le(CALL), &[]));
+        assert!(encoding_unjudgeable(
+            b"data: +AHs-",
+            &["text/event-stream; charset=utf-7"]
         ));
-        let mut bom = b"\xEF\xBB\xBF".to_vec();
-        bom.extend(json.as_bytes());
-        assert!(!is_unparsed_encoding_tool_call(&bom, None));
-        // binary with NULs that is not JSON-looking, and UTF-16 JSON without tools/call
-        assert!(!is_unparsed_encoding_tool_call(b"\x89PNG\0\0\0tools/call", None));
-        assert!(!is_unparsed_encoding_tool_call(&utf16le(r#"{"a":"b"}"#), None));
+        assert!(encoding_unjudgeable(
+            b"{}",
+            &["text/event-stream; charset=utf-8", "application/json; charset=utf-8"]
+        ));
+        assert!(!encoding_unjudgeable(
+            CALL.as_bytes(),
+            &["text/event-stream; charset=utf-8"]
+        ));
+        assert!(!encoding_unjudgeable(b"data: {}", &["text/event-stream"]));
     }
 }

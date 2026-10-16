@@ -26,7 +26,7 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::{is_unenforceable_tool_call, is_unparsed_encoding_tool_call, parse_mcp_request};
+use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request, request_encoding_hazard};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
 use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
@@ -1161,10 +1161,21 @@ impl ProxyServer {
                 }
             },
         };
-        // Round 4: a UTF-16/32 or non-UTF-8-charset JSON-RPC body is read by
-        // Node/Python peers but not by the UTF-8 parser below.
-        if is_unparsed_encoding_tool_call(&decoded, req.header("content-type")) {
-            let reason = "MCP request body is in an encoding the proxy cannot parse (UTF-16/32 or a non-UTF-8 charset), so it cannot be enforced and was rejected (fail-closed)";
+        // Rounds 4-5: peers disagree on how to decode a JSON body with an exotic
+        // or conflicting charset (Node honours it, Python auto-detects UTF-16/32),
+        // so such a request is never judged on the UTF-8 reading alone.
+        let content_types: Vec<&str> = req
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let has_mcp_header = req
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("mcp-session-id") || k.eq_ignore_ascii_case("mcp-protocol-version"));
+        if request_encoding_hazard(&decoded, &content_types, has_mcp_header) {
+            let reason = "MCP request body is in an encoding the proxy cannot judge (non-UTF-8 charset, conflicting charsets, or UTF-16/32), so it cannot be enforced and was rejected (fail-closed)";
             tracing::warn!(%host, "{reason}");
             self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
             return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
@@ -1322,7 +1333,20 @@ impl ProxyServer {
     ) -> Result<(), ProxyError> {
         let response_encoding = http::joined_content_encoding(&resp.headers);
         let content_encoding = response_encoding.as_deref();
-        let scan = self.interceptor.redact_response_body(&resp.body, content_encoding);
+        let response_types: Vec<&str> = resp
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let scan = if self
+            .interceptor
+            .response_encoding_unjudgeable(&resp.body, content_encoding, &response_types)
+        {
+            ResponseScan::Withhold
+        } else {
+            self.interceptor.redact_response_body(&resp.body, content_encoding)
+        };
         // AAASM-6355: the proxy's scanner holds built-in patterns only, so after
         // its own redaction the gateway evaluates what would actually be sent
         // (the redacted body, or the decoded original when the scan was clean).
