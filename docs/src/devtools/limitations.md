@@ -213,18 +213,41 @@ Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 
 ## `alert_only` records an MCP response detection; it does not stop the response
 
-For an MCP `tools/call` response, `aa-proxy` asks the gateway to evaluate the body
-and withholds it (HTTP `502`) on `Deny`, on a `Redact` it cannot apply, and on any
-RPC failure, timeout, undecodable or oversized body. That path is always
-fail-closed and is independent of `AA_PROXY_MCP_FAIL_OPEN`, which governs only the
-request-side `tools/call` check.
+When `aa-proxy` is configured with a gateway endpoint and decrypts the host, it
+asks the gateway to evaluate the response to **any recognised MCP exchange** — a
+`tools/call`, `resources/read`, `prompts/get`, a JSON-RPC batch, or any request
+carrying an `Mcp-Session-Id` / `MCP-Protocol-Version` header — and withholds it
+(HTTP `502`) on `Deny`, on a `Redact` it cannot apply, and on any RPC failure,
+timeout (10 s), undecodable or oversized body. That path is always fail-closed and
+is independent of `AA_PROXY_MCP_FAIL_OPEN`, which governs only the request-side
+`tools/call` check. If an endpoint is configured but the proxy holds no live
+gateway connection (start-up connect failed under `AA_PROXY_MCP_FAIL_OPEN=1`),
+every recognised MCP response is withheld; an empty `202`/`204` reply is forwarded.
 
 Under `credential_action: alert_only` the gateway records the detection and raises
 a `SecretAlert` (credential kinds and a count, never the matched value), then
 allows. The matching content reaches the client **unchanged**. That is observing,
-not protecting: it does not prevent disclosure and it does not mask the value.
-Without a connected gateway there is no gateway evaluation of responses at all;
-only the proxy's built-in-pattern redaction applies.
+not protecting: it does not prevent disclosure and it does not mask the value. The
+alert is attributed to the proxy's synthetic identity (`aa-proxy`), not to the
+agent whose traffic it was, because the proxy holds no per-agent credential.
+
+Boundaries of this check, stated plainly:
+
+- **Standalone mode applies no response scanning.** With no gateway endpoint
+  configured, the proxy relays responses on a decrypted non-LLM host unchanged; the
+  proxy's built-in-pattern redaction of MCP responses runs only on the
+  gateway-enforced path above.
+- **A `text/event-stream` response on an enforcing proxy is withheld** (HTTP `502`,
+  before any event byte is forwarded). Streamed MCP responses are not yet
+  evaluated; until they are, this closes the bypass rather than inspecting the
+  stream. This applies to any request on the host, including a bodyless `GET`.
+- **Plain-HTTP (non-TLS) MCP is not covered**; only traffic decrypted inside a
+  `CONNECT` tunnel is.
+- **A secret split across separate messages** is evaluated one message at a time.
+- **A non-JSON-RPC body** sent to a server that tolerates it is not recognised as
+  MCP, so its response is relayed unchanged. Recognition is lenient (a `jsonrpc`
+  key or a string `method`, in an object or batch), but it is not a guarantee.
+- Each recognised response costs one extra gateway round trip.
 
 The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
 every JSON escape, SSE framing, 200-deep or `NaN` bodies) and denies a `tools/call`
