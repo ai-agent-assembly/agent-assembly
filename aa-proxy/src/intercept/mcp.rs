@@ -170,7 +170,7 @@ pub fn decode_json_strings(text: &str) -> Option<String> {
 /// True when some decoded string token of `text` is exactly `tools/call`.
 fn has_tools_call_token(text: &str) -> bool {
     // Unjudgeable (over the cap) counts as "might be": fail closed.
-    decode_json_strings(text).is_none_or(|d| d.lines().any(|t| t == MCP_TOOLS_CALL_METHOD))
+    decode_json_strings(text).map_or(true, |d| d.lines().any(|t| t == MCP_TOOLS_CALL_METHOD))
 }
 
 /// Try to interpret `body` as a JSON-RPC 2.0 MCP `tools/call` request and
