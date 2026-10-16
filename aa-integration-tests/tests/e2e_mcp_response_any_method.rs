@@ -550,8 +550,10 @@ fn assert_withheld(r: &Run, secrets: &[&str]) {
         r.seen
     );
     assert!(r.seen.contains("withheld"), "got: {}", r.seen);
-    for s in secrets {
-        assert!(!r.seen.contains(s), "{s} reached the client: {}", r.seen);
+    // The message names the secret by position only: printing the value (or the
+    // response that contains it) is exactly the leak this assertion guards.
+    for (i, s) in secrets.iter().enumerate() {
+        assert!(!r.seen.contains(s), "secret #{i} reached the client");
     }
 }
 
