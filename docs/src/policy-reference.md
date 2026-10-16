@@ -477,6 +477,29 @@ Sensitive-data / credential handling. Backed by `DataPolicy`.
 
 Any other value is a validation error.
 
+#### MCP tool results through `aa-proxy`
+
+When `aa-proxy` is connected to a gateway, it sends each MCP `tools/call`
+**response** body (after decoding `Content-Encoding`) to the gateway as a
+`ToolResult` action, so `sensitive_patterns`, `locale_packs` and `tool_result.*`
+conditions apply to what the tool returned. The proxy's own scanner holds only the
+built-in patterns; it redacts those itself and the gateway evaluates what would
+actually be sent.
+
+Response-direction evaluation **always fails closed**. The proxy withholds the
+response (HTTP `502`, body not forwarded) when the gateway answers `Deny`, answers
+`Redact` (the proxy cannot apply the gateway's redaction, so it does not forward
+the original), cannot be reached, errors or times out, or when the body cannot be
+decoded or exceeds the inspection limit. `AA_PROXY_MCP_FAIL_OPEN` does not change
+this: it governs only the request-side `tools/call` check and proxy start-up
+without a gateway, and never causes a failed response check to be forwarded. There
+is no response-side fail-open setting.
+
+`alert_only` is the exception that is not enforcement. The gateway records the
+detection and raises an alert, then allows, so the matching content **continues
+unchanged to the client**. It does not prevent disclosure and does not mask the
+value. Use `block` or `redact_only` when the value must not reach the client.
+
 ### `sensitive_patterns` regex syntax
 
 Each entry is a regular expression compiled by the Rust `regex` crate (RE2-style
