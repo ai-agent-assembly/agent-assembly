@@ -123,47 +123,74 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
 }
 
 /// Every way a response body can be read: the raw (BOM-stripped, lossy) text
-/// and, when the client's JSON parser would produce something different, the
-/// escape-resolved reading.
+/// and, when it carries backslash escapes, the text with those escapes decoded.
 ///
-/// Both are needed because they hide different things: a repeated JSON key keeps
-/// only its last value after normalisation, while `\uXXXX` escapes hide a value
-/// from the raw text (AAASM-6355 review F4/V1).
+/// Both are needed because they hide different things: `\uXXXX` escapes hide a
+/// value from the raw text, and a re-serialising parser would hide a repeated
+/// JSON key from the decoded one (serde keeps the last). The decoded form is
+/// therefore built by a parse that keeps every key and value in order, and it is
+/// only produced when escapes exist, so an escape-free body reaches the gateway
+/// exactly once, as sent (AAASM-6355 review F4/V1).
 struct ResponseForms {
     raw: String,
-    /// `(compact re-serialisation for the gateway, decoded string contents for
-    /// the scanner)`. Scanning the contents rather than the re-serialisation
-    /// keeps number rewriting (`1.2e+29`) from producing entropy false positives.
-    resolved: Option<(String, String)>,
+    /// Every decoded key and string value, one per line, duplicates included.
+    decoded: Option<String>,
 }
 
 impl ResponseForms {
-    /// Texts the built-in scanner must find clean.
-    fn scan_texts(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.raw.as_str()).chain(self.resolved.iter().map(|(_, strings)| strings.as_str()))
-    }
-
-    /// Texts the gateway must `Allow`, each as its own request.
-    fn gateway_texts(self) -> Vec<String> {
-        std::iter::once(self.raw)
-            .chain(self.resolved.map(|(json, _)| json))
-            .collect()
+    /// Texts the built-in scanner must find clean, and the gateway must `Allow`
+    /// each as its own request.
+    fn texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.raw.as_str()).chain(self.decoded.as_deref())
     }
 }
 
-fn push_strings(value: &serde_json::Value, out: &mut String) {
-    match value {
-        serde_json::Value::String(s) => {
-            out.push_str(s);
-            out.push('\n');
+/// Accumulates every string in a JSON document, duplicate keys included.
+struct AllStrings(String);
+
+impl<'de> serde::Deserialize<'de> for AllStrings {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = AllStrings;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("any JSON value")
+            }
+            fn visit_str<E>(self, v: &str) -> Result<AllStrings, E> {
+                Ok(AllStrings(format!("{v}\n")))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<AllStrings, E> {
+                Ok(AllStrings(String::new()))
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<AllStrings, E> {
+                Ok(AllStrings(String::new()))
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<AllStrings, E> {
+                Ok(AllStrings(String::new()))
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<AllStrings, E> {
+                Ok(AllStrings(String::new()))
+            }
+            fn visit_unit<E>(self) -> Result<AllStrings, E> {
+                Ok(AllStrings(String::new()))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<AllStrings, A::Error> {
+                let mut out = String::new();
+                while let Some(AllStrings(s)) = seq.next_element()? {
+                    out.push_str(&s);
+                }
+                Ok(AllStrings(out))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<AllStrings, A::Error> {
+                let mut out = String::new();
+                while let Some((AllStrings(k), AllStrings(v))) = map.next_entry()? {
+                    out.push_str(&k);
+                    out.push_str(&v);
+                }
+                Ok(AllStrings(out))
+            }
         }
-        serde_json::Value::Array(items) => items.iter().for_each(|v| push_strings(v, out)),
-        serde_json::Value::Object(map) => map.iter().for_each(|(k, v)| {
-            out.push_str(k);
-            out.push('\n');
-            push_strings(v, out);
-        }),
-        _ => {}
+        deserializer.deserialize_any(V)
     }
 }
 
@@ -172,21 +199,16 @@ fn push_strings(value: &serde_json::Value, out: &mut String) {
 /// client decodes is unknown.
 fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
     let raw = mcp::lenient_json_text(bytes).into_owned();
-    match serde_json::from_str::<serde_json::Value>(&raw) {
-        Ok(value) => {
-            let json = value.to_string();
-            if json == raw {
-                return Some(ResponseForms { raw, resolved: None });
-            }
-            let mut strings = String::new();
-            push_strings(&value, &mut strings);
-            Some(ResponseForms {
-                raw,
-                resolved: Some((json, strings)),
-            })
-        }
+    if !raw.contains('\\') {
+        return Some(ResponseForms { raw, decoded: None });
+    }
+    match serde_json::from_str::<AllStrings>(&raw) {
+        Ok(AllStrings(decoded)) => Some(ResponseForms {
+            raw,
+            decoded: Some(decoded),
+        }),
         Err(_) if mcp::looks_like_json_document(&raw) && raw.contains("\\u") => None,
-        Err(_) => Some(ResponseForms { raw, resolved: None }),
+        Err(_) => Some(ResponseForms { raw, decoded: None }),
     }
 }
 
@@ -454,7 +476,7 @@ impl Interceptor {
         };
         let raw_scan = scanner.scan(&forms.raw);
         if raw_scan.is_clean() {
-            let hidden_in_escapes = forms.scan_texts().skip(1).any(|t| !scanner.scan(t).is_clean());
+            let hidden_in_escapes = forms.texts().skip(1).any(|t| !scanner.scan(t).is_clean());
             return if hidden_in_escapes {
                 ResponseScan::Withhold
             } else {
@@ -471,7 +493,7 @@ impl Interceptor {
         // Redaction can leave an escape-hidden or duplicate-shadowed secret
         // behind; whatever is still findable in what would be sent withholds.
         match response_forms(redacted.as_bytes()) {
-            Some(after) if after.scan_texts().all(|t| scanner.scan(t).is_clean()) => {
+            Some(after) if after.texts().all(|t| scanner.scan(t).is_clean()) => {
                 ResponseScan::Redact(redacted.into_bytes())
             }
             _ => ResponseScan::Withhold,
@@ -480,9 +502,10 @@ impl Interceptor {
 
     /// The texts the gateway should judge for a response that will be sent as
     /// `sent` (the redacted body when the scan redacted, else the decoded
-    /// original): the raw form and, when it differs, the escape-resolved form.
-    /// Every one must be `Allow`ed, so a value hidden by duplicate keys or by
-    /// escapes is still seen. `None` when the body cannot be decoded or judged
+    /// original): the raw form and, when it carries escapes, the decoded strings.
+    /// Every one must be `Allow`ed, so a value hidden by escapes is still seen.
+    /// The decoded form is plain text (no JSON structure), so structure-aware
+    /// policy applies to the raw form only. `None` when the body cannot be decoded or judged
     /// (callers must then withhold, not forward). AAASM-6355.
     pub fn gateway_candidates(
         &self,
@@ -497,7 +520,7 @@ impl Interceptor {
                 ScanSource::Uninspectable => None,
             },
         }?;
-        Some(forms.gateway_texts().into_iter().map(String::into_bytes).collect())
+        Some(forms.texts().map(|t| t.as_bytes().to_vec()).collect())
     }
 
     /// Emit an audit event recording the gateway's decision for an MCP
@@ -1215,9 +1238,23 @@ mod tests {
         let forms = i.gateway_candidates(body, None, None).unwrap();
         assert_eq!(forms.len(), 2);
         assert_eq!(forms[0], body.to_vec());
-        assert!(String::from_utf8_lossy(&forms[1]).contains(r#""a":"A""#));
-        // A body with no difference yields one candidate.
+        // Duplicate keys are all kept, escapes decoded.
+        assert_eq!(String::from_utf8_lossy(&forms[1]), "a\nx\na\nA\n");
+        // An escape-free body yields exactly one candidate, even when the
+        // re-serialisation would differ (whitespace): one gateway evaluation.
         assert_eq!(i.gateway_candidates(b"plain", None, None).unwrap().len(), 1);
+        assert_eq!(i.gateway_candidates(br#"{ "a" : 1 }"#, None, None).unwrap().len(), 1);
+    }
+
+    // An escape-hidden secret in a SHADOWED duplicate key: neither the raw text
+    // nor a last-key-wins parse shows it.
+    #[test]
+    fn response_escape_hidden_secret_in_a_shadowed_duplicate_key_withholds() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let body = format!(r#"{{"t":"{escaped}","t":"ok"}}"#);
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        // control: same shape, harmless escaped value
+        assert_eq!(response_scan(br#"{"t":"\u0041bc","t":"ok"}"#), ResponseScan::Forward);
     }
 
     #[test]

@@ -2140,3 +2140,18 @@ async fn allowed_lenient_mcp_bodies_and_non_mcp_garbage_are_forwarded() {
         assert!(!seen.is_empty(), "{label}: must reach upstream, got: {response:?}");
     }
 }
+
+/// V1+F4: the gateway-only value is both escaped AND shadowed by a later key, so
+/// neither the raw text nor a last-key-wins parse shows it.
+#[tokio::test]
+async fn an_escaped_gateway_only_value_in_a_shadowed_duplicate_key_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let escaped = POLICY_ONLY_VALUE.replacen('A', "\\u0041", 1);
+    let gateway = gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await;
+    let view = client_view_of_response(gateway, duplicate_key_response(&escaped), None).await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+    // control: the same shape with a harmless escaped value is forwarded
+    let gateway = gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await;
+    let view = client_view_of_response(gateway, duplicate_key_response("harmless \\u0041"), None).await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
