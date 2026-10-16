@@ -1321,26 +1321,36 @@ impl ProxyServer {
         // Anything but `Allow` withholds: the gateway's `Redact` cannot be
         // applied here (no replayable instructions, no gateway patterns).
         if let (Some(gw), false) = (gateway, matches!(scan, ResponseScan::Withhold)) {
-            let candidate = match &scan {
-                ResponseScan::Redact(bytes) => Some(bytes.clone()),
-                _ => self.interceptor.decoded_response_body(&resp.body, content_encoding),
+            let sent = match &scan {
+                ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
+                _ => None,
             };
-            let verdict = match candidate {
+            let candidates = self.interceptor.gateway_candidates(&resp.body, content_encoding, sent);
+            let verdict = match candidates {
                 None => Err("response body could not be decoded for gateway evaluation".to_string()),
-                Some(body) => match evaluate_mcp_result(gw, call, &body, source_url, "", "").await {
-                    Ok(McpDecision::Allow) => Ok(()),
-                    Ok(McpDecision::Deny { reason }) => Err(format!("gateway denied the MCP response: {reason}")),
-                    Ok(McpDecision::Redact { .. }) => Err(
-                        "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
-                            .to_string(),
-                    ),
-                    // Deliberately NOT governed by `mcp_fail_open`: that knob is the
-                    // documented opt-in for forwarding a `tools/call` when the
-                    // gateway is unreachable. Response evaluation is a new gateway
-                    // dependency, and failing it open would let a gateway-only
-                    // sensitive value reach the client during an outage.
-                    Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
-                },
+                Some(bodies) => {
+                    let mut verdict = Ok(());
+                    for body in &bodies {
+                        verdict = match evaluate_mcp_result(gw, call, body, source_url, "", "").await {
+                            Ok(McpDecision::Allow) => Ok(()),
+                            Ok(McpDecision::Deny { reason }) => Err(format!("gateway denied the MCP response: {reason}")),
+                            Ok(McpDecision::Redact { .. }) => Err(
+                                "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
+                                    .to_string(),
+                            ),
+                            // Deliberately NOT governed by `mcp_fail_open`: that knob is the
+                            // documented opt-in for forwarding a `tools/call` when the
+                            // gateway is unreachable. Response evaluation is a new gateway
+                            // dependency, and failing it open would let a gateway-only
+                            // sensitive value reach the client during an outage.
+                            Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
+                        };
+                        if verdict.is_err() {
+                            break;
+                        }
+                    }
+                    verdict
+                }
             };
             if let Err(reason) = verdict {
                 tracing::warn!(tool_name = %call.tool_name, "{reason}; withholding response");
@@ -2754,10 +2764,17 @@ fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
 /// Every `Content-Encoding` line joined, so a repeated header reads as the
 /// layered encoding it is (see `http::joined_content_encoding`).
 fn plain_http_content_encoding(headers: &[String]) -> Option<String> {
+    // Header names are case-insensitive and HTTP tolerates whitespace before the
+    // colon in lenient peers; matching only `content-encoding:` let
+    // `Content-Encoding : gzip` pass as unencoded (AAASM-6355 review L2).
     let values: Vec<String> = headers
         .iter()
-        .filter(|h| h.to_ascii_lowercase().starts_with("content-encoding:"))
-        .map(|h| h["content-encoding:".len()..].trim().to_string())
+        .filter_map(|h| {
+            let (name, value) = h.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-encoding")
+                .then(|| value.trim().to_string())
+        })
         .collect();
     (!values.is_empty()).then(|| values.join(", "))
 }

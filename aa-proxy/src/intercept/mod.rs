@@ -122,14 +122,42 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
     }
 }
 
-/// The text a scanner (and the gateway) should inspect for `bytes`: the compact
-/// re-serialisation when the body is JSON (escapes resolved), else the lossy
-/// UTF-8 text. Never used for the bytes forwarded, except as the redacted form
-/// when the scan finds something.
-fn normalize_json_for_scan(bytes: &[u8]) -> Cow<'_, str> {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(value) => Cow::Owned(value.to_string()),
-        Err(_) => String::from_utf8_lossy(bytes),
+/// How a response body reads once the client's JSON parser has run.
+enum JsonForm {
+    /// Not a JSON document: only the raw text exists.
+    NotJson,
+    /// Parsed; the compact re-serialisation with escapes resolved.
+    Normalized(String),
+    /// Looks like a JSON document and carries `\u` escapes yet does not parse
+    /// even leniently, so what a lenient client decodes cannot be judged.
+    Unjudgeable,
+}
+
+/// The escape-resolved view of `text`. Only used to *scan* and to show the
+/// gateway: re-serialising drops duplicate keys (serde keeps the last) and
+/// rewrites numbers, so it is never the form forwarded to the client.
+fn json_form(text: &str) -> JsonForm {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => JsonForm::Normalized(value.to_string()),
+        Err(_) if mcp::looks_like_json_document(text) && text.contains("\\u") => JsonForm::Unjudgeable,
+        Err(_) => JsonForm::NotJson,
+    }
+}
+
+/// Every text form a response body can be read as: the raw (BOM-stripped, lossy)
+/// text and, when it differs, the escape-resolved one. `None` when the body
+/// cannot be judged (see [`JsonForm::Unjudgeable`]).
+///
+/// Both are needed because they hide different things: a repeated JSON key keeps
+/// only its last value after normalisation, while `\uXXXX` escapes hide a value
+/// from the raw text (AAASM-6355 review F4/V1).
+fn scan_forms(bytes: &[u8]) -> Option<Vec<String>> {
+    let raw = mcp::lenient_json_text(bytes).into_owned();
+    match json_form(&raw) {
+        JsonForm::NotJson => Some(vec![raw]),
+        JsonForm::Normalized(norm) if norm == raw => Some(vec![raw]),
+        JsonForm::Normalized(norm) => Some(vec![raw, norm]),
+        JsonForm::Unjudgeable => None,
     }
 }
 
@@ -387,13 +415,23 @@ impl Interceptor {
             ScanSource::Plaintext { bytes, encoded } => (bytes, encoded),
             ScanSource::Uninspectable => return ResponseScan::Withhold,
         };
-        // Scan the JSON-normalised text: a value sent as `\uXXXX` escapes is
-        // invisible to a raw-text pattern but decoded by the client (AAASM-6355
-        // review F4). The request side already scans a re-serialisation.
-        let text = normalize_json_for_scan(&bytes);
-        let scan = scanner.scan(&text);
-        if scan.is_clean() {
-            return ResponseScan::Forward;
+        // The raw text and the escape-resolved text hide different things (see
+        // `scan_forms`), so both are scanned. A raw finding is redacted on the raw
+        // text, which keeps the rest of the body byte-faithful; a finding only the
+        // escape-resolved text shows cannot be redacted without forwarding a
+        // re-serialisation, so it withholds (AAASM-6355 review V1/V2/L1).
+        let Some(forms) = scan_forms(&bytes) else {
+            return ResponseScan::Withhold;
+        };
+        let raw = &forms[0];
+        let raw_scan = scanner.scan(raw);
+        if raw_scan.is_clean() {
+            let hidden_in_escapes = forms.iter().skip(1).any(|f| !scanner.scan(f).is_clean());
+            return if hidden_in_escapes {
+                ResponseScan::Withhold
+            } else {
+                ResponseScan::Forward
+            };
         }
         if encoded {
             // Findings inside a compressed body cannot be re-encoded to the
@@ -401,17 +439,37 @@ impl Interceptor {
             // compressed bytes would relay the secret. Withhold (fail closed).
             return ResponseScan::Withhold;
         }
-        ResponseScan::Redact(scan.redact(&text).into_bytes())
+        let redacted = raw_scan.redact(raw);
+        // Redaction can leave an escape-hidden or duplicate-shadowed secret
+        // behind; whatever is still findable in what would be sent withholds.
+        match scan_forms(redacted.as_bytes()) {
+            Some(after) if after.iter().all(|f| scanner.scan(f).is_clean()) => {
+                ResponseScan::Redact(redacted.into_bytes())
+            }
+            _ => ResponseScan::Withhold,
+        }
     }
 
-    /// The response body as the gateway should see it: decoded per
-    /// `content_encoding`, or `None` when it cannot be decoded (callers must
-    /// then withhold, not forward). AAASM-6355.
-    pub fn decoded_response_body(&self, body: &[u8], content_encoding: Option<&str>) -> Option<Vec<u8>> {
-        match scan_source(body, content_encoding) {
-            ScanSource::Plaintext { bytes, .. } => Some(normalize_json_for_scan(&bytes).into_owned().into_bytes()),
-            ScanSource::Uninspectable => None,
-        }
+    /// The texts the gateway should judge for a response that will be sent as
+    /// `sent` (the redacted body when the scan redacted, else the decoded
+    /// original): the raw form and, when it differs, the escape-resolved form.
+    /// Every one must be `Allow`ed, so a value hidden by duplicate keys or by
+    /// escapes is still seen. `None` when the body cannot be decoded or judged
+    /// (callers must then withhold, not forward). AAASM-6355.
+    pub fn gateway_candidates(
+        &self,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        sent: Option<&[u8]>,
+    ) -> Option<Vec<Vec<u8>>> {
+        let forms = match sent {
+            Some(redacted) => scan_forms(redacted),
+            None => match scan_source(body, content_encoding) {
+                ScanSource::Plaintext { bytes, .. } => scan_forms(&bytes),
+                ScanSource::Uninspectable => None,
+            },
+        }?;
+        Some(forms.into_iter().map(String::into_bytes).collect())
     }
 
     /// Emit an audit event recording the gateway's decision for an MCP
