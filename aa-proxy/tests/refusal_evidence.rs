@@ -2397,32 +2397,30 @@ async fn a_utf16_response_is_withheld() {
     assert!(view.contains("200 OK"), "utf-8 control: got {view:?}");
 }
 
-/// Round 5 (response): a declared utf-7 charset on an SSE response, and two
+/// Round 5 (response): a declared utf-7 charset on a JSON response, and two
 /// charset declarations, are withheld; utf-8 and ISO-8859-1 with a 7-bit body are not.
 #[tokio::test]
 async fn response_charsets_outside_the_allowlist_are_withheld() {
     use gateway_stub::ResultVerdict;
-    let body = format!(
-        "event: message\ndata: {}\n\n",
-        String::from_utf8(result_body("+AHs-")).unwrap()
-    )
-    .into_bytes();
+    // JSON, not SSE: an enforcing proxy withholds every event stream outright
+    // (AAASM-6356), which would mask the charset gate under test.
+    let body = result_body("+AHs-");
     for (label, headers, forwarded) in [
-        ("utf-7 sse", "Content-Type: text/event-stream; charset=utf-7\r\n", false),
+        ("utf-7 json", "Content-Type: application/json; charset=utf-7\r\n", false),
         (
             "two charsets",
-            "Content-Type: text/event-stream; charset=utf-8; charset=utf-16le\r\n",
+            "Content-Type: application/json; charset=utf-8; charset=utf-16le\r\n",
             false,
         ),
         (
             "non-ascii latin1",
-            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            "Content-Type: application/json; charset=iso-8859-1\r\n",
             false,
         ),
-        ("utf-8 sse", "Content-Type: text/event-stream; charset=utf-8\r\n", true),
+        ("utf-8 json", "Content-Type: application/json; charset=utf-8\r\n", true),
         (
-            "latin1 7-bit sse",
-            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            "latin1 7-bit json",
+            "Content-Type: application/json; charset=iso-8859-1\r\n",
             true,
         ),
     ] {
