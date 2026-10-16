@@ -25,7 +25,7 @@ fn directory_source_populates_the_cascade() {
         "apiVersion: agent-assembly.dev/v1alpha1\n\
          kind: GovernancePolicy\n\
          metadata:\n  name: local-global\n  version: \"0.1.0\"\n\
-         spec:\n  tools: {}\n",
+         spec:\n  tools:\n    \"*\":\n      allow: true\n",
     )
     .expect("write global doc");
     std::fs::write(

@@ -83,6 +83,11 @@ impl PolicyValidator {
         }
 
         // Step 3 — validate each section
+        //
+        // Presence of these two is read before the sections are consumed: their
+        // validated forms (`Vec`/enum) cannot say whether the key was written.
+        let declares_authority = raw.authority.is_some();
+        let declares_egress = raw.egress.is_some();
         let network = Self::validate_network(raw.network, &mut errors);
         let schedule = Self::validate_schedule(raw.schedule, &mut errors);
         let budget = Self::validate_budget(raw.budget, &mut errors);
@@ -103,6 +108,41 @@ impl PolicyValidator {
             Some(v) => v,
             None => 300,
         };
+
+        // AAASM-6338: a document that parses but declares no enforcement
+        // section (`version: 1`, `scope: global`, `spec: {}`, a bare-null
+        // `network:`, a tagged `!foo {}`) would load as a fully permissive
+        // policy: the open-by-omission case AAASM-6337 closed only for the
+        // literally blank document. Modelled on
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-4020) but not
+        // identical to it: a key that is *present* counts, even when empty
+        // (`network: {}` is an empty allowlist, i.e. deny-all), but `tools: {}`
+        // and a `filesystem:` that states neither verb say nothing. This check
+        // also counts schedule/budget/data/authority/egress, which aa_security
+        // does not, so an empty `budget: {}` or `authority: {}` still loads as a
+        // no-op section (known residual, tracked separately). `approval`, `approval_timeout_secs`,
+        // `version`, `scope` and `metadata` tune or describe a policy; none
+        // constrains an action. Only checked when everything else is valid so
+        // the operator sees real errors first.
+        if errors.is_empty()
+            && network.is_none()
+            && schedule.is_none()
+            && budget.is_none()
+            && data.is_none()
+            && tools.is_empty()
+            && capabilities.is_none()
+            && filesystem.is_none()
+            && syscall_allowlist.is_none()
+            && !declares_authority
+            && !declares_egress
+        {
+            errors.push(ValidationError::new(
+                "(document)",
+                "policy declares no enforcement section \
+                 (network/schedule/budget/data/tools/capabilities/filesystem/syscalls/authority/egress); \
+                 it would be fully permissive",
+            ));
+        }
 
         if !errors.is_empty() {
             return Err(errors);
@@ -1583,21 +1623,21 @@ data:
 
     #[test]
     fn scope_team_field_round_trips_through_validator() {
-        let yaml = "scope: team:platform\n";
+        let yaml = "scope: team:platform\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Team("platform".to_owned()));
     }
 
     #[test]
     fn scope_org_field_round_trips_through_validator() {
-        let yaml = "scope: org:acme\n";
+        let yaml = "scope: org:acme\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Org("acme".to_owned()));
     }
 
     #[test]
     fn scope_global_field_is_accepted() {
-        let yaml = "scope: global\n";
+        let yaml = "scope: global\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Global);
     }
@@ -1655,7 +1695,7 @@ data:
 
     #[test]
     fn approval_timeout_valid_value_round_trips() {
-        let yaml = "approval_timeout_secs: 600\n";
+        let yaml = "approval_timeout_secs: 600\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.approval_timeout_secs, 600);
     }
@@ -1773,6 +1813,8 @@ metadata:
   name: escalation-test
 spec:
   scope: global
+  network:
+    allowlist: []
   approval:
     timeout_seconds: 600
     escalation_role: org-admin
@@ -1785,7 +1827,7 @@ spec:
 
     #[test]
     fn approval_policy_absent_yields_none() {
-        let out = PolicyValidator::from_yaml("version: \"1\"\n").unwrap();
+        let out = PolicyValidator::from_yaml("version: \"1\"\nnetwork:\n  allowlist: []\n").unwrap();
         assert!(out.document.approval_policy.is_none());
     }
 
@@ -2144,7 +2186,7 @@ approval:
     /// that permits no call.
     #[test]
     fn an_absent_syscalls_section_is_not_an_empty_allowlist() {
-        let absent = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let absent = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert!(absent.document.syscall_allowlist.is_none());
 
         let empty = PolicyValidator::from_yaml("syscalls: {}\n").expect("valid");
@@ -2185,7 +2227,7 @@ approval:
 
     #[test]
     fn absent_authority_section_is_an_empty_lease_list() {
-        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert!(out.document.leases.is_empty());
     }
 
@@ -2302,7 +2344,7 @@ approval:
 
     #[test]
     fn absent_egress_section_is_not_required() {
-        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert_eq!(out.document.egress, EgressPosture::NotRequired);
     }
 
@@ -2390,5 +2432,59 @@ approval:
         // Paired control: one declared section is the only difference.
         assert!(PolicyValidator::from_yaml("capabilities:\n  deny: [terminal_exec]\n").is_ok());
         assert!(PolicyValidator::from_yaml("network:\n  allowlist: []\n").is_ok());
+    }
+
+    // ── Documents that parse but declare no enforcement (AAASM-6338) ───────
+
+    /// Documents that deserialize to an all-`None` policy. Each differs from an
+    /// accepted control only in carrying no enforcement-bearing section.
+    const NO_ENFORCEMENT_DOCS: [&str; 10] = [
+        "version: 1\n",
+        "version: \"1\"\n",
+        "scope: global\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  scope: global\n",
+        "network:\n",
+        "budget:\n",
+        "!foo {}\n",
+        "tools: {}\n",
+        "filesystem: {}\n",
+    ];
+
+    #[test]
+    fn documents_declaring_no_enforcement_section_are_rejected() {
+        // Collect every offender so one run names the whole accepted class.
+        let accepted: Vec<&str> = NO_ENFORCEMENT_DOCS
+            .into_iter()
+            .filter(|doc| match PolicyValidator::from_yaml(doc) {
+                Ok(_) => true,
+                Err(errs) => !errs.iter().any(|e| e.message.contains("no enforcement section")),
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "documents with no enforcement section were not rejected as such: {accepted:?}",
+        );
+    }
+
+    #[test]
+    fn each_enforcement_bearing_section_alone_is_accepted_control() {
+        // Control for the test above: one declared section is the only variable.
+        for doc in [
+            "version: \"1\"\nnetwork:\n  allowlist: []\n",
+            "network: {}\n",
+            "capabilities:\n  deny: [terminal_exec]\n",
+            "tools:\n  t:\n    allow: true\n",
+            "budget:\n  daily_limit_usd: 5.0\n",
+            "syscalls:\n  allow: []\n",
+            "filesystem:\n  read:\n    allow: []\n",
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
+            "data:\n  sensitive_patterns: [\"sk-[A-Za-z0-9]{20,}\"]\n",
+            "authority:\n  leases: []\n",
+            "egress:\n  posture: broker_required\n",
+            "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  network:\n    allowlist: []\n",
+        ] {
+            PolicyValidator::from_yaml(doc).unwrap_or_else(|e| panic!("{doc:?} declares a section: {e:?}"));
+        }
     }
 }

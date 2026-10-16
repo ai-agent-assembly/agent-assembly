@@ -128,7 +128,7 @@ tools:
 
 #[tokio::test]
 async fn check_action_returns_invalid_argument_on_missing_context() {
-    let addr = start_server("version: \"1\"\n").await;
+    let addr = start_server(aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).await;
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
@@ -147,7 +147,7 @@ async fn check_action_returns_invalid_argument_on_missing_context() {
 
 #[tokio::test]
 async fn check_action_populates_latency_us() {
-    let addr = start_server("version: \"1\"\n").await;
+    let addr = start_server(aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).await;
 
     let mut client = PolicyServiceClient::connect(format!("http://{addr}")).await.unwrap();
 
