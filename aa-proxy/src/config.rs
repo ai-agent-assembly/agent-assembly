@@ -157,6 +157,11 @@ pub struct ProxyConfig {
     /// This knob only affects MCP `tools/call` enforcement. Non-MCP traffic
     /// is unaffected and continues to flow.
     ///
+    /// It never governs the response direction (AAASM-6355): when the gateway
+    /// cannot evaluate an upstream MCP response, the response is withheld even
+    /// with this set, because forwarding it would let a gateway-only sensitive
+    /// value reach the client.
+    ///
     /// Env: `AA_PROXY_MCP_FAIL_OPEN` — `1`/`true` to fail open; default `false`.
     pub mcp_fail_open: bool,
 

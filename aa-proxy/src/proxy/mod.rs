@@ -1332,10 +1332,11 @@ impl ProxyServer {
                         "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
                             .to_string(),
                     ),
-                    Err(e) if self.config.mcp_fail_open => {
-                        tracing::warn!(error = %e, "gateway response evaluation failed; forwarding (AA_PROXY_MCP_FAIL_OPEN)");
-                        Ok(())
-                    }
+                    // Deliberately NOT governed by `mcp_fail_open`: that knob is the
+                    // documented opt-in for forwarding a `tools/call` when the
+                    // gateway is unreachable. Response evaluation is a new gateway
+                    // dependency, and failing it open would let a gateway-only
+                    // sensitive value reach the client during an outage.
                     Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
                 },
             };
