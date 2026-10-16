@@ -1164,3 +1164,63 @@ async fn interim_heads_and_content_type_lists_do_not_hide_an_event_stream() {
     .await;
     assert_forwarded(&ok, "200", "nothing sensitive");
 }
+
+/// A request whose encoding the proxy cannot judge is denied BEFORE any
+/// classification, so an unjudgeable `resources/read` is never reduced to a
+/// response-only exchange (AAASM-6355 gate x AAASM-6356 recognition). The
+/// request never reaches the upstream and the gateway is never asked about a
+/// response. Control: the same body declared utf-8 is recognised as usual.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unjudgeable_request_encoding_is_denied_before_classification() {
+    for content_type in [
+        "application/json; charset=utf-7",
+        "application/json; charset=utf-8; charset=utf-16le",
+    ] {
+        let request = ClientRequest {
+            method: "POST",
+            path: "/mcp",
+            headers: vec![("Content-Type", content_type)],
+            body: jsonrpc("resources/read"),
+        };
+        let r = Scenario::new("redact_only", request, ok_json(&dirty())).run().await;
+        assert_eq!(r.upstream_requests, 0, "{content_type}: request must not be forwarded");
+        assert!(
+            r.seen.contains("encoding the proxy cannot judge"),
+            "{content_type}: {}",
+            r.seen
+        );
+        assert!(!r.seen.contains(PATIENT_ID), "{content_type}: {}", r.seen);
+        assert!(
+            tool_result_labels(&r).is_empty(),
+            "{content_type}: no response evaluation"
+        );
+    }
+    let control = ClientRequest {
+        method: "POST",
+        path: "/mcp",
+        headers: vec![("Content-Type", "application/json; charset=utf-8")],
+        body: jsonrpc("resources/read"),
+    };
+    let r = Scenario::new("redact_only", control, ok_json(&dirty())).run().await;
+    assert_withheld(&r, &[PATIENT_ID]);
+    assert_eq!(tool_result_labels(&r), vec!["mcp-method:resources/read".to_string()]);
+}
+
+/// The response-side encoding gate also covers a non-`tools/call` MCP
+/// exchange: a utf-7 `resources/read` response is withheld without a gateway
+/// call, a utf-8 one is evaluated.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unjudgeable_response_encoding_on_a_recognised_exchange_is_withheld() {
+    let body = clean();
+    let utf7 = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-7\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes();
+    let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("resources/read")), utf7)
+        .run()
+        .await;
+    assert_eq!(r.upstream_requests, 1);
+    assert!(r.seen.starts_with("HTTP/1.1 502"), "got: {}", r.seen);
+    assert!(tool_result_labels(&r).is_empty(), "withheld before any gateway call");
+}
