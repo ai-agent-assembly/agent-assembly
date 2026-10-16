@@ -90,8 +90,12 @@ mod credential_broker_sentinel {
         (format!("sk-ant-QA6174-{suffix}"), suffix)
     }
 
-    fn write_test_policy(dir: &Path) -> std::io::Result<PathBuf> {
+    fn write_test_policy(dir: &Path, credentials_policy: Option<&str>) -> std::io::Result<PathBuf> {
         let path = dir.join("policy.yaml");
+        if let Some(document) = credentials_policy {
+            std::fs::write(&path, document)?;
+            return Ok(path);
+        }
         std::fs::write(
             &path,
             "apiVersion: agent-assembly/v1\n\
@@ -181,11 +185,25 @@ exit 0
         gateway_endpoint: &str,
         extra_env: &[(&str, &str)],
     ) -> anyhow::Result<Host> {
+        build_host_with_policy(tmp_root, proxy, gateway_endpoint, extra_env, None)
+    }
+
+    /// As [`build_host`], but `credentials_policy` replaces the default tool
+    /// policy with a `credentials:`-node document (AAASM-6349) so a scenario
+    /// can state `posture: broker_required`, with or without the explicit
+    /// credential lease.
+    fn build_host_with_policy(
+        tmp_root: &Path,
+        proxy: &TrustedProxy,
+        gateway_endpoint: &str,
+        extra_env: &[(&str, &str)],
+        credentials_policy: Option<&str>,
+    ) -> anyhow::Result<Host> {
         let home = tmp_root.join("home");
         let project = tmp_root.join("project");
         std::fs::create_dir_all(home.join(".claude"))?;
         std::fs::create_dir_all(&project)?;
-        let policy = write_test_policy(tmp_root)?;
+        let policy = write_test_policy(tmp_root, credentials_policy)?;
         let dump = tmp_root.join("child-dump.txt");
         let marker = tmp_root.join("child-started.marker");
         let state_dir = tmp_root.join("state");
@@ -535,6 +553,244 @@ exit 0
         }
 
         drop(tmp);
+        Ok(())
+    }
+
+    // ---- AAASM-6349 (J84 part 3): `credentials: posture: broker_required` ----
+    //
+    // The scenarios below drive the real `aasm run` on the default
+    // `--isolation none` arm with a policy that states
+    // `credentials: posture: broker_required` (AAASM-6347/6348). The only
+    // input that differs between them is the policy document and whether a
+    // broker covers `api.anthropic.com`.
+    //
+    // What these prove, and what they do not: the gate admits or refuses on
+    // four facts (a fail-closed broker, a brokered service, an explicit
+    // `credential` lease, brokered env names withheld). They do not confine
+    // the child. A same-uid process can still read the supervisor's exec-time
+    // environment (see the `ps -E` test above), so nothing here is a claim of
+    // plaintext-secret isolation. An egress lease or `egress: broker_required`
+    // never supplies the credential lease; the no-lease case is refused.
+
+    const BROKER_KEYS: (&str, &str) = (
+        "AA_PROXY_PROVIDER_KEYS",
+        "api.anthropic.com=sk-ant-REAL-OPERATOR-KEY-not-the-sentinel",
+    );
+    const REFUSAL_POLICY_NAME: &str = "credentials: posture: broker_required";
+    const BROKER_REQUIRED_NO_LEASE: &str = "credentials:\n  posture: broker_required\n";
+    const BROKER_REQUIRED_WITH_LEASE: &str = "credentials:\n  posture: broker_required\nauthority:\n  leases:\n    - \
+         domain: credential\n      scope: whole\n      reason: aaasm6349 sentinel\n";
+    /// `not_required` alone is "no enforcement section" and fails to load, so
+    /// the control also states a tool rule; the only variable vs. the
+    /// refusing policies is the credentials posture.
+    const NOT_REQUIRED: &str = "tools:\n  read_file:\n    allow: true\ncredentials:\n  posture: not_required\n";
+    const REFUSAL_NO_GRANT: &str = "no explicit grant authorizes credential brokerage for this run";
+    const REFUSAL_NO_SERVICE: &str = "no upstream service is covered by any credential brokerage";
+
+    /// What a finished `aasm run`, refused or not, left behind.
+    struct Outcome {
+        status: std::process::ExitStatus,
+        /// stdout + stderr of the supervisor itself.
+        supervisor_output: String,
+        dump: Option<String>,
+        started: bool,
+        state_dir: PathBuf,
+    }
+
+    fn launch(host: Host) -> anyhow::Result<Outcome> {
+        let Host {
+            dump,
+            marker,
+            state_dir,
+            mut cmd,
+        } = host;
+        let output = cmd.output()?;
+        let supervisor_output = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let dump = if wait_for_file(&dump, Duration::from_secs(3)) {
+            Some(std::fs::read_to_string(&dump)?)
+        } else {
+            None
+        };
+        Ok(Outcome {
+            status: output.status,
+            supervisor_output,
+            dump,
+            started: std::fs::metadata(&marker).is_ok(),
+            state_dir,
+        })
+    }
+
+    /// The child's own env/argv/lsof channel only; the `ps -E` supervisor
+    /// channel is the documented residual and is asserted separately.
+    fn own_channel(dump: &str) -> &str {
+        dump.split("===PS_PPID").next().expect("split always yields one part")
+    }
+
+    fn assert_nothing_persisted(outcome: &Outcome, proxy: &TrustedProxy, sentinel: &str, suffix: &str) {
+        for root in [&outcome.state_dir, proxy.data_dir()] {
+            assert!(
+                grep_tree_for(root, sentinel).is_empty() && grep_tree_for(root, suffix).is_empty(),
+                "sentinel found in files under {}",
+                root.display()
+            );
+        }
+    }
+
+    /// Refusal: no credential lease covers the brokered credential, so the
+    /// launch is refused before any child exists, the refusal names the
+    /// policy statement that caused it, and the sentinel appears nowhere.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broker_required_without_a_credential_lease_is_refused_before_the_child_starts() -> anyhow::Result<()> {
+        let proxy = TrustedProxy::start()?;
+        let gateway = GrpcGateway::start().await?;
+        let tmp = tempfile::tempdir()?;
+        let (sentinel, suffix) = sentinel();
+        let host = build_host_with_policy(
+            tmp.path(),
+            &proxy,
+            gateway.endpoint(),
+            &[BROKER_KEYS, ("ANTHROPIC_API_KEY", &sentinel)],
+            Some(BROKER_REQUIRED_NO_LEASE),
+        )?;
+
+        let outcome = launch(host)?;
+
+        assert!(
+            !outcome.status.success(),
+            "a broker_required policy with no credential lease must refuse the launch:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(
+            outcome.supervisor_output.contains(REFUSAL_POLICY_NAME),
+            "the refusal must name `{REFUSAL_POLICY_NAME}`:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(
+            outcome.supervisor_output.contains(REFUSAL_NO_GRANT),
+            "refused, but not for the missing credential grant:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(
+            !outcome.started && outcome.dump.is_none(),
+            "the refused launch must never start the child"
+        );
+        assert!(
+            !outcome.supervisor_output.contains(&sentinel) && !outcome.supervisor_output.contains(&suffix),
+            "the refusal output must not echo the credential"
+        );
+        assert_nothing_persisted(&outcome, &proxy, &sentinel, &suffix);
+        Ok(())
+    }
+
+    /// Refusal when no broker covers the credential: a lease alone is not
+    /// enough, because no brokered service exists to perform the request.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broker_required_with_a_lease_but_no_broker_is_refused() -> anyhow::Result<()> {
+        let proxy = TrustedProxy::start()?;
+        let gateway = GrpcGateway::start().await?;
+        let tmp = tempfile::tempdir()?;
+        let (sentinel, suffix) = sentinel();
+        // No `AA_PROXY_PROVIDER_KEYS`: the broker covers no service.
+        let host = build_host_with_policy(
+            tmp.path(),
+            &proxy,
+            gateway.endpoint(),
+            &[("ANTHROPIC_API_KEY", &sentinel)],
+            Some(BROKER_REQUIRED_WITH_LEASE),
+        )?;
+
+        let outcome = launch(host)?;
+
+        assert!(
+            !outcome.status.success(),
+            "broker_required with no brokered service must refuse even with a lease:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(outcome.supervisor_output.contains(REFUSAL_POLICY_NAME));
+        assert!(
+            outcome.supervisor_output.contains(REFUSAL_NO_SERVICE),
+            "refused, but not because no broker covers a service:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(!outcome.started, "the refused launch must never start the child");
+        assert!(!outcome.supervisor_output.contains(&sentinel));
+        assert_nothing_persisted(&outcome, &proxy, &sentinel, &suffix);
+        Ok(())
+    }
+
+    /// Admission: broker covers the service and an explicit credential lease
+    /// is authored, so the launch proceeds, and the child's own
+    /// env/argv/lsof never carries the sentinel.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn broker_required_with_a_lease_and_a_broker_launches_without_the_sentinel() -> anyhow::Result<()> {
+        let proxy = TrustedProxy::start()?;
+        let gateway = GrpcGateway::start().await?;
+        let tmp = tempfile::tempdir()?;
+        let (sentinel, suffix) = sentinel();
+        let host = build_host_with_policy(
+            tmp.path(),
+            &proxy,
+            gateway.endpoint(),
+            &[BROKER_KEYS, ("ANTHROPIC_API_KEY", &sentinel)],
+            Some(BROKER_REQUIRED_WITH_LEASE),
+        )?;
+
+        let outcome = launch(host)?;
+
+        assert!(
+            outcome.status.success(),
+            "a covered broker_required launch must be admitted:\n{}",
+            outcome.supervisor_output
+        );
+        assert!(
+            outcome.started,
+            "the child must have started, or the negative below is vacuous"
+        );
+        let dump = outcome.dump.as_deref().expect("a started child writes its dump");
+        let own = own_channel(dump);
+        assert!(
+            !own.contains(&sentinel) && !own.contains(&suffix),
+            "the sentinel reached the child's env/argv/lsof under broker_required:\n{own}"
+        );
+        assert_nothing_persisted(&outcome, &proxy, &sentinel, &suffix);
+        Ok(())
+    }
+
+    /// Positive control: the identical launch with `posture: not_required`
+    /// and no broker is admitted, and here the sentinel DOES reach the child
+    /// through ambient inheritance. That proves the detector sees a leak, so
+    /// the absence above is not vacuous, and that `not_required` makes no
+    /// brokerage promise.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn not_required_posture_launches_and_does_not_withhold_the_ambient_credential() -> anyhow::Result<()> {
+        let proxy = TrustedProxy::start()?;
+        let gateway = GrpcGateway::start().await?;
+        let tmp = tempfile::tempdir()?;
+        let (sentinel, _suffix) = sentinel();
+        let host = build_host_with_policy(
+            tmp.path(),
+            &proxy,
+            gateway.endpoint(),
+            &[("ANTHROPIC_API_KEY", &sentinel)],
+            Some(NOT_REQUIRED),
+        )?;
+
+        let outcome = launch(host)?;
+
+        assert!(
+            outcome.status.success(),
+            "a not_required launch must be admitted:\n{}",
+            outcome.supervisor_output
+        );
+        let dump = outcome.dump.as_deref().expect("a started child writes its dump");
+        assert!(
+            own_channel(dump).contains(&sentinel),
+            "positive control failed: the detector did not see an unbrokered ambient credential"
+        );
         Ok(())
     }
 }
