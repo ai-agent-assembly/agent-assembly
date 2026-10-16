@@ -28,7 +28,8 @@ use std::sync::Arc;
 
 use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
 use aa_proto::assembly::policy::v1::{
-    action_context::Action, ActionContext, CheckActionRequest, CheckActionResponse, RedactInstructions, ToolCallContext,
+    action_context::Action, ActionContext, CheckActionRequest, CheckActionResponse, RedactInstructions,
+    ToolCallContext, ToolResultContext,
 };
 use aa_runtime::gateway_client::GatewayClient;
 use tokio::sync::Mutex;
@@ -70,8 +71,8 @@ pub enum McpDecision {
     /// locale packs). The data path therefore ALWAYS denies a `Redact` call
     /// fail-closed (AAASM-6353), whatever its own scan finds, mirroring
     /// `network_enforce`. `instructions` is advisory and currently unused.
-    /// Response-direction scanning is likewise built-in patterns only
-    /// (follow-up AAASM-6355).
+    /// The response direction is evaluated by the gateway separately
+    /// (AAASM-6355) and withholds on `Redact` for the same reason.
     Redact { instructions: RedactInstructions },
 }
 
@@ -116,6 +117,60 @@ pub fn build_check_action_request(
         }),
         caller_agent_id: None,
     }
+}
+
+/// Build the response-direction `CheckActionRequest` for an MCP tool result
+/// (AAASM-6355): the gateway's `ToolResult` evaluation applies its own policy
+/// data (`sensitive_patterns`, locale packs, `tool_result.*` predicates) to the
+/// body, which the proxy's built-in-only scanner cannot do.
+pub fn build_tool_result_request(
+    call: &McpToolCall,
+    result_body: &[u8],
+    source_url: &str,
+    trace_id: &str,
+    span_id: &str,
+) -> CheckActionRequest {
+    CheckActionRequest {
+        agent_id: Some(ProtoAgentId {
+            org_id: String::new(),
+            team_id: String::new(),
+            agent_id: PROXY_AGENT_ID.into(),
+        }),
+        credential_token: String::new(),
+        trace_id: trace_id.into(),
+        span_id: span_id.into(),
+        action_type: ActionType::ToolResult as i32,
+        context: Some(ActionContext {
+            action: Some(Action::ToolResult(ToolResultContext {
+                tool_name: call.tool_name.clone(),
+                tool_source: MCP_TOOL_SOURCE.into(),
+                result_json: result_body.to_vec(),
+                source_url: source_url.into(),
+            })),
+        }),
+        caller_agent_id: None,
+    }
+}
+
+/// Ask the gateway to evaluate an upstream MCP response body. Same transport
+/// and error shape as [`evaluate_mcp_call`].
+pub async fn evaluate_mcp_result(
+    gateway: &Arc<Mutex<GatewayClient>>,
+    call: &McpToolCall,
+    result_body: &[u8],
+    source_url: &str,
+    trace_id: &str,
+    span_id: &str,
+) -> anyhow::Result<McpDecision> {
+    let request = build_tool_result_request(call, result_body, source_url, trace_id, span_id);
+    let response = {
+        let mut client = gateway.lock().await;
+        client
+            .check_action(request)
+            .await
+            .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction (tool result) failed: {e}"))?
+    };
+    Ok(decision_from_response(&response))
 }
 
 /// Convert a `CheckActionResponse` into an [`McpDecision`].

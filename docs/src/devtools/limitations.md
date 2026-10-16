@@ -211,6 +211,33 @@ whenever it cannot measure:
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
 
+## `alert_only` records an MCP response detection; it does not stop the response
+
+For an MCP `tools/call` response, `aa-proxy` asks the gateway to evaluate the body
+and withholds it (HTTP `502`) on `Deny`, on a `Redact` it cannot apply, and on any
+RPC failure, timeout, undecodable or oversized body. That path is always
+fail-closed and is independent of `AA_PROXY_MCP_FAIL_OPEN`, which governs only the
+request-side `tools/call` check.
+
+Under `credential_action: alert_only` the gateway records the detection and raises
+a `SecretAlert` (credential kinds and a count, never the matched value), then
+allows. The matching content reaches the client **unchanged**. That is observing,
+not protecting: it does not prevent disclosure and it does not mask the value.
+Without a connected gateway there is no gateway evaluation of responses at all;
+only the proxy's built-in-pattern redaction applies.
+
+The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
+every JSON escape, SSE framing, 200-deep or `NaN` bodies) and denies a `tools/call`
+whose keys collide after Go-style case folding. It **denies JSON it cannot decode
+identically to every peer**: `utf-7` or any unknown charset, repeated `charset`
+parameters, UTF-16/32, JSON declared ISO-8859-1 / us-ascii / windows-1252 with
+non-ASCII bytes, two `Content-Type` headers on JSON, and any request (whatever its
+media type) declaring a charset outside the allowlist; MCP responses are withheld under the same rules. **Not covered:**
+JSON5/JSONC peers; inexact-case argument keys that do not collide (e.g. only
+`"PATH"` for a Go or .NET binder); first-key-wins duplicate keys inside
+`arguments`; and a secret split across separate `content[]` parts. See "MCP tool
+results through `aa-proxy`" in the policy reference.
+
 ## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
 
 A governed `aasm run` launch strips ambient `HTTP_PROXY`/`HTTPS_PROXY`/

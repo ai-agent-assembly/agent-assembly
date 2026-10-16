@@ -26,9 +26,9 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
+use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request, request_encoding_hazard};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
@@ -343,7 +343,11 @@ enum McpEvalOutcome {
     Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// Denied — connection should be closed after writing the given response.
     Deny(String),
-    /// No MCP call detected, or gateway unavailable with fail-open — proceed without MCP handling.
+    /// The request RPC failed under `mcp_fail_open`: the call is forwarded
+    /// unevaluated (the documented request-side opt-in), but the response must
+    /// still be scanned and gateway-evaluated, which always fails closed.
+    ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
+    /// No MCP call detected — proceed without MCP handling.
     Skip,
 }
 
@@ -1135,9 +1139,50 @@ impl ProxyServer {
         req: &HttpRequest,
         host: &str,
     ) -> McpEvalOutcome {
-        let Some(call) = parse_mcp_request(&req.body) else {
+        // AAASM-6354: inspect the *decoded* body. A `gzip`/`deflate` JSON-RPC
+        // `tools/call` is opaque bytes to the parser, so it used to fall into
+        // `Skip` and reach the upstream with no `CheckAction`. An encoding the
+        // proxy cannot decode (br, zstd, layered, corrupt, over the size cap)
+        // is denied rather than forwarded unevaluated.
+        let request_encoding = req.content_encoding();
+        let decoded: std::borrow::Cow<'_, [u8]> = match request_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
+        {
+            None => std::borrow::Cow::Borrowed(req.body.as_slice()),
+            Some(enc) => match http::decompress_content_encoding(enc, &req.body) {
+                Ok(plain) => std::borrow::Cow::Owned(plain),
+                Err(e) => {
+                    let reason = "MCP request body has a Content-Encoding the proxy cannot decode, so it cannot be enforced and was rejected (fail-closed)";
+                    tracing::warn!(%host, error = %e, "{reason}");
+                    self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+                    return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+                }
+            },
+        };
+        // Rounds 4-5: peers disagree on how to decode a JSON body with an exotic
+        // or conflicting charset (Node honours it, Python auto-detects UTF-16/32),
+        // so such a request is never judged on the UTF-8 reading alone.
+        let content_types: Vec<&str> = req
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let has_mcp_header = req
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("mcp-session-id") || k.eq_ignore_ascii_case("mcp-protocol-version"));
+        if request_encoding_hazard(&decoded, &content_types, has_mcp_header) {
+            let reason = "MCP request body is in an encoding the proxy cannot judge (non-UTF-8 charset, conflicting charsets, or UTF-16/32), so it cannot be enforced and was rejected (fail-closed)";
+            tracing::warn!(%host, "{reason}");
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+        }
+        let Some(call) = parse_mcp_request(&decoded) else {
             // Not a parseable MCP call — check for bypass attempt.
-            if is_unenforceable_tool_call(&req.body) {
+            if is_unenforceable_tool_call(&decoded) {
                 let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
                 tracing::warn!(
                     %host,
@@ -1174,9 +1219,8 @@ impl ProxyServer {
             // secret with a gateway-only value), so no scan outcome can
             // authorize the forward.
             //
-            // Not covered here (follow-ups): the response direction
-            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only)
-            // and the compressed-body scan bypass (AAASM-6354).
+            // Not covered here (follow-up): the response direction
+            // (AAASM-6355, `relay_mcp_response` scans built-in patterns only).
             Ok(McpDecision::Redact { .. }) => {
                 let reason = "gateway required redaction of this MCP call that the proxy cannot apply (fail-closed); \
                               change the policy to alert/allow, or wait for proxy redaction support";
@@ -1209,7 +1253,7 @@ impl ProxyServer {
                     error = %e,
                     "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
-                McpEvalOutcome::Skip
+                McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
             Err(e) => {
                 let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
@@ -1240,6 +1284,8 @@ impl ProxyServer {
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
         let mut upstream_reader = BufReader::new(upstream_read);
         let read_result =
@@ -1251,12 +1297,7 @@ impl ProxyServer {
             };
         match read_result {
             Ok(Some(resp)) => {
-                let content_encoding = resp
-                    .headers
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
-                    .map(|(_, v)| v.as_str());
-                self.handle_mcp_response_body(&resp, content_encoding, client_tls, call, args_bytes)
+                self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
                     .await
             }
             Ok(None) => Ok(()), // Upstream closed without writing a response.
@@ -1284,12 +1325,75 @@ impl ProxyServer {
     async fn handle_mcp_response_body(
         &self,
         resp: &http::HttpResponse,
-        content_encoding: Option<&str>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
-        match self.interceptor.redact_response_body(&resp.body, content_encoding) {
+        let response_encoding = http::joined_content_encoding(&resp.headers);
+        let content_encoding = response_encoding.as_deref();
+        let response_types: Vec<&str> = resp
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let scan = if self
+            .interceptor
+            .response_encoding_unjudgeable(&resp.body, content_encoding, &response_types)
+        {
+            ResponseScan::Withhold
+        } else {
+            self.interceptor.redact_response_body(&resp.body, content_encoding)
+        };
+        // AAASM-6355: the proxy's scanner holds built-in patterns only, so after
+        // its own redaction the gateway evaluates what would actually be sent
+        // (the redacted body, or the decoded original when the scan was clean).
+        // Anything but `Allow` withholds: the gateway's `Redact` cannot be
+        // applied here (no replayable instructions, no gateway patterns).
+        if let (Some(gw), false) = (gateway, matches!(scan, ResponseScan::Withhold)) {
+            let sent = match &scan {
+                ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
+                _ => None,
+            };
+            let candidates = self.interceptor.gateway_candidates(&resp.body, content_encoding, sent);
+            let verdict = match candidates {
+                None => Err("response body could not be decoded for gateway evaluation".to_string()),
+                Some(bodies) => {
+                    let mut verdict = Ok(());
+                    for body in &bodies {
+                        verdict = match evaluate_mcp_result(gw, call, body, source_url, "", "").await {
+                            Ok(McpDecision::Allow) => Ok(()),
+                            Ok(McpDecision::Deny { reason }) => Err(format!("gateway denied the MCP response: {reason}")),
+                            Ok(McpDecision::Redact { .. }) => Err(
+                                "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
+                                    .to_string(),
+                            ),
+                            // Deliberately NOT governed by `mcp_fail_open`: that knob is the
+                            // documented opt-in for forwarding a `tools/call` when the
+                            // gateway is unreachable. Response evaluation is a new gateway
+                            // dependency, and failing it open would let a gateway-only
+                            // sensitive value reach the client during an outage.
+                            Err(e) => Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
+                        };
+                        if verdict.is_err() {
+                            break;
+                        }
+                    }
+                    verdict
+                }
+            };
+            if let Err(reason) = verdict {
+                tracing::warn!(tool_name = %call.tool_name, "{reason}; withholding response");
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, args_bytes, true, &reason)
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                return Ok(());
+            }
+        }
+        match scan {
             ResponseScan::Withhold => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
@@ -1395,7 +1499,9 @@ impl ProxyServer {
         // MCP detection — only when a gateway is configured.
         let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match gateway {
             Some(gw) => match self.evaluate_mcp_request(gw, &req, host).await {
-                McpEvalOutcome::Forward(call, args_bytes) => Some((call, args_bytes)),
+                McpEvalOutcome::Forward(call, args_bytes) | McpEvalOutcome::ForwardUnevaluated(call, args_bytes) => {
+                    Some((call, args_bytes))
+                }
                 McpEvalOutcome::Deny(resp) => {
                     tracing::info!(
                         %host,
@@ -1425,7 +1531,7 @@ impl ProxyServer {
         // non-LLM host.
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
         if verdict.decision == VerdictDecision::Block {
@@ -1487,8 +1593,15 @@ impl ProxyServer {
 
         if let Some((call, args_bytes)) = mcp_call {
             // MCP response path: read, scan, and relay the upstream response.
-            self.relay_mcp_response(upstream_read, &mut client_tls, &call, &args_bytes)
-                .await?;
+            self.relay_mcp_response(
+                upstream_read,
+                &mut client_tls,
+                &call,
+                &args_bytes,
+                gateway,
+                &format!("https://{host}{}", req.target),
+            )
+            .await?;
         } else {
             // Not MCP — relay only the upstream response back to the client.
             let mut upstream_read = upstream_read;
@@ -1761,7 +1874,7 @@ impl ProxyServer {
 
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
 
@@ -2511,7 +2624,7 @@ impl ProxyServer {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body).await?;
 
-        let content_encoding = plain_http_header_value(headers, "content-encoding");
+        let content_encoding = plain_http_content_encoding(headers);
         let scanned =
             self.interceptor
                 .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
@@ -2680,6 +2793,24 @@ fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
 /// Find the value of a plain-HTTP header by name (case-insensitive) from the
 /// raw header lines captured in [`ProxyServer::handle_plain_http`]. Each line
 /// still carries its trailing CRLF, so the value is trimmed.
+/// Every `Content-Encoding` line joined, so a repeated header reads as the
+/// layered encoding it is (see `http::joined_content_encoding`).
+fn plain_http_content_encoding(headers: &[String]) -> Option<String> {
+    // Header names are case-insensitive and HTTP tolerates whitespace before the
+    // colon in lenient peers; matching only `content-encoding:` let
+    // `Content-Encoding : gzip` pass as unencoded (AAASM-6355 review L2).
+    let values: Vec<String> = headers
+        .iter()
+        .filter_map(|h| {
+            let (name, value) = h.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-encoding")
+                .then(|| value.trim().to_string())
+        })
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
 fn plain_http_header_value(headers: &[String], name: &str) -> Option<String> {
     let prefix = format!("{}:", name.to_ascii_lowercase());
     headers.iter().find_map(|h| {
@@ -2731,6 +2862,28 @@ fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AAASM-6355 review L2: header-name matching is case-insensitive and
+    // tolerates whitespace before the colon.
+    #[test]
+    fn plain_http_content_encoding_tolerates_case_and_space_before_colon() {
+        let h = |s: &str| vec![format!("{s}\r\n")];
+        for line in [
+            "Content-Encoding: gzip",
+            "content-encoding : gzip",
+            "CONTENT-ENCODING\t: gzip",
+        ] {
+            assert_eq!(plain_http_content_encoding(&h(line)).as_deref(), Some("gzip"), "{line}");
+        }
+        // Controls: other headers, and a header merely containing the name.
+        assert_eq!(plain_http_content_encoding(&h("Content-Length: 4")), None);
+        assert_eq!(plain_http_content_encoding(&h("X-Content-Encoding: gzip")), None);
+        let two = vec![
+            "Content-Encoding: gzip\r\n".to_string(),
+            "content-encoding : br\r\n".to_string(),
+        ];
+        assert_eq!(plain_http_content_encoding(&two).as_deref(), Some("gzip, br"));
+    }
 
     #[test]
     fn unparseable_mcp_response_is_fail_closed_and_carries_no_upstream_bytes() {

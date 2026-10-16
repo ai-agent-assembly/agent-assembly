@@ -102,6 +102,8 @@ struct Fixture {
     /// AAASM-6353: override the scanner's action. `None` keeps the permissive
     /// `AlertOnly` every refusal test above relies on.
     credential_action: Option<CredentialAction>,
+    /// AAASM-6355: `ProxyConfig::mcp_fail_open`.
+    mcp_fail_open: bool,
 }
 
 /// Start a proxy with a live audit sink; hand back its address and the sink's
@@ -129,7 +131,7 @@ async fn start_proxy(fixture: Fixture, ca_dir: &std::path::Path) -> (SocketAddr,
         credential_action: fixture.credential_action.unwrap_or(CredentialAction::AlertOnly),
         upstream_override: fixture.upstream_override,
         gateway_endpoint: fixture.gateway_endpoint,
-        mcp_fail_open: false,
+        mcp_fail_open: fixture.mcp_fail_open,
         network_fail_open: false,
         agent_id: fixture.agent_id,
         ready_file: None,
@@ -308,6 +310,10 @@ async fn open_tunnel(proxy: SocketAddr, host: &str) -> Result<BufReader<TcpStrea
 /// Complete the MitM TLS handshake on an open tunnel, send `request`, and
 /// return whatever the client saw.
 async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> String {
+    mitm_send_bytes(reader, host, request.as_bytes()).await
+}
+
+async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8]) -> String {
     let client_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
@@ -316,7 +322,7 @@ async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> S
     let server_name = ServerName::try_from(host.to_string()).unwrap();
     let mut tls = connector.connect(server_name, reader.into_inner()).await.unwrap();
 
-    tls.write_all(request.as_bytes()).await.unwrap();
+    tls.write_all(request).await.unwrap();
     let mut out = Vec::new();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
     String::from_utf8_lossy(&out).into_owned()
@@ -994,6 +1000,91 @@ mod gateway_stub {
         }
     }
 
+    /// Allows every `tools/call`; answers `verdict` to a `ToolResult` whose body
+    /// carries the gateway-only marker, `Allow` otherwise (`Error` fails the RPC).
+    #[derive(Clone, Copy)]
+    pub enum ResultVerdict {
+        Redact,
+        Deny,
+        Allow,
+        Error,
+        /// `tools/call` check FAILS (RPC error); a result with the marker is Redact.
+        CallErrorResultRedact,
+        /// `tools/call` check FAILS; every result is Allow.
+        CallErrorResultAllow,
+    }
+
+    struct JudgeResults(ResultVerdict);
+
+    #[tonic::async_trait]
+    impl PolicyService for JudgeResults {
+        async fn check_action(
+            &self,
+            req: Request<CheckActionRequest>,
+        ) -> Result<Response<CheckActionResponse>, Status> {
+            use aa_proto::assembly::common::v1::Decision;
+            use aa_proto::assembly::policy::v1::action_context::Action;
+            let decision = match req.get_ref().context.as_ref().and_then(|c| c.action.as_ref()) {
+                Some(Action::ToolCall(_))
+                    if matches!(
+                        self.0,
+                        ResultVerdict::CallErrorResultRedact | ResultVerdict::CallErrorResultAllow
+                    ) =>
+                {
+                    return Err(Status::resource_exhausted("stub request failure"));
+                }
+                Some(Action::ToolResult(r)) => {
+                    if matches!(self.0, ResultVerdict::Error) {
+                        return Err(Status::internal("stub result failure"));
+                    }
+                    let marked = r
+                        .result_json
+                        .windows(super::POLICY_ONLY_VALUE.len())
+                        .any(|w| w == super::POLICY_ONLY_VALUE.as_bytes());
+                    match (marked, self.0) {
+                        (true, ResultVerdict::Redact | ResultVerdict::CallErrorResultRedact) => Decision::Redact,
+                        (true, ResultVerdict::Deny) => Decision::Deny,
+                        _ => Decision::Allow,
+                    }
+                }
+                _ => Decision::Allow,
+            };
+            Ok(Response::new(CheckActionResponse {
+                decision: decision as i32,
+                redact: matches!(decision, Decision::Redact).then(Default::default),
+                reason: "stub result verdict".into(),
+                ..Default::default()
+            }))
+        }
+
+        async fn batch_check(&self, _req: Request<BatchCheckRequest>) -> Result<Response<BatchCheckResponse>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+
+        type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+        async fn op_control_stream(
+            &self,
+            _req: Request<OpControlSubscribeRequest>,
+        ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+            Err(Status::unimplemented("stub"))
+        }
+    }
+
+    pub async fn spawn_result_judging_gateway(verdict: ResultVerdict) -> String {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(PolicyServiceServer::new(JudgeResults(verdict)))
+                .serve(addr)
+                .await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        format!("http://{addr}")
+    }
+
     /// Bind a gateway that allows everything.
     pub async fn spawn_allowing_gateway() -> String {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -1251,4 +1342,1249 @@ async fn the_same_policy_only_body_under_gateway_allow_is_forwarded() {
         upstream_saw.contains(POLICY_ONLY_VALUE),
         "under Allow the body is forwarded unchanged, upstream saw: {upstream_saw:?}"
     );
+}
+
+// ── Content-Encoded MCP request bodies are evaluated, not skipped (AAASM-6354) ──
+
+fn gzip_bytes(plain: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(plain).unwrap();
+    enc.finish().unwrap()
+}
+
+fn zlib_bytes(plain: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(plain).unwrap();
+    enc.finish().unwrap()
+}
+
+fn post_encoded(host: &str, encoding: &str, body: &[u8]) -> Vec<u8> {
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    req.extend_from_slice(body);
+    req
+}
+
+/// Send one MCP `tools/call` body (already encoded) through a proxy backed by
+/// `gateway` and return (client response, bytes that reached upstream).
+async fn send_encoded_mcp(gateway: String, encoding: &str, body: &[u8]) -> (String, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, &post_encoded(MITM_HOST, encoding, body)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    (response, seen)
+}
+
+#[tokio::test]
+async fn a_gzip_mcp_call_the_gateway_denies_is_denied_and_never_forwarded() {
+    let body = mcp_body_with("anything");
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        "gzip",
+        &gzip_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(
+        response.contains("-32000"),
+        "gateway Deny must reach the client, got: {response:?}"
+    );
+    assert!(
+        seen.is_empty(),
+        "a denied call must not reach upstream, saw {} bytes",
+        seen.len()
+    );
+}
+
+#[tokio::test]
+async fn a_deflate_mcp_call_the_gateway_denies_is_denied_and_never_forwarded() {
+    let body = mcp_body_with("anything");
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        "deflate",
+        &zlib_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+#[tokio::test]
+async fn a_gzip_mcp_call_the_gateway_redacts_is_denied_not_forwarded_raw() {
+    let body = mcp_body_with(POLICY_ONLY_VALUE);
+    let (response, seen) = send_encoded_mcp(
+        gateway_stub::spawn_redacting_gateway().await,
+        "gzip",
+        &gzip_bytes(body.as_bytes()),
+    )
+    .await;
+    assert!(response.contains("cannot apply"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+#[tokio::test]
+async fn an_undecodable_mcp_body_encoding_is_denied_fail_closed() {
+    for (encoding, body) in [
+        ("br", mcp_body_with("x").into_bytes()),
+        ("zstd", mcp_body_with("x").into_bytes()),
+        ("gzip, br", gzip_bytes(mcp_body_with("x").as_bytes())),
+        ("gzip", b"not actually gzip".to_vec()),
+    ] {
+        let (response, seen) = send_encoded_mcp(gateway_stub::spawn_allowing_gateway().await, encoding, &body).await;
+        assert!(
+            response.contains("cannot be enforced") || response.contains("cannot decode"),
+            "{encoding}: must be rejected, got: {response:?}"
+        );
+        assert!(seen.is_empty(), "{encoding}: saw {} bytes upstream", seen.len());
+    }
+}
+
+/// Controls: the same call is forwarded when the gateway allows it, whether
+/// plain, `identity`, or gzip - so the denials above come from the gateway
+/// verdict on the decoded call, not from a blanket refusal of encoded bodies.
+#[tokio::test]
+async fn an_allowed_mcp_call_is_forwarded_plain_identity_and_gzip() {
+    let body = mcp_body_with("harmless");
+    for (encoding, wire) in [
+        ("identity", body.clone().into_bytes()),
+        ("gzip", gzip_bytes(body.as_bytes())),
+    ] {
+        let (response, seen) = send_encoded_mcp(gateway_stub::spawn_allowing_gateway().await, encoding, &wire).await;
+        assert!(
+            !seen.is_empty(),
+            "{encoding}: an allowed call must reach upstream, got: {response:?}"
+        );
+    }
+}
+
+// ── MCP response direction is evaluated by the gateway (AAASM-6355) ──────────
+
+/// A TLS upstream answering one fixed body (optionally `Content-Encoding`-ed).
+async fn fixed_body_tls_upstream(body: Vec<u8>, content_encoding: Option<&'static str>) -> SocketAddr {
+    install_crypto();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut chunk = [0u8; 8192];
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut chunk)).await;
+                let enc = content_encoding
+                    .map(|e| format!("Content-Encoding: {e}\r\n"))
+                    .unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{enc}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = tls.write_all(head.as_bytes()).await;
+                let _ = tls.write_all(&body).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    addr
+}
+
+/// Send an allowed `tools/call` whose upstream answers `upstream_body`; return
+/// what the client received.
+async fn client_view_of_response(
+    gateway: String,
+    upstream_body: Vec<u8>,
+    content_encoding: Option<&'static str>,
+) -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(upstream_body, content_encoding).await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await
+}
+
+fn result_body(text: &str) -> Vec<u8> {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":"{text}"}}]}}}}"#).into_bytes()
+}
+
+#[tokio::test]
+async fn a_gateway_only_value_in_a_response_is_withheld_when_the_gateway_redacts_it() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE),
+        "the gateway-only value reached the client: {view:?}"
+    );
+    assert!(!view.contains("200 OK"), "the response must be withheld, got: {view:?}");
+}
+
+#[tokio::test]
+async fn a_gateway_only_value_in_a_response_is_withheld_when_the_gateway_denies_it() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Deny).await,
+        result_body(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(!view.contains(POLICY_ONLY_VALUE), "got: {view:?}");
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+#[tokio::test]
+async fn an_encoded_response_carrying_a_gateway_only_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        gzip_bytes(&result_body(POLICY_ONLY_VALUE)),
+        Some("gzip"),
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an encoded body the gateway objects to must be withheld, got: {view:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_mixed_response_is_withheld_not_partially_redacted() {
+    use gateway_stub::ResultVerdict;
+    // The proxy redacts the built-in secret itself; the gateway still sees the
+    // policy-only value in what would be sent, so the response is withheld.
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(&format!("{BUILTIN_SECRET} and {POLICY_ONLY_VALUE}")),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE) && !view.contains(BUILTIN_SECRET),
+        "got: {view:?}"
+    );
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+#[tokio::test]
+async fn a_failed_response_evaluation_withholds_fail_closed() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Error).await,
+        result_body("harmless"),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an unevaluable response must not be forwarded, got: {view:?}"
+    );
+}
+
+/// Controls: the withholds above come from the gateway's verdict, not from a
+/// blanket refusal. Same upstream bodies, forwarded when the gateway allows.
+#[tokio::test]
+async fn responses_the_gateway_allows_are_forwarded() {
+    use gateway_stub::ResultVerdict;
+    for (body, enc) in [
+        (result_body(POLICY_ONLY_VALUE), None),
+        (gzip_bytes(&result_body("harmless")), Some("gzip")),
+        (result_body("harmless"), None),
+    ] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            body,
+            enc,
+        )
+        .await;
+        assert!(
+            view.contains("200 OK"),
+            "an allowed response must be forwarded, got: {view:?}"
+        );
+    }
+}
+
+/// The proxy's own built-in redaction still applies before the gateway sees the
+/// body, so a built-in secret alone is redacted and forwarded (no regression).
+#[tokio::test]
+async fn a_builtin_secret_in_a_response_is_still_redacted_and_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        result_body(BUILTIN_SECRET),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+    assert!(
+        !view.contains(BUILTIN_SECRET),
+        "the built-in secret must be redacted, got: {view:?}"
+    );
+}
+
+/// `mcp_fail_open` is the operator opt-in for forwarding a `tools/call` when the
+/// gateway is unreachable. It must not extend to the response direction.
+#[tokio::test]
+async fn a_failed_response_evaluation_is_withheld_even_with_mcp_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body(POLICY_ONLY_VALUE), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::Error).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+    assert!(!view.contains(POLICY_ONLY_VALUE), "got: {view:?}");
+    assert!(
+        !view.contains("200 OK"),
+        "fail-open must not forward an unevaluated response, got: {view:?}"
+    );
+}
+
+/// A gzip body that expands past the proxy's cap is un-inspectable and withheld,
+/// even though the gateway would allow everything.
+#[tokio::test]
+async fn a_decompression_bomb_response_is_withheld_not_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let bomb = gzip_bytes(&vec![b'a'; 70 * 1024 * 1024]);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        bomb,
+        Some("gzip"),
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an over-cap encoded response must be withheld, got a forward"
+    );
+}
+
+// ── review findings on the AAASM-6354/6355 stack (F1-F4) ─────────────────────
+
+fn escaped_policy_value_response() -> Vec<u8> {
+    // The policy-only value with its first character sent as a JSON `\u0041`
+    // escape: invisible to a raw-text match, decoded by every JSON client.
+    let escaped = POLICY_ONLY_VALUE.replacen('A', "\\u0041", 1);
+    result_body(&escaped)
+}
+
+/// F1: the *request* check fails under `mcp_fail_open` (the call is forwarded
+/// unevaluated, per the documented opt-in) - the response must still be
+/// evaluated, and withheld when the gateway objects.
+#[tokio::test]
+async fn fail_open_request_forward_still_evaluates_and_withholds_the_response() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body(POLICY_ONLY_VALUE), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(
+                gateway_stub::spawn_result_judging_gateway(ResultVerdict::CallErrorResultRedact).await,
+            ),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+    assert!(!view.contains(POLICY_ONLY_VALUE), "got: {view:?}");
+    assert!(
+        !view.contains("200 OK"),
+        "an unevaluated request must not unlock an unevaluated response, got: {view:?}"
+    );
+}
+
+/// F1 control: same fail-open request forward, gateway healthy for results and
+/// allowing them - the documented request-side opt-in still works.
+#[tokio::test]
+async fn fail_open_request_forward_still_delivers_an_allowed_response() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(
+                gateway_stub::spawn_result_judging_gateway(ResultVerdict::CallErrorResultAllow).await,
+            ),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// F2 (request): `gzip("") ++ gzip(tools/call)` decoded to nothing with a
+/// first-member-only decoder, skipping CheckAction while an upstream that
+/// inflates every member would run the call.
+#[tokio::test]
+async fn a_multi_member_gzip_mcp_call_is_evaluated_not_skipped() {
+    let body = mcp_body_with("anything");
+    let mut wire = gzip_bytes(b"");
+    wire.extend_from_slice(&gzip_bytes(body.as_bytes()));
+    let (response, seen) = send_encoded_mcp(gateway_stub::spawn_denying_gateway().await, "gzip", &wire).await;
+    assert!(
+        response.contains("-32000"),
+        "the gateway Deny must apply to the later member, got: {response:?}"
+    );
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// F2: bytes after the stream are not inspectable, so they are refused.
+#[tokio::test]
+async fn trailing_bytes_after_a_gzip_mcp_body_are_refused() {
+    let mut wire = gzip_bytes(mcp_body_with("x").as_bytes());
+    wire.extend_from_slice(b"TRAILINGGARBAGE");
+    let (response, seen) = send_encoded_mcp(gateway_stub::spawn_allowing_gateway().await, "gzip", &wire).await;
+    assert!(
+        response.contains("cannot decode") || response.contains("cannot be enforced"),
+        "got: {response:?}"
+    );
+    assert!(seen.is_empty());
+}
+
+/// F2 (response): a multi-member gzip response hides the secret in a later member.
+#[tokio::test]
+async fn a_multi_member_gzip_response_is_fully_decoded_and_withheld() {
+    use gateway_stub::ResultVerdict;
+    let mut wire = gzip_bytes(b"");
+    wire.extend_from_slice(&gzip_bytes(&result_body(POLICY_ONLY_VALUE)));
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        wire,
+        Some("gzip"),
+    )
+    .await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+/// F3: two `Content-Encoding` headers are a layered encoding to the client.
+#[tokio::test]
+async fn duplicate_content_encoding_headers_on_a_response_are_withheld() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let body = gzip_bytes(&gzip_bytes(&result_body(POLICY_ONLY_VALUE)));
+    let upstream =
+        fixed_body_tls_upstream_raw_headers(body, "Content-Encoding: gzip\r\nContent-Encoding: gzip\r\n").await;
+    let (proxy, _audit) = redact_fixture_proxy_with(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        upstream,
+        dir.path(),
+        CredentialAction::AlertOnly,
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+    assert!(
+        !view.contains("200 OK"),
+        "a layered encoding must be withheld even if the gateway would allow, got a forward"
+    );
+}
+
+/// F3 (request).
+#[tokio::test]
+async fn duplicate_content_encoding_headers_on_a_request_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(
+        gateway_stub::spawn_allowing_gateway().await,
+        upstream,
+        dir.path(),
+        CredentialAction::AlertOnly,
+    )
+    .await;
+    let body = gzip_bytes(&gzip_bytes(mcp_body_with("x").as_bytes()));
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {MITM_HOST}\r\nContent-Encoding: gzip\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    req.extend_from_slice(&body);
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, &req).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        response.contains("cannot decode") || response.contains("cannot be enforced"),
+        "got: {response:?}"
+    );
+    assert!(received.lock().unwrap().is_empty());
+}
+
+/// F4: a value delivered as JSON `\uXXXX` escapes is judged as the client will
+/// read it. Control: the unescaped body is withheld too, and a clean one is not.
+#[tokio::test]
+async fn a_json_escaped_gateway_only_value_in_a_response_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        escaped_policy_value_response(),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "an escaped value must not slip past the raw-text match, got: {view:?}"
+    );
+}
+
+/// A TLS upstream answering `body` with caller-supplied raw header lines.
+async fn fixed_body_tls_upstream_raw_headers(body: Vec<u8>, extra_headers: &'static str) -> SocketAddr {
+    install_crypto();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+    let key_der = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
+    let server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = TlsAcceptor::from(Arc::new(server_config));
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            let body = body.clone();
+            tokio::spawn(async move {
+                let Ok(mut tls) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut chunk = [0u8; 8192];
+                let _ = tokio::time::timeout(std::time::Duration::from_millis(500), tls.read(&mut chunk)).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = tls.write_all(head.as_bytes()).await;
+                let _ = tls.write_all(&body).await;
+                let _ = tls.shutdown().await;
+            });
+        }
+    });
+    addr
+}
+
+// ── review round 2: duplicate keys, BOM/invalid bytes, lenient request parse (V1/V2/V4/L1) ──
+
+fn bytes_of(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
+}
+
+const BOM: &[u8] = b"\xEF\xBB\xBF";
+
+/// A response whose `text` key appears twice: serde keeps the LAST, other JSON
+/// parsers may keep either, and the forwarded bytes carry both.
+fn duplicate_key_response(first: &str) -> Vec<u8> {
+    format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"text":"{first}","text":"ok"}}}}"#).into_bytes()
+}
+
+/// V1: the built-in secret sits in the shadowed first `text`. The normalised
+/// body is clean, so only a raw scan sees it; it must not reach the client.
+#[tokio::test]
+async fn a_builtin_secret_in_a_shadowed_duplicate_key_is_redacted() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        duplicate_key_response(BUILTIN_SECRET),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(BUILTIN_SECRET),
+        "the shadowed secret reached the client: {view:?}"
+    );
+}
+
+/// V1 control: the same duplicate-key shape without a secret is forwarded, so
+/// the redaction above comes from the secret and not from duplicate keys.
+#[tokio::test]
+async fn a_clean_duplicate_key_response_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        duplicate_key_response("harmless"),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V1: a gateway-only value in the shadowed key is judged on the raw form.
+#[tokio::test]
+async fn a_gateway_only_value_in_a_shadowed_duplicate_key_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        duplicate_key_response(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(POLICY_ONLY_VALUE) && !view.contains("200 OK"),
+        "got: {view:?}"
+    );
+}
+
+/// V1 control: the identical body is forwarded when the gateway allows it.
+#[tokio::test]
+async fn the_same_shadowed_gateway_only_body_is_forwarded_under_allow() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        duplicate_key_response(POLICY_ONLY_VALUE),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2: a BOM defeated `serde_json::from_slice`, leaving escapes undecoded.
+#[tokio::test]
+async fn a_bom_prefixed_escaped_gateway_only_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[BOM, &escaped_policy_value_response()]),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK"),
+        "a BOM must not hide an escaped value, got: {view:?}"
+    );
+}
+
+/// V2 control: a BOM-prefixed body whose escaped value is clean is forwarded.
+#[tokio::test]
+async fn a_bom_prefixed_escaped_clean_value_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[BOM, &result_body("harmless \\u0041")]),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2: one invalid UTF-8 byte elsewhere in the body must not hide an escape.
+#[tokio::test]
+async fn an_invalid_byte_does_not_hide_an_escaped_gateway_only_value() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[b"{\"pad\":\"\xFF\",", &escaped_policy_value_response()[1..]]),
+        None,
+    )
+    .await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+}
+
+/// V2 control: the same invalid byte with a clean escaped value is forwarded.
+#[tokio::test]
+async fn an_invalid_byte_with_a_clean_escaped_value_is_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+        bytes_of(&[b"{\"pad\":\"\xFF\",", &result_body("harmless \\u0041")[1..]]),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+/// F4/V2: a built-in secret hidden by an escape is withheld by the proxy's own
+/// scan (no gateway involved in the decision); the plain secret is redacted.
+#[tokio::test]
+async fn an_escaped_builtin_secret_is_withheld_not_forwarded() {
+    use gateway_stub::ResultVerdict;
+    let escaped = BUILTIN_SECRET.replacen('A', "\\u0041", 1);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        bytes_of(&[BOM, &result_body(&escaped)]),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains(BUILTIN_SECRET) && !view.contains("200 OK"),
+        "got: {view:?}"
+    );
+}
+
+/// L1: redacting a built-in secret must not re-serialise the rest of the body.
+#[tokio::test]
+async fn redaction_keeps_big_integers_byte_faithful() {
+    use gateway_stub::ResultVerdict;
+    let body =
+        format!(r#"{{"jsonrpc":"2.0","id":123456789012345678901234567890,"result":{{"text":"{BUILTIN_SECRET}"}}}}"#);
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        body.into_bytes(),
+        None,
+    )
+    .await;
+    assert!(!view.contains(BUILTIN_SECRET), "got: {view:?}");
+    assert!(
+        view.contains("123456789012345678901234567890"),
+        "the integer must keep every digit, got: {view:?}"
+    );
+}
+
+/// Send `body` (identity-encoded) as an MCP request; return (client view, bytes
+/// that reached upstream).
+async fn send_raw_mcp(gateway: String, body: &[u8]) -> (String, Vec<u8>) {
+    send_encoded_mcp(gateway, "identity", body).await
+}
+
+/// V4: a BOM-prefixed `tools/call` is evaluated, so a denying gateway stops it.
+#[tokio::test]
+async fn a_bom_prefixed_mcp_call_is_denied_and_never_forwarded() {
+    let (response, seen) = send_raw_mcp(
+        gateway_stub::spawn_denying_gateway().await,
+        &bytes_of(&[BOM, mcp_body_with("x").as_bytes()]),
+    )
+    .await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: one 0xFF byte inside an argument string must not turn the call into
+/// "not JSON".
+#[tokio::test]
+async fn an_invalid_byte_in_an_mcp_argument_is_still_denied() {
+    let body = bytes_of(&[
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_note","arguments":{"text":"a"#,
+        b"\xFF",
+        br#"b"}}}"#,
+    ]);
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, &body).await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: an unparseable JSON-looking body naming `tools\/call` (escaped slash) is
+/// refused rather than skipped.
+#[tokio::test]
+async fn an_unparseable_escaped_slash_tools_call_is_refused() {
+    let body = br#"{"jsonrpc":"2.0","method":"tools\/call","params":{"name":"x" BROKEN"#;
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, body).await;
+    assert!(response.contains("cannot be enforced"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4: a well-formed `tools\/call` (escaped slash) decodes to the real method
+/// and is evaluated.
+#[tokio::test]
+async fn a_well_formed_escaped_slash_tools_call_is_evaluated() {
+    let body = mcp_body_with("x").replace("tools/call", "tools\\/call");
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, body.as_bytes()).await;
+    assert!(response.contains("-32000"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes upstream", seen.len());
+}
+
+/// V4 controls: the BOM, 0xFF and plain bodies reach upstream when the gateway
+/// allows (evaluated, not blanket-refused), and unparseable non-MCP JSON that
+/// never names `tools/call` is not refused.
+#[tokio::test]
+async fn allowed_lenient_mcp_bodies_and_non_mcp_garbage_are_forwarded() {
+    let with_ff = bytes_of(&[
+        br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"send_note","arguments":{"text":"a"#,
+        b"\xFF",
+        br#"b"}}}"#,
+    ]);
+    for (label, body) in [
+        ("plain", mcp_body_with("x").into_bytes()),
+        ("bom", bytes_of(&[BOM, mcp_body_with("x").as_bytes()])),
+        ("0xff", with_ff),
+        ("non-mcp garbage", br#"{"hello": BROKEN"#.to_vec()),
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, &body).await;
+        assert!(!seen.is_empty(), "{label}: must reach upstream, got: {response:?}");
+    }
+}
+
+/// V1+F4: the gateway-only value is both escaped AND shadowed by a later key, so
+/// neither the raw text nor a last-key-wins parse shows it.
+#[tokio::test]
+async fn an_escaped_gateway_only_value_in_a_shadowed_duplicate_key_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let escaped = POLICY_ONLY_VALUE.replacen('A', "\\u0041", 1);
+    let gateway = gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await;
+    let view = client_view_of_response(gateway, duplicate_key_response(&escaped), None).await;
+    assert!(!view.contains("200 OK"), "got: {view:?}");
+    // control: the same shape with a harmless escaped value is forwarded
+    let gateway = gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await;
+    let view = client_view_of_response(gateway, duplicate_key_response("harmless \\u0041"), None).await;
+    assert!(view.contains("200 OK"), "got: {view:?}");
+}
+
+// ── round 3: bodies serde rejects but real peers accept (depth, NaN, 1e400) ──
+
+fn deep_arrays(n: usize) -> String {
+    format!("{}{}", "[".repeat(n), "]".repeat(n))
+}
+
+fn tools_call_with(method: &str, tail: &str) -> Vec<u8> {
+    format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"{method}","params":{{"name":"send_note","arguments":{{"text":"x"}}}},{tail}}}"#
+    )
+    .into_bytes()
+}
+
+/// Each variant must be stopped (never reach upstream) by a DENYING gateway.
+async fn assert_mcp_body_stopped(label: &str, body: &[u8]) {
+    let (response, seen) = send_raw_mcp(gateway_stub::spawn_denying_gateway().await, body).await;
+    assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+    assert!(
+        response.contains("-32"),
+        "{label}: expected a JSON-RPC error, got: {response:?}"
+    );
+}
+
+/// F1: depth-200 / NaN / 1e400 defeat serde; every spelling of the method is
+/// still a tools/call to Node and Python.
+#[tokio::test]
+async fn serde_rejected_tools_calls_are_denied_in_every_spelling() {
+    let deep = format!(r#""d":{}"#, deep_arrays(200));
+    for method in ["tools/call", r"tools\u002fcall", r"\u0074ools/call", r"tools\/call"] {
+        for tail in [deep.as_str(), r#""n":NaN"#, r#""n":1e400"#] {
+            assert_mcp_body_stopped(&format!("{method} {tail:.10}"), &tools_call_with(method, tail)).await;
+        }
+    }
+}
+
+/// F1 controls: the depth-100 body is parsed normally and denied by the gateway
+/// verdict; allowed, it is forwarded, as is the same deep shape naming another
+/// method, and a valid tools/list that merely mentions "tools/call".
+#[tokio::test]
+async fn controls_for_serde_rejected_tools_calls() {
+    let d100 = format!(r#""d":{}"#, deep_arrays(100));
+    assert_mcp_body_stopped("depth-100", &tools_call_with("tools/call", &d100)).await;
+
+    let d200 = format!(r#""d":{}"#, deep_arrays(200));
+    let list_deep = tools_call_with("tools/list", &d200);
+    let list_mention = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"q":"tools/call"}}"#.to_vec();
+    for (label, body) in [
+        ("deep tools/list", list_deep),
+        ("tools/list mentioning tools/call", list_mention),
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, &body).await;
+        assert!(!seen.is_empty(), "{label}: must be forwarded, got: {response:?}");
+    }
+}
+
+/// F3: a repeated `method` key, either order.
+#[tokio::test]
+async fn a_repeated_method_key_is_denied_in_either_order() {
+    for (a, b) in [("tools/call", "tools/list"), ("tools/list", "tools/call")] {
+        let body =
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{a}","method":"{b}","params":{{"name":"send_note"}}}}"#);
+        assert_mcp_body_stopped(&format!("{a} then {b}"), body.as_bytes()).await;
+    }
+}
+
+/// F2: a fake DB URL whose slashes are escaped (`\/`) in a body serde cannot
+/// parse. Under an ALLOWING built-in-only path the proxy's own scan must stop it.
+#[tokio::test]
+async fn an_escaped_secret_in_a_serde_rejected_response_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let hidden = "postgres:\\/\\/user:pw@localhost\\/db";
+    let ok = "a\\/b";
+    for (label, tail) in [
+        ("depth-200", format!(r#""d":{}"#, deep_arrays(200))),
+        ("NaN", r#""n":NaN"#.to_string()),
+    ] {
+        let make = |text: &str| {
+            format!(r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"text":"{text}"}}]}},{tail}}}"#).into_bytes()
+        };
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            make(hidden),
+            None,
+        )
+        .await;
+        assert!(
+            !view.contains("200 OK") && !view.contains("postgres"),
+            "{label}: got {view:?}"
+        );
+        // control: same shape with a harmless escaped value is forwarded
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            make(ok),
+            None,
+        )
+        .await;
+        assert!(view.contains("200 OK"), "{label} control: got {view:?}");
+    }
+}
+
+/// F2: a raw built-in secret next to an escaped one is withheld, not partially
+/// redacted and forwarded with the escaped secret intact.
+#[tokio::test]
+async fn a_raw_plus_escaped_secret_is_withheld_not_partially_redacted() {
+    use gateway_stub::ResultVerdict;
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"result":{{"a":"{BUILTIN_SECRET}","b":"postgres:\/\/user:pw@localhost\/db"}},"d":{}}}"#,
+        deep_arrays(200)
+    );
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        body.into_bytes(),
+        None,
+    )
+    .await;
+    assert!(
+        !view.contains("200 OK") && !view.contains(BUILTIN_SECRET) && !view.contains("postgres"),
+        "got: {view:?}"
+    );
+}
+
+// ── round 4: case-insensitive peers, wide encodings, SSE framing ──
+
+async fn send_with_content_type(gateway: String, content_type: &str, body: &[u8]) -> (String, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = redact_fixture_proxy_with(gateway, upstream, dir.path(), CredentialAction::AlertOnly).await;
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\nHost: {MITM_HOST}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    req.extend_from_slice(body);
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, &req).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    (response, seen)
+}
+
+/// V1: Go's encoding/json would run the second spelling; the proxy must not
+/// judge a different call than the peer runs.
+#[tokio::test]
+async fn case_ambiguous_tools_calls_are_denied() {
+    for body in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","Method":"tools/call","params":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe","NAME":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"PARAMS":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"safe"},"param\u017f":{"name":"evil"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"p":"ok"},"Arguments":{"p":"/etc/passwd"}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"path":"/ok","PATH":"/etc/passwd"}}}"#,
+    ] {
+        assert_mcp_body_stopped(body, body.as_bytes()).await;
+    }
+}
+
+/// V1 control: differently-cased keys that do not collide, and a plain call,
+/// are evaluated and forwarded by an allowing gateway.
+#[tokio::test]
+async fn non_colliding_differently_cased_keys_are_forwarded() {
+    for body in [
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","Meta":1,"params":{"name":"t","arguments":{"Path":"/ok"}}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"t","arguments":{"path":"/ok"}}}"#,
+    ] {
+        let (response, seen) = send_raw_mcp(gateway_stub::spawn_allowing_gateway().await, body.as_bytes()).await;
+        assert!(!seen.is_empty(), "{body}: got {response:?}");
+    }
+}
+
+fn utf16le_bytes(s: &str) -> Vec<u8> {
+    s.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+/// V2 (request): a UTF-16 tools/call, with and without a BOM or charset.
+#[tokio::test]
+async fn utf16_tools_calls_are_denied() {
+    let json = String::from_utf8(mcp_body_with("x").into_bytes()).unwrap();
+    let mut bom = vec![0xFF, 0xFE];
+    bom.extend(utf16le_bytes(&json));
+    for (label, ct, body) in [
+        (
+            "utf-16le charset",
+            "application/json; charset=utf-16le",
+            utf16le_bytes(&json),
+        ),
+        ("no charset", "application/json", utf16le_bytes(&json)),
+        ("bom", "application/json", bom),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+        assert!(response.contains("-32600"), "{label}: got {response:?}");
+    }
+}
+
+/// V2 controls: UTF-8, UTF-8 with BOM, and an escaped \u0000 (not a NUL byte)
+/// are evaluated and forwarded.
+#[tokio::test]
+async fn utf8_bodies_and_escaped_nul_are_forwarded() {
+    let plain = mcp_body_with("x");
+    let escaped_nul = mcp_body_with("a\\u0000b");
+    for (label, body) in [
+        ("utf-8", plain.clone().into_bytes()),
+        ("utf-8 bom", bytes_of(&[BOM, plain.as_bytes()])),
+        ("escaped nul", escaped_nul.into_bytes()),
+    ] {
+        let (response, seen) = send_with_content_type(
+            gateway_stub::spawn_allowing_gateway().await,
+            "application/json; charset=utf-8",
+            &body,
+        )
+        .await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+/// V2 (response): a UTF-16LE result is withheld outright (round 5: no NUL-strip
+/// heuristic), including one whose non-ASCII code unit (U+4122 = bytes 22 41)
+/// would desync a naive byte filter. Control: UTF-8 is forwarded.
+#[tokio::test]
+async fn a_utf16_response_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let secret = format!(r#"{{"x":"\u{{4122}}","t":"{BUILTIN_SECRET}"}}"#);
+    let clean = String::from_utf8(result_body("harmless")).unwrap();
+    for (label, body) in [("secret+U+4122", secret), ("clean", clean.clone())] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            utf16le_bytes(&body),
+            None,
+        )
+        .await;
+        assert!(!view.contains("200 OK"), "{label}: got: {view:?}");
+    }
+    let view = client_view_of_response(
+        gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+        clean.into_bytes(),
+        None,
+    )
+    .await;
+    assert!(view.contains("200 OK"), "utf-8 control: got {view:?}");
+}
+
+/// Round 5 (response): a declared utf-7 charset on an SSE response, and two
+/// charset declarations, are withheld; utf-8 and ISO-8859-1 with a 7-bit body are not.
+#[tokio::test]
+async fn response_charsets_outside_the_allowlist_are_withheld() {
+    use gateway_stub::ResultVerdict;
+    let body = format!(
+        "event: message\ndata: {}\n\n",
+        String::from_utf8(result_body("+AHs-")).unwrap()
+    )
+    .into_bytes();
+    for (label, headers, forwarded) in [
+        ("utf-7 sse", "Content-Type: text/event-stream; charset=utf-7\r\n", false),
+        (
+            "two charsets",
+            "Content-Type: text/event-stream; charset=utf-8; charset=utf-16le\r\n",
+            false,
+        ),
+        (
+            "non-ascii latin1",
+            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            false,
+        ),
+        ("utf-8 sse", "Content-Type: text/event-stream; charset=utf-8\r\n", true),
+        (
+            "latin1 7-bit sse",
+            "Content-Type: text/event-stream; charset=iso-8859-1\r\n",
+            true,
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = body.clone();
+        if label == "non-ascii latin1" {
+            b.push(0xE9);
+        }
+        let upstream = fixed_body_tls_upstream_raw_headers(b, headers).await;
+        let (proxy, _audit) = redact_fixture_proxy_with(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await,
+            upstream,
+            dir.path(),
+            CredentialAction::AlertOnly,
+        )
+        .await;
+        let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+        let view = mitm_send(tunnel, MITM_HOST, &post(MITM_HOST, "/mcp", &mcp_body_with("harmless"))).await;
+        assert_eq!(view.contains("200 OK"), forwarded, "{label}: got {view:?}");
+    }
+}
+
+/// V3: an SSE-framed response keeps its escapes decoded for the scan and the gateway.
+#[tokio::test]
+async fn an_sse_framed_escaped_value_is_withheld() {
+    use gateway_stub::ResultVerdict;
+    let sse = |text: &str| format!("event: message\ndata: {{\"t\":\"{text}\"}}\n\n").into_bytes();
+    let builtin = BUILTIN_SECRET.replacen('A', "\\u0041", 1);
+    let marker = POLICY_ONLY_VALUE.replacen('A', "\\u0041", 1);
+    for (label, body, verdict) in [
+        ("builtin", sse(&builtin), ResultVerdict::Allow),
+        ("gateway marker", sse(&marker), ResultVerdict::Redact),
+    ] {
+        let view = client_view_of_response(gateway_stub::spawn_result_judging_gateway(verdict).await, body, None).await;
+        assert!(!view.contains("200 OK"), "{label}: got {view:?}");
+    }
+    // controls: escape-free and harmlessly escaped SSE bodies are forwarded
+    for body in [sse("ok"), sse("ok \\u0041")] {
+        let view = client_view_of_response(
+            gateway_stub::spawn_result_judging_gateway(ResultVerdict::Redact).await,
+            body,
+            None,
+        )
+        .await;
+        assert!(view.contains("200 OK"), "control: got {view:?}");
+    }
+}
+
+// ── round 5: encodings (inverted gate) ──
+
+fn mcp_json() -> Vec<u8> {
+    mcp_body_with("x").into_bytes()
+}
+
+async fn assert_encoding_denied(label: &str, content_type: &str, body: &[u8]) {
+    let (response, seen) =
+        send_with_content_type(gateway_stub::spawn_allowing_gateway().await, content_type, body).await;
+    // ALLOWING gateway above: only the encoding gate can stop the request.
+    assert!(seen.is_empty(), "{label}: {} bytes reached upstream", seen.len());
+    assert!(response.contains("-32600"), "{label}: got {response:?}");
+}
+
+#[tokio::test]
+async fn exotic_or_conflicting_charsets_on_json_requests_are_denied() {
+    let utf7 = b"+AHsAIg-jsonrpc+ACIAOgAi-2.0+ACIALAAi-method+ACIAOgAi-tools/call+ACIAfQ-".to_vec();
+    assert_encoding_denied("utf-7", "application/json; charset=utf-7", &utf7).await;
+    assert_encoding_denied("utf-7 real body", "application/json; charset=utf-7", &mcp_json()).await;
+    assert_encoding_denied(
+        "dup charset a",
+        "application/json; charset=utf-8; charset=utf-16le",
+        &mcp_json(),
+    )
+    .await;
+    assert_encoding_denied(
+        "dup charset b",
+        "application/json; charset=utf-16le; charset=utf-8",
+        &mcp_json(),
+    )
+    .await;
+    assert_encoding_denied(
+        "latin1 non-ascii",
+        "application/json; charset=ISO-8859-1",
+        b"{\"a\":\"\xe9\"}",
+    )
+    .await;
+}
+
+/// Control for the above: the very same body under utf-8 is forwarded.
+#[tokio::test]
+async fn the_same_json_body_under_utf8_or_7bit_latin1_is_forwarded() {
+    for (label, ct, body) in [
+        ("utf-8", "application/json; charset=utf-8", mcp_json()),
+        ("latin1 7-bit mcp", "application/json; charset=iso-8859-1", mcp_json()),
+        (
+            "latin1 7-bit non-mcp",
+            "application/json; charset=ISO-8859-1",
+            br#"{"hello":1}"#.to_vec(),
+        ),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+#[tokio::test]
+async fn utf16_and_utf32_json_requests_are_denied_with_or_without_desync() {
+    let json = String::from_utf8(mcp_json()).unwrap();
+    // U+4122 encodes as bytes 22 41: a stray quote for a NUL-stripping reader.
+    let desync = json.replacen("\"jsonrpc\"", "\"jsonrpc\":\"\u{4122}\",\"x\"", 1);
+    let u32le: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_le_bytes()).collect();
+    let u32be: Vec<u8> = json.chars().flat_map(|c| (c as u32).to_be_bytes()).collect();
+    let mut bom = vec![0xFF, 0xFE];
+    bom.extend(utf16le_bytes(&json));
+    for (label, body) in [
+        ("utf-16le", utf16le_bytes(&json)),
+        ("utf-16le desync", utf16le_bytes(&desync)),
+        ("utf-16 bom", bom),
+        ("utf-32le", u32le),
+        ("utf-32be", u32be),
+    ] {
+        assert_encoding_denied(label, "application/json", &body).await;
+    }
+}
+
+/// Compat controls: bodies that are not JSON-typed are untouched even with NULs
+/// or an exotic declared charset.
+#[tokio::test]
+async fn binary_multipart_and_form_bodies_are_still_forwarded() {
+    for (label, ct, body) in [
+        ("binary", "application/octet-stream", b"\x89PNG\0\0\0\rIHDR".to_vec()),
+        (
+            "multipart",
+            "multipart/form-data; boundary=b",
+            b"--b\r\n\0\0\0\r\n--b--\r\n".to_vec(),
+        ),
+        ("form", "application/x-www-form-urlencoded", b"a=1&b=%00".to_vec()),
+    ] {
+        let (response, seen) = send_with_content_type(gateway_stub::spawn_allowing_gateway().await, ct, &body).await;
+        assert!(!seen.is_empty(), "{label}: got {response:?}");
+    }
+}
+
+/// Round 6: the Node MCP SDK accepts any Content-Type merely containing
+/// `application/json` and decodes with the declared charset, so a near-miss media
+/// type with charset=utf-7 must be stopped by the encoding gate (allowing gateway,
+/// -32600) while the same body under utf-8 or no charset is forwarded.
+#[tokio::test]
+async fn a_declared_exotic_charset_is_denied_for_any_media_type() {
+    // A UTF-7 body (`+AHs-` is `{`) is NOT JSON-looking under UTF-8 and no MCP
+    // header is sent, so only the charset rule can stop it.
+    let body = b"+AHsAIg-jsonrpc+ACIAOgAi-2.0+ACIALAAi-method+ACIAOgAi-tools/call+ACIAfQ-".to_vec();
+    for media in [
+        "application/jsonx",
+        "application/json5",
+        "text/plain; x=\"application/json\"",
+        "application/x-www-form-urlencoded",
+    ] {
+        assert_encoding_denied(media, &format!("{media}; charset=utf-7"), &body).await;
+        for ct in [format!("{media}; charset=utf-8"), media.to_string()] {
+            let (response, seen) =
+                send_with_content_type(gateway_stub::spawn_allowing_gateway().await, &ct, &body).await;
+            assert!(!seen.is_empty(), "control {ct}: got {response:?}");
+        }
+    }
 }

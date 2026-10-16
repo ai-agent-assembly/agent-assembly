@@ -149,7 +149,7 @@ services. Values below are taken directly from that file.
 |---|---|---|
 | `AA_PROXY_ADDR` | `0.0.0.0:8899` | Proxy listen address. |
 | `AA_PROXY_LLM_ONLY` | `false` | Intercept all egress, not just LLM calls. |
-| `AA_PROXY_MCP_FAIL_OPEN` | `1` | **Demo only** — lets the proxy start without a reachable gateway. The proxy normally fails **closed** when its gateway is unreachable. |
+| `AA_PROXY_MCP_FAIL_OPEN` | `1` | **Demo only** — lets the proxy start without a reachable gateway. The proxy normally fails **closed** when its gateway is unreachable. Governs only request-side `tools/call` checks and start-up; a failed gateway evaluation of an MCP *response* is always withheld regardless of this setting. |
 | `AA_PROXY_GATEWAY_ENDPOINT` | _(unset)_ | Set to a gateway endpoint (self-hosted or SaaS) to enforce through it. |
 
 ## Quickstart
