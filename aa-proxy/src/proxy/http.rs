@@ -465,6 +465,44 @@ pub struct HttpResponse {
     pub body: Vec<u8>,
 }
 
+/// The status line and headers of an upstream response, before any body byte
+/// is read, plus the exact bytes they were parsed from.
+///
+/// Split from [`HttpResponse`] (AAASM-6356) so a caller can decide what to do
+/// with the response — relay it verbatim, withhold it, or buffer and inspect
+/// it — from the head alone, before committing to reading (or forwarding) the
+/// body.
+#[derive(Debug, Clone)]
+pub struct HttpResponseHead {
+    /// HTTP version (e.g. `"HTTP/1.1"`).
+    pub version: String,
+    /// Status code (e.g. `"200"`).
+    pub status_code: String,
+    /// Reason phrase (e.g. `"OK"`).
+    pub reason: String,
+    /// Header lines as `(name, value)` pairs preserving casing.
+    pub headers: Vec<(String, String)>,
+    /// The head exactly as received, through the blank line. Relaying these
+    /// bytes keeps the original framing headers, which a re-serialised head
+    /// would rewrite.
+    pub raw: Vec<u8>,
+}
+
+impl HttpResponseHead {
+    /// Whether the response is a Server-Sent Events stream
+    /// (`Content-Type: text/event-stream`, parameters and case ignored).
+    pub fn is_event_stream(&self) -> bool {
+        self.headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .any(|(_, v)| {
+                v.split(';')
+                    .next()
+                    .is_some_and(|m| m.trim().eq_ignore_ascii_case("text/event-stream"))
+            })
+    }
+}
+
 /// Read and parse an HTTP/1.1 response from `reader`.
 ///
 /// Companion to [`read_http_request`] but for the upstream side of the
@@ -483,6 +521,26 @@ pub async fn read_http_response<R>(reader: &mut BufReader<R>) -> Result<Option<H
 where
     R: tokio::io::AsyncRead + Unpin,
 {
+    let Some(head) = read_http_response_head(reader).await? else {
+        return Ok(None);
+    };
+    let body = read_http_response_body(&head, reader).await?;
+    Ok(Some(HttpResponse {
+        version: head.version,
+        status_code: head.status_code,
+        reason: head.reason,
+        headers: head.headers,
+        body,
+    }))
+}
+
+/// Read and parse only the status line and headers of an HTTP/1.1 response,
+/// with the same caps as [`read_http_response`]. Leaves the body unread in
+/// `reader`. `Ok(None)` is a clean EOF before any byte.
+pub async fn read_http_response_head<R>(reader: &mut BufReader<R>) -> Result<Option<HttpResponseHead>, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
     // AAASM-3922: bound the response head the same way as the request head so a
     // hostile upstream cannot OOM the proxy with an unbounded header read.
     let mut head_budget = MAX_HEADER_BYTES;
@@ -492,6 +550,7 @@ where
         return Ok(None);
     }
     head_budget -= n;
+    let mut raw = status_line.clone().into_bytes();
     let trimmed = status_line.trim_end_matches(['\r', '\n']);
     let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
     if parts.len() < 2 {
@@ -509,6 +568,7 @@ where
             return Err(ProxyError::Config("unexpected EOF reading response headers".into()));
         }
         head_budget -= n;
+        raw.extend_from_slice(line.as_bytes());
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed.is_empty() {
             break;
@@ -527,6 +587,26 @@ where
         }
     }
 
+    Ok(Some(HttpResponseHead {
+        version,
+        status_code,
+        reason,
+        headers,
+        raw,
+    }))
+}
+
+/// Read the body that follows `head`, under the framing and caps documented on
+/// [`read_http_response`].
+pub async fn read_http_response_body<R>(
+    head: &HttpResponseHead,
+    reader: &mut BufReader<R>,
+) -> Result<Vec<u8>, ProxyError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let headers = &head.headers;
+    let status_code = head.status_code.as_str();
     let content_length_header = headers
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
@@ -575,13 +655,7 @@ where
         (None, None) => read_to_eof_capped(reader).await?,
     };
 
-    Ok(Some(HttpResponse {
-        version,
-        status_code,
-        reason,
-        headers,
-        body,
-    }))
+    Ok(body)
 }
 
 /// Decode a `Transfer-Encoding: chunked` body from `reader` (AAASM-5645).
@@ -1488,5 +1562,47 @@ mod tests {
             .unwrap()
             .expect("response present");
         assert!(resp.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn response_head_keeps_exact_raw_bytes_and_leaves_body_unread() {
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-LENGTH: 5\r\n\r\n";
+        let raw = format!("{head}hello");
+        let mut reader = make_reader(raw.as_bytes());
+        let parsed = read_http_response_head(&mut reader).await.unwrap().expect("head");
+        assert_eq!(parsed.raw, head.as_bytes());
+        assert_eq!(parsed.status_code, "200");
+        let body = read_http_response_body(&parsed, &mut reader).await.unwrap();
+        assert_eq!(body, b"hello");
+    }
+
+    #[tokio::test]
+    async fn response_head_then_body_matches_read_http_response() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
+        let whole = read_http_response(&mut make_reader(raw)).await.unwrap().unwrap();
+        let mut reader = make_reader(raw);
+        let head = read_http_response_head(&mut reader).await.unwrap().unwrap();
+        let body = read_http_response_body(&head, &mut reader).await.unwrap();
+        assert_eq!(whole.body, body);
+        assert_eq!(whole.headers, head.headers);
+    }
+
+    #[tokio::test]
+    async fn event_stream_detection_ignores_case_and_parameters_but_not_lookalikes() {
+        let cases: &[(&str, bool)] = &[
+            ("text/event-stream", true),
+            ("Text/Event-Stream; charset=utf-8", true),
+            ("application/json", false),
+            ("text/event-streamx", false),
+            ("application/x-ndjson; note=text/event-stream", false),
+        ];
+        for (ct, want) in cases {
+            let raw = format!("HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: 0\r\n\r\n");
+            let head = read_http_response_head(&mut make_reader(raw.as_bytes()))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(head.is_event_stream(), *want, "content-type: {ct}");
+        }
     }
 }
