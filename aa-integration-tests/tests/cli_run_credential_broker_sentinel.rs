@@ -29,21 +29,21 @@
 //! never be mistaken for this run's own exposure. `AAASM-6174` in the
 //! literal string ties any stray hit straight back to this QA epic.
 //!
-//! # Fail-closed: the live case is unreachable, by design, today
+//! # Fail-closed: live as of AAASM-6347/6348/6349
 //!
-//! AAASM-6293's own task list asks for a "credential broker required but
-//! unavailable" live-refusal test. There is no such live case to exercise:
-//! `aa-cli/src/commands/run.rs` constructs `CredentialContract::not_required()`
-//! unconditionally (grep `credential_contract: CredentialContract::` in that
-//! file) — no policy source in this repository ever issues
-//! `BrokeragePosture::BrokerRequired`, exactly as `credential_broker.rs`'s own
-//! module doc states ("no policy source issues a stronger contract yet").
-//! Standing up a live launch and asserting it refuses would therefore not be
-//! testing the product; it would be testing a contract this file would have
-//! to construct itself, which is indistinguishable from the unit-level
-//! coverage `credential_broker.rs::tests::unavailable_broker_is_refused_available_broker_is_admitted`
-//! already provides. Recorded here as an honest gap (and in `qa/golden-journeys.yaml`'s
-//! J84 entry), not faked as "live".
+//! AAASM-6293 recorded the "broker required but unavailable" refusal as
+//! unreachable because no policy source issued `BrokeragePosture::BrokerRequired`.
+//! A policy can now state `credentials: posture: broker_required`, and the
+//! `broker_required_*` scenarios below drive that through the real binary on
+//! the default `--isolation none` arm: refused (naming the policy statement)
+//! when no credential lease or no brokered service covers the launch, admitted
+//! when both do, with a `not_required` positive control.
+//!
+//! Not covered live here: an isolated backend. No backend is usable on this
+//! macOS host (Sandlock is Linux-only; the VM backend needs a runtime), so the
+//! backend-arm gates are covered by `aa-cli` and `aa-isolation` unit tests only.
+//! The admitted scenario proves the child's env/argv/descriptors are clean, not
+//! that the child is confined.
 //!
 //! # The `ps -E` finding (AAASM-6187's macOS counterpart)
 //!
