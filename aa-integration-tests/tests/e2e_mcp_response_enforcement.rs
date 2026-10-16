@@ -32,6 +32,7 @@ use tokio::task::{AbortHandle, JoinSet};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 use aa_core::AuditEntry;
+use aa_gateway::alerts::SecretAlert;
 use aa_gateway::registry::AgentRegistry;
 use aa_gateway::service::PolicyServiceImpl;
 use aa_gateway::PolicyEngine;
@@ -183,6 +184,9 @@ struct Gateway {
     forwarder_addr: SocketAddr,
     forwarder: AbortHandle,
     _server: AbortHandle,
+    /// Receives every `SecretAlert` the real `PolicyServiceImpl` publishes, the
+    /// same hook `server::serve_tcp` attaches in production.
+    alert_rx: Mutex<broadcast::Receiver<SecretAlert>>,
 }
 
 impl Gateway {
@@ -193,13 +197,15 @@ impl Gateway {
         let (alert_tx, _) = broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
         let engine = Arc::new(PolicyEngine::load_from_file(tmp.path(), alert_tx).expect("policy must load"));
         let (audit_tx, _audit_rx) = mpsc::channel::<AuditEntry>(4096);
+        let (secret_tx, alert_rx) = broadcast::channel::<SecretAlert>(64);
         let service = PolicyServiceImpl::with_registry(
             engine,
             Arc::new(AgentRegistry::new()),
             audit_tx,
             Arc::new(AtomicU64::new(0)),
             [0u8; 32],
-        );
+        )
+        .with_secret_alert_tx(secret_tx);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let real_addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -233,7 +239,19 @@ impl Gateway {
             forwarder_addr,
             forwarder: forwarder.abort_handle(),
             _server: server.abort_handle(),
+            alert_rx: Mutex::new(alert_rx),
         }
+    }
+
+    /// Every alert published so far. The gateway publishes before it replies, so
+    /// once the client has seen the proxy's answer the alert is already queued.
+    fn drain_alerts(&self) -> Vec<SecretAlert> {
+        let mut rx = self.alert_rx.lock().unwrap();
+        let mut out = Vec::new();
+        while let Ok(a) = rx.try_recv() {
+            out.push(a);
+        }
+        out
     }
 
     fn killer(&self) -> OnRequest {
@@ -366,6 +384,7 @@ struct Run {
     seen: String,
     raw: Vec<u8>,
     upstream_requests: usize,
+    alerts: Vec<SecretAlert>,
 }
 
 /// Drive one call through the whole chain. `kill_gateway_on_request` severs the
@@ -381,8 +400,10 @@ async fn run(policy_action: &str, body: Vec<u8>, gzip_encoded: bool, fail_open: 
     let (proxy, abort) = start_proxy(dir.path(), ca, upstream.addr, gateway.forwarder_addr, fail_open).await;
     let raw = call_through_proxy(proxy, cfg).await;
     let upstream_requests = upstream.request_count();
+    let alerts = gateway.drain_alerts();
     abort.abort();
     Run {
+        alerts,
         seen: visible(&raw),
         raw,
         upstream_requests,
@@ -567,4 +588,42 @@ async fn alert_only_forwards_operator_pattern_value_by_design() {
     )
     .await;
     assert_forwarded(&r, PATIENT_ID);
+}
+
+/// The detection `alert_only` promises is a real record, not a silent allow: the
+/// gateway publishes one `SecretAlert` for the response-direction match, while
+/// the value still reaches the client. Controls: a clean body under the same
+/// policy raises none, and `redact_only` records the same detection *and*
+/// withholds. An alert carries kinds and a count only, never the matched value.
+#[tokio::test(flavor = "multi_thread")]
+async fn alert_only_records_a_secret_alert_for_the_response_detection() {
+    let dirty = text_result(&format!("id {PATIENT_ID}")).into_bytes();
+
+    let observed = run("alert_only", dirty.clone(), false, false, false).await;
+    assert_forwarded(&observed, PATIENT_ID);
+    assert_eq!(observed.alerts.len(), 1, "got {:?}", observed.alerts);
+    let alert = &observed.alerts[0];
+    eprintln!("ALERT_ONLY observed alert: {alert:?}");
+    assert_eq!(alert.finding_count, 1);
+    assert!(!alert.kinds.is_empty());
+    assert!(
+        !format!("{alert:?}").contains(PATIENT_ID),
+        "the alert must not carry the matched value: {alert:?}"
+    );
+
+    let clean = run(
+        "alert_only",
+        text_result("nothing sensitive").into_bytes(),
+        false,
+        false,
+        false,
+    )
+    .await;
+    assert_forwarded(&clean, "nothing sensitive");
+    assert!(clean.alerts.is_empty(), "clean body raised {:?}", clean.alerts);
+
+    let enforced = run("redact_only", dirty, false, false, false).await;
+    assert_withheld(&enforced, &[PATIENT_ID]);
+    assert_eq!(enforced.alerts.len(), 1, "got {:?}", enforced.alerts);
+    assert!(!format!("{:?}", enforced.alerts).contains(PATIENT_ID));
 }
