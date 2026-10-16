@@ -808,6 +808,7 @@ impl PolicyEngine {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -944,6 +945,7 @@ impl PolicyEngine {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         };
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(doc)));
         PolicyEngine {
@@ -2768,6 +2770,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -4884,6 +4887,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_from_file_rejects_documents_declaring_no_enforcement_section() {
+        // AAASM-6338: file load (and hot reload, which shares it) must not turn
+        // a document with nothing to enforce into a fully permissive engine.
+        // Control: the same file shape with one declared section loads.
+        use std::io::Write;
+        let load = |yaml: &str| {
+            let mut tmp = tempfile::NamedTempFile::new().unwrap();
+            write!(tmp, "{yaml}").unwrap();
+            tmp.flush().unwrap();
+            let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+            PolicyEngine::load_from_file(tmp.path(), alert_tx)
+        };
+        for bad in ["version: \"1\"\n", "scope: global\n", "network:\n", "!foo {}\n"] {
+            let result = load(bad);
+            assert!(
+                matches!(result, Err(PolicyLoadError::Validation(_))),
+                "{bad:?}: expected fail-closed Validation error, got: {:?}",
+                result.err()
+            );
+        }
+        assert!(load("version: \"1\"\nnetwork:\n  allowlist: []\n").is_ok());
+    }
+
     // ── PolicyEvaluator trait impl ────────────────────────────────────────────
 
     #[test]
@@ -5091,6 +5118,108 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// AAASM-6336/6337: a blank or non-finite-budget body must leave the live
+    /// policy and the history store exactly as they were. Each rejected body is
+    /// paired with the accepted control that follows, so a validator that
+    /// rejects everything cannot pass.
+    #[tokio::test]
+    async fn apply_yaml_rejects_blank_and_non_finite_budget_leaving_live_policy_untouched() {
+        use crate::policy::history::{FsHistoryStore, HistoryConfig, PolicyHistoryStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        let engine = make_engine(empty_doc());
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("seed"), &store)
+            .await
+            .unwrap();
+        let epoch_before = engine.policy_epoch.load(Ordering::Relaxed);
+
+        for bad in [
+            "",
+            "{}",
+            "# only a comment\n",
+            "budget:\n  daily_limit_usd: .nan\n",
+            "budget:\n  monthly_limit_usd: .inf\n",
+            "budget:\n  team_daily_limit_usd: -.inf\n",
+            "budget:\n  org_monthly_limit_usd: .nan\n",
+        ] {
+            let result = engine.apply_yaml(bad, Some("attacker"), &store).await;
+            assert!(result.is_err(), "{bad:?} must be rejected");
+            assert!(
+                !engine.policy.load().tools["bash"].allow,
+                "{bad:?}: live policy must still be the seeded deny-bash policy"
+            );
+            assert_eq!(
+                engine.policy_epoch.load(Ordering::Relaxed),
+                epoch_before,
+                "{bad:?}: a rejected body must not bump the policy epoch"
+            );
+            assert_eq!(store.list(10).await.unwrap().len(), 1, "{bad:?}: no history entry");
+        }
+
+        // Control: a finite positive budget is accepted and does swap the policy.
+        engine
+            .apply_yaml("budget:\n  daily_limit_usd: 5.0\n", Some("control"), &store)
+            .await
+            .unwrap();
+        assert!(engine.policy.load().tools.is_empty());
+    }
+
+    /// AAASM-6338: a body that parses but declares no enforcement section must
+    /// leave the live policy, epoch and history exactly as they were. The
+    /// accepted control differs only in carrying one enforcement section.
+    #[tokio::test]
+    async fn apply_yaml_rejects_no_enforcement_documents_leaving_live_policy_untouched() {
+        use crate::policy::history::{FsHistoryStore, HistoryConfig, PolicyHistoryStore};
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: tmp.path().to_path_buf(),
+            max_versions: 50,
+        });
+
+        let engine = make_engine(empty_doc());
+        engine
+            .apply_yaml("tools:\n  bash:\n    allow: false\n", Some("seed"), &store)
+            .await
+            .unwrap();
+        let epoch_before = engine.policy_epoch.load(Ordering::Relaxed);
+
+        for bad in [
+            "version: 1\n",
+            "version: \"1\"\n",
+            "scope: global\n",
+            "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+            "network:\n",
+            "budget:\n",
+            "!foo {}\n",
+            "tools: {}\n",
+        ] {
+            let result = engine.apply_yaml(bad, Some("attacker"), &store).await;
+            assert!(result.is_err(), "{bad:?} must be rejected");
+            assert!(
+                !engine.policy.load().tools["bash"].allow,
+                "{bad:?}: live policy must still be the seeded deny-bash policy"
+            );
+            assert_eq!(
+                engine.policy_epoch.load(Ordering::Relaxed),
+                epoch_before,
+                "{bad:?}: a rejected body must not bump the policy epoch"
+            );
+            assert_eq!(store.list(10).await.unwrap().len(), 1, "{bad:?}: no history entry");
+        }
+
+        // Control: one declared section is accepted and does swap the policy.
+        engine
+            .apply_yaml("version: \"1\"\nnetwork:\n  allowlist: []\n", Some("control"), &store)
+            .await
+            .unwrap();
+        assert!(engine.policy.load().tools.is_empty());
+    }
+
     #[tokio::test]
     async fn apply_yaml_broadcasts_invalidation_within_100ms() {
         use crate::invalidation::InvalidationHub;
@@ -5252,6 +5381,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -5555,13 +5685,14 @@ mod tests {
     #[test]
     fn binary_loader_cascades_org_scoped_deny_over_global_allow() {
         let tmp = tempfile::tempdir().unwrap();
-        // Global baseline — empty tools = allow-by-default.
+        // Global baseline — explicit allow-all tool entry (a bare `tools: {}` is
+        // refused, AAASM-6338).
         std::fs::write(
             tmp.path().join("000-global-allow-all.yaml"),
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global-allow-all\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         // Org-alpha-scoped deny of `bash`. `scope:` lives INSIDE `spec:`.
@@ -5617,7 +5748,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         std::fs::write(
@@ -5664,7 +5795,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: reg-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let budget = Arc::new(BudgetTracker::new(
@@ -5720,7 +5851,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-global-allow-all\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha.yaml");
@@ -5785,7 +5916,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-add-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
 
@@ -5839,7 +5970,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: hr-inv-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
@@ -5900,7 +6031,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: empty-global\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         let org_doc = tmp.path().join("100-org-alpha-deny-bash.yaml");
@@ -6218,7 +6349,7 @@ mod tests {
             "apiVersion: agent-assembly.dev/v1alpha1\n\
              kind: GovernancePolicy\n\
              metadata:\n  name: t-global-allow\n  version: \"0.1.0\"\n\
-             spec:\n  tools: {}\n",
+             spec:\n  tools:\n    \"*\":\n      allow: true\n",
         )
         .unwrap();
         std::fs::write(

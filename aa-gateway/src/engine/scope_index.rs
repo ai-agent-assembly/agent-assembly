@@ -155,6 +155,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::policy::EgressPosture::NotRequired,
+            credentials: crate::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 

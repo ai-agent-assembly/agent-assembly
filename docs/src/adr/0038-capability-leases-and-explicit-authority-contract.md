@@ -1077,15 +1077,20 @@ changes, and no production caller changes (production passes only `Ancestry::Roo
 
 ### §11 (amended): parent edges, a transitive check, and the new refusals
 
-- **Edges.** Each ledger entry is `{state, link}` with `link` one of `Root`,
+- **Edges.** Each ledger entry is `{state, link, content}` (content added by AAASM-6312) with `link` one of `Root`,
   `Parent(LeaseId)` or `Unlinked`. `derive_child` inserts the child with a `Parent`
   edge under the ledger lock. `revoke` changes state only and keeps the edge; revoking
   an id the ledger does not know inserts it as `Unlinked`.
 - **No resurrection, no severing.** `derive_child` refuses a child id the ledger already
-  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) and the auto-registration
-  of an unknown parent accept only a lease with no delegation provenance; a mid-chain
-  lease is refused (`AncestryUnverifiable`), because registering it as a root would cut
-  its link to the ancestors above it. Registering a known id is `DuplicateLeaseId`.
+  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) accepts only a lease with
+  no delegation provenance; a mid-chain lease is refused (`AncestryUnverifiable`),
+  because registering it as a root would cut its link to the ancestors above it.
+  Registering a known id is `DuplicateLeaseId`. Since AAASM-6312 `derive_child` no
+  longer auto-registers an unknown parent (that let any caller seed its own chain with a
+  forged lease); an unknown parent is `AncestryUnverifiable`, and roots enter only
+  through `register_parent`. A ledger built with `with_trusted_issuer` accepts a root
+  only when the lease's own claimed issuer matches (`UntrustedIssuer`); `new()` is
+  unrestricted and is for in-process/test use.
 - **Derive time.** `derive_child` walks the parent's whole chain and returns
   `ParentRevoked` ("the parent or any ancestor") if any hop is revoked and
   `AncestryUnverifiable` if a hop is unknown or unlinked. The walk is bounded by the
@@ -1113,9 +1118,12 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
 - The chain is observed under the ledger lock at gate time. A revocation recorded a
   moment later is not seen by a gate call already past that point, and this ADR still
   makes no revocation-latency claim.
-- A ledger entry does not copy a lease's scope, expiry or limits; those are still taken
-  from the lease value in the `ParentAuthority`. The ledger authenticates *state and
-  ancestry by id*, not lease content.
+- Since AAASM-6312 the ledger records each lease's content (every field except the
+  mutable revocation state) and the gate refuses a parent or tracked child whose content
+  differs from the record (`LedgerContentMismatch`, `DelegationDenied::ContentMismatch`),
+  so a wider snapshot reusing a tracked id no longer passes. This binds content to the
+  ledger's record; it does not authenticate the issuer, which is asserted-only
+  (AAASM-5533), and the ledger is still chosen by the caller of `from_gated_spec`.
 - The ledger is chosen by the caller of `from_gated_spec`. Nothing ties a lease to the
   ledger that issued it: a provenance-free lease can be registered as a root in any
   ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`

@@ -89,7 +89,7 @@ async fn serve_uds_persists_a_finding_through_the_real_grpc_surface() {
     std::env::set_var(SENSITIVE_DATA_PROJECTION_DB_ENV, &db);
 
     let mut policy = tempfile::NamedTempFile::new().unwrap();
-    writeln!(policy, "version: \"1\"").unwrap();
+    write!(policy, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     policy.flush().unwrap();
 
     let agent = ProtoAgentId {

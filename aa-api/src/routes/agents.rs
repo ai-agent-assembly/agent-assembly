@@ -2769,6 +2769,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: aa_gateway::policy::EgressPosture::NotRequired,
+            credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 

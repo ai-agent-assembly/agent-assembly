@@ -4,12 +4,14 @@ use std::collections::HashMap;
 
 use crate::{
     document::{
-        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, DataPolicy, EgressPosture,
-        LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolPolicy,
+        ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, CredentialBrokeragePosture,
+        DataPolicy, EgressPosture, LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy,
+        ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{
-        GovernancePolicyEnvelope, RawAuthorityPolicy, RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument,
+        GovernancePolicyEnvelope, RawAuthorityPolicy, RawBudgetPolicy, RawCredentialsPolicy, RawDataPolicy,
+        RawEgressPolicy, RawLeaseGrant, RawLeaseScope, RawPolicyDocument, RawSchedulePolicy,
     },
     scope::PolicyScope,
 };
@@ -75,7 +77,7 @@ impl PolicyValidator {
                     format!(
                         "unknown top-level key '{}'; valid keys are: version, scope, network, \
                          schedule, budget, data, tools, capabilities, filesystem, syscalls, \
-                         authority, egress, approval_timeout_secs, approval",
+                         authority, egress, credentials, approval_timeout_secs, approval",
                         key
                     ),
                 ));
@@ -83,7 +85,20 @@ impl PolicyValidator {
         }
 
         // Step 3 — validate each section
+        //
+        // Presence of these two is read before the sections are consumed: their
+        // validated forms (`Vec`/enum) cannot say whether the key was written.
+        let declares_authority = raw.authority.as_ref().is_some_and(RawAuthorityPolicy::constrains);
+        let declares_egress = raw.egress.as_ref().is_some_and(RawEgressPolicy::constrains);
+        let declares_credentials = raw.credentials.as_ref().is_some_and(RawCredentialsPolicy::constrains);
         let network = Self::validate_network(raw.network, &mut errors);
+        // AAASM-6343: an empty `schedule:`/`budget:`/`data:` validates into a
+        // `Some` section that restricts nothing. Read what each states before
+        // the raw form is consumed, so the check below counts only sections
+        // that say something.
+        let declares_schedule = raw.schedule.as_ref().is_some_and(RawSchedulePolicy::constrains);
+        let declares_budget = raw.budget.as_ref().is_some_and(RawBudgetPolicy::constrains);
+        let declares_data = raw.data.as_ref().is_some_and(RawDataPolicy::constrains);
         let schedule = Self::validate_schedule(raw.schedule, &mut errors);
         let budget = Self::validate_budget(raw.budget, &mut errors);
         let data = Self::validate_data(raw.data, &mut errors);
@@ -93,6 +108,7 @@ impl PolicyValidator {
         let syscall_allowlist = Self::validate_syscalls(raw.syscalls, &mut errors);
         let leases = Self::validate_authority(raw.authority, &mut errors);
         let egress = Self::validate_egress(raw.egress, &mut errors);
+        let credentials = Self::validate_credentials(raw.credentials, &mut errors);
         let approval_policy = Self::validate_approval_policy(raw.approval, &mut errors);
 
         let approval_timeout_secs = match raw.approval_timeout_secs {
@@ -103,6 +119,42 @@ impl PolicyValidator {
             Some(v) => v,
             None => 300,
         };
+
+        // AAASM-6338: a document that parses but declares no enforcement
+        // section (`version: 1`, `scope: global`, `spec: {}`, a bare-null
+        // `network:`, a tagged `!foo {}`) would load as a fully permissive
+        // policy: the open-by-omission case AAASM-6337 closed only for the
+        // literally blank document. Modelled on
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-4020) but not
+        // identical to it: a key that is *present* counts, even when empty
+        // (`network: {}` is an empty allowlist, i.e. deny-all), but `tools: {}`
+        // and a `filesystem:` that states neither verb say nothing. This check
+        // also counts schedule/budget/data/authority/egress, which aa_security
+        // does not, but only when they state something (AAASM-6343): a bare
+        // `budget: {}` is a no-op, not a policy. `approval`, `approval_timeout_secs`,
+        // `version`, `scope` and `metadata` tune or describe a policy; none
+        // constrains an action. Only checked when everything else is valid so
+        // the operator sees real errors first.
+        if errors.is_empty()
+            && network.is_none()
+            && !declares_schedule
+            && !declares_budget
+            && !declares_data
+            && tools.is_empty()
+            && capabilities.is_none()
+            && filesystem.is_none()
+            && syscall_allowlist.is_none()
+            && !declares_authority
+            && !declares_egress
+            && !declares_credentials
+        {
+            errors.push(ValidationError::new(
+                "(document)",
+                "policy declares no enforcement section \
+                 (network/schedule/budget/data/tools/capabilities/filesystem/syscalls/authority/egress/credentials); \
+                 it would be fully permissive",
+            ));
+        }
 
         if !errors.is_empty() {
             return Err(errors);
@@ -131,6 +183,7 @@ impl PolicyValidator {
                 syscall_allowlist,
                 leases,
                 egress,
+                credentials,
             },
             warnings,
         })
@@ -152,10 +205,49 @@ impl PolicyValidator {
             vec![err]
         };
 
+        // AAASM-6337: reject a blank document before it can deserialize into an
+        // all-`None` (fully permissive) policy. A bare `null`/`~` already fails
+        // the struct parse below with its own error, so this runs only on
+        // documents that would otherwise succeed. Mirrors
+        // `aa_security::policy::PolicyDocument::from_yaml` (AAASM-3997) so the
+        // two entry points cannot disagree about what an empty policy means.
+        if let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(yaml_str) {
+            let blank = match &value {
+                serde_yaml::Value::Null => true,
+                serde_yaml::Value::Mapping(map) => map.is_empty(),
+                _ => false,
+            };
+            if blank && serde_yaml::from_str::<RawPolicyDocument>(yaml_str).is_ok() {
+                return Err(vec![ValidationError::new(
+                    "(document)",
+                    "empty or null policy document is not permitted (would be fully permissive)",
+                )]);
+            }
+        }
+
         // Try envelope format: if it has a `spec` key, treat it as wrapped.
         if let Ok(envelope) = serde_yaml::from_str::<GovernancePolicyEnvelope>(yaml_str) {
             if let Some(spec_value) = envelope.spec {
                 let raw: RawPolicyDocument = serde_yaml::from_value(spec_value).map_err(make_parse_error)?;
+                // AAASM-6344: only apiVersion/kind/metadata/spec are read from
+                // an envelope. A section written beside `spec:` (a common
+                // mis-indent) was dropped silently, taking its denial with it.
+                if !envelope.unknown.is_empty() {
+                    let mut keys: Vec<&String> = envelope.unknown.keys().collect();
+                    keys.sort();
+                    return Err(keys
+                        .into_iter()
+                        .map(|k| {
+                            ValidationError::new(
+                                k.as_str(),
+                                format!(
+                                    "top-level key `{k}` sits beside `spec:` and would be ignored; \
+                                     move it under `spec:` or remove it"
+                                ),
+                            )
+                        })
+                        .collect());
+                }
                 return Ok((raw, envelope.metadata));
             }
         }
@@ -722,6 +814,48 @@ impl PolicyValidator {
         }
     }
 
+    /// Validate the `credentials:` section into a
+    /// [`CredentialBrokeragePosture`] (AAASM-6347).
+    ///
+    /// Same shape as [`validate_egress`](Self::validate_egress): absent reads
+    /// as `NotRequired`, while a present section must state `posture:` and
+    /// may state nothing else. Stray keys (`raw_fallback`, ceilings, ...) are
+    /// rejected so no authored key can silently soften the requirement.
+    fn validate_credentials(
+        raw: Option<RawCredentialsPolicy>,
+        errors: &mut Vec<ValidationError>,
+    ) -> CredentialBrokeragePosture {
+        let Some(raw) = raw else {
+            return CredentialBrokeragePosture::NotRequired;
+        };
+
+        reject_unknown_keys("credentials", &raw.unknown, errors);
+
+        match raw.posture.as_deref() {
+            None => {
+                errors.push(ValidationError::new(
+                    "credentials.posture",
+                    "is required when a `credentials:` section is present; write \"not_required\" or \
+                     \"broker_required\"",
+                ));
+                CredentialBrokeragePosture::NotRequired
+            }
+            Some(word) => match CredentialBrokeragePosture::parse(word) {
+                Some(posture) => posture,
+                None => {
+                    errors.push(ValidationError::new(
+                        "credentials.posture",
+                        format!(
+                            "unrecognised credentials posture '{word}'; valid postures are: not_required, \
+                             broker_required"
+                        ),
+                    ));
+                    CredentialBrokeragePosture::NotRequired
+                }
+            },
+        }
+    }
+
     /// Validate one `filesystem.<verb>` node into a canonical
     /// [`aa_security::policy::PathScope`].
     ///
@@ -855,14 +989,10 @@ fn validate_budget_limit_pair(
     errors: &mut Vec<ValidationError>,
 ) {
     if let Some(limit) = daily {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(daily_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, daily_field, errors);
     }
     if let Some(limit) = monthly {
-        if limit <= 0.0 {
-            errors.push(ValidationError::new(monthly_field, "must be greater than 0"));
-        }
+        check_budget_limit(limit, monthly_field, errors);
         if let Some(daily) = daily {
             if limit < daily {
                 // Cross-message references the daily field by its leaf name.
@@ -870,6 +1000,20 @@ fn validate_budget_limit_pair(
                 errors.push(ValidationError::new(monthly_field, format!("must be >= {daily_leaf}")));
             }
         }
+    }
+}
+
+/// A budget cap must be a finite number greater than zero.
+///
+/// `limit <= 0.0` alone is not enough: YAML `.nan` / `.inf` deserialize into
+/// `f64` fine, and every comparison against NaN is false, so a NaN cap would
+/// pass that check and then never trip at enforcement time (AAASM-6336). An
+/// infinite cap is equally "no cap" under a field that claims to be one.
+fn check_budget_limit(limit: f64, field: &'static str, errors: &mut Vec<ValidationError>) {
+    if !limit.is_finite() {
+        errors.push(ValidationError::new(field, "must be a finite number"));
+    } else if limit <= 0.0 {
+        errors.push(ValidationError::new(field, "must be greater than 0"));
     }
 }
 
@@ -1357,7 +1501,9 @@ mod tests {
 
     #[test]
     fn capabilities_absent_is_none() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert!(out.document.capabilities.is_none());
     }
@@ -1526,41 +1672,46 @@ data:
     }
 
     #[test]
-    fn empty_document_is_valid_with_no_errors() {
-        let yaml = "{}\n";
+    fn minimal_declared_document_is_valid_with_no_errors() {
+        // AAASM-6337: formerly `empty_document_is_valid_with_no_errors`. A blank
+        // document is now rejected (see `blank_policy_documents_are_rejected_*`);
+        // the smallest accepted document declares one section.
+        let yaml = "network:\n  allowlist: []\n";
         let result = PolicyValidator::from_yaml(yaml);
         assert!(result.is_ok());
         let out = result.unwrap();
         assert!(out.warnings.is_empty());
-        assert!(out.document.network.is_none());
+        assert!(out.document.schedule.is_none());
     }
 
     // ── Scope field (F92) ───────────────────────────────────────────────────
 
     #[test]
     fn scope_absent_defaults_to_global_for_backward_compatibility() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Global);
     }
 
     #[test]
     fn scope_team_field_round_trips_through_validator() {
-        let yaml = "scope: team:platform\n";
+        let yaml = "scope: team:platform\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Team("platform".to_owned()));
     }
 
     #[test]
     fn scope_org_field_round_trips_through_validator() {
-        let yaml = "scope: org:acme\n";
+        let yaml = "scope: org:acme\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Org("acme".to_owned()));
     }
 
     #[test]
     fn scope_global_field_is_accepted() {
-        let yaml = "scope: global\n";
+        let yaml = "scope: global\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.scope, PolicyScope::Global);
     }
@@ -1618,14 +1769,16 @@ data:
 
     #[test]
     fn approval_timeout_valid_value_round_trips() {
-        let yaml = "approval_timeout_secs: 600\n";
+        let yaml = "approval_timeout_secs: 600\nnetwork:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.approval_timeout_secs, 600);
     }
 
     #[test]
     fn approval_timeout_absent_defaults_to_300() {
-        let yaml = "{}\n";
+        // AAASM-6337: a blank document is rejected, so defaults are observed on
+        // a document that declares one unrelated section.
+        let yaml = "network:\n  allowlist: []\n";
         let out = PolicyValidator::from_yaml(yaml).unwrap();
         assert_eq!(out.document.approval_timeout_secs, 300);
     }
@@ -1657,6 +1810,75 @@ spec:
         assert_eq!(out.document.name, Some("my-policy".to_string()));
         assert_eq!(out.document.policy_version, Some("2.0.0".to_string()));
         assert_eq!(out.document.budget.unwrap().daily_limit_usd, Some(10.0));
+    }
+
+    // ── AAASM-6343: empty sections are not enforcement ──────────────────────
+
+    #[test]
+    fn a_document_of_only_empty_sections_is_refused() {
+        for body in [
+            "budget: {}\n",
+            "schedule: {}\n",
+            "data: {}\n",
+            "authority: {}\n",
+            "budget:\n  timezone: UTC\n  action_on_exceed: deny\n",
+            "data:\n  sensitive_patterns: []\n  locale_packs: []\n",
+            "budget: {}\nschedule: {}\ndata: {}\nauthority: {}\n",
+            "authority:\n  leases: []\n",
+            "egress:\n  posture: not_required\n",
+        ] {
+            let errs = PolicyValidator::from_yaml(body).expect_err(body);
+            assert!(
+                errs.iter().any(|e| e.message.contains("no enforcement section")),
+                "{body:?} must be refused as declaring nothing, got {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_section_that_states_something_still_counts() {
+        // Positive control: each of these says something, so each loads.
+        for body in [
+            "budget:\n  daily_limit_usd: 1.0\n",
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
+            "data:\n  credential_action: block\n",
+            "data:\n  sensitive_patterns: [\"x\"]\n",
+            "egress:\n  posture: broker_required\n",
+            "credentials:\n  posture: broker_required\n",
+        ] {
+            PolicyValidator::from_yaml(body).unwrap_or_else(|e| panic!("{body:?} should load: {e:?}"));
+        }
+    }
+
+    // ── AAASM-6344: sections beside `spec:` are not silently dropped ───────
+
+    #[test]
+    fn a_section_written_beside_spec_is_refused_not_dropped() {
+        let yaml = r#"
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: misindented
+spec:
+  tools:
+    "*":
+      allow: true
+network:
+  allowlist: []
+capabilities:
+  deny: [file_write]
+"#;
+        let errs = PolicyValidator::from_yaml(yaml).expect_err("siblings of spec must not be dropped");
+        let fields: Vec<&str> = errs.iter().map(|e| e.field.as_str()).collect();
+        assert_eq!(fields, ["capabilities", "network"], "{errs:?}");
+        assert!(errs[0].message.contains("beside `spec:`"));
+    }
+
+    #[test]
+    fn a_well_formed_envelope_still_loads() {
+        // Negative control for the sibling check: apiVersion/kind/metadata/spec only.
+        let yaml = "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: ok\nspec:\n  tools:\n    \"*\":\n      allow: true\n";
+        PolicyValidator::from_yaml(yaml).expect("well-formed envelope loads");
     }
 
     #[test]
@@ -1734,6 +1956,8 @@ metadata:
   name: escalation-test
 spec:
   scope: global
+  network:
+    allowlist: []
   approval:
     timeout_seconds: 600
     escalation_role: org-admin
@@ -1746,7 +1970,7 @@ spec:
 
     #[test]
     fn approval_policy_absent_yields_none() {
-        let out = PolicyValidator::from_yaml("version: \"1\"\n").unwrap();
+        let out = PolicyValidator::from_yaml("version: \"1\"\nnetwork:\n  allowlist: []\n").unwrap();
         assert!(out.document.approval_policy.is_none());
     }
 
@@ -2105,7 +2329,7 @@ approval:
     /// that permits no call.
     #[test]
     fn an_absent_syscalls_section_is_not_an_empty_allowlist() {
-        let absent = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let absent = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert!(absent.document.syscall_allowlist.is_none());
 
         let empty = PolicyValidator::from_yaml("syscalls: {}\n").expect("valid");
@@ -2146,13 +2370,13 @@ approval:
 
     #[test]
     fn absent_authority_section_is_an_empty_lease_list() {
-        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert!(out.document.leases.is_empty());
     }
 
     #[test]
     fn empty_leases_list_is_also_an_empty_lease_list() {
-        let out = PolicyValidator::from_yaml("authority:\n  leases: []\n").expect("valid");
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\nauthority:\n  leases: []\n").expect("valid");
         assert!(out.document.leases.is_empty());
     }
 
@@ -2257,13 +2481,14 @@ approval:
 
     #[test]
     fn a_not_required_posture_round_trips_through_validation() {
-        let out = PolicyValidator::from_yaml("egress:\n  posture: not_required\n").expect("valid egress document");
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\negress:\n  posture: not_required\n")
+            .expect("valid egress document");
         assert_eq!(out.document.egress, EgressPosture::NotRequired);
     }
 
     #[test]
     fn absent_egress_section_is_not_required() {
-        let out = PolicyValidator::from_yaml("version: \"1.0\"\n").expect("valid");
+        let out = PolicyValidator::from_yaml("version: \"1.0\"\nnetwork:\n  allowlist: []\n").expect("valid");
         assert_eq!(out.document.egress, EgressPosture::NotRequired);
     }
 
@@ -2291,5 +2516,189 @@ approval:
     fn an_unknown_top_level_key_lists_egress_as_valid() {
         let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
         assert!(errs.iter().any(|e| e.message.contains("egress")));
+    }
+
+    // ── Fail-closed budget numbers and blank documents (AAASM-6336/6337) ──
+
+    /// Every f64 budget field the validator owns, so a new field cannot be
+    /// added to the schema without this list being the thing that fails.
+    const BUDGET_F64_FIELDS: [&str; 6] = [
+        "daily_limit_usd",
+        "monthly_limit_usd",
+        "team_daily_limit_usd",
+        "team_monthly_limit_usd",
+        "org_daily_limit_usd",
+        "org_monthly_limit_usd",
+    ];
+
+    #[test]
+    fn every_budget_limit_field_accepts_a_finite_positive_value() {
+        // Control for the rejection test below: the only variable is the value.
+        for field in BUDGET_F64_FIELDS {
+            let yaml = format!("budget:\n  {field}: 100.0\n");
+            assert!(
+                PolicyValidator::from_yaml(&yaml).is_ok(),
+                "{field}: a finite positive limit must be accepted",
+            );
+        }
+    }
+
+    #[test]
+    fn every_budget_limit_field_rejects_non_finite_zero_and_negative_values() {
+        for field in BUDGET_F64_FIELDS {
+            for bad in [".nan", ".NaN", ".inf", "-.inf", "0", "0.0", "-1", "-0.5"] {
+                let yaml = format!("budget:\n  {field}: {bad}\n");
+                let errs = PolicyValidator::from_yaml(&yaml).expect_err(&format!("{field}: {bad} must be rejected"));
+                assert!(
+                    errs.iter().any(|e| e.field == format!("budget.{field}")),
+                    "{field}: {bad} must be reported on budget.{field}, got {errs:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn blank_policy_documents_are_rejected_not_validated_into_allow_all() {
+        // AAASM-6337: `aa_security::policy::PolicyDocument::from_yaml` already
+        // rejects these (AAASM-3997); the validator must not disagree.
+        for blank in ["", "{}", "# only a comment\n", "\n\n", "---\n", "{ }\n"] {
+            let errs =
+                PolicyValidator::from_yaml(blank).expect_err(&format!("blank document {blank:?} must be rejected"));
+            assert!(
+                errs.iter().any(|e| e.message.contains("empty or null policy document")),
+                "{blank:?}: expected the AAASM-3997 message, got {errs:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_minimal_declared_policy_is_still_accepted_unlike_a_blank_one() {
+        // Paired control: one declared section is the only difference.
+        assert!(PolicyValidator::from_yaml("capabilities:\n  deny: [terminal_exec]\n").is_ok());
+        assert!(PolicyValidator::from_yaml("network:\n  allowlist: []\n").is_ok());
+    }
+
+    // ── Documents that parse but declare no enforcement (AAASM-6338) ───────
+
+    /// Documents that deserialize to an all-`None` policy. Each differs from an
+    /// accepted control only in carrying no enforcement-bearing section.
+    const NO_ENFORCEMENT_DOCS: [&str; 11] = [
+        "version: 1\n",
+        "version: \"1\"\n",
+        "scope: global\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+        "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  scope: global\n",
+        "network:\n",
+        "budget:\n",
+        "!foo {}\n",
+        "tools: {}\n",
+        "filesystem: {}\n",
+        "credentials:\n  posture: not_required\n",
+    ];
+
+    #[test]
+    fn documents_declaring_no_enforcement_section_are_rejected() {
+        // Collect every offender so one run names the whole accepted class.
+        let accepted: Vec<&str> = NO_ENFORCEMENT_DOCS
+            .into_iter()
+            .filter(|doc| match PolicyValidator::from_yaml(doc) {
+                Ok(_) => true,
+                Err(errs) => !errs.iter().any(|e| e.message.contains("no enforcement section")),
+            })
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "documents with no enforcement section were not rejected as such: {accepted:?}",
+        );
+    }
+
+    #[test]
+    fn each_enforcement_bearing_section_alone_is_accepted_control() {
+        // Control for the test above: one declared section is the only variable.
+        for doc in [
+            "version: \"1\"\nnetwork:\n  allowlist: []\n",
+            "network: {}\n",
+            "capabilities:\n  deny: [terminal_exec]\n",
+            "tools:\n  t:\n    allow: true\n",
+            "budget:\n  daily_limit_usd: 5.0\n",
+            "syscalls:\n  allow: []\n",
+            "filesystem:\n  read:\n    allow: []\n",
+            "schedule:\n  active_hours:\n    start: \"09:00\"\n    end: \"17:00\"\n    timezone: UTC\n",
+            "data:\n  sensitive_patterns: [\"sk-[A-Za-z0-9]{20,}\"]\n",
+            "authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: r\n",
+            "egress:\n  posture: broker_required\n",
+            "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec:\n  network:\n    allowlist: []\n",
+        ] {
+            PolicyValidator::from_yaml(doc).unwrap_or_else(|e| panic!("{doc:?} declares a section: {e:?}"));
+        }
+    }
+
+    // ── AAASM-6347 — credentials ────────────────────────────────────────────
+
+    #[test]
+    fn a_broker_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: broker_required\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::BrokerRequired);
+        // It must not leak into the egress node.
+        assert_eq!(out.document.egress, EgressPosture::NotRequired);
+    }
+
+    #[test]
+    fn a_not_required_credentials_posture_round_trips_through_validation() {
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: not_required\nnetwork:\n  allowlist: []\n")
+            .expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn absent_credentials_section_is_not_required() {
+        let out = PolicyValidator::from_yaml("network:\n  allowlist: []\n").expect("valid");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn a_not_required_credentials_posture_alone_is_refused_as_declaring_nothing() {
+        // The default posture restricts nothing, exactly like `egress`.
+        let errs = PolicyValidator::from_yaml("credentials:\n  posture: not_required\n").expect_err("no enforcement");
+        assert!(errs.iter().any(|e| e.message.contains("no enforcement section")));
+    }
+
+    #[test]
+    fn a_broker_required_credentials_posture_alone_is_an_enforcing_policy() {
+        // Positive path: the posture is a supported way to author a policy,
+        // not something that only validates when a sibling section rescues it.
+        let out = PolicyValidator::from_yaml("credentials:\n  posture: broker_required\n").expect("enforcing");
+        assert_eq!(out.document.credentials, CredentialBrokeragePosture::BrokerRequired);
+    }
+
+    #[test]
+    fn a_credentials_section_with_no_posture_is_rejected() {
+        let errs = PolicyValidator::from_yaml("credentials: {}\n").expect_err("missing posture");
+        assert!(errs.iter().any(|e| e.field == "credentials.posture"));
+    }
+
+    #[test]
+    fn a_credentials_section_with_an_unrecognised_posture_is_rejected() {
+        for word in ["raw_fallback", "broker_preferred", "Broker_Required"] {
+            let errs = PolicyValidator::from_yaml(&format!("credentials:\n  posture: {word}\n"))
+                .expect_err("an unknown posture must be rejected");
+            assert!(errs.iter().any(|e| e.field == "credentials.posture"), "{word}");
+        }
+    }
+
+    #[test]
+    fn unknown_credentials_keys_are_rejected_rather_than_dropped() {
+        for key in ["raw_fallback", "required_mode", "ceilings", "posturee"] {
+            let errs =
+                PolicyValidator::from_yaml(&format!("credentials:\n  posture: broker_required\n  {key}: true\n"))
+                    .expect_err("an unknown nested key must fail closed");
+            assert!(errs.iter().any(|e| e.field.starts_with("credentials")), "{key}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_lists_credentials_as_valid() {
+        let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
+        assert!(errs.iter().any(|e| e.message.contains("credentials")));
     }
 }

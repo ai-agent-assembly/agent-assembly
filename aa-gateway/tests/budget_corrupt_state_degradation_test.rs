@@ -34,7 +34,7 @@ async fn corrupt_budget_state_degrades_the_booted_gateway() {
     std::fs::write(budget_dir.join("budget.json"), b"NOT VALID JSON {{{").unwrap();
 
     let mut policy = tempfile::NamedTempFile::new().unwrap();
-    writeln!(policy, "version: \"1\"").unwrap();
+    write!(policy, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     policy.flush().unwrap();
     let policy_path = policy.path().to_path_buf();
 

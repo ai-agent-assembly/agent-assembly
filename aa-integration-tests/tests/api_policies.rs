@@ -244,3 +244,55 @@ async fn policies_active_response_matches_openapi_schema() {
         "GET /api/v1/policies/active response does not match PolicyResponse schema: {body}"
     );
 }
+
+// ── Fail-closed bodies must not replace the live policy (AAASM-6336/6337) ────
+
+/// Over a real socket: blank documents and NaN/infinite budget caps are 4xx and
+/// the harness-seeded `topology-it-policy` stays the active policy, with its
+/// version history untouched. Paired with the accepted control in
+/// `policies_list_includes_active_only_when_seeded` (same request shape).
+#[tokio::test(flavor = "multi_thread")]
+async fn post_policy_rejects_blank_and_non_finite_budget_leaving_active_policy_unchanged() {
+    let client = reqwest::Client::new();
+    for bad in [
+        "",
+        "{}",
+        "# only a comment\n",
+        "budget:\n  daily_limit_usd: .nan\n",
+        "budget:\n  daily_limit_usd: .inf\n",
+        "budget:\n  monthly_limit_usd: -.inf\n",
+    ] {
+        let env = TopologyTestEnv::start().await.expect("harness start");
+        let resp = client
+            .post(format!("{}/api/v1/policies", env.base_url()))
+            .header("content-type", "application/json")
+            .json(&serde_json::json!({"policy_yaml": bad}))
+            .send()
+            .await
+            .expect("POST /api/v1/policies");
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        println!("POST policy_yaml={bad:?} -> {status} {detail}");
+        assert!(status.is_client_error(), "{bad:?}: expected 4xx, got {status}");
+
+        let active: Value = client
+            .get(format!("{}/api/v1/policies/active", env.base_url()))
+            .send()
+            .await
+            .expect("GET active")
+            .json()
+            .await
+            .expect("active json");
+        assert_eq!(active["name"], "topology-it-policy", "{bad:?}: live policy replaced");
+
+        let list: Value = client
+            .get(format!("{}/api/v1/policies?include_archived=true", env.base_url()))
+            .send()
+            .await
+            .expect("GET list")
+            .json()
+            .await
+            .expect("list json");
+        assert_eq!(list["total"], 0, "{bad:?}: a rejected body must not create a version");
+    }
+}

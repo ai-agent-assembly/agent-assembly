@@ -195,6 +195,47 @@ impl EgressPosture {
     }
 }
 
+/// Whether a policy document requires a credential broker (AAASM-6347,
+/// ADR 0038).
+///
+/// Named `CredentialBrokeragePosture`, not `CredentialPosture`, because
+/// `aa_isolation::CredentialPosture` already names a different thing (what a
+/// backend measured about credential exposure). This is only the *statement
+/// of a requirement*: it grants no authority. Authority still needs an
+/// explicit `authority.leases` entry (`domain: credential`, `scope: whole`),
+/// so `broker_required` without one is refused downstream, never admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialBrokeragePosture {
+    /// No credential-brokerage property is required. The default for every
+    /// document that states no `credentials:` section.
+    #[default]
+    NotRequired,
+    /// Credentials must be brokered by a fail-closed broker, or the launch
+    /// must be refused.
+    BrokerRequired,
+}
+
+impl CredentialBrokeragePosture {
+    /// Parse the wire name a policy author writes (snake_case). `None` for an
+    /// unrecognised word so the validator rejects a typo instead of falling
+    /// back to [`Self::NotRequired`].
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "not_required" => Some(Self::NotRequired),
+            "broker_required" => Some(Self::BrokerRequired),
+            _ => None,
+        }
+    }
+
+    /// The wire name this posture round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::BrokerRequired => "broker_required",
+        }
+    }
+}
+
 /// A capability domain a [`LeaseGrant`] may be issued against (AAASM-6275,
 /// ADR 0038).
 ///
@@ -447,6 +488,14 @@ pub struct PolicyDocument {
     /// agent itself may do) consumed by `aa_isolation::egress::egress_gate`
     /// instead.
     pub egress: EgressPosture,
+    /// AAASM-6347 — this document's required credential-brokerage posture.
+    ///
+    /// Defaults to [`CredentialBrokeragePosture::NotRequired`] when the
+    /// document states no `credentials:` section. Like [`Self::egress`], it
+    /// is never routed through [`Self::to_canonical`]: it is a requirement
+    /// stated about the run's broker, not a restriction on the agent, and it
+    /// never sets the egress contract (nor vice versa).
+    pub credentials: CredentialBrokeragePosture,
 }
 
 #[cfg(test)]
@@ -472,6 +521,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: EgressPosture::NotRequired,
+            credentials: CredentialBrokeragePosture::NotRequired,
         };
         assert!(doc.tools.is_empty());
         // AAASM-5751 — an unstated path node. Read this as "nobody said",
@@ -481,6 +531,24 @@ mod tests {
         assert!(doc.leases.is_empty());
         // AAASM-6278 — no egress section authored.
         assert_eq!(doc.egress, EgressPosture::NotRequired);
+        // AAASM-6347 — no credentials section authored.
+        assert_eq!(doc.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn credential_brokerage_posture_round_trips_through_parse_and_as_str() {
+        for posture in [
+            CredentialBrokeragePosture::NotRequired,
+            CredentialBrokeragePosture::BrokerRequired,
+        ] {
+            assert_eq!(CredentialBrokeragePosture::parse(posture.as_str()), Some(posture));
+        }
+    }
+
+    #[test]
+    fn credential_brokerage_posture_rejects_an_unrecognised_word() {
+        assert_eq!(CredentialBrokeragePosture::parse("raw_fallback"), None);
+        assert_eq!(CredentialBrokeragePosture::parse(""), None);
     }
 
     #[test]

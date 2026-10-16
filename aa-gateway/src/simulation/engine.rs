@@ -173,7 +173,7 @@ mod tests {
     // (Previously this fixture used the unsupported top-level `rules:` schema,
     // which the validator now rejects rather than silently loading as
     // allow-all.)
-    const ALLOW_ALL_POLICY: &str = "version: \"1.0\"\n";
+    const ALLOW_ALL_POLICY: &str = crate::policy::resolve::ALLOW_ALL_TEMPLATE;
 
     #[test]
     fn simulate_event_allow() {

@@ -76,7 +76,7 @@ async fn ensure_stream(url: &str) {
 /// attached, returning the bound address (mirrors `op_control_stream_test`).
 async fn start_server(publisher: SharedOpControlPublisher) -> SocketAddr {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
 
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);

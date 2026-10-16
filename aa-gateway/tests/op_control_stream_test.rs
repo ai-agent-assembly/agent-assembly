@@ -23,7 +23,7 @@ use tonic::transport::Server;
 /// attached, returning the bound address.
 async fn start_server(publisher: Option<SharedOpControlPublisher>) -> SocketAddr {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
 
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
