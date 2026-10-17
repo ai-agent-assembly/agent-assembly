@@ -990,6 +990,12 @@ impl BodyStream {
                 .find(|(k, _)| k.eq_ignore_ascii_case(name))
                 .map(|(_, v)| v.trim().to_ascii_lowercase())
         };
+        // A reply with no body by definition never has one to wait for.
+        if matches!(head.status_code.as_str(), "204" | "304") || head.status_code.starts_with('1') {
+            return Ok(Self {
+                framing: BodyFraming::Done,
+            });
+        }
         let framing = match (find("content-length"), find("transfer-encoding").as_deref()) {
             (_, Some("chunked")) => BodyFraming::Chunked { remaining: 0 },
             (_, Some(other)) => {
@@ -1862,6 +1868,14 @@ mod tests {
         assert_eq!(stream_all(sized).await.unwrap(), b"hello");
         let open = b"HTTP/1.1 200 OK\r\n\r\nuntil close";
         assert_eq!(stream_all(open).await.unwrap(), b"until close");
+    }
+
+    #[tokio::test]
+    async fn body_stream_does_not_wait_for_a_body_on_a_bodyless_status() {
+        for status in ["204 No Content", "304 Not Modified"] {
+            let raw = format!("HTTP/1.1 {status}\r\nContent-Length: 9\r\n\r\n").into_bytes();
+            assert_eq!(stream_all(&raw).await.unwrap(), b"", "{status}");
+        }
     }
 
     #[tokio::test]
