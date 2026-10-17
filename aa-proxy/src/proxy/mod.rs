@@ -2337,7 +2337,7 @@ impl ProxyServer {
     /// header or origin-form target names nothing and is not ambiguous.
     fn request_authority_is_ambiguous(req: &HttpRequest) -> bool {
         let target_authority =
-            strip_http_scheme(&req.target).map(|rest| &rest[..rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len())]);
+            strip_http_scheme(&req.target).map(|rest| &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]);
         let mut hosts = req
             .headers
             .iter()
@@ -3003,7 +3003,11 @@ impl ProxyServer {
             })
         });
         let not_origin_form = !target.starts_with('/') && target != "*" && strip_http_scheme(target).is_none();
-        if host_values.len() > 1 || disagrees || not_origin_form {
+        // A WHATWG client reads `\` in the authority as `/`, an RFC 3986 one does
+        // not; `parse_plain_http_host` cuts there, so refuse rather than pick a reading.
+        let backslash_authority = strip_http_scheme(target)
+            .is_some_and(|rest| rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].contains('\\'));
+        if host_values.len() > 1 || disagrees || not_origin_form || backslash_authority {
             tracing::info!(
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: conflicting destination (fail-closed)",
@@ -3732,6 +3736,7 @@ mod tests {
             ("https://api.openai.com@evil.com/v1", Some("api.openai.com")),
             ("https://api.openai.com:x/v1", None),
             ("HTTPS://evil.com@api.openai.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com\\@evil.com/v1", Some("api.openai.com")),
         ] {
             assert!(
                 ProxyServer::request_authority_is_ambiguous(&req(target, host)),
@@ -4606,6 +4611,8 @@ mod tests {
             "GET evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
             // userinfo smuggled into the absolute-form authority
             "GET http://api.openai.com@evil.com/x HTTP/1.1\r\nHost: api.openai.com@evil.com\r\n\r\n",
+            // backslash in the authority: WHATWG and RFC 3986 clients disagree
+            "GET http://api.openai.com\\@evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
             // upper-case scheme must not hide the target authority
             "GET HTTP://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
         ] {
