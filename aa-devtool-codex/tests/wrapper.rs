@@ -93,11 +93,10 @@ async fn apply_settings_creates_config_toml_with_correct_content() {
     );
     // Codex's approval_policy is ONE string (a table fails to load, AAASM-6319).
     assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
-    let allowed = parsed["allowed_domains"].as_array().unwrap();
-    assert!(
-        allowed.contains(&toml::Value::String("api.openai.com".to_string())),
-        "allowed_domains must include api.openai.com"
-    );
+    // AAASM-6330: codex 0.160 does not honor these keys and rejects them under
+    // `--strict-config`, so they must not be written.
+    assert!(parsed.get("allowed_domains").is_none());
+    assert!(parsed.get("blocked_domains").is_none());
 }
 
 /// Seeds `~/.codex/config.toml`, applies a one-rule policy through the real

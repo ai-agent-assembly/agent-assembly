@@ -55,43 +55,6 @@ impl Serialize for CodexSandboxMode {
     }
 }
 
-/// Action-pattern prefix that marks a network-domain rule.
-///
-/// Rules whose `action_pattern` starts with `"network:"` carry a domain
-/// (or glob) immediately after the colon. The domain is extracted into
-/// the allow list when `decision` is [`Allow`], or into the block list
-/// when `decision` is [`Deny`].
-///
-/// [`Allow`]: PolicyDecision::Allow
-/// [`Deny`]: PolicyDecision::Deny
-const NETWORK_PREFIX: &str = "network:";
-
-/// Extract network domains from policy rules that should be **allowed**.
-///
-/// Returns every domain (or glob) `D` where a rule with
-/// `action_pattern = "network:<D>"` and `decision = Allow` exists.
-pub fn network_allow_list(policy: &PolicyDocument) -> Vec<String> {
-    policy
-        .rules
-        .iter()
-        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Allow)
-        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
-        .collect()
-}
-
-/// Extract network domains from policy rules that should be **blocked**.
-///
-/// Returns every domain (or glob) `D` where a rule with
-/// `action_pattern = "network:<D>"` and `decision = Deny` exists.
-pub fn network_block_list(policy: &PolicyDocument) -> Vec<String> {
-    policy
-        .rules
-        .iter()
-        .filter(|r| r.action_pattern.starts_with(NETWORK_PREFIX) && r.decision == PolicyDecision::Deny)
-        .map(|r| r.action_pattern[NETWORK_PREFIX.len()..].to_string())
-        .collect()
-}
-
 /// Action-pattern prefix used in [`PolicyRule`]s to express an explicit
 /// Codex sandbox-mode override.
 ///
@@ -230,31 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn network_allow_list_extracted() {
-        let policy = make_policy(vec![
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.example.com", PolicyDecision::Deny),
-            ("network:cdn.example.com", PolicyDecision::Allow),
-            ("fs:read", PolicyDecision::Allow),
-        ]);
-        let mut allow = network_allow_list(&policy);
-        allow.sort();
-        assert_eq!(allow, vec!["api.openai.com", "cdn.example.com"]);
-    }
-
-    #[test]
-    fn network_block_list_extracted() {
-        let policy = make_policy(vec![
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.example.com", PolicyDecision::Deny),
-            ("network:malware.io", PolicyDecision::Deny),
-        ]);
-        let mut block = network_block_list(&policy);
-        block.sort();
-        assert_eq!(block, vec!["evil.example.com", "malware.io"]);
-    }
-
-    #[test]
     fn empty_policy_maps_to_full_auto() {
         let policy = make_policy(vec![]);
         assert_eq!(map_policy_to_sandbox_mode(&policy), CodexSandboxMode::FullAuto);
@@ -285,26 +223,5 @@ mod tests {
         ] {
             assert_ne!(mode.as_codex_value(), "danger-full-access", "{mode:?}");
         }
-    }
-
-    #[test]
-    fn generate_managed_settings_snapshot() {
-        let policy = make_policy(vec![
-            ("shell:exec", PolicyDecision::Deny),
-            ("network:api.openai.com", PolicyDecision::Allow),
-            ("network:evil.io", PolicyDecision::Deny),
-        ]);
-        let sandbox_mode = map_policy_to_sandbox_mode(&policy);
-        let allowed = network_allow_list(&policy);
-        let blocked = network_block_list(&policy);
-        let settings = serde_json::json!({
-            "sandbox_mode": sandbox_mode,
-            "allowed_domains": allowed,
-            "blocked_domains": blocked,
-        });
-        let json = serde_json::to_string_pretty(&settings).unwrap();
-        assert!(json.contains(r#""sandbox_mode": "read-only""#));
-        assert!(json.contains("api.openai.com"));
-        assert!(json.contains("evil.io"));
     }
 }

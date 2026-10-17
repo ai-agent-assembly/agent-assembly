@@ -229,9 +229,9 @@ mod tests {
     fn other_managed_keys_pass_through() {
         let (m, _) = run(
             "sandbox_mode = \"read-only\"",
-            "sandbox_mode = \"workspace-write\"\nallowed_domains = [\"a\"]",
+            "sandbox_mode = \"workspace-write\"\nsome_other_key = [\"a\"]",
         );
         assert!(!m.contains_key("sandbox_mode"));
-        assert!(m.contains_key("allowed_domains"));
+        assert!(m.contains_key("some_other_key"));
     }
 }
