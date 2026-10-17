@@ -2292,6 +2292,9 @@ impl ProxyServer {
         // disallowed host in the `Host` header (or vice versa). Previously only
         // the target-preferred "effective" host was checked, so a mismatched
         // pair let the un-checked half slip past the allowlist.
+        if Self::request_authority_is_ambiguous(req) {
+            return Some(EgressDenyReason::NetworkAllowlist);
+        }
         for host in [Self::target_request_host(req), Self::header_request_host(req)]
             .into_iter()
             .flatten()
@@ -2323,9 +2326,25 @@ impl ProxyServer {
             .target
             .strip_prefix("https://")
             .or_else(|| req.target.strip_prefix("http://"))?;
-        let host_port = rest.split('/').next().unwrap_or(rest);
-        let host = strip_host_port(host_port);
+        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+        let host = strip_host_port(&rest[..end]);
         (!host.is_empty()).then_some(host)
+    }
+
+    /// AAASM-6313: whether the in-tunnel request names a destination authority
+    /// that is ambiguous (userinfo, a non-numeric port, stray delimiters). Both
+    /// the absolute-form target and the `Host` header are checked; an absent
+    /// header or origin-form target names nothing and is not ambiguous.
+    fn request_authority_is_ambiguous(req: &HttpRequest) -> bool {
+        let target_authority = req
+            .target
+            .strip_prefix("https://")
+            .or_else(|| req.target.strip_prefix("http://"))
+            .map(|rest| &rest[..rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len())]);
+        target_authority
+            .into_iter()
+            .chain(req.header("host"))
+            .any(|a| aa_core::policy::egress_host_from_authority(a.trim()).is_none())
     }
 
     /// Host named by the `Host` header, with brackets/port stripped, or `None`
@@ -2642,6 +2661,31 @@ impl ProxyServer {
         // classified Unknown and raw-tunnelled under llm_only, and case/dot
         // variants would evade the denylist. `target` (with port) is retained
         // for the DNS/connect calls, which tolerate the trailing dot.
+        // AAASM-6313: refuse an authority that two parsers could read differently
+        // (userinfo, a non-numeric "port", path/query/fragment bytes, brackets
+        // that are not an IPv6 literal) BEFORE it is reduced to a host:
+        // `strip_host_port` keeps `api.openai.com` out of `api.openai.com:@evil`,
+        // so the allowlist would vouch for a name the dial never reaches.
+        if aa_core::policy::egress_host_from_authority(target).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "CONNECT denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method: "CONNECT",
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                probe_correlation,
+            );
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
         let host = canonical_host(target);
         let host = host.as_str();
 
@@ -2941,6 +2985,15 @@ impl ProxyServer {
         // (before any upstream dial), mirroring the CONNECT path's 403.
         // AAASM-5851: routed through `egress_deny_reason` too, so a
         // scheme-downgrade cannot also bypass gateway-mode network policy.
+        // AAASM-6313: an authority that cannot be read one way (see the CONNECT
+        // path) is refused before the allowlist sees a stripped, vouched-for host.
+        if aa_core::policy::egress_host_from_authority(&host).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "plain-HTTP egress denied: ambiguous authority (fail-closed)",
+            );
+            return self.refuse_plain_http_403(reader, "").await;
+        }
         let deny_host = strip_host_port(&host);
         if let Some(reason) = self.egress_deny_reason(deny_host, 80, "http").await {
             tracing::info!(
@@ -3293,7 +3346,8 @@ fn parse_connect_authority_port(authority: &str) -> Option<u16> {
 /// host on the stack frame and frees it when the request completes.
 fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
     if let Some(url_host) = target.strip_prefix("http://") {
-        url_host.split('/').next().unwrap_or(url_host).to_string()
+        let end = url_host.find(['/', '?', '#', '\\']).unwrap_or(url_host.len());
+        url_host[..end].to_string()
     } else {
         headers
             .iter()
@@ -3554,6 +3608,51 @@ mod tests {
         // Origin-form `http://host/path` targets resolve the host from the URL.
         let host = parse_plain_http_host("http://api.openai.com/v1/chat", &[]);
         assert_eq!(host, "api.openai.com");
+    }
+
+    #[test]
+    fn plain_http_host_stops_at_query_fragment_and_backslash() {
+        // AAASM-6313: the authority ends at the first `/ ? # \`, as a client reads it.
+        for (target, want) in [
+            ("http://evil.com?x=api.openai.com", "evil.com"),
+            ("http://evil.com#api.openai.com", "evil.com"),
+            ("http://evil.com\\api.openai.com", "evil.com"),
+            ("http://api.openai.com:80/v1", "api.openai.com:80"),
+        ] {
+            assert_eq!(parse_plain_http_host(target, &[]), want, "{target}");
+        }
+    }
+
+    #[test]
+    fn in_tunnel_request_with_an_ambiguous_authority_is_flagged() {
+        let req = |target: &str, host: Option<&str>| HttpRequest {
+            method: "POST".into(),
+            target: target.into(),
+            version: "HTTP/1.1".into(),
+            headers: host.map(|h| ("Host".to_string(), h.to_string())).into_iter().collect(),
+            body: Vec::new(),
+        };
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "/v1",
+            Some("api.openai.com")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "https://api.openai.com/v1",
+            Some("api.openai.com:443")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req("/v1", None)));
+        for (target, host) in [
+            ("/v1", Some("api.openai.com:@evil.com")),
+            ("/v1", Some("evil.com@api.openai.com")),
+            ("/v1", Some("")),
+            ("https://api.openai.com@evil.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com:x/v1", None),
+        ] {
+            assert!(
+                ProxyServer::request_authority_is_ambiguous(&req(target, host)),
+                "{target} {host:?}"
+            );
+        }
     }
 
     #[test]
