@@ -99,23 +99,15 @@ impl AnomalyDetector {
     /// (the non-fail-closed variant is used deliberately to preserve this
     /// function's pre-existing empty-allowlist behavior).
     pub fn check_unknown_connection(&self, agent_id: AgentId, url: &str, allowlist: &[String]) -> Option<AnomalyEvent> {
-        let host_port = url
-            .split_once("://")
-            .map(|x| x.1)
-            .unwrap_or(url)
-            .split('/')
-            .next()
-            .unwrap_or("");
-        // AAASM-3367: `convert.rs` builds the URL as `proto://host:port`, so the
-        // authority extracted above still carries the `:port` suffix. Allowlist
-        // entries are bare hosts, so comparing `host:port` against them always
-        // failed. Strip a trailing numeric `:port` before the allowlist compare,
-        // mirroring the engine network stage (AAASM-3350, `engine/decision.rs`).
-        let host = match host_port.rsplit_once(':') {
-            Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-            _ => host_port,
-        };
-        if aa_core::policy::is_host_allowed_by_egress_allowlist(host, allowlist) {
+        // AAASM-6313: the same host the engine network stage judges
+        // (`egress_host_from_url`, which already strips the AAASM-3367 `:port`).
+        // A URL whose host is ambiguous cannot be vouched for, so it is reported
+        // as unknown rather than matched against a hand-split fragment.
+        let parsed = aa_core::policy::egress_host_from_url(url);
+        let host = parsed.as_deref().unwrap_or(url);
+        if allowlist.is_empty()
+            || (parsed.is_some() && aa_core::policy::is_host_allowed_by_egress_allowlist(host, allowlist))
+        {
             return None;
         }
         Some(AnomalyEvent {
@@ -461,6 +453,42 @@ mod tests {
         let result = detector.check_unknown_connection(id, "https://evil-api.anthropic.com.attacker.com/x", &allowlist);
         assert!(result.is_some());
         assert_eq!(result.unwrap().anomaly_type, AnomalyType::UnknownExternalConnection);
+    }
+
+    #[test]
+    fn unknown_connection_judges_the_host_a_client_would_dial() {
+        // AAASM-6313: each URL's real host is `evil.com`; none may be matched
+        // against the allowlisted name that appears elsewhere in the string.
+        let detector = default_detector();
+        let allowlist = vec!["api.openai.com".to_string(), "*.anthropic.com".to_string()];
+        for (n, url) in [
+            "https://evil.com#.anthropic.com/x",
+            "https://evil.com?x=api.openai.com",
+            "https://evil.com\\@api.openai.com/",
+            "evil.com/x://api.openai.com",
+            "https://api.openai.com:@evil.com/",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(
+                detector
+                    .check_unknown_connection(agent(40 + n as u8), url, &allowlist)
+                    .is_some(),
+                "{url}"
+            );
+        }
+        // controls: the allowlisted host is still recognised
+        for url in [
+            "https://api.openai.com/v1",
+            "https://x.anthropic.com:8443/y",
+            "https://u:p@api.openai.com/z",
+        ] {
+            assert!(
+                detector.check_unknown_connection(agent(50), url, &allowlist).is_none(),
+                "{url}"
+            );
+        }
     }
 
     #[test]
