@@ -3008,6 +3008,15 @@ impl ProxyServer {
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: conflicting destination (fail-closed)",
             );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
             return self.refuse_plain_http_403(reader, "").await;
         }
         // AAASM-6313: an authority that cannot be read one way (see the CONNECT
@@ -3016,6 +3025,15 @@ impl ProxyServer {
             tracing::info!(
                 transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
                 "plain-HTTP egress denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
             );
             return self.refuse_plain_http_403(reader, "").await;
         }
@@ -4546,6 +4564,65 @@ mod tests {
             !serialized.contains(EVIDENCE_TEST_SECRET),
             "SECURITY INVARIANT VIOLATED: raw value in the persisted record: {serialized}"
         );
+    }
+
+    /// AAASM-6313 (F3): the ambiguous-authority refusals, driven through the
+    /// real `handle_connection` entry point under a default-open policy (empty
+    /// allowlist), so only the ambiguity check can be what refuses them. Each
+    /// must answer 403 and persist an allowlist-rule, not-forwarded record.
+    async fn assert_ambiguity_refused(request: &str) {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{request:?} -> {response:?}");
+        let entry = audit_rx
+            .try_recv()
+            .unwrap_or_else(|_| panic!("{request:?}: the refusal persisted no record"));
+        assert_eq!(entry.decision, ProxyAuditDecision::Blocked, "{request:?}");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::EgressAllowlist), "{request:?}");
+        assert!(entry.execution.establishes_non_transmission(), "{request:?}");
+    }
+
+    #[tokio::test]
+    async fn connect_with_an_ambiguous_authority_is_refused() {
+        for target in [
+            "api.openai.com:@evil.com:443",
+            "evil.com#.openai.com:443",
+            "api.openai.com\\@evil.com:443",
+            "user@api.openai.com:443",
+            "api.openai.com:44x",
+        ] {
+            assert_ambiguity_refused(&format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n")).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_http_with_an_ambiguous_authority_is_refused() {
+        for request in [
+            // two Host headers: a downstream parser may pick either
+            "GET /x HTTP/1.1\r\nHost: api.openai.com\r\nHost: evil.com\r\n\r\n",
+            // absolute-form target disagrees with Host
+            "GET http://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // neither origin-form, absolute-form nor `*`
+            "GET evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // userinfo smuggled into the absolute-form authority
+            "GET http://api.openai.com@evil.com/x HTTP/1.1\r\nHost: api.openai.com@evil.com\r\n\r\n",
+            // upper-case scheme must not hide the target authority
+            "GET HTTP://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+        ] {
+            assert_ambiguity_refused(request).await;
+        }
+    }
+
+    /// Positive control for the two tests above: a well-formed request that is
+    /// refused for a *different* reason carries a different rule, so the
+    /// ambiguity assertion is not satisfied by "anything refused".
+    #[tokio::test]
+    async fn a_well_formed_authority_is_not_refused_as_ambiguous() {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, "GET http://127.0.0.1/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response:?}");
+        let entry = audit_rx.try_recv().expect("the SSRF refusal persisted a record");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::SsrfBlockedAddress));
     }
 
     /// Redaction **forwards** the scrubbed bytes. The record must say
