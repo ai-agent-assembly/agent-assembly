@@ -596,22 +596,58 @@ pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[
 /// `/`), so `https://evil.com#.openai.com/` is `evil.com`, not
 /// `evil.com#.openai.com`. Userinfo (`user@`) and a numeric `:port` are
 /// stripped; one trailing dot is dropped. Whitespace or control characters in
-/// the authority, an empty host, or a host with characters outside
+/// the authority, an empty host, or a missing or malformed scheme, or a host with characters outside
 /// `[A-Za-z0-9._-]` (other than a bracketed IPv6 literal) make the URL
 /// ambiguous: `None`, which every caller must treat as "not allowed". A
 /// non-ASCII host is therefore refused until it is presented as punycode.
 #[cfg(feature = "alloc")]
 pub fn egress_host_from_url(url: &str) -> Option<alloc::string::String> {
-    let rest = url.split_once("://")?.1;
+    let (scheme, rest) = url.split_once("://")?;
+    // The first `://` must follow a real scheme: in a scheme-less URL such as
+    // `evil.com/x://api.openai.com` it sits in the path, and a client would dial
+    // `evil.com`.
+    let mut scheme_chars = scheme.chars();
+    if !scheme_chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        || !scheme_chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+    {
+        return None;
+    }
     let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     let authority = &rest[..end];
     if authority.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    host_from_host_port(host_port)
+}
+
+/// The host of a bare `host[:port]` / `[ipv6][:port]` authority (a CONNECT
+/// target or a `Host` header value), lower-cased, or `None` when it is
+/// ambiguous (AAASM-6313). Unlike a URL authority it may carry NO userinfo: an
+/// `@` makes the value ambiguous, because a client that parses it as a URL
+/// would dial what follows the `@`. Callers must treat `None` as "refuse".
+#[cfg(feature = "alloc")]
+pub fn egress_host_from_authority(authority: &str) -> Option<alloc::string::String> {
+    if authority
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '@' | '/' | '?' | '#' | '\\'))
+    {
+        return None;
+    }
+    host_from_host_port(authority)
+}
+
+#[cfg(feature = "alloc")]
+fn host_from_host_port(host_port: &str) -> Option<alloc::string::String> {
     let host = if host_port.starts_with('[') {
         // A bracketed IPv6 literal, optionally followed by `:port`.
         let close = host_port.find(']')?;
+        if !host_port[1..close]
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.' | b'%'))
+        {
+            return None;
+        }
         let after = &host_port[close + 1..];
         if !(after.is_empty() || (after.starts_with(':') && after[1..].bytes().all(|b| b.is_ascii_digit()))) {
             return None;
@@ -665,7 +701,7 @@ mod egress_tests {
     use alloc::string::ToString;
     use alloc::vec;
 
-    use super::{egress_host_from_url, is_host_allowed_by_egress_allowlist};
+    use super::{egress_host_from_authority, egress_host_from_url, is_host_allowed_by_egress_allowlist};
 
     // ── AAASM-6313: the host a wildcard sees is the host a client dials ──────
 
@@ -690,6 +726,37 @@ mod egress_tests {
     }
 
     #[test]
+    fn host_from_authority_refuses_every_ambiguous_form() {
+        let h = |a: &str| egress_host_from_authority(a);
+        // legitimate controls
+        assert_eq!(h("API.OpenAI.com:443").as_deref(), Some("api.openai.com"));
+        assert_eq!(h("api.openai.com.").as_deref(), Some("api.openai.com"));
+        assert_eq!(h("[::1]:8080").as_deref(), Some("[::1]"));
+        assert_eq!(h("example.com").as_deref(), Some("example.com"));
+        // a non-numeric "port" used to strip to the allowlisted name
+        assert_eq!(h("api.openai.com:@evil.com"), None);
+        assert_eq!(h("api.openai.com:x"), None);
+        // userinfo, path, query, fragment, backslash, whitespace, control
+        for bad in [
+            "api.openai.com@evil.com",
+            "evil.com@api.openai.com",
+            "evil.com/api.openai.com",
+            "evil.com?api.openai.com",
+            "evil.com#api.openai.com",
+            "evil.com\\api.openai.com",
+            "evil.com api.openai.com",
+            "evil.com\t",
+            "",
+            ":443",
+            "[evil.com#x]",
+            "[::1",
+            "bad%host.com",
+        ] {
+            assert_eq!(h(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
     fn host_from_url_is_the_host_a_client_dials() {
         let host = |u: &str| egress_host_from_url(u);
         assert_eq!(host("https://evil.com#.openai.com/").as_deref(), Some("evil.com"));
@@ -705,6 +772,13 @@ mod egress_tests {
             Some("api.openai.com")
         );
         assert_eq!(host("http://[::1]:8080/").as_deref(), Some("[::1]"));
+        // a `://` inside the path/query of a scheme-less URL is not a scheme
+        assert_eq!(host("evil.com/x://api.openai.com"), None);
+        assert_eq!(host("evil.com?r=https://api.openai.com"), None);
+        assert_eq!(host("//api.openai.com/x"), None);
+        assert_eq!(host("1http://api.openai.com"), None);
+        // bracket contents must be an IPv6 literal
+        assert_eq!(host("http://[evil.com#x]/"), None);
         assert_eq!(host("https://a.example.com").as_deref(), Some("a.example.com"));
     }
 
