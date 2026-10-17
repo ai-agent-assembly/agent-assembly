@@ -1797,7 +1797,7 @@ impl ProxyServer {
         audit_reason: &str,
         client_message: &str,
     ) -> Result<(), ProxyError> {
-        tracing::warn!(%tool_name, "{audit_reason}; withholding (fail-closed)");
+        tracing::warn!(%tool_name, "{audit_reason}");
         self.interceptor
             .emit_mcp_decision(tool_name, args_bytes, true, audit_reason)
             .await;
