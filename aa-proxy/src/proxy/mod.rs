@@ -2276,7 +2276,10 @@ impl ProxyServer {
     ///
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
-    /// An empty allowlist keeps the default-open behaviour unchanged.
+    /// An empty allowlist keeps the default-open behaviour unchanged for a
+    /// well-formed host, but an ambiguous authority (duplicate or malformed
+    /// `Host`, userinfo, delimiters) is refused regardless of policy: which host
+    /// a client dials is undecidable, so there is nothing to default-open to.
     ///
     /// AAASM-5851: routes both candidate hosts through [`Self::egress_deny_reason`]
     /// (not just the local check), so a gateway-configured deployment cannot be
