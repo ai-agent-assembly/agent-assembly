@@ -136,6 +136,9 @@ impl CodexIntegration {
         if let Some(home) = paths.home() {
             adapter = adapter.with_home_dir(home.to_path_buf());
         }
+        if let Some(codex_home) = paths.codex_home() {
+            adapter = adapter.with_codex_home_dir(codex_home.to_path_buf());
+        }
         Self {
             paths,
             adapter,
@@ -1065,6 +1068,36 @@ mod tests {
             plan.planned_level,
             ProtectionLevel::GatewayProtected,
             "Codex has no endpoint-managed settings surface, so HostEnforced is never reachable"
+        );
+    }
+
+    /// AAASM-6332 review: the integration plans against `paths.settings_path`
+    /// while the adapter applies launch settings against its own paths. With a
+    /// CODEX_HOME they must name the same file, or `apply_settings` writes
+    /// `$HOME/.codex/config.toml`, which Codex does not read.
+    #[test]
+    fn the_adapter_resolves_the_same_settings_file_as_the_integration_plan() {
+        use aa_devtool_contract::SettingsScope::User;
+        let home = tempfile::tempdir().unwrap();
+        let codex_home = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::default()
+            .with_home(home.path().to_path_buf())
+            .with_codex_home(codex_home.path().to_path_buf());
+        let integ = CodexIntegration::with_paths(paths.clone());
+        let planned = paths.settings_path(User).unwrap();
+        assert_eq!(planned, codex_home.path().join("config.toml"));
+        assert_eq!(integ.adapter.launch_paths().settings_path(User).unwrap(), planned);
+
+        // Control: with no CODEX_HOME both fall back to $HOME/.codex.
+        let plain = CodexPaths::default().with_home(home.path().to_path_buf());
+        let integ = CodexIntegration::with_paths(plain.clone());
+        assert_eq!(
+            integ.adapter.launch_paths().settings_path(User).unwrap(),
+            plain.settings_path(User).unwrap()
+        );
+        assert_eq!(
+            plain.settings_path(User).unwrap(),
+            home.path().join(".codex/config.toml")
         );
     }
 }
