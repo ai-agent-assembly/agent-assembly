@@ -592,8 +592,8 @@ pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[
 /// The host a client would actually dial for `url`, lower-cased, or `None` when
 /// the URL is ambiguous or not an authority-bearing URL (AAASM-6313).
 ///
-/// The authority ends at the first `/`, `?`, `#` or `\` (a browser reads `\` as
-/// `/`), so `https://evil.com#.openai.com/` is `evil.com`, not
+/// The authority ends at the first `/`, `?` or `#`, and a `\` inside it is
+/// ambiguous (see below), so `https://evil.com#.openai.com/` is `evil.com`, not
 /// `evil.com#.openai.com`. Userinfo (`user@`) and a numeric `:port` are
 /// stripped; one trailing dot is dropped. Whitespace or control characters in
 /// the authority, an empty host, or a missing or malformed scheme, or a host with characters outside
@@ -612,9 +612,14 @@ pub fn egress_host_from_url(url: &str) -> Option<alloc::string::String> {
     {
         return None;
     }
-    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..end];
-    if authority.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    // A WHATWG client reads `\` as `/` while an RFC 3986 client keeps it in the
+    // authority, so `api.openai.com\@evil.com` dials two different hosts.
+    if authority
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    {
         return None;
     }
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
@@ -763,7 +768,16 @@ mod egress_tests {
         let host = |u: &str| egress_host_from_url(u);
         assert_eq!(host("https://evil.com#.openai.com/").as_deref(), Some("evil.com"));
         assert_eq!(host("https://evil.com?.openai.com/").as_deref(), Some("evil.com"));
-        assert_eq!(host("https://evil.com\\.openai.com/").as_deref(), Some("evil.com"));
+        // `\` is `/` to a WHATWG client but part of the authority to an RFC 3986
+        // one, so a URL carrying it is refused in either direction.
+        for u in [
+            "https://evil.com\\.openai.com/",
+            "https://api.openai.com\\@evil.com/",
+            "tcp://api.openai.com\\@evil.com:443",
+            "https://evil.com\\@api.openai.com/",
+        ] {
+            assert_eq!(host(u), None, "{u}");
+        }
         // userinfo is not the host
         assert_eq!(
             host("https://evil.com@api.openai.com/x").as_deref(),
