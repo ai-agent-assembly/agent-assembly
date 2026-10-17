@@ -101,6 +101,13 @@ fn sse_response(content_type: &str, events: &str) -> Vec<u8> {
     format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\n\r\n{events}").into_bytes()
 }
 
+const SSE_HEAD: &str = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n";
+
+/// One SSE event carrying a JSON-RPC result with `text`.
+fn event(text: &str) -> String {
+    format!("data: {}\n\n", text_result(text))
+}
+
 struct ClientRequest {
     method: &'static str,
     path: &'static str,
@@ -146,6 +153,17 @@ impl ClientRequest {
 /// Called when the upstream has received the request, before it replies.
 type OnRequest = Arc<dyn Fn() + Send + Sync>;
 
+/// One beat of a scripted upstream reply.
+#[derive(Clone)]
+enum Step {
+    Send(Vec<u8>),
+    Sleep(Duration),
+    /// Fire the hook (the gateway going silent), mid-stream.
+    Call(OnRequest),
+    /// Stand-in the scenario replaces with the gateway's go-silent hook.
+    GoSilent,
+}
+
 struct Upstream {
     addr: SocketAddr,
     request_count: Arc<Mutex<usize>>,
@@ -155,6 +173,18 @@ struct Upstream {
 impl Upstream {
     /// Replies to every request with exactly `response`, then closes.
     async fn start(ca: &CaStore, response: Vec<u8>, on_request: Option<OnRequest>) -> Self {
+        let mut script = Vec::new();
+        if let Some(hook) = on_request {
+            script.push(Step::Call(hook));
+            // Let the hook's effect land before the proxy sees the response.
+            script.push(Step::Sleep(Duration::from_millis(300)));
+        }
+        script.push(Step::Send(response));
+        Self::start_script(ca, script).await
+    }
+
+    /// Plays `script` on the response side of every request, then closes.
+    async fn start_script(ca: &CaStore, script: Vec<Step>) -> Self {
         let ck = ca.sign_cert(MCP_HOSTNAME).expect("ca sign_cert");
         let cert = CertificateDer::from(ck.cert_der.clone());
         let key = PrivateKeyDer::from(PrivatePkcs8KeyDer::from(ck.key_der.clone()));
@@ -173,9 +203,8 @@ impl Upstream {
                     return;
                 };
                 let acceptor = acceptor.clone();
-                let response = response.clone();
+                let script = script.clone();
                 let count = Arc::clone(&count);
-                let on_request = on_request.clone();
                 tokio::spawn(async move {
                     let Ok(mut tls) = acceptor.accept(stream).await else {
                         return;
@@ -203,13 +232,17 @@ impl Upstream {
                         }
                     }
                     *count.lock().unwrap() += 1;
-                    if let Some(hook) = on_request {
-                        hook();
-                        // Let the hook's effect land before the proxy sees the response.
-                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    for step in script {
+                        match step {
+                            Step::Send(bytes) => {
+                                let _ = tls.write_all(&bytes).await;
+                                let _ = tls.flush().await;
+                            }
+                            Step::Sleep(d) => tokio::time::sleep(d).await,
+                            Step::Call(hook) => hook(),
+                            Step::GoSilent => {}
+                        }
                     }
-                    let _ = tls.write_all(&response).await;
-                    let _ = tls.flush().await;
                     let _ = tls.shutdown().await;
                 });
             }
@@ -431,8 +464,15 @@ async fn client_config(ca_dir: &Path) -> Arc<ClientConfig> {
 }
 
 /// Everything the downstream client receives for one request, raw, read to EOF
-/// (the proxy closes after every response) or to a 25s ceiling.
-async fn send_through_proxy(proxy: SocketAddr, cfg: Arc<ClientConfig>, request: &ClientRequest) -> Vec<u8> {
+/// (the proxy closes after every response) or to `ceiling`; also how long after
+/// the request `marker` first appeared in what the client had received.
+async fn send_through_proxy_marked(
+    proxy: SocketAddr,
+    cfg: Arc<ClientConfig>,
+    request: &ClientRequest,
+    ceiling: Duration,
+    marker: Option<&str>,
+) -> (Vec<u8>, Option<Duration>) {
     let mut tcp = TcpStream::connect(proxy).await.unwrap();
     let target = format!("{MCP_HOSTNAME}:443");
     tcp.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
@@ -459,7 +499,9 @@ async fn send_through_proxy(proxy: SocketAddr, cfg: Arc<ClientConfig>, request: 
     tls.write_all(&request.bytes()).await.unwrap();
     let mut out = Vec::new();
     let mut tmp = [0u8; 8192];
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let started = Instant::now();
+    let mut marker_at = None;
+    let deadline = started + ceiling;
     while let Ok(Ok(n)) =
         tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), tls.read(&mut tmp)).await
     {
@@ -467,8 +509,15 @@ async fn send_through_proxy(proxy: SocketAddr, cfg: Arc<ClientConfig>, request: 
             break;
         }
         out.extend_from_slice(&tmp[..n]);
+        if marker_at.is_none() {
+            if let Some(m) = marker {
+                if String::from_utf8_lossy(&out).contains(m) {
+                    marker_at = Some(started.elapsed());
+                }
+            }
+        }
     }
-    out
+    (out, marker_at)
 }
 
 struct Run {
@@ -479,6 +528,8 @@ struct Run {
     alerts: Vec<SecretAlert>,
     audit: Vec<AuditEntry>,
     elapsed: Duration,
+    /// When `Scenario::marker` first reached the client.
+    marker_at: Option<Duration>,
 }
 
 struct Scenario {
@@ -488,6 +539,10 @@ struct Scenario {
     proxy: ProxyOpts,
     /// The gateway stops answering once the upstream has the request.
     gateway_silent_after_request: bool,
+    /// Scripted upstream reply; replaces `upstream_response` when set.
+    script: Option<Vec<Step>>,
+    ceiling: Duration,
+    marker: Option<&'static str>,
 }
 
 impl Scenario {
@@ -498,7 +553,25 @@ impl Scenario {
             request,
             proxy: ProxyOpts::default(),
             gateway_silent_after_request: false,
+            script: None,
+            ceiling: Duration::from_secs(25),
+            marker: None,
         }
+    }
+
+    fn with_script(mut self, script: Vec<Step>) -> Self {
+        self.script = Some(script);
+        self
+    }
+
+    fn with_ceiling(mut self, ceiling: Duration) -> Self {
+        self.ceiling = ceiling;
+        self
+    }
+
+    fn with_marker(mut self, marker: &'static str) -> Self {
+        self.marker = Some(marker);
+        self
     }
 
     fn with_proxy(mut self, proxy: ProxyOpts) -> Self {
@@ -513,7 +586,19 @@ impl Scenario {
         let cfg = client_config(dir.path()).await;
         let gateway = Gateway::start(&policy(self.policy_action)).await;
         let hook = self.gateway_silent_after_request.then(|| gateway.go_silent_hook());
-        let upstream = Upstream::start(&ca, self.upstream_response, hook).await;
+        let upstream = match self.script {
+            Some(script) => {
+                let script = script
+                    .into_iter()
+                    .map(|step| match step {
+                        Step::GoSilent => Step::Call(gateway.go_silent_hook()),
+                        other => other,
+                    })
+                    .collect();
+                Upstream::start_script(&ca, script).await
+            }
+            None => Upstream::start(&ca, self.upstream_response, hook).await,
+        };
         let (event_tx, _event_rx) = broadcast::channel::<PipelineEvent>(64);
         let (proxy, abort) = start_proxy(
             dir.path(),
@@ -525,7 +610,7 @@ impl Scenario {
         )
         .await;
         let started = Instant::now();
-        let raw = send_through_proxy(proxy, cfg, &self.request).await;
+        let (raw, marker_at) = send_through_proxy_marked(proxy, cfg, &self.request, self.ceiling, self.marker).await;
         let elapsed = started.elapsed();
         // The gateway audits before it replies; this only lets the sink task drain.
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -536,6 +621,7 @@ impl Scenario {
             alerts: gateway.drain_alerts(),
             audit: gateway.audit.lock().unwrap().clone(),
             elapsed,
+            marker_at,
         };
         abort.abort();
         run
@@ -803,60 +889,357 @@ async fn non_mcp_exchange_on_an_enforcing_host_is_relayed_byte_identical() {
     assert_eq!(tool_result_labels(&session_get).len(), 1);
 }
 
-/// (5, interim) An enforcing host serving `text/event-stream` is withheld before
-/// any event byte - for a recognised POST and for a bodyless `GET` carrying
-/// `Last-Event-ID`. Controls: with the endpoint unset the stream passes through
-/// untouched; and the same recognised exchange answered as `application/json` is
-/// evaluated and forwarded.
+/// (5) An enforcing host's `text/event-stream` response is judged event by
+/// event: every event is a gateway `ToolResult`, a denied event ends the stream
+/// (a fixed error event replaces it and nothing after it is forwarded), and no
+/// withheld byte reaches the client. Covers a recognised POST and a bodyless
+/// `GET` carrying `Last-Event-ID` (judged under the stream label). Controls: the
+/// same streams with clean events are delivered whole; with the endpoint unset
+/// the stream passes through untouched.
 #[tokio::test(flavor = "multi_thread")]
-async fn event_stream_response_on_an_enforcing_host_is_withheld() {
-    let events = format!("id: 1\ndata: {}\n\n", dirty());
-    let sse = sse_response("text/event-stream", &events);
+async fn event_streams_are_judged_event_by_event() {
+    let first = event("first event ok");
+    let bad = format!("data: {}\n\n", dirty());
+    let third = event("third event ok");
 
-    // The recognised POST streams *clean* events: if the gateway were what
-    // withheld it, it would be forwarded, so only the event-stream rule can
-    // produce the 502.
-    let clean_sse = sse_response("text/event-stream", &format!("id: 1\ndata: {}\n\n", clean()));
     let post = Scenario::new(
         "redact_only",
         ClientRequest::post(&jsonrpc("resources/read")),
-        clean_sse,
+        sse_response("text/event-stream", &[first.as_str(), &bad, &third].concat()),
     )
     .run()
     .await;
-    assert_withheld(&post, &["id: 1", "data: ", "nothing sensitive"]);
+    assert_eq!(post.upstream_requests, 1);
+    assert!(post.seen.starts_with("HTTP/1.1 200"), "got: {}", post.seen);
+    assert!(
+        post.seen.contains("first event ok"),
+        "the clean event before is delivered"
+    );
+    assert!(
+        !post.seen.contains(PATIENT_ID),
+        "the denied event must not reach the client"
+    );
+    assert!(
+        !post.seen.contains("third event ok"),
+        "nothing after the denial is forwarded"
+    );
+    assert!(post.seen.contains("event stream ended"), "got: {}", post.seen);
+    assert_eq!(
+        tool_result_labels(&post),
+        vec!["mcp-method:resources/read"; 2],
+        "the clean event and the denied one were each judged; the third never was"
+    );
 
-    let get = Scenario::new(
-        "redact_only",
-        ClientRequest::get(vec![("Accept", "text/event-stream"), ("Last-Event-ID", "7")]),
-        sse_response("Text/Event-Stream; charset=utf-8", &events),
-    )
-    .run()
-    .await;
-    assert_withheld(&get, &[PATIENT_ID]);
-
-    let standalone = Scenario::new(
-        "redact_only",
-        ClientRequest::get(vec![("Accept", "text/event-stream"), ("Last-Event-ID", "7")]),
-        sse.clone(),
-    )
-    .with_proxy(ProxyOpts {
-        endpoint: Endpoint::Unset,
-        ..ProxyOpts::default()
-    })
-    .run()
-    .await;
-    assert_eq!(standalone.raw, sse, "standalone proxy streams the bytes through");
-
-    let as_json = Scenario::new(
+    // control: the same stream with a clean middle event is delivered whole, in order
+    let ok = Scenario::new(
         "redact_only",
         ClientRequest::post(&jsonrpc("resources/read")),
-        ok_json(&clean()),
+        sse_response(
+            "text/event-stream",
+            &[first.as_str(), &event("middle ok"), &third].concat(),
+        ),
     )
     .run()
     .await;
-    assert_forwarded(&as_json, "200", "nothing sensitive");
-    assert_eq!(tool_result_labels(&as_json).len(), 1);
+    let at = |needle: &str| {
+        ok.seen
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing: {}", ok.seen))
+    };
+    assert!(at("first event ok") < at("middle ok") && at("middle ok") < at("third event ok"));
+    assert!(!ok.seen.contains("event stream ended"));
+    assert_eq!(tool_result_labels(&ok).len(), 3);
+
+    // a bodyless GET resuming a stream has no request to classify: the stream label
+    let get_headers = || vec![("Accept", "text/event-stream"), ("Last-Event-ID", "7")];
+    let get = Scenario::new(
+        "redact_only",
+        ClientRequest::get(get_headers()),
+        sse_response("Text/Event-Stream; charset=utf-8", &bad),
+    )
+    .run()
+    .await;
+    assert!(!get.seen.contains(PATIENT_ID), "got: {}", get.seen);
+    assert!(get.seen.contains("event stream ended"), "got: {}", get.seen);
+    assert_eq!(tool_result_labels(&get), vec!["mcp-method:#stream"]);
+    let get_ok = Scenario::new(
+        "redact_only",
+        ClientRequest::get(get_headers()),
+        sse_response("text/event-stream", &first),
+    )
+    .run()
+    .await;
+    assert!(get_ok.seen.contains("first event ok"), "got: {}", get_ok.seen);
+
+    // control: no gateway endpoint -> the bytes pass through untouched
+    let raw = sse_response("text/event-stream", &bad);
+    let standalone = Scenario::new("redact_only", ClientRequest::get(get_headers()), raw.clone())
+        .with_proxy(ProxyOpts {
+            endpoint: Endpoint::Unset,
+            ..ProxyOpts::default()
+        })
+        .run()
+        .await;
+    assert_eq!(standalone.raw, raw, "standalone proxy streams the bytes through");
+}
+
+/// (9) A clean stream is delivered as it arrives, not when it ends: the first
+/// event reaches the client while the upstream is still holding the connection
+/// open before its second.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clean_stream_is_delivered_incrementally() {
+    let r = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        Vec::new(),
+    )
+    .with_script(vec![
+        Step::Send(format!("{}{}", SSE_HEAD, event("early event")).into_bytes()),
+        Step::Sleep(Duration::from_secs(3)),
+        Step::Send(event("late event").into_bytes()),
+    ])
+    .with_marker("early event")
+    .run()
+    .await;
+    let early = r.marker_at.expect("first event delivered");
+    assert!(
+        early < Duration::from_millis(2500),
+        "first event arrived after {early:?}"
+    );
+    assert!(r.elapsed >= Duration::from_secs(3), "the stream really was held open");
+    assert!(r.seen.contains("late event"), "got: {}", r.seen);
+}
+
+/// (10) A built-in finding inside an event is redacted in that event and the
+/// stream continues. Control for (5): redaction is not a denial.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_credential_inside_an_event_is_redacted_and_the_stream_continues() {
+    let key = "AKIAABCDEFGHIJKLMNOP";
+    let events = [event(&format!("key {key}")), event("after")].concat();
+    let r = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        sse_response("text/event-stream", &events),
+    )
+    .run()
+    .await;
+    assert!(!r.seen.contains(key), "the credential reached the client");
+    assert!(r.seen.contains("[REDACTED:"), "got: {}", r.seen);
+    assert!(r.seen.contains("after"), "the stream continued: {}", r.seen);
+}
+
+/// (11) Framing quirks cannot get a value past the judgement: the value is
+/// found whatever the line endings, and comments and unknown fields (which a
+/// client ignores) are not forwarded at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn line_endings_comments_and_unknown_fields_do_not_hide_or_carry_content() {
+    for terminator in ["\r\n\r\n", "\r\r", "\n\n"] {
+        let events = format!("data: {}{terminator}", dirty());
+        let r = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            sse_response("text/event-stream", &events),
+        )
+        .run()
+        .await;
+        assert!(!r.seen.contains(PATIENT_ID), "{terminator:?}: {}", r.seen);
+        assert!(r.seen.contains("event stream ended"), "{terminator:?}: {}", r.seen);
+    }
+    let events = format!(": SMUGGLED-COMMENT\nx-smuggled: SMUGGLED-FIELD\ndata: {}\n\n", clean());
+    let r = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        sse_response("text/event-stream", &events),
+    )
+    .run()
+    .await;
+    assert!(r.seen.contains("nothing sensitive"), "got: {}", r.seen);
+    assert!(
+        !r.seen.contains("SMUGGLED"),
+        "unjudged content was forwarded: {}",
+        r.seen
+    );
+}
+
+/// (12) A chunked stream is decoded and judged the same way; the secret is
+/// caught even when a chunk boundary falls inside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_chunked_stream_is_judged_across_chunk_boundaries() {
+    let ev = format!("data: {}\n\n", dirty());
+    let (a, b) = ev.split_at(ev.find(PATIENT_ID).unwrap() + 6);
+    let chunk = |s: &str| format!("{:x}\r\n{s}\r\n", s.len());
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+    let body = format!("{head}{}{}0\r\n\r\n", chunk(a), chunk(b)).into_bytes();
+    let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("resources/read")), body)
+        .run()
+        .await;
+    assert!(!r.seen.contains(PATIENT_ID), "got: {}", r.seen);
+    assert!(r.seen.contains("event stream ended"), "got: {}", r.seen);
+}
+
+/// (13) The gateway stops answering mid-stream: the event it never judged is
+/// not forwarded, the stream ends with the fixed error, within the RPC bound.
+/// `mcp_fail_open` never governs a response.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_gateway_that_goes_silent_mid_stream_ends_it_fail_closed() {
+    let r = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        Vec::new(),
+    )
+    .with_proxy(ProxyOpts {
+        mcp_fail_open: true,
+        ..ProxyOpts::default()
+    })
+    .with_script(vec![
+        Step::Send(format!("{}{}", SSE_HEAD, event("judged event")).into_bytes()),
+        Step::Sleep(Duration::from_millis(600)),
+        Step::GoSilent,
+        Step::Sleep(Duration::from_millis(300)),
+        Step::Send(event("unjudged event").into_bytes()),
+    ])
+    .run()
+    .await;
+    assert!(r.seen.contains("judged event"), "got: {}", r.seen);
+    assert!(!r.seen.contains("unjudged event"), "got: {}", r.seen);
+    assert!(r.seen.contains("event stream ended"), "got: {}", r.seen);
+    assert!(r.elapsed < Duration::from_secs(20), "took {:?}", r.elapsed);
+}
+
+/// (14) A compressed stream cannot be read: it is withheld with a 502 before
+/// any byte. Control: the same stream uncompressed is delivered.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_compressed_or_foreign_charset_stream_is_withheld_before_any_byte() {
+    for extra in [
+        "Content-Encoding: gzip\r\n",
+        "Content-Type: text/event-stream; charset=utf-16\r\n",
+    ] {
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n{extra}\r\n");
+        let r = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            format!("{head}{}", event("sealed event")).into_bytes(),
+        )
+        .run()
+        .await;
+        assert_withheld(&r, &["sealed event"]);
+    }
+    let ok = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        sse_response("text/event-stream", &event("sealed event")),
+    )
+    .run()
+    .await;
+    assert_forwarded(&ok, "200", "sealed event");
+}
+
+/// (15) Interim `1xx` heads and Content-Type lists do not hide an event stream
+/// from per-event judgement: a dirty event under each wrapper is stopped, and
+/// the wrapped JSON controls are still evaluated whole.
+#[tokio::test(flavor = "multi_thread")]
+async fn interim_heads_and_content_type_lists_do_not_hide_an_event_stream() {
+    let bad = format!("data: {}\n\n", dirty());
+    for interim in [
+        "HTTP/1.1 100 Continue\r\n\r\n",
+        "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n",
+    ] {
+        let stream = [interim.as_bytes(), &sse_response("text/event-stream", &bad)].concat();
+        for request in [
+            ClientRequest::post(&jsonrpc("resources/read")),
+            ClientRequest::post(r#"{"a":1}"#),
+        ] {
+            let r = Scenario::new("redact_only", request, stream.clone()).run().await;
+            assert!(!r.seen.contains(PATIENT_ID), "{}", r.seen);
+            assert!(r.seen.contains("event stream ended"), "{}", r.seen);
+        }
+        // control: the interim head before an ordinary JSON response
+        let json = [interim.as_bytes(), &ok_json(&clean())].concat();
+        let ok = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            json.clone(),
+        )
+        .run()
+        .await;
+        assert_forwarded(&ok, "200", "nothing sensitive");
+        let raw = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), json.clone())
+            .run()
+            .await;
+        assert_eq!(raw.raw, json, "unrecognised exchange stays byte-identical");
+    }
+    for ct in [
+        "application/json, text/event-stream",
+        "TEXT/EVENT-STREAM",
+        "x/y;z=\"text/event-stream\"",
+    ] {
+        for request in [
+            ClientRequest::post(&jsonrpc("resources/read")),
+            ClientRequest::post(r#"{"a":1}"#),
+        ] {
+            let r = Scenario::new("redact_only", request, sse_response(ct, &bad))
+                .run()
+                .await;
+            assert!(!r.seen.contains(PATIENT_ID), "{ct}: {}", r.seen);
+            assert!(r.seen.contains("event stream ended"), "{ct}: {}", r.seen);
+        }
+    }
+    // a second Content-Type header
+    let two =
+        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-type: text/event-stream\r\n\r\n{bad}")
+            .into_bytes();
+    let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("resources/read")), two)
+        .run()
+        .await;
+    assert!(!r.seen.contains(PATIENT_ID), "{}", r.seen);
+    // control: a Content-Type list with no event stream is just evaluated
+    let ok = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        json_response("200 OK", &clean()),
+    )
+    .run()
+    .await;
+    assert_forwarded(&ok, "200", "nothing sensitive");
+}
+
+/// (16) An event that starts and never finishes is cut off after the partial
+/// event timeout; the unfinished bytes are never forwarded. Control: idle time
+/// BETWEEN events is not a stall.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stalled_partial_event_ends_the_stream_but_idle_time_between_events_does_not() {
+    let stalled = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        Vec::new(),
+    )
+    .with_script(vec![
+        Step::Send(format!("{}{}data: HALF-WRITTEN", SSE_HEAD, event("whole event")).into_bytes()),
+        Step::Sleep(Duration::from_secs(40)),
+    ])
+    .with_ceiling(Duration::from_secs(45))
+    .run()
+    .await;
+    assert!(stalled.seen.contains("whole event"), "got: {}", stalled.seen);
+    assert!(!stalled.seen.contains("HALF-WRITTEN"), "got: {}", stalled.seen);
+    assert!(stalled.seen.contains("event stream ended"), "got: {}", stalled.seen);
+    assert!(stalled.elapsed < Duration::from_secs(38), "took {:?}", stalled.elapsed);
+
+    let idle = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        Vec::new(),
+    )
+    .with_script(vec![
+        Step::Send(format!("{}{}", SSE_HEAD, event("before idle")).into_bytes()),
+        Step::Sleep(Duration::from_secs(35)),
+        Step::Send(event("after idle").into_bytes()),
+    ])
+    .with_ceiling(Duration::from_secs(45))
+    .run()
+    .await;
+    assert!(idle.seen.contains("after idle"), "got: {}", idle.seen);
+    assert!(!idle.seen.contains("event stream ended"), "got: {}", idle.seen);
 }
 
 /// (6) Attribution and `alert_only`: the gateway raises one `SecretAlert` for a
@@ -1080,91 +1463,6 @@ async fn labels_cannot_be_steered_by_tool_names_or_method_text() {
             .await;
         assert_eq!(tool_result_labels(&r), vec![want.to_string()], "method {method:?}");
     }
-}
-
-/// (F4) The event-stream rule survives an interim `1xx` head and Content-Type
-/// lists. Every stream carries CLEAN events, so only the event-stream rule can
-/// withhold. Controls: the same wrappers around `application/json` pass.
-#[tokio::test(flavor = "multi_thread")]
-async fn interim_heads_and_content_type_lists_do_not_hide_an_event_stream() {
-    let events = format!("id: 1\ndata: {}\n\n", clean());
-    let hidden = ["id: 1", "data: ", "nothing sensitive"];
-    for interim in [
-        "HTTP/1.1 100 Continue\r\n\r\n",
-        "HTTP/1.1 103 Early Hints\r\nLink: </a>\r\n\r\n",
-    ] {
-        let stream = [interim.as_bytes(), &sse_response("text/event-stream", &events)].concat();
-        let recognised = Scenario::new(
-            "redact_only",
-            ClientRequest::post(&jsonrpc("resources/read")),
-            stream.clone(),
-        )
-        .run()
-        .await;
-        assert_withheld(&recognised, &hidden);
-        let unrecognised = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), stream)
-            .run()
-            .await;
-        assert!(unrecognised.seen.contains("withheld"), "got: {}", unrecognised.seen);
-        for h in hidden {
-            assert!(!unrecognised.seen.contains(h), "{h} leaked: {}", unrecognised.seen);
-        }
-
-        // control: the interim head before an ordinary JSON response
-        let json = [interim.as_bytes(), &ok_json(&clean())].concat();
-        let ok = Scenario::new(
-            "redact_only",
-            ClientRequest::post(&jsonrpc("resources/read")),
-            json.clone(),
-        )
-        .run()
-        .await;
-        assert_forwarded(&ok, "200", "nothing sensitive");
-        let raw = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), json.clone())
-            .run()
-            .await;
-        assert_eq!(raw.raw, json, "unrecognised exchange stays byte-identical");
-    }
-
-    for ct in [
-        "application/json, text/event-stream",
-        "TEXT/EVENT-STREAM",
-        "x/y;z=\"text/event-stream\"",
-    ] {
-        let r = Scenario::new(
-            "redact_only",
-            ClientRequest::post(&jsonrpc("resources/read")),
-            sse_response(ct, &events),
-        )
-        .run()
-        .await;
-        assert_withheld(&r, &hidden);
-        let u = Scenario::new(
-            "redact_only",
-            ClientRequest::post(r#"{"a":1}"#),
-            sse_response(ct, &events),
-        )
-        .run()
-        .await;
-        assert!(u.seen.contains("withheld"), "{ct}: {}", u.seen);
-    }
-    // a second Content-Type header
-    let two =
-        format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\ncontent-type: text/event-stream\r\n\r\n{events}")
-            .into_bytes();
-    let r = Scenario::new("redact_only", ClientRequest::post(&jsonrpc("resources/read")), two)
-        .run()
-        .await;
-    assert_withheld(&r, &hidden);
-    // control: a Content-Type list with no event stream is just evaluated
-    let ok = Scenario::new(
-        "redact_only",
-        ClientRequest::post(&jsonrpc("resources/read")),
-        json_response("200 OK", &clean()),
-    )
-    .run()
-    .await;
-    assert_forwarded(&ok, "200", "nothing sensitive");
 }
 
 /// A request whose encoding the proxy cannot judge is denied BEFORE any
