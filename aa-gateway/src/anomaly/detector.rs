@@ -114,7 +114,11 @@ impl AnomalyDetector {
             anomaly_type: AnomalyType::UnknownExternalConnection,
             response: AnomalyResponse::default_for(AnomalyType::UnknownExternalConnection),
             agent_id,
-            description: format!("Connection to host '{host}' not in network allowlist"),
+            // Never echo an ambiguous URL: it may carry userinfo credentials.
+            description: match parsed.as_deref() {
+                Some(host) => format!("Connection to host '{host}' not in network allowlist"),
+                None => "Connection to an ambiguous destination URL not in network allowlist".to_string(),
+            },
             detected_at: chrono::Utc::now(),
         })
     }
@@ -478,6 +482,12 @@ mod tests {
                 "{url}"
             );
         }
+        // an ambiguous URL is reported without echoing it: userinfo is a credential
+        let leaky = "https://svc:hunter2pw@api.openai.com\\@evil.com/";
+        let event = detector
+            .check_unknown_connection(agent(45), leaky, &allowlist)
+            .expect("ambiguous URL is unknown");
+        assert!(!event.description.contains("hunter2pw"), "{}", event.description);
         // controls: the allowlisted host is still recognised
         for url in [
             "https://api.openai.com/v1",
