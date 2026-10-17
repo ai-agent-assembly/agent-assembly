@@ -749,6 +749,8 @@ mod egress_tests {
             "",
             ":443",
             "[evil.com#x]",
+            "[evil.com]",
+            "[evil.com]:443",
             "[::1",
             "bad%host.com",
         ] {
@@ -779,6 +781,8 @@ mod egress_tests {
         assert_eq!(host("1http://api.openai.com"), None);
         // bracket contents must be an IPv6 literal
         assert_eq!(host("http://[evil.com#x]/"), None);
+        assert_eq!(host("http://[evil.com]/"), None);
+        assert_eq!(host("http://[evil.com]:80/"), None);
         assert_eq!(host("https://a.example.com").as_deref(), Some("a.example.com"));
     }
 
