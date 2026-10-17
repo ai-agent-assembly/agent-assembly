@@ -31,7 +31,10 @@ managed-settings surface (`aa-devtool-codex/src/lib.rs`, `apply_settings`),
 which lets the adapter push `sandbox_mode` / `approval_policy` without
 modifying the tool binary (it no longer writes `allowed_domains` /
 `blocked_domains`: codex-cli 0.160.0 does not honor them and rejects them
-under `--strict-config`, AAASM-6330; network egress rests on `aa-proxy`) —
+under `--strict-config`, AAASM-6330; network egress rests on `aa-proxy`. A
+`config.toml` written by an earlier version may still contain those two keys: the
+adapter cannot tell its own legacy lines from yours, so it does not delete
+them — remove them by hand if `codex --strict-config` rejects the file) —
 this page named the file `.codex/config.toml` when first written, was
 changed to `.codex/config.json` in a later correction to match the
 adapter's actual (buggy) write path, and is back to `.toml` now that
