@@ -46,7 +46,7 @@ Already-merged evidence reused, not repeated: `cli_run_workspace_tx.rs` (4 tests
 `cli_run_concurrent_isolation.rs` (1), `cli_run_execution_receipt.rs` (6). QA re-ran them on
 this revision; all passed.
 
-### 1.3 Findings (not fixed here; each has a passing characterisation test and an `#[ignore]`d `desired_*` test)
+### 1.3 Findings (found here; F1 is since fixed by AAASM-6319, the others still have a passing characterisation test and an `#[ignore]`d `desired_*` test)
 
 * **F1 — Codex install writes configuration that the current Codex CLI rejects.**
   `aa-devtool-codex/src/lifecycle.rs` `managed_settings_toml` writes
@@ -57,9 +57,14 @@ this revision; all passed.
   'workspace-write', 'danger-full-access'`; `unknown variant 'file_writes', expected
   one of 'untrusted', 'on-failure', 'on-request', 'granular', 'never'`), while an empty
   config, `sandbox_mode = "read-only"` and `approval_policy = "on-request"` all load.
-  Net effect: after the Codex integration is installed, `codex` cannot load its own
-  configuration. **Do not run `aasm integrations install codex` against your real
-  `~/.codex` until fixed.**
+  Net effect: after the Codex integration was installed, `codex` could not load its own
+  configuration. **Fixed by AAASM-6319**: the install now writes
+  `sandbox_mode = "workspace-write"` or `"read-only"` and `approval_policy =
+  "on-failure"` or `"on-request"` (a string), and
+  `live_codex_loads_the_config_the_install_writes` runs the real `codex mcp list` over
+  the generated file against a throwaway `CODEX_HOME`. That test has only been run on
+  one host with `codex-cli 0.160.0`; until you have run the install yourself, install
+  into a throwaway `CODEX_HOME` first and check that `codex mcp list` loads it.
 * **F2 — Codex TOML merge discards comments and re-orders keys, permanently.**
   `aa-core` round-trips `config.toml` through `toml::Table`. User *values* are
   preserved and restored (including the user's own prior value of a managed key),
