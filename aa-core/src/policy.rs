@@ -647,9 +647,13 @@ fn host_from_host_port(host_port: &str) -> Option<alloc::string::String> {
     let host = if host_port.starts_with('[') {
         // A bracketed IPv6 literal, optionally followed by `:port`.
         let close = host_port.find(']')?;
-        if !host_port[1..close]
-            .bytes()
-            .all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.' | b'%'))
+        let inner = &host_port[1..close];
+        // An IPv6 literal always contains `:`. Without one, `[1.2.3.4]` or
+        // `[dead.beef]` is not a form clients agree on, so it is refused.
+        if !inner.contains(':')
+            || !inner
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || matches!(b, b':' | b'.' | b'%'))
         {
             return None;
         }
@@ -797,6 +801,11 @@ mod egress_tests {
         assert_eq!(host("http://[evil.com#x]/"), None);
         assert_eq!(host("http://[evil.com]/"), None);
         assert_eq!(host("http://[evil.com]:80/"), None);
+        // ...and must actually be IPv6: a bracketed IPv4 / dotted-hex is no host
+        assert_eq!(host("http://[1.2.3.4]/"), None);
+        assert_eq!(host("http://[1.2.3.4]:80/"), None);
+        assert_eq!(host("http://[dead.beef]/"), None);
+        assert_eq!(host("http://[2001:db8::1]:443/").as_deref(), Some("[2001:db8::1]"));
         assert_eq!(host("https://a.example.com").as_deref(), Some("a.example.com"));
     }
 
