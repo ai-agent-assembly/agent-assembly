@@ -126,6 +126,16 @@ fn head_is_safe_to_reserialise(head: &http::HttpResponseHead) -> bool {
         && head.headers.iter().all(|(k, v)| clean(k) && clean(v))
 }
 
+/// A fixed, content-free label for why an upstream response could not be read.
+/// The parser's own messages quote the offending bytes (a header line, a status
+/// line, a chunk size), which are upstream-controlled and must not reach logs.
+fn upstream_failure_class(error: &ProxyError) -> &'static str {
+    match error {
+        ProxyError::Io(_) => "I/O error reading the upstream response",
+        _ => "upstream response rejected (malformed, oversized, unsupported framing, or timed out)",
+    }
+}
+
 /// Interim `1xx` heads tolerated before the real response head; more is treated
 /// as an evasion attempt and withheld (AAASM-6356).
 const MAX_INTERIM_HEADS: usize = 16;
@@ -1476,7 +1486,7 @@ impl ProxyServer {
             Err(e) => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
-                    error = %e,
+                    failure = upstream_failure_class(&e),
                     "MCP response parse failed; withholding unredacted upstream body (fail-closed)",
                 );
                 self.interceptor
@@ -1553,7 +1563,15 @@ impl ProxyServer {
             if http::raw_head_is_interim(&raw) {
                 interim += 1;
                 if interim > MAX_INTERIM_HEADS {
-                    return self.withhold_event_stream(client_tls, stream_label, &[]).await;
+                    return self
+                        .withhold_response(
+                            client_tls,
+                            stream_label,
+                            &[],
+                            "too many interim 1xx heads, withheld (fail-closed)",
+                            "MCP response sent too many interim heads and was withheld (fail-closed)",
+                        )
+                        .await;
                 }
                 continue;
             }
@@ -1757,22 +1775,34 @@ impl ProxyServer {
         tool_name: &str,
         args_bytes: &[u8],
     ) -> Result<(), ProxyError> {
-        tracing::warn!(
-            %tool_name,
-            "text/event-stream response on an enforcing host cannot be inspected; withholding (fail-closed)",
-        );
+        self.withhold_response(
+            client_tls,
+            tool_name,
+            args_bytes,
+            "event-stream response not inspectable, withheld (fail-closed)",
+            "MCP event-stream response cannot be inspected for secrets and was withheld (fail-closed)",
+        )
+        .await
+    }
+
+    /// Withhold a response before any of its body is forwarded: audit
+    /// `audit_reason` and answer the client with a `502` carrying only the
+    /// fixed `client_message`. Both are caller-chosen constants, so the audit
+    /// trail names the actual cause and no upstream content reaches either.
+    async fn withhold_response(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        tool_name: &str,
+        args_bytes: &[u8],
+        audit_reason: &str,
+        client_message: &str,
+    ) -> Result<(), ProxyError> {
+        tracing::warn!(%tool_name, "{audit_reason}; withholding (fail-closed)");
         self.interceptor
-            .emit_mcp_decision(
-                tool_name,
-                args_bytes,
-                true,
-                "event-stream response not inspectable, withheld (fail-closed)",
-            )
+            .emit_mcp_decision(tool_name, args_bytes, true, audit_reason)
             .await;
         client_tls
-            .write_all(&mcp_withheld_response_bytes(
-                "MCP event-stream response cannot be inspected for secrets and was withheld (fail-closed)",
-            ))
+            .write_all(&mcp_withheld_response_bytes(client_message))
             .await?;
         Ok(())
     }
@@ -3379,6 +3409,16 @@ fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AAASM-6356 review: the log label for a parse failure must never carry
+    // the upstream bytes the parser's message quotes.
+    #[test]
+    fn upstream_failure_class_never_echoes_the_parser_message() {
+        let quoted = ProxyError::Config("malformed response header line: \"X-Leak: SECRET-VALUE\"".into());
+        assert!(!upstream_failure_class(&quoted).contains("SECRET-VALUE"));
+        let io = ProxyError::Io(std::io::Error::other("SECRET-VALUE"));
+        assert!(!upstream_failure_class(&io).contains("SECRET-VALUE"));
+    }
 
     fn hdrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
