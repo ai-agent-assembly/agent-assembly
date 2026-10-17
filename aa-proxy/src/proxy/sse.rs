@@ -38,6 +38,9 @@ pub struct SseParser {
     /// The previous byte was `\r`, so a following `\n` is the same line end.
     pending_cr: bool,
     seen_event: bool,
+    /// Bytes of `buf` already searched for an event end, so a long event
+    /// dripped in small writes is scanned once, not once per write.
+    scanned: usize,
 }
 
 impl SseParser {
@@ -67,7 +70,14 @@ impl SseParser {
             }
         }
         let mut out = Vec::new();
-        while let Some(end) = self.buf.windows(2).position(|w| w == b"\n\n") {
+        loop {
+            let from = self.scanned.saturating_sub(1);
+            let Some(rel) = self.buf[from..].windows(2).position(|w| w == b"\n\n") else {
+                self.scanned = self.buf.len();
+                break;
+            };
+            let end = from + rel;
+            self.scanned = 0;
             let raw: Vec<u8> = self.buf.drain(..end + 2).collect();
             if let Some(canonical) = self.canonicalise(&raw[..end])? {
                 out.push(canonical);
@@ -76,6 +86,7 @@ impl SseParser {
         // Blank lines between events carry nothing.
         let blank = self.buf.iter().take_while(|&&b| b == b'\n').count();
         self.buf.drain(..blank);
+        self.scanned = self.scanned.saturating_sub(blank);
         if self.buf.len() > MAX_EVENT_BYTES {
             return Err(SseError::EventTooLarge);
         }
@@ -179,6 +190,23 @@ mod tests {
         assert!(p.has_partial());
         assert_eq!(p.push(b" done\n\n").unwrap(), vec![b"data: half done\n\n".to_vec()]);
         assert!(!p.has_partial());
+    }
+
+    #[test]
+    fn a_byte_at_a_time_drip_yields_the_same_events() {
+        let whole = b"data: a\r\n\r\n: c\n\ndata: b\n\n";
+        let mut p = SseParser::new();
+        let dripped: Vec<Vec<u8>> = whole.iter().flat_map(|b| p.push(&[*b]).unwrap()).collect();
+        assert_eq!(dripped, events(&[whole]));
+        assert_eq!(dripped.len(), 3);
+    }
+
+    #[test]
+    fn canonical_output_reparses_to_itself() {
+        let first =
+            events(&[b"\xEF\xBB\xBFevent: m\r\n:c\r\ndata: x\r\ndata: y\r\nid: 3\r\nretry: 5\r\nzz: q\r\n\r\n"]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(events(&[&first[0]]), first);
     }
 
     #[test]
