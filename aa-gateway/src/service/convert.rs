@@ -186,7 +186,15 @@ pub fn request_to_core(req: &CheckActionRequest) -> Result<(AgentContext, Govern
             }
         }
         Action::NetworkCall(nc) => {
-            let url = format!("{}://{}:{}", nc.protocol, nc.host, nc.port);
+            // The proxy sends an IPv6 literal without brackets, but a URL authority
+            // needs them; unbracketed, `::1` + `:443` parses as no host at all and
+            // the destination could never match a `[::1]` allowlist entry.
+            let host = if nc.host.contains(':') && !nc.host.starts_with('[') {
+                format!("[{}]", nc.host)
+            } else {
+                nc.host.clone()
+            };
+            let url = format!("{}://{}:{}", nc.protocol, host, nc.port);
             GovernanceAction::NetworkRequest {
                 url,
                 method: "CONNECT".into(),
@@ -556,6 +564,41 @@ mod tests {
             escalate_at: None,
             routing_history: vec![],
         }
+    }
+
+    #[test]
+    fn network_call_url_brackets_an_ipv6_host_so_it_parses_back_to_that_host() {
+        use aa_proto::assembly::policy::v1::{ActionContext, NetworkCallContext};
+
+        let url_for = |host: &str| {
+            let req = CheckActionRequest {
+                context: Some(ActionContext {
+                    action: Some(Action::NetworkCall(NetworkCallContext {
+                        host: host.into(),
+                        port: 443,
+                        protocol: "https".into(),
+                        in_allowlist: false,
+                    })),
+                }),
+                ..Default::default()
+            };
+            match request_to_core(&req).expect("convert").1 {
+                GovernanceAction::NetworkRequest { url, .. } => url,
+                other => panic!("expected NetworkRequest, got {other:?}"),
+            }
+        };
+        let host_of = |h: &str| aa_core::policy::egress_host_from_url(&url_for(h));
+
+        // Unbracketed (what the proxy sends) and pre-bracketed both resolve to the
+        // same host, which matches an allowlist entry written with brackets.
+        assert_eq!(host_of("::1").as_deref(), Some("[::1]"));
+        assert_eq!(host_of("[::1]").as_deref(), Some("[::1]"));
+        assert_eq!(host_of("2001:db8::1").as_deref(), Some("[2001:db8::1]"));
+        // Controls: names and dotted quads are untouched.
+        assert_eq!(host_of("api.openai.com").as_deref(), Some("api.openai.com"));
+        assert_eq!(host_of("1.2.3.4").as_deref(), Some("1.2.3.4"));
+        // A bracketed non-IPv6 literal is still refused.
+        assert_eq!(host_of("[1.2.3.4]"), None);
     }
 
     #[test]
