@@ -33,6 +33,7 @@ use aa_gateway::registry::convert::proto_agent_id_to_key;
 use aa_gateway::registry::AgentRegistry;
 use aa_gateway::service::PolicyServiceImpl;
 use aa_gateway::PolicyEngine;
+use aa_proto::assembly::audit::v1::audit_event;
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proxy::config::{CredentialAction, ProxyConfig};
@@ -162,6 +163,9 @@ enum Step {
     Call(OnRequest),
     /// Stand-in the scenario replaces with the gateway's go-silent hook.
     GoSilent,
+    /// Stand-in the scenario replaces with the hook that makes the gateway
+    /// connection fail outright.
+    GoDrop,
 }
 
 struct Upstream {
@@ -240,7 +244,7 @@ impl Upstream {
                             }
                             Step::Sleep(d) => tokio::time::sleep(d).await,
                             Step::Call(hook) => hook(),
-                            Step::GoSilent => {}
+                            Step::GoSilent | Step::GoDrop => {}
                         }
                     }
                     let _ = tls.shutdown().await;
@@ -266,6 +270,9 @@ struct Gateway {
     /// While set, the forwarder swallows what the proxy sends and the gateway
     /// never answers: the connection stays up, the RPC hangs.
     silent: Arc<AtomicBool>,
+    /// While set, the forwarder closes the proxy's connection: the next RPC
+    /// fails at once (a transport error, not a hang).
+    dropped: Arc<AtomicBool>,
     _forwarder: AbortHandle,
     _server: AbortHandle,
     alert_rx: Mutex<broadcast::Receiver<SecretAlert>>,
@@ -310,7 +317,9 @@ impl Gateway {
         let silent = Arc::new(AtomicBool::new(false));
         let front = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let forwarder_addr = front.local_addr().unwrap();
+        let dropped = Arc::new(AtomicBool::new(false));
         let silent_flag = Arc::clone(&silent);
+        let dropped_flag = Arc::clone(&dropped);
         let forwarder = tokio::spawn(async move {
             let mut conns = JoinSet::new();
             loop {
@@ -318,6 +327,7 @@ impl Gateway {
                     return;
                 };
                 let silent = Arc::clone(&silent_flag);
+                let dropped = Arc::clone(&dropped_flag);
                 conns.spawn(async move {
                     let Ok(outbound) = TcpStream::connect(real_addr).await else {
                         return;
@@ -330,6 +340,9 @@ impl Gateway {
                             match in_r.read(&mut buf).await {
                                 Ok(0) | Err(_) => return,
                                 Ok(n) => {
+                                    if dropped.load(Ordering::SeqCst) {
+                                        return;
+                                    }
                                     if !silent.load(Ordering::SeqCst) && out_w.write_all(&buf[..n]).await.is_err() {
                                         return;
                                     }
@@ -348,6 +361,7 @@ impl Gateway {
         Self {
             forwarder_addr,
             silent,
+            dropped,
             _forwarder: forwarder.abort_handle(),
             _server: server.abort_handle(),
             alert_rx: Mutex::new(alert_rx),
@@ -362,6 +376,11 @@ impl Gateway {
             out.push(a);
         }
         out
+    }
+
+    fn go_drop_hook(&self) -> OnRequest {
+        let flag = Arc::clone(&self.dropped);
+        Arc::new(move || flag.store(true, Ordering::SeqCst))
     }
 
     fn go_silent_hook(&self) -> OnRequest {
@@ -530,6 +549,8 @@ struct Run {
     elapsed: Duration,
     /// When `Scenario::marker` first reached the client.
     marker_at: Option<Duration>,
+    /// Reasons of the `PolicyViolation` audit events the proxy emitted.
+    violations: Vec<String>,
 }
 
 struct Scenario {
@@ -592,6 +613,7 @@ impl Scenario {
                     .into_iter()
                     .map(|step| match step {
                         Step::GoSilent => Step::Call(gateway.go_silent_hook()),
+                        Step::GoDrop => Step::Call(gateway.go_drop_hook()),
                         other => other,
                     })
                     .collect();
@@ -599,7 +621,7 @@ impl Scenario {
             }
             None => Upstream::start(&ca, self.upstream_response, hook).await,
         };
-        let (event_tx, _event_rx) = broadcast::channel::<PipelineEvent>(64);
+        let (event_tx, mut event_rx) = broadcast::channel::<PipelineEvent>(64);
         let (proxy, abort) = start_proxy(
             dir.path(),
             ca,
@@ -614,6 +636,14 @@ impl Scenario {
         let elapsed = started.elapsed();
         // The gateway audits before it replies; this only lets the sink task drain.
         tokio::time::sleep(Duration::from_millis(150)).await;
+        let mut violations = Vec::new();
+        while let Ok(event) = event_rx.try_recv() {
+            if let PipelineEvent::Audit(audit) = event {
+                if let Some(audit_event::Detail::Violation(v)) = audit.inner.detail {
+                    violations.push(v.reason);
+                }
+            }
+        }
         let run = Run {
             seen: String::from_utf8_lossy(&raw).into_owned(),
             raw,
@@ -622,6 +652,7 @@ impl Scenario {
             audit: gateway.audit.lock().unwrap().clone(),
             elapsed,
             marker_at,
+            violations,
         };
         abort.abort();
         run
@@ -1528,4 +1559,75 @@ async fn an_unjudgeable_response_encoding_on_a_recognised_exchange_is_withheld()
     assert_eq!(r.upstream_requests, 1);
     assert!(r.seen.starts_with("HTTP/1.1 502"), "got: {}", r.seen);
     assert!(tool_result_labels(&r).is_empty(), "withheld before any gateway call");
+}
+
+/// (review) More interim `1xx` heads than the proxy tolerates withhold the
+/// response, and the audit trail names THAT cause - not an event stream, which
+/// the exchange never was. Control: the tolerated number of interim heads is
+/// relayed and the real response follows.
+#[tokio::test(flavor = "multi_thread")]
+async fn too_many_interim_heads_are_withheld_with_their_own_audit_reason() {
+    let interim = "HTTP/1.1 100 Continue\r\n\r\n";
+    let many = [interim.repeat(17).as_bytes(), &ok_json(&clean())].concat();
+    let r = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), many)
+        .run()
+        .await;
+    assert!(r.seen.contains("withheld"), "got: {}", r.seen);
+    assert!(!r.seen.contains("nothing sensitive"), "got: {}", r.seen);
+    assert_eq!(r.violations, vec!["too many interim 1xx heads, withheld (fail-closed)"]);
+
+    let few = [interim.repeat(3).as_bytes(), &ok_json(&clean())].concat();
+    let ok = Scenario::new("redact_only", ClientRequest::post(r#"{"a":1}"#), few.clone())
+        .run()
+        .await;
+    assert_eq!(ok.raw, few, "an ordinary run of interim heads is relayed unchanged");
+    assert!(ok.violations.is_empty());
+}
+
+/// (review) A gateway whose connection FAILS (rather than hangs) while a
+/// non-`tools/call` response is awaiting judgement withholds that response at
+/// once; `mcp_fail_open` does not change it. Control: with the gateway up the
+/// identical exchange is forwarded.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_gateway_call_withholds_a_non_tools_call_response() {
+    let reply = ok_json(&clean());
+    let script = |reply: &[u8], drop: bool| {
+        let mut steps = Vec::new();
+        if drop {
+            steps.push(Step::GoDrop);
+            steps.push(Step::Sleep(Duration::from_millis(300)));
+        }
+        steps.push(Step::Send(reply.to_vec()));
+        steps
+    };
+    for fail_open in [false, true] {
+        let r = Scenario::new(
+            "redact_only",
+            ClientRequest::post(&jsonrpc("resources/read")),
+            Vec::new(),
+        )
+        .with_proxy(ProxyOpts {
+            mcp_fail_open: fail_open,
+            ..ProxyOpts::default()
+        })
+        .with_script(script(&reply, true))
+        .run()
+        .await;
+        assert_withheld(&r, &["nothing sensitive"]);
+        assert!(r.elapsed < Duration::from_secs(8), "failed fast, took {:?}", r.elapsed);
+        assert!(
+            r.violations.iter().any(|v| v.contains("enforcement unavailable")),
+            "mcp_fail_open={fail_open}: {:?}",
+            r.violations
+        );
+    }
+    let ok = Scenario::new(
+        "redact_only",
+        ClientRequest::post(&jsonrpc("resources/read")),
+        Vec::new(),
+    )
+    .with_script(script(&reply, false))
+    .run()
+    .await;
+    assert_forwarded(&ok, "200", "nothing sensitive");
 }
