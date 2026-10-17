@@ -1214,7 +1214,12 @@ async fn a_stalled_partial_event_ends_the_stream_but_idle_time_between_events_do
         Vec::new(),
     )
     .with_script(vec![
-        Step::Send(format!("{}{}data: HALF-WRITTEN", SSE_HEAD, event("whole event")).into_bytes()),
+        Step::Send(format!("{}{}", SSE_HEAD, event("whole event")).into_bytes()),
+        // The half event arrives in a write of its own: the timer must start
+        // with the first byte of an unfinished event, not only when a write
+        // also completes another one.
+        Step::Sleep(Duration::from_millis(400)),
+        Step::Send(b"data: HALF-WRITTEN".to_vec()),
         Step::Sleep(Duration::from_secs(40)),
     ])
     .with_ceiling(Duration::from_secs(45))

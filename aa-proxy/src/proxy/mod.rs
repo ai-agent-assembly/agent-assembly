@@ -115,6 +115,17 @@ fn event_stream_head_is_judgeable(headers: &[(String, String)]) -> bool {
     !encoded && !foreign_charset
 }
 
+/// The head is re-serialised for the client, so a bare CR, LF or NUL inside the
+/// status line or a header would let a peer that treats a lone CR as a line end
+/// read an injected header.
+fn head_is_safe_to_reserialise(head: &http::HttpResponseHead) -> bool {
+    let clean = |s: &str| !s.contains(['\r', '\n', '\0']);
+    clean(&head.version)
+        && clean(&head.status_code)
+        && clean(&head.reason)
+        && head.headers.iter().all(|(k, v)| clean(k) && clean(v))
+}
+
 /// Interim `1xx` heads tolerated before the real response head; more is treated
 /// as an evasion attempt and withheld (AAASM-6356).
 const MAX_INTERIM_HEADS: usize = 16;
@@ -1593,7 +1604,7 @@ impl ProxyServer {
                 .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
                 .await;
         };
-        if !event_stream_head_is_judgeable(&head.headers) {
+        if !event_stream_head_is_judgeable(&head.headers) || !head_is_safe_to_reserialise(&head) {
             return self
                 .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
                 .await;
@@ -1607,6 +1618,10 @@ impl ProxyServer {
                 "connection",
                 "keep-alive",
                 "content-encoding",
+                "upgrade",
+                "te",
+                "trailer",
+                "proxy-connection",
             ]
             .iter()
             .any(|h| k.eq_ignore_ascii_case(h));
@@ -1670,7 +1685,7 @@ impl ProxyServer {
             };
             partial_since = match (parser.has_partial(), events.is_empty(), partial_since) {
                 (false, _, _) => None,
-                (true, true, since) => since,
+                (true, true, since) => since.or(Some(tokio::time::Instant::now())),
                 (true, false, _) => Some(tokio::time::Instant::now()),
             };
             for event in events {
@@ -3367,6 +3382,21 @@ mod tests {
 
     fn hdrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_head_with_a_bare_cr_lf_or_nul_is_not_reserialised() {
+        let head = |reason: &str, header: (&str, &str)| http::HttpResponseHead {
+            version: "HTTP/1.1".into(),
+            status_code: "200".into(),
+            reason: reason.into(),
+            headers: vec![(header.0.into(), header.1.into())],
+            raw: Vec::new(),
+        };
+        assert!(head_is_safe_to_reserialise(&head("OK", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK\rSet-Cookie: x", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\rSet-Cookie: x"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\0"))));
     }
 
     // AAASM-6356 PR2: only a stream whose bytes are readable UTF-8 text can be
