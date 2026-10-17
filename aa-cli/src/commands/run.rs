@@ -1435,6 +1435,11 @@ mod plan {
     }
 
     impl IsolationPlan {
+        /// Whether a backend was selected, without taking it.
+        pub(super) fn has_backend(&self) -> bool {
+            self.backend.is_some()
+        }
+
         /// Take the selected backend, leaving none behind.
         ///
         /// Consuming rather than borrowing because the launch path needs it as
@@ -2238,6 +2243,11 @@ mod plan {
                 isolation,
                 boundary,
             }
+        }
+
+        /// Whether an isolation backend was selected (and will confine the tool).
+        pub(super) fn has_backend(&self) -> bool {
+            self.isolation.has_backend()
         }
 
         /// Take the selected isolation backend, leaving none behind.
@@ -6562,9 +6572,14 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         );
     }
     if mode != aa_core::EnforcementMode::Disabled {
-        if let Some(check) = aa_devtool::registry::verify_launch_boundary(
+        let launch_ctx = aa_devtool::registry::LaunchContext {
+            child_env: Some(bound.child_env()),
+            confined_by_backend: resolved.has_backend(),
+        };
+        if let Some(check) = aa_devtool::registry::verify_launch_boundary_in(
             &args.tool,
             bound.command(),
+            &launch_ctx,
             &managed_policy,
             mode == aa_core::EnforcementMode::Enforce,
         ) {
