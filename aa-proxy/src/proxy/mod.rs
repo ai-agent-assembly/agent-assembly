@@ -2306,7 +2306,10 @@ impl ProxyServer {
     ///
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
-    /// An empty allowlist keeps the default-open behaviour unchanged.
+    /// An empty allowlist keeps the default-open behaviour unchanged for a
+    /// well-formed host, but an ambiguous authority (duplicate or malformed
+    /// `Host`, userinfo, delimiters) is refused regardless of policy: which host
+    /// a client dials is undecidable, so there is nothing to default-open to.
     ///
     /// AAASM-5851: routes both candidate hosts through [`Self::egress_deny_reason`]
     /// (not just the local check), so a gateway-configured deployment cannot be
@@ -2322,6 +2325,9 @@ impl ProxyServer {
         // disallowed host in the `Host` header (or vice versa). Previously only
         // the target-preferred "effective" host was checked, so a mismatched
         // pair let the un-checked half slip past the allowlist.
+        if Self::request_authority_is_ambiguous(req) {
+            return Some(EgressDenyReason::NetworkAllowlist);
+        }
         for host in [Self::target_request_host(req), Self::header_request_host(req)]
             .into_iter()
             .flatten()
@@ -2349,13 +2355,33 @@ impl ProxyServer {
     /// `http://host/...`), with brackets/port stripped, or `None` for an
     /// origin-form target (`/path`).
     fn target_request_host(req: &HttpRequest) -> Option<&str> {
-        let rest = req
-            .target
-            .strip_prefix("https://")
-            .or_else(|| req.target.strip_prefix("http://"))?;
-        let host_port = rest.split('/').next().unwrap_or(rest);
-        let host = strip_host_port(host_port);
+        let rest = strip_http_scheme(&req.target)?;
+        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+        let host = strip_host_port(&rest[..end]);
         (!host.is_empty()).then_some(host)
+    }
+
+    /// AAASM-6313: whether the in-tunnel request names a destination authority
+    /// that is ambiguous (userinfo, a non-numeric port, stray delimiters). Both
+    /// the absolute-form target and the `Host` header are checked; an absent
+    /// header or origin-form target names nothing and is not ambiguous.
+    fn request_authority_is_ambiguous(req: &HttpRequest) -> bool {
+        let target_authority =
+            strip_http_scheme(&req.target).map(|rest| &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]);
+        let mut hosts = req
+            .headers
+            .iter()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case("host"))
+            .map(|(_, v)| v.trim());
+        let host = hosts.next();
+        // Two `Host` headers: a server may act on either, the proxy checked one.
+        if hosts.next().is_some() {
+            return true;
+        }
+        target_authority
+            .into_iter()
+            .chain(host)
+            .any(|a| aa_core::policy::egress_host_from_authority(a).is_none())
     }
 
     /// Host named by the `Host` header, with brackets/port stripped, or `None`
@@ -2672,6 +2698,31 @@ impl ProxyServer {
         // classified Unknown and raw-tunnelled under llm_only, and case/dot
         // variants would evade the denylist. `target` (with port) is retained
         // for the DNS/connect calls, which tolerate the trailing dot.
+        // AAASM-6313: refuse an authority that two parsers could read differently
+        // (userinfo, a non-numeric "port", path/query/fragment bytes, brackets
+        // that are not an IPv6 literal) BEFORE it is reduced to a host:
+        // `strip_host_port` keeps `api.openai.com` out of `api.openai.com:@evil`,
+        // so the allowlist would vouch for a name the dial never reaches.
+        if aa_core::policy::egress_host_from_authority(target).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "CONNECT denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method: "CONNECT",
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                probe_correlation,
+            );
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
         let host = canonical_host(target);
         let host = host.as_str();
 
@@ -2971,6 +3022,55 @@ impl ProxyServer {
         // (before any upstream dial), mirroring the CONNECT path's 403.
         // AAASM-5851: routed through `egress_deny_reason` too, so a
         // scheme-downgrade cannot also bypass gateway-mode network policy.
+        // AAASM-6313: the dial uses the absolute-form target when there is one, so
+        // a `Host` header naming something else (or a second `Host`) would reach
+        // the upstream unchecked. Refuse the disagreement and the duplicate.
+        let host_values: Vec<&str> = plain_http_host_values(&headers).collect();
+        let target_authority = strip_http_scheme(target).map(|_| host.as_str());
+        let disagrees = target_authority.is_some_and(|t| {
+            host_values.first().is_some_and(|h| {
+                aa_core::policy::egress_host_from_authority(h.trim()) != aa_core::policy::egress_host_from_authority(t)
+            })
+        });
+        let not_origin_form = !target.starts_with('/') && target != "*" && strip_http_scheme(target).is_none();
+        // A WHATWG client reads `\` in the authority as `/`, an RFC 3986 one does
+        // not; `parse_plain_http_host` cuts there, so refuse rather than pick a reading.
+        let backslash_authority = strip_http_scheme(target)
+            .is_some_and(|rest| rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].contains('\\'));
+        if host_values.len() > 1 || disagrees || not_origin_form || backslash_authority {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "plain-HTTP egress denied: conflicting destination (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
+            return self.refuse_plain_http_403(reader, "").await;
+        }
+        // AAASM-6313: an authority that cannot be read one way (see the CONNECT
+        // path) is refused before the allowlist sees a stripped, vouched-for host.
+        if aa_core::policy::egress_host_from_authority(&host).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "plain-HTTP egress denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
+            return self.refuse_plain_http_403(reader, "").await;
+        }
         let deny_host = strip_host_port(&host);
         if let Some(reason) = self.egress_deny_reason(deny_host, 80, "http").await {
             tracing::info!(
@@ -3322,19 +3422,36 @@ fn parse_connect_authority_port(authority: &str) -> Option<u16> {
 /// requests grow proxy memory without bound. Returning an owned value keeps the
 /// host on the stack frame and frees it when the request completes.
 fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
-    if let Some(url_host) = target.strip_prefix("http://") {
-        url_host.split('/').next().unwrap_or(url_host).to_string()
+    if let Some(url_host) = strip_http_scheme(target) {
+        let end = url_host.find(['/', '?', '#', '\\']).unwrap_or(url_host.len());
+        url_host[..end].to_string()
     } else {
-        headers
-            .iter()
-            .find_map(|h| {
-                let lower = h.to_ascii_lowercase();
-                lower
-                    .starts_with("host:")
-                    .then(|| h["host:".len()..].trim().to_string())
-            })
+        plain_http_host_values(headers)
+            .next()
+            .map(|v| v.trim().to_string())
             .unwrap_or_default()
     }
+}
+
+/// The remainder of an absolute-form `http://` / `https://` target, matching the
+/// scheme case-insensitively (RFC 3986 §3.1) so `HTTP://evil.com/` is not
+/// mistaken for an origin-form target (AAASM-6313).
+fn strip_http_scheme(target: &str) -> Option<&str> {
+    ["http://", "https://"].into_iter().find_map(|scheme| {
+        target
+            .get(..scheme.len())
+            .filter(|head| head.eq_ignore_ascii_case(scheme))
+            .map(|_| &target[scheme.len()..])
+    })
+}
+
+/// Every `Host` header value in the raw plain-HTTP header lines. More than one
+/// is itself ambiguous: servers disagree on whether the first or the last wins.
+fn plain_http_host_values(headers: &[String]) -> impl Iterator<Item = &str> {
+    headers.iter().filter_map(|h| {
+        let (name, value) = h.split_once(':')?;
+        name.trim().eq_ignore_ascii_case("host").then_some(value)
+    })
 }
 
 /// Find the value of a plain-HTTP header by name (case-insensitive) from the
@@ -3594,6 +3711,78 @@ mod tests {
         // Origin-form `http://host/path` targets resolve the host from the URL.
         let host = parse_plain_http_host("http://api.openai.com/v1/chat", &[]);
         assert_eq!(host, "api.openai.com");
+    }
+
+    #[test]
+    fn plain_http_host_stops_at_query_fragment_and_backslash() {
+        // AAASM-6313: the authority ends at the first `/ ? # \`, as a client reads it.
+        for (target, want) in [
+            ("http://evil.com?x=api.openai.com", "evil.com"),
+            ("http://evil.com#api.openai.com", "evil.com"),
+            ("http://evil.com\\api.openai.com", "evil.com"),
+            ("http://api.openai.com:80/v1", "api.openai.com:80"),
+        ] {
+            assert_eq!(parse_plain_http_host(target, &[]), want, "{target}");
+        }
+    }
+
+    #[test]
+    fn absolute_form_scheme_is_matched_case_insensitively() {
+        // AAASM-6313: `HTTP://evil.com/` is absolute-form, not an origin-form target.
+        assert_eq!(strip_http_scheme("HTTP://evil.com/x"), Some("evil.com/x"));
+        assert_eq!(strip_http_scheme("hTtPs://evil.com"), Some("evil.com"));
+        assert_eq!(strip_http_scheme("/v1/chat"), None);
+        assert_eq!(strip_http_scheme("ftp://evil.com"), None);
+        assert_eq!(strip_http_scheme("http:/"), None);
+        let headers = vec!["Host: api.openai.com\r\n".to_string()];
+        assert_eq!(parse_plain_http_host("HTTP://evil.com/", &headers), "evil.com");
+    }
+
+    #[test]
+    fn duplicate_host_headers_are_all_visible() {
+        let headers = vec![
+            "Host: api.openai.com\r\n".to_string(),
+            "host : evil.com\r\n".to_string(),
+            "X-Host: other\r\n".to_string(),
+        ];
+        assert_eq!(plain_http_host_values(&headers).count(), 2);
+    }
+
+    #[test]
+    fn in_tunnel_request_with_an_ambiguous_authority_is_flagged() {
+        let req = |target: &str, host: Option<&str>| HttpRequest {
+            method: "POST".into(),
+            target: target.into(),
+            version: "HTTP/1.1".into(),
+            headers: host.map(|h| ("Host".to_string(), h.to_string())).into_iter().collect(),
+            body: Vec::new(),
+        };
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "/v1",
+            Some("api.openai.com")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "https://api.openai.com/v1",
+            Some("api.openai.com:443")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req("/v1", None)));
+        let mut dup = req("/v1", Some("api.openai.com"));
+        dup.headers.push(("host".into(), "evil.com".into()));
+        assert!(ProxyServer::request_authority_is_ambiguous(&dup));
+        for (target, host) in [
+            ("/v1", Some("api.openai.com:@evil.com")),
+            ("/v1", Some("evil.com@api.openai.com")),
+            ("/v1", Some("")),
+            ("https://api.openai.com@evil.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com:x/v1", None),
+            ("HTTPS://evil.com@api.openai.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com\\@evil.com/v1", Some("api.openai.com")),
+        ] {
+            assert!(
+                ProxyServer::request_authority_is_ambiguous(&req(target, host)),
+                "{target} {host:?}"
+            );
+        }
     }
 
     #[test]
@@ -4420,6 +4609,67 @@ mod tests {
             !serialized.contains(EVIDENCE_TEST_SECRET),
             "SECURITY INVARIANT VIOLATED: raw value in the persisted record: {serialized}"
         );
+    }
+
+    /// AAASM-6313 (F3): the ambiguous-authority refusals, driven through the
+    /// real `handle_connection` entry point under a default-open policy (empty
+    /// allowlist), so only the ambiguity check can be what refuses them. Each
+    /// must answer 403 and persist an allowlist-rule, not-forwarded record.
+    async fn assert_ambiguity_refused(request: &str) {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{request:?} -> {response:?}");
+        let entry = audit_rx
+            .try_recv()
+            .unwrap_or_else(|_| panic!("{request:?}: the refusal persisted no record"));
+        assert_eq!(entry.decision, ProxyAuditDecision::Blocked, "{request:?}");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::EgressAllowlist), "{request:?}");
+        assert!(entry.execution.establishes_non_transmission(), "{request:?}");
+    }
+
+    #[tokio::test]
+    async fn connect_with_an_ambiguous_authority_is_refused() {
+        for target in [
+            "api.openai.com:@evil.com:443",
+            "evil.com#.openai.com:443",
+            "api.openai.com\\@evil.com:443",
+            "user@api.openai.com:443",
+            "api.openai.com:44x",
+        ] {
+            assert_ambiguity_refused(&format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n")).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_http_with_an_ambiguous_authority_is_refused() {
+        for request in [
+            // two Host headers: a downstream parser may pick either
+            "GET /x HTTP/1.1\r\nHost: api.openai.com\r\nHost: evil.com\r\n\r\n",
+            // absolute-form target disagrees with Host
+            "GET http://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // neither origin-form, absolute-form nor `*`
+            "GET evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // userinfo smuggled into the absolute-form authority
+            "GET http://api.openai.com@evil.com/x HTTP/1.1\r\nHost: api.openai.com@evil.com\r\n\r\n",
+            // backslash in the authority: WHATWG and RFC 3986 clients disagree
+            "GET http://api.openai.com\\@evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // upper-case scheme must not hide the target authority
+            "GET HTTP://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+        ] {
+            assert_ambiguity_refused(request).await;
+        }
+    }
+
+    /// Positive control for the two tests above: a well-formed request that is
+    /// refused for a *different* reason carries a different rule, so the
+    /// ambiguity assertion is not satisfied by "anything refused".
+    #[tokio::test]
+    async fn a_well_formed_authority_is_not_refused_as_ambiguous() {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, "GET http://127.0.0.1/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response:?}");
+        let entry = audit_rx.try_recv().expect("the SSRF refusal persisted a record");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::SsrfBlockedAddress));
     }
 
     /// Redaction **forwards** the scrubbed bytes. The record must say

@@ -188,18 +188,10 @@ fn stage_network(doc: &PolicyDocument, action: &aa_core::GovernanceAction) -> Op
 ///   single-file path used an empty-is-allow-all default and an exact-only
 ///   compare — a fail-open egress control.
 pub(crate) fn network_request_url_allowed(url: &str, np: &crate::policy::NetworkPolicy) -> bool {
-    let host_port = url
-        .split_once("://")
-        .map(|x| x.1)
-        .unwrap_or("")
-        .split('/')
-        .next()
-        .unwrap_or("");
-    let host = match host_port.rsplit_once(':') {
-        Some((h, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => h,
-        _ => host_port,
-    };
-    aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(host, &np.allowlist)
+    // AAASM-6313: judge the host a client would dial. An ambiguous URL has no
+    // such host and is refused, whatever the allowlist (even `*`).
+    aa_core::policy::egress_host_from_url(url)
+        .is_some_and(|host| aa_core::policy::is_host_allowed_by_egress_allowlist_fail_closed(&host, &np.allowlist))
 }
 
 /// Stage 3 — Tool allow/deny: deny a `ToolCall` whose tool policy is not allowed.
@@ -589,6 +581,57 @@ mod tests {
         GovernanceAction::NetworkRequest {
             url: url.into(),
             method: "GET".into(),
+        }
+    }
+
+    // AAASM-6313: a wildcard entry must not admit a URL whose real host differs.
+    #[test]
+    fn stage_network_refuses_urls_whose_real_host_is_not_allowlisted() {
+        let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
+        for evil in [
+            "https://evil.com#.openai.com/",
+            "https://evil.com?.openai.com/",
+            "https://evil.com\\.openai.com/",
+            "https://evil.com#.openai.com",
+        ] {
+            assert!(
+                matches!(
+                    stage_network(&doc, &net_action(evil)),
+                    Some(PolicyDecision::Deny { .. })
+                ),
+                "{evil}"
+            );
+        }
+        // control: the same wrappers around a genuinely allowlisted host pass
+        for ok in [
+            "https://api.openai.com/v1",
+            "https://x.api.openai.com:8443/v1?q=1#frag",
+            "https://user@api.openai.com/v1",
+            "https://API.OPENAI.COM./v1",
+        ] {
+            assert_eq!(stage_network(&doc, &net_action(ok)), None, "{ok}");
+        }
+    }
+
+    // AAASM-6313 (F2): the gateway builds `{protocol}://{host}:{port}` from a
+    // `NetworkCallContext`. The only in-tree producer, aa-proxy, sends "http" or
+    // "https", which must keep working; a protocol that is not a URI scheme
+    // makes the URL ambiguous and is refused (fail-closed), not guessed at.
+    #[test]
+    fn stage_network_accepts_proxy_protocols_and_refuses_non_scheme_protocols() {
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        for ok in ["https://api.openai.com:443", "http://api.openai.com:80"] {
+            assert_eq!(stage_network(&doc, &net_action(ok)), None, "{ok}");
+        }
+        for bad in [
+            "://api.openai.com:443",
+            "HTTP/1.1://api.openai.com:443",
+            "1http://api.openai.com:443",
+        ] {
+            assert!(
+                matches!(stage_network(&doc, &net_action(bad)), Some(PolicyDecision::Deny { .. })),
+                "{bad}"
+            );
         }
     }
 
