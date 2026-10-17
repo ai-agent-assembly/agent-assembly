@@ -951,6 +951,159 @@ pub fn serialize_http_response(resp: &HttpResponse, new_body: &[u8]) -> Vec<u8> 
     out
 }
 
+/// Largest piece [`BodyStream::next_piece`] returns, so a long chunk or a fast
+/// close-delimited body is handed to the caller in bounded steps.
+const BODY_STREAM_PIECE: usize = 8 * 1024;
+
+/// Incremental reader of a response body, for streams that cannot be buffered
+/// (AAASM-6356 PR2: Server-Sent Events). Yields the *decoded* payload — chunk
+/// framing is removed — in bounded pieces, with the same fail-closed framing
+/// rules as [`read_http_response_body`]: a literal `chunked` encoding, a
+/// `Content-Length`, or close-delimited. Any other `Transfer-Encoding` is
+/// refused when the stream is opened, and a truncated chunked body is an error
+/// rather than a quiet end.
+#[derive(Debug)]
+pub struct BodyStream {
+    framing: BodyFraming,
+}
+
+#[derive(Debug)]
+enum BodyFraming {
+    /// Inside a chunked body; `remaining` payload bytes are left in the current
+    /// chunk (0 means the next thing on the wire is a chunk-size line).
+    Chunked {
+        remaining: usize,
+    },
+    Length {
+        remaining: usize,
+    },
+    UntilClose,
+    Done,
+}
+
+impl BodyStream {
+    /// Pick the framing from `head`.
+    pub fn new(head: &HttpResponseHead) -> Result<Self, ProxyError> {
+        let find = |name: &str| {
+            head.headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.trim().to_ascii_lowercase())
+        };
+        // A reply with no body by definition never has one to wait for.
+        if matches!(head.status_code.as_str(), "204" | "304") || head.status_code.starts_with('1') {
+            return Ok(Self {
+                framing: BodyFraming::Done,
+            });
+        }
+        let framing = match (find("content-length"), find("transfer-encoding").as_deref()) {
+            (_, Some("chunked")) => BodyFraming::Chunked { remaining: 0 },
+            (_, Some(other)) => {
+                return Err(ProxyError::Config(format!(
+                    "response Transfer-Encoding {other:?} is not inspectable; refusing (fail-closed)"
+                )));
+            }
+            (Some(raw), None) => BodyFraming::Length {
+                remaining: raw
+                    .parse()
+                    .map_err(|_| ProxyError::Config(format!("malformed response Content-Length {raw:?}")))?,
+            },
+            (None, None) => BodyFraming::UntilClose,
+        };
+        Ok(Self { framing })
+    }
+
+    /// The next decoded piece, or `None` once the body has ended cleanly.
+    pub async fn next_piece<R>(&mut self, reader: &mut BufReader<R>) -> Result<Option<Vec<u8>>, ProxyError>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        loop {
+            match &mut self.framing {
+                BodyFraming::Done => return Ok(None),
+                BodyFraming::UntilClose => {
+                    let mut piece = vec![0u8; BODY_STREAM_PIECE];
+                    let n = reader.read(&mut piece).await?;
+                    if n == 0 {
+                        self.framing = BodyFraming::Done;
+                        return Ok(None);
+                    }
+                    piece.truncate(n);
+                    return Ok(Some(piece));
+                }
+                BodyFraming::Length { remaining } => {
+                    if *remaining == 0 {
+                        self.framing = BodyFraming::Done;
+                        return Ok(None);
+                    }
+                    let mut piece = vec![0u8; (*remaining).min(BODY_STREAM_PIECE)];
+                    let n = reader.read(&mut piece).await?;
+                    if n == 0 {
+                        return Err(ProxyError::Config(
+                            "response body ended before Content-Length; refusing (fail-closed)".into(),
+                        ));
+                    }
+                    *remaining -= n;
+                    piece.truncate(n);
+                    return Ok(Some(piece));
+                }
+                BodyFraming::Chunked { remaining } => {
+                    if *remaining > 0 {
+                        let mut piece = vec![0u8; (*remaining).min(BODY_STREAM_PIECE)];
+                        let n = reader.read(&mut piece).await?;
+                        if n == 0 {
+                            return Err(ProxyError::Config(
+                                "unexpected EOF inside a chunk; refusing (fail-closed)".into(),
+                            ));
+                        }
+                        *remaining -= n;
+                        piece.truncate(n);
+                        if *remaining == 0 {
+                            let mut crlf = [0u8; 2];
+                            reader.read_exact(&mut crlf).await?;
+                            if &crlf != b"\r\n" {
+                                return Err(ProxyError::Config(
+                                    "malformed chunk terminator; refusing (fail-closed)".into(),
+                                ));
+                            }
+                        }
+                        return Ok(Some(piece));
+                    }
+                    let mut size_line = String::new();
+                    let n = read_line_capped(reader, &mut size_line, MAX_HEADER_LINE_LEN, MAX_HEADER_LINE_LEN).await?;
+                    if n == 0 {
+                        return Err(ProxyError::Config(
+                            "unexpected EOF reading chunk size; refusing (fail-closed)".into(),
+                        ));
+                    }
+                    let size_text = size_line.trim_end_matches(['\r', '\n']);
+                    let size_hex = size_text.split(';').next().unwrap_or("").trim();
+                    let chunk_size = usize::from_str_radix(size_hex, 16)
+                        .map_err(|_| ProxyError::Config(format!("malformed chunk size: {size_text:?}")))?;
+                    if chunk_size == 0 {
+                        loop {
+                            let mut trailer = String::new();
+                            let n = read_line_capped(reader, &mut trailer, MAX_HEADER_LINE_LEN, MAX_HEADER_LINE_LEN)
+                                .await?;
+                            if n == 0 {
+                                return Err(ProxyError::Config(
+                                    "unexpected EOF reading chunked trailer; refusing (fail-closed)".into(),
+                                ));
+                            }
+                            if trailer.trim_end_matches(['\r', '\n']).is_empty() {
+                                break;
+                            }
+                        }
+                        self.framing = BodyFraming::Done;
+                        return Ok(None);
+                    }
+                    *remaining = chunk_size;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1688,6 +1841,53 @@ mod tests {
             matches!(&err, ProxyError::Config(m) if m.contains("not inspectable")),
             "expected fail-closed rejection of a layered Transfer-Encoding, got: {err:?}"
         );
+    }
+
+    // ── incremental body reading (AAASM-6356 PR2) ───────────────────────────
+
+    async fn stream_all(raw: &[u8]) -> Result<Vec<u8>, ProxyError> {
+        let mut reader = make_reader(raw);
+        let head = read_http_response_head(&mut reader).await?.expect("head present");
+        let mut stream = BodyStream::new(&head)?;
+        let mut out = Vec::new();
+        while let Some(piece) = stream.next_piece(&mut reader).await? {
+            out.extend_from_slice(&piece);
+        }
+        Ok(out)
+    }
+
+    #[tokio::test]
+    async fn body_stream_decodes_chunks_to_the_same_bytes_as_the_buffered_reader() {
+        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;ext=1\r\nhello\r\n7\r\n, world\r\n0\r\nX-T: 1\r\n\r\n";
+        assert_eq!(stream_all(raw).await.unwrap(), b"hello, world");
+    }
+
+    #[tokio::test]
+    async fn body_stream_honours_content_length_and_close_delimited_framing() {
+        let sized = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello-trailing-bytes-are-not-ours";
+        assert_eq!(stream_all(sized).await.unwrap(), b"hello");
+        let open = b"HTTP/1.1 200 OK\r\n\r\nuntil close";
+        assert_eq!(stream_all(open).await.unwrap(), b"until close");
+    }
+
+    #[tokio::test]
+    async fn body_stream_does_not_wait_for_a_body_on_a_bodyless_status() {
+        for status in ["204 No Content", "304 Not Modified"] {
+            let raw = format!("HTTP/1.1 {status}\r\nContent-Length: 9\r\n\r\n").into_bytes();
+            assert_eq!(stream_all(&raw).await.unwrap(), b"", "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn body_stream_fails_closed_on_truncation_and_layered_encodings() {
+        let cut_chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n";
+        assert!(stream_all(cut_chunked).await.is_err());
+        let cut_inside_chunk = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\nhel";
+        assert!(stream_all(cut_inside_chunk).await.is_err());
+        let short_length = b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nhel";
+        assert!(stream_all(short_length).await.is_err());
+        let layered = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\nx";
+        assert!(stream_all(layered).await.is_err());
     }
 
     #[tokio::test]

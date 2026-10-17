@@ -4,6 +4,7 @@
 //! and the interceptor. It is the top-level runtime object of the proxy.
 
 pub mod http;
+mod sse;
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -83,6 +84,47 @@ const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// either, and every connection task shares the one mutex, which is why the
 /// response side needs the bound.
 const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long an event stream may sit on an event that has started but not
+/// finished (AAASM-6356 PR2). Idle time *between* events is unbounded (a quiet
+/// server-push stream is legitimate); a half-written event that never ends is
+/// not, and holds buffered, unjudged bytes, so it ends the stream.
+const SSE_PARTIAL_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether the proxy can read an event stream's bytes as the UTF-8 text it
+/// parses: no `Content-Encoding` (the body would be compressed bytes) and, if
+/// a charset is declared, UTF-8 or ASCII.
+fn event_stream_head_is_judgeable(headers: &[(String, String)]) -> bool {
+    let encoded = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-encoding") && !v.trim().is_empty() && !v.trim().eq_ignore_ascii_case("identity")
+    });
+    let foreign_charset = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .any(|(_, v)| {
+            let v = v.to_ascii_lowercase();
+            v.split("charset=").skip(1).any(|rest| {
+                let name = rest
+                    .trim_start_matches(['"', ' '])
+                    .split([';', '"', ',', ' '])
+                    .next()
+                    .unwrap_or("");
+                !matches!(name, "utf-8" | "us-ascii" | "utf8")
+            })
+        });
+    !encoded && !foreign_charset
+}
+
+/// The head is re-serialised for the client, so a bare CR, LF or NUL inside the
+/// status line or a header would let a peer that treats a lone CR as a line end
+/// read an injected header.
+fn head_is_safe_to_reserialise(head: &http::HttpResponseHead) -> bool {
+    let clean = |s: &str| !s.contains(['\r', '\n', '\0']);
+    clean(&head.version)
+        && clean(&head.status_code)
+        && clean(&head.reason)
+        && head.headers.iter().all(|(k, v)| clean(k) && clean(v))
+}
 
 /// Interim `1xx` heads tolerated before the real response head; more is treated
 /// as an evasion attempt and withheld (AAASM-6356).
@@ -1342,10 +1384,10 @@ impl ProxyServer {
     /// `mcp_call` is `Some` for a recognised MCP exchange; its response is
     /// buffered, scanned and gateway-evaluated. For anything else the response
     /// is relayed byte-for-byte, except a `text/event-stream` response, which
-    /// is withheld before any byte of it is forwarded: an SSE stream is
+    /// is judged event by event ([`Self::relay_event_stream`]): an SSE stream is
     /// unbounded and cannot be buffered, and relaying it raw would let any MCP
     /// server (or a bodyless `GET` carrying `Last-Event-ID`) bypass response
-    /// enforcement. Interim until streaming evaluation lands (AAASM-6356 PR2).
+    /// enforcement.
     async fn relay_enforced_response(
         &self,
         // AAASM-5922: was `TlsStream<TcpStream>` — `dial_upstream_tls`'s
@@ -1359,12 +1401,15 @@ impl ProxyServer {
     ) -> Result<(), ProxyError> {
         let mut upstream_reader = BufReader::new(upstream_read);
         let Some((call, args_bytes)) = mcp_call else {
-            return self.relay_unrecognised_response(&mut upstream_reader, client_tls).await;
+            return self
+                .relay_unrecognised_response(&mut upstream_reader, client_tls, gateway, source_url)
+                .await;
         };
 
         enum Upstream {
             Closed,
-            EventStream,
+            /// The raw head, for the streaming relay to re-parse.
+            EventStream(Vec<u8>),
             Buffered(http::HttpResponse),
         }
         let read_result = tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, async {
@@ -1379,7 +1424,7 @@ impl ProxyServer {
                 // The lenient byte scan runs on the raw head so an odd head the
                 // strict parser rejects cannot hide an event stream.
                 if http::raw_head_is_event_stream(&raw) {
-                    return Ok(Upstream::EventStream);
+                    return Ok(Upstream::EventStream(raw));
                 }
                 if http::raw_head_is_interim(&raw) {
                     interim += 1;
@@ -1393,7 +1438,7 @@ impl ProxyServer {
                 break http::parse_raw_response_head(&raw)?;
             };
             if head.is_event_stream() {
-                return Ok(Upstream::EventStream);
+                return Ok(Upstream::EventStream(head.raw));
             }
             let body = read_http_response_body(&head, &mut upstream_reader).await?;
             Ok(Upstream::Buffered(http::HttpResponse {
@@ -1415,9 +1460,17 @@ impl ProxyServer {
                 self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
                     .await
             }
-            Ok(Upstream::EventStream) => {
-                self.withhold_event_stream(client_tls, &call.tool_name, args_bytes)
-                    .await
+            Ok(Upstream::EventStream(raw)) => {
+                self.relay_event_stream(
+                    &raw,
+                    &mut upstream_reader,
+                    client_tls,
+                    call,
+                    args_bytes,
+                    gateway,
+                    source_url,
+                )
+                .await
             }
             Ok(Upstream::Closed) => Ok(()), // Upstream closed without writing a response.
             Err(e) => {
@@ -1443,7 +1496,7 @@ impl ProxyServer {
     /// Response relay for a request an enforcing proxy did not recognise as
     /// MCP: the upstream bytes are forwarded unchanged (head verbatim, then the
     /// rest as a stream) with no gateway call, except `text/event-stream`,
-    /// which is withheld (see [`Self::relay_enforced_response`]).
+    /// which is judged event by event (see [`Self::relay_enforced_response`]).
     ///
     /// "Is this an event stream" is decided by a lenient byte scan of the raw
     /// head (see [`http::raw_head_is_event_stream`]), so a head the strict
@@ -1457,6 +1510,8 @@ impl ProxyServer {
         &self,
         upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
         let stream_label = MCP_LABEL_STREAM;
         let mut interim = 0usize;
@@ -1482,7 +1537,16 @@ impl ProxyServer {
                 }
             };
             if http::raw_head_is_event_stream(&raw) {
-                return self.withhold_event_stream(client_tls, stream_label, &[]).await;
+                // An event stream with no recognised request (a bodyless `GET`
+                // resuming with `Last-Event-ID`) is judged per event under the
+                // reserved stream label.
+                let call = crate::intercept::mcp::McpToolCall {
+                    tool_name: stream_label.to_string(),
+                    arguments: serde_json::Value::Null,
+                };
+                return self
+                    .relay_event_stream(&raw, upstream_reader, client_tls, &call, &[], gateway, source_url)
+                    .await;
             }
             // Not an event stream: relay the head unchanged, whatever its shape.
             client_tls.write_all(&raw).await?;
@@ -1498,6 +1562,193 @@ impl ProxyServer {
         }
     }
 
+    /// Relay an `text/event-stream` response on an enforcing host, one event at
+    /// a time (AAASM-6356 PR2).
+    ///
+    /// Each event is canonicalised ([`sse::SseParser`]), scanned with the
+    /// built-in patterns and judged by the gateway as a `ToolResult`, and what
+    /// is forwarded is exactly what was judged. The head goes out first (a
+    /// quiet stream must not stall its client), re-framed as close-delimited
+    /// with no `Content-Length`/`Transfer-Encoding`/`Content-Encoding`. A
+    /// denial, a gateway failure or timeout, an uninspectable event, a stalled
+    /// partial event or a framing error ends the stream: a fixed JSON-RPC error
+    /// event replaces whatever was next, and no later event is forwarded.
+    /// Like the buffered path, none of this is governed by `mcp_fail_open`.
+    ///
+    /// Events are judged one by one, so a value split across two events is not
+    /// seen whole. A stream that cannot be read at all (compressed, a foreign
+    /// charset, no gateway client) is withheld with a 502 before any byte.
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_event_stream(
+        &self,
+        raw_head: &[u8],
+        upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
+    ) -> Result<(), ProxyError> {
+        let Some(gw) = gateway else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        let Ok(head) = http::parse_raw_response_head(raw_head) else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        let Ok(mut body) = http::BodyStream::new(&head) else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        if !event_stream_head_is_judgeable(&head.headers) || !head_is_safe_to_reserialise(&head) {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        }
+
+        let mut out = format!("{} {} {}\r\n", head.version, head.status_code, head.reason).into_bytes();
+        for (k, v) in &head.headers {
+            let drop = [
+                "content-length",
+                "transfer-encoding",
+                "connection",
+                "keep-alive",
+                "content-encoding",
+                "upgrade",
+                "te",
+                "trailer",
+                "proxy-connection",
+            ]
+            .iter()
+            .any(|h| k.eq_ignore_ascii_case(h));
+            if !drop {
+                out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+            }
+        }
+        out.extend_from_slice(b"Connection: close\r\n\r\n");
+        client_tls.write_all(&out).await?;
+        client_tls.flush().await?;
+
+        let mut parser = sse::SseParser::new();
+        let mut partial_since: Option<tokio::time::Instant> = None;
+        loop {
+            let read = match partial_since {
+                Some(since) => {
+                    let left = SSE_PARTIAL_EVENT_TIMEOUT.saturating_sub(since.elapsed());
+                    match tokio::time::timeout(left, body.next_piece(upstream_reader)).await {
+                        Ok(r) => r,
+                        Err(_elapsed) => {
+                            return self
+                                .end_event_stream(
+                                    client_tls,
+                                    call,
+                                    args_bytes,
+                                    "event stream stalled inside an event, withheld (fail-closed)",
+                                )
+                                .await;
+                        }
+                    }
+                }
+                None => body.next_piece(upstream_reader).await,
+            };
+            let piece = match read {
+                Ok(Some(piece)) => piece,
+                // A clean end drops any unfinished event, as an SSE client does.
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    return self
+                        .end_event_stream(
+                            client_tls,
+                            call,
+                            args_bytes,
+                            "event stream framing error, withheld (fail-closed)",
+                        )
+                        .await;
+                }
+            };
+            let events = match parser.push(&piece) {
+                Ok(events) => events,
+                Err(_) => {
+                    return self
+                        .end_event_stream(
+                            client_tls,
+                            call,
+                            args_bytes,
+                            "event not inspectable (oversized or not UTF-8), withheld (fail-closed)",
+                        )
+                        .await;
+                }
+            };
+            partial_since = match (parser.has_partial(), events.is_empty(), partial_since) {
+                (false, _, _) => None,
+                (true, true, since) => since.or(Some(tokio::time::Instant::now())),
+                (true, false, _) => Some(tokio::time::Instant::now()),
+            };
+            for event in events {
+                let send = if event == sse::KEEPALIVE {
+                    event
+                } else {
+                    let scan = self.interceptor.redact_response_body(&event, None);
+                    match self
+                        .evaluate_response_candidate(gw, call, scan, &event, None, source_url)
+                        .await
+                    {
+                        Ok(ResponseScan::Forward) => event,
+                        Ok(ResponseScan::Redact(redacted)) => {
+                            self.interceptor
+                                .emit_mcp_decision(&call.tool_name, args_bytes, false, "response event redacted")
+                                .await;
+                            redacted
+                        }
+                        Ok(ResponseScan::Withhold) => {
+                            return self
+                                .end_event_stream(
+                                    client_tls,
+                                    call,
+                                    args_bytes,
+                                    "event not inspectable, withheld (fail-closed)",
+                                )
+                                .await;
+                        }
+                        Err(reason) => return self.end_event_stream(client_tls, call, args_bytes, &reason).await,
+                    }
+                };
+                client_tls.write_all(&send).await?;
+                client_tls.flush().await?;
+            }
+        }
+    }
+
+    /// End a stream already under way: audit the denial and send one fixed
+    /// JSON-RPC error event in place of everything that would have followed.
+    /// `reason` goes to the audit trail only; the client sees a fixed message,
+    /// so nothing from the upstream reaches it.
+    async fn end_event_stream(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        tracing::warn!(tool_name = %call.tool_name, "{reason}; ending event stream");
+        self.interceptor
+            .emit_mcp_decision(&call.tool_name, args_bytes, true, reason)
+            .await;
+        let error = build_jsonrpc_error_response(
+            -32000,
+            "MCP event stream ended: an event could not be cleared for delivery (fail-closed)",
+        );
+        client_tls
+            .write_all(format!("event: message\ndata: {error}\n\n").as_bytes())
+            .await?;
+        client_tls.flush().await?;
+        Ok(())
+    }
+
     /// Answer the client with the withheld envelope in place of an SSE stream,
     /// before any event byte has been forwarded.
     async fn withhold_event_stream(
@@ -1508,7 +1759,7 @@ impl ProxyServer {
     ) -> Result<(), ProxyError> {
         tracing::warn!(
             %tool_name,
-            "text/event-stream response on an enforcing host cannot be inspected yet; withholding (fail-closed)",
+            "text/event-stream response on an enforcing host cannot be inspected; withholding (fail-closed)",
         );
         self.interceptor
             .emit_mcp_decision(
@@ -1548,7 +1799,7 @@ impl ProxyServer {
         gateway: &Arc<Mutex<GatewayClient>>,
         call: &crate::intercept::mcp::McpToolCall,
         scan: ResponseScan,
-        resp: &http::HttpResponse,
+        body: &[u8],
         content_encoding: Option<&str>,
         source_url: &str,
     ) -> Result<ResponseScan, String> {
@@ -1559,7 +1810,7 @@ impl ProxyServer {
             ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
             _ => None,
         };
-        let Some(bodies) = self.interceptor.gateway_candidates(&resp.body, content_encoding, sent) else {
+        let Some(bodies) = self.interceptor.gateway_candidates(body, content_encoding, sent) else {
             return Err("response body could not be decoded for gateway evaluation".to_string());
         };
         for body in &bodies {
@@ -1629,7 +1880,7 @@ impl ProxyServer {
         };
         let verdict = match (gateway, enforcing) {
             (Some(gw), _) => {
-                self.evaluate_response_candidate(gw, call, scan, resp, content_encoding, source_url)
+                self.evaluate_response_candidate(gw, call, scan, &resp.body, content_encoding, source_url)
                     .await
             }
             (None, true) => {
@@ -1714,7 +1965,7 @@ impl ProxyServer {
     ///   the (possibly redacted) body and relay the upstream response
     ///   unchanged. A `Block` verdict returns 403 without dialing upstream.
     ///   On an enforcing proxy only a `text/event-stream` response differs: it
-    ///   is withheld (interim, see [`Self::relay_enforced_response`]).
+    ///   is judged event by event (see [`Self::relay_enforced_response`]).
     async fn handle_non_llm_mitm(
         self: &Arc<Self>,
         client_tls: tokio_rustls::server::TlsStream<TcpStream>,
@@ -3128,6 +3379,46 @@ fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hdrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_head_with_a_bare_cr_lf_or_nul_is_not_reserialised() {
+        let head = |reason: &str, header: (&str, &str)| http::HttpResponseHead {
+            version: "HTTP/1.1".into(),
+            status_code: "200".into(),
+            reason: reason.into(),
+            headers: vec![(header.0.into(), header.1.into())],
+            raw: Vec::new(),
+        };
+        assert!(head_is_safe_to_reserialise(&head("OK", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK\rSet-Cookie: x", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\rSet-Cookie: x"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\0"))));
+    }
+
+    // AAASM-6356 PR2: only a stream whose bytes are readable UTF-8 text can be
+    // judged event by event; anything else is withheld before the first byte.
+    #[test]
+    fn event_stream_head_judgeability_depends_on_encoding_and_charset() {
+        for ok in [
+            hdrs(&[("Content-Type", "text/event-stream")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=utf-8")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=\"UTF-8\"")]),
+            hdrs(&[("Content-Type", "text/event-stream"), ("Content-Encoding", "identity")]),
+        ] {
+            assert!(event_stream_head_is_judgeable(&ok), "{ok:?}");
+        }
+        for bad in [
+            hdrs(&[("Content-Type", "text/event-stream"), ("Content-Encoding", "gzip")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=utf-16")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=iso-8859-1")]),
+        ] {
+            assert!(!event_stream_head_is_judgeable(&bad), "{bad:?}");
+        }
+    }
 
     // AAASM-6355 review L2: header-name matching is case-insensitive and
     // tolerates whitespace before the colon.

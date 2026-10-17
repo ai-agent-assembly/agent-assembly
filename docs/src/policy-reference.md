@@ -511,8 +511,9 @@ fail-open setting.
 
 Without a configured gateway endpoint (standalone mode) **no response scanning is
 applied** to MCP responses. A `text/event-stream` response on an enforcing proxy is
-withheld for now (streaming evaluation is not implemented), and plain-HTTP MCP is
-not covered. The `SecretAlert` the gateway raises for a response names the proxy's
+judged **event by event** (each event is scanned and sent to the gateway as a
+`ToolResult`; a denied or unjudgeable event ends the stream with a fixed JSON-RPC
+error event, and nothing after it is forwarded), and plain-HTTP MCP is not covered. The `SecretAlert` the gateway raises for a response names the proxy's
 synthetic identity (`aa-proxy`), not the agent.
 
 **What the proxy decodes the way a lenient peer does** (so a value or a

@@ -237,14 +237,22 @@ Boundaries of this check, stated plainly:
   configured, the proxy relays responses on a decrypted non-LLM host unchanged; the
   proxy's built-in-pattern redaction of MCP responses runs only on the
   gateway-enforced path above.
-- **A `text/event-stream` response on an enforcing proxy is withheld** (HTTP `502`,
-  before any event byte is forwarded). Streamed MCP responses are not yet
-  evaluated; until they are, this closes the bypass rather than inspecting the
-  stream. This applies to any request on the host, including a bodyless `GET`.
-  The check is a case-insensitive search for `text/event-stream` in any
-  `Content-Type` value, and looks past interim `1xx` heads. Other responses to
-  an unrecognised request are relayed byte-for-byte even when their head is
-  unusual (oversized headers, Latin-1 bytes), up to a 1 MiB head.
+- **A `text/event-stream` response on an enforcing proxy is judged event by
+  event.** Each event is re-serialised in canonical form (comments and fields
+  other than `data`, `event`, `id` and `retry` are dropped), scanned with the
+  built-in patterns and evaluated by the gateway; exactly what was judged is what
+  is forwarded. A denied event, a gateway failure or timeout, an oversized or
+  non-UTF-8 event, a framing error, or an event left unfinished for 30 s ends the
+  stream with a fixed JSON-RPC error event (`mcp_fail_open` never applies).
+  Limits: events are judged one at a time, so a value split **across** events is
+  not seen whole; an HTTP `200` head has already been sent when a later event is
+  stopped; and a stream that is compressed, declares a non-UTF-8 charset or has no
+  live gateway client is withheld with a `502` before any byte. This applies to
+  any request on the host, including a bodyless `GET`. The check is a
+  case-insensitive search for `text/event-stream` in any `Content-Type` value,
+  and looks past interim `1xx` heads. Other responses to an unrecognised request
+  are relayed byte-for-byte even when their head is unusual (oversized headers,
+  Latin-1 bytes), up to a 1 MiB head.
 - **Plain-HTTP (non-TLS) MCP is not covered**; only traffic decrypted inside a
   `CONNECT` tunnel is.
 - **A host the proxy treats as an LLM endpoint is not checked as MCP.** A built-in
