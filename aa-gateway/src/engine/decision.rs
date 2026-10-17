@@ -613,6 +613,28 @@ mod tests {
         }
     }
 
+    // AAASM-6313 (F2): the gateway builds `{protocol}://{host}:{port}` from a
+    // `NetworkCallContext`. The only in-tree producer, aa-proxy, sends "http" or
+    // "https", which must keep working; a protocol that is not a URI scheme
+    // makes the URL ambiguous and is refused (fail-closed), not guessed at.
+    #[test]
+    fn stage_network_accepts_proxy_protocols_and_refuses_non_scheme_protocols() {
+        let doc = doc_with_allowlist(vec!["api.openai.com".into()]);
+        for ok in ["https://api.openai.com:443", "http://api.openai.com:80"] {
+            assert_eq!(stage_network(&doc, &net_action(ok)), None, "{ok}");
+        }
+        for bad in [
+            "://api.openai.com:443",
+            "HTTP/1.1://api.openai.com:443",
+            "1http://api.openai.com:443",
+        ] {
+            assert!(
+                matches!(stage_network(&doc, &net_action(bad)), Some(PolicyDecision::Deny { .. })),
+                "{bad}"
+            );
+        }
+    }
+
     #[test]
     fn stage_network_wildcard_matches_subdomain() {
         let doc = doc_with_allowlist(vec!["*.openai.com".into()]);
