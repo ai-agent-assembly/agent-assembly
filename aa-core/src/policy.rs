@@ -589,6 +589,55 @@ pub fn is_host_allowed_by_egress_allowlist_fail_closed(host: &str, allowlist: &[
     is_host_allowed_by_egress_allowlist(host, allowlist)
 }
 
+/// The host a client would actually dial for `url`, lower-cased, or `None` when
+/// the URL is ambiguous or not an authority-bearing URL (AAASM-6313).
+///
+/// The authority ends at the first `/`, `?`, `#` or `\` (a browser reads `\` as
+/// `/`), so `https://evil.com#.openai.com/` is `evil.com`, not
+/// `evil.com#.openai.com`. Userinfo (`user@`) and a numeric `:port` are
+/// stripped; one trailing dot is dropped. Whitespace or control characters in
+/// the authority, an empty host, or a host with characters outside
+/// `[A-Za-z0-9._-]` (other than a bracketed IPv6 literal) make the URL
+/// ambiguous: `None`, which every caller must treat as "not allowed". A
+/// non-ASCII host is therefore refused until it is presented as punycode.
+#[cfg(feature = "alloc")]
+pub fn egress_host_from_url(url: &str) -> Option<alloc::string::String> {
+    let rest = url.split_once("://")?.1;
+    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    if authority.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return None;
+    }
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let host = if host_port.starts_with('[') {
+        // A bracketed IPv6 literal, optionally followed by `:port`.
+        let close = host_port.find(']')?;
+        let after = &host_port[close + 1..];
+        if !(after.is_empty() || (after.starts_with(':') && after[1..].bytes().all(|b| b.is_ascii_digit()))) {
+            return None;
+        }
+        &host_port[..=close]
+    } else {
+        match host_port.rsplit_once(':') {
+            Some((h, port)) if port.bytes().all(|b| b.is_ascii_digit()) => h,
+            Some(_) => return None,
+            None => host_port,
+        }
+    };
+    let host = host.strip_suffix('.').unwrap_or(host);
+    if host.is_empty() || !(host.starts_with('[') || is_plain_hostname(host)) {
+        return None;
+    }
+    Some(host.to_ascii_lowercase())
+}
+
+/// `[A-Za-z0-9._-]` only: what a DNS name or dotted-quad can contain.
+#[cfg(feature = "alloc")]
+fn is_plain_hostname(host: &str) -> bool {
+    host.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+}
+
 #[cfg(feature = "alloc")]
 fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
     let pattern_lower = pattern.to_ascii_lowercase();
@@ -599,8 +648,14 @@ fn egress_pattern_matches(pattern: &str, host_lower: &str) -> bool {
         // *.example.com matches anything ending in `.example.com` AFTER at
         // least one extra label — does NOT match the bare suffix or
         // attacker-crafted subdomains where the suffix is not at the right.
+        //
+        // The host must also be a plain hostname (AAASM-6313): a string such as
+        // `evil.com#.openai.com` ends with `.openai.com` but is not a host any
+        // client dials as that name, so a wildcard must never admit it.
         let required_suffix = alloc::format!(".{suffix}");
-        return host_lower.ends_with(&required_suffix) && host_lower.len() > required_suffix.len();
+        return host_lower.ends_with(&required_suffix)
+            && host_lower.len() > required_suffix.len()
+            && is_plain_hostname(host_lower);
     }
     pattern_lower == host_lower
 }
@@ -610,7 +665,64 @@ mod egress_tests {
     use alloc::string::ToString;
     use alloc::vec;
 
-    use super::is_host_allowed_by_egress_allowlist;
+    use super::{egress_host_from_url, is_host_allowed_by_egress_allowlist};
+
+    // ── AAASM-6313: the host a wildcard sees is the host a client dials ──────
+
+    #[test]
+    fn a_wildcard_never_admits_a_host_string_with_url_syntax_in_it() {
+        let list = vec!["*.openai.com".to_string()];
+        for evil in [
+            "evil.com#.openai.com",
+            "evil.com?.openai.com",
+            "evil.com\\.openai.com",
+            "evil.com@x.openai.com",
+            "evil.com/.openai.com",
+            "evil.com .openai.com",
+            "evil.com:80.openai.com",
+        ] {
+            assert!(!is_host_allowed_by_egress_allowlist(evil, &list), "{evil}");
+        }
+        // control: ordinary subdomains still match
+        for ok in ["api.openai.com", "x.api.openai.com", "A-b_c.OpenAI.com"] {
+            assert!(is_host_allowed_by_egress_allowlist(ok, &list), "{ok}");
+        }
+    }
+
+    #[test]
+    fn host_from_url_is_the_host_a_client_dials() {
+        let host = |u: &str| egress_host_from_url(u);
+        assert_eq!(host("https://evil.com#.openai.com/").as_deref(), Some("evil.com"));
+        assert_eq!(host("https://evil.com?.openai.com/").as_deref(), Some("evil.com"));
+        assert_eq!(host("https://evil.com\\.openai.com/").as_deref(), Some("evil.com"));
+        // userinfo is not the host
+        assert_eq!(
+            host("https://evil.com@api.openai.com/x").as_deref(),
+            Some("api.openai.com")
+        );
+        assert_eq!(
+            host("https://API.OpenAI.com.:8443/v1").as_deref(),
+            Some("api.openai.com")
+        );
+        assert_eq!(host("http://[::1]:8080/").as_deref(), Some("[::1]"));
+        assert_eq!(host("https://a.example.com").as_deref(), Some("a.example.com"));
+    }
+
+    #[test]
+    fn an_ambiguous_url_has_no_host() {
+        for bad in [
+            "api.openai.com/v1",
+            "https://",
+            "https:///path",
+            "https://a b.example.com/",
+            "https://a.example.com:80x/",
+            "https://[::1]x/",
+            "https://exa\u{e9}mple.com/",
+            "https://a.com%2eopenai.com/",
+        ] {
+            assert_eq!(egress_host_from_url(bad), None, "{bad}");
+        }
+    }
 
     #[test]
     fn empty_allowlist_is_default_allow() {
