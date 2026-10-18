@@ -510,13 +510,13 @@ mod tests {
         let gateway = Arc::new(Mutex::new(stub::gateway(stub::Mode::Hang).await));
         let held = gateway.clone().lock_owned().await;
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             drop(held);
         });
 
         let started = std::time::Instant::now();
         let err = evaluate_mcp_call_within(
-            std::time::Duration::from_millis(200),
+            std::time::Duration::from_secs(1),
             &gateway,
             &sample_call(),
             "https://mcp.example.com/",
@@ -527,10 +527,13 @@ mod tests {
         .expect_err("the gateway never answers");
         let elapsed = started.elapsed();
 
-        // The lock arrived at ~150ms, inside the bound, so the failure is the
-        // RPC stage; it must still end at ~200ms, not ~350ms.
+        // The lock arrived at ~700ms, inside the 1s bound, so the failure is the
+        // RPC stage; it must still end at ~1s, not ~1.7s (two separate
+        // timeouts). Margins are wide on purpose: 300ms before the deadline for
+        // the lock hand-off, 500ms of slack above the bound, still 200ms below
+        // the two-timeout outcome.
         assert!(!err.is::<GatewayContended>(), "{err}");
-        assert!(elapsed < std::time::Duration::from_millis(300), "took {elapsed:?}");
+        assert!(elapsed < std::time::Duration::from_millis(1500), "took {elapsed:?}");
     }
 
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {
