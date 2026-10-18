@@ -274,7 +274,7 @@ pub struct GatewayContended;
 
 impl std::fmt::Display for GatewayContended {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("gateway client busy: evaluation queued past the bound and was not sent (fail-closed)")
+        f.write_str("gateway client busy: evaluation was not sent to the gateway within the bound")
     }
 }
 
