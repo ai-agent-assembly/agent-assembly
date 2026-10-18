@@ -247,4 +247,17 @@ mod tests {
         assert!(!m.contains_key("sandbox_mode"));
         assert!(m.contains_key("some_other_key"));
     }
+
+    /// Ranking pin. Evidence: codex-cli 0.163.0 (`codex --ask-for-approval`
+    /// help; `codex mcp list` against a private `CODEX_HOME`) loads both values
+    /// and defines `on-request` as "The model decides when to ask the user for
+    /// approval", i.e. it can prompt before acting, while `on-failure` only asks
+    /// once a sandboxed command has failed. The order is therefore a documented
+    /// reading of those semantics, not an observed prompt; this pins it so a
+    /// change has to be deliberate.
+    #[test]
+    fn on_request_outranks_on_failure_per_codex_0_163_0() {
+        let rank = |s: &str| approval_rank(&toml::Value::String(s.into())).unwrap();
+        assert!(rank("on-request") > rank("on-failure"));
+    }
 }
