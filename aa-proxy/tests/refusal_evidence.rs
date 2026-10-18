@@ -314,6 +314,17 @@ async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> S
 }
 
 async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8]) -> String {
+    mitm_send_bytes_within(reader, host, request, std::time::Duration::from_secs(3)).await
+}
+
+/// [`mitm_send_bytes`] with the read window as a parameter, for the tests whose
+/// answer is held back by the proxy's 10 s gateway bound.
+async fn mitm_send_bytes_within(
+    reader: BufReader<TcpStream>,
+    host: &str,
+    request: &[u8],
+    read_window: std::time::Duration,
+) -> String {
     let client_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
@@ -324,7 +335,7 @@ async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8
 
     tls.write_all(request).await.unwrap();
     let mut out = Vec::new();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
+    let _ = tokio::time::timeout(read_window, tls.read_to_end(&mut out)).await;
     String::from_utf8_lossy(&out).into_owned()
 }
 
