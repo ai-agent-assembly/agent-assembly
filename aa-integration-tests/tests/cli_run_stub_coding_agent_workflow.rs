@@ -175,6 +175,44 @@ mod stub_coding_agent {
         Ok(out)
     }
 
+    /// The one variable the sanitised launch forwards: the coverage runner's
+    /// profile pattern. `aasm run --workspace-tx` runs with the fixture tree as
+    /// its cwd, so an instrumented `aasm` that never sees this writes its
+    /// `default_*.profraw` into the tree the exact-change-set oracle compares.
+    /// Forwarding the runner's own pattern (already outside any fixture) keeps
+    /// the full snapshot honest and the profile collected.
+    const PROFILE_ENV: &str = "LLVM_PROFILE_FILE";
+
+    /// Validate the ambient coverage profile pattern for pass-through. `None`
+    /// (ordinary lane) forwards nothing. The pattern must be absolute and its
+    /// directory must resolve outside `tree`; the directory is created if the
+    /// runner has not yet done so. The pattern text (with `%p`/`%m`) is
+    /// returned unchanged so per-process profile names still expand.
+    fn validated_profile_sink(raw: Option<std::ffi::OsString>, tree: &Path) -> io::Result<Option<PathBuf>> {
+        let Some(raw) = raw.filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let pattern = PathBuf::from(raw);
+        let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, format!("{PROFILE_ENV} {why}"));
+        if !pattern.is_absolute() {
+            return Err(bad("must be an absolute path"));
+        }
+        let dir = pattern.parent().ok_or_else(|| bad("has no directory"))?;
+        std::fs::create_dir_all(dir)?;
+        if dir.canonicalize()?.starts_with(tree.canonicalize()?) {
+            return Err(bad("must point outside the fixture tree"));
+        }
+        Ok(Some(pattern))
+    }
+
+    /// Forward only the validated profile pattern into an already
+    /// `env_clear`ed launch; every other ambient variable stays cleared.
+    fn apply_profile_sink(cmd: &mut Command, sink: Option<&Path>) {
+        if let Some(pattern) = sink {
+            cmd.env(PROFILE_ENV, pattern);
+        }
+    }
+
     /// Everything one test host shares: a CA, the deterministic upstream, a
     /// real gateway with `PolicyService`, and the trusted-proxy precondition.
     struct Host {
@@ -185,6 +223,7 @@ mod stub_coding_agent {
         state: PathBuf,
         gateway_endpoint: String,
         policy: PathBuf,
+        profile_sink: Option<PathBuf>,
         upstream: ConformanceUpstream,
         proxy: TrustedProxy,
     }
@@ -201,6 +240,7 @@ mod stub_coding_agent {
                 std::fs::create_dir_all(d)?;
             }
             let policy = write_policy(&root, "aaasm6297-stub", deny_test_allowed)?;
+            let profile_sink = validated_profile_sink(std::env::var_os(PROFILE_ENV), &root)?;
             let (gateway_endpoint, _registry) = super::conformance_gateway_support::start_full_gateway(&policy).await?;
             let ca = CaStore::load_or_create(&ca_dir)
                 .await
@@ -217,6 +257,7 @@ mod stub_coding_agent {
                 state,
                 gateway_endpoint,
                 policy,
+                profile_sink,
                 upstream,
                 proxy,
             })
@@ -249,6 +290,7 @@ mod stub_coding_agent {
                 .arg(mode)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
+            apply_profile_sink(&mut cmd, self.profile_sink.as_deref());
             cmd.spawn()
         }
     }
