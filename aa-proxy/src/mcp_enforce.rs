@@ -221,12 +221,13 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
 /// alongside other proxy data-path errors without taking a direct tonic
 /// dependency.
 ///
-/// AAASM-6364: bounded by [`MCP_CALL_CHECK_TIMEOUT`] over the whole future, so
-/// it covers waiting for the shared mutex as well as the RPC. Without it a
+/// AAASM-6364: bounded by [`MCP_CALL_CHECK_TIMEOUT`] on the shared mutex wait
+/// and again on the RPC. Without it a
 /// gateway that stopped answering (not one that refused) would hold the lock
 /// and stall every `tools/call` on every connection behind it, indefinitely,
-/// before the caller's fail-open/fail-closed branch could ever run. Expiry is
-/// an `Err`, handled exactly like an RPC failure.
+/// before the caller's fail-open/fail-closed branch could ever run. A stalled
+/// RPC is an `Err` like any RPC failure; a lock wait that expires is
+/// [`GatewayContended`], which `mcp_fail_open` never forwards.
 pub async fn evaluate_mcp_call(
     gateway: &Arc<Mutex<GatewayClient>>,
     call: &McpToolCall,
@@ -248,19 +249,43 @@ async fn evaluate_mcp_call_within(
     span_id: &str,
 ) -> anyhow::Result<McpDecision> {
     let request = build_check_action_request(call, target_url, trace_id, span_id);
-    let response = tokio::time::timeout(bound, async {
-        let mut client = gateway.lock().await;
-        client
-            .check_action(request)
-            .await
-            .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))
-    })
-    .await
-    .map_err(|_| anyhow::anyhow!("PolicyService.CheckAction timed out after {bound:?}"))??;
+    // Two bounds, because they mean different things. Waiting on the shared
+    // lock is local queueing (a hostile or busy agent can build a queue behind
+    // one slow RPC); only the RPC itself says anything about the gateway.
+    let mut client = tokio::time::timeout(bound, gateway.lock())
+        .await
+        .map_err(|_| anyhow::Error::new(GatewayContended))?;
+    let response = tokio::time::timeout(bound, client.check_action(request))
+        .await
+        .map_err(|_| anyhow::anyhow!("PolicyService.CheckAction timed out after {bound:?}"))?
+        .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))?;
+    drop(client);
     Ok(decision_from_response(&response))
 }
 
-/// Bound on one request-side `tools/call` evaluation. Matches the response-side
+/// The shared gateway client stayed locked past the bound: this call never
+/// reached the gateway, so the gateway has said nothing about it. Not a
+/// gateway failure, which is why [`fail_open_applies`] refuses it.
+#[derive(Debug)]
+pub struct GatewayContended;
+
+impl std::fmt::Display for GatewayContended {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("gateway client busy: evaluation queued past the bound and was not sent (fail-closed)")
+    }
+}
+
+impl std::error::Error for GatewayContended {}
+
+/// Whether `mcp_fail_open` may forward a call whose evaluation failed with
+/// `error`. The flag is the opt-in for "the gateway failed"; local contention
+/// is not that, and is induced by whoever can issue many slow calls (AAASM-6364).
+pub fn fail_open_applies(error: &anyhow::Error, mcp_fail_open: bool) -> bool {
+    mcp_fail_open && !error.is::<GatewayContended>()
+}
+
+/// Bound on each stage (lock wait, then RPC) of one request-side `tools/call`
+/// evaluation. Matches the response-side
 /// bound in the proxy (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative
 /// starting point rather than a value tuned against a measured p99.
 const MCP_CALL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -309,17 +334,24 @@ mod tests {
         let gateway = Arc::new(Mutex::new(client));
         let held = gateway.lock().await;
 
-        let err = evaluate_mcp_call_within(
-            std::time::Duration::from_millis(50),
-            &gateway,
-            &sample_call(),
-            "https://mcp.example.com/",
-            "",
-            "",
+        // The outer bound makes a regression (an unbounded wait) fail fast
+        // instead of hanging the suite.
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            evaluate_mcp_call_within(
+                std::time::Duration::from_millis(50),
+                &gateway,
+                &sample_call(),
+                "https://mcp.example.com/",
+                "",
+                "",
+            ),
         )
         .await
+        .expect("the evaluation itself must be bounded")
         .expect_err("a stalled gateway must not be waited on forever");
-        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(err.is::<GatewayContended>(), "{err}");
+        assert!(!fail_open_applies(&err, true), "contention must never fail open");
         drop(held);
 
         let err = evaluate_mcp_call_within(
@@ -332,7 +364,10 @@ mod tests {
         )
         .await
         .expect_err("nothing listens on the endpoint");
-        assert!(!err.to_string().contains("timed out"), "{err}");
+        assert!(!err.is::<GatewayContended>(), "{err}");
+        // Positive control: a real gateway failure still honours the opt-in.
+        assert!(fail_open_applies(&err, true));
+        assert!(!fail_open_applies(&err, false));
     }
 
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {

@@ -32,7 +32,7 @@ use crate::intercept::mcp::{
     request_encoding_hazard, MCP_LABEL_STREAM, MCP_LABEL_UNKNOWN,
 };
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, fail_open_applies, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response_body, read_line_capped, serialize_http_request,
@@ -1361,7 +1361,7 @@ impl ProxyServer {
                     .await;
                 McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, &reason))
             }
-            Err(e) if self.config.mcp_fail_open => {
+            Err(e) if fail_open_applies(&e, self.config.mcp_fail_open) => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
                     %host,
