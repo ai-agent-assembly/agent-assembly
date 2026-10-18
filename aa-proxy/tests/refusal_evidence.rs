@@ -1748,6 +1748,37 @@ async fn a_stalled_gateway_forwards_concurrent_mcp_calls_under_fail_open() {
     }
 }
 
+/// AAASM-6364: the default. The same stalled gateway with the flag off denies
+/// both calls with a JSON-RPC error and nothing reaches the upstream.
+#[tokio::test]
+async fn a_stalled_gateway_denies_concurrent_mcp_calls_by_default() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallCall).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: false,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains(r#""code":-32000"#), "got: {view:?}");
+        assert!(
+            view.contains("MCP enforcement unavailable:") && view.contains("(fail-closed)"),
+            "got: {view:?}"
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    assert!(seen.is_empty(), "a denied call reached upstream: {} bytes", seen.len());
+}
+
 // ── review findings on the AAASM-6354/6355 stack (F1-F4) ─────────────────────
 
 fn escaped_policy_value_response() -> Vec<u8> {
