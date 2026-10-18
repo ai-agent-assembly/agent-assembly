@@ -919,13 +919,18 @@ fn surfaces_not_owned_by_a_project() -> Vec<std::path::PathBuf> {
     let home = var("HOME");
 
     let claude_config = var("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude")));
+    // Codex relocates its configuration with `CODEX_HOME`, so the redirected
+    // directory is a protected surface exactly as `CLAUDE_CONFIG_DIR` is. The
+    // default `$HOME/.codex` stays protected as well: the redirect is the
+    // child's environment, not a statement that the default holds nothing.
+    let codex_home = var("CODEX_HOME");
     let codex_config = home.as_ref().map(|h| h.join(".codex"));
     let state = var("AASM_STATE_DIR").or_else(|| home.as_ref().map(|h| h.join(".aasm")));
     let ca = var("AA_CA_DIR").or_else(|| home.as_ref().map(|h| h.join(".aa")));
     let managed =
         var("AASM_CLAUDE_MANAGED_ROOT").unwrap_or_else(|| PathBuf::from(aa_core::dev_tool::MANAGED_SETTINGS_DIR));
 
-    [claude_config, codex_config, state, ca, Some(managed)]
+    [claude_config, codex_home, codex_config, state, ca, Some(managed)]
         .into_iter()
         .flatten()
         .map(|p| p.canonicalize().unwrap_or(p))
@@ -1247,6 +1252,39 @@ mod tests {
         assert!(surfaces.contains(&dir.path().canonicalize().unwrap()));
         assert!(!surfaces.contains(&raw));
         std::env::remove_var("AASM_CLAUDE_MANAGED_ROOT");
+    }
+
+    /// AAASM-6360: a project root equal to the directory `CODEX_HOME`
+    /// points at is refused, and the default `$HOME/.codex` keeps
+    /// being refused while the variable is set. Negative control: an unrelated
+    /// directory is not swallowed by the codex surfaces.
+    #[test]
+    fn codex_home_is_in_the_refusal_set_and_the_default_stays() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let redirected = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+        let old_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("CODEX_HOME", redirected.path());
+
+        let surfaces = surfaces_not_owned_by_a_project();
+        let redirected_canon = redirected.path().canonicalize().unwrap();
+        let default_codex = home.path().join(".codex");
+        let unrelated_canon = unrelated.path().canonicalize().unwrap();
+
+        let redirected_hit = owned_surface_within(&redirected_canon, &surfaces);
+        let default_hit = owned_surface_within(&default_codex, &surfaces);
+        let unrelated_hit = owned_surface_within(&unrelated_canon, &surfaces);
+
+        std::env::remove_var("CODEX_HOME");
+        match old_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        assert_eq!(redirected_hit, Some(redirected_canon));
+        assert_eq!(default_hit, Some(default_codex));
+        assert_eq!(unrelated_hit, None);
     }
 
     #[test]
