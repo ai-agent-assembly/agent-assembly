@@ -347,6 +347,52 @@ mod stub_coding_agent {
         );
     }
 
+    /// Negative control for the external sink: profile output written where the
+    /// forwarded pattern points never appears in the snapshot, the sink inside
+    /// the tree is refused, and the launch forwards that one variable only.
+    #[test]
+    fn external_profile_sink_keeps_profiles_out_of_the_snapshot_and_forwards_only_itself() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let sink_dir = tempfile::tempdir().expect("sink dir");
+        let before = snapshot(tree.path());
+
+        let pattern = sink_dir.path().join("cov").join("aa-%p-%m.profraw");
+        let sink = validated_profile_sink(Some(pattern.clone().into_os_string()), tree.path())
+            .expect("external sink is valid")
+            .expect("sink present");
+        assert_eq!(sink, pattern, "pattern text is forwarded unchanged");
+        assert!(pattern.parent().expect("dir").is_dir(), "harness creates the sink dir");
+
+        // What an instrumented child does with the forwarded pattern.
+        std::fs::write(pattern.parent().expect("dir").join("aa-123-456.profraw"), b"profile").expect("write");
+        assert_eq!(
+            snapshot(tree.path()),
+            before,
+            "external profile output must not be in the snapshot"
+        );
+
+        let inside = tree.path().join("aa-%p.profraw");
+        assert!(validated_profile_sink(Some(inside.into_os_string()), tree.path()).is_err());
+        assert!(validated_profile_sink(Some("relative/aa.profraw".into()), tree.path()).is_err());
+        assert_eq!(validated_profile_sink(None, tree.path()).expect("unset"), None);
+
+        let mut cmd = Command::new("true");
+        cmd.env_clear();
+        apply_profile_sink(&mut cmd, Some(&sink));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert_eq!(
+            envs.len(),
+            1,
+            "only one variable may cross the sanitised launch: {envs:?}"
+        );
+        assert_eq!(envs[0].0, PROFILE_ENV);
+        let mut none = Command::new("true");
+        none.env_clear();
+        apply_profile_sink(&mut none, None);
+        assert_eq!(none.get_envs().count(), 0, "ordinary lane forwards nothing");
+    }
+
     /// The composite stub workflow: edit + shell + allowed call + DENIED call,
     /// inside one transactional workspace.
     #[tokio::test(flavor = "multi_thread")]
