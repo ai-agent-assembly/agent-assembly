@@ -417,9 +417,12 @@ enum McpEvalOutcome {
     Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// Denied — connection should be closed after writing the given response.
     Deny(String),
-    /// The request RPC failed under `mcp_fail_open`: the call is forwarded
-    /// unevaluated (the documented request-side opt-in), but the response must
-    /// still be scanned and gateway-evaluated, which always fails closed.
+    /// The request-side evaluation did not complete under `mcp_fail_open` (the
+    /// RPC failed or did not answer within the bound, the call waited past the
+    /// bound for the shared gateway client, or no live client exists): the call
+    /// is forwarded unevaluated (the documented request-side opt-in), but the
+    /// response must still be scanned and gateway-evaluated, which always fails
+    /// closed.
     ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// A recognised MCP exchange that is not a `tools/call` (AAASM-6356): there
     /// is nothing to authorise on the request side, so no request RPC and no
