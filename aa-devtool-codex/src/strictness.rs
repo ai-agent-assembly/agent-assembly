@@ -79,6 +79,12 @@ pub(crate) fn warning(w: &Withheld) -> String {
     }
 }
 
+/// Writes one [`warning`] line per withheld key, so a skipped relaxation is
+/// never silent.
+pub(crate) fn report(withheld: &[Withheld], out: &mut impl std::io::Write) -> std::io::Result<()> {
+    withheld.iter().try_for_each(|w| writeln!(out, "{}", warning(w)))
+}
+
 fn describe(v: &toml::Value) -> String {
     match v.as_str() {
         Some(s) => s.to_string(),
