@@ -427,6 +427,25 @@ mod tests {
         assert!(err.to_string().contains("timed out"), "{err}");
     }
 
+    /// Positive control for the timeout tests: the same call against a gateway
+    /// that answers reaches a real decision, so the `Err`s above come from the
+    /// bound and not from the stub or the client being unusable.
+    #[tokio::test]
+    async fn evaluate_mcp_call_returns_the_gateway_decision_when_it_answers() {
+        let gateway = Arc::new(Mutex::new(stub::gateway(stub::Mode::Allow).await));
+        let decision = evaluate_mcp_call_within(
+            std::time::Duration::from_secs(5),
+            &gateway,
+            &sample_call(),
+            "https://mcp.example.com/",
+            "",
+            "",
+        )
+        .await
+        .expect("a live gateway answers");
+        assert_eq!(decision, McpDecision::Allow);
+    }
+
     /// AAASM-6364: a gateway lock that is never released (a stalled RPC holds
     /// it) must surface as an `Err` after the bound, not hang the caller.
     /// Positive control: the same call with the lock free reaches the RPC and
