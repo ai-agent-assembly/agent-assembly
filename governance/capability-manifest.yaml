@@ -393,6 +393,77 @@ meta:
         it on the ProtectionState axis. R7 rejects a GovernanceLevel where a ladder rung is
         meant, so the manifest cannot carry the seed's value here either. Nothing was measured
         about this row's ladder state, and `not_measured` says exactly that.
+    - field: coverage
+      ids:
+      - M6
+      representations:
+      - seed
+      - seed_companion
+      manifest_value: evaluated
+      other_value: unmeasured
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: decision_timing
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: pre
+      other_value: none
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: observe_or_enforce
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: enforce
+      other_value: none
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: sync_or_best_effort
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: sync
+      other_value: none
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: failure_posture
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: fail_closed
+      other_value: not_applicable
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: default_state
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: 'off'
+      other_value: not_applicable
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+    - field: evidence_runs_on_main
+      ids:
+      - M6
+      representations:
+      - seed
+      manifest_value: path_gated_no_backstop
+      other_value: none
+      ticket: AAASM-6362
+      reason: >-
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
   retired_ids: []
 capabilities:
 - id: S1
@@ -2979,7 +3050,7 @@ capabilities:
   capability: MCP over SSE (text/event-stream)
   owner:
     repository: agent-assembly
-    component: none
+    component: aa-proxy
   framework_or_tool:
   - any_mcp_client
   language:
@@ -2987,36 +3058,101 @@ capabilities:
   platform:
   - linux
   - macos
-  launch_path: any
-  preconditions: []
-  transport: sse
-  interception_component: none
-  identity_source: not_applicable
-  policy_context: []
-  decision_timing: none
-  observe_or_enforce: none
-  sync_or_best_effort: none
-  failure_posture: not_applicable
-  coverage: unmeasured
+  launch_path: same_as_M1
+  preconditions:
+  - kind: env
+    name: AA_PROXY_GATEWAY_ENDPOINT
+    required_value: <set>
+    note: without it the proxy is standalone and relays a text/event-stream response
+      byte for byte with no scan and no gateway call; this is what makes the row's default_state
+      off (aa-proxy/src/config.rs:1281-1286 pins the default as None)
+  transport: text/event-stream response inside a CONNECT-decrypted tunnel on a MitM'd non-LLM
+    host, to any request on that host including a bodyless GET
+  interception_component: relay_event_stream aa-proxy/src/proxy/mod.rs:1600 (event framing
+    SseParser aa-proxy/src/proxy/sse.rs:35) -> evaluate_response_candidate :1827 -> aa-gateway
+    PolicyService.CheckAction as a ToolResult
+  identity_source: CONSTANT 'aa-proxy' — PROXY_AGENT_ID aa-proxy/src/mcp_enforce.rs:54,
+    build_tool_result_request :143; a SecretAlert is attributed to the proxy, not to the
+    agent
+  policy_context:
+  - tool_name
+  - tool_source=mcp
+  - result_json
+  - source_url
+  decision_timing: pre
+  observe_or_enforce: enforce
+  sync_or_best_effort: sync
+  failure_posture: fail_closed
+  coverage: evaluated
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
-  boundary_class: not_applicable
+  boundary_class: B3
   released_channels:
   - not_applicable
   released_platforms:
   - not_applicable
+  released_note: 'Merged to main on 2026-10-17 (PR #2688 7873ec9f7, #2689 1a8c4327c, #2690 853802759, all AAASM-6356), AFTER v0.0.1-rc.7 (2026-09-17). `git tag --contains` is empty for all three merge commits, so no published artifact carries per-event SSE enforcement: neither v0.0.1-rc.7 nor v0.0.1-rc.6 contains it. Re-derive once a release tag contains them.'
   buildable: not_applicable
-  default_state: not_applicable
+  default_state: 'off'
   reachability: absent_mechanism
   known_bypasses:
-  - the SSE leg is raw-copied unscanned
+  - standalone proxy (no AA_PROXY_GATEWAY_ENDPOINT, the default) relays the stream unjudged
+  - a secret split across two events is not seen whole, each event is judged alone
+  - an event that is denied mid-stream is preceded by the 200 head and by every earlier
+    event, which were already delivered; only the stream's remainder is withheld
+  - gateway RedactInstructions cannot be applied to an event, so a gateway Redact withholds
+    the stream rather than redacting it
+  - only traffic decrypted inside a CONNECT tunnel on a MitM'd host; plain-HTTP MCP and
+    a host taking the LLM interception path (see M9) get no MCP response evaluation
+  - tool-scoped policy rules also see the synthetic names mcp-method:<method> and mcp-method:#stream
+    (a resumed GET with Last-Event-ID has no request to classify), so an allowlist must
+    name them
+  - no request-side decision is made for a non-tools/call method or a resumed GET; only
+    the response events are judged (see M4)
+  - events are judged under the proxy's own identity, not the agent's
   evidence:
-  - kind: gap
-    reason: GAP — text/event-stream 0 matches repo-wide
-  evidence_runs_on_main: none
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
+    test: event_streams_are_judged_event_by_event
+    note: POST resources/read and a bodyless GET with Last-Event-ID; a denied event ends
+      the stream and nothing after it is forwarded; clean controls delivered whole; with
+      no endpoint the bytes pass through untouched
+    pins:
+    - coverage
+    - default_state
+    - failure_posture
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
+    test: a_gateway_that_goes_silent_mid_stream_ends_it_fail_closed
+    note: with mcp_fail_open set, a silent gateway still ends the stream
+    pins:
+    - failure_posture
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
+    test: a_compressed_or_foreign_charset_stream_is_withheld_before_any_byte
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
+    test: a_stalled_partial_event_ends_the_stream_but_idle_time_between_events_does_not
+  - kind: test
+    path: aa-proxy/src/proxy/sse.rs
+    note: SseParser unit tests (canonical form, split-at-any-byte, oversized or non-UTF-8
+      is an error)
+  evidence_tree: 41e7842c64986a46eb627655bf4aecb26e3040eb
+  evidence_date: '2026-10-18'
+  evidence_runs_on_main: path_gated_no_backstop
+  evidence_gate_note: The e2e test runs in ci.yml's Test job (cargo nextest run --workspace,
+    ci.yml:1112), gated on needs.changes.outputs.rust and on push to main by path filter.
+    No schedule backstop was verified for that job.
   target_level: state explicitly
   tickets:
   - AAASM-5533
+  - AAASM-6356
+  - AAASM-6362
+  notes: 'Verified against aa-proxy at 41e7842c6. Per-event judgement applies to every
+    text/event-stream response on an enforcing host (proxy/mod.rs:1396-1400, :1551), not
+    only to tools/call. Resumption: a bodyless GET carrying Last-Event-ID is judged event
+    by event under the mcp-method:#stream label (e2e test above); the proxy does not interpret
+    Last-Event-ID or dedupe replayed events.'
   q4_changed_answer: true
 - id: M7
   domain: mcp

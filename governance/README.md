@@ -552,9 +552,9 @@ population smaller than the one claimed shows up as a sum that does not close:
 ```
 count: [R16] ids: 81 in the manifest, 81 in …-matrix.yaml, 81 shared, 0 manifest-only, 0 seed-only
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
-count: [R16] seed: 81 ids x 29 fields = 2349 pairs; 1375 agree, 32 diverge, 942 one-side-silent; 0 skipped
-count: [R16] seed_companion: 81 coverage cells read, 0 ragged rows skipped; 81 of 81 shared ids compared, 76 agree, 5 diverge
-count: [R16] divergences: 37 found; declarations claim 37 (row, representation) pair(s) across 4 entries, 37 matched
+count: [R16] seed: 81 ids x 29 fields = 2349 pairs; 1368 agree, 39 diverge, 942 one-side-silent; 0 skipped
+count: [R16] seed_companion: 81 coverage cells read, 0 ragged rows skipped; 81 of 81 shared ids compared, 75 agree, 6 diverge
+count: [R16] divergences: 45 found; declarations claim 45 (row, representation) pair(s) across 11 entries, 45 matched
 ```
 
 The 32 seed divergences are 8 + 24. The 8: the five `coverage` rows above, plus
