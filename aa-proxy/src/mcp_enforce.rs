@@ -486,6 +486,22 @@ mod tests {
         assert_eq!(decision, McpDecision::Allow);
     }
 
+    /// AAASM-6364: the client-visible reason says which of the two failures
+    /// happened, and is a fixed string that never carries the error text.
+    #[test]
+    fn fail_closed_reason_names_contention_and_gateway_failure_separately() {
+        let contended = fail_closed_reason(&anyhow::Error::new(GatewayContended));
+        assert_eq!(
+            contended,
+            "MCP enforcement unavailable: gateway client busy, call was not evaluated within 10s (fail-closed)"
+        );
+        let failed = fail_closed_reason(&anyhow::anyhow!("PolicyService.CheckAction timed out after 10s"));
+        assert_eq!(
+            failed,
+            "MCP enforcement unavailable: gateway did not return a decision within 10s or failed (fail-closed)"
+        );
+    }
+
     /// AAASM-6364: lock wait and RPC share ONE deadline. With separate
     /// timeouts a call that queued for most of the bound would then wait the
     /// whole bound again on the RPC (worst case twice the bound).
