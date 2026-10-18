@@ -260,4 +260,15 @@ mod tests {
         let rank = |s: &str| approval_rank(&toml::Value::String(s.into())).unwrap();
         assert!(rank("on-request") > rank("on-failure"));
     }
+
+    #[test]
+    fn warning_for_a_relaxation_says_the_value_would_be_less_strict() {
+        let (_, w) = run("approval_policy = \"on-request\"", "approval_policy = \"on-failure\"");
+        assert!(!w[0].unrankable);
+        let line = warning(&w[0]);
+        assert!(
+            line.contains("approval_policy") && line.contains("on-request") && line.contains("less strict"),
+            "{line}"
+        );
+    }
 }
