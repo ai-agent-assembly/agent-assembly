@@ -1026,6 +1026,8 @@ mod gateway_stub {
         /// `tools/call` check never answers (a gateway that stopped responding);
         /// every result is Allow.
         StallCall,
+        /// `tools/call` check is Allow; a `ToolResult` check never answers.
+        StallResult,
     }
 
     struct JudgeResults(ResultVerdict);
@@ -1048,6 +1050,9 @@ mod gateway_stub {
                     return Err(Status::resource_exhausted("stub request failure"));
                 }
                 Some(Action::ToolCall(_)) if matches!(self.0, ResultVerdict::StallCall) => {
+                    std::future::pending::<Decision>().await
+                }
+                Some(Action::ToolResult(_)) if matches!(self.0, ResultVerdict::StallResult) => {
                     std::future::pending::<Decision>().await
                 }
                 Some(Action::ToolResult(r)) => {
@@ -1802,6 +1807,41 @@ async fn a_responsive_gateway_allows_concurrent_mcp_calls() {
     for view in two_concurrent_mcp_calls(proxy).await {
         assert!(view.contains("200 OK") && view.contains("harmless"), "got: {view:?}");
     }
+}
+
+/// AAASM-6364: the response direction stays always fail-closed. The request is
+/// allowed, the gateway then never answers for the response, and even with
+/// `mcp_fail_open` set the response is withheld (502), not delivered.
+#[tokio::test]
+async fn a_stalled_response_evaluation_is_withheld_even_under_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallResult).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send_bytes_within(
+        tunnel,
+        MITM_HOST,
+        post(MITM_HOST, "/mcp", &mcp_body_with("harmless")).as_bytes(),
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    assert!(view.contains("502"), "got: {view:?}");
+    assert!(
+        !view.contains("harmless"),
+        "an unevaluated response was delivered: {view:?}"
+    );
 }
 
 // ── review findings on the AAASM-6354/6355 stack (F1-F4) ─────────────────────
