@@ -271,4 +271,25 @@ mod tests {
             "{line}"
         );
     }
+
+    #[test]
+    fn a_withheld_relaxation_is_reported_and_a_tightening_is_not() {
+        // Negative control: relaxation withheld AND reported.
+        let (m, w) = run("approval_policy = \"on-request\"", "approval_policy = \"on-failure\"");
+        assert!(!m.contains_key("approval_policy"));
+        let mut out = Vec::new();
+        report(&w, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(
+            text.contains("approval_policy") && text.contains("on-request"),
+            "{text}"
+        );
+        // Positive control: a genuine tightening is applied and says nothing.
+        let (m, w) = run("approval_policy = \"on-failure\"", "approval_policy = \"on-request\"");
+        assert!(m.contains_key("approval_policy"));
+        let mut out = Vec::new();
+        report(&w, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
 }
