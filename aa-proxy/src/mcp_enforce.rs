@@ -227,7 +227,7 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
 /// and stall every `tools/call` on every connection behind it, indefinitely,
 /// before the caller's fail-open/fail-closed branch could ever run. A stalled
 /// RPC is an `Err` like any RPC failure; a lock wait that expires is
-/// [`GatewayContended`], which `mcp_fail_open` never forwards.
+/// [`GatewayContended`]. Both are `Err`s that `mcp_fail_open` governs.
 pub async fn evaluate_mcp_call(
     gateway: &Arc<Mutex<GatewayClient>>,
     call: &McpToolCall,
@@ -266,8 +266,9 @@ async fn evaluate_mcp_call_within(
 }
 
 /// The shared gateway client stayed locked past the bound: this call never
-/// reached the gateway, so the gateway has said nothing about it. Not a
-/// gateway failure, which is why [`fail_open_applies`] refuses it.
+/// reached the gateway. It is an evaluation that did not complete, so it
+/// follows `mcp_fail_open` exactly like a stalled RPC; the type exists so the
+/// caller can say which of the two happened.
 #[derive(Debug)]
 pub struct GatewayContended;
 
@@ -279,15 +280,8 @@ impl std::fmt::Display for GatewayContended {
 
 impl std::error::Error for GatewayContended {}
 
-/// Whether `mcp_fail_open` may forward a call whose evaluation failed with
-/// `error`. The flag is the opt-in for "the gateway failed"; local contention
-/// is not that, and is induced by whoever can issue many slow calls (AAASM-6364).
-pub fn fail_open_applies(error: &anyhow::Error, mcp_fail_open: bool) -> bool {
-    mcp_fail_open && !error.is::<GatewayContended>()
-}
-
-/// Bound on each stage (lock wait, then RPC) of one request-side `tools/call`
-/// evaluation. Matches the response-side
+/// Bound on one request-side `tools/call` evaluation (lock wait and RPC share
+/// it). Matches the response-side
 /// bound in the proxy (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative
 /// starting point rather than a value tuned against a measured p99.
 const MCP_CALL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -353,7 +347,6 @@ mod tests {
         .expect("the evaluation itself must be bounded")
         .expect_err("a stalled gateway must not be waited on forever");
         assert!(err.is::<GatewayContended>(), "{err}");
-        assert!(!fail_open_applies(&err, true), "contention must never fail open");
         drop(held);
 
         let err = evaluate_mcp_call_within(
@@ -367,9 +360,6 @@ mod tests {
         .await
         .expect_err("nothing listens on the endpoint");
         assert!(!err.is::<GatewayContended>(), "{err}");
-        // Positive control: a real gateway failure still honours the opt-in.
-        assert!(fail_open_applies(&err, true));
-        assert!(!fail_open_applies(&err, false));
     }
 
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {
