@@ -331,6 +331,102 @@ mod tests {
         assert_eq!(parsed, json!({ "path": "/etc/passwd" }));
     }
 
+    /// An in-process `PolicyService` standing in for the gateway, so the
+    /// request-side bound is exercised against a real gRPC peer rather than an
+    /// unreachable port.
+    mod stub {
+        use std::pin::Pin;
+
+        use aa_proto::assembly::common::v1::Decision;
+        use aa_proto::assembly::policy::v1::policy_service_server::{PolicyService, PolicyServiceServer};
+        use aa_proto::assembly::policy::v1::{
+            BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
+            OpControlSubscribeRequest,
+        };
+        use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
+        use tonic::codegen::tokio_stream::Stream;
+        use tonic::{Request, Response, Status};
+
+        #[derive(Clone, Copy)]
+        pub enum Mode {
+            /// Never answers `CheckAction`: a gateway that stopped responding.
+            Hang,
+            /// Answers `Allow` immediately.
+            Allow,
+        }
+
+        struct Stub(Mode);
+
+        #[tonic::async_trait]
+        impl PolicyService for Stub {
+            async fn check_action(
+                &self,
+                _req: Request<CheckActionRequest>,
+            ) -> Result<Response<CheckActionResponse>, Status> {
+                match self.0 {
+                    Mode::Hang => std::future::pending().await,
+                    Mode::Allow => Ok(Response::new(CheckActionResponse {
+                        decision: Decision::Allow as i32,
+                        ..Default::default()
+                    })),
+                }
+            }
+
+            async fn batch_check(
+                &self,
+                _req: Request<BatchCheckRequest>,
+            ) -> Result<Response<BatchCheckResponse>, Status> {
+                Err(Status::unimplemented("stub"))
+            }
+
+            type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+            async fn op_control_stream(
+                &self,
+                _req: Request<OpControlSubscribeRequest>,
+            ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+                Err(Status::unimplemented("stub"))
+            }
+        }
+
+        /// Serve the stub on an already-bound port (no bind/serve race) and
+        /// return a client for it.
+        pub async fn gateway(mode: Mode) -> super::super::GatewayClient {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let _ = tonic::transport::Server::builder()
+                    .add_service(PolicyServiceServer::new(Stub(mode)))
+                    .serve_with_incoming(TcpListenerStream::new(listener))
+                    .await;
+            });
+            super::super::GatewayClient::connect_lazy_owned(&format!("http://{addr}")).expect("lazy client")
+        }
+    }
+
+    /// AAASM-6364: a gateway that accepts the call and never answers is a
+    /// timeout (the RPC stage), not contention.
+    #[tokio::test]
+    async fn evaluate_mcp_call_times_out_when_the_gateway_never_answers() {
+        let gateway = Arc::new(Mutex::new(stub::gateway(stub::Mode::Hang).await));
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            evaluate_mcp_call_within(
+                std::time::Duration::from_millis(50),
+                &gateway,
+                &sample_call(),
+                "https://mcp.example.com/",
+                "",
+                "",
+            ),
+        )
+        .await
+        .expect("the evaluation itself must be bounded")
+        .expect_err("a hung gateway must not be waited on forever");
+        assert!(!err.is::<GatewayContended>(), "{err}");
+        assert!(err.to_string().contains("timed out"), "{err}");
+    }
+
     /// AAASM-6364: a gateway lock that is never released (a stalled RPC holds
     /// it) must surface as an `Err` after the bound, not hang the caller.
     /// Positive control: the same call with the lock free reaches the RPC and
