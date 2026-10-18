@@ -486,6 +486,37 @@ mod tests {
         assert_eq!(decision, McpDecision::Allow);
     }
 
+    /// AAASM-6364: lock wait and RPC share ONE deadline. With separate
+    /// timeouts a call that queued for most of the bound would then wait the
+    /// whole bound again on the RPC (worst case twice the bound).
+    #[tokio::test]
+    async fn evaluate_mcp_call_lock_wait_and_rpc_share_one_deadline() {
+        let gateway = Arc::new(Mutex::new(stub::gateway(stub::Mode::Hang).await));
+        let held = gateway.clone().lock_owned().await;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            drop(held);
+        });
+
+        let started = std::time::Instant::now();
+        let err = evaluate_mcp_call_within(
+            std::time::Duration::from_millis(200),
+            &gateway,
+            &sample_call(),
+            "https://mcp.example.com/",
+            "",
+            "",
+        )
+        .await
+        .expect_err("the gateway never answers");
+        let elapsed = started.elapsed();
+
+        // The lock arrived at ~150ms, inside the bound, so the failure is the
+        // RPC stage; it must still end at ~200ms, not ~350ms.
+        assert!(!err.is::<GatewayContended>(), "{err}");
+        assert!(elapsed < std::time::Duration::from_millis(300), "took {elapsed:?}");
+    }
+
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {
         CheckActionResponse {
             decision: decision as i32,
