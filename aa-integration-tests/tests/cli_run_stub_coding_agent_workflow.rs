@@ -327,6 +327,26 @@ mod stub_coding_agent {
         );
     }
 
+    /// A `.profraw`-named directory is not a free pass for what it contains.
+    #[test]
+    fn snapshot_detects_an_unapproved_file_inside_a_profraw_directory() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let before = snapshot(tree.path());
+
+        let dir = tree.path().join("unexpected.profraw");
+        std::fs::create_dir(&dir).expect("mkdir");
+        std::fs::write(dir.join("child.rs"), b"fn unapproved() {}").expect("write");
+
+        let after = snapshot(tree.path());
+        assert_ne!(before, after, "a .profraw directory subtree must change the snapshot");
+        assert_eq!(after.get("unexpected.profraw"), Some(&Entry::Dir));
+        assert_eq!(
+            after.get("unexpected.profraw/child.rs"),
+            Some(&Entry::File(b"fn unapproved() {}".to_vec()))
+        );
+    }
+
     /// The composite stub workflow: edit + shell + allowed call + DENIED call,
     /// inside one transactional workspace.
     #[tokio::test(flavor = "multi_thread")]
