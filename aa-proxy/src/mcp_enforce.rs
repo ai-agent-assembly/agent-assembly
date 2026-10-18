@@ -292,9 +292,10 @@ pub fn fail_closed_reason(error: &anyhow::Error) -> &'static str {
 }
 
 /// Bound on one request-side `tools/call` evaluation (lock wait and RPC share
-/// it). Matches the response-side
-/// bound in the proxy (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative
-/// starting point rather than a value tuned against a measured p99.
+/// it). Same order as the response-side bound in the proxy
+/// (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative starting point rather
+/// than a value tuned against a measured p99. The deny reasons in
+/// [`fail_closed_reason`] spell this value out as "10s".
 const MCP_CALL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
