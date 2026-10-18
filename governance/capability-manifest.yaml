@@ -403,17 +403,17 @@ meta:
       other_value: unmeasured
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. Seed and seed companion say `unmeasured` because the survey found no SSE mechanism. The manifest says `evaluated` and not `denied_before_execution`: each event goes to the gateway and is withheld on a denial, but the 200 head and earlier events are already delivered. This is a deliberate strengthening, the first declared divergence where the manifest is stronger than the seed (the earlier ones are weakenings forced by R12, R14 and R7).
     - field: decision_timing
       ids:
       - M6
       representations:
       - seed
-      manifest_value: pre
+      manifest_value: in_line
       other_value: none
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `none` (no mechanism). The manifest says `in_line`, not `pre`: the seed's own legend defines `in-line` as the decision preceding egress while the caller has already committed, which is true of a ToolResult the upstream already produced.
     - field: observe_or_enforce
       ids:
       - M6
@@ -423,7 +423,7 @@ meta:
       other_value: none
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `none`; each event is withheld on a gateway denial or a scanner finding it cannot clear, so the row enforces on the response direction.
     - field: sync_or_best_effort
       ids:
       - M6
@@ -433,7 +433,7 @@ meta:
       other_value: none
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `none`; the proxy waits for the gateway verdict (10 s bound) before forwarding each event.
     - field: failure_posture
       ids:
       - M6
@@ -443,7 +443,7 @@ meta:
       other_value: not_applicable
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `not_applicable`; a gateway error or timeout, framing error, oversized or non-UTF-8 event, or stalled partial event ends the stream, and `mcp_fail_open` does not apply to responses.
     - field: default_state
       ids:
       - M6
@@ -453,7 +453,7 @@ meta:
       other_value: not_applicable
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `not_applicable`; with no AA_PROXY_GATEWAY_ENDPOINT, the default, the stream is relayed unjudged, so the default is `off`.
     - field: evidence_runs_on_main
       ids:
       - M6
@@ -463,7 +463,7 @@ meta:
       other_value: none
       ticket: AAASM-6362
       reason: >-
-        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event. The seed is the point-in-time AAASM-5527 survey and records the pre-fix gap ('text/event-stream 0 matches repo-wide'); it is kept as written, so the manifest moves and the seed does not.
+        M6 was re-derived at 41e7842c6 after AAASM-6356 (PRs #2688-#2690) made MCP SSE responses judged per event; the seed is the point-in-time AAASM-5527 survey and is kept as written. The seed says `none` because it cited no test; the cited e2e test runs in ci.yml's Test job on a path-filtered push to main with no schedule clause of its own.
   retired_ids: []
 capabilities:
 - id: S1
@@ -3066,6 +3066,19 @@ capabilities:
     note: without it the proxy is standalone and relays a text/event-stream response
       byte for byte with no scan and no gateway call; this is what makes the row's default_state
       off (aa-proxy/src/config.rs:1281-1286 pins the default as None)
+  - kind: env
+    name: AA_PROXY_MITM_HOSTS
+    required_value: <set>
+    optional: true
+    note: the targeted route to MitM-decrypt a non-LLM MCP host (the same precondition as
+      M1). Either this or the wide route (AA_PROXY_LLM_ONLY, next) is needed for the stream to be decrypted
+      at all; on a host the proxy does not decrypt there is no response evaluation
+  - kind: env
+    name: AA_PROXY_LLM_ONLY
+    required_value: 'false'
+    optional: true
+    note: the wide route (the same precondition as M1), which brings every host under
+      TLS MitM; the managed CLI path sets it
   transport: text/event-stream response inside a CONNECT-decrypted tunnel on a MitM'd non-LLM
     host, to any request on that host including a bodyless GET
   interception_component: relay_event_stream aa-proxy/src/proxy/mod.rs:1600 (event framing
@@ -3079,11 +3092,12 @@ capabilities:
   - tool_source=mcp
   - result_json
   - source_url
-  decision_timing: pre
+  decision_timing: in_line
   observe_or_enforce: enforce
   sync_or_best_effort: sync
   failure_posture: fail_closed
   coverage: evaluated
+  redaction_actor: proxy_scanner
   protection_state: not_applicable
   governance_level_ceiling: not_applicable
   boundary_class: B3
@@ -3129,6 +3143,11 @@ capabilities:
     - failure_posture
   - kind: test
     path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
+    test: a_credential_inside_an_event_is_redacted_and_the_stream_continues
+    note: a built-in-scanner finding (AKIA key) is redacted inside its event and the stream
+      continues; the proxy's own redaction is what is forwarded after the gateway allows it
+  - kind: test
+    path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
     test: a_compressed_or_foreign_charset_stream_is_withheld_before_any_byte
   - kind: test
     path: aa-integration-tests/tests/e2e_mcp_response_any_method.rs
@@ -3140,19 +3159,37 @@ capabilities:
   evidence_tree: 41e7842c64986a46eb627655bf4aecb26e3040eb
   evidence_date: '2026-10-18'
   evidence_runs_on_main: path_gated_no_backstop
-  evidence_gate_note: The e2e test runs in ci.yml's Test job (cargo nextest run --workspace,
-    ci.yml:1112), gated on needs.changes.outputs.rust and on push to main by path filter.
-    No schedule backstop was verified for that job.
+  evidence_gate_note: The e2e tests run in ci.yml's Test job (cargo nextest run --workspace,
+    ci.yml:1112), whose condition is `needs.changes.outputs.rust == 'true'` (ci.yml:972)
+    and which runs on push to main only when a path filter matches. Unlike the ebpf and
+    isolation jobs (ci.yml:2121, :3587, :3783), whose conditions also include
+    `github.event_name == 'schedule'`, the Test job's own condition has no schedule clause.
+    Whether the weekly cron still reaches it through the rust path filter was not verified.
   target_level: state explicitly
   tickets:
   - AAASM-5533
   - AAASM-6356
   - AAASM-6362
   notes: 'Verified against aa-proxy at 41e7842c6. Per-event judgement applies to every
-    text/event-stream response on an enforcing host (proxy/mod.rs:1396-1400, :1551), not
-    only to tools/call. Resumption: a bodyless GET carrying Last-Event-ID is judged event
+    text/event-stream response on an enforcing host, not only to tools/call: a recognised
+    request is dispatched at proxy/mod.rs:1473-1483 and an unrecognised one (including a
+    bodyless GET) at :1549-1558. Resumption: a GET carrying Last-Event-ID is judged event
     by event under the mcp-method:#stream label (e2e test above); the proxy does not interpret
-    Last-Event-ID or dedupe replayed events.'
+    Last-Event-ID or dedupe replayed events. Redaction: the proxy scanner can redact an event
+    (mod.rs:1719-1724, redact_response_body), and that redacted event is what is forwarded
+    once the gateway allows it; a gateway Redact verdict is not applied and withholds
+    (mod.rs:1857-1862). Test coverage is uneven: a silent gateway mid-stream, a stalled
+    partial event, a compressed or foreign-charset stream and a denied event are covered
+    end to end; a gateway RPC error that is not a timeout, an SSE framing error, an event
+    over 1 MiB and a non-UTF-8 event are covered only by SseParser unit tests (sse.rs), so
+    the claim that nothing is forwarded in those modes rests on reading relay_event_stream
+    (mod.rs:1654-1745), not on an end-to-end run. Distribution: aa-proxy ships, but this
+    behaviour is merged to main only and in no release. The schema has no structured
+    marker for that, so released_channels, released_platforms and buildable stay
+    not_applicable and the state is carried in released_note; a generated page or trust
+    surface that reads only the structured fields will show no distribution for this row,
+    and detect_capability_changes.py will classify the first release that lists a channel
+    here as BLOCKING (a gained released_channels entry).'
   q4_changed_answer: true
 - id: M7
   domain: mcp
