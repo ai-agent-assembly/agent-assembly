@@ -1779,6 +1779,31 @@ async fn a_stalled_gateway_denies_concurrent_mcp_calls_by_default() {
     assert!(seen.is_empty(), "a denied call reached upstream: {} bytes", seen.len());
 }
 
+/// AAASM-6364 control for the two tests above: with a gateway that answers, the
+/// same concurrent calls are allowed through, so those outcomes come from the
+/// stall and not from the fixture.
+#[tokio::test]
+async fn a_responsive_gateway_allows_concurrent_mcp_calls() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: false,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains("200 OK") && view.contains("harmless"), "got: {view:?}");
+    }
+}
+
 // ── review findings on the AAASM-6354/6355 stack (F1-F4) ─────────────────────
 
 fn escaped_policy_value_response() -> Vec<u8> {
