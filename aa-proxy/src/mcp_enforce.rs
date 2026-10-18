@@ -221,8 +221,8 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
 /// alongside other proxy data-path errors without taking a direct tonic
 /// dependency.
 ///
-/// AAASM-6364: bounded by [`MCP_CALL_CHECK_TIMEOUT`] on the shared mutex wait
-/// and again on the RPC. Without it a
+/// AAASM-6364: bounded by one [`MCP_CALL_CHECK_TIMEOUT`] deadline covering the
+/// shared mutex wait and the RPC. Without it a
 /// gateway that stopped answering (not one that refused) would hold the lock
 /// and stall every `tools/call` on every connection behind it, indefinitely,
 /// before the caller's fail-open/fail-closed branch could ever run. A stalled
@@ -249,13 +249,15 @@ async fn evaluate_mcp_call_within(
     span_id: &str,
 ) -> anyhow::Result<McpDecision> {
     let request = build_check_action_request(call, target_url, trace_id, span_id);
-    // Two bounds, because they mean different things. Waiting on the shared
-    // lock is local queueing (a hostile or busy agent can build a queue behind
-    // one slow RPC); only the RPC itself says anything about the gateway.
-    let mut client = tokio::time::timeout(bound, gateway.lock())
+    // One deadline for the whole evaluation (lock wait plus RPC), so the worst
+    // case is `bound`, not twice it, and there is no window at the hand-off
+    // between the two stages. The lock wait still fails as `GatewayContended`
+    // so the caller can say the call was never sent to the gateway.
+    let deadline = tokio::time::Instant::now() + bound;
+    let mut client = tokio::time::timeout_at(deadline, gateway.lock())
         .await
         .map_err(|_| anyhow::Error::new(GatewayContended))?;
-    let response = tokio::time::timeout(bound, client.check_action(request))
+    let response = tokio::time::timeout_at(deadline, client.check_action(request))
         .await
         .map_err(|_| anyhow::anyhow!("PolicyService.CheckAction timed out after {bound:?}"))?
         .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))?;
