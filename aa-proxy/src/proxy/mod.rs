@@ -32,7 +32,7 @@ use crate::intercept::mcp::{
     request_encoding_hazard, MCP_LABEL_STREAM, MCP_LABEL_UNKNOWN,
 };
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, fail_closed_reason, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response_body, read_line_capped, serialize_http_request,
@@ -1365,18 +1365,16 @@ impl ProxyServer {
                 tracing::warn!(
                     tool_name = %call.tool_name,
                     %host,
-                    error = %e,
-                    "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                    "gateway evaluation did not complete ({e}); forwarding WITHOUT enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
                 McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
             Err(e) => {
-                let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
+                let reason = fail_closed_reason(&e);
                 tracing::error!(
                     tool_name = %call.tool_name,
                     %host,
-                    error = %e,
-                    "gateway CheckAction failed; denying MCP call (fail-closed). \
+                    "gateway CheckAction did not complete ({e}); denying MCP call (fail-closed). \
                      Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
                 );
                 self.interceptor

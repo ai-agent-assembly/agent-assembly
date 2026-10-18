@@ -280,6 +280,17 @@ impl std::fmt::Display for GatewayContended {
 
 impl std::error::Error for GatewayContended {}
 
+/// Client-visible reason for a request-side evaluation that did not complete
+/// and was denied (fail-closed). Fixed strings only: the error text can carry
+/// gateway or transport detail that must not reach the agent.
+pub fn fail_closed_reason(error: &anyhow::Error) -> &'static str {
+    if error.is::<GatewayContended>() {
+        "MCP enforcement unavailable: gateway client busy, call was not evaluated within 10s (fail-closed)"
+    } else {
+        "MCP enforcement unavailable: gateway did not return a decision within 10s or failed (fail-closed)"
+    }
+}
+
 /// Bound on one request-side `tools/call` evaluation (lock wait and RPC share
 /// it). Matches the response-side
 /// bound in the proxy (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative
