@@ -64,12 +64,19 @@ fn approval_rank(v: &toml::Value) -> Option<u8> {
     }
 }
 
-/// The line `aasm run` prints when it leaves an unrankable value alone.
+/// The line `aasm run` prints when it leaves a managed key alone.
 pub(crate) fn warning(w: &Withheld) -> String {
-    format!(
-        "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
-        w.key, w.existing
-    )
+    if w.unrankable {
+        format!(
+            "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
+            w.key, w.existing
+        )
+    } else {
+        format!(
+            "warning: not changing `{}` in your Codex config: the managed value would be less strict than your `{}`, so it is left as you set it",
+            w.key, w.existing
+        )
+    }
 }
 
 fn describe(v: &toml::Value) -> String {
