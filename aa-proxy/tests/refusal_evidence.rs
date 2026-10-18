@@ -1023,6 +1023,9 @@ mod gateway_stub {
         CallErrorResultRedact,
         /// `tools/call` check FAILS; every result is Allow.
         CallErrorResultAllow,
+        /// `tools/call` check never answers (a gateway that stopped responding);
+        /// every result is Allow.
+        StallCall,
     }
 
     struct JudgeResults(ResultVerdict);
@@ -1043,6 +1046,9 @@ mod gateway_stub {
                     ) =>
                 {
                     return Err(Status::resource_exhausted("stub request failure"));
+                }
+                Some(Action::ToolCall(_)) if matches!(self.0, ResultVerdict::StallCall) => {
+                    std::future::pending::<Decision>().await
                 }
                 Some(Action::ToolResult(r)) => {
                     if matches!(self.0, ResultVerdict::Error) {
@@ -1696,6 +1702,50 @@ async fn a_decompression_bomb_response_is_withheld_not_forwarded() {
         !view.contains("200 OK"),
         "an over-cap encoded response must be withheld, got a forward"
     );
+}
+
+/// AAASM-6364: two `tools/call`s through one proxy, sent together, so the
+/// second one queues for the shared gateway client behind the first. Each
+/// answer is held up to the proxy's 10 s evaluation bound.
+async fn two_concurrent_mcp_calls(proxy: SocketAddr) -> [String; 2] {
+    let tunnels = [
+        open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed"),
+        open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed"),
+    ];
+    let request = post(MITM_HOST, "/mcp", &mcp_body_with("harmless"));
+    let window = std::time::Duration::from_secs(45);
+    let [first, second] = tunnels;
+    let (a, b) = tokio::join!(
+        mitm_send_bytes_within(first, MITM_HOST, request.as_bytes(), window),
+        mitm_send_bytes_within(second, MITM_HOST, request.as_bytes(), window),
+    );
+    [a, b]
+}
+
+/// AAASM-6364: a gateway that stops answering is a failed evaluation, so under
+/// `mcp_fail_open` the calls are forwarded after the bound, both the one whose
+/// RPC timed out and the one that queued behind it (the opt-in has no
+/// contention exception). Their responses are still evaluated.
+#[tokio::test]
+async fn a_stalled_gateway_forwards_concurrent_mcp_calls_under_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallCall).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains("200 OK") && view.contains("harmless"), "got: {view:?}");
+    }
 }
 
 // ── review findings on the AAASM-6354/6355 stack (F1-F4) ─────────────────────
