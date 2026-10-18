@@ -113,17 +113,6 @@ mod stub_coding_agent {
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).expect("read_dir") {
                 let path = entry.expect("dir entry").path();
-                // Under `cargo llvm-cov` every instrumented `aasm` child that runs
-                // with this tree as its cwd writes a `default_<hash>_<n>_<pid>.profraw`
-                // there: `aasm run` sanitises the child environment, so the
-                // absolute `LLVM_PROFILE_FILE` the coverage job sets never reaches
-                // them. The workspace transaction rightly commits whatever the
-                // session wrote, so these files are a property of the coverage lane,
-                // not of the agent's change set. Nothing in the stub's script writes
-                // a `.profraw`, so ignoring that extension cannot hide a real change.
-                if path.extension().is_some_and(|ext| ext == "profraw") {
-                    continue;
-                }
                 let rel = path
                     .strip_prefix(root)
                     .expect("under root")
