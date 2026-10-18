@@ -447,13 +447,11 @@ mod tests {
     }
 
     /// AAASM-6364: a gateway lock that is never released (a stalled RPC holds
-    /// it) must surface as an `Err` after the bound, not hang the caller.
-    /// Positive control: the same call with the lock free reaches the RPC and
-    /// fails promptly on the unreachable endpoint rather than timing out.
+    /// it) must surface as `GatewayContended` after the bound, not hang the
+    /// caller. Once the lock is free the same call reaches a real decision.
     #[tokio::test]
     async fn evaluate_mcp_call_is_bounded_when_the_gateway_lock_is_never_released() {
-        let client = GatewayClient::connect_lazy_owned("http://127.0.0.1:1").expect("lazy client");
-        let gateway = Arc::new(Mutex::new(client));
+        let gateway = Arc::new(Mutex::new(stub::gateway(stub::Mode::Allow).await));
         let held = gateway.lock().await;
 
         // The outer bound makes a regression (an unbounded wait) fail fast
@@ -471,11 +469,11 @@ mod tests {
         )
         .await
         .expect("the evaluation itself must be bounded")
-        .expect_err("a stalled gateway must not be waited on forever");
+        .expect_err("a held lock must not be waited on forever");
         assert!(err.is::<GatewayContended>(), "{err}");
         drop(held);
 
-        let err = evaluate_mcp_call_within(
+        let decision = evaluate_mcp_call_within(
             std::time::Duration::from_secs(5),
             &gateway,
             &sample_call(),
@@ -484,8 +482,8 @@ mod tests {
             "",
         )
         .await
-        .expect_err("nothing listens on the endpoint");
-        assert!(!err.is::<GatewayContended>(), "{err}");
+        .expect("the lock is free again");
+        assert_eq!(decision, McpDecision::Allow);
     }
 
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {
