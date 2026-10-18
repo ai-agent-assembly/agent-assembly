@@ -1365,7 +1365,8 @@ impl ProxyServer {
                 tracing::warn!(
                     tool_name = %call.tool_name,
                     %host,
-                    "gateway evaluation did not complete ({e}); forwarding WITHOUT enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                    error = %e,
+                    "gateway evaluation did not complete; forwarding WITHOUT enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
                 McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
@@ -1374,7 +1375,8 @@ impl ProxyServer {
                 tracing::error!(
                     tool_name = %call.tool_name,
                     %host,
-                    "gateway CheckAction did not complete ({e}); denying MCP call (fail-closed). \
+                    error = %e,
+                    "gateway evaluation did not complete; denying MCP call (fail-closed). \
                      Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
                 );
                 self.interceptor
