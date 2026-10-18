@@ -220,6 +220,13 @@ pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
 /// status code preserved in the message) so callers can `?`-propagate
 /// alongside other proxy data-path errors without taking a direct tonic
 /// dependency.
+///
+/// AAASM-6364: bounded by [`MCP_CALL_CHECK_TIMEOUT`] over the whole future, so
+/// it covers waiting for the shared mutex as well as the RPC. Without it a
+/// gateway that stopped answering (not one that refused) would hold the lock
+/// and stall every `tools/call` on every connection behind it, indefinitely,
+/// before the caller's fail-open/fail-closed branch could ever run. Expiry is
+/// an `Err`, handled exactly like an RPC failure.
 pub async fn evaluate_mcp_call(
     gateway: &Arc<Mutex<GatewayClient>>,
     call: &McpToolCall,
@@ -227,16 +234,36 @@ pub async fn evaluate_mcp_call(
     trace_id: &str,
     span_id: &str,
 ) -> anyhow::Result<McpDecision> {
+    evaluate_mcp_call_within(MCP_CALL_CHECK_TIMEOUT, gateway, call, target_url, trace_id, span_id).await
+}
+
+/// [`evaluate_mcp_call`] with the bound as a parameter, so a test can exercise
+/// the expiry path without waiting out the production value.
+async fn evaluate_mcp_call_within(
+    bound: std::time::Duration,
+    gateway: &Arc<Mutex<GatewayClient>>,
+    call: &McpToolCall,
+    target_url: &str,
+    trace_id: &str,
+    span_id: &str,
+) -> anyhow::Result<McpDecision> {
     let request = build_check_action_request(call, target_url, trace_id, span_id);
-    let response = {
+    let response = tokio::time::timeout(bound, async {
         let mut client = gateway.lock().await;
         client
             .check_action(request)
             .await
-            .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))?
-    };
+            .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("PolicyService.CheckAction timed out after {bound:?}"))??;
     Ok(decision_from_response(&response))
 }
+
+/// Bound on one request-side `tools/call` evaluation. Matches the response-side
+/// bound in the proxy (`MCP_GATEWAY_RPC_TIMEOUT`); like it, a conservative
+/// starting point rather than a value tuned against a measured p99.
+const MCP_CALL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(test)]
 mod tests {
@@ -270,6 +297,42 @@ mod tests {
         // args_json round-trips back to the original Value.
         let parsed: serde_json::Value = serde_json::from_slice(&tool.args_json).expect("args_json must be valid JSON");
         assert_eq!(parsed, json!({ "path": "/etc/passwd" }));
+    }
+
+    /// AAASM-6364: a gateway lock that is never released (a stalled RPC holds
+    /// it) must surface as an `Err` after the bound, not hang the caller.
+    /// Positive control: the same call with the lock free reaches the RPC and
+    /// fails promptly on the unreachable endpoint rather than timing out.
+    #[tokio::test]
+    async fn evaluate_mcp_call_is_bounded_when_the_gateway_lock_is_never_released() {
+        let client = GatewayClient::connect_lazy_owned("http://127.0.0.1:1").expect("lazy client");
+        let gateway = Arc::new(Mutex::new(client));
+        let held = gateway.lock().await;
+
+        let err = evaluate_mcp_call_within(
+            std::time::Duration::from_millis(50),
+            &gateway,
+            &sample_call(),
+            "https://mcp.example.com/",
+            "",
+            "",
+        )
+        .await
+        .expect_err("a stalled gateway must not be waited on forever");
+        assert!(err.to_string().contains("timed out"), "{err}");
+        drop(held);
+
+        let err = evaluate_mcp_call_within(
+            std::time::Duration::from_secs(5),
+            &gateway,
+            &sample_call(),
+            "https://mcp.example.com/",
+            "",
+            "",
+        )
+        .await
+        .expect_err("nothing listens on the endpoint");
+        assert!(!err.to_string().contains("timed out"), "{err}");
     }
 
     fn response_with(decision: Decision, reason: &str) -> CheckActionResponse {

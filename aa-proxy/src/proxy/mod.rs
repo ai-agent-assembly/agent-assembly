@@ -78,11 +78,10 @@ const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// `Mutex<GatewayClient>` as well as the `CheckAction` RPC itself. On expiry the
 /// response is withheld; a response RPC failure always withholds.
 ///
-/// It bounds nothing else. In particular the request-side `evaluate_mcp_call`
-/// (the `tools/call` decision) has no timeout of its own: that is pre-existing
-/// behaviour this constant does not change. The gateway client has no timeout
-/// either, and every connection task shares the one mutex, which is why the
-/// response side needs the bound.
+/// It bounds nothing else. The request-side `evaluate_mcp_call` (the
+/// `tools/call` decision) carries its own bound (AAASM-6364). The gateway
+/// client has no timeout, and every connection task shares the one mutex,
+/// which is why each side needs one.
 const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long an event stream may sit on an event that has started but not
