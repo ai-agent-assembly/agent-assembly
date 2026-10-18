@@ -309,6 +309,24 @@ mod stub_coding_agent {
         }
     }
 
+    /// The exact-change-set oracle must see an arbitrary file whose name merely
+    /// ends in `.profraw`; only the external sink may keep profiles out of the tree.
+    #[test]
+    fn snapshot_detects_an_arbitrary_profraw_file_as_an_unapproved_change() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let before = snapshot(tree.path());
+
+        std::fs::write(tree.path().join("unexpected.profraw"), b"not a profile").expect("write");
+
+        let after = snapshot(tree.path());
+        assert_ne!(before, after, "an unexpected .profraw file must change the snapshot");
+        assert_eq!(
+            after.get("unexpected.profraw"),
+            Some(&Entry::File(b"not a profile".to_vec()))
+        );
+    }
+
     /// The composite stub workflow: edit + shell + allowed call + DENIED call,
     /// inside one transactional workspace.
     #[tokio::test(flavor = "multi_thread")]
