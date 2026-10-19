@@ -1019,6 +1019,38 @@ mod tests {
         }
     }
 
+    /// AAASM-6361: an unset key yields an `absent` withheld entry, which is not
+    /// a user value to protect, so install must still proceed.
+    #[tokio::test]
+    async fn refuse_to_relax_ignores_keys_that_are_only_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-failure\"\n";
+        let missing = dir.path().join("missing.toml");
+        refuse_to_relax(&missing, managed)
+            .await
+            .expect("a missing config holds no value to protect");
+        let empty = dir.path().join("empty.toml");
+        std::fs::write(&empty, "").unwrap();
+        refuse_to_relax(&empty, managed)
+            .await
+            .expect("an empty config holds no value to protect");
+    }
+
+    /// Positive control for the test above: a real user value is still refused,
+    /// and the refusal names that key even when an unset key is reported first.
+    #[tokio::test]
+    async fn refuse_to_relax_still_refuses_a_value_the_user_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "approval_policy = \"never\"\n").unwrap();
+        let managed = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n";
+        let err = refuse_to_relax(&path, managed).await.unwrap_err().to_string();
+        assert!(
+            err.contains("approval_policy") && err.contains("never") && err.contains("will not lower"),
+            "{err}"
+        );
+    }
+
     #[tokio::test]
     async fn only_codex_ca_certificate_is_injected_never_ssl_cert_file() {
         let dir = tempfile::tempdir().unwrap();
