@@ -434,7 +434,7 @@ mod stub_coding_agent {
             "pattern text is forwarded unchanged"
         );
         assert!(
-            format!("{cmd:?}").starts_with("env -i "),
+            format!("{cmd:?}").contains(" env -i "),
             "launch must stay env_clear'ed: {cmd:?}"
         );
         Ok(())
