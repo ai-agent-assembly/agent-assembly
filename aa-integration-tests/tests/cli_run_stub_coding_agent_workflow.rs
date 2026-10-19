@@ -255,6 +255,13 @@ mod stub_coding_agent {
         /// `aasm run --workspace-tx exec -- sh stub_agent.sh <session> <ca> <mode>`
         /// with an explicit environment -- nothing ambient crosses in.
         fn launch(&self, agent_id: &str, project: &Path, mode: &str) -> io::Result<std::process::Child> {
+            self.launch_command(agent_id, project, mode)?.spawn()
+        }
+
+        /// The exact `Command` `launch` spawns, exposed so a test can assert the
+        /// sanitised environment the real launch path builds rather than a
+        /// re-derivation of it.
+        fn launch_command(&self, agent_id: &str, project: &Path, mode: &str) -> io::Result<Command> {
             let home = self.root.join(format!("home-{agent_id}"));
             std::fs::create_dir_all(&home)?;
             let mut cmd = Command::new(self.proxy.aasm());
@@ -280,7 +287,7 @@ mod stub_coding_agent {
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             apply_profile_sink(&mut cmd, self.profile_sink.as_deref());
-            cmd.spawn()
+            Ok(cmd)
         }
     }
 
