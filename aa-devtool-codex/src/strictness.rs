@@ -22,6 +22,10 @@ pub(crate) struct Withheld {
     /// `true` when the existing value has no rank (kept as-is); `false` when
     /// AA's value would have been less strict.
     pub unrankable: bool,
+    /// `true` when the key was unset in the user's config, so nothing of theirs
+    /// was lowered; the managed value was dropped because it was not the
+    /// strictest one AA can write. `existing` is empty then.
+    pub absent: bool,
 }
 
 const SANDBOX: &str = "sandbox_mode";
@@ -66,7 +70,12 @@ fn approval_rank(v: &toml::Value) -> Option<u8> {
 
 /// The line `aasm run` prints when it leaves a managed key alone.
 pub(crate) fn warning(w: &Withheld) -> String {
-    if w.unrankable {
+    if w.absent {
+        format!(
+            "warning: not setting `{}` in your Codex config: it is unset there and the managed value is not the strictest Agent Assembly can write, so it is left unset",
+            w.key
+        )
+    } else if w.unrankable {
         format!(
             "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
             w.key, w.existing
@@ -102,6 +111,12 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
         let Some(current) = existing.get(key) else {
             // Absent ranks strictest: only the strictest AA value may land.
             if !rank(aa).is_some_and(|r| r >= strictest(key)) {
+                withheld.push(Withheld {
+                    key,
+                    existing: String::new(),
+                    unrankable: false,
+                    absent: true,
+                });
                 managed.remove(key);
             }
             continue;
@@ -113,6 +128,7 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
                     key,
                     existing: describe(current),
                     unrankable: false,
+                    absent: false,
                 });
                 managed.remove(key);
             }
@@ -121,6 +137,7 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
                     key,
                     existing: describe(current),
                     unrankable: true,
+                    absent: false,
                 });
                 managed.remove(key);
             }
@@ -194,9 +211,12 @@ mod tests {
             "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-failure\"",
         );
         assert!(m.is_empty(), "{m:?}");
-        assert!(w.is_empty());
-        let (m, _) = run("", "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"");
+        // The drop is reported (AAASM-6361), once per key, as an absent key.
+        assert_eq!(w.iter().filter(|x| x.absent).count(), 2, "{w:?}");
+        assert!(w.iter().all(|x| !x.unrankable && x.existing.is_empty()));
+        let (m, w) = run("", "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"");
         assert_eq!(m.len(), 2);
+        assert!(w.is_empty(), "the strictest value lands and says nothing: {w:?}");
     }
 
     #[test]
