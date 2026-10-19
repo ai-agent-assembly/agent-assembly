@@ -237,6 +237,21 @@ fn auto_approve(policy: &PolicyDocument) -> bool {
         .any(|r| r.decision == PolicyDecision::RequireApproval)
 }
 
+/// Whether the user's existing value for `key` is already stricter than the
+/// governed `incoming` one. Only the two approval keys have an ordering:
+/// `chat.tools.autoApprove: false` and `chat.mcp.requireApproval: "always"`
+/// are the strict ends. Any other key, or an unexpected value type, is not
+/// protected and is overwritten as before.
+fn user_value_is_stricter(key: &str, existing: Option<&serde_json::Value>, incoming: &serde_json::Value) -> bool {
+    match (key, existing, incoming) {
+        ("chat.tools.autoApprove", Some(serde_json::Value::Bool(false)), serde_json::Value::Bool(true)) => true,
+        ("chat.mcp.requireApproval", Some(serde_json::Value::String(u)), serde_json::Value::String(i)) => {
+            u == "always" && i == "never"
+        }
+        _ => false,
+    }
+}
+
 /// `chat.agent.maxRequests` — from `dev_tools.copilot.max_requests:<N>` rule,
 /// falling back to [`DEFAULT_MAX_REQUESTS`].
 fn max_requests(policy: &PolicyDocument) -> u32 {
@@ -353,6 +368,11 @@ impl DevToolAdapter for CopilotAdapter {
             serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
         if let (Some(obj), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) {
             for (k, v) in inc {
+                // AAASM-6321: governance may tighten a setting but never loosen
+                // one the user already made stricter.
+                if user_value_is_stricter(k, obj.get(k), v) {
+                    continue;
+                }
                 obj.insert(k.clone(), v.clone());
             }
         }
