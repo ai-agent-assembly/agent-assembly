@@ -599,7 +599,6 @@ mod copilot {
     /// DESIRED: governance never loosens a setting the user already made
     /// stricter.
     #[tokio::test]
-    #[ignore = "AAASM-6297 finding: aa-devtool-copilot generate_managed_settings/auto_approve (src/lib.rs:233) defaults autoApprove to true and mcp requireApproval to never when no RequireApproval rule exists, and apply_settings overwrites the user's stricter values"]
     async fn desired_apply_never_loosens_a_stricter_user_setting() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = tmp.path().join("settings.json");
