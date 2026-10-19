@@ -385,6 +385,80 @@ mod stub_coding_agent {
         assert_eq!(validated_profile_sink(None, tree.path()).expect("unset"), None);
     }
 
+    /// Variables the sanitised launch sets itself; anything else crossing in is
+    /// a leak the exact-change-set oracle was not written to tolerate.
+    const LAUNCH_ENV: [&str; 9] = [
+        "PATH",
+        "HOME",
+        "AASM_STATE_DIR",
+        "AA_CA_DIR",
+        "AA_DATA_DIR",
+        "AA_GATEWAY_ENDPOINT",
+        "AA_TEST_PROXY_UPSTREAM",
+        "AA_PROXY_LLM_ONLY",
+        "AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY",
+    ];
+
+    fn launch_env(cmd: &Command) -> BTreeMap<String, Option<String>> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// The real `Host::launch` environment, with an external sink: the one
+    /// extra variable is the validated pattern, `env_clear` still applies, and
+    /// nothing else is added. Deleting the forward in `launch`, or adding any
+    /// further `.env()`, changes this key set and fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_forwards_only_the_validated_profile_sink() -> anyhow::Result<()> {
+        let sink_dir = tempfile::tempdir()?;
+        let pattern = sink_dir.path().join("cov").join("aa-%p-%m.profraw");
+        let host = Host::start_with_profile_env(false, Some(pattern.clone().into_os_string())).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+
+        let cmd = host.launch_command("aaasm6297-env", &project, "allow")?;
+        let env = launch_env(&cmd);
+
+        let mut expected: BTreeSet<String> = LAUNCH_ENV.iter().map(|k| k.to_string()).collect();
+        expected.insert(PROFILE_ENV.to_string());
+        assert_eq!(env.keys().cloned().collect::<BTreeSet<_>>(), expected);
+        assert_eq!(
+            env.get(PROFILE_ENV),
+            Some(&Some(pattern.to_string_lossy().into_owned())),
+            "pattern text is forwarded unchanged"
+        );
+        assert!(
+            format!("{cmd:?}").starts_with("env -i "),
+            "launch must stay env_clear'ed: {cmd:?}"
+        );
+        Ok(())
+    }
+
+    /// Ordinary lane: with no sink the real launch environment carries no
+    /// coverage variable at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_without_a_profile_sink_forwards_nothing() -> anyhow::Result<()> {
+        let host = Host::start_with_profile_env(false, None).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+
+        let cmd = host.launch_command("aaasm6297-env", &project, "allow")?;
+        let env = launch_env(&cmd);
+
+        assert_eq!(
+            env.keys().cloned().collect::<BTreeSet<_>>(),
+            LAUNCH_ENV.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>()
+        );
+        assert!(!env.contains_key(PROFILE_ENV));
+        Ok(())
+    }
+
     /// The composite stub workflow: edit + shell + allowed call + DENIED call,
     /// inside one transactional workspace.
     #[tokio::test(flavor = "multi_thread")]
