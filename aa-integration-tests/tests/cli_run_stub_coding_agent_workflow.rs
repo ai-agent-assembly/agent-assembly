@@ -173,10 +173,19 @@ mod stub_coding_agent {
     const PROFILE_ENV: &str = "LLVM_PROFILE_FILE";
 
     /// Validate the ambient coverage profile pattern for pass-through. `None`
-    /// (ordinary lane) forwards nothing. The pattern must be absolute and its
-    /// directory must resolve outside `tree`; the directory is created if the
-    /// runner has not yet done so. The pattern text (with `%p`/`%m`) is
-    /// returned unchanged so per-process profile names still expand.
+    /// (ordinary lane) forwards nothing.
+    ///
+    /// Supported pattern: an absolute path whose directory part is literal
+    /// (no `..`, no `%` token) and resolves outside `tree`, and whose final
+    /// component is the file name, which may carry `%p`/`%m` tokens. LLVM
+    /// expands tokens in directory components into names this check cannot
+    /// see, so they are refused rather than checked as literal directories.
+    /// The directory is created if the runner has not yet done so. The
+    /// returned pattern is the *resolved* directory joined with the original
+    /// file name, so the destination that was checked is the one forwarded,
+    /// and a pre-existing symlink at a concrete file name is refused. A
+    /// same-user process racing the directory after this check is out of
+    /// scope: the sink is a private directory of the harness's own runner.
     fn validated_profile_sink(raw: Option<std::ffi::OsString>, tree: &Path) -> io::Result<Option<PathBuf>> {
         let Some(raw) = raw.filter(|v| !v.is_empty()) else {
             return Ok(None);
@@ -187,11 +196,33 @@ mod stub_coding_agent {
             return Err(bad("must be an absolute path"));
         }
         let dir = pattern.parent().ok_or_else(|| bad("has no directory"))?;
-        std::fs::create_dir_all(dir)?;
-        if dir.canonicalize()?.starts_with(tree.canonicalize()?) {
+        let leaf = pattern.file_name().ok_or_else(|| bad("has no file name"))?;
+        if dir
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+        {
+            return Err(bad("directory must not contain . or .. components"));
+        }
+        if dir.to_string_lossy().contains('%') {
+            return Err(bad("directory must not contain % tokens; only the file name may"));
+        }
+        let tree = tree.canonicalize()?;
+        // Refuse a literal in-tree directory before creating anything in the tree.
+        if dir.starts_with(&tree) {
             return Err(bad("must point outside the fixture tree"));
         }
-        Ok(Some(pattern))
+        std::fs::create_dir_all(dir)?;
+        let dir = dir.canonicalize()?;
+        if dir.starts_with(&tree) {
+            return Err(bad("must point outside the fixture tree"));
+        }
+        let resolved = dir.join(leaf);
+        if !leaf.to_string_lossy().contains('%')
+            && std::fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(bad("file name must not be a symlink"));
+        }
+        Ok(Some(resolved))
     }
 
     /// Forward only the validated profile pattern into an already
@@ -376,7 +407,13 @@ mod stub_coding_agent {
         let sink = validated_profile_sink(Some(pattern.clone().into_os_string()), tree.path())
             .expect("external sink is valid")
             .expect("sink present");
-        assert_eq!(sink, pattern, "pattern text is forwarded unchanged");
+        let resolved = sink_dir
+            .path()
+            .canonicalize()
+            .expect("canonical")
+            .join("cov")
+            .join("aa-%p-%m.profraw");
+        assert_eq!(sink, resolved, "directory is resolved, file name text is unchanged");
         assert!(pattern.parent().expect("dir").is_dir(), "harness creates the sink dir");
 
         let inside = tree.path().join("aa-%p.profraw");
@@ -418,6 +455,7 @@ mod stub_coding_agent {
     async fn launch_forwards_only_the_validated_profile_sink() -> anyhow::Result<()> {
         let sink_dir = tempfile::tempdir()?;
         let pattern = sink_dir.path().join("cov").join("aa-%p-%m.profraw");
+        let resolved = sink_dir.path().canonicalize()?.join("cov").join("aa-%p-%m.profraw");
         let host = Host::start_with_profile_env(false, Some(pattern.clone().into_os_string())).await?;
         let project = host.root.join("project");
         copy_fixture(&project)?;
@@ -430,8 +468,8 @@ mod stub_coding_agent {
         assert_eq!(env.keys().cloned().collect::<BTreeSet<_>>(), expected);
         assert_eq!(
             env.get(PROFILE_ENV),
-            Some(&Some(pattern.to_string_lossy().into_owned())),
-            "pattern text is forwarded unchanged"
+            Some(&Some(resolved.to_string_lossy().into_owned())),
+            "the resolved sink with the original file name pattern is forwarded"
         );
         assert!(
             format!("{cmd:?}").contains(" env -i "),
