@@ -1069,7 +1069,11 @@ impl FilesystemExecutor {
             SettingsMerge::Replace => fingerprint::canonicalize(format, content).map_err(fp)?,
         };
 
-        let unchanged = fingerprint::canonicalize(format, &current).map_err(fp)? == next && path.exists();
+        // `next` may carry the user's comments and layout, so it is compared by
+        // meaning: a byte comparison would rewrite an already-installed file.
+        let unchanged = fingerprint::canonicalize(format, &current).map_err(fp)?
+            == fingerprint::canonicalize(format, &next).map_err(fp)?
+            && path.exists();
         if !unchanged {
             write_preserving_mode(path, &next, step_id)?;
         }
@@ -1188,7 +1192,10 @@ impl StepExecutor for FilesystemExecutor {
             // created; leaving an empty document behind would be an artifact the
             // user never had.
             let empty = fingerprint::empty_document(*format);
-            if restored == empty && prior.document_fingerprint == fingerprint::fingerprint_raw(empty) {
+            // `trim`, because a format-preserving restore can leave blank lines
+            // behind. Not compared by canonical form: a comment-only file
+            // canonicalises to nothing and must not be deleted.
+            if restored.trim() == empty && prior.document_fingerprint == fingerprint::fingerprint_raw(empty) {
                 return remove_file(path);
             }
             write_preserving_mode(path, &restored, &step.step_id)?;
