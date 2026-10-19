@@ -527,6 +527,28 @@ mod stub_coding_agent {
         assert_refused(validated_profile_sink(Some(sneaky.into_os_string()), tree.path()));
     }
 
+    /// A refused sink must leave nothing behind: not a new in-tree directory,
+    /// and not one reached through a dangling symlink that points into the tree.
+    #[test]
+    fn profile_sink_refusal_creates_no_directories() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+
+        let literal = tree.path().join("newdir");
+        assert_refused(validated_profile_sink(
+            Some(literal.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
+        assert!(!literal.exists(), "an in-tree sink directory must not be created");
+
+        let target = tree.path().join("viadangling");
+        let lnk = ext.path().join("dangling");
+        std::os::unix::fs::symlink(&target, &lnk).expect("symlink");
+        assert!(validated_profile_sink(Some(lnk.join("aa-%p.profraw").into_os_string()), tree.path()).is_err());
+        assert!(!target.exists(), "creation must not go through a dangling symlink");
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
