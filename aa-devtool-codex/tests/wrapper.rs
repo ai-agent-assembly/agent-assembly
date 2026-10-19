@@ -178,6 +178,40 @@ async fn apply_settings_writes_no_permissive_value_onto_an_empty_config() {
     assert!(parsed.get("approval_policy").is_none());
 }
 
+const STDERR_CHILD_ENV: &str = "AA_TEST_WITHHELD_STDERR_CHILD";
+const STDERR_CHILD_TEST: &str = "apply_settings_child_for_stderr_capture";
+
+/// Child half of the test below: does nothing unless the parent set the env
+/// var, so it is an inert pass in a normal run.
+#[tokio::test]
+async fn apply_settings_child_for_stderr_capture() {
+    if std::env::var_os(STDERR_CHILD_ENV).is_none() {
+        return;
+    }
+    apply_one_rule("approval_policy = \"on-request\"\n", "*", PolicyDecision::Allow).await;
+}
+
+/// AAASM-6361: the withheld-relaxation line must reach the process's real
+/// stderr through `apply_settings`, not just `strictness::report`'s writer.
+/// `apply_settings` writes to `std::io::stderr()`, which an in-process test
+/// cannot capture, so the test re-runs this binary and reads the child's fd 2.
+#[test]
+fn apply_settings_prints_the_withheld_relaxation_to_the_real_stderr() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", STDERR_CHILD_TEST, "--nocapture", "--test-threads=1"])
+        .env(STDERR_CHILD_ENV, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "child failed: {stderr}");
+    assert!(
+        stderr.lines().any(|l| l.contains("not changing `approval_policy`")
+            && l.contains("on-request")
+            && l.contains("less strict")),
+        "withheld relaxation not on stderr: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn apply_settings_is_idempotent() {
     let tmp = tempfile::tempdir().unwrap();
