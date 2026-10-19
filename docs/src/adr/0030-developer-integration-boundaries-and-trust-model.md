@@ -1266,6 +1266,16 @@ that ticket rather than as checks present in this documentation-only change.
   would be a *choice* rather than a constraint; it should then be revisited rather than
   inherited.
 
+  **Addendum (AAASM-6322): this trigger has fired for TOML only.** The Codex lifecycle
+  step now edits `config.toml` in place with `toml_edit`, so comments and layout survive an
+  install and a removal restores the original bytes when the user changed nothing else
+  (restore is still semantic where the spelling cannot be recovered, e.g. a single-quoted
+  value comes back double-quoted). The canonical `toml::Table` merge remains the oracle: an
+  edit that does not mean the same is refused and nothing is written. JSON adapters still
+  reserialise, so the constraint stands for them. Not yet covered:
+  `CodexAdapter::apply_settings` (`aa-devtool-codex/src/lib.rs`, reachable from `aasm run`)
+  still rewrites without preserving comments.
+
 ## Traceability
 
 | Reference | Relation |
