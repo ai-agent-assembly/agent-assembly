@@ -516,6 +516,17 @@ mod stub_coding_agent {
         ));
     }
 
+    /// `..` would let a literal-looking directory resolve somewhere else.
+    #[test]
+    fn profile_sink_refuses_a_parent_dir_component() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let sneaky = ext.path().join("cov").join("..").join("a.profraw");
+
+        assert_refused(validated_profile_sink(Some(sneaky.into_os_string()), tree.path()));
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
