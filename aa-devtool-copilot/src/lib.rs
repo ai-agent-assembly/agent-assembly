@@ -661,6 +661,53 @@ mod tests {
         assert!(v["github.copilot.enable"].is_object(), "managed key written");
     }
 
+    /// Apply the policy-derived settings over `existing` user JSON and return the result.
+    async fn apply_over(existing: &str, policy: &PolicyDocument) -> serde_json::Value {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, existing).unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(policy).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap()
+    }
+
+    /// AAASM-6321: the user's `autoApprove: false` survives a permissive policy.
+    #[tokio::test]
+    async fn apply_keeps_a_stricter_user_auto_approve() {
+        let v = apply_over(r#"{"chat.tools.autoApprove": false}"#, &empty_policy()).await;
+        assert_eq!(v["chat.tools.autoApprove"], false);
+    }
+
+    /// AAASM-6321: the user's `requireApproval: "always"` survives a permissive policy.
+    #[tokio::test]
+    async fn apply_keeps_a_stricter_user_require_approval() {
+        let v = apply_over(r#"{"chat.mcp.requireApproval": "always"}"#, &empty_policy()).await;
+        assert_eq!(v["chat.mcp.requireApproval"], "always");
+    }
+
+    /// Preservation control: governance still writes its own value when the
+    /// user has no setting, so the guard is not "never write these keys".
+    #[tokio::test]
+    async fn apply_still_writes_the_managed_approval_values_when_the_user_has_none() {
+        let v = apply_over("{}", &empty_policy()).await;
+        assert_eq!(v["chat.tools.autoApprove"], true);
+        assert_eq!(v["chat.mcp.requireApproval"], "never");
+    }
+
+    /// Preservation control: a looser user value is still tightened by a strict policy.
+    #[tokio::test]
+    async fn apply_still_tightens_a_looser_user_approval_setting() {
+        let policy = policy_with_rule("mcp_tool:github:push", PolicyDecision::RequireApproval);
+        let v = apply_over(
+            r#"{"chat.tools.autoApprove": true, "chat.mcp.requireApproval": "never"}"#,
+            &policy,
+        )
+        .await;
+        assert_eq!(v["chat.tools.autoApprove"], false);
+        assert_eq!(v["chat.mcp.requireApproval"], "always");
+    }
+
     /// AAASM-6091: `read_settings` used to fall back to `{}` on any parse
     /// failure, so `apply_settings` would silently replace the user's real
     /// VS Code settings file with only the AA-managed keys. The falsifying
