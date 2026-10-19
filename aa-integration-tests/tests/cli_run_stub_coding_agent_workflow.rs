@@ -446,6 +446,28 @@ mod stub_coding_agent {
         assert_eq!(validated_profile_sink(None, tree.path()).expect("unset"), None);
     }
 
+    fn assert_refused(result: io::Result<Option<PathBuf>>) {
+        let err = result.expect_err("sink must be refused");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    /// A concrete external file name that is a symlink into the tree would let
+    /// the profile writer follow it into the fixture.
+    #[test]
+    fn profile_sink_refuses_an_external_leaf_symlink_into_the_tree() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let leaf = ext.path().join("leaf.profraw");
+        std::os::unix::fs::symlink(tree.path().join("src/lib.txt"), &leaf).expect("symlink");
+
+        assert_refused(validated_profile_sink(Some(leaf.into_os_string()), tree.path()));
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
