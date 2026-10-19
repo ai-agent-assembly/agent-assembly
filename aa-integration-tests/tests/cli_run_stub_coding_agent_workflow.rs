@@ -172,20 +172,48 @@ mod stub_coding_agent {
     /// the full snapshot honest and the profile collected.
     const PROFILE_ENV: &str = "LLVM_PROFILE_FILE";
 
+    /// Resolve `dir` through every symlink that exists, appending any not-yet-
+    /// created tail verbatim. Lets the containment check run BEFORE anything is
+    /// created, so a refused sink leaves no directories behind. A dangling
+    /// symlink is an error, not a missing tail: creating through it would land
+    /// wherever it points.
+    fn canonicalize_with_missing_tail(dir: &Path) -> io::Result<PathBuf> {
+        let mut missing = Vec::new();
+        let mut cur = dir;
+        loop {
+            match cur.canonicalize() {
+                Ok(mut resolved) => {
+                    resolved.extend(missing.iter().rev());
+                    return Ok(resolved);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound && cur.symlink_metadata().is_err() => {
+                    let (Some(name), Some(parent)) = (cur.file_name(), cur.parent()) else {
+                        return Err(e);
+                    };
+                    missing.push(name);
+                    cur = parent;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Validate the ambient coverage profile pattern for pass-through. `None`
     /// (ordinary lane) forwards nothing.
     ///
     /// Supported pattern: an absolute path whose directory part is literal
-    /// (no `..`, no `%` token) and resolves outside `tree`, and whose final
-    /// component is the file name, which may carry `%p`/`%m` tokens. LLVM
-    /// expands tokens in directory components into names this check cannot
-    /// see, so they are refused rather than checked as literal directories.
-    /// The directory is created if the runner has not yet done so. The
+    /// (no `.`/`..` component, no `%` token) and whose final component is the
+    /// file name, which may carry `%p`/`%m` tokens -- what `cargo llvm-cov`
+    /// sets. LLVM expands tokens in directory components into names this check
+    /// cannot see, so they are refused rather than checked as literal
+    /// directories. The directory and the fixture root are resolved through
+    /// symlinks and must not overlap; only then is the directory created. The
     /// returned pattern is the *resolved* directory joined with the original
-    /// file name, so the destination that was checked is the one forwarded,
-    /// and a pre-existing symlink at a concrete file name is refused. A
-    /// same-user process racing the directory after this check is out of
-    /// scope: the sink is a private directory of the harness's own runner.
+    /// file name, so the destination that was checked is the one forwarded
+    /// while `%` tokens in the file name still expand. A concrete (token-free)
+    /// file name must not be a symlink; a file name with tokens is NOT
+    /// resolved. A same-user process racing the directory after this check is
+    /// out of scope: the sink is a private directory of the harness's runner.
     fn validated_profile_sink(raw: Option<std::ffi::OsString>, tree: &Path) -> io::Result<Option<PathBuf>> {
         let Some(raw) = raw.filter(|v| !v.is_empty()) else {
             return Ok(None);
@@ -207,16 +235,12 @@ mod stub_coding_agent {
             return Err(bad("directory must not contain % tokens; only the file name may"));
         }
         let tree = tree.canonicalize()?;
-        // Refuse a literal in-tree directory before creating anything in the tree.
-        if dir.starts_with(&tree) {
+        let resolved_dir = canonicalize_with_missing_tail(dir)?;
+        if resolved_dir.starts_with(&tree) {
             return Err(bad("must point outside the fixture tree"));
         }
-        std::fs::create_dir_all(dir)?;
-        let dir = dir.canonicalize()?;
-        if dir.starts_with(&tree) {
-            return Err(bad("must point outside the fixture tree"));
-        }
-        let resolved = dir.join(leaf);
+        std::fs::create_dir_all(&resolved_dir)?;
+        let resolved = resolved_dir.join(leaf);
         if !leaf.to_string_lossy().contains('%')
             && std::fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink())
         {
