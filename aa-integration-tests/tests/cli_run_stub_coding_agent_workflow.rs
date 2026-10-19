@@ -502,6 +502,20 @@ mod stub_coding_agent {
         ));
     }
 
+    /// LLVM expands tokens in directory components too, so the validated
+    /// directory would not be where profiles land.
+    #[test]
+    fn profile_sink_refuses_a_token_in_a_directory_component() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+
+        assert_refused(validated_profile_sink(
+            Some(ext.path().join("%p").join("a.profraw").into_os_string()),
+            tree.path(),
+        ));
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
