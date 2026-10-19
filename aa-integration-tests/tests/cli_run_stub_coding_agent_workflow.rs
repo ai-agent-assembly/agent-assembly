@@ -572,6 +572,25 @@ mod stub_coding_agent {
         );
     }
 
+    /// A token-free external file name that already exists as a regular file is
+    /// a legitimate sink.
+    #[test]
+    fn profile_sink_accepts_an_existing_external_regular_file() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let pattern = ext.path().join("existing.profraw");
+        std::fs::write(&pattern, b"old").expect("write");
+
+        let sink = validated_profile_sink(Some(pattern.into_os_string()), tree.path())
+            .expect("valid")
+            .expect("present");
+        assert_eq!(
+            sink,
+            ext.path().canonicalize().expect("canonical").join("existing.profraw")
+        );
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
