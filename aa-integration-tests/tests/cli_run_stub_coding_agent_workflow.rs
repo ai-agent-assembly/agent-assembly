@@ -484,6 +484,24 @@ mod stub_coding_agent {
         ));
     }
 
+    /// The fixture root is canonicalised too: naming it through an alias must
+    /// not hide an in-tree sink spelled the canonical way (macOS `/var` vs
+    /// `/private/var` is the same shape).
+    #[test]
+    fn profile_sink_refuses_an_in_tree_dir_when_the_root_is_given_as_an_alias() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let alias = ext.path().join("alias");
+        std::os::unix::fs::symlink(tree.path(), &alias).expect("symlink");
+        let canonical_tree = tree.path().canonicalize().expect("canonical");
+
+        assert_refused(validated_profile_sink(
+            Some(canonical_tree.join("aa-%p.profraw").into_os_string()),
+            &alias,
+        ));
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
