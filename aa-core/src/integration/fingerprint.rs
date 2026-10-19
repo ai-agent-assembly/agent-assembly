@@ -100,6 +100,15 @@ pub enum FingerprintError {
         /// The parser's complaint, without the document's contents.
         detail: String,
     },
+    /// The format-preserving TOML edit did not mean what the canonical merge
+    /// meant, so nothing was written.
+    ///
+    /// Carries no document contents, only which operation diverged.
+    #[error("the comment-preserving TOML edit diverged from the canonical result ({operation})")]
+    EditDiverged {
+        /// `merge` or `restore`.
+        operation: &'static str,
+    },
     /// The document parsed but is not a JSON object, so it has no keys to own.
     #[error("the document is a JSON {found}, not an object")]
     NotAnObject {
@@ -384,7 +393,12 @@ pub fn merge_managed_keys(
             base.insert(key.clone(), value);
         }
     }
-    Ok(base.render())
+    let canonical = base.render();
+    if format == DocumentFormat::Toml {
+        let sets = toml_sets(&incoming, managed_keys.iter().map(String::as_str));
+        return preserving_edit(current, &sets, &[], canonical, "merge");
+    }
+    Ok(canonical)
 }
 
 /// Put `prior_values` back into `current` and delete `absent_keys`.
@@ -400,13 +414,122 @@ pub fn restore_managed_keys(
 ) -> Result<String, FingerprintError> {
     let mut base = Doc::parse(format, current)?;
     let prior = Doc::parse(format, prior_values)?;
+    let sets = toml_sets(&prior, prior_keys(&prior).iter().map(String::as_str));
     for (key, value) in prior.into_owned_pairs() {
         base.insert(key, value.as_doc_value());
     }
     for key in absent_keys {
         base.remove(key);
     }
-    Ok(base.render())
+    let canonical = base.render();
+    if format == DocumentFormat::Toml {
+        return preserving_edit(current, &sets, absent_keys, canonical, "restore");
+    }
+    Ok(canonical)
+}
+
+fn prior_keys(doc: &Doc) -> Vec<String> {
+    match doc {
+        Doc::Json(map) => map.keys().cloned().collect(),
+        Doc::Toml(table) => table.keys().cloned().collect(),
+    }
+}
+
+/// The `(key, value)` pairs of a TOML `doc` named by `keys`; empty for JSON,
+/// which keeps the canonical rendering.
+fn toml_sets<'a>(doc: &Doc, keys: impl Iterator<Item = &'a str>) -> Vec<(String, toml::Value)> {
+    let Doc::Toml(table) = doc else { return Vec::new() };
+    let mut sets: Vec<(String, toml::Value)> = keys
+        .filter_map(|k| table.get(k).map(|v| (k.to_owned(), v.clone())))
+        .collect();
+    sets.sort_by(|a, b| a.0.cmp(&b.0));
+    sets.dedup_by(|a, b| a.0 == b.0);
+    sets
+}
+
+/// Apply `sets` and `removes` to `current` in place, keeping the user's
+/// comments and layout, and return the edited text.
+///
+/// `canonical` is the result of the canonical (`toml::Table`) merge and is the
+/// oracle: if the edited document does not mean exactly the same, nothing is
+/// returned for writing. A format-preserving editor is trusted only as far as
+/// it can be checked against the implementation that already defines the
+/// semantics.
+fn preserving_edit(
+    current: &str,
+    sets: &[(String, toml::Value)],
+    removes: &[String],
+    canonical: String,
+    operation: &'static str,
+) -> Result<String, FingerprintError> {
+    // A blank document has nothing to preserve, and the canonical rendering is
+    // what a fresh file must contain byte for byte.
+    if current.trim().is_empty() {
+        return Ok(canonical);
+    }
+    let diverged = FingerprintError::EditDiverged { operation };
+    let semantic = Doc::parse(DocumentFormat::Toml, current)?;
+    let Doc::Toml(semantic) = semantic else {
+        return Err(diverged);
+    };
+    let mut edited: toml_edit::DocumentMut = current
+        .parse()
+        .map_err(|e: toml_edit::TomlError| FingerprintError::NotToml { detail: e.to_string() })?;
+    let root_was_empty = edited.as_table().is_empty();
+
+    for (key, value) in sets {
+        if semantic.get(key) == Some(value) {
+            continue;
+        }
+        let mut new_item = item_for(key, value).ok_or_else(|| FingerprintError::EditDiverged { operation })?;
+        match edited.as_table_mut().get_mut(key) {
+            Some(old) => {
+                match (&*old, &mut new_item) {
+                    (toml_edit::Item::Value(o), toml_edit::Item::Value(n)) => {
+                        // The trailing comment lives on the value's decor.
+                        *n.decor_mut() = o.decor().clone();
+                    }
+                    (toml_edit::Item::Table(o), toml_edit::Item::Table(n)) => {
+                        *n.decor_mut() = o.decor().clone();
+                        n.set_position(o.position());
+                    }
+                    _ => {}
+                }
+                *old = new_item;
+            }
+            None => {
+                if matches!(new_item, toml_edit::Item::Table(_)) && !root_was_empty {
+                    if let Some(t) = new_item.as_table_mut() {
+                        t.decor_mut().set_prefix("\n");
+                    }
+                }
+                edited.as_table_mut().insert(key, new_item);
+            }
+        }
+    }
+    for key in removes {
+        edited.as_table_mut().remove(key);
+    }
+
+    let text = edited.to_string();
+    if canonicalize(DocumentFormat::Toml, &text)? != canonical {
+        return Err(diverged);
+    }
+    Ok(text)
+}
+
+/// A format-preserving item for `key = value`, made by rendering a one-key
+/// table and parsing it back so the item is spelled the way TOML spells it.
+fn item_for(key: &str, value: &toml::Value) -> Option<toml_edit::Item> {
+    let mut one = toml::Table::new();
+    one.insert(key.to_owned(), value.clone());
+    let mut doc: toml_edit::DocumentMut = toml::to_string(&one).ok()?.parse().ok()?;
+    let mut item = doc.as_table_mut().remove(key)?;
+    if let Some(t) = item.as_table_mut() {
+        // Position belongs to the throwaway document it was parsed from.
+        t.set_position(None);
+    }
+    Some(item)
 }
 
 fn scanner() -> &'static aa_security::CredentialScanner {
