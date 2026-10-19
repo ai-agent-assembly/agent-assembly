@@ -549,6 +549,29 @@ mod stub_coding_agent {
         assert!(!target.exists(), "creation must not go through a dangling symlink");
     }
 
+    /// What `cargo llvm-cov` actually sets: tokens only in the file name. The
+    /// file name is forwarded verbatim (so `%m`/`%p` still expand) under the
+    /// resolved directory.
+    #[test]
+    fn profile_sink_accepts_a_file_name_token_pattern_and_keeps_the_tokens() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let pattern = ext.path().join("cov").join("default_%m_%p.profraw");
+
+        let sink = validated_profile_sink(Some(pattern.into_os_string()), tree.path())
+            .expect("valid")
+            .expect("present");
+        assert_eq!(
+            sink,
+            ext.path()
+                .canonicalize()
+                .expect("canonical")
+                .join("cov")
+                .join("default_%m_%p.profraw")
+        );
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
