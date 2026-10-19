@@ -268,13 +268,21 @@ mod tests {
         assert!(m.contains_key("some_other_key"));
     }
 
-    /// Ranking pin. Evidence: codex-cli 0.163.0 (`codex --ask-for-approval`
-    /// help; `codex mcp list` against a private `CODEX_HOME`) loads both values
-    /// and defines `on-request` as "The model decides when to ask the user for
-    /// approval", i.e. it can prompt before acting, while `on-failure` only asks
-    /// once a sandboxed command has failed. The order is therefore a documented
-    /// reading of those semantics, not an observed prompt; this pins it so a
-    /// change has to be deliberate.
+    /// Ranking pin. Checked against codex-cli 0.163.0 with a private
+    /// `CODEX_HOME` (no auth read, no prompt observed):
+    /// - `codex --help` lists `--ask-for-approval` values `on-request` ("The
+    ///   model decides when to ask the user for approval") and `never`; it does
+    ///   NOT list or describe `on-failure`.
+    /// - A `config.toml` with `approval_policy` = `on-failure` or `on-request`
+    ///   loads (`codex mcp list` succeeds); `untrusted` fails with "is no longer
+    ///   supported"; an unknown value fails listing `untrusted`, `on-failure`,
+    ///   `on-request`, `granular`, `never`.
+    ///
+    /// So 0.163.0 confirms both strings are accepted and defines `on-request`
+    /// as can-prompt-before-acting, but gives no definition of `on-failure`.
+    /// The order below (`on-failure` asks only after a sandboxed command fails)
+    /// is therefore a reading, not something this binary states; this pins it
+    /// so changing it has to be deliberate.
     #[test]
     fn on_request_outranks_on_failure_per_codex_0_163_0() {
         let rank = |s: &str| approval_rank(&toml::Value::String(s.into())).unwrap();
