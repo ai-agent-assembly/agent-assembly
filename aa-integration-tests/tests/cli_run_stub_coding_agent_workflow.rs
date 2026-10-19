@@ -468,6 +468,22 @@ mod stub_coding_agent {
         assert_refused(validated_profile_sink(Some(leaf.into_os_string()), tree.path()));
     }
 
+    /// A symlinked directory component resolves into the tree even though the
+    /// spelled path looks external.
+    #[test]
+    fn profile_sink_refuses_a_symlinked_directory_into_the_tree() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let lnk = ext.path().join("lnk");
+        std::os::unix::fs::symlink(tree.path(), &lnk).expect("symlink");
+
+        assert_refused(validated_profile_sink(
+            Some(lnk.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
+    }
+
     /// Variables the sanitised launch sets itself; anything else crossing in is
     /// a leak the exact-change-set oracle was not written to tolerate.
     const LAUNCH_ENV: [&str; 9] = [
