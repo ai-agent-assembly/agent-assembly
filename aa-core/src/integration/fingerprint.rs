@@ -764,4 +764,74 @@ mod tests {
         assert!(installed.contains("command = \"bar\""), "{installed}");
         assert!(installed.contains("sandbox_mode = \"read-only\""), "{installed}");
     }
+
+    #[test]
+    fn toml_merge_and_restore_keep_comments_and_return_the_prior_bytes() {
+        let keys = vec!["sandbox_mode".to_string(), "approval_policy".to_string()];
+        let original = "# mine\nmodel = \"m\" # keep\nsandbox_mode = \"danger-full-access\" # theirs\n\n[a.b]\nx = 1\n";
+        let incoming = "approval_policy = \"on-request\"\nsandbox_mode = \"read-only\"\n";
+        let installed = merge_managed_keys(DocumentFormat::Toml, original, incoming, &keys).unwrap();
+        assert!(installed.contains("# mine") && installed.contains("model = \"m\" # keep"));
+        assert!(
+            installed.contains("sandbox_mode = \"read-only\" # theirs"),
+            "{installed}"
+        );
+        let prior = managed_projection(DocumentFormat::Toml, original, &keys).unwrap();
+        let absent = absent_managed_keys(DocumentFormat::Toml, original, &keys).unwrap();
+        let restored = restore_managed_keys(DocumentFormat::Toml, &installed, &prior, &absent).unwrap();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn toml_user_edits_after_install_survive_a_restore() {
+        let installed = "model = \"edited\" # new comment\nsandbox_mode = \"read-only\"\n";
+        let restored = restore_managed_keys(
+            DocumentFormat::Toml,
+            installed,
+            "sandbox_mode = \"workspace-write\"\n",
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            restored,
+            "model = \"edited\" # new comment\nsandbox_mode = \"workspace-write\"\n"
+        );
+    }
+
+    #[test]
+    fn toml_merge_into_a_fresh_document_is_the_canonical_rendering() {
+        let keys = vec!["a".to_string(), "t".to_string()];
+        let incoming = "a = 1\n\n[t]\nx = 2\n";
+        let merged = merge_managed_keys(DocumentFormat::Toml, "", incoming, &keys).unwrap();
+        assert_eq!(merged, canonicalize(DocumentFormat::Toml, incoming).unwrap());
+    }
+
+    #[test]
+    fn toml_merge_over_malformed_input_is_not_toml() {
+        let err =
+            merge_managed_keys(DocumentFormat::Toml, "this = is [ bad", "a = 1\n", &["a".to_string()]).unwrap_err();
+        assert!(matches!(err, FingerprintError::NotToml { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn a_comment_preserving_edit_that_disagrees_with_the_oracle_writes_nothing() {
+        let sets = vec![("a".to_string(), toml::Value::Integer(1))];
+        let err = preserving_edit("# c\nb = 2\n", &sets, &[], "a = 999\nb = 2\n".to_string(), "merge").unwrap_err();
+        assert_eq!(err, FingerprintError::EditDiverged { operation: "merge" });
+    }
+
+    #[test]
+    fn json_merge_and_restore_output_is_unchanged() {
+        let keys = vec!["permissions".to_string()];
+        let merged = merge_managed_keys(
+            DocumentFormat::Json,
+            "{ \"theme\": \"dark\" }",
+            "{\"permissions\":{\"allow\":[]}}",
+            &keys,
+        )
+        .unwrap();
+        assert_eq!(merged, r#"{"permissions":{"allow":[]},"theme":"dark"}"#);
+        let restored = restore_managed_keys(DocumentFormat::Json, &merged, "{}", &keys).unwrap();
+        assert_eq!(restored, r#"{"theme":"dark"}"#);
+    }
 }
