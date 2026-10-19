@@ -219,6 +219,16 @@ mod stub_coding_agent {
 
     impl Host {
         async fn start(deny_test_allowed: bool) -> anyhow::Result<Self> {
+            Self::start_with_profile_env(deny_test_allowed, std::env::var_os(PROFILE_ENV)).await
+        }
+
+        /// `start` with the coverage profile pattern supplied explicitly, so a
+        /// test can exercise the real launch path under a chosen sink instead
+        /// of whatever the runner happens to export.
+        async fn start_with_profile_env(
+            deny_test_allowed: bool,
+            profile_env: Option<std::ffi::OsString>,
+        ) -> anyhow::Result<Self> {
             install_crypto_provider();
             let tmp = tempfile::tempdir()?;
             let root = tmp.path().to_path_buf();
@@ -229,7 +239,7 @@ mod stub_coding_agent {
                 std::fs::create_dir_all(d)?;
             }
             let policy = write_policy(&root, "aaasm6297-stub", deny_test_allowed)?;
-            let profile_sink = validated_profile_sink(std::env::var_os(PROFILE_ENV), &root)?;
+            let profile_sink = validated_profile_sink(profile_env, &root)?;
             let (gateway_endpoint, _registry) = super::conformance_gateway_support::start_full_gateway(&policy).await?;
             let ca = CaStore::load_or_create(&ca_dir)
                 .await
