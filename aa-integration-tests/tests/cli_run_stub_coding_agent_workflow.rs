@@ -208,17 +208,23 @@ mod stub_coding_agent {
     /// (ordinary lane) forwards nothing.
     ///
     /// Supported pattern: an absolute path whose directory part is literal
-    /// (no `.`/`..` component, no `%` token) and whose final component is the
+    /// (no `..` component, no `%` token) and whose final component is the
     /// file name, which may carry `%p`/`%m` tokens -- what `cargo llvm-cov`
-    /// sets. LLVM expands tokens in directory components into names this check
-    /// cannot see, so they are refused rather than checked as literal
-    /// directories. The directory and the fixture root are resolved through
-    /// symlinks and must not overlap; only then is the directory created. The
-    /// returned pattern is the *resolved* directory joined with the original
-    /// file name, so the destination that was checked is the one forwarded
-    /// while `%` tokens in the file name still expand. A concrete (token-free)
-    /// file name must not be a symlink; a file name with tokens is NOT
-    /// resolved. A same-user process racing the directory after this check is
+    /// sets. (`Path::components` already drops interior `.` components, and
+    /// `/a/./b` resolves exactly like `/a/b`, so `.` needs no refusal.) LLVM
+    /// expands tokens in directory components into names this check cannot
+    /// see, so they are refused rather than checked as literal directories.
+    /// The directory and the fixture root are resolved through symlinks, and
+    /// the sink directory must not lie inside the fixture root (a directory
+    /// that contains the root is accepted: profiles land in that directory
+    /// itself, not in the root's subtree); only then is the directory created.
+    /// The returned pattern is the *resolved* directory joined with the
+    /// original file name, so for a token-free file name the destination that
+    /// was checked is the one forwarded, and `%` tokens in a file name still
+    /// expand. A concrete (token-free) existing file name must not be a
+    /// symlink; a file name with tokens is NOT resolved, so what LLVM expands
+    /// it to is not checked, and a hard link to a fixture file is not
+    /// detected. A same-user process racing the directory after this check is
     /// out of scope: the sink is a private directory of the harness's runner.
     fn validated_profile_sink(raw: Option<std::ffi::OsString>, tree: &Path) -> io::Result<Option<PathBuf>> {
         let Some(raw) = raw.filter(|v| !v.is_empty()) else {
