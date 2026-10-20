@@ -493,9 +493,14 @@ around it. Fingerprints are taken over **canonical JSON**, so a reformat is
 correctly reported as *no drift*. And a removal report **states the limitation**
 rather than implying a guarantee the write path cannot keep.
 
-Codex is the exception for its TOML `config.toml`: the lifecycle edits it in
-place, so your comments and layout are kept and, when you changed nothing else,
-removal restores the original bytes.
+Codex is the exception for its TOML `config.toml` on install and removal: the
+lifecycle edits it in place, so your comments and layout are kept. For an LF
+file you did not otherwise change, removal restores the original bytes. It stays
+semantic where the spelling cannot be recovered (a single-quoted value comes
+back double-quoted), a CRLF file is normalised to LF line endings, and comments
+inside a managed table that Agent Assembly replaces are not kept. `aasm run` is
+not covered yet: it still rewrites the file without preserving comments
+(AAASM-6373).
 
 The alternative — preserving the original document verbatim — was rejected as
 disproportionate for the MVP: it needs a format-preserving JSON editor no in-tree
