@@ -337,11 +337,9 @@ impl DevToolAdapter for CodexAdapter {
         // ...except that a security setting the user already holds is never
         // lowered (AAASM-6327), and one that cannot be ranked is never replaced.
         if let toml::Value::Table(mut new_table) = new_val {
-            for w in strictness::withhold_relaxations(&merged, &mut new_table) {
-                if w.unrankable {
-                    eprintln!("{}", strictness::warning(&w));
-                }
-            }
+            let withheld = strictness::withhold_relaxations(&merged, &mut new_table);
+            // Best effort: a closed stderr must not fail the settings write.
+            let _ = strictness::report(&withheld, &mut std::io::stderr());
             merged.extend(new_table);
         }
 
