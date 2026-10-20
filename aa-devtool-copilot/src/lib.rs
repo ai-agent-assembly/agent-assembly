@@ -358,8 +358,11 @@ impl DevToolAdapter for CopilotAdapter {
     /// Code user-settings file.
     ///
     /// Reads the existing `settings.json` (starting from `{}` when absent),
-    /// overwrites every key present in `settings`, and writes the merged
-    /// document back atomically. Other user settings are preserved.
+    /// overwrites every key present in `settings` -- except that a stricter
+    /// user value for `chat.tools.autoApprove` (`false`) or
+    /// `chat.mcp.requireApproval` (`"always"`) is kept rather than loosened --
+    /// and writes the merged document back atomically. Other user settings
+    /// are preserved.
     ///
     /// [`generate_managed_settings`]: Self::generate_managed_settings
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
