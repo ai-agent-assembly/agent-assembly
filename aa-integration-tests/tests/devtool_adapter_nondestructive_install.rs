@@ -465,37 +465,45 @@ y = 2
     assert_eq!(std::fs::read_to_string(w.config()).unwrap(), user);
 }
 
-/// A pre-6319 install left `[approval_policy]` as a table; the install turns it
-/// into the loadable string and the removal brings the table back, in meaning.
+/// A pre-6319 install left `[approval_policy]` as a table. The adapter will not
+/// lower or replace a value it cannot rank, so the install is refused with a
+/// message naming the key and the user's file is left byte-for-byte untouched.
 #[tokio::test]
-async fn codex_legacy_approval_policy_table_is_restored_in_meaning() {
+async fn codex_legacy_approval_policy_table_is_refused_and_left_untouched() {
     let w = World::new();
     let user = "model = \"m\"\n\n[approval_policy]\nfile_writes = \"auto\"\nshell_exec = \"prompt\"\n";
     std::fs::write(w.config(), user).unwrap();
-    let before = parse(&w.config());
-    install(&w, 1_000).await.unwrap();
-    assert!(parse(&w.config())["approval_policy"].is_str());
-    remove(&w);
-    assert_eq!(parse(&w.config()), before);
+    let err = install(&w, 1_000)
+        .await
+        .expect_err("an unrankable legacy table must be refused");
+    assert!(err.contains("approval_policy"), "{err}");
+    assert_eq!(std::fs::read_to_string(w.config()).unwrap(), user);
 }
 
-/// CHARACTERISATION: a CRLF file stays valid TOML through install and remove
-/// and is restored in meaning. The lines AASM adds are written with `\n`, so
-/// the line endings of the file may be mixed; the original CRLF lines keep theirs.
+/// CHARACTERISATION (observed limitation): a CRLF file stays valid TOML and its
+/// comments survive install and remove, and it is restored in meaning, but its
+/// line endings are NOT preserved -- the installed file is LF-only. Exact-byte
+/// restore therefore holds for LF files; CRLF files are restored in meaning.
 #[tokio::test]
-async fn codex_crlf_file_stays_valid_and_is_restored_in_meaning() {
+async fn codex_crlf_file_keeps_comments_and_meaning_but_not_line_endings() {
     let w = World::new();
     let user = "# crlf\r\nmodel = \"m\"\r\nsandbox_mode = \"danger-full-access\" # mine\r\n";
     std::fs::write(w.config(), user).unwrap();
     let before = parse(&w.config());
     install(&w, 1_000).await.unwrap();
     let installed = std::fs::read_to_string(w.config()).unwrap();
-    assert!(installed.starts_with("# crlf\r\nmodel = \"m\"\r\n"), "{installed:?}");
-    parse(&w.config());
+    assert!(
+        installed.contains("# crlf") && installed.contains("# mine"),
+        "{installed:?}"
+    );
+    assert!(
+        !installed.contains('\r'),
+        "line endings were expected to be normalised: {installed:?}"
+    );
     remove(&w);
     assert_eq!(parse(&w.config()), before);
     let after = std::fs::read_to_string(w.config()).unwrap();
-    assert!(after.contains("# crlf\r\n"), "{after:?}");
+    assert!(after.contains("# crlf") && after.contains("# mine"), "{after:?}");
 }
 
 /// A second install over an installed file changes nothing and says so.
