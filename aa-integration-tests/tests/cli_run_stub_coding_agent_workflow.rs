@@ -193,6 +193,12 @@ mod stub_coding_agent {
                     missing.push(name);
                     cur = parent;
                 }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{PROFILE_ENV} directory crosses a dangling symlink"),
+                    ));
+                }
                 Err(e) => return Err(e),
             }
         }
