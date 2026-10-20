@@ -551,7 +551,10 @@ mod stub_coding_agent {
         let target = tree.path().join("viadangling");
         let lnk = ext.path().join("dangling");
         std::os::unix::fs::symlink(&target, &lnk).expect("symlink");
-        assert!(validated_profile_sink(Some(lnk.join("aa-%p.profraw").into_os_string()), tree.path()).is_err());
+        assert_refused(validated_profile_sink(
+            Some(lnk.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
         assert!(!target.exists(), "creation must not go through a dangling symlink");
     }
 
