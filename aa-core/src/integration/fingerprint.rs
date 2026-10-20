@@ -481,7 +481,7 @@ fn preserving_edit(
         if semantic.get(key) == Some(value) {
             continue;
         }
-        let mut new_item = item_for(key, value).ok_or_else(|| FingerprintError::EditDiverged { operation })?;
+        let mut new_item = item_for(key, value).ok_or(FingerprintError::EditDiverged { operation })?;
         match edited.as_table_mut().get_mut(key) {
             Some(old) => {
                 match (&*old, &mut new_item) {
