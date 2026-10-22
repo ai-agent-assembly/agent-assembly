@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aa_devtool_contract::{
-    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+    merge_managed_keys, AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, DocumentFormat, GovernanceLevel,
+    McpServerInfo, PolicyDocument,
 };
 use async_trait::async_trait;
 
@@ -305,9 +306,12 @@ impl DevToolAdapter for CodexAdapter {
         // removes the `exists()`-then-read window, in which the file could be
         // removed between the two calls and the absence reported as a read
         // failure instead.
-        let mut merged: toml::value::Table = match tokio::fs::read_to_string(&config_path).await {
+        // `raw_current` is kept so the managed keys can be merged into the
+        // user's own text (AAASM-6373) instead of reserialising the whole
+        // parsed table, which discards comments and key order.
+        let (merged, raw_current): (toml::value::Table, String) = match tokio::fs::read_to_string(&config_path).await {
             Ok(raw) => match toml::from_str::<toml::Value>(&raw) {
-                Ok(toml::Value::Table(t)) => t,
+                Ok(toml::Value::Table(t)) => (t, raw),
                 Ok(_) => {
                     return Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -327,7 +331,7 @@ impl DevToolAdapter for CodexAdapter {
                     )));
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::value::Table::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (toml::value::Table::new(), String::new()),
             // Any other read failure — a permission denial, a directory in the
             // file's place — still refuses, as the mapped `?` did before.
             Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
@@ -336,14 +340,27 @@ impl DevToolAdapter for CodexAdapter {
         // AA-managed keys win; user-managed keys not present in `settings` survive.
         // ...except that a security setting the user already holds is never
         // lowered (AAASM-6327), and one that cannot be ranked is never replaced.
+        let mut managed = toml::value::Table::new();
         if let toml::Value::Table(mut new_table) = new_val {
             let withheld = strictness::withhold_relaxations(&merged, &mut new_table);
             // Best effort: a closed stderr must not fail the settings write.
             let _ = strictness::report(&withheld, &mut std::io::stderr());
-            merged.extend(new_table);
+            managed = new_table;
         }
 
-        let content = toml::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        // AAASM-6373: merge only the managed keys into the user's own text, so
+        // their comments, layout and key order survive an `aasm run`. The
+        // merge fails closed (nothing is returned for writing) if the edit
+        // would not mean exactly what the canonical merge means.
+        let managed_keys: Vec<String> = managed.keys().cloned().collect();
+        let incoming = toml::to_string(&managed).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        let content =
+            merge_managed_keys(DocumentFormat::Toml, &raw_current, &incoming, &managed_keys).map_err(|e| {
+                AdapterError::SettingsApplyFailed(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{}: {e}", config_path.display()),
+                ))
+            })?;
 
         // Ensure ~/.codex/ exists.
         if let Some(parent) = config_path.parent() {
