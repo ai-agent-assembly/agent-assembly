@@ -102,6 +102,12 @@ async fn apply_settings_creates_config_toml_with_correct_content() {
 /// Seeds `~/.codex/config.toml`, applies a one-rule policy through the real
 /// generate+apply path, and returns the parsed result.
 async fn apply_one_rule(seed: &str, pattern: &str, decision: PolicyDecision) -> toml::Value {
+    toml::from_str(&apply_one_rule_text(seed, pattern, decision).await).unwrap()
+}
+
+/// Same as [`apply_one_rule`] but returns the written text, for tests that
+/// assert on the user's own bytes (comments, layout).
+async fn apply_one_rule_text(seed: &str, pattern: &str, decision: PolicyDecision) -> String {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("codex");
     std::fs::write(&bin, "").unwrap();
@@ -121,7 +127,7 @@ async fn apply_one_rule(seed: &str, pattern: &str, decision: PolicyDecision) -> 
     };
     let settings = adapter.generate_managed_settings(&policy).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap();
-    toml::from_str(&std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()).unwrap()
+    std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()
 }
 
 /// AAASM-6327: a permissive all-Allow policy must not lower the user's own
@@ -135,6 +141,28 @@ async fn apply_settings_never_relaxes_the_users_security_settings() {
     )
     .await;
     assert_eq!(parsed["user_theme"].as_str(), Some("dark"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// AAASM-6373: the withhold path (a looser managed value is dropped to keep the
+/// user's stricter one) must also keep the user's text byte-for-byte: the
+/// stricter lines with their trailing comments are untouched.
+#[tokio::test]
+async fn apply_settings_keeps_withheld_keys_and_their_comments_verbatim() {
+    let seed =
+        "# keep me\nsandbox_mode = \"read-only\"   # stricter, mine\napproval_policy = \"on-request\"   # also mine\n";
+    let written = apply_one_rule_text(seed, "*", PolicyDecision::Allow).await;
+    let mut at = 0;
+    for line in seed.lines() {
+        let found = written
+            .lines()
+            .skip(at)
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("user line lost or altered: {line:?}\n--- written ---\n{written}"));
+        at += found + 1;
+    }
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
     assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
     assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
 }
