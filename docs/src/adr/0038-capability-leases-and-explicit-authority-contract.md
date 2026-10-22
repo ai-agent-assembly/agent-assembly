@@ -1128,7 +1128,8 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
   ledger that issued it: a provenance-free lease can be registered as a root in any
   ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`
   therefore means "this ledger has no record", not "this is the issuing ledger".
-  Which ledger is authoritative across processes is for AAASM-6273 to settle.
+  Across processes the supervisor registry is the authoritative ledger (§27–§29.4);
+  AAASM-6273 owns its design.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
 
 ## Amendment (AAASM-6347/6348/6349): `credentials: posture` — authoring the credential-brokerage requirement
@@ -1209,10 +1210,12 @@ none-arm spec, documented on `unconfined_credential_refusal`; a spec that gained
 AAASM-6273 was recorded above as the one place a real multi-process sub-agent tree's
 attenuation guarantee stays partial. This amendment records the owner decision on its
 direction and the acceptance contract any implementation must meet. It changes no code
-and enables nothing: the cross-process handoff is **not implemented, and must not be
-implemented, and must not be enabled in any environment, until the B3 evidence gate
-below passes.** No code for it lands behind a disabled switch either: the gate comes
-first.
+and enables nothing: the cross-process handoff is **not implemented, and must be neither built nor
+enabled in any environment until the B3 evidence gate below passes.** What may land
+before the gate is limited to: this documentation; the gate's own evidence harness and
+test fixtures (§29–§30), which never ship as production handoff code and are not
+reachable behind a flag; and the §28 launch-refusal check, which only ever refuses and
+grants nothing. The order is: gate evidence first, then the implementation Story.
 
 ### 27. Supervisor-mediated authority; no serialized or caller-supplied parent authority
 
@@ -1227,10 +1230,8 @@ caller) hands over. Consequently:
 - There is **no caller-controlled parent-authority file or flag** (the
   `--parent-authority-file` shape already rejected in the AAASM-6272 amendment).
 - A receipt-derived re-derivation of the parent in the child is excluded for the same
-  reason: it is an artifact a second process can construct. It stays excluded unless
-  the supervisor itself mints and holds the artifact and the child cannot supply or
-  alter it; any such proposal needs its own decision and must meet §28–§30 (see "What
-  this amendment does not decide").
+  reason: it is an artifact a second process can construct. Revisiting this requires a
+  new amendment to this ADR.
 
 ### 28. Universal requirement: a confined launch must not hold write authority over the supervisor registry
 
@@ -1250,8 +1251,16 @@ handoff, on the policy domain, or on which isolation backend is in use.
   `*at` calls; mount, root and alias resolution (symlinks, `..`, bind mounts, a
   different mount namespace or `chroot`, `/proc/self/fd`, `/proc/<pid>/root`); and
   discretionary access (the child's uid and gid, group-write bits, ACLs, and whether the
-  child owns the registry directory's parent and could therefore change its mode) — not
-  from the lexical path alone.
+  child owns, or can chmod or chown, the registry directory or any ancestor of it) —
+  and from same-uid control of whoever writes the registry: `ptrace`,
+  `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd` against the supervisor or
+  any registry-capable process, and a descriptor obtained after launch (passed over
+  `SCM_RIGHTS` or taken with `pidfd_getfd`) as well as an inherited one. Where the
+  child shares a uid with the supervisor, the launch must also separate them (a
+  distinct uid, a PID namespace, or a Yama/Landlock scope that denies those routes);
+  otherwise it is refused. The computation is only the admission check: the control is
+  the kernel-enforced Landlock domain, and the check must hold for the child's lifetime
+  rather than only at launch.
 - The check **fails closed**: when the launch's write authority cannot be resolved or
   compared, the launch is refused and the reason is reported.
 - An unconfined launch (`--isolation none`) establishes no boundary and claims none
@@ -1270,16 +1279,18 @@ nothing):
    reaches it; rename or replacement of the registry directory or of an ancestor
    component; a hard link between a registry entry and a child-writable directory; a
    writable registry file or socket; write access obtained through the child's uid,
-   gid, group bits, ACL or ownership of the registry's parent. Admitted (positive
+   gid, group bits, ACL, or ownership of (or chmod/chown over) the registry directory
+   or any ancestor; `ptrace`, `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd`
+   against the supervisor; a descriptor received after launch over `SCM_RIGHTS`. Admitted (positive
    control): a sibling directory outside the registry's ancestor chain, with an
    identical-shape launch. The refusal tests must fail when the check is removed.
 2. **Cross-tree impersonation.** A child launched in tree A that claims a parent, or a
-   sibling's identity, in tree B is refused; so is a replay of an attestation after
+   sibling's identity, in tree B is refused; so is a replay of a child-asserted claim after
    its parent exited or its process identity was reused. Positive control: a child
-   legitimately launched in the same tree is accepted with the same attestation shape.
+   legitimately launched in the same tree is accepted with the same claim shape.
 3. **Authority escalation.** A child lease wider than its parent's is refused at every
    hop (the §8–§11 monotonic rule, now across processes); a child-forged or
-   hand-built attestation, and an entry the child planted in the registry, are not
+   hand-built claim of ancestry, and an entry the child planted in the registry, are not
    honoured. Positive control: a child lease equal to or narrower than its parent's is
    admitted at the same hop.
 4. **Transitive revocation across the process boundary.** Revoking any ancestor's
@@ -1300,23 +1311,28 @@ kernel whose relevant capabilities were verified *first*:
 1. **Landlock cross-process restriction** — a confined process cannot reach the
    registry or lift its own restriction, and a process in another tree is unaffected
    by this tree's ruleset. The kernel's Landlock ABI is queried at run time and must
-   cover rename/link (`REFER`) and truncate rights (ABI 3 or newer); an older ABI
-   cannot restrict those routes and yields no evidence for §28.
+   cover rename/link (`REFER`) and truncate rights (ABI 3 or newer); ABI 1 has no
+   explicit `REFER` right (ABI 2) and ABI 1–2 cannot restrict truncation (ABI 3), so an
+   older ABI yields no evidence for §28.
 2. **pidfs identity** — a process identity obtained as a pidfd is stable against pid
-   reuse and not forgeable by an unrelated process.
+   reuse and not forgeable by an unrelated process. The evidence records the exact
+   kernel version, the kernel documentation relied on, and the runtime behaviour shown
+   (`pidfd_open` on a reaped-and-reused pid does not alias the new process; the pidfd
+   compares equal only to its own process).
 3. **Registry write isolation** — a confined child's attempts to write the registry
    (§28) fail at the kernel, including through aliases.
 4. **Real multi-process ancestry** — the launched tree's parent/child relation is
    observed from real processes, not synthesized.
 
 An environment that cannot show a property (a kernel without Landlock compiled in or
-not in the active LSM list, a kernel too old for pidfs, a container whose host kernel
+not in the active LSM list, a kernel whose pidfd behaviour fails §30.2, a container whose host kernel
 was not itself verified) yields *no evidence*, not a pass. The gate is not waivable by
 reading source, by unit tests, or by an unsupported configuration.
 
 ### Current state, stated precisely
 
-- **J82 (cross-process sub-agent attenuation, AAASM-6273) stays `partial`** until the gate and the §29 tests pass and are independently
+- **J82 (monotonic capability attenuation across sub-agent trees, AAASM-6161 /
+  AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently
   verified. No production path builds `Ancestry::Parent` from another process; the
   multi-process case remains refused, not accepted.
 - **Verified on the available host (2026-10-22):** the only Linux kernel reachable
@@ -1327,15 +1343,17 @@ reading source, by unit tests, or by an unsupported configuration.
   is macOS, which has no Landlock.
 - **Missing capability, minimally stated:** a Linux kernel built with
   `CONFIG_SECURITY_LANDLOCK=y`, with `landlock` in the active LSM list
-  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, that has the pidfs semantics
-  §30.2 relies on (to be confirmed against the kernel's own documentation when the
-  environment is chosen), that the operator may run isolated, bounded, multi-process
+  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, whose pidfd behaviour
+  passes the runtime checks in §30.2, that the operator may run isolated, bounded, multi-process
   tests on without touching the host network.
 
 ### What this amendment does not decide
 
-- The on-disk or in-memory design of the supervisor registry, or the attestation
-  format — those belong to the implementation Story and must satisfy §27–§30.
+- The on-disk or in-memory design of the supervisor registry. Any record of a launched
+  process's place in the ancestry is supervisor-side only and unreachable by the
+  child; there is no child-held attestation. The design and record format belong to the
+  implementation Story, which starts only after the gate (see the order above), and
+  must satisfy §27–§30.
 - Any receipt-schema change (`LeaseBinding`), or cryptographic identity binding
   (AAASM-5533 still owns verification).
 - That the gate passes. It records the gate; it does not claim any of it.
