@@ -265,6 +265,62 @@ async fn apply_settings_preserves_a_user_written_sub_table() {
     );
 }
 
+/// Applies the fixture policy over a seeded `~/.codex/config.toml` and returns
+/// the written text, for tests that assert on the user's own bytes.
+async fn apply_fixture_over(seed: &str) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+    let codex_dir = tmp.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(codex_dir.join("config.toml"), seed).unwrap();
+    let adapter =
+        CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe)).with_home_dir(tmp.path().to_path_buf());
+    let settings = adapter.generate_managed_settings(&fixture_policy()).await.unwrap();
+    adapter.apply_settings(&settings).await.unwrap();
+    std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()
+}
+
+/// AAASM-6373: an `aasm run` apply must not rewrite the user's file through a
+/// sorted table. Every line the user wrote is still there, in the same
+/// relative order (`command` before `args`, which a sorted table reverses),
+/// with its comments.
+#[tokio::test]
+async fn apply_settings_keeps_the_users_comments_and_key_order() {
+    let seed = "# my codex config -- hand written\nmodel = \"o4-mini\"   # trailing comment\n\n[mcp_servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"docs-server\"]\n";
+    let written = apply_fixture_over(seed).await;
+
+    let mut at = 0;
+    for line in seed.lines().filter(|l| !l.is_empty()) {
+        let found = written
+            .lines()
+            .skip(at)
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("user line lost or reordered: {line:?}\n--- written ---\n{written}"));
+        at += found + 1;
+    }
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "managed key applied"
+    );
+}
+
+/// AAASM-6373: the user's trailing comment on a key the policy tightens stays
+/// with that key.
+#[tokio::test]
+async fn apply_settings_keeps_a_trailing_comment_on_a_tightened_key() {
+    let written = apply_fixture_over("sandbox_mode = \"danger-full-access\"   # my choice\n").await;
+    assert!(written.contains("# my choice"), "{written}");
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "tightened by the Deny rule"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // build_launch_command
 // ---------------------------------------------------------------------------
