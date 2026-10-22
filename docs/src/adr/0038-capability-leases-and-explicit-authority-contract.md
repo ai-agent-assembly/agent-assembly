@@ -1210,12 +1210,19 @@ none-arm spec, documented on `unconfined_credential_refusal`; a spec that gained
 AAASM-6273 was recorded above as the one place a real multi-process sub-agent tree's
 attenuation guarantee stays partial. This amendment records the owner decision on its
 direction and the acceptance contract any implementation must meet. It changes no code
-and enables nothing: the cross-process handoff is **not implemented, and must be neither built nor
-enabled in any environment until the B3 evidence gate below passes.** What may land
-before the gate is limited to: this documentation; the gate's own evidence harness and
-test fixtures (§29–§30), which never ship as production handoff code and are not
-reachable behind a flag; and the §28 launch-refusal check, which only ever refuses and
-grants nothing. The order is: gate evidence first, then the implementation Story.
+and enables nothing: the cross-process handoff is **not implemented, and must be
+neither built nor enabled in any environment until the B3 evidence gate below
+passes.** What may land before the gate is limited to: this documentation; and the
+gate's own evidence harness (§30), which runs against a stand-in fixture directory
+(never the production registry), is never shipped as handoff code and is not reachable
+behind a flag. Everything else waits for the implementation Story, which starts only
+after the gate passes: the supervisor registry, the §28 refusal on real launches (its
+registry path is a configured input; enabling it can refuse launches whose write scope
+is an ancestor of that path, for example a home or working directory, and that
+compatibility effect is assessed in the Story), and the §29.2–§29.4 tests, which
+exercise handoff code. The §29.1 registry write-protection cases are exercised by the
+harness against the stand-in directory first and against the real registry in the
+Story.
 
 ### 27. Supervisor-mediated authority; no serialized or caller-supplied parent authority
 
@@ -1257,10 +1264,20 @@ handoff, on the policy domain, or on which isolation backend is in use.
   any registry-capable process, and a descriptor obtained after launch (passed over
   `SCM_RIGHTS` or taken with `pidfd_getfd`) as well as an inherited one. Where the
   child shares a uid with the supervisor, the launch must also separate them (a
-  distinct uid, a PID namespace, or a Yama/Landlock scope that denies those routes);
-  otherwise it is refused. The computation is only the admission check: the control is
-  the kernel-enforced Landlock domain, and the check must hold for the child's lifetime
-  rather than only at launch.
+  distinct uid, or a PID namespace with the routes denied) or establish that those
+  routes are denied by mechanisms the kernel actually provides: Yama
+  `ptrace_scope` of at least 1 (a host-wide sysctl the launch cannot set, which
+  `CAP_SYS_PTRACE` bypasses, so the admission check verifies both), or a child Landlock
+  domain that is more restricted than the supervisor's, which Landlock's own ptrace rule
+  uses to refuse the child's attach. Landlock's `LANDLOCK_SCOPE_*` flags (abstract unix
+  sockets, signals) do not cover these routes. Otherwise the launch is refused.
+  The computation is only the admission check. The control for filesystem routes is the
+  kernel-enforced Landlock domain, which is checked when a path is opened; it does not
+  revoke a writable descriptor the child already holds, so descriptors are handled by
+  hygiene (every descriptor except stdio is closed or close-on-exec at launch, and no
+  registry-capable process sends descriptors to the child) together with the ptrace and
+  `pidfd_getfd` denial above. A confined launch on a backend with no equivalent
+  kernel-enforced control is refused under the fail-closed rule below.
 - The check **fails closed**: when the launch's write authority cannot be resolved or
   compared, the launch is refused and the reason is reported.
 - An unconfined launch (`--isolation none`) establishes no boundary and claims none
@@ -1281,7 +1298,7 @@ nothing):
    writable registry file or socket; write access obtained through the child's uid,
    gid, group bits, ACL, or ownership of (or chmod/chown over) the registry directory
    or any ancestor; `ptrace`, `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd`
-   against the supervisor; a descriptor received after launch over `SCM_RIGHTS`. Admitted (positive
+   against the supervisor; a descriptor received after launch over `SCM_RIGHTS` (exercising the hygiene and `pidfd_getfd` denial above). Admitted (positive
    control): a sibling directory outside the registry's ancestor chain, with an
    identical-shape launch. The refusal tests must fail when the check is removed.
 2. **Cross-tree impersonation.** A child launched in tree A that claims a parent, or a
@@ -1304,25 +1321,36 @@ run* and never counted toward acceptance.
 
 ### 30. The B3 evidence gate (mandatory before any implementation is built or enabled)
 
-The handoff's security rests on four kernel-level assumptions. Each must be
+The handoff's security rests on five kernel-level assumptions. Each must be
 demonstrated, with a positive and an adversarial negative control, on a real Linux
 kernel whose relevant capabilities were verified *first*:
 
 1. **Landlock cross-process restriction** — a confined process cannot reach the
    registry or lift its own restriction, and a process in another tree is unaffected
    by this tree's ruleset. The kernel's Landlock ABI is queried at run time and must
-   cover rename/link (`REFER`) and truncate rights (ABI 3 or newer); ABI 1 has no
-   explicit `REFER` right (ABI 2) and ABI 1–2 cannot restrict truncation (ABI 3), so an
-   older ABI yields no evidence for §28.
+   cover rename/link (`REFER`, ABI 2) and truncate (ABI 3) rights, so ABI 3 or newer is
+   required; an older ABI is not accepted as evidence for §28 (ABI 1 denies
+   cross-directory rename and link outright rather than letting a ruleset govern them,
+   and ABI 1–2 cannot restrict truncation).
 2. **pidfs identity** — a process identity obtained as a pidfd is stable against pid
-   reuse and not forgeable by an unrelated process. The evidence records the exact
-   kernel version, the kernel documentation relied on, and the runtime behaviour shown
-   (`pidfd_open` on a reaped-and-reused pid does not alias the new process; the pidfd
-   compares equal only to its own process).
+   reuse. The evidence records the exact
+   kernel version, the kernel documentation relied on, and the runtime behaviour shown:
+   a pidfd the supervisor obtained at clone time (`CLONE_PIDFD`) stays bound to its own
+   process; once that process is reaped, `pidfd_send_signal` on it returns `ESRCH` and
+   never reaches a later holder of the same pid; and two pidfds name the same process
+   exactly when their pidfs inodes compare equal (`fstat` `st_ino`, or `kcmp`). A pidfd
+   is not a secret (`pidfd_open` needs no permission), so the claim is stability, not
+   unforgeability.
 3. **Registry write isolation** — a confined child's attempts to write the registry
    (§28) fail at the kernel, including through aliases.
 4. **Real multi-process ancestry** — the launched tree's parent/child relation is
    observed from real processes, not synthesized.
+5. **Same-uid control denied** — a confined child sharing the supervisor's uid cannot
+   `ptrace`, `process_vm_writev`, read or write `/proc/<pid>/mem`, or `pidfd_getfd` the
+   supervisor or a registry-capable process, and cannot use a descriptor the supervisor
+   did not give it; the evidence records `ptrace_scope`, the child's capabilities, and a
+   positive control in which the same operation succeeds when the separation is
+   removed.
 
 An environment that cannot show a property (a kernel without Landlock compiled in or
 not in the active LSM list, a kernel whose pidfd behaviour fails §30.2, a container whose host kernel
@@ -1332,8 +1360,7 @@ reading source, by unit tests, or by an unsupported configuration.
 ### Current state, stated precisely
 
 - **J82 (monotonic capability attenuation across sub-agent trees, AAASM-6161 /
-  AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently
-  verified. No production path builds `Ancestry::Parent` from another process; the
+  AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently verified. No production path builds `Ancestry::Parent` from another process; the
   multi-process case remains refused, not accepted.
 - **Verified on the available host (2026-10-22):** the only Linux kernel reachable
   from the development host is Docker Desktop's VM, `6.10.14-linuxkit` (aarch64). Its
@@ -1343,9 +1370,10 @@ reading source, by unit tests, or by an unsupported configuration.
   is macOS, which has no Landlock.
 - **Missing capability, minimally stated:** a Linux kernel built with
   `CONFIG_SECURITY_LANDLOCK=y`, with `landlock` in the active LSM list
-  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, whose pidfd behaviour
-  passes the runtime checks in §30.2, that the operator may run isolated, bounded, multi-process
-  tests on without touching the host network.
+  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, whose pidfd behaviour passes
+  the runtime checks in §30.2, with Yama `ptrace_scope` of at least 1 or a uid/PID
+  namespace separation available for §30.5, that the operator may run isolated,
+  bounded, multi-process tests on without touching the host network.
 
 ### What this amendment does not decide
 
