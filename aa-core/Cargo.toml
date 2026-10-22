@@ -19,10 +19,13 @@ serde_yaml   = { workspace = true, optional = true }
 sha2         = { workspace = true, default-features = false, optional = true }
 thiserror    = { workspace = true, optional = true }
 toml         = { workspace = true, optional = true }
+# AAASM-6322: format-preserving TOML edits so an install/remove cycle keeps the
+# user's comments and layout; `toml` alone only round-trips semantics.
+toml_edit    = { version = "0.25", optional = true, default-features = false, features = ["parse", "display"] }
 
 [features]
 default    = ["std"]
-std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "dep:toml", "serde?/std"]
+std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "dep:toml", "dep:toml_edit", "serde?/std"]
 alloc      = ["dep:sha2"]
 serde      = ["dep:serde", "aa-security?/serde"]
 schemars   = ["dep:schemars"]

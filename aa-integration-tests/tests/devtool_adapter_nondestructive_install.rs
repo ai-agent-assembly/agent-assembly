@@ -17,10 +17,11 @@
 //!   `$HOME`: every root is an injected temp path built with `with_paths` /
 //!   `CodexPaths::with_home`, never `::new()`.
 //!
-//! Tests prefixed `desired_` are `#[ignore]`d on purpose: they pin the
-//! contract the product SHOULD meet and currently does not (a defect found by
-//! this pass). Run with `--ignored` to reproduce. (The Codex managed-value
-//! defect, AAASM-6319, is fixed, so its test is no longer ignored.)
+//! Tests prefixed `desired_` pin the contract the product SHOULD meet; one that
+//! the product does not yet meet is `#[ignore]`d so a defect found by this pass
+//! can be reproduced with `--ignored`. The Codex ones are no longer ignored:
+//! the managed-value defect (AAASM-6319) and the comment/byte-exact-restore
+//! defect (AAASM-6322) are fixed.
 
 use std::path::{Path, PathBuf};
 
@@ -283,30 +284,8 @@ async fn codex_update_of_a_pre_6319_install_writes_loadable_values() {
     assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
 }
 
-/// CHARACTERISATION: the file after install+remove is NOT the user's original
-/// bytes -- comments are gone and tables are re-serialised in sorted key order
-/// (`args` before `command`). Pins the observed bytes so a change is noticed.
-#[tokio::test]
-async fn codex_install_then_remove_does_not_restore_the_original_bytes() {
-    let w = World::new();
-    std::fs::write(w.config(), USER_CONFIG).unwrap();
-    install(&w, 1_000).await.unwrap();
-    remove(&w);
-    let after = std::fs::read_to_string(w.config()).unwrap();
-    assert_ne!(after, USER_CONFIG, "OBSERVED: byte-exact restoration does not happen");
-    assert!(
-        !after.contains("hand written, do not lose this comment"),
-        "OBSERVED: comments permanently lost"
-    );
-    assert!(
-        after.find("args =").unwrap() < after.find("command =").unwrap(),
-        "OBSERVED: keys re-serialised in sorted order"
-    );
-}
-
 /// DESIRED: remove restores the user's file byte for byte.
 #[tokio::test]
-#[ignore = "AAASM-6297 finding: install+remove round-trips config.toml through toml::Table, so comments and key order are permanently lost; desired contract (byte-exact restore) not met"]
 async fn desired_codex_remove_restores_the_original_bytes() {
     let w = World::new();
     std::fs::write(w.config(), USER_CONFIG).unwrap();
@@ -396,12 +375,10 @@ async fn codex_install_comment_preservation_is_characterised() {
 }
 
 /// Observed value for the characterisation test above. See the report.
-const COMMENTS_SURVIVE_INSTALL_TODAY: bool = false;
+const COMMENTS_SURVIVE_INSTALL_TODAY: bool = true;
 
-/// DESIRED contract: the user's comments survive install. `#[ignore]`d --
-/// the engine round-trips TOML through `toml::Table`, which discards comments.
+/// DESIRED contract: the user's comments survive install.
 #[tokio::test]
-#[ignore = "AAASM-6297 finding: TOML merge discards the user's comments (aa-core engine toml::Table round-trip); desired contract, not yet met"]
 async fn desired_codex_install_preserves_the_users_comments() {
     let w = World::new();
     std::fs::write(w.config(), USER_CONFIG).unwrap();
@@ -409,6 +386,162 @@ async fn desired_codex_install_preserves_the_users_comments() {
     let after = std::fs::read_to_string(w.config()).unwrap();
     assert!(after.contains("hand written, do not lose this comment"));
     assert!(after.contains("trailing comment on an unmanaged key"));
+}
+
+/// A trailing comment on a key Agent Assembly manages is the user's: it
+/// survives the install (next to the new value) and the removal brings back the
+/// prior value and the same comment, byte for byte.
+#[tokio::test]
+async fn codex_trailing_comment_on_a_managed_key_survives_install_and_remove() {
+    let w = World::new();
+    std::fs::write(w.config(), USER_CONFIG).unwrap();
+    install(&w, 1_000).await.unwrap();
+    let installed = std::fs::read_to_string(w.config()).unwrap();
+    let line = installed.lines().find(|l| l.starts_with("sandbox_mode")).unwrap();
+    assert!(line.contains("# the user's OWN choice for a managed key"), "{line}");
+    assert!(
+        !line.contains("danger-full-access"),
+        "install must replace the value: {line}"
+    );
+    remove(&w);
+    assert_eq!(std::fs::read_to_string(w.config()).unwrap(), USER_CONFIG);
+}
+
+/// After install the user edits an unmanaged key and adds a comment; removal
+/// keeps both and still puts the prior managed value back.
+#[tokio::test]
+async fn codex_edits_and_comments_added_after_install_survive_remove() {
+    let w = World::new();
+    std::fs::write(w.config(), USER_CONFIG).unwrap();
+    install(&w, 1_000).await.unwrap();
+    let edited = std::fs::read_to_string(w.config())
+        .unwrap()
+        .replace("model = \"o4-mini\"", "model = \"edited-after\"")
+        .replace("[profiles.work]", "# added after install\n[profiles.work]");
+    std::fs::write(w.config(), edited).unwrap();
+    remove(&w);
+    let after = std::fs::read_to_string(w.config()).unwrap();
+    assert!(after.contains("# added after install"));
+    let t = parse(&w.config());
+    assert_eq!(t["model"].as_str(), Some("edited-after"));
+    assert_eq!(t["sandbox_mode"].as_str(), Some("danger-full-access"));
+    assert!(!t.contains_key("approval_policy"), "a key Agent Assembly added must go");
+}
+
+/// STATED LIMITATION: restore is semantic, not a re-quote. A prior value the
+/// user wrote with single quotes comes back equal in meaning but spelled with
+/// double quotes.
+#[tokio::test]
+async fn codex_single_quoted_prior_value_is_restored_semantically_not_byte_for_byte() {
+    let w = World::new();
+    std::fs::write(w.config(), "sandbox_mode = 'danger-full-access'  # mine\n").unwrap();
+    install(&w, 1_000).await.unwrap();
+    remove(&w);
+    let after = std::fs::read_to_string(w.config()).unwrap();
+    assert_eq!(after, "sandbox_mode = \"danger-full-access\"  # mine\n");
+    assert_eq!(parse(&w.config())["sandbox_mode"].as_str(), Some("danger-full-access"));
+}
+
+/// Nested tables and dotted keys keep the order the user wrote.
+#[tokio::test]
+async fn codex_nested_tables_and_dotted_keys_keep_their_order() {
+    let w = World::new();
+    let user = "\
+zeta = 1
+alpha.beta = 2
+
+[z.last]
+x = 1
+
+[a.first]
+y = 2
+";
+    std::fs::write(w.config(), user).unwrap();
+    install(&w, 1_000).await.unwrap();
+    let installed = std::fs::read_to_string(w.config()).unwrap();
+    assert!(installed.find("zeta").unwrap() < installed.find("alpha.beta").unwrap());
+    assert!(installed.find("[z.last]").unwrap() < installed.find("[a.first]").unwrap());
+    remove(&w);
+    assert_eq!(std::fs::read_to_string(w.config()).unwrap(), user);
+}
+
+/// A pre-6319 install left `[approval_policy]` as a table. The adapter will not
+/// lower or replace a value it cannot rank, so the install is refused with a
+/// message naming the key and the user's file is left byte-for-byte untouched.
+#[tokio::test]
+async fn codex_legacy_approval_policy_table_is_refused_and_left_untouched() {
+    let w = World::new();
+    let user = "model = \"m\"\n\n[approval_policy]\nfile_writes = \"auto\"\nshell_exec = \"prompt\"\n";
+    std::fs::write(w.config(), user).unwrap();
+    let err = install(&w, 1_000)
+        .await
+        .expect_err("an unrankable legacy table must be refused");
+    assert!(err.contains("approval_policy"), "{err}");
+    assert_eq!(std::fs::read_to_string(w.config()).unwrap(), user);
+}
+
+/// CHARACTERISATION (observed limitation): a CRLF file stays valid TOML and its
+/// comments survive install and remove, and it is restored in meaning, but its
+/// line endings are NOT preserved -- the installed file is LF-only. Exact-byte
+/// restore therefore holds for LF files; CRLF files are restored in meaning.
+#[tokio::test]
+async fn codex_crlf_file_keeps_comments_and_meaning_but_not_line_endings() {
+    let w = World::new();
+    let user = "# crlf\r\nmodel = \"m\"\r\nsandbox_mode = \"danger-full-access\" # mine\r\n";
+    std::fs::write(w.config(), user).unwrap();
+    let before = parse(&w.config());
+    install(&w, 1_000).await.unwrap();
+    let installed = std::fs::read_to_string(w.config()).unwrap();
+    assert!(
+        installed.contains("# crlf") && installed.contains("# mine"),
+        "{installed:?}"
+    );
+    assert!(
+        !installed.contains('\r'),
+        "line endings were expected to be normalised: {installed:?}"
+    );
+    remove(&w);
+    assert_eq!(parse(&w.config()), before);
+    let after = std::fs::read_to_string(w.config()).unwrap();
+    assert!(after.contains("# crlf") && after.contains("# mine"), "{after:?}");
+}
+
+/// A second install over an installed file changes nothing and says so.
+#[tokio::test]
+async fn codex_second_install_is_byte_identical_and_reports_no_mutation() {
+    let w = World::new();
+    std::fs::write(w.config(), USER_CONFIG).unwrap();
+    install(&w, 1_000).await.unwrap();
+    let first = std::fs::read_to_string(w.config()).unwrap();
+    let second = install(&w, 2_000).await.unwrap();
+    assert_eq!(std::fs::read_to_string(w.config()).unwrap(), first);
+    assert!(!second.mutated, "a repeat install must not report a mutation");
+}
+
+/// A file AASM created and the user then annotated with a comment is not an
+/// empty artifact: removal keeps it.
+#[tokio::test]
+async fn codex_aa_created_file_with_a_user_comment_survives_remove() {
+    let w = World::new();
+    install(&w, 1_000).await.unwrap();
+    let mut text = std::fs::read_to_string(w.config()).unwrap();
+    text.push_str("# written by the user after install\n");
+    std::fs::write(w.config(), text).unwrap();
+    remove(&w);
+    assert!(w.config().is_file(), "a user-annotated file must not be deleted");
+    assert!(std::fs::read_to_string(w.config())
+        .unwrap()
+        .contains("# written by the user after install"));
+}
+
+/// The bytes written onto a missing config are the canonical rendering, as
+/// before the comment-preserving edit existed.
+#[tokio::test]
+async fn codex_fresh_install_writes_the_canonical_bytes() {
+    let w = World::new();
+    install(&w, 1_000).await.unwrap();
+    let text = std::fs::read_to_string(w.config()).unwrap();
+    assert_eq!(text, toml::to_string(&parse(&w.config())).unwrap());
 }
 
 /// The managed values are ones the current Codex CLI accepts.
