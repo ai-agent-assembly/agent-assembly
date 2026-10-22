@@ -1220,9 +1220,9 @@ after the gate passes: the supervisor registry, the §28 refusal on real launche
 registry path is a configured input; enabling it can refuse launches whose write scope
 is an ancestor of that path, for example a home or working directory, and that
 compatibility effect is assessed in the Story), and the §29.2–§29.4 tests, which
-exercise handoff code. The §29.1 registry write-protection cases are exercised by the
-harness against the stand-in directory first and against the real registry in the
-Story.
+exercise handoff code. Before the gate the harness exercises kernel-level denial (§30.3)
+against the stand-in directory only; the §29.1 refusal cases, including the
+remove-the-check falsification, need the admission check and run in the Story.
 
 ### 27. Supervisor-mediated authority; no serialized or caller-supplied parent authority
 
@@ -1271,13 +1271,21 @@ handoff, on the policy domain, or on which isolation backend is in use.
   domain that is more restricted than the supervisor's, which Landlock's own ptrace rule
   uses to refuse the child's attach. Landlock's `LANDLOCK_SCOPE_*` flags (abstract unix
   sockets, signals) do not cover these routes. Otherwise the launch is refused.
-  The computation is only the admission check. The control for filesystem routes is the
-  kernel-enforced Landlock domain, which is checked when a path is opened; it does not
+  The computation is only the admission check. The control for filesystem write routes is the
+  kernel-enforced Landlock domain, which is checked when a path is opened. It does not
+  mediate metadata changes (`chmod`, `chown`, `setxattr`, ACL changes, `utimes`), so
+  those are denied by a distinct uid, by DAC ownership, or by admission refusal, and
+  are tested that way, not as Landlock denials; it does not
   revoke a writable descriptor the child already holds, so descriptors are handled by
   hygiene (every descriptor except stdio is closed or close-on-exec at launch, and no
   registry-capable process sends descriptors to the child) together with the ptrace and
   `pidfd_getfd` denial above. A confined launch on a backend with no equivalent
-  kernel-enforced control is refused under the fail-closed rule below.
+  kernel-enforced control is refused under the fail-closed rule below. Once a registry
+  is configured that refuses every such launch (for example on macOS), handoff or not;
+  with no registry configured the rule has nothing to protect and is vacuous. What
+  counts as an equivalent control is defined in the Story, with the J84 isolated backend
+  as its first test case, and the Story's compatibility assessment covers this effect.
+  The supervisor must not call `prctl(PR_SET_PTRACER)` to widen Yama access to a child.
 - The check **fails closed**: when the launch's write authority cannot be resolved or
   compared, the launch is refused and the reason is reported.
 - An unconfined launch (`--isolation none`) establishes no boundary and claims none
@@ -1337,12 +1345,15 @@ kernel whose relevant capabilities were verified *first*:
    kernel version, the kernel documentation relied on, and the runtime behaviour shown:
    a pidfd the supervisor obtained at clone time (`CLONE_PIDFD`) stays bound to its own
    process; once that process is reaped, `pidfd_send_signal` on it returns `ESRCH` and
-   never reaches a later holder of the same pid; and two pidfds name the same process
-   exactly when their pidfs inodes compare equal (`fstat` `st_ino`, or `kcmp`). A pidfd
-   is not a secret (`pidfd_open` needs no permission), so the claim is stability, not
+   never reaches a later holder of the same pid; and the runtime check shows that the pidfd's pidfs inode number (`fstat`
+   `st_ino`) distinguishes two different processes and stays stable across pid reuse;
+   `kcmp` is not used, because it compares open files, not processes. The evidence
+   records the kernel version at which that inode behaviour was observed; this ADR
+   asserts no minimum version. A pidfd is not a secret (`pidfd_open` needs no permission), so the claim is stability, not
    unforgeability.
 3. **Registry write isolation** — a confined child's attempts to write the registry
-   (§28) fail at the kernel, including through aliases.
+   (§28) fail at the kernel, including through aliases. Metadata changes are outside
+   Landlock's reach (§28) and are evidenced under item 5 and the DAC separation.
 4. **Real multi-process ancestry** — the launched tree's parent/child relation is
    observed from real processes, not synthesized.
 5. **Same-uid control denied** — a confined child sharing the supervisor's uid cannot
