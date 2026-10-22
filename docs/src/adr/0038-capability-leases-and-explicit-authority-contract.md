@@ -1128,7 +1128,8 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
   ledger that issued it: a provenance-free lease can be registered as a root in any
   ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`
   therefore means "this ledger has no record", not "this is the issuing ledger".
-  Which ledger is authoritative across processes is for AAASM-6273 to settle.
+  Across processes the supervisor registry is the authoritative ledger (§27–§29.4);
+  AAASM-6273 owns its design.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
 
 ## Amendment (AAASM-6347/6348/6349): `credentials: posture` — authoring the credential-brokerage requirement
@@ -1203,3 +1204,195 @@ none-arm spec, documented on `unconfined_credential_refusal`; a spec that gained
   only the child is never started.
 - J84 stays `partial`: the live evidence is macOS-only, the isolated-backend arm has
   none, and the `ps -E` channel is open.
+
+## Amendment (AAASM-6273): cross-process parent-authority handoff — direction decided, implementation gated
+
+AAASM-6273 was recorded above as the one place a real multi-process sub-agent tree's
+attenuation guarantee stays partial. This amendment records the owner decision on its
+direction and the acceptance contract any implementation must meet. It changes no code
+and enables nothing: the cross-process handoff is **not implemented, and must be
+neither built nor enabled in any environment until the B3 evidence gate below
+passes.** What may land before the gate is limited to: this documentation; and the
+gate's own evidence harness (§30), which runs against a stand-in fixture directory
+(never the production registry), is never shipped as handoff code and is not reachable
+behind a flag. Everything else waits for the implementation Story, which starts only
+after the gate passes: the supervisor registry, the §28 refusal on real launches (its
+registry path is a configured input; enabling it can refuse launches whose write scope
+is an ancestor of that path, for example a home or working directory, and that
+compatibility effect is assessed in the Story), and the §29.2–§29.4 tests, which
+exercise handoff code. Before the gate the harness exercises kernel-level denial (§30.3)
+against the stand-in directory only; the §29.1 refusal cases, including the
+remove-the-check falsification, need the admission check and run in the Story.
+
+### 27. Supervisor-mediated authority; no serialized or caller-supplied parent authority
+
+A parent's authority stays inside the supervisor that launched the child. A child
+process presents no authority material of its own: its place in the ancestry is
+established by the supervisor that launched it, never by a value the child (or its
+caller) hands over. Consequently:
+
+- `ParentAuthority` is **not serialized** across a process boundary, in any form. The
+  witness-gating of §2, §8 and §15 exists to make a `ParentAuthority` unforgeable; any
+  encoding a second process can construct reopens that hole.
+- There is **no caller-controlled parent-authority file or flag** (the
+  `--parent-authority-file` shape already rejected in the AAASM-6272 amendment).
+- A receipt-derived re-derivation of the parent in the child is excluded for the same
+  reason: it is an artifact a second process can construct. Revisiting this requires a
+  new amendment to this ADR.
+
+### 28. Universal requirement: a confined launch must not hold write authority over the supervisor registry
+
+Whatever the supervisor records about the processes it launched is only as trustworthy
+as the exclusivity of its writer. Therefore **every confined AASM launch must be
+refused if it would give the child effective write authority over the supervisor
+registry directory or over any ancestor of that directory.** The rule is universal over
+confined launches: it is not conditional on whether the launch participates in a
+handoff, on the policy domain, or on which isolation backend is in use.
+
+- *Effective write authority* means any route by which the child could create, modify,
+  rename, replace or unlink an entry in that directory, or rename, replace or unlink
+  the directory or any ancestor itself (which lets it substitute a path component), or
+  write a registry file or socket inside it, or hard-link a registry entry into a
+  location it can write. It is computed from all of: the launch's filesystem-write
+  scopes; inherited descriptors, including `O_PATH` and directory descriptors used with
+  `*at` calls; mount, root and alias resolution (symlinks, `..`, bind mounts, a
+  different mount namespace or `chroot`, `/proc/self/fd`, `/proc/<pid>/root`); and
+  discretionary access (the child's uid and gid, group-write bits, ACLs, and whether the
+  child owns, or can chmod or chown, the registry directory or any ancestor of it) —
+  and from same-uid control of whoever writes the registry: `ptrace`,
+  `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd` against the supervisor or
+  any registry-capable process, and a descriptor obtained after launch (passed over
+  `SCM_RIGHTS` or taken with `pidfd_getfd`) as well as an inherited one. Where the
+  child shares a uid with the supervisor, the launch must also separate them (a
+  distinct uid, or a PID namespace with the routes denied) or establish that those
+  routes are denied by mechanisms the kernel actually provides: Yama
+  `ptrace_scope` of at least 1 (a host-wide sysctl the launch cannot set, which
+  `CAP_SYS_PTRACE` bypasses, so the admission check verifies both), or a child Landlock
+  domain that is more restricted than the supervisor's, which Landlock's own ptrace rule
+  uses to refuse the child's attach. Landlock's `LANDLOCK_SCOPE_*` flags (abstract unix
+  sockets, signals) do not cover these routes. Otherwise the launch is refused.
+  The computation is only the admission check. The control for filesystem write routes is the
+  kernel-enforced Landlock domain, which is checked when a path is opened. It does not
+  mediate metadata changes (`chmod`, `chown`, `setxattr`, ACL changes, `utimes`), so
+  those are denied by a distinct uid, by DAC ownership, or by admission refusal, and
+  are tested that way, not as Landlock denials; it does not
+  revoke a writable descriptor the child already holds, so descriptors are handled by
+  hygiene (every descriptor except stdio is closed or close-on-exec at launch, and no
+  registry-capable process sends descriptors to the child) together with the ptrace and
+  `pidfd_getfd` denial above. A confined launch on a backend with no equivalent
+  kernel-enforced control is refused under the fail-closed rule below. Once a registry
+  is configured that refuses every such launch (for example on macOS), handoff or not;
+  with no registry configured the rule has nothing to protect and is vacuous. What
+  counts as an equivalent control is defined in the Story, with the J84 isolated backend
+  as its first test case, and the Story's compatibility assessment covers this effect.
+  The supervisor must not call `prctl(PR_SET_PTRACER)` to widen Yama access to a child.
+- The check **fails closed**: when the launch's write authority cannot be resolved or
+  compared, the launch is refused and the reason is reported.
+- An unconfined launch (`--isolation none`) establishes no boundary and claims none
+  (§23 of the AAASM-6347 amendment). It therefore cannot carry a cross-process
+  attenuation claim: the handoff stays refused for it.
+
+### 29. Acceptance contract for the implementation Story
+
+Tests are required, not optional, and each pairs an adversarial case with a positive
+control that moves with the condition under test (a check that cannot fail proves
+nothing):
+
+1. **Registry write-protection.** Refused: a write scope equal to the registry
+   directory; to an ancestor of it; a path that resolves to either through a symlink,
+   `..` or a bind-mount alias; an inherited descriptor (including `O_PATH`) that
+   reaches it; rename or replacement of the registry directory or of an ancestor
+   component; a hard link between a registry entry and a child-writable directory; a
+   writable registry file or socket; write access obtained through the child's uid,
+   gid, group bits, ACL, or ownership of (or chmod/chown over) the registry directory
+   or any ancestor; `ptrace`, `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd`
+   against the supervisor; a descriptor received after launch over `SCM_RIGHTS` (exercising the hygiene and `pidfd_getfd` denial above). Admitted (positive
+   control): a sibling directory outside the registry's ancestor chain, with an
+   identical-shape launch. The refusal tests must fail when the check is removed.
+2. **Cross-tree impersonation.** A child launched in tree A that claims a parent, or a
+   sibling's identity, in tree B is refused; so is a replay of a child-asserted claim after
+   its parent exited or its process identity was reused. Positive control: a child
+   legitimately launched in the same tree is accepted with the same claim shape.
+3. **Authority escalation.** A child lease wider than its parent's is refused at every
+   hop (the §8–§11 monotonic rule, now across processes); a child-forged or
+   hand-built claim of ancestry, and an entry the child planted in the registry, are not
+   honoured. Positive control: a child lease equal to or narrower than its parent's is
+   admitted at the same hop.
+4. **Transitive revocation across the process boundary.** Revoking any ancestor's
+   lease refuses the descendants, including an already-launched one (the AAASM-6307
+   property, shown with real separate processes rather than an in-process ledger).
+   Positive control: with no ancestor revoked, the same descendants keep running.
+
+Properties that depend on kernel behaviour are evidenced on a real kernel only (§30).
+A test that is skipped, or that exercises a mock or fake kernel, is recorded as *not
+run* and never counted toward acceptance.
+
+### 30. The B3 evidence gate (mandatory before any implementation is built or enabled)
+
+The handoff's security rests on five kernel-level assumptions. Each must be
+demonstrated, with a positive and an adversarial negative control, on a real Linux
+kernel whose relevant capabilities were verified *first*:
+
+1. **Landlock cross-process restriction** — a confined process cannot reach the
+   registry or lift its own restriction, and a process in another tree is unaffected
+   by this tree's ruleset. The kernel's Landlock ABI is queried at run time and must
+   cover rename/link (`REFER`, ABI 2) and truncate (ABI 3) rights, so ABI 3 or newer is
+   required; an older ABI is not accepted as evidence for §28 (ABI 1 denies
+   cross-directory rename and link outright rather than letting a ruleset govern them,
+   and ABI 1–2 cannot restrict truncation).
+2. **pidfs identity** — a process identity obtained as a pidfd is stable against pid
+   reuse. The evidence records the exact
+   kernel version, the kernel documentation relied on, and the runtime behaviour shown:
+   a pidfd the supervisor obtained at clone time (`CLONE_PIDFD`) stays bound to its own
+   process; once that process is reaped, `pidfd_send_signal` on it returns `ESRCH` and
+   never reaches a later holder of the same pid; and the runtime check shows that the pidfd's pidfs inode number (`fstat`
+   `st_ino`) distinguishes two different processes and stays stable across pid reuse;
+   `kcmp` is not used, because it compares open files, not processes. The evidence
+   records the kernel version at which that inode behaviour was observed; this ADR
+   asserts no minimum version. A pidfd is not a secret (`pidfd_open` needs no permission), so the claim is stability, not
+   unforgeability.
+3. **Registry write isolation** — a confined child's attempts to write the registry
+   (§28) fail at the kernel, including through aliases. Metadata changes are outside
+   Landlock's reach (§28) and are evidenced under item 5 and the DAC separation.
+4. **Real multi-process ancestry** — the launched tree's parent/child relation is
+   observed from real processes, not synthesized.
+5. **Same-uid control denied** — a confined child sharing the supervisor's uid cannot
+   `ptrace`, `process_vm_writev`, read or write `/proc/<pid>/mem`, or `pidfd_getfd` the
+   supervisor or a registry-capable process, and cannot use a descriptor the supervisor
+   did not give it; the evidence records `ptrace_scope`, the child's capabilities, and a
+   positive control in which the same operation succeeds when the separation is
+   removed.
+
+An environment that cannot show a property (a kernel without Landlock compiled in or
+not in the active LSM list, a kernel whose pidfd behaviour fails §30.2, a container whose host kernel
+was not itself verified) yields *no evidence*, not a pass. The gate is not waivable by
+reading source, by unit tests, or by an unsupported configuration.
+
+### Current state, stated precisely
+
+- **J82 (monotonic capability attenuation across sub-agent trees, AAASM-6161 /
+  AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently verified. No production path builds `Ancestry::Parent` from another process; the
+  multi-process case remains refused, not accepted.
+- **Verified on the available host (2026-10-22):** the only Linux kernel reachable
+  from the development host is Docker Desktop's VM, `6.10.14-linuxkit` (aarch64). Its
+  `/proc/config.gz` reports `# CONFIG_SECURITY_LANDLOCK is not set` and
+  `CONFIG_LSM="yama,loadpin,safesetid,integrity,bpf"`. **B3 cannot be established
+  there.** The development host itself
+  is macOS, which has no Landlock.
+- **Missing capability, minimally stated:** a Linux kernel built with
+  `CONFIG_SECURITY_LANDLOCK=y`, with `landlock` in the active LSM list
+  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, whose pidfd behaviour passes
+  the runtime checks in §30.2, with Yama `ptrace_scope` of at least 1 or a uid/PID
+  namespace separation available for §30.5, that the operator may run isolated,
+  bounded, multi-process tests on without touching the host network.
+
+### What this amendment does not decide
+
+- The on-disk or in-memory design of the supervisor registry. Any record of a launched
+  process's place in the ancestry is supervisor-side only and unreachable by the
+  child; there is no child-held attestation. The design and record format belong to the
+  implementation Story, which starts only after the gate (see the order above), and
+  must satisfy §27–§30.
+- Any receipt-schema change (`LeaseBinding`), or cryptographic identity binding
+  (AAASM-5533 still owns verification).
+- That the gate passes. It records the gate; it does not claim any of it.
