@@ -560,12 +560,12 @@ mod copilot {
     use aa_devtool_copilot::CopilotAdapter;
 
     /// A deny-only policy (one denied MCP tool, no `RequireApproval` rule)
-    /// makes the adapter WRITE `chat.tools.autoApprove: true` and
-    /// `chat.mcp.requireApproval: "never"`. A user who had chosen the stricter
-    /// values loses them, and nothing records the prior values, so there is no
-    /// way back. CHARACTERISATION of a destructive, weakening edge.
+    /// used to WRITE `chat.tools.autoApprove: true` and
+    /// `chat.mcp.requireApproval: "never"` over the user's stricter values,
+    /// with no record to undo it (AAASM-6321). The stricter user values must
+    /// now survive, and unmanaged keys stay untouched.
     #[tokio::test]
-    async fn apply_of_a_deny_only_policy_weakens_the_users_stricter_settings_with_no_undo() {
+    async fn apply_of_a_deny_only_policy_keeps_the_users_stricter_settings() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = tmp.path().join("settings.json");
         std::fs::write(
@@ -582,24 +582,18 @@ mod copilot {
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
         assert_eq!(v["editor.fontSize"], 14, "unmanaged key preserved");
         assert_eq!(
-            v["chat.tools.autoApprove"], true,
-            "OBSERVED: the user's stricter `false` was overwritten with true"
+            v["chat.tools.autoApprove"], false,
+            "the user's stricter `false` must survive"
         );
         assert_eq!(
-            v["chat.mcp.requireApproval"], "never",
-            "OBSERVED: the user's `always` was overwritten with never"
-        );
-        let leftovers: Vec<_> = walk(tmp.path()).into_iter().filter(|p| p != &settings).collect();
-        assert!(
-            leftovers.is_empty(),
-            "no receipt/backup is written, so the old values are unrecoverable: {leftovers:?}"
+            v["chat.mcp.requireApproval"], "always",
+            "the user's `always` must survive"
         );
     }
 
     /// DESIRED: governance never loosens a setting the user already made
     /// stricter.
     #[tokio::test]
-    #[ignore = "AAASM-6297 finding: aa-devtool-copilot generate_managed_settings/auto_approve (src/lib.rs:233) defaults autoApprove to true and mcp requireApproval to never when no RequireApproval rule exists, and apply_settings overwrites the user's stricter values"]
     async fn desired_apply_never_loosens_a_stricter_user_setting() {
         let tmp = tempfile::tempdir().unwrap();
         let settings = tmp.path().join("settings.json");

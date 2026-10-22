@@ -237,6 +237,21 @@ fn auto_approve(policy: &PolicyDocument) -> bool {
         .any(|r| r.decision == PolicyDecision::RequireApproval)
 }
 
+/// Whether the user's existing value for `key` is already stricter than the
+/// governed `incoming` one. Only the two approval keys have an ordering:
+/// `chat.tools.autoApprove: false` and `chat.mcp.requireApproval: "always"`
+/// are the strict ends. Any other key, or an unexpected value type, is not
+/// protected and is overwritten as before.
+fn user_value_is_stricter(key: &str, existing: Option<&serde_json::Value>, incoming: &serde_json::Value) -> bool {
+    match (key, existing, incoming) {
+        ("chat.tools.autoApprove", Some(serde_json::Value::Bool(false)), serde_json::Value::Bool(true)) => true,
+        ("chat.mcp.requireApproval", Some(serde_json::Value::String(u)), serde_json::Value::String(i)) => {
+            u == "always" && i == "never"
+        }
+        _ => false,
+    }
+}
+
 /// `chat.agent.maxRequests` — from `dev_tools.copilot.max_requests:<N>` rule,
 /// falling back to [`DEFAULT_MAX_REQUESTS`].
 fn max_requests(policy: &PolicyDocument) -> u32 {
@@ -343,8 +358,11 @@ impl DevToolAdapter for CopilotAdapter {
     /// Code user-settings file.
     ///
     /// Reads the existing `settings.json` (starting from `{}` when absent),
-    /// overwrites every key present in `settings`, and writes the merged
-    /// document back atomically. Other user settings are preserved.
+    /// overwrites every key present in `settings` -- except that a stricter
+    /// user value for `chat.tools.autoApprove` (`false`) or
+    /// `chat.mcp.requireApproval` (`"always"`) is kept rather than loosened --
+    /// and writes the merged document back atomically. Other user settings
+    /// are preserved.
     ///
     /// [`generate_managed_settings`]: Self::generate_managed_settings
     async fn apply_settings(&self, settings: &str) -> Result<(), AdapterError> {
@@ -353,6 +371,11 @@ impl DevToolAdapter for CopilotAdapter {
             serde_json::from_str(settings).map_err(|e| AdapterError::Serde(e.to_string()))?;
         if let (Some(obj), Some(inc)) = (existing.as_object_mut(), incoming.as_object()) {
             for (k, v) in inc {
+                // AAASM-6321: governance may tighten a setting but never loosen
+                // one the user already made stricter.
+                if user_value_is_stricter(k, obj.get(k), v) {
+                    continue;
+                }
                 obj.insert(k.clone(), v.clone());
             }
         }
@@ -639,6 +662,53 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(v["editor.fontSize"], 14, "unmanaged key must be preserved");
         assert!(v["github.copilot.enable"].is_object(), "managed key written");
+    }
+
+    /// Apply the policy-derived settings over `existing` user JSON and return the result.
+    async fn apply_over(existing: &str, policy: &PolicyDocument) -> serde_json::Value {
+        let tmp = TempDir::new().unwrap();
+        let settings_file = tmp.path().join("settings.json");
+        std::fs::write(&settings_file, existing).unwrap();
+        let adapter = CopilotAdapter::with_paths(tmp.path(), &settings_file);
+        let json = adapter.generate_managed_settings(policy).await.unwrap();
+        adapter.apply_settings(&json).await.unwrap();
+        serde_json::from_str(&std::fs::read_to_string(&settings_file).unwrap()).unwrap()
+    }
+
+    /// AAASM-6321: the user's `autoApprove: false` survives a permissive policy.
+    #[tokio::test]
+    async fn apply_keeps_a_stricter_user_auto_approve() {
+        let v = apply_over(r#"{"chat.tools.autoApprove": false}"#, &empty_policy()).await;
+        assert_eq!(v["chat.tools.autoApprove"], false);
+    }
+
+    /// AAASM-6321: the user's `requireApproval: "always"` survives a permissive policy.
+    #[tokio::test]
+    async fn apply_keeps_a_stricter_user_require_approval() {
+        let v = apply_over(r#"{"chat.mcp.requireApproval": "always"}"#, &empty_policy()).await;
+        assert_eq!(v["chat.mcp.requireApproval"], "always");
+    }
+
+    /// Preservation control: governance still writes its own value when the
+    /// user has no setting, so the guard is not "never write these keys".
+    #[tokio::test]
+    async fn apply_still_writes_the_managed_approval_values_when_the_user_has_none() {
+        let v = apply_over("{}", &empty_policy()).await;
+        assert_eq!(v["chat.tools.autoApprove"], true);
+        assert_eq!(v["chat.mcp.requireApproval"], "never");
+    }
+
+    /// Preservation control: a looser user value is still tightened by a strict policy.
+    #[tokio::test]
+    async fn apply_still_tightens_a_looser_user_approval_setting() {
+        let policy = policy_with_rule("mcp_tool:github:push", PolicyDecision::RequireApproval);
+        let v = apply_over(
+            r#"{"chat.tools.autoApprove": true, "chat.mcp.requireApproval": "never"}"#,
+            &policy,
+        )
+        .await;
+        assert_eq!(v["chat.tools.autoApprove"], false);
+        assert_eq!(v["chat.mcp.requireApproval"], "always");
     }
 
     /// AAASM-6091: `read_settings` used to fall back to `{}` on any parse
