@@ -107,7 +107,65 @@ mod stub_coding_agent {
         File(Vec<u8>),
     }
 
+    /// Directory that receives a raw witness of every snapshot, or `None`.
+    ///
+    /// HORO-1718 X2 needs the fixture tree as it was observed before and after
+    /// a run, not only the in-test assertion that the two were equal. Setting
+    /// this variable is an opt-in recording hook: it changes nothing a test
+    /// compares and is unset in every ordinary lane.
+    const WITNESS_ENV: &str = "AASM_STUB_SNAPSHOT_WITNESS_DIR";
+
+    /// Write one witness file per `snapshot` call: the calling test, a
+    /// process-wide sequence number, and for every entry its kind, length and
+    /// sha256. Failures to record are reported, never swallowed, because a
+    /// witness that silently stopped being written would read as absence.
+    fn record_snapshot_witness(root: &Path, snap: &BTreeMap<String, Entry>) {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let Some(dir) = std::env::var_os(WITNESS_ENV).filter(|v| !v.is_empty()) else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create witness dir");
+        let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+        let test = std::thread::current().name().unwrap_or("unnamed").to_string();
+        let entries: BTreeMap<&String, serde_json::Value> = snap
+            .iter()
+            .map(|(path, entry)| {
+                let value = match entry {
+                    Entry::Dir => serde_json::json!({ "kind": "dir" }),
+                    Entry::File(bytes) => serde_json::json!({
+                        "kind": "file",
+                        "len": bytes.len(),
+                        "sha256": hex::encode(Sha256::digest(bytes)),
+                    }),
+                };
+                (path, value)
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "test": test,
+            "seq": seq,
+            "pid": std::process::id(),
+            "root_name": root.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "entries": entries,
+        });
+        let safe: String = test
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let file = dir.join(format!("{safe}-{seq:04}.json"));
+        std::fs::write(&file, serde_json::to_vec_pretty(&doc).expect("witness json")).expect("write witness");
+    }
+
     fn snapshot(root: &Path) -> BTreeMap<String, Entry> {
+        let out = take_snapshot(root);
+        record_snapshot_witness(root, &out);
+        out
+    }
+
+    fn take_snapshot(root: &Path) -> BTreeMap<String, Entry> {
         let mut out = BTreeMap::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
