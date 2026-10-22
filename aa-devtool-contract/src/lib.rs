@@ -111,6 +111,13 @@ pub use aa_core::integration::{
     StepAction, StepPrivilege, StepRequirement, TrustMaterialKind,
 };
 
+// The comment-preserving managed-key merge (AAASM-6322), re-exported for one
+// pure, I/O-free purpose: an adapter that rewrites its own config outside the
+// lifecycle engine (AAASM-6373, Codex `aasm run`) must not fall back to a lossy
+// whole-file reserialisation. Nothing else from the fingerprint module is
+// reachable through this facade.
+pub use aa_core::integration::{merge_managed_keys, FingerprintError};
+
 // Receipts are read by adapters (status, verify, plan_removal) and written
 // only by the service — the type is shared, the authority is not.
 pub use aa_core::integration::{IntegrationReceipt, ReceiptError, StepReceipt};
