@@ -260,7 +260,8 @@ on:
     # rather than by line, because a line number in a 4400-line file is stale
     # the moment anyone edits above it:
     #
-    #   run-coverage    the `sonar` and `coverage` jobs
+    #   run-coverage    the `sonar` and `coverage` jobs (`coverage` also runs on any
+    #                   PR touching aa-integration-tests Rust sources, AAASM-6326)
     #   run-benchmark   the `benchmark` job
     #
     # Both labels must also EXIST. A `contains(labels.*.name, 'x')` against a
@@ -318,6 +319,7 @@ jobs:
       # `changes` router — same reasoning as the satellites above.
       workflow_syntax_gate: ${{ steps.filter.outputs.workflow_syntax_gate }}
       excluded_workspaces: ${{ steps.filter.outputs.excluded_workspaces }}
+      integration_tests: ${{ steps.filter.outputs.integration_tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -453,6 +455,18 @@ jobs:
               - 'proto/devint.proto'
               - 'aa-runtime/src/devint/**'
               - '.github/workflows/ci.yml'
+            # AAASM-6326: a PR that adds or edits an integration test must run it
+            # under `cargo llvm-cov` BEFORE merge. `Coverage` is label-gated on
+            # PRs (cost), so a test that only fails under instrumentation (e.g.
+            # `default_*.profraw` written into a sanitised child's workspace)
+            # passed every PR lane and turned `main` red after merge (#2639).
+            # Narrower than `rust` on purpose: only integration-test sources
+            # select the instrumented lane automatically; everything else keeps
+            # the `run-coverage` opt-in. Every path is covered by the existing
+            # `on.pull_request.paths` entries (`aa-*/**/*.rs`, `aa-*/**/*.toml`).
+            integration_tests:
+              - 'aa-integration-tests/**/*.rs'
+              - 'aa-integration-tests/Cargo.toml'
             conformance:
               - 'aa-cli/src/commands/start.rs'
               - 'aa-gateway/src/local_mode.rs'
@@ -1129,7 +1143,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     needs: [changes, dashboard-assets]
-    if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
+    if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || needs.changes.outputs.integration_tests == 'true' || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
       # AAASM-1741: lets the env-gated storage::postgres::tests run under
       # cargo llvm-cov so codecov/patch sees coverage for the PG backend.
