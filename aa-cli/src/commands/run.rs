@@ -7256,6 +7256,17 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         anyhow::bail!("refusing to launch: {why}");
     }
 
+    // A launch the adapter cannot build fails here, before any settings write
+    // (AAASM-6297). Copilot is the load-bearing case: a VS Code extension has no
+    // launch command, so `build_launch_command` always errors — applying managed
+    // settings first would mutate the user's VS Code config, with no receipt and
+    // nothing to undo it, on a command that cannot succeed. Raised here rather
+    // than at bind time because `bind` also serves `--dry-run`, which must
+    // report the error instead of raising it.
+    if let Some(e) = bound.adapter_error() {
+        anyhow::bail!("failed to build launch command: {e}");
+    }
+
     // Managed settings are a dev-tool artifact, so they are generated and applied
     // only where there is a dev tool. A generic command has no adapter, no
     // settings schema and no configuration file of its own; writing one would put
@@ -7272,12 +7283,6 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             .apply_settings(&settings)
             .await
             .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
-    }
-
-    // Raised here rather than at bind time so the failure still lands where it
-    // always has: after the managed settings have been applied, not before.
-    if let Some(e) = bound.adapter_error() {
-        anyhow::bail!("failed to build launch command: {e}");
     }
 
     // AAASM-6166: captured before `resolved`/`bound` are consumed below. Mirrors
