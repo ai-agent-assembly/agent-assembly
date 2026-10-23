@@ -9,7 +9,7 @@
 //! there is still exactly one place that decides which implementation backs a
 //! tool (AAASM-5274).
 //!
-//! **Claude Code (AAASM-5281) and Codex (AAASM-5918) are native**; every other
+//! **Claude Code (AAASM-5281), Codex (AAASM-5918) and GitHub Copilot (AAASM-6297) are native**; every other
 //! built-in adapter is still wrapped in [`LegacyAdapterShim`], which makes it
 //! satisfy the lifecycle contract while declaring honestly that it cannot
 //! substantiate the mechanisms it was never designed to expose (§7).
@@ -72,6 +72,9 @@ pub fn built_in_integrations(policy: PolicyDocument) -> Vec<RegisteredIntegratio
             if kind == DevToolKind::Codex {
                 return Some(codex_integration());
             }
+            if kind == DevToolKind::GitHubCopilot {
+                return Some(copilot_integration());
+            }
             let adapter = aa_devtool::registry::adapter_for(token)?;
             let shim = LegacyAdapterShim::new(kind.clone(), BoxedAdapter(adapter), policy.clone());
             Some(RegisteredIntegration::new(kind, Arc::new(shim)))
@@ -119,6 +122,31 @@ pub fn codex_registration(integration: Arc<aa_devtool_codex::CodexIntegration>) 
     RegisteredIntegration::new(DevToolKind::Codex, integration.clone())
         .with_content(Arc::new(CodexSteps(integration.clone())))
         .with_executor(Arc::new(CodexSteps(integration)))
+}
+
+/// The native GitHub Copilot registration (AAASM-6297).
+///
+/// Unlike Claude Code and Codex it keeps the default executor: its only step is
+/// a settings write, which `FilesystemExecutor` performs itself.
+pub fn copilot_integration() -> RegisteredIntegration {
+    copilot_registration(Arc::new(aa_devtool_copilot::CopilotIntegration::new()))
+}
+
+/// Register a Copilot integration that was built elsewhere (see
+/// [`codex_registration`] for why this is public).
+pub fn copilot_registration(integration: Arc<aa_devtool_copilot::CopilotIntegration>) -> RegisteredIntegration {
+    RegisteredIntegration::new(DevToolKind::GitHubCopilot, integration.clone())
+        .with_content(Arc::new(CopilotSteps(integration)))
+}
+
+/// Bridges Copilot's apply-time rendering onto the service's content seam.
+struct CopilotSteps(Arc<aa_devtool_copilot::CopilotIntegration>);
+
+#[async_trait]
+impl StepContentSource for CopilotSteps {
+    async fn render(&self, plan: &IntegrationPlan) -> Result<BTreeMap<String, String>, String> {
+        self.0.step_content(plan).await.map_err(|e| e.to_string())
+    }
 }
 
 /// Adapts the Codex integration's rendering and execution surfaces onto the
@@ -259,6 +287,28 @@ mod tests {
             .collect();
         assert!(ids.contains(&"claude-code".to_string()), "{ids:?}");
         assert!(ids.contains(&"codex".to_string()), "{ids:?}");
+    }
+
+    /// Copilot is native, not shimmed: the shim's plan carries
+    /// `ApplyLegacyManagedSettings`, which the executor refuses, so a shimmed
+    /// Copilot could be planned but never applied (AAASM-6297).
+    #[tokio::test]
+    async fn copilot_is_native_and_its_plan_is_applicable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let settings = dir.path().join("settings.json");
+        let integration = Arc::new(aa_devtool_copilot::CopilotIntegration::with_adapter(
+            aa_devtool_copilot::CopilotAdapter::with_paths(dir.path().join("ext"), &settings),
+        ));
+        let registered = copilot_registration(integration);
+        let service = EngineLifecycle::new(vec![registered], ReceiptStore::at(dir.path().join("store")));
+        let tools = service.list_tools().await.expect("list");
+        let copilot = tools
+            .iter()
+            .find(|t| t.tool == DevToolKind::GitHubCopilot)
+            .expect("copilot is registered");
+        assert!(copilot
+            .capabilities
+            .is_effective(aa_core::integration::IntegrationCapability::ManagedSettings));
     }
 
     /// The shim declares what it cannot substantiate rather than claiming it.
