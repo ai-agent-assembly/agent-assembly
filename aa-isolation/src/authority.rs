@@ -662,7 +662,9 @@ fn covered(state: &AuthorityState, domain: CapabilityDomain, scope: &Requirement
 /// A [`AuthorityState::Leased`] state must be valid at `now`, name `subject`
 /// (AAASM-6279/D-b: a lease proves what its named subject was authorized for,
 /// not what some other agent may do), and cover `scope`. The other states
-/// defer to [`covered`].
+/// defer to [`covered`]: [`AuthorityState::Denied`] refuses, and
+/// [`AuthorityState::CompatibilityResidual`] admits everything, because the
+/// lease-only checks (validity, subject, scope) do not apply to it.
 ///
 /// # Errors
 ///
@@ -2393,8 +2395,10 @@ mod tests {
     }
 
     /// `admit_lease` is the extracted body of `authority_gate`'s per-domain
-    /// check; the two must agree verdict-for-verdict, or a runtime caller of
-    /// `admit_lease` would decide differently from the launch gate.
+    /// check. The expected refusals below are written out by hand, not read
+    /// back from `admit_lease`, so a reordered check or a changed variant or
+    /// payload fails here instead of passing by agreeing with itself. The
+    /// combined-failure rows pin the order: validity, then subject, then scope.
     #[test]
     fn admit_lease_agrees_with_authority_gate() {
         let domain = CapabilityDomain::FilesystemRead;
@@ -2416,38 +2420,100 @@ mod tests {
                 LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
             )
         };
-        let requested = RequirementScope::Selectors(vec!["/workspace".to_string()]);
+        let requested = workspace();
         let uncovered = RequirementScope::Selectors(vec!["/etc".to_string()]);
+        let invalid = |reason| Err(AuthorityRefusal::LeaseInvalid { domain, reason });
+        let wrong_subject = Err(AuthorityRefusal::LeaseSubjectMismatch {
+            domain,
+            lease_subject: "someone-else".to_string(),
+        });
 
-        let table: Vec<(&str, CapabilityLease, &RequirementScope, SystemTime, bool)> = vec![
-            ("valid", lease_for(domain, workspace()), &requested, t(1_500), true),
-            ("expired", lease_for(domain, workspace()), &requested, t(2_500), false),
+        type Row<'a> = (
+            &'a str,
+            CapabilityLease,
+            &'a RequirementScope,
+            SystemTime,
+            Result<(), AuthorityRefusal>,
+        );
+        let table: Vec<Row> = vec![
+            ("valid", lease_for(domain, workspace()), &requested, t(1_500), Ok(())),
+            (
+                "expired",
+                lease_for(domain, workspace()),
+                &requested,
+                t(2_500),
+                invalid(LeaseInvalid::Expired { expires_at: t(2_000) }),
+            ),
             (
                 "not yet valid",
                 lease_for(domain, workspace()),
                 &requested,
                 t(500),
-                false,
+                invalid(LeaseInvalid::NotYetValid { not_before: t(1_000) }),
             ),
-            ("revoked", revoked(), &requested, t(1_500), false),
-            ("wrong subject", other_subject(), &requested, t(1_500), false),
+            (
+                "revoked",
+                revoked(),
+                &requested,
+                t(1_500),
+                invalid(LeaseInvalid::Revoked {
+                    reason: "operator revoked".to_string(),
+                }),
+            ),
+            (
+                "wrong subject",
+                other_subject(),
+                &requested,
+                t(1_500),
+                wrong_subject.clone(),
+            ),
             (
                 "uncovered scope",
                 lease_for(domain, workspace()),
                 &uncovered,
                 t(1_500),
-                false,
+                Err(AuthorityRefusal::LeaseScopeInsufficient { domain }),
+            ),
+            (
+                "expired and wrong subject: validity first",
+                other_subject(),
+                &requested,
+                t(2_500),
+                invalid(LeaseInvalid::Expired { expires_at: t(2_000) }),
+            ),
+            (
+                "wrong subject and uncovered scope: subject first",
+                other_subject(),
+                &uncovered,
+                t(1_500),
+                wrong_subject,
             ),
         ];
 
-        for (name, lease, scope, now, expect_ok) in table {
+        for (name, lease, scope, now, expected) in table {
             let spec = base_spec().with_requirement(ControlRequirement::observe(domain).with_scope(scope.clone()));
             let spec = attach_lease(spec, lease.clone());
             let via_gate = authority_gate(&spec, &Ancestry::Root, now).map(|_| ());
             let authority = EffectiveAuthority::from_leases(&[lease]).expect("single lease builds");
             let via_admit = admit_lease(authority.state(domain), &identity().agent_id, domain, scope, now);
-            assert_eq!(via_gate, via_admit, "{name}: gate and admit_lease disagree");
-            assert_eq!(via_admit.is_ok(), expect_ok, "{name}: unexpected verdict");
+            assert_eq!(via_admit, expected, "{name}: admit_lease verdict");
+            assert_eq!(via_gate, expected, "{name}: authority_gate verdict");
         }
+    }
+
+    /// `from_leases` itself refuses two leases for one domain, so a caller that
+    /// never goes through `from_spec` gets the same malformed-input refusal.
+    #[test]
+    fn from_leases_rejects_duplicate_domain() {
+        let leases = [
+            lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
+            lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
+        ];
+        assert_eq!(
+            EffectiveAuthority::from_leases(&leases),
+            Err(AuthorityBuildError::DuplicateLeaseDomain(
+                CapabilityDomain::NetworkEgress
+            ))
+        );
     }
 }
