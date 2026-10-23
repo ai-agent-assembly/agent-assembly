@@ -9,10 +9,13 @@
 //!   throwaway `$HOME`. Claude Code's equivalent is already covered by
 //!   `conformance_claude_code.rs` / `aa-cli/tests/integrations_command.rs`
 //!   (journey J70) and is not repeated.
-//! * **Copilot** and **Windsurf** have NO receipted lifecycle (no plan / receipt
-//!   / remove -- see `no_receipted_lifecycle_exists_for_copilot_or_windsurf`).
-//!   Their `apply_*` methods are exercised directly over throwaway paths and
-//!   every destructive behaviour is *characterised* rather than endorsed.
+//! * **Copilot** has a native receipted lifecycle (AAASM-6297) and is driven
+//!   through the same engine in `mod copilot_lifecycle`. Its legacy
+//!   `apply_*` surface is still exercised in `mod copilot`.
+//! * **Windsurf** still has NO receipted lifecycle (no plan / receipt / remove
+//!   -- see `no_receipted_lifecycle_exists_for_windsurf`). Its `apply_*`
+//!   methods are exercised directly over throwaway paths and every
+//!   destructive behaviour is *characterised* rather than endorsed.
 //! * Nothing here launches a real dev tool, reads a real config, or touches
 //!   `$HOME`: every root is an injected temp path built with `with_paths` /
 //!   `CodexPaths::with_home`, never `::new()`.
@@ -665,27 +668,338 @@ fn deny_all_mcp_policy(denied_tool: &str) -> aa_devtool_contract::PolicyDocument
     }
 }
 
-/// Copilot and Windsurf expose only `apply_*`: there is no plan, receipt or
-/// remove, so "uninstall" is UNSUPPORTED for them. Pinned by asserting the
-/// lifecycle trait is not implemented for them.
+/// Windsurf exposes only `apply_*`: there is no plan, receipt or remove, so
+/// "uninstall" is UNSUPPORTED for it. Pinned by scanning its source for an
+/// `impl DevToolIntegration` (the `include_str!` reads `lib.rs` only, so a
+/// lifecycle added in another module would escape it -- update this row if
+/// Windsurf grows a `lifecycle.rs`); Copilot, which now has one, is pinned at
+/// the type level as the control that the check can say yes.
 #[test]
-fn no_receipted_lifecycle_exists_for_copilot_or_windsurf() {
+fn no_receipted_lifecycle_exists_for_windsurf() {
     fn implements_lifecycle<T: DevToolIntegration>() {}
-    implements_lifecycle::<CodexIntegration>(); // control: the check can say yes
-                                                // The absence for the other two is a compile-time fact: the following
-                                                // would fail to compile, so it is documented rather than expressed:
-                                                //   implements_lifecycle::<aa_devtool_copilot::CopilotAdapter>();
-                                                //   implements_lifecycle::<aa_devtool_windsurf::WindsurfCascadeAdapter>();
-    let src = include_str!("../../aa-devtool-copilot/src/lib.rs");
-    assert!(
-        !src.contains("impl DevToolIntegration"),
-        "copilot gained a lifecycle: update the QA row"
-    );
+    implements_lifecycle::<CodexIntegration>();
+    implements_lifecycle::<aa_devtool_copilot::CopilotIntegration>();
     let src = include_str!("../../aa-devtool-windsurf/src/lib.rs");
     assert!(
         !src.contains("impl DevToolIntegration"),
         "windsurf gained a lifecycle: update the QA row"
     );
+    assert!(
+        !std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../aa-devtool-windsurf/src/lifecycle.rs"
+        ))
+        .exists(),
+        "windsurf gained a lifecycle module: update the QA row"
+    );
+}
+
+/// Copilot's native lifecycle (AAASM-6297) driven through the real engine over a
+/// throwaway settings file, mirroring the Codex tests above.
+mod copilot_lifecycle {
+    use std::path::PathBuf;
+
+    use aa_core::integration::{FilesystemExecutor, IntegrationEngine, ReceiptStore};
+    use aa_devtool_contract::{
+        DevToolIntegration, DevToolKind, IntegrationRequest, ProtectionLevel, ProtectionProfile, SettingsScope,
+        VerificationOutcome,
+    };
+    use aa_devtool_copilot::{CopilotAdapter, CopilotIntegration};
+
+    const KEY: &str = "chat.tools.global.autoApprove";
+
+    struct World {
+        _tmp: tempfile::TempDir,
+        settings: PathBuf,
+        state: PathBuf,
+    }
+
+    impl World {
+        fn new() -> Self {
+            let tmp = tempfile::tempdir().unwrap();
+            let settings = tmp.path().join("Code").join("User").join("settings.json");
+            std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+            let state = tmp.path().join("state");
+            // status derivation needs Copilot to be detectable
+            let ext = state.join("ext").join("github.copilot-1.300.0");
+            std::fs::create_dir_all(&ext).unwrap();
+            std::fs::write(ext.join("package.json"), r#"{"version":"1.300.0"}"#).unwrap();
+            Self {
+                _tmp: tmp,
+                settings,
+                state,
+            }
+        }
+
+        fn integration(&self) -> CopilotIntegration {
+            CopilotIntegration::with_adapter(CopilotAdapter::with_paths(self.state.join("ext"), &self.settings))
+        }
+
+        fn engine(&self, executor: FilesystemExecutor) -> IntegrationEngine<FilesystemExecutor> {
+            IntegrationEngine::new(executor, ReceiptStore::at(self.state.join("store")))
+        }
+
+        fn write(&self, body: &str) {
+            std::fs::write(&self.settings, body).unwrap();
+        }
+
+        fn json(&self) -> serde_json::Value {
+            serde_json::from_str(&std::fs::read_to_string(&self.settings).unwrap()).expect("settings must stay JSON")
+        }
+    }
+
+    fn request() -> IntegrationRequest {
+        IntegrationRequest::new(
+            DevToolKind::GitHubCopilot,
+            ProtectionProfile::Recommended,
+            SettingsScope::User,
+        )
+    }
+
+    async fn install(w: &World, now: u64) -> Result<aa_core::integration::ApplyOutcome, String> {
+        let integration = w.integration();
+        let plan = integration
+            .plan_integration(&request())
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut executor = FilesystemExecutor::new();
+        for (id, content) in integration.step_content(&plan).await.map_err(|e| e.to_string())? {
+            executor = executor.with_content(id, content);
+        }
+        w.engine(executor)
+            .apply(&plan, &super::context(now))
+            .map_err(|e| e.to_string())
+    }
+
+    fn remove(w: &World) -> aa_core::integration::RemovalOutcome {
+        w.engine(FilesystemExecutor::new())
+            .remove(&DevToolKind::GitHubCopilot, SettingsScope::User)
+            .expect("remove")
+    }
+
+    const USER: &str = r#"{"editor.fontSize": 14, "chat.mcp.servers": {"docs": {"command": "npx"}}, "chat.tools.global.autoApprove": true}"#;
+
+    #[tokio::test]
+    async fn install_preserves_every_unmanaged_key() {
+        let w = World::new();
+        w.write(USER);
+        let before: serde_json::Value = serde_json::from_str(USER).unwrap();
+        assert!(install(&w, 1_000).await.unwrap().mutated);
+        let after = w.json();
+        assert_eq!(after["editor.fontSize"], before["editor.fontSize"]);
+        assert_eq!(after["chat.mcp.servers"], before["chat.mcp.servers"]);
+        assert_eq!(after[KEY], false, "control: the managed key was tightened");
+    }
+
+    #[tokio::test]
+    async fn second_install_is_byte_identical_and_reports_no_mutation() {
+        let w = World::new();
+        w.write(USER);
+        install(&w, 1_000).await.unwrap();
+        let first = std::fs::read(&w.settings).unwrap();
+        let again = install(&w, 2_000).await.unwrap();
+        assert!(!again.mutated);
+        assert_eq!(std::fs::read(&w.settings).unwrap(), first);
+    }
+
+    #[tokio::test]
+    async fn remove_restores_the_users_prior_value() {
+        let w = World::new();
+        w.write(USER);
+        install(&w, 1_000).await.unwrap();
+        let out = remove(&w);
+        assert!(out.residual.is_empty(), "{:?}", out.residual);
+        assert_eq!(w.json(), serde_json::from_str::<serde_json::Value>(USER).unwrap());
+    }
+
+    /// `absent_keys`: a key the user never had must be deleted again, not left as
+    /// `false`, and what they did have stays.
+    #[tokio::test]
+    async fn install_then_remove_leaves_no_key_the_user_never_had() {
+        let w = World::new();
+        w.write(r#"{"editor.fontSize": 14}"#);
+        install(&w, 1_000).await.unwrap();
+        assert_eq!(w.json()[KEY], false, "control: install added the key");
+        remove(&w);
+        let after = w.json();
+        assert!(after.get(KEY).is_none(), "key AASM added must go: {after}");
+        assert_eq!(after["editor.fontSize"], 14);
+    }
+
+    #[tokio::test]
+    async fn fresh_install_with_no_file_then_remove_leaves_no_file() {
+        let w = World::new();
+        assert!(!w.settings.exists());
+        install(&w, 1_000).await.unwrap();
+        assert_eq!(w.json()[KEY], false);
+        remove(&w);
+        assert!(!w.settings.exists(), "an AASM-created settings file must be removed");
+    }
+
+    /// A user value already at `false` is never owned: the plan claims no key, and
+    /// a loosening the USER makes after install is theirs, so removal must not
+    /// "restore" `false` over it.
+    #[tokio::test]
+    async fn a_stricter_user_value_survives_install_and_remove_and_is_never_owned() {
+        let w = World::new();
+        w.write(r#"{"editor.fontSize": 14, "chat.tools.global.autoApprove": false}"#);
+        let plan = w.integration().plan_integration(&request()).await.unwrap();
+        let aa_devtool_contract::StepAction::WriteManagedSettings { managed_keys, .. } = &plan.steps[0].action else {
+            panic!("expected a settings step")
+        };
+        assert!(
+            managed_keys.is_empty(),
+            "the plan must not claim a key the user holds: {managed_keys:?}"
+        );
+
+        install(&w, 1_000).await.unwrap();
+        assert_eq!(w.json()[KEY], false, "install must not loosen it");
+
+        // the user's own later choice
+        w.write(r#"{"editor.fontSize": 14, "chat.tools.global.autoApprove": true}"#);
+        remove(&w);
+        assert_eq!(
+            w.json()[KEY],
+            true,
+            "removal touched a key AASM never owned and overwrote the user's later edit"
+        );
+
+        let w2 = World::new();
+        w2.write(r#"{"chat.tools.global.autoApprove": false}"#);
+        install(&w2, 1_000).await.unwrap();
+        remove(&w2);
+        assert_eq!(w2.json()[KEY], false, "remove must not loosen it");
+    }
+
+    #[tokio::test]
+    async fn a_jsonc_settings_file_is_refused_at_plan_time_and_left_byte_identical() {
+        let w = World::new();
+        let jsonc = "{\n  // my font\n  \"editor.fontSize\": 14,\n}\n";
+        w.write(jsonc);
+        let err = w
+            .integration()
+            .plan_integration(&request())
+            .await
+            .expect_err("a JSONC file must be refused when planning, not at apply")
+            .to_string();
+        assert!(err.contains("not strict JSON"), "{err}");
+        assert!(install(&w, 1_000).await.is_err());
+        assert_eq!(std::fs::read_to_string(&w.settings).unwrap(), jsonc);
+        assert!(
+            !w.state.join("store").exists(),
+            "no receipt for an install that did not happen"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edit_made_after_planning_is_refused_at_apply() {
+        // an unrankable value appearing after the plan was reviewed
+        let w = World::new();
+        w.write(USER);
+        let integration = w.integration();
+        let plan = integration.plan_integration(&request()).await.unwrap();
+        let edited = r#"{"chat.tools.global.autoApprove": {"x": 1}}"#;
+        w.write(edited);
+        let err = integration
+            .step_content(&plan)
+            .await
+            .expect_err("edited after planning");
+        assert!(err.to_string().contains(KEY), "{err}");
+        assert_eq!(std::fs::read_to_string(&w.settings).unwrap(), edited);
+
+        // the user tightening it themselves changes what would be written; the
+        // executor's digest check refuses the stale plan
+        let w = World::new();
+        w.write(USER);
+        let integration = w.integration();
+        let plan = integration.plan_integration(&request()).await.unwrap();
+        w.write(r#"{"chat.tools.global.autoApprove": false}"#);
+        let mut executor = FilesystemExecutor::new();
+        for (id, content) in integration.step_content(&plan).await.unwrap() {
+            executor = executor.with_content(id, content);
+        }
+        assert!(w.engine(executor).apply(&plan, &super::context(1_000)).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&w.settings).unwrap(),
+            r#"{"chat.tools.global.autoApprove": false}"#
+        );
+        assert!(
+            ReceiptStore::at(w.state.join("store"))
+                .load_receipt(&DevToolKind::GitHubCopilot, SettingsScope::User)
+                .unwrap()
+                .is_none(),
+            "a refused install must write no receipt"
+        );
+    }
+
+    async fn verify_outcome(w: &World, receipt: &aa_core::integration::IntegrationReceipt) -> VerificationOutcome {
+        w.integration().verify_integration(receipt, None).await.unwrap().outcome
+    }
+
+    #[tokio::test]
+    async fn verify_is_unverifiable_normally_and_failed_after_drift() {
+        let w = World::new();
+        w.write(USER);
+        let receipt = install(&w, 1_000).await.unwrap().receipt;
+        assert!(
+            matches!(
+                verify_outcome(&w, &receipt).await,
+                VerificationOutcome::Unverifiable { .. }
+            ),
+            "read-back matches but no probe exists"
+        );
+        w.write(r#"{"editor.fontSize": 14, "chat.tools.global.autoApprove": true}"#);
+        assert!(matches!(
+            verify_outcome(&w, &receipt).await,
+            VerificationOutcome::Failed { .. }
+        ));
+    }
+
+    /// An install over an already-`false` value claims no key, so the managed
+    /// fingerprint covers nothing. Status and verify must still notice the user
+    /// loosening or deleting it, rather than report Installed forever.
+    #[tokio::test]
+    async fn an_already_strict_install_reports_truthfully_and_notices_later_loosening() {
+        for (later, label) in [
+            (r#"{"chat.tools.global.autoApprove": true}"#, "loosened"),
+            (r#"{"editor.fontSize": 14}"#, "deleted"),
+        ] {
+            let w = World::new();
+            w.write(r#"{"chat.tools.global.autoApprove": false}"#);
+            let receipt = install(&w, 1_000).await.unwrap().receipt;
+
+            let status = w.integration().integration_status(Some(&receipt), None).await.unwrap();
+            assert_eq!(status.state.achieved_level(), ProtectionLevel::Integrated, "{label}");
+            assert!(matches!(
+                verify_outcome(&w, &receipt).await,
+                VerificationOutcome::Unverifiable { .. }
+            ));
+
+            w.write(later);
+            let verdict = verify_outcome(&w, &receipt).await;
+            assert!(
+                matches!(&verdict, VerificationOutcome::Failed { reason } if reason.contains("no longer false")),
+                "{label}: {verdict:?}"
+            );
+            let status = w.integration().integration_status(Some(&receipt), None).await.unwrap();
+            assert!(
+                status.state.achieved_level() < ProtectionLevel::Integrated,
+                "{label}: still reports {:?}",
+                status.state
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn project_and_managed_scopes_are_refused() {
+        let w = World::new();
+        for scope in [SettingsScope::Project, SettingsScope::Managed] {
+            let mut req = request();
+            req.settings_scope = scope;
+            assert!(w.integration().plan_integration(&req).await.is_err(), "{scope}");
+        }
+        assert!(!w.settings.exists());
+    }
 }
 
 mod copilot {

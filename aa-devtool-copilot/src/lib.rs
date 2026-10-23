@@ -43,6 +43,10 @@
 
 #![warn(missing_docs)]
 
+pub mod lifecycle;
+
+pub use lifecycle::CopilotIntegration;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 

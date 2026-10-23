@@ -601,6 +601,7 @@ dependencies = [
  "aa-devtool",
  "aa-devtool-claude-code",
  "aa-devtool-codex",
+ "aa-devtool-copilot",
  "aa-ebpf",
  "aa-ebpf-common",
  "aa-policy",

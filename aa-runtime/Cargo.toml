@@ -49,6 +49,9 @@ aa-devtool-claude-code      = { path = "../aa-devtool-claude-code" }
 # reason as Claude Code above — its plan's InjectLaunchEnvironment/
 # ConfigureProxy steps need an executor `FilesystemExecutor` refuses.
 aa-devtool-codex            = { path = "../aa-devtool-codex" }
+# AAASM-6297: Copilot is native too — the shim's plan is unappliable, so a
+# shimmed Copilot could be planned but never installed.
+aa-devtool-copilot          = { path = "../aa-devtool-copilot" }
 # strip-for-publish:end devtool
 aa-security                 = { path = "../aa-security", version = "0.0.1-rc.7", features = ["serde"] }
 aa-proto                    = { path = "../aa-proto", version = "0.0.1-rc.7" }
