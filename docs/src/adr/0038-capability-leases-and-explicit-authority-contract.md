@@ -1415,9 +1415,11 @@ This amendment adds a seam, not an enforcement feature.
 - **Restrict-only.** `Permit` falls through to the gateway and local policy and cannot
   grant over an op-control halt, a gateway deny or a local `blocked_actions` rule.
 - **Fail closed when a gate is installed.** A `Deny`, a gate panic and an empty subject
-  all deny before any gateway forward. `LLM_CALL` and `TOOL_RESULT` name no capability
-  domain and are permitted by the seam without consulting the gate; unspecified and
-  unknown action codes are consulted, so the gate decides what it cannot classify.
+  all deny before any gateway forward. The SDK receives a generic "capability lease
+  required" message; the gate's detail goes only to the runtime log.
+- **The gate is consulted for every action type**, including `LLM_CALL`, `TOOL_RESULT`
+  and unspecified or unknown codes. The seam exempts nothing: the gate owns
+  classification and decides which classes need no lease.
 - The subject is the runtime's server-side `agent_id`, never the SDK-asserted
   `CheckActionRequest.agent_id`, and it is runtime-wide rather than per connection.
   The clock is read once per query and passed to the gate.
@@ -1426,3 +1428,9 @@ This amendment adds a seam, not an enforcement feature.
   needs `panic = "unwind"`.
 - `ParentAuthority` is not serialized and no cross-process handoff is introduced
   (sections 27 to 30 are unchanged).
+- **Known limitation.** `action_type` and the rest of the request are SDK-asserted, so
+  this seam belongs to the advisory layer. It binds cooperative, SDK-wrapped calls and
+  does not stop a process that bypasses the SDK or misreports what it is doing. This is
+  why the seam exempts no action class.
+- A gate that holds a `std::sync::Mutex` across a panic poisons it and then denies every
+  later call: fail-closed, but persistent.
