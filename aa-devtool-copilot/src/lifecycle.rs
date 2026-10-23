@@ -35,13 +35,12 @@
 use std::path::{Path, PathBuf};
 
 use aa_devtool_contract::{
-    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, CallerEnvironment, CapabilitySupport,
-    DevToolCapabilities, DevToolInfo, DevToolIntegration, DevToolKind, DocumentFormat, EvidenceKind,
-    FilesystemExecutor, GovernanceLevel, IntegrationCapability, IntegrationPlan, IntegrationReceipt,
-    IntegrationRequest, IntegrationStatus, IntegrationStep, LifecyclePhase, NextLevel, PolicyPosture,
-    ProtectionEvidence, ProtectionLevel, RemovalPlan, SettingsMerge, SettingsScope, StateDerivation, StepAction,
-    StepExecutor, StepReceipt, SupportedToolVersions, ToolVersion, VerificationOutcome, VerificationResult,
-    VersionCompatibility, VersionSupport, LIFECYCLE_SCHEMA_VERSION,
+    now_unix_secs, sha256_hex, AdapterError, ArtifactObservation, CallerEnvironment, DevToolCapabilities, DevToolInfo,
+    DevToolIntegration, DevToolKind, DocumentFormat, EvidenceKind, FilesystemExecutor, GovernanceLevel,
+    IntegrationCapability, IntegrationPlan, IntegrationReceipt, IntegrationRequest, IntegrationStatus, IntegrationStep,
+    LifecyclePhase, NextLevel, PolicyPosture, ProtectionEvidence, ProtectionLevel, RemovalPlan, SettingsMerge,
+    SettingsScope, StateDerivation, StepAction, StepExecutor, StepReceipt, SupportedToolVersions, ToolVersion,
+    VerificationOutcome, VerificationResult, VersionCompatibility, VersionSupport, LIFECYCLE_SCHEMA_VERSION,
 };
 use async_trait::async_trait;
 
@@ -51,6 +50,13 @@ const STEP_MANAGED_SETTINGS: &str = "managed-settings";
 
 /// The only key this integration owns. See the module docs.
 const MANAGED_KEY: &str = "chat.tools.global.autoApprove";
+
+/// The governance level this integration can truthfully claim. The legacy
+/// adapter's `L2Enforce` described what its (undocumented) keys were meant to
+/// do; this lifecycle writes one documented setting and verifies nothing about
+/// VS Code honouring it, so it claims discovery only, consistent with the
+/// `Integrated` ceiling and `ToolActionApproval` being unsupported.
+const GOVERNANCE_CEILING: GovernanceLevel = GovernanceLevel::L0Discover;
 
 /// GitHub Copilot's native lifecycle integration.
 #[derive(Debug, Default)]
@@ -115,6 +121,17 @@ impl CopilotIntegration {
             .iter()
             .filter(|step| step.applied && step.fingerprint.is_some())
             .map(|step| {
+                if owns_no_keys(step) {
+                    let (matches, detail) = posture_still_strict(step);
+                    return ProtectionEvidence::new(
+                        IntegrationCapability::ManagedSettings,
+                        EvidenceKind::ReadBack {
+                            matches_receipt: matches,
+                        },
+                        now,
+                        detail,
+                    );
+                }
                 let expected = step.fingerprint.as_deref().unwrap_or_default();
                 let (matches, detail) = match executor.observe(step) {
                     ArtifactObservation::Present {
@@ -221,7 +238,11 @@ impl DevToolIntegration for CopilotIntegration {
         DevToolCapabilities::new()
             .supported(IntegrationCapability::Discovery)
             .supported(IntegrationCapability::ManagedSettings)
-            .declare(IntegrationCapability::ToolActionApproval, CapabilitySupport::Supported)
+            .unsupported(
+                IntegrationCapability::ToolActionApproval,
+                "chat.tools.global.autoApprove is written as managed settings; nothing here independently \
+                 verifies VS Code honours a per-call approval decision",
+            )
             .unsupported(
                 IntegrationCapability::ManagedLaunch,
                 "GitHub Copilot is a VS Code extension and cannot be launched by `aasm run`",
@@ -297,13 +318,13 @@ impl DevToolIntegration for CopilotIntegration {
             format!("copilot-{scope}-{}", now_unix_secs()),
             request,
             planned_level,
-            GovernanceLevel::L2Enforce,
+            GOVERNANCE_CEILING,
         );
 
         let summary = if rendered.already_strict {
             format!(
                 "{} already sets `{MANAGED_KEY}` to false; nothing to write and nothing Agent Assembly will \
-                 ever restore or delete",
+                 ever restore or delete. Status reports Integrated only while it stays false",
                 settings_path.display()
             )
         } else {
@@ -400,7 +421,7 @@ impl DevToolIntegration for CopilotIntegration {
             state,
             evidence,
             planned_level,
-            adapter_ceiling: detected.map_or(GovernanceLevel::L0Discover, |i| i.governance_level),
+            adapter_ceiling: detected.map_or(GOVERNANCE_CEILING, |i| i.governance_level.min(GOVERNANCE_CEILING)),
             compatibility,
             next_level,
             observed_at_unix_secs: now,
@@ -483,6 +504,37 @@ impl DevToolIntegration for CopilotIntegration {
                     .to_string(),
             )
             .warn("reload VS Code for the removal to take effect".to_string()))
+    }
+}
+
+/// A step planned over a user value that was already `false` claims no key, so
+/// the fingerprint it recorded covers nothing and could never show drift.
+fn owns_no_keys(step: &StepReceipt) -> bool {
+    matches!(&step.action, StepAction::WriteManagedSettings { managed_keys, .. } if managed_keys.is_empty())
+}
+
+/// For a step that owns no key, the posture the integration reports is "the
+/// user's `chat.tools.global.autoApprove` is `false`"; read it back so the
+/// report cannot stay green after the user loosens or deletes it.
+fn posture_still_strict(step: &StepReceipt) -> (bool, String) {
+    let label = artifact_label(step);
+    let Some(path) = step.action.affected_paths().first().map(|p| (*p).to_path_buf()) else {
+        return (false, format!("{label} has no path to read back"));
+    };
+    let strict = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .is_some_and(|doc| doc.get(MANAGED_KEY) == Some(&serde_json::Value::Bool(false)));
+    if strict {
+        (
+            true,
+            format!("{label}: `{MANAGED_KEY}` is still false (your own value; not owned by Agent Assembly)"),
+        )
+    } else {
+        (
+            false,
+            format!("{label}: `{MANAGED_KEY}` is no longer false, and Agent Assembly owns no key there to restore"),
+        )
     }
 }
 
@@ -571,6 +623,11 @@ mod tests {
             );
         }
         assert!(caps.is_effective(IntegrationCapability::ManagedSettings));
+        assert!(
+            caps.unsupported_reason(IntegrationCapability::ToolActionApproval)
+                .is_some(),
+            "nothing verifies VS Code honours the key, so approval gating must not be claimed"
+        );
     }
 
     #[tokio::test]
@@ -645,5 +702,80 @@ mod tests {
             .expect_err("cannot be ranked")
             .to_string();
         assert!(err.contains(MANAGED_KEY) && err.contains("cannot rank"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn the_plan_and_status_do_not_claim_more_than_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = dir.path().join("ext").join("github.copilot-1.300.0");
+        std::fs::create_dir_all(&ext).unwrap();
+        std::fs::write(ext.join("package.json"), r#"{"version":"1.300.0"}"#).unwrap();
+        let integration = integration(dir.path());
+        assert!(integration.detect().is_some(), "fixture must make Copilot detectable");
+        let plan = integration
+            .plan_integration(&request(SettingsScope::User))
+            .await
+            .unwrap();
+        assert_eq!(plan.adapter_ceiling, GovernanceLevel::L0Discover);
+        let status = integration.integration_status(None, None).await.unwrap();
+        assert_eq!(
+            status.adapter_ceiling,
+            GovernanceLevel::L0Discover,
+            "the legacy adapter's L2Enforce must not leak into the lifecycle status"
+        );
+    }
+
+    async fn refusal_for(body: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), body).unwrap();
+        integration(dir.path())
+            .plan_integration(&request(SettingsScope::User))
+            .await
+            .expect_err(body)
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn null_string_and_non_object_values_are_refused() {
+        for body in [
+            r#"{"chat.tools.global.autoApprove": null}"#,
+            r#"{"chat.tools.global.autoApprove": "false"}"#,
+            r#"{"chat.tools.global.autoApprove": 0}"#,
+        ] {
+            let err = refusal_for(body).await;
+            assert!(
+                err.contains(MANAGED_KEY) && err.contains("cannot rank"),
+                "{body}: {err}"
+            );
+        }
+        for body in ["[]", "null", "\"x\"", "42"] {
+            let err = refusal_for(body).await;
+            assert!(err.contains("not a JSON object"), "{body}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_byte_order_mark_is_refused_untouched_and_whitespace_only_is_empty() {
+        let bom = "\u{feff}{\"editor.fontSize\": 14}";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, bom).unwrap();
+        let err = integration(dir.path())
+            .plan_integration(&request(SettingsScope::User))
+            .await
+            .expect_err("a BOM-prefixed file is not strict JSON to serde_json")
+            .to_string();
+        assert!(err.contains("not strict JSON"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), bom);
+
+        std::fs::write(&path, " \n\t ").unwrap();
+        let plan = integration(dir.path())
+            .plan_integration(&request(SettingsScope::User))
+            .await
+            .expect("a whitespace-only file holds nothing to protect");
+        let StepAction::WriteManagedSettings { managed_keys, .. } = &plan.steps[0].action else {
+            panic!("expected a settings step")
+        };
+        assert_eq!(managed_keys, &vec![MANAGED_KEY.to_string()]);
     }
 }
