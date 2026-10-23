@@ -700,7 +700,10 @@ mod copilot_lifecycle {
     use std::path::PathBuf;
 
     use aa_core::integration::{FilesystemExecutor, IntegrationEngine, ReceiptStore};
-    use aa_devtool_contract::{DevToolIntegration, DevToolKind, IntegrationRequest, ProtectionProfile, SettingsScope};
+    use aa_devtool_contract::{
+        DevToolIntegration, DevToolKind, IntegrationRequest, ProtectionLevel, ProtectionProfile, SettingsScope,
+        VerificationOutcome,
+    };
     use aa_devtool_copilot::{CopilotAdapter, CopilotIntegration};
 
     const KEY: &str = "chat.tools.global.autoApprove";
@@ -717,6 +720,10 @@ mod copilot_lifecycle {
             let settings = tmp.path().join("Code").join("User").join("settings.json");
             std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
             let state = tmp.path().join("state");
+            // status derivation needs Copilot to be detectable
+            let ext = state.join("ext").join("github.copilot-1.300.0");
+            std::fs::create_dir_all(&ext).unwrap();
+            std::fs::write(ext.join("package.json"), r#"{"version":"1.300.0"}"#).unwrap();
             Self {
                 _tmp: tmp,
                 settings,
@@ -923,6 +930,64 @@ mod copilot_lifecycle {
                 .is_none(),
             "a refused install must write no receipt"
         );
+    }
+
+    async fn verify_outcome(w: &World, receipt: &aa_core::integration::IntegrationReceipt) -> VerificationOutcome {
+        w.integration().verify_integration(receipt, None).await.unwrap().outcome
+    }
+
+    #[tokio::test]
+    async fn verify_is_unverifiable_normally_and_failed_after_drift() {
+        let w = World::new();
+        w.write(USER);
+        let receipt = install(&w, 1_000).await.unwrap().receipt;
+        assert!(
+            matches!(
+                verify_outcome(&w, &receipt).await,
+                VerificationOutcome::Unverifiable { .. }
+            ),
+            "read-back matches but no probe exists"
+        );
+        w.write(r#"{"editor.fontSize": 14, "chat.tools.global.autoApprove": true}"#);
+        assert!(matches!(
+            verify_outcome(&w, &receipt).await,
+            VerificationOutcome::Failed { .. }
+        ));
+    }
+
+    /// An install over an already-`false` value claims no key, so the managed
+    /// fingerprint covers nothing. Status and verify must still notice the user
+    /// loosening or deleting it, rather than report Installed forever.
+    #[tokio::test]
+    async fn an_already_strict_install_reports_truthfully_and_notices_later_loosening() {
+        for (later, label) in [
+            (r#"{"chat.tools.global.autoApprove": true}"#, "loosened"),
+            (r#"{"editor.fontSize": 14}"#, "deleted"),
+        ] {
+            let w = World::new();
+            w.write(r#"{"chat.tools.global.autoApprove": false}"#);
+            let receipt = install(&w, 1_000).await.unwrap().receipt;
+
+            let status = w.integration().integration_status(Some(&receipt), None).await.unwrap();
+            assert_eq!(status.state.achieved_level(), ProtectionLevel::Integrated, "{label}");
+            assert!(matches!(
+                verify_outcome(&w, &receipt).await,
+                VerificationOutcome::Unverifiable { .. }
+            ));
+
+            w.write(later);
+            let verdict = verify_outcome(&w, &receipt).await;
+            assert!(
+                matches!(&verdict, VerificationOutcome::Failed { reason } if reason.contains("no longer false")),
+                "{label}: {verdict:?}"
+            );
+            let status = w.integration().integration_status(Some(&receipt), None).await.unwrap();
+            assert!(
+                status.state.achieved_level() < ProtectionLevel::Integrated,
+                "{label}: still reports {:?}",
+                status.state
+            );
+        }
     }
 
     #[tokio::test]

@@ -62,6 +62,13 @@ use super::service::{RegisteredIntegration, StepContentSource, StepExecutorFacto
 /// crosses the DI-API (ADR 0030 matrix row 6); until that resolution exists the
 /// runtime passes the document it was started with.
 pub fn built_in_integrations(policy: PolicyDocument) -> Vec<RegisteredIntegration> {
+    assemble(policy, &copilot_integration)
+}
+
+/// [`built_in_integrations`] with Copilot's construction injectable, so a test
+/// can run the real per-tool dispatch below without Copilot reading the
+/// developer's actual VS Code settings path.
+fn assemble(policy: PolicyDocument, copilot: &dyn Fn() -> RegisteredIntegration) -> Vec<RegisteredIntegration> {
     aa_devtool::registry::SUPPORTED_TOOLS
         .iter()
         .filter_map(|token| {
@@ -73,7 +80,7 @@ pub fn built_in_integrations(policy: PolicyDocument) -> Vec<RegisteredIntegratio
                 return Some(codex_integration());
             }
             if kind == DevToolKind::GitHubCopilot {
-                return Some(copilot_integration());
+                return Some(copilot());
             }
             let adapter = aa_devtool::registry::adapter_for(token)?;
             let shim = LegacyAdapterShim::new(kind.clone(), BoxedAdapter(adapter), policy.clone());
@@ -291,24 +298,43 @@ mod tests {
 
     /// Copilot is native, not shimmed: the shim's plan carries
     /// `ApplyLegacyManagedSettings`, which the executor refuses, so a shimmed
-    /// Copilot could be planned but never applied (AAASM-6297).
+    /// Copilot could be planned but never applied (AAASM-6297). Goes through the
+    /// real per-tool dispatch and asserts a fact only the native plan has: a
+    /// `WriteManagedSettings` step over the one documented key.
     #[tokio::test]
-    async fn copilot_is_native_and_its_plan_is_applicable() {
+    async fn copilot_dispatches_to_the_native_integration_with_an_applicable_plan() {
         let dir = tempfile::tempdir().expect("tempdir");
         let settings = dir.path().join("settings.json");
-        let integration = Arc::new(aa_devtool_copilot::CopilotIntegration::with_adapter(
-            aa_devtool_copilot::CopilotAdapter::with_paths(dir.path().join("ext"), &settings),
-        ));
-        let registered = copilot_registration(integration);
-        let service = EngineLifecycle::new(vec![registered], ReceiptStore::at(dir.path().join("store")));
-        let tools = service.list_tools().await.expect("list");
-        let copilot = tools
+        let pinned = || {
+            copilot_registration(Arc::new(aa_devtool_copilot::CopilotIntegration::with_adapter(
+                aa_devtool_copilot::CopilotAdapter::with_paths(dir.path().join("ext"), &settings),
+            )))
+        };
+        let integrations = assemble(policy(), &pinned);
+        let copilot = integrations
             .iter()
-            .find(|t| t.tool == DevToolKind::GitHubCopilot)
+            .find(|i| i.tool == DevToolKind::GitHubCopilot)
             .expect("copilot is registered");
-        assert!(copilot
-            .capabilities
-            .is_effective(aa_core::integration::IntegrationCapability::ManagedSettings));
+        let request = aa_core::integration::IntegrationRequest::new(
+            DevToolKind::GitHubCopilot,
+            aa_core::integration::ProtectionProfile::Recommended,
+            aa_core::integration::SettingsScope::User,
+        );
+        let plan = copilot.integration.plan_integration(&request).await.expect("plan");
+        let keys: Vec<&String> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match &s.action {
+                aa_core::integration::StepAction::WriteManagedSettings { managed_keys, .. } => Some(managed_keys),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(keys, vec!["chat.tools.global.autoApprove"], "{:?}", plan.steps);
+        assert!(plan.steps.iter().all(|s| !matches!(
+            s.action,
+            aa_core::integration::StepAction::ApplyLegacyManagedSettings { .. }
+        )));
     }
 
     /// The shim declares what it cannot substantiate rather than claiming it.
