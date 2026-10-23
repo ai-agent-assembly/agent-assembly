@@ -782,9 +782,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       # AAASM-6005: rust-cache's own target-artifact cache didn't reliably
@@ -892,9 +892,9 @@ jobs:
           # ancestry present. No `ref:` — the default merge ref is the point.
           fetch-depth: 0
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -929,9 +929,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -1015,9 +1015,9 @@ jobs:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - name: Free up runner disk space
         # AAASM-2581: selecting mold changes the rust-cache key (it hashes
         # RUSTFLAGS), so the first run rebuilds the workspace cold. The Test
@@ -1177,9 +1177,9 @@ jobs:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: llvm-tools-preview
@@ -1307,7 +1307,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -1351,7 +1351,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2088,7 +2088,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2143,7 +2143,7 @@ jobs:
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime) for the
         # multi-layer integration test step.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
           # AAASM-5311: pin the actual nightly *release* date, not just the
@@ -2278,7 +2278,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime/aa-gateway).
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install curl
         # curl is the libssl-backed agent for tests 1, 3, 4 — its `SSL_write`
         # call is what fires the TLS uprobe. ubuntu-latest already ships curl;
@@ -2417,7 +2417,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run criterion benchmarks
@@ -2449,7 +2449,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2789,7 +2789,7 @@ jobs:
         #   Could not find `protoc` … try setting the `PROTOC` environment variable
         # which is what took this lane red on its first CI run while it passed
         # locally, where protoc happened to be installed.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
 
       - name: Pre-build aasm binary (AAASM-5904)
         # AAASM-5904's fixture harness (`proxy_trust_support::mod.rs`,
@@ -3060,7 +3060,7 @@ jobs:
           shared-key: workspace-debug
           save-if: "false"
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Pre-build aa-api-server (AAASM-5904)
@@ -3166,7 +3166,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Download dashboard dist artifact
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -3205,7 +3205,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -3255,7 +3255,7 @@ jobs:
       # ---- Rust coverage + clippy (only when the Rust side ran) --------------
       - name: Install protobuf compiler
         if: needs.coverage.result == 'success'
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: needs.coverage.result == 'success'
         with:
@@ -3662,7 +3662,7 @@ jobs:
         # `aa-cli` transitively compiles `aa-proto`, whose build.rs invokes
         # `protoc`, and the runner does not ship it. Needed since this lane
         # started building `aa-cli` for the `run_isolation_linux` binary below.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Build the native launcher for the auto-selection scenario
         # AAASM-5808's `an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist`
         # scenario calls `NativeBackend::discover()` (not `discover_with_launcher`),
@@ -4085,7 +4085,7 @@ jobs:
       # absent it, that family degrades to `skipped` rather than measuring
       # anything, and the CI-hosted `ubuntu-latest` image does not ship it.
       - name: Install protobuf compiler and ripgrep
-        run: sudo apt-get install -y protobuf-compiler ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler ripgrep
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
@@ -4360,7 +4360,7 @@ jobs:
         # builds `aa-cli`). build-essential: the "launch compiler tooling"
         # scenario compiles a small C fixture with `cc`, which the runner
         # image does not guarantee ships pre-installed.
-        run: sudo apt-get install -y protobuf-compiler build-essential
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler build-essential
       - name: Build the aasm and aa-gateway binaries
         # Both, for the same reason `isolation-benchmark-confined-arm`
         # builds both: a live (non-dry-run) `aasm run` refuses to launch
