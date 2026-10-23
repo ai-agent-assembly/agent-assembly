@@ -509,7 +509,9 @@ async fn handle_policy_query(
                 connection_id,
                 IpcResponse::PolicyResponse(CheckActionResponse {
                     decision: Decision::Deny as i32,
-                    reason: format!("capability lease required: {reason}"),
+                    // Generic on purpose: the gate's detail stays in the log above
+                    // and is not handed to a possibly non-cooperative SDK.
+                    reason: "capability lease required".to_string(),
                     ..Default::default()
                 }),
                 response_router,

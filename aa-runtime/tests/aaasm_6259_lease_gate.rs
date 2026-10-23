@@ -9,16 +9,16 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
 
-use aa_proto::assembly::common::v1::{ActionType, Decision};
+use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
 use aa_proto::assembly::policy::v1::policy_service_server::{PolicyService, PolicyServiceServer};
 use aa_proto::assembly::policy::v1::{
-    BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
+    BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage, OpControlSignal,
     OpControlSubscribeRequest,
 };
 use aa_runtime::approval::ApprovalQueue;
 use aa_runtime::gateway_client::GatewayClient;
 use aa_runtime::ipc::{new_response_router, new_verified_identity_store, IpcFrame, IpcResponse};
-use aa_runtime::op_control::OpControlStore;
+use aa_runtime::op_control::{agent_halt_op_id, OpControlStore};
 use aa_runtime::pipeline::enforcement::EnforcementConfig;
 use aa_runtime::pipeline::{
     run, run_with_lease_gate, LeaseGate, LeaseVerdict, PipelineConfig, PipelineEvent, PipelineMetrics,
@@ -147,14 +147,35 @@ enum Entry {
     WithGate(Option<Arc<dyn LeaseGate>>),
 }
 
-/// Send one policy query through the real loop; `None` if no response arrives
-/// (the pipeline task died).
-async fn try_ask(
-    entry: Entry,
+/// Knobs for one query. Defaults: the standard server agent, no SDK-asserted
+/// agent, a fresh op-control store.
+struct Query {
     action: i32,
     policy: PolicyRules,
     gateway: Option<Arc<Mutex<GatewayClient>>>,
-) -> Option<CheckActionResponse> {
+    server_agent: String,
+    sdk_agent: Option<String>,
+    op_control: OpControlStore,
+    wait: Duration,
+}
+
+impl Query {
+    fn new(action: i32) -> Self {
+        Self {
+            action,
+            policy: PolicyRules::default(),
+            gateway: None,
+            server_agent: SERVER_AGENT.to_string(),
+            sdk_agent: None,
+            op_control: OpControlStore::new(),
+            wait: Duration::from_secs(2),
+        }
+    }
+}
+
+/// Send one policy query through the real loop; `None` if no response arrives
+/// (the pipeline task died, or the query is blocked).
+async fn try_ask_with(entry: Entry, q: Query) -> Option<CheckActionResponse> {
     let (tx, rx) = mpsc::channel::<(u64, IpcFrame)>(8);
     let (broadcast_tx, _keep) = broadcast::channel::<PipelineEvent>(8);
     let router = new_response_router();
@@ -164,14 +185,17 @@ async fn try_ask(
     let args = (
         rx,
         broadcast_tx,
-        config(),
+        PipelineConfig {
+            agent_id: q.server_agent.clone(),
+            ..config()
+        },
         Arc::new(PipelineMetrics::default()),
         token.clone(),
-        Arc::new(policy),
+        Arc::new(q.policy),
         router,
         ApprovalQueue::new(),
-        gateway,
-        OpControlStore::new(),
+        q.gateway,
+        q.op_control,
         Arc::new(AtomicU64::new(0)),
         new_verified_identity_store(),
     );
@@ -189,18 +213,39 @@ async fn try_ask(
     tx.send((
         0,
         IpcFrame::PolicyQuery(CheckActionRequest {
-            action_type: action,
+            action_type: q.action,
+            agent_id: q.sdk_agent.map(|agent_id| ProtoAgentId {
+                agent_id,
+                ..Default::default()
+            }),
             ..Default::default()
         }),
     ))
     .await
     .unwrap();
-    let resp = tokio::time::timeout(Duration::from_secs(2), resp_rx.recv()).await;
+    let resp = tokio::time::timeout(q.wait, resp_rx.recv()).await;
     token.cancel();
     match resp {
         Ok(Some(IpcResponse::PolicyResponse(r))) => Some(r),
         _ => None,
     }
+}
+
+async fn try_ask(
+    entry: Entry,
+    action: i32,
+    policy: PolicyRules,
+    gateway: Option<Arc<Mutex<GatewayClient>>>,
+) -> Option<CheckActionResponse> {
+    try_ask_with(
+        entry,
+        Query {
+            policy,
+            gateway,
+            ..Query::new(action)
+        },
+    )
+    .await
 }
 
 async fn ask(
@@ -218,8 +263,13 @@ fn gate_entry(gate: &Arc<RecordingGate>) -> Entry {
     Entry::WithGate(Some(gate.clone() as Arc<dyn LeaseGate>))
 }
 
+/// `run` and `run_with_lease_gate(None)` share one code path, so equality here
+/// is a smoke check, not the guarantee. The real guarantee that an absent gate
+/// changes nothing is that every pre-existing pipeline test passes unchanged
+/// and that `handle_policy_query` reads the clock and calls the gate only
+/// inside `if let Some(gate)`.
 #[tokio::test]
-async fn gate_absent_unchanged() {
+async fn absent_gate_matches_pre_seam_entry_point() {
     let actions = [
         ActionType::LlmCall,
         ActionType::ToolCall,
@@ -229,12 +279,9 @@ async fn gate_absent_unchanged() {
     for action in actions {
         let plain = ask(Entry::PlainRun, action, blocking_policy("TOOL_CALL"), None).await;
         let no_gate = ask(Entry::WithGate(None), action, blocking_policy("TOOL_CALL"), None).await;
-        assert_eq!(
-            plain, no_gate,
-            "{action:?}: absent gate must equal the pre-seam entry point"
-        );
+        assert_eq!(plain, no_gate, "{action:?}");
     }
-    // Control: the comparison is not vacuous; the policy really denies TOOL_CALL.
+    // Control: the policy really denies TOOL_CALL and allows the rest.
     let blocked = ask(
         Entry::PlainRun,
         ActionType::ToolCall,
@@ -332,28 +379,165 @@ async fn gate_panic_denies() {
     );
 }
 
+/// `action_type` is SDK-asserted, so no class may skip the gate: a
+/// non-cooperative SDK could otherwise label a shell exec as `LLM_CALL`.
 #[tokio::test]
-async fn passthrough_classes_not_gated() {
-    for action in [ActionType::LlmCall, ActionType::ToolResult] {
-        let gate = RecordingGate::new(deny);
-        let resp = ask(gate_entry(&gate), action, PolicyRules::default(), None).await;
+async fn gate_consulted_for_every_action_type() {
+    let codes = [
+        ActionType::LlmCall as i32,
+        ActionType::ToolResult as i32,
+        ActionType::ToolCall as i32,
+        ActionType::NetworkCall as i32,
+        ActionType::ProcessExec as i32,
+        ActionType::ActionUnspecified as i32,
+        99,
+    ];
+    for code in codes {
+        let denying = RecordingGate::new(deny);
+        let resp = try_ask(gate_entry(&denying), code, PolicyRules::default(), None)
+            .await
+            .expect("response");
+        assert_eq!(
+            resp.decision,
+            Decision::Deny as i32,
+            "code {code} must reach a denying gate"
+        );
+        assert_eq!(denying.calls().len(), 1, "code {code}");
+
+        let permitting = RecordingGate::new(|| LeaseVerdict::Permit);
+        let resp = try_ask(gate_entry(&permitting), code, PolicyRules::default(), None)
+            .await
+            .expect("response");
         assert_eq!(
             resp.decision,
             Decision::Allow as i32,
-            "{action:?} must not be denied by the gate"
+            "code {code} must fall through on permit"
         );
-        assert!(gate.calls().is_empty(), "{action:?} must not consult the gate");
+        assert_eq!(permitting.calls().len(), 1, "code {code}");
     }
+}
 
-    // Controls: a capability action and unclassifiable codes ARE consulted.
-    for code in [ActionType::ToolCall as i32, ActionType::ActionUnspecified as i32, 99] {
-        let gate = RecordingGate::new(deny);
-        let resp = try_ask(gate_entry(&gate), code, PolicyRules::default(), None)
-            .await
-            .expect("response");
-        assert_eq!(resp.decision, Decision::Deny as i32, "code {code} must reach the gate");
-        assert_eq!(gate.calls().len(), 1, "code {code}");
-    }
+#[tokio::test]
+async fn empty_subject_denies_without_consulting_gate() {
+    let gate = RecordingGate::new(|| LeaseVerdict::Permit);
+    let resp = try_ask_with(
+        gate_entry(&gate),
+        Query {
+            server_agent: String::new(),
+            ..Query::new(ActionType::ToolCall as i32)
+        },
+    )
+    .await
+    .expect("response");
+    assert_eq!(resp.decision, Decision::Deny as i32);
+    assert!(gate.calls().is_empty(), "a gate must not be asked about no subject");
+}
+
+#[tokio::test]
+async fn sdk_asserted_agent_id_never_becomes_the_subject() {
+    let gate = RecordingGate::new(|| LeaseVerdict::Permit);
+    try_ask_with(
+        gate_entry(&gate),
+        Query {
+            sdk_agent: Some("attacker-chosen".to_string()),
+            ..Query::new(ActionType::ToolCall as i32)
+        },
+    )
+    .await
+    .expect("response");
+    let calls = gate.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].0, SERVER_AGENT);
+}
+
+/// The gate sits after the op-control halt: a terminated agent is denied by the
+/// kill switch and the gate is never asked; a paused one blocks before it.
+#[tokio::test]
+async fn op_control_halt_precedes_gate() {
+    let store = OpControlStore::new();
+    store.apply(&agent_halt_op_id(SERVER_AGENT), OpControlSignal::Terminate);
+    let gate = RecordingGate::new(|| LeaseVerdict::Permit);
+    let resp = try_ask_with(
+        gate_entry(&gate),
+        Query {
+            op_control: store,
+            ..Query::new(ActionType::ToolCall as i32)
+        },
+    )
+    .await
+    .expect("response");
+    assert_eq!(resp.decision, Decision::Deny as i32);
+    assert!(resp.reason.contains("OpTerminatedError"), "reason: {}", resp.reason);
+    assert!(gate.calls().is_empty(), "terminated op must not reach the gate");
+
+    let store = OpControlStore::new();
+    store.apply(&agent_halt_op_id(SERVER_AGENT), OpControlSignal::Pause);
+    let gate = RecordingGate::new(|| LeaseVerdict::Permit);
+    let resp = try_ask_with(
+        gate_entry(&gate),
+        Query {
+            op_control: store,
+            wait: Duration::from_millis(300),
+            ..Query::new(ActionType::ToolCall as i32)
+        },
+    )
+    .await;
+    assert!(resp.is_none(), "a paused op blocks");
+    assert!(gate.calls().is_empty(), "paused op must not reach the gate");
+}
+
+/// The SDK gets a generic message; the gate's detail stays in the runtime log.
+#[tokio::test]
+async fn deny_reason_is_not_relayed_to_sdk() {
+    const MARKER: &str = "SECRET-LEASE-DETAIL-9f3a";
+    let gate = RecordingGate::new(|| LeaseVerdict::Deny {
+        reason: MARKER.to_string(),
+    });
+    let resp = ask(gate_entry(&gate), ActionType::ToolCall, PolicyRules::default(), None).await;
+    assert_eq!(resp.decision, Decision::Deny as i32);
+    assert_eq!(resp.reason, "capability lease required");
+    assert!(!resp.reason.contains(MARKER));
+}
+
+fn denial_count(snapshotter: &metrics_util::debugging::Snapshotter) -> u64 {
+    use metrics_util::debugging::DebugValue;
+    snapshotter
+        .snapshot()
+        .into_vec()
+        .into_iter()
+        .filter(|(key, _, _, _)| key.key().name() == "aa_lease_gate_denials_total")
+        .map(|(_, _, _, value)| match value {
+            DebugValue::Counter(n) => n,
+            _ => 0,
+        })
+        .sum()
+}
+
+#[tokio::test]
+async fn denial_increments_counter() {
+    // The recorder is process-global and other tests in this binary may deny
+    // concurrently under plain `cargo test`, so assert an increase, not an
+    // exact delta.
+    let recorder = metrics_util::debugging::DebuggingRecorder::new();
+    let snapshotter = recorder.snapshotter();
+    // Only this test installs a recorder.
+    let installed = recorder.install().is_ok();
+    assert!(installed, "metrics recorder already installed in this test binary");
+
+    let before = denial_count(&snapshotter);
+    let deny_gate = RecordingGate::new(deny);
+    ask(
+        gate_entry(&deny_gate),
+        ActionType::ToolCall,
+        PolicyRules::default(),
+        None,
+    )
+    .await;
+    let after = denial_count(&snapshotter);
+    assert!(
+        after > before,
+        "deny must increment aa_lease_gate_denials_total ({before} -> {after})"
+    );
 }
 
 #[tokio::test]

@@ -13,8 +13,18 @@
 //!   policy; it never short-circuits a later deny.
 //! * Anything other than an explicit `Permit` is a deny, including an empty
 //!   subject and a gate that panics.
+//! * The gate is consulted for **every** action type. `action_type` is
+//!   asserted by the SDK, so exempting a class here would let a
+//!   non-cooperative SDK relabel a `NETWORK_CALL` or `PROCESS_EXEC` as
+//!   `LLM_CALL` and skip the gate. Which classes need no lease is the gate's
+//!   decision, not the seam's.
+//!
+//! # Known limitation
+//!
+//! `action_type` and the rest of the request are SDK-asserted, so this seam is
+//! part of the advisory layer: it binds cooperative, SDK-wrapped calls and
+//! does not stop a process that bypasses the SDK.
 
-use aa_proto::assembly::common::v1::ActionType;
 use aa_proto::assembly::policy::v1::CheckActionRequest;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::SystemTime;
@@ -27,7 +37,8 @@ pub enum LeaseVerdict {
     Permit,
     /// No valid covering lease.
     Deny {
-        /// Operator-facing reason, relayed to the SDK in the deny response.
+        /// Detail for the runtime's own log. It is deliberately not relayed to
+        /// the SDK, which receives only a generic message.
         reason: String,
     },
 }
@@ -39,12 +50,15 @@ pub enum LeaseVerdict {
 /// stalls every agent's policy checks, and there is no timeout here. The
 /// verdict is point-in-time; a lease that lapses while an approval is pending
 /// is not re-checked when the approval resolves. Panics are contained only
-/// under `panic = "unwind"` (the workspace default).
+/// under `panic = "unwind"` (the workspace default). A gate that holds a
+/// `std::sync::Mutex` across a panic poisons it and then denies every later
+/// call: fail-closed, but persistent.
 pub trait LeaseGate: Send + Sync {
     /// Decide whether `subject` may perform the action in `req` at `now`.
     ///
-    /// `now` is read once per query by the caller so a gate that evaluates
-    /// several leases compares them against one instant.
+    /// Called for every action type, so the gate owns classification. `now` is
+    /// read once per query by the caller so a gate that evaluates several
+    /// leases compares them against one instant.
     fn check(&self, subject: &str, req: &CheckActionRequest, now: SystemTime) -> LeaseVerdict;
 }
 
@@ -56,18 +70,6 @@ pub(crate) fn enforce(
     req: &CheckActionRequest,
     now: SystemTime,
 ) -> Result<(), String> {
-    // LLM calls and tool results are not capability grants: they name no
-    // lease domain, so consulting the gate would make every lease deny all
-    // model traffic and every tool response. The seam decides them (permit)
-    // and later stages still apply. Unspecified and unknown action codes are
-    // NOT exempt: an action that cannot be classified is exactly what a gate
-    // must decide, rather than the seam waving it through.
-    if matches!(
-        ActionType::try_from(req.action_type),
-        Ok(ActionType::LlmCall | ActionType::ToolResult)
-    ) {
-        return Ok(());
-    }
     if subject.is_empty() {
         return Err("no server-side agent identity to check a lease against".to_string());
     }
