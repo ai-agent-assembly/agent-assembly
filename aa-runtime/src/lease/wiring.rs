@@ -36,7 +36,8 @@ pub struct LeaseStatus {
 }
 
 impl LeaseStatus {
-    pub(crate) fn new(generation: u64) -> Self {
+    /// A status reporting `governed` at `generation`.
+    pub fn new(generation: u64) -> Self {
         Self {
             inner: Mutex::new(LeaseGovernanceReport {
                 generation,
@@ -45,14 +46,16 @@ impl LeaseStatus {
         }
     }
 
-    pub(crate) fn set_governed(&self, generation: u64) {
+    /// Record that the gate now decides against `generation`.
+    pub fn set_governed(&self, generation: u64) {
         self.set(LeaseGovernanceReport {
             generation,
             state: "governed",
         });
     }
 
-    pub(crate) fn set_denied_all(&self, generation: u64) {
+    /// Record that the gate is denying every request.
+    pub fn set_denied_all(&self, generation: u64) {
         self.set(LeaseGovernanceReport {
             generation,
             state: "denied_all",
