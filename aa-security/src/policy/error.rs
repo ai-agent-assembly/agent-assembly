@@ -33,6 +33,19 @@ pub enum PolicyParseError {
         /// Why it was rejected.
         reason: String,
     },
+    /// A `tools.<name>.capabilities` declaration was invalid (AAASM-6259).
+    ///
+    /// Same rules as `aa_policy`'s validator: a non-empty, duplicate-free list
+    /// of known words, `none` only on its own, no launch-boundary domains and
+    /// no declaration under the `"*"` tool key. Rejected rather than dropped
+    /// because a silently ignored declaration reads as "undeclared", which a
+    /// governed runtime then treats differently from what the operator wrote.
+    InvalidToolCapabilities {
+        /// The tool entry that carried the declaration.
+        tool: String,
+        /// Why it was rejected.
+        reason: String,
+    },
     /// A structural key was not part of the known policy schema.
     ///
     /// Raised when a security-relevant section or field is misspelled (e.g.
@@ -75,6 +88,9 @@ impl fmt::Display for PolicyParseError {
             }
             Self::InvalidPath { raw, reason } => {
                 write!(f, "invalid filesystem path {raw:?}: {reason}")
+            }
+            Self::InvalidToolCapabilities { tool, reason } => {
+                write!(f, "invalid capabilities for tool {tool:?}: {reason}")
             }
             Self::UnknownKey { path, key } => {
                 write!(f, "unknown policy key {key:?} under {path}")
