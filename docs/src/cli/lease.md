@@ -8,7 +8,7 @@ which lease ids have been revoked since.
 > startup (it refuses to start if the record is missing, corrupt, or bound to a
 > different agent or policy digest) and every ~100 ms afterwards, so `revoke` takes
 > effect there on the next reload. A runtime started without `AA_LEASE_POLICY`
-> ignores the record entirely. See ADR 0038 section 37 for exactly what is and is
+> ignores the record entirely. See Core ADR 0038 section 37 for exactly what is and is
 > not enforced; this is admission control for cooperative SDK tool calls, not
 > confinement.
 
