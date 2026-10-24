@@ -1396,3 +1396,41 @@ reading source, by unit tests, or by an unsupported configuration.
 - Any receipt-schema change (`LeaseBinding`), or cryptographic identity binding
   (AAASM-5533 still owns verification).
 - That the gate passes. It records the gate; it does not claim any of it.
+
+## Amendment (AAASM-6259): runtime gate seam in `handle_policy_query`
+
+This amendment adds a seam, not an enforcement feature.
+
+- `aa-runtime/src/pipeline/lease_gate.rs` defines `LeaseGate`, which answers
+  `Permit` or `Deny { reason }` for `(server-side agent id, CheckActionRequest, now)`.
+  `pipeline::run_with_lease_gate` takes an `Option<Arc<dyn LeaseGate>>`; `pipeline::run`
+  is unchanged and passes `None`. In `handle_policy_query` the gate runs after the
+  op-control halt and before the gateway forward, because a handled gateway response
+  returns early.
+- **An absent gate behaves exactly as before.** This is not a decision on the
+  compatibility switch of section 3; it is the absence of a gate.
+- **No production gate exists.** Nothing implements `LeaseGate` outside tests and nothing
+  supplies leases to the runtime, so no shipped binary enforces leases through this seam.
+  A later change adds the production implementation.
+- **Restrict-only.** `Permit` falls through to the gateway and local policy and cannot
+  grant over an op-control halt, a gateway deny or a local `blocked_actions` rule.
+- **Fail closed when a gate is installed.** A `Deny`, a gate panic and an empty subject
+  all deny before any gateway forward. The SDK receives a generic "capability lease
+  required" message; the gate's detail goes only to the runtime log.
+- **The gate is consulted for every action type**, including `LLM_CALL`, `TOOL_RESULT`
+  and unspecified or unknown codes. The seam exempts nothing: the gate owns
+  classification and decides which classes need no lease.
+- The subject is the runtime's server-side `agent_id`, never the SDK-asserted
+  `CheckActionRequest.agent_id`, and it is runtime-wide rather than per connection.
+  The clock is read once per query and passed to the gate.
+- The verdict is point-in-time and `check` runs inline in the single pipeline loop with
+  no timeout, so a real gate must answer from an in-memory snapshot. Panic containment
+  needs `panic = "unwind"`.
+- `ParentAuthority` is not serialized and no cross-process handoff is introduced
+  (sections 27 to 30 are unchanged).
+- **Known limitation.** `action_type` and the rest of the request are SDK-asserted, so
+  this seam belongs to the advisory layer. It binds cooperative, SDK-wrapped calls and
+  does not stop a process that bypasses the SDK or misreports what it is doing. This is
+  why the seam exempts no action class.
+- A gate that holds a `std::sync::Mutex` across a panic poisons it and then denies every
+  later call: fail-closed, but persistent.
