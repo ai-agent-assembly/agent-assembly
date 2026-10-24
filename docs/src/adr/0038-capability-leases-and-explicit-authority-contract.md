@@ -1511,3 +1511,59 @@ does not know the key and rejects the document as an unknown key, which is fail-
 a policy carrying declarations cannot be silently loaded by a binary that would ignore
 them.
 
+
+### 35. The governed decision (library only, not wired)
+
+`aa-runtime/src/lease/decide.rs` implements the decision section 32 describes as "decided
+here, implemented later", and `lease/gate.rs` wraps it as a `LeaseGate`. **Nothing builds
+the governance, installs the gate or passes it to `run_with_lease_gate` yet, so no shipped
+binary evaluates this table.** The runtime wiring, the `AA_LEASE_POLICY` switch and the
+revocation reload are later changes under the same ticket. Nothing here should be read as
+the runtime enforcing leases today.
+
+`decide(governance, revoked, request, now)` is pure. `LeaseGovernance` is built once from
+operator-trusted input: the server-side agent id, an `Enforced` policy load (a permissive,
+unconfigured or failed load is a construction error, and governed mode never falls back to
+ungoverned), the tool table from `tools.<name>.capabilities` joined with `allow`, and the
+leases lowered by the same `authored_lease_from` and `lower_leases` path `aasm run` uses
+(the conversion now lives in `aa-runtime` and `aa-cli` calls it). A policy that authors
+`max_count` or two leases for one domain cannot be governed and refuses to start.
+
+| request | verdict |
+|---|---|
+| `TOOL_CALL`, tool declared `[none]`, `allow: true` | Permit |
+| `TOOL_CALL`, declared domain classes, `allow: true` | Permit only if every class has a valid, un-revoked, `whole`-scope lease naming the governed subject (`admit_lease` with `RequirementScope::Whole`) |
+| `TOOL_CALL`, undeclared tool; `allow: false`; missing or empty tool name; no `ToolCallContext` | Deny |
+| `TOOL_CALL`, tool declaring `process_creation` or `syscall`; any unrecognised class | Deny, even with a lease for that class |
+| `LLM_CALL`, `TOOL_RESULT` | Permit, no lease |
+| `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
+
+A `Permit` only falls through to the gateway and local policy; the gate can only restrict.
+The typed action types deny because admitting one would need a typed filesystem or network
+claim, and the request carries only an SDK-asserted `action_type`; there is nothing
+trustworthy to check a lease against. `process_creation` and `syscall` deny because an
+admission check cannot bound a class that subsumes every other. A lease selected by named
+selectors never admits a tool (section 33) because the requirement is `Whole`, which a
+selector lease does not cover. Revocation is a set of lease ids supplied by the caller;
+the library does not read lease state.
+
+`agent_id`, `caller_agent_id`, `args_json`, `tool_source`, `target_url`, the credential
+token and the trace and span ids never influence a verdict. The decision reads only
+`action_type`, the tool name and operator-trusted state.
+
+### 36. Limits of the governed decision
+
+- **Admission, not confinement.** It decides whether a cooperative SDK-wrapped call may
+  proceed. A process that bypasses the SDK, or a tool that does more than its declaration
+  says, is not stopped.
+- **`action_type` is SDK-asserted.** `LLM_CALL` and `TOOL_RESULT` need no lease, so a
+  non-cooperative SDK can relabel a tool call as one of them and skip the lease check. The
+  gateway and local policy still apply to it. The seam cannot close this; it is stated here
+  rather than papered over.
+- **The subject is runtime-wide.** Every connection to one runtime shares the server-side
+  agent id, so a lease admits all of them, not one caller.
+- **Verdicts are point-in-time.** Expiry and revocation are read when the query is
+  decided; a lease that lapses or is revoked while an approval is pending is not
+  re-checked when the approval resolves.
+- **A poisoned snapshot lock denies every call** until the process restarts, and a refused
+  `install` does not heal it.
