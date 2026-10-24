@@ -10,6 +10,20 @@ Protocol versioning follows the policy in [docs/versioning.md](../versioning.md)
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- `schemas/policy/v1/policy-document.schema.json` — optional `tools.<name>.capabilities`
+  (array of `filesystem_read`, `filesystem_write`, `network_egress`, `name_resolution`,
+  `syscall`, `process_creation`, `ipc`, `credential`, `none`; `minItems: 1`,
+  `uniqueItems`, `none` only as the sole word, not allowed under the `"*"` tool key).
+  Additive: documents without the key validate as before. A binary from rc.7 or earlier
+  does not recognise the key and rejects the document, which fails closed. The schema
+  addition is not yet enforced at runtime.
+
+---
+
 ## [v0.0.1] — 2026-04-28
 
 Initial release of the Agent Assembly protocol specification.
