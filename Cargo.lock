@@ -604,6 +604,7 @@ dependencies = [
  "aa-devtool-copilot",
  "aa-ebpf",
  "aa-ebpf-common",
+ "aa-isolation",
  "aa-policy",
  "aa-proto",
  "aa-security",

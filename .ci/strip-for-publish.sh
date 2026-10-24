@@ -83,6 +83,7 @@ MARKED_FILES=(
     # publishes, so that surface could only ever answer "no tools detected".
     "${REPO_ROOT}/aa-runtime/Cargo.toml"
     "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/mod.rs"
     "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
@@ -152,6 +153,7 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
     # AAASM-5280: the built-in adapter bridge consumes the stripped aa-devtool dep.
     "${REPO_ROOT}/aa-runtime/src/devint/adapters.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/authored.rs"
 )
 
 # Strip region. Uses awk to drop lines from any

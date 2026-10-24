@@ -419,6 +419,7 @@ mod plan {
         SessionRef, TargetRef, XcodeListRequest,
     };
     use aa_policy::resolve as run_policy;
+    use aa_runtime::lease::authored::authored_lease_from;
 
     use super::{run_registration, RegistrationHandle, RunArgs};
 
@@ -1020,70 +1021,6 @@ mod plan {
         /// threaded through `resolve_boundary` exactly as `credential_contract`
         /// is, so a future source has one call site to populate.
         host_capability_contract: HostCapabilityContract,
-    }
-
-    /// Convert one authored [`aa_policy::CanonicalLeaseGrant`] into this
-    /// crate's own [`AuthoredLease`] (AAASM-6277).
-    ///
-    /// `aa-isolation` cannot depend on `aa-policy`'s type — see
-    /// `aa_isolation::lease_lowering`'s own module documentation, "Why the
-    /// input is not `aa_policy`'s own type" — so `aa-cli`, which already
-    /// depends on both, is where this conversion has to live. The domain
-    /// match is **exhaustive, with no wildcard arm**: a future
-    /// `LeaseDomain`/`CapabilityDomain` variant added to one side without a
-    /// corresponding arm here is a compile error, never a silently dropped
-    /// grant.
-    ///
-    /// `LeaseScope::Selectors` is converted through
-    /// [`aa_isolation::permit_only_selector`] — never passed through
-    /// verbatim. `aa_isolation::lowering::lower_policy`'s own requirement
-    /// selectors, `egress_gate`'s coverage check and `scope_order`'s
-    /// comparator all operate on the `permit-only:`-prefixed vocabulary;
-    /// `authority.leases`' own validator fixtures author bare selectors
-    /// (e.g. `api.example.com`, not `permit-only:api.example.com`). Without
-    /// this conversion, no authored selector lease would ever match anything
-    /// it is meant to cover. An author who writes the prefix themselves gets
-    /// double-prefixed (`permit-only:permit-only:x`), which can never match —
-    /// that is a safe refusal, not a silent admission, which is why this
-    /// applies the prefix unconditionally rather than detecting and skipping
-    /// an already-prefixed selector.
-    pub(super) fn authored_lease_from(grant: &aa_policy::CanonicalLeaseGrant) -> AuthoredLease {
-        use aa_policy::LeaseDomain;
-
-        let domain = match grant.domain {
-            LeaseDomain::FilesystemRead => CapabilityDomain::FilesystemRead,
-            LeaseDomain::FilesystemWrite => CapabilityDomain::FilesystemWrite,
-            LeaseDomain::NetworkEgress => CapabilityDomain::NetworkEgress,
-            LeaseDomain::NameResolution => CapabilityDomain::NameResolution,
-            LeaseDomain::Syscall => CapabilityDomain::Syscall,
-            LeaseDomain::ProcessCreation => CapabilityDomain::ProcessCreation,
-            LeaseDomain::Ipc => CapabilityDomain::Ipc,
-            LeaseDomain::Credential => CapabilityDomain::Credential,
-            LeaseDomain::Resource => CapabilityDomain::Resource,
-            LeaseDomain::WorkspaceTransaction => CapabilityDomain::WorkspaceTransaction,
-        };
-
-        let scope = match &grant.scope {
-            aa_policy::LeaseScope::Whole => RequirementScope::Whole,
-            aa_policy::LeaseScope::Selectors(selectors) => RequirementScope::Selectors(
-                selectors
-                    .iter()
-                    .map(|s| aa_isolation::permit_only_selector(s))
-                    .collect(),
-            ),
-        };
-
-        AuthoredLease {
-            domain,
-            scope,
-            max_count: grant.max_count,
-            ttl_seconds: grant.ttl_seconds,
-            delegable: grant.delegable,
-            issuer: grant.issuer.clone(),
-            policy_rule: grant.policy_rule.clone(),
-            approval_ref: grant.approval_ref.clone(),
-            reason: grant.reason.clone(),
-        }
     }
 
     /// The default lease TTL applied when an authored grant states no
