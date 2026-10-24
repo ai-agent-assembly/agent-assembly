@@ -933,6 +933,7 @@ impl PolicyValidator {
                     allow: rt.allow.unwrap_or(false),
                     limit_per_hour: rt.limit_per_hour,
                     requires_approval_if: rt.requires_approval_if,
+                    capabilities: None,
                 },
             );
         }

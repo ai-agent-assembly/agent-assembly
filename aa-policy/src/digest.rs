@@ -822,6 +822,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         assert_ne!(base_doc().content_digest(), edited.content_digest());
@@ -833,6 +834,7 @@ mod tests {
             allow,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         };
         let mut a = base_doc();
         a.tools.insert("alpha".into(), tp(true));

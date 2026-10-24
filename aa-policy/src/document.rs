@@ -145,6 +145,13 @@ pub struct ToolPolicy {
     pub limit_per_hour: Option<u32>,
     /// CEL expression that triggers human-in-the-loop approval.
     pub requires_approval_if: Option<String>,
+    /// Operator-declared authority this tool's calls need (AAASM-6259).
+    ///
+    /// `None` means *undeclared*, which is not the same as `Some([NoAuthority])`
+    /// (declared as needing nothing): a later governed-mode decision denies an
+    /// undeclared tool. This crate only carries the declaration; it grants
+    /// nothing and no lease is ever derived from it.
+    pub capabilities: Option<Vec<ToolCapability>>,
 }
 
 /// Whether a policy document requires brokered egress (AAASM-6278, ADR 0038
@@ -677,6 +684,7 @@ mod tests {
             allow: true,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         };
         assert!(tp.allow);
         assert!(tp.limit_per_hour.is_none());

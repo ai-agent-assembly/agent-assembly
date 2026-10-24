@@ -1443,6 +1443,7 @@ pub(crate) mod graph_tests {
                             allow: *allow,
                             limit_per_hour: None,
                             requires_approval_if: None,
+                            capabilities: None,
                         },
                     )
                 })

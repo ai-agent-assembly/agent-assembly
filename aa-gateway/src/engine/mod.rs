@@ -3724,6 +3724,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3747,6 +3748,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3767,6 +3769,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3792,6 +3795,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: Some(1),
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3823,6 +3827,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3844,6 +3849,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -3852,6 +3858,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3883,6 +3890,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: Some(1),
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -3891,6 +3899,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3932,6 +3941,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: Some(1),
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -3984,6 +3994,7 @@ mod tests {
                 // Always true for any real tool name — proves the wildcard guard
                 // is consulted regardless of the unlisted tool's name.
                 requires_approval_if: Some(r#"tool != "__never_matches__""#.to_string()),
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -3992,6 +4003,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -4021,6 +4033,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: Some(1),
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -4029,6 +4042,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(empty_doc());
@@ -4072,6 +4086,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: Some(r#"tool != "__never_matches__""#.to_string()),
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -4080,6 +4095,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(empty_doc());
@@ -4110,6 +4126,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: Some(1),
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -4136,6 +4153,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: Some(r#"tool == "search""#.to_string()),
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -4157,6 +4175,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: Some(r#"tool == "deploy""#.to_string()),
+                capabilities: None,
             },
         );
         let engine = make_engine(doc);
@@ -4183,6 +4202,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: Some("args.amount > 100".to_string()),
+                capabilities: None,
             },
         );
         let engine = make_engine(empty_doc());
@@ -4688,6 +4708,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         doc.data = Some(DataPolicy {

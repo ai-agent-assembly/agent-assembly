@@ -1036,6 +1036,7 @@ mod tests {
                             allow: *allow,
                             limit_per_hour: None,
                             requires_approval_if: None,
+                            capabilities: None,
                         },
                     )
                 })
@@ -1517,6 +1518,7 @@ mod tests {
                     allow: false,
                     limit_per_hour: None,
                     requires_approval_if: Some("size > 1".to_string()),
+                    capabilities: None,
                 },
             )]),
             capabilities: Some(caps),
