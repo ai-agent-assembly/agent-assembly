@@ -94,7 +94,16 @@ fn the_dry_run_prints_a_lease_plan_with_per_tool_verdicts_and_exits_zero() {
     assert!(out.contains("revocation: not evaluated"), "{out}");
     assert!(out.contains("enforcement: runtime-only"), "{out}");
 
-    assert!(out.contains("lease: filesystem_read scope=whole\n"), "{out}");
+    assert!(
+        out.contains("lease: filesystem_read scope=whole ttl=3600s (default)\n"),
+        "{out}"
+    );
+    assert!(out.contains("a governed runtime would give"), "{out}");
+    assert!(out.contains("only when started with AA_LEASE_POLICY"), "{out}");
+    assert!(
+        out.contains("summary: 2 of 4 tools declaring capabilities would be denied\n"),
+        "{out}"
+    );
     assert!(out.contains("tool calc [none]: PERMIT\n"), "{out}");
     assert!(out.contains("tool reader [filesystem_read]: PERMIT\n"), "{out}");
     assert!(out.contains("tool writer [filesystem_write]: DENY ("), "{out}");

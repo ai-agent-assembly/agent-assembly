@@ -1027,7 +1027,7 @@ mod plan {
     /// `ttl_seconds` (AAASM-6277). One hour: short enough that a stale grant
     /// does not quietly outlive the session it was authored for, long
     /// enough that an ordinary `aasm run` invocation does not expire mid-launch.
-    const DEFAULT_LEASE_TTL_SECONDS: u64 = 3_600;
+    pub(super) const DEFAULT_LEASE_TTL_SECONDS: u64 = 3_600;
 
     /// The issuer label recorded on a lease whose authored grant states none
     /// (AAASM-6277). Never a per-launch identity: this is the component that
@@ -6961,9 +6961,9 @@ mod lease_plan {
 
     use crate::sanitize::sanitize_terminal;
 
-    /// Same value as the runtime's governed-mode default, so a grant without
-    /// `ttl_seconds` is planned with the lifetime the runtime would give it.
-    pub(super) const PLAN_DEFAULT_TTL_SECONDS: u64 = 3_600;
+    /// The launch's own default lease lifetime, applied to a grant that states
+    /// no `ttl_seconds`. One definition, shared with `aasm run`'s real launch.
+    use super::plan::DEFAULT_LEASE_TTL_SECONDS;
 
     /// Action types whose verdict the plan reports, in the order printed. Every
     /// value the decision table names other than `TOOL_CALL`, which is reported
@@ -7022,7 +7022,7 @@ mod lease_plan {
             subject,
             &GovernedIssuance {
                 issued_at,
-                default_ttl_seconds: PLAN_DEFAULT_TTL_SECONDS,
+                default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
                 default_issuer: "aasm-run:plan".to_string(),
             },
             &|domain| Ok(format!("plan:{domain}")),
@@ -7068,8 +7068,10 @@ mod lease_plan {
     ) -> String {
         let mut out = String::from(
             "\n--- lease plan (PLAN: point-in-time, not authorization) ---\n\
-             status: PLAN ONLY. These are the verdicts the runtime lease gate would give a wrapped call \
-             if it started now against this policy. Nothing is recorded, issued or enforced by this preview.\n\
+             status: PLAN ONLY. These are the verdicts a governed runtime would give a wrapped call under \
+             this policy. A runtime is governed only when started with AA_LEASE_POLICY (and a record from \
+             `aasm lease init` in AA_LEASE_STATE); without it no lease gate runs and nothing below is in force \
+             (ADR 0038 sections 32 and 37). Nothing is recorded, issued or enforced by this preview.\n\
              revocation: not evaluated; revocation exists only in a running runtime's lease state \
              (`aasm lease revoke`), so a plan can never show one.\n\
              enforcement: runtime-only. A PERMIT here is not a grant and a DENY here is not a refusal; \
@@ -7090,7 +7092,7 @@ mod lease_plan {
 
         out.push_str(&format!(
             "issuance: leases from `authority.leases` only (never from tool declarations), issued at plan time, \
-             default ttl {PLAN_DEFAULT_TTL_SECONDS}s\n"
+             default ttl {DEFAULT_LEASE_TTL_SECONDS}s\n"
         ));
         let grants = resolution.lease_grants();
         if grants.is_empty() {
@@ -7101,22 +7103,39 @@ mod lease_plan {
                 aa_policy::LeaseScope::Whole => "whole".to_string(),
                 aa_policy::LeaseScope::Selectors(s) => format!("selectors({})", s.len()),
             };
-            out.push_str(&format!("lease: {} scope={scope}\n", grant.domain.as_str()));
+            let (ttl, source) = match grant.ttl_seconds {
+                Some(t) => (t, "authored"),
+                None => (DEFAULT_LEASE_TTL_SECONDS, "default"),
+            };
+            out.push_str(&format!(
+                "lease: {} scope={scope} ttl={ttl}s ({source})\n",
+                grant.domain.as_str()
+            ));
         }
 
         // `from_resolution` succeeded, so the resolution is enforced and carries
         // a capability map; the empty fallback is unreachable, not a default.
+        let mut denied = 0usize;
+        let mut total = 0usize;
         if let Some(tools) = resolution.tool_capabilities() {
             for (name, capabilities) in tools {
                 let words: Vec<String> = capabilities.iter().map(|c| c.as_str().to_string()).collect();
+                let verdict = tool_verdict(&governance, &revoked, name, now);
+                total += 1;
+                denied += usize::from(matches!(verdict, LeaseVerdict::Deny { .. }));
                 out.push_str(&format!(
                     "tool {} [{}]: {}\n",
                     sanitize_terminal(name),
                     words.join(", "),
-                    show(&tool_verdict(&governance, &revoked, name, now))
+                    show(&verdict)
                 ));
             }
         }
+        out.push_str(&format!(
+            "summary: {denied} of {total} tools declaring capabilities would be denied\n\
+             note: a tool declared without `capabilities` is not listed above; it is covered by the \
+             `<undeclared>` line below (a governed runtime denies it)\n"
+        ));
         out.push_str(&format!(
             "tool <undeclared>: {}\n",
             show(&tool_verdict(
@@ -12109,30 +12128,129 @@ mod tests {
             }
         }
 
+        /// Every declared tool's printed line must be the line the gate's own
+        /// verdict formats to, for every row's policy and clock — not for one
+        /// hand-picked policy. A renderer that substituted or dropped a verdict
+        /// for any row (expired, selector-scoped, ...) fails here.
         #[test]
-        fn the_rendered_plan_prints_exactly_the_gates_verdict_for_each_declared_tool() {
+        fn the_rendered_plan_prints_exactly_the_gates_verdict_for_each_declared_tool_in_every_row() {
+            for row in rows() {
+                let resolution = resolve(row.leases);
+                let gate = gate_for(&resolution);
+                let now = issued() + Duration::from_secs(row.seconds_after_issue);
+                let out = lease_plan::render(&resolution, SUBJECT, issued(), now);
+                for (name, caps) in resolution.tool_capabilities().expect("enforced") {
+                    let words: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
+                    let verdict = gate.check(SUBJECT, &lease_plan::tool_call(name), now);
+                    let line = format!("tool {name} [{}]: {}\n", words.join(", "), lease_plan::show(&verdict));
+                    assert!(
+                        out.contains(&line),
+                        "row `{}`: missing line {line:?} in:\n{out}",
+                        row.label
+                    );
+                }
+                let governance = lease_plan::governance_for_plan(&resolution, SUBJECT, issued()).unwrap();
+                let undeclared = gate.check(
+                    SUBJECT,
+                    &lease_plan::tool_call(&lease_plan::undeclared_probe(&governance)),
+                    now,
+                );
+                assert!(
+                    out.contains(&format!("tool <undeclared>: {}\n", lease_plan::show(&undeclared))),
+                    "row `{}`: {out}",
+                    row.label
+                );
+            }
+        }
+
+        #[test]
+        fn the_header_says_a_governed_runtime_would_decide_and_names_the_trigger() {
+            let out = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            assert!(out.contains("a governed runtime would give"), "{out}");
+            assert!(out.contains("only when started with AA_LEASE_POLICY"), "{out}");
+            assert!(out.contains("without it no lease gate runs"), "{out}");
+            assert!(
+                !out.contains("the runtime lease gate would give"),
+                "must not read as if every runtime enforces: {out}"
+            );
+            assert!(
+                out.contains("PLAN") && out.contains("revocation: not evaluated"),
+                "{out}"
+            );
+            assert!(out.contains("not authorization"), "{out}");
+        }
+
+        #[test]
+        fn each_lease_line_states_its_ttl_and_where_it_came_from() {
+            let authored = lease_plan::render(&resolve(READ_SHORT_TTL), SUBJECT, issued(), issued());
+            assert!(
+                authored.contains("lease: filesystem_read scope=whole ttl=60s (authored)\n"),
+                "{authored}"
+            );
+            let default = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            let expected = format!(
+                "lease: filesystem_read scope=whole ttl={}s (default)\n",
+                super::super::plan::DEFAULT_LEASE_TTL_SECONDS
+            );
+            assert!(default.contains(&expected), "{default}");
+        }
+
+        /// The plan's default lifetime is the launch's, and the launch's is the
+        /// value governed mode uses; if either moves, the plan would misreport.
+        #[test]
+        fn the_default_ttl_is_the_one_governed_mode_uses() {
+            assert_eq!(
+                super::super::plan::DEFAULT_LEASE_TTL_SECONDS,
+                aa_runtime::lease::governed::DEFAULT_LEASE_TTL_SECONDS
+            );
+        }
+
+        #[test]
+        fn the_summary_counts_denied_tools_and_the_note_covers_tools_without_capabilities() {
+            let out = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            // Declaring capabilities: calc, reader, writer, denied, spawner. Permitted: calc, reader.
+            assert!(
+                out.contains("summary: 3 of 5 tools declaring capabilities would be denied\n"),
+                "{out}"
+            );
+            assert!(!out.contains("tool undeclared_caps"), "{out}");
+            assert!(
+                out.contains("declared without `capabilities` is not listed above"),
+                "{out}"
+            );
+        }
+
+        /// Through the real preview entry point, not `render` directly: the
+        /// section is actually appended, and each line is the gate's verdict.
+        #[test]
+        fn the_dry_run_preview_carries_the_gates_verdicts() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let spec: String = format!("{TOOLS}{READ_WHOLE}")
+                .lines()
+                .map(|l| format!("  {l}\n"))
+                .collect();
+            let path = dir.path().join("p.yaml");
+            std::fs::write(
+                &path,
+                format!("apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: p\nspec:\n{spec}"),
+            )
+            .expect("write policy");
+            let mut args = super::planning_args(super::super::EXEC_TARGET);
+            args.tool_args = vec!["/bin/echo".into(), "hi".into()];
+            args.policy = Some(path);
+            args.dry_run = true;
+            let target = super::super::plan::RunTarget::command(&args.tool_args).expect("program");
+            let out = super::super::dry_run_preview(target, None, &args);
+
             let resolution = resolve(READ_WHOLE);
             let gate = gate_for(&resolution);
-            let out = lease_plan::render(&resolution, SUBJECT, issued(), issued());
             for (name, caps) in resolution.tool_capabilities().expect("enforced") {
                 let words: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
                 let verdict = gate.check(SUBJECT, &lease_plan::tool_call(name), issued());
                 let line = format!("tool {name} [{}]: {}\n", words.join(", "), lease_plan::show(&verdict));
-                assert!(out.contains(&line), "missing line {line:?} in:\n{out}");
+                assert!(out.contains(&line), "preview lacks {line:?}:\n{out}");
             }
-            let governance = lease_plan::governance_for_plan(&resolution, SUBJECT, issued()).unwrap();
-            let undeclared = gate.check(
-                SUBJECT,
-                &lease_plan::tool_call(&lease_plan::undeclared_probe(&governance)),
-                issued(),
-            );
-            assert!(
-                out.contains(&format!("tool <undeclared>: {}\n", lease_plan::show(&undeclared))),
-                "{out}"
-            );
-            assert!(out.contains("PLAN"), "{out}");
-            assert!(out.contains("revocation: not evaluated"), "{out}");
-            assert!(out.contains("not authorization"), "{out}");
+            assert!(out.contains("--- lease plan (PLAN"), "{out}");
         }
 
         /// The falsifier for the comparison itself: an evaluator with its own
