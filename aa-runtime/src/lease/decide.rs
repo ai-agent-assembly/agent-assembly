@@ -16,8 +16,14 @@
 //! | `TOOL_CALL`, missing or empty tool name, or no `ToolCallContext` | Deny |
 //! | `TOOL_CALL`, tool declaring `process_creation` or `syscall` | Deny |
 //! | `TOOL_CALL`, any class this module does not recognise | Deny |
-//! | `LLM_CALL`, `TOOL_RESULT` | Permit, no lease |
+//! | `LLM_CALL`, `TOOL_RESULT`, context absent or of the matching kind | Permit, no lease |
+//! | `LLM_CALL`, `TOOL_RESULT` carrying any other typed context (notably a `ToolCallContext`) | Deny |
 //! | `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
+//!
+//! Tool names match exactly: no case folding, trimming or wildcard expansion,
+//! and a `"*"` entry declares nothing (the validator refuses one). Leases do not
+//! refresh: a leased tool denies from `issued_at + ttl` until an operator starts
+//! a new run, which is fail-closed by design.
 //!
 //! A `Permit` is necessary, not sufficient: the seam falls through to the
 //! gateway and local policy afterwards, so this gate can only restrict.
@@ -43,9 +49,11 @@
 //!   SDK-wrapped call may proceed. It does not stop a process that bypasses
 //!   the SDK.
 //! * **`action_type` is SDK-asserted.** `LLM_CALL` and `TOOL_RESULT` need no
-//!   lease, so a non-cooperative SDK can relabel a call as one of them and be
-//!   permitted here (still subject to the gateway and local policy). The seam
-//!   cannot close this; it is stated, not fixed.
+//!   lease, so a non-cooperative SDK can relabel a call as one of them **and
+//!   omit the context** and be permitted here (still subject to the gateway and
+//!   local policy). A relabel that leaves a `ToolCallContext` behind is denied;
+//!   the omit-the-context relabel is the residual nothing in the request can
+//!   reveal.
 //! * **The subject is runtime-wide**, the server-side agent id, not a
 //!   per-connection identity.
 //! * **Verdicts are point-in-time.** A lease that lapses or is revoked while
@@ -148,6 +156,12 @@ pub enum GovernanceError {
     Lowering(LeaseLoweringError),
     /// Two leases for one capability domain.
     Authority(AuthorityBuildError),
+    /// Two held leases share one id, so a revocation could not tell them apart.
+    DuplicateLeaseId(String),
+    /// The state record names a different subject than the one governed.
+    StateSubjectMismatch,
+    /// The state record was issued for a different policy than the one loaded.
+    StateDigestMismatch,
     /// The caller's lease-id function refused a domain word.
     LeaseId {
         /// The domain word the id was requested for.
@@ -167,6 +181,9 @@ impl std::fmt::Display for GovernanceError {
             ),
             Self::Lowering(e) => write!(f, "policy authors a lease governed mode cannot issue: {e}"),
             Self::Authority(e) => write!(f, "policy authors an inconsistent lease set: {e}"),
+            Self::DuplicateLeaseId(id) => write!(f, "two leases share the id `{id}`"),
+            Self::StateSubjectMismatch => write!(f, "the lease state record belongs to a different agent id"),
+            Self::StateDigestMismatch => write!(f, "the lease state record was issued for a different policy"),
             Self::LeaseId { domain, detail } => write!(f, "no lease id for domain `{domain}`: {detail}"),
         }
     }
@@ -278,6 +295,50 @@ impl LeaseGovernance {
         Self::from_parts(subject, tools, leased, content_digest.clone())
     }
 
+    /// Build governance from a policy and the run record `aasm lease` manages.
+    ///
+    /// Prefer this over [`from_resolution`](Self::from_resolution) in the
+    /// wiring: the issue time, the lease ids and the revoked set all come from
+    /// `state`, so they cannot disagree, and a record written for another
+    /// subject or another policy is refused instead of silently governing with
+    /// ids nobody revoked. `issued_at` is `state.issued_at()` seconds after the
+    /// Unix epoch.
+    ///
+    /// # Errors
+    ///
+    /// [`GovernanceError::StateSubjectMismatch`] or
+    /// [`GovernanceError::StateDigestMismatch`] when the record is for another
+    /// subject or for a policy other than `resolution`, plus every error
+    /// [`from_resolution`](Self::from_resolution) returns.
+    #[cfg(unix)]
+    pub fn from_state(
+        resolution: &PolicyResolution,
+        subject: &str,
+        default_ttl_seconds: u64,
+        default_issuer: &str,
+        state: &crate::lease::state::LeaseState,
+    ) -> Result<Self, GovernanceError> {
+        if state.subject() != subject {
+            return Err(GovernanceError::StateSubjectMismatch);
+        }
+        let digest = resolution
+            .content_digest()
+            .map(|d| d.strip_prefix("sha256:").unwrap_or(d));
+        if digest != Some(state.policy_digest()) {
+            return Err(GovernanceError::StateDigestMismatch);
+        }
+        Self::from_resolution(
+            resolution,
+            subject,
+            &GovernedIssuance {
+                issued_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(state.issued_at()),
+                default_ttl_seconds,
+                default_issuer: default_issuer.to_string(),
+            },
+            &|d| state.lease_id(d).map_err(|e| e.to_string()),
+        )
+    }
+
     /// Build governance from already-lowered parts.
     ///
     /// Public so a test or a later wiring step can supply leases directly. A
@@ -287,7 +348,8 @@ impl LeaseGovernance {
     /// # Errors
     ///
     /// [`GovernanceError::EmptySubject`], or [`GovernanceError::Authority`]
-    /// for two leases naming one domain.
+    /// for two leases naming one domain, [`GovernanceError::DuplicateLeaseId`]
+    /// for two leases sharing an id.
     pub fn from_parts(
         subject: &str,
         tools: BTreeMap<String, ToolRequirement>,
@@ -296,6 +358,10 @@ impl LeaseGovernance {
     ) -> Result<Self, GovernanceError> {
         if subject.is_empty() {
             return Err(GovernanceError::EmptySubject);
+        }
+        let mut seen = BTreeSet::new();
+        if let Some((_, dup)) = leased.iter().find(|(_, id)| !seen.insert(id.as_str())) {
+            return Err(GovernanceError::DuplicateLeaseId(dup.clone()));
         }
         let leases: Vec<CapabilityLease> = leased.iter().map(|(l, _)| l.clone()).collect();
         let authority = EffectiveAuthority::from_leases(&leases).map_err(GovernanceError::Authority)?;
@@ -353,13 +419,28 @@ pub fn decide(
     now: SystemTime,
 ) -> LeaseVerdict {
     match ActionType::try_from(req.action_type) {
-        Ok(ActionType::LlmCall | ActionType::ToolResult) => LeaseVerdict::Permit,
+        Ok(ActionType::LlmCall) => lease_free(req, |a| matches!(a, Action::LlmCall(_)), "LLM_CALL"),
+        Ok(ActionType::ToolResult) => lease_free(req, |a| matches!(a, Action::ToolResult(_)), "TOOL_RESULT"),
         Ok(ActionType::ToolCall) => decide_tool(governance, revoked, req, now),
         Ok(other) => deny(format!("action type {other:?} is not admitted in governed mode")),
         Err(_) => deny(format!(
             "unknown action type {} is not admitted in governed mode",
             req.action_type
         )),
+    }
+}
+
+/// Permit a lease-free action type, unless its context shows it is something
+/// else. A request labelled `LLM_CALL` that carries a `ToolCallContext` (or any
+/// other typed context) is a relabelled call, and the context is what the
+/// SDK-asserted label was hiding; only an absent or matching context permits.
+/// What remains is the omit-the-context relabel, which nothing in the request
+/// can reveal.
+fn lease_free(req: &CheckActionRequest, matches_label: impl Fn(&Action) -> bool, label: &str) -> LeaseVerdict {
+    match req.context.as_ref().and_then(|c| c.action.as_ref()) {
+        None => LeaseVerdict::Permit,
+        Some(action) if matches_label(action) => LeaseVerdict::Permit,
+        Some(_) => deny(format!("{label} carries a context for a different kind of action")),
     }
 }
 
@@ -400,11 +481,24 @@ fn decide_tool(
     }
 
     for class in classes {
-        let ToolCapability::Domain(domain) = class else {
-            continue;
-        };
-        if let Err(reason) = admit_class(governance, revoked, capability_domain_from(*domain), now) {
-            return deny(format!("tool {shown:?}: {reason}"));
+        match class {
+            ToolCapability::Domain(domain) => {
+                if let Err(reason) = admit_class(governance, revoked, capability_domain_from(*domain), now) {
+                    return deny(format!("tool {shown:?}: {reason}"));
+                }
+            }
+            // Unreachable here (`none` returned above), but an arm that
+            // permits would turn a future change to that early return into a
+            // silent admit.
+            ToolCapability::NoAuthority => return deny(format!("tool {shown:?} mixes `none` with other capabilities")),
+            // `ToolCapability` is not `#[non_exhaustive]` today; if a class is
+            // added, nothing has decided how to admit it.
+            #[allow(unreachable_patterns)]
+            _ => {
+                return deny(format!(
+                    "tool {shown:?} declares a capability class this gate does not recognise"
+                ))
+            }
         }
     }
     LeaseVerdict::Permit
@@ -583,6 +677,50 @@ mod tests {
         for t in [ActionType::LlmCall, ActionType::ToolResult] {
             assert!(permitted(&decide(&g, &none(), &action(t as i32), mid())), "{t:?}");
         }
+    }
+
+    #[test]
+    fn a_lease_free_label_over_a_tool_call_context_is_denied() {
+        let g = governance(&["filesystem_read"]);
+        for t in [ActionType::LlmCall, ActionType::ToolResult] {
+            let mut relabelled = tool_call("writer");
+            relabelled.action_type = t as i32;
+            assert_deny(
+                decide(&g, &none(), &relabelled, mid()),
+                &format!("{t:?} with ToolCall context"),
+            );
+            // Even a tool that needs no lease: the label is what is false.
+            let mut calc = tool_call("calc");
+            calc.action_type = t as i32;
+            assert_deny(decide(&g, &none(), &calc, mid()), &format!("{t:?} calc"));
+        }
+        // Control: matching or absent context still permits.
+        let llm = CheckActionRequest {
+            action_type: ActionType::LlmCall as i32,
+            context: Some(ActionContext {
+                action: Some(Action::LlmCall(LlmCallContext::default())),
+            }),
+            ..Default::default()
+        };
+        assert!(permitted(&decide(&g, &none(), &llm, mid())));
+        assert!(permitted(&decide(
+            &g,
+            &none(),
+            &action(ActionType::ToolResult as i32),
+            mid()
+        )));
+        // A different typed context is also a relabel.
+        let file_under_llm = CheckActionRequest {
+            action_type: ActionType::LlmCall as i32,
+            context: Some(ActionContext {
+                action: Some(Action::FileOp(Default::default())),
+            }),
+            ..Default::default()
+        };
+        assert_deny(
+            decide(&g, &none(), &file_under_llm, mid()),
+            "file context under LLM_CALL",
+        );
     }
 
     #[test]
@@ -997,5 +1135,85 @@ mod tests {
             "revoked in the state record",
         );
         assert!(permitted(&decide(&g, &state, &tool_call("writer"), mid())));
+    }
+    #[test]
+    fn duplicate_lease_ids_are_refused() {
+        let lowered = lower_leases(
+            &resolve(&policy(&["filesystem_read", "filesystem_write"]))
+                .lease_grants()
+                .iter()
+                .map(authored_lease_from)
+                .collect::<Vec<_>>(),
+            &LeaseIssuance {
+                subject: IdentityRef::root(SUBJECT),
+                default_issuer: IdentityRef::root("t"),
+                issued_at: issued(),
+                default_ttl_seconds: TTL,
+                id_prefix: "p".to_string(),
+            },
+        )
+        .unwrap();
+        let same: Vec<(CapabilityLease, String)> = lowered.into_iter().map(|l| (l, "same".to_string())).collect();
+        assert_eq!(
+            LeaseGovernance::from_parts(SUBJECT, BTreeMap::new(), same, "d".into()).unwrap_err(),
+            GovernanceError::DuplicateLeaseId("same".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    mod from_state {
+        use super::*;
+        use crate::lease::state::LeaseState;
+
+        fn hex(resolution: &PolicyResolution) -> String {
+            resolution
+                .content_digest()
+                .and_then(|d| d.strip_prefix("sha256:"))
+                .unwrap()
+                .to_string()
+        }
+
+        #[test]
+        fn issue_time_comes_from_the_state_record_not_the_caller() {
+            let resolution = resolve(&policy(&["filesystem_read"]));
+            let state_issued = 5_000_000;
+            let state = LeaseState::new_run(SUBJECT, &hex(&resolution), state_issued).unwrap();
+            let g = LeaseGovernance::from_state(&resolution, SUBJECT, TTL, "t", &state).unwrap();
+            let start = SystemTime::UNIX_EPOCH + Duration::from_secs(state_issued);
+            let req = tool_call("reader");
+
+            assert!(permitted(&decide(&g, &state, &req, start)));
+            assert!(permitted(&decide(
+                &g,
+                &state,
+                &req,
+                start + Duration::from_secs(TTL - 1)
+            )));
+            assert_deny(
+                decide(&g, &state, &req, start + Duration::from_secs(TTL)),
+                "TTL counts from the record's issued_at",
+            );
+            // The test helper's unrelated clock (1_000_000) is before the
+            // record's issue time, so the lease is not yet valid there.
+            assert_deny(
+                decide(&g, &state, &req, mid()),
+                "not valid before the record's issued_at",
+            );
+        }
+
+        #[test]
+        fn a_record_for_another_subject_or_policy_is_refused() {
+            let resolution = resolve(&policy(&["filesystem_read"]));
+            let other_subject = LeaseState::new_run("someone-else", &hex(&resolution), 1).unwrap();
+            assert_eq!(
+                LeaseGovernance::from_state(&resolution, SUBJECT, TTL, "t", &other_subject).unwrap_err(),
+                GovernanceError::StateSubjectMismatch
+            );
+            let other_policy = LeaseState::new_run(SUBJECT, &"ab".repeat(32), 1).unwrap();
+            assert_eq!(
+                LeaseGovernance::from_state(&resolution, SUBJECT, TTL, "t", &other_policy).unwrap_err(),
+                GovernanceError::StateDigestMismatch
+            );
+        }
     }
 }
