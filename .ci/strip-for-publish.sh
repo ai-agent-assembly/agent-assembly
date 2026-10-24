@@ -84,6 +84,8 @@ MARKED_FILES=(
     "${REPO_ROOT}/aa-runtime/Cargo.toml"
     "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/mod.rs"
+    # AAASM-6259: the one call into the stripped gate; the refusal around it stays.
+    "${REPO_ROOT}/aa-runtime/src/lease/wiring.rs"
     "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
