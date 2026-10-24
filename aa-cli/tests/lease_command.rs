@@ -224,3 +224,95 @@ fn init_with_did_key_subject_prints_an_encoded_prefix() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("did%3Akey%3Az6MkExample:0123456789ab:"));
     assert_eq!(status_json(d.path(), &p)["subject"], "did:key:z6MkExample");
 }
+
+/// A one-shot-per-request HTTP server answering `GET /health` with `body`.
+fn fake_health(body: &'static str) -> String {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    format!("http://{addr}")
+}
+
+fn revoke_wait(home: &Path, state: &Path, url: &str, timeout: &str) -> Output {
+    aasm(home)
+        .env("NO_PROXY", "127.0.0.1")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("HTTP_PROXY")
+        .env_remove("ALL_PROXY")
+        .args([
+            "lease",
+            "revoke",
+            "--lease-id",
+            "x",
+            "--wait-health",
+            url,
+            "--wait-timeout-secs",
+            timeout,
+            "--state",
+        ])
+        .arg(state)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn revoke_wait_health_returns_once_the_runtime_reports_the_generation() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(r#"{"lease_governance":{"generation":2,"state":"governed"}}"#);
+    let out = revoke_wait(d.path(), &p, &url, "5");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("runtime applied generation 2"));
+}
+
+#[test]
+fn revoke_wait_health_fails_when_the_runtime_never_catches_up() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(r#"{"lease_governance":{"generation":1,"state":"governed"}}"#);
+    let out = revoke_wait(d.path(), &p, &url, "1");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("did not acknowledge"));
+    // The revocation itself is recorded regardless.
+    assert_eq!(status_json(d.path(), &p)["generation"], 2);
+}
+
+#[test]
+fn revoke_wait_health_fails_against_an_ungoverned_runtime() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(r#"{"status":"healthy"}"#);
+    let out = revoke_wait(d.path(), &p, &url, "2");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not in governed lease mode"));
+}
+
+#[test]
+fn init_computes_the_digest_from_a_policy_file() {
+    let (d, p) = state_dir();
+    let pol = d.path().join("policy.yaml");
+    std::fs::write(&pol, "tools:\n  calc: { allow: true, capabilities: [none] }\n").unwrap();
+    let out = aasm(d.path())
+        .args(["lease", "init", "--subject", "agent-1", "--policy"])
+        .arg(&pol)
+        .arg("--state")
+        .arg(&p)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let digest = status_json(d.path(), &p)["policy_digest"].as_str().unwrap().to_string();
+    assert_eq!(digest.len(), 64);
+    assert!(!digest.starts_with("sha256:"));
+}
