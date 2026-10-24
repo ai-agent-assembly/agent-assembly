@@ -32,7 +32,7 @@ pub enum LeaseSubcommand {
 #[derive(Debug, clap::Args)]
 pub struct InitArgs {
     /// Path of the lease state record to create.
-    #[arg(long, env = "AA_LEASE_STATE")]
+    #[arg(long, env = "AA_LEASE_STATE", hide_env_values = true)]
     pub state: PathBuf,
 
     /// Agent id the run's leases are issued to.
@@ -53,7 +53,7 @@ pub struct InitArgs {
 #[derive(Debug, clap::Args)]
 pub struct RevokeArgs {
     /// Path of an existing lease state record.
-    #[arg(long, env = "AA_LEASE_STATE")]
+    #[arg(long, env = "AA_LEASE_STATE", hide_env_values = true)]
     pub state: PathBuf,
 
     /// Lease id(s) to revoke; repeatable.
@@ -65,7 +65,7 @@ pub struct RevokeArgs {
 #[derive(Debug, clap::Args)]
 pub struct StatusArgs {
     /// Path of the lease state record.
-    #[arg(long, env = "AA_LEASE_STATE")]
+    #[arg(long, env = "AA_LEASE_STATE", hide_env_values = true)]
     pub state: PathBuf,
 }
 
