@@ -71,7 +71,7 @@ pub struct RevokeArgs {
     /// generation (or `denied_all`), and fails if that does not happen within
     /// `--wait-timeout-secs`. Without it the revocation is recorded but is
     /// applied by the runtime only on its next reload (about 100 ms).
-    #[arg(long, env = "AA_LEASE_HEALTH_URL")]
+    #[arg(long, env = "AA_LEASE_HEALTH_URL", hide_env_values = true)]
     pub wait_health: Option<String>,
 
     /// How long `--wait-health` waits for the runtime to acknowledge.

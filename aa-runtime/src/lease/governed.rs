@@ -18,7 +18,7 @@
 //! nothing until restart; the digest binding makes a restart with an edited
 //! policy refuse unless the operator re-initialises the record.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -141,8 +141,8 @@ pub(crate) fn reload_step(current: &LeaseState, loaded: Result<LeaseState, Lease
     }
 }
 
-async fn read_state(path: &PathBuf) -> Result<LeaseState, LeaseStateError> {
-    let p = path.clone();
+async fn read_state(path: &Path) -> Result<LeaseState, LeaseStateError> {
+    let p = path.to_path_buf();
     // Blocking filesystem reads must not run on an async worker.
     match tokio::task::spawn_blocking(move || state::load(&p)).await {
         Ok(r) => r,
