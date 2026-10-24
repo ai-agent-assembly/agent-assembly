@@ -1283,7 +1283,7 @@ mod tests {
         let p = d.path().join("lease.json");
         let first = init_run(&p, "agent-1", D, 5_000, false).unwrap();
         let revoked_id = first.lease_id("net").unwrap();
-        revoke_ids(&p, &[revoked_id.clone()]).unwrap();
+        revoke_ids(&p, std::slice::from_ref(&revoked_id)).unwrap();
 
         // Same second.
         let same = init_run(&p, "agent-1", D, 5_000, true).unwrap();
