@@ -175,7 +175,11 @@ impl AnomalyDetector {
             anomaly_type: AnomalyType::DataExfiltrationAttempt,
             response: AnomalyResponse::default_for(AnomalyType::DataExfiltrationAttempt),
             agent_id,
-            description: format!("PII detected in payload destined for external host: {url}"),
+            // Host only: the URL may carry userinfo or query-string credentials.
+            description: match aa_core::policy::egress_host_from_url(url) {
+                Some(host) => format!("PII detected in payload destined for external host: {host}"),
+                None => "PII detected in payload destined for an ambiguous destination URL".to_string(),
+            },
             detected_at: chrono::Utc::now(),
         })
     }
@@ -602,6 +606,26 @@ mod tests {
         let event = result.unwrap();
         assert_eq!(event.anomaly_type, AnomalyType::DataExfiltrationAttempt);
         assert_eq!(event.response, AnomalyResponse::Block);
+    }
+
+    #[test]
+    fn data_exfiltration_event_names_the_host_but_never_url_credentials() {
+        let detector = default_detector();
+
+        // Positive control: the operator still sees where the data was headed.
+        let clean = detector
+            .check_data_exfiltration(agent(8), true, "https://external.com/api?id=1")
+            .unwrap();
+        assert!(clean.description.contains("external.com"));
+
+        for url in [
+            "https://user:hunter2pw@external.com/api",
+            "https://external.com/api?token=hunter2pw",
+            "https://external.com\\@hunter2pw.evil.com/",
+        ] {
+            let event = detector.check_data_exfiltration(agent(8), true, url).unwrap();
+            assert!(!event.description.contains("hunter2pw"), "{url}: {}", event.description);
+        }
     }
 
     #[test]
