@@ -314,6 +314,17 @@ async fn mitm_send(reader: BufReader<TcpStream>, host: &str, request: &str) -> S
 }
 
 async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8]) -> String {
+    mitm_send_bytes_within(reader, host, request, std::time::Duration::from_secs(3)).await
+}
+
+/// [`mitm_send_bytes`] with the read window as a parameter, for the tests whose
+/// answer is held back by the proxy's 10 s gateway bound.
+async fn mitm_send_bytes_within(
+    reader: BufReader<TcpStream>,
+    host: &str,
+    request: &[u8],
+    read_window: std::time::Duration,
+) -> String {
     let client_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(AcceptAnyCert))
@@ -324,7 +335,7 @@ async fn mitm_send_bytes(reader: BufReader<TcpStream>, host: &str, request: &[u8
 
     tls.write_all(request).await.unwrap();
     let mut out = Vec::new();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), tls.read_to_end(&mut out)).await;
+    let _ = tokio::time::timeout(read_window, tls.read_to_end(&mut out)).await;
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -1012,6 +1023,11 @@ mod gateway_stub {
         CallErrorResultRedact,
         /// `tools/call` check FAILS; every result is Allow.
         CallErrorResultAllow,
+        /// `tools/call` check never answers (a gateway that stopped responding);
+        /// every result is Allow.
+        StallCall,
+        /// `tools/call` check is Allow; a `ToolResult` check never answers.
+        StallResult,
     }
 
     struct JudgeResults(ResultVerdict);
@@ -1032,6 +1048,12 @@ mod gateway_stub {
                     ) =>
                 {
                     return Err(Status::resource_exhausted("stub request failure"));
+                }
+                Some(Action::ToolCall(_)) if matches!(self.0, ResultVerdict::StallCall) => {
+                    std::future::pending::<Decision>().await
+                }
+                Some(Action::ToolResult(_)) if matches!(self.0, ResultVerdict::StallResult) => {
+                    std::future::pending::<Decision>().await
                 }
                 Some(Action::ToolResult(r)) => {
                     if matches!(self.0, ResultVerdict::Error) {
@@ -1684,6 +1706,141 @@ async fn a_decompression_bomb_response_is_withheld_not_forwarded() {
     assert!(
         !view.contains("200 OK"),
         "an over-cap encoded response must be withheld, got a forward"
+    );
+}
+
+/// AAASM-6364: two `tools/call`s through one proxy, sent together, so the
+/// second one queues for the shared gateway client behind the first. Each
+/// answer is held up to the proxy's 10 s evaluation bound.
+async fn two_concurrent_mcp_calls(proxy: SocketAddr) -> [String; 2] {
+    let tunnels = [
+        open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed"),
+        open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed"),
+    ];
+    let request = post(MITM_HOST, "/mcp", &mcp_body_with("harmless"));
+    let window = std::time::Duration::from_secs(45);
+    let [first, second] = tunnels;
+    let (a, b) = tokio::join!(
+        mitm_send_bytes_within(first, MITM_HOST, request.as_bytes(), window),
+        mitm_send_bytes_within(second, MITM_HOST, request.as_bytes(), window),
+    );
+    [a, b]
+}
+
+/// AAASM-6364: a gateway that stops answering is a failed evaluation, so under
+/// `mcp_fail_open` the calls are forwarded after the bound, both the one whose
+/// RPC timed out and the one that queued behind it (the opt-in has no
+/// contention exception). Their responses are still evaluated.
+#[tokio::test]
+async fn a_stalled_gateway_forwards_concurrent_mcp_calls_under_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallCall).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains("200 OK") && view.contains("harmless"), "got: {view:?}");
+    }
+}
+
+/// AAASM-6364: the default. The same stalled gateway with the flag off denies
+/// both calls with a JSON-RPC error and nothing reaches the upstream.
+#[tokio::test]
+async fn a_stalled_gateway_denies_concurrent_mcp_calls_by_default() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallCall).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: false,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains(r#""code":-32000"#), "got: {view:?}");
+        assert!(
+            view.contains("MCP enforcement unavailable:") && view.contains("(fail-closed)"),
+            "got: {view:?}"
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    assert!(seen.is_empty(), "a denied call reached upstream: {} bytes", seen.len());
+}
+
+/// AAASM-6364 control for the two tests above: with a gateway that answers, the
+/// same concurrent calls are allowed through, so those outcomes come from the
+/// stall and not from the fixture.
+#[tokio::test]
+async fn a_responsive_gateway_allows_concurrent_mcp_calls() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::Allow).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: false,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    for view in two_concurrent_mcp_calls(proxy).await {
+        assert!(view.contains("200 OK") && view.contains("harmless"), "got: {view:?}");
+    }
+}
+
+/// AAASM-6364: the response direction stays always fail-closed. The request is
+/// allowed, the gateway then never answers for the response, and even with
+/// `mcp_fail_open` set the response is withheld (502), not delivered.
+#[tokio::test]
+async fn a_stalled_response_evaluation_is_withheld_even_under_fail_open() {
+    use gateway_stub::ResultVerdict;
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = fixed_body_tls_upstream(result_body("harmless"), None).await;
+    let (proxy, _audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            gateway_endpoint: Some(gateway_stub::spawn_result_judging_gateway(ResultVerdict::StallResult).await),
+            upstream_override: Some(upstream),
+            credential_action: Some(CredentialAction::AlertOnly),
+            mcp_fail_open: true,
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let view = mitm_send_bytes_within(
+        tunnel,
+        MITM_HOST,
+        post(MITM_HOST, "/mcp", &mcp_body_with("harmless")).as_bytes(),
+        std::time::Duration::from_secs(30),
+    )
+    .await;
+    assert!(view.contains("502"), "got: {view:?}");
+    assert!(
+        !view.contains("harmless"),
+        "an unevaluated response was delivered: {view:?}"
     );
 }
 
