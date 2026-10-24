@@ -87,6 +87,7 @@
 
 - [Release QA policy](qa/release-qa-policy.md)
 - [Evidence contract and worker result schema](qa/evidence-and-worker-result-contract.md)
+- [J81 SDK lease-gate end-to-end harness](qa/j81-sdk-lease-e2e.md)
 
 # Architecture
 
