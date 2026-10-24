@@ -518,6 +518,23 @@ async fn a_lease_stops_permitting_at_expiry_with_no_grace() {
     assert_eq!(calls.load(Ordering::SeqCst), permits, "denies reached the gateway");
 }
 
+/// Lease windows count from the record's `issued_at` (the `aasm lease init`
+/// time), not from when the runtime started: a restart must not refresh them.
+#[tokio::test]
+async fn the_ttl_counts_from_the_record_not_from_runtime_start() {
+    let (gw, calls) = start_gateway().await;
+    let rig = Rig::new(&policy_yaml(&read_lease(60)));
+    init_run(&rig.state, &rig.agent, &rig.digest, now_secs() - 100, false).unwrap();
+    let mut rt = rig.governed(gw);
+    rt.wait_ready().await;
+    assert!(permitted(&rt.tool("calc").await), "positive control");
+    assert!(
+        lease_denied(&rt.tool("reader").await),
+        "a lease issued 100s ago with a 60s ttl is expired"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
 #[tokio::test]
 async fn revocation_denies_on_the_next_check_and_survives_a_restart() {
     let (gw, calls) = start_gateway().await;
