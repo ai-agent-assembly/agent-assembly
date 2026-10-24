@@ -37,6 +37,9 @@ from pathlib import Path
 from typing import Any
 
 
+GATE_REASON = "capability lease required"
+
+
 def _emit(**fields: Any) -> None:
     reason = str(fields.pop("reason", "")).replace("\n", " ")
     parts = [f"{k}={v}" for k, v in fields.items()]
@@ -113,66 +116,66 @@ def cmd_raw(a: argparse.Namespace) -> int:
     if rc is None:
         _emit(status="unreachable", executed=0, reason="no runtime client")
         return 0
-    res = rc.query_policy(a.agent, a.action_type, a.tool, a.args or None)
+    # An empty --tool sends tool_name=None: the native shim then builds NO typed context,
+    # which is the omit-context relabel ADR 0038 section 36 names as the residual.
+    res = rc.query_policy(a.agent, a.action_type, a.tool or None, a.args or None)
     _emit(status=str(res.get("decision", "")), executed=0, reason=str(res.get("reason", "")))
     return 0
 
 
 def cmd_watch(a: argparse.Namespace) -> int:
-    """Call in a loop; mid-way start ``aasm lease revoke --wait-health`` and time its ack.
+    """Call in a loop; mid-way run ``aasm lease revoke --wait-health`` and time its return.
 
-    Single-threaded on purpose: the llama-index patch keeps the process agent id in
-    a ``threading.local``, so a worker thread would not be governed as this agent.
+    The revoke runs in a helper thread so its completion time is taken the instant the
+    process returns, not at the next poll of the call loop. Only the call loop touches
+    the governed tool: the llama-index patch keeps the process agent id in a
+    ``threading.local``, so a worker thread would not be governed as this agent.
+    Calls sent between the revoke write and the /health acknowledgement may be allowed by
+    design; the claim is only about calls sent at or after the acknowledgement.
     """
+    import threading
+
     sdir = Path(a.sentinel_dir)
     tool_obj = _build_governed_tool(a.agent, a.tool, sdir)
     log: list[dict[str, Any]] = []
-    proc: subprocess.Popen[bytes] | None = None
-    t_ack: float | None = None
+    done: dict[str, Any] = {}
+
+    def revoke() -> None:
+        proc = subprocess.run(
+            [a.aasm, "lease", "revoke", "--state", a.state, "--lease-id", a.lease_id,
+             "--wait-health", a.health_url, "--wait-timeout-secs", "10"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )  # fmt: skip
+        done["t_ack"] = time.time()
+        done["rc"] = proc.returncode
+
+    worker = threading.Thread(target=revoke)
+    started = False
     start = time.time()
-    revoke_rc: int | None = None
     deadline = start + a.duration
     while time.time() < deadline:
-        now = time.time()
-        if proc is None and now - start >= a.revoke_after:
-            proc = subprocess.Popen(
-                [
-                    a.aasm,
-                    "lease",
-                    "revoke",
-                    "--state",
-                    a.state,
-                    "--lease-id",
-                    a.lease_id,
-                    "--wait-health",
-                    a.health_url,
-                    "--wait-timeout-secs",
-                    "10",
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        if proc is not None and t_ack is None and proc.poll() is not None:
-            t_ack = time.time()
-            revoke_rc = proc.returncode
+        if not started and time.time() - start >= a.revoke_after:
+            worker.start()
+            started = True
         log.append(_one_call(tool_obj, a.tool, sdir, {}))
-    if proc is not None and t_ack is None:
-        proc.wait(timeout=15)
-        t_ack = time.time()
-        revoke_rc = proc.returncode
+    if started:
+        worker.join(timeout=15)
+    t_ack = done.get("t_ack")
     allows_before = sum(1 for r in log if r["status"] == "allow" and (t_ack is None or r["sent"] < t_ack))
     sent_after = [r for r in log if t_ack is not None and r["sent"] >= t_ack]
     allows_after = sum(1 for r in sent_after if r["status"] == "allow")
     executed_after = sum(r["executed"] for r in sent_after)
+    gate_denies_after = sum(1 for r in sent_after if r["status"] == "deny" and GATE_REASON in r["reason"])
     _emit(
         status="ok",
         executed=executed_after,
-        revoke_rc=revoke_rc,
+        revoke_rc=done.get("rc"),
         calls=len(log),
         allows_before_ack=allows_before,
         calls_after_ack=len(sent_after),
         allows_after_ack=allows_after,
         executed_after_ack=executed_after,
+        gate_denies_after_ack=gate_denies_after,
     )
     return 0
 
@@ -211,7 +214,7 @@ def main() -> int:
 
     r = sub.add_parser("raw")
     r.add_argument("--agent", required=True)
-    r.add_argument("--tool", required=True)
+    r.add_argument("--tool", default="")
     r.add_argument("--action-type", required=True)
     r.add_argument("--args", default="")
     r.set_defaults(fn=cmd_raw)
