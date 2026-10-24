@@ -184,9 +184,10 @@ pub enum PolicyResolution {
         /// does — but it is carried here for the same reason `canonical` is:
         /// this is the last point the rich document exists to read it from.
         leases: Vec<crate::canonical::CanonicalLeaseGrant>,
-        /// AAASM-6259 — see [`Self::Enforced`]'s `tool_capabilities` field. A
-        /// wildcard-only allow-all document can declare none (the `"*"` key is
-        /// refused), but the field is carried for the same reason `leases` is.
+        /// AAASM-6259 — always empty here, by construction: a document is
+        /// `Permissive` only when its sole tool entry is `"*"`, and a
+        /// declaration under `"*"` is refused at validation. The field exists
+        /// so both effective states answer `tool_capabilities()` with `Some`.
         tool_capabilities: ToolCapabilityMap,
         /// AAASM-6259 — see [`Self::Enforced`]'s `content_digest` field.
         content_digest: String,
@@ -394,14 +395,22 @@ impl PolicyResolution {
     }
 
     /// Operator-declared `tools.<name>.capabilities` of the effective policy
-    /// (AAASM-6259). Empty for the two refusing states and for a document that
-    /// declares none — in both cases there is simply nothing declared, and a
-    /// caller must treat a tool missing from this map as *undeclared*.
-    pub fn tool_capabilities(&self) -> &ToolCapabilityMap {
-        static NONE: ToolCapabilityMap = ToolCapabilityMap::new();
+    /// (AAASM-6259), or `None` when no policy resolved (`Unconfigured` /
+    /// `LoadFailed`).
+    ///
+    /// `None` and `Some(empty map)` are different states and must stay
+    /// different: the first means there is no policy to read, the second means
+    /// a policy loaded and no tool declared anything. A governed decision must
+    /// key off `AA_LEASE_POLICY` being set and a successful `Enforced` load,
+    /// and must treat a tool missing from the map as undeclared, which is a
+    /// deny. Reading `None` as "nothing declared, nothing to check" would be
+    /// the fail-open reading.
+    pub fn tool_capabilities(&self) -> Option<&ToolCapabilityMap> {
         match self {
-            Self::Enforced { tool_capabilities, .. } | Self::Permissive { tool_capabilities, .. } => tool_capabilities,
-            Self::Unconfigured(_) | Self::LoadFailed { .. } => &NONE,
+            Self::Enforced { tool_capabilities, .. } | Self::Permissive { tool_capabilities, .. } => {
+                Some(tool_capabilities)
+            }
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => None,
         }
     }
 
@@ -1322,7 +1331,7 @@ mod tests {
 
         let resolution = load(&path);
         assert_eq!(resolution.state_token(), "enforced");
-        let caps = resolution.tool_capabilities();
+        let caps = resolution.tool_capabilities().expect("enforced policy exposes its map");
 
         assert_eq!(
             caps.get("web_search"),
@@ -1349,7 +1358,7 @@ mod tests {
             "tools:\n  web_search: { allow: true, capabilities: [network_egress] }\n",
         );
         let resolution = load(&path);
-        assert_eq!(resolution.tool_capabilities().len(), 1);
+        assert_eq!(resolution.tool_capabilities().map(|m| m.len()), Some(1));
         assert!(resolution.lease_grants().is_empty());
     }
 
@@ -1378,16 +1387,26 @@ mod tests {
         );
     }
 
+    /// The distinction the accessor exists to keep: a loaded policy that
+    /// declares nothing is `Some(empty)`, never `None`.
     #[test]
-    fn refusing_states_carry_no_declarations_and_no_digest() {
+    fn an_enforced_policy_with_no_declarations_is_some_empty_not_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolution = load(&write(&dir, "plain.yaml", "tools:\n  bash:\n    allow: true\n"));
+        assert_eq!(resolution.state_token(), "enforced");
+        assert_eq!(resolution.tool_capabilities().map(|m| m.is_empty()), Some(true));
+    }
+
+    #[test]
+    fn refusing_states_have_no_map_at_all_not_an_empty_one() {
         let unconfigured = PolicyResolution::Unconfigured(Unconfigured::NoSource { searched: vec![] });
-        assert!(unconfigured.tool_capabilities().is_empty());
+        assert_eq!(unconfigured.tool_capabilities(), None);
         assert_eq!(unconfigured.content_digest(), None);
         let failed = PolicyResolution::LoadFailed {
             source: PathBuf::from("/p.yaml"),
             detail: "bad".to_string(),
         };
-        assert!(failed.tool_capabilities().is_empty());
+        assert_eq!(failed.tool_capabilities(), None);
         assert_eq!(failed.content_digest(), None);
     }
 
@@ -1402,7 +1421,7 @@ mod tests {
             "tools:\n  t: { allow: true, capabilities: [resource] }\n",
         ));
         assert_eq!(resolution.state_token(), "load_failed");
-        assert!(resolution.tool_capabilities().is_empty());
+        assert_eq!(resolution.tool_capabilities(), None);
     }
 
     #[test]
