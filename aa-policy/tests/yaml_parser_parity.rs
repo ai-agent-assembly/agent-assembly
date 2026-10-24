@@ -464,6 +464,72 @@ fn golden_corpus_verdicts() {
             yaml: "budget:\n  daily_limit_usd: \"5\"\n",
             sec: Expect::Err("no enforcement section"),
             pol: Expect::Err("invalid type: string \"5\", expected f64"),
+        },        // ── tools.<name>.capabilities (AAASM-6259) ──────────────────────────
+        Case {
+            name: "tool capabilities accepted",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [network_egress, name_resolution]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities none alone accepted",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [none]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities process_creation and syscall pass authoring",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [process_creation, syscall]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities empty list rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: []\n",
+            sec: Expect::Err("must not be empty"),
+            pol: Expect::Err("must not be empty"),
+        },
+        Case {
+            name: "tool capabilities unknown word rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [teleport]\n",
+            sec: Expect::Err("unrecognised capability 'teleport'"),
+            pol: Expect::Err("unrecognised capability 'teleport'"),
+        },
+        Case {
+            name: "tool capabilities duplicate rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [ipc, ipc]\n",
+            sec: Expect::Err("duplicate capability 'ipc'"),
+            pol: Expect::Err("duplicate capability 'ipc'"),
+        },
+        Case {
+            name: "tool capabilities none mixed rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [none, ipc]\n",
+            sec: Expect::Err("cannot be combined"),
+            pol: Expect::Err("cannot be combined"),
+        },
+        Case {
+            name: "tool capabilities resource rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [resource]\n",
+            sec: Expect::Err("launch-boundary"),
+            pol: Expect::Err("launch-boundary"),
+        },
+        Case {
+            name: "tool capabilities workspace_transaction rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [ipc, workspace_transaction]\n",
+            sec: Expect::Err("launch-boundary"),
+            pol: Expect::Err("launch-boundary"),
+        },
+        Case {
+            name: "tool capabilities under wildcard tool rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    capabilities: [ipc]\n",
+            sec: Expect::Err("\"*\" tool key"),
+            pol: Expect::Err("\"*\" tool key"),
+        },
+        Case {
+            name: "tool capabilities scalar rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: ipc\n",
+            sec: Expect::Err("invalid type"),
+            pol: Expect::Err("invalid type"),
         },
     ];
 
