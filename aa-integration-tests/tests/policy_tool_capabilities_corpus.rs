@@ -62,6 +62,37 @@ const CORPUS: &[(&str, &str, &str, bool)] = &[
     ("nested list", "t", "[[ipc]]", false),
     ("number in list", "t", "[1]", false),
     ("wildcard tool key with valid words", "\"*\"", "[ipc]", false),
+    // `capabilities:` with nothing after it is not "undeclared": all three
+    // gates refuse a bare key rather than read it as omitted.
+    ("null instead of a list", "t", "null", false),
+];
+
+/// Whole `tools` entries (not just the capabilities value), including the
+/// wildcard key. Added because splitting the wildcard entry off the shared
+/// per-tool schema once left `"*"` unvalidated by the schema.
+const TOOL_ENTRIES: &[(&str, &str, bool)] = &[
+    ("wildcard allow true", "tools:\n  \"*\":\n    allow: true\n", true),
+    (
+        "wildcard with limit",
+        "tools:\n  \"*\":\n    allow: true\n    limit_per_hour: 5\n",
+        true,
+    ),
+    (
+        "wildcard non-boolean allow",
+        "tools:\n  \"*\":\n    allow: banana\n",
+        false,
+    ),
+    (
+        "wildcard unknown key",
+        "tools:\n  \"*\":\n    allow: true\n    bogus: 1\n",
+        false,
+    ),
+    ("named non-boolean allow", "tools:\n  t:\n    allow: banana\n", false),
+    (
+        "named unknown key",
+        "tools:\n  t:\n    allow: true\n    bogus: 1\n",
+        false,
+    ),
 ];
 
 #[test]
@@ -77,6 +108,24 @@ fn schema_validator_and_canonical_parser_agree_on_every_corpus_row() {
 
         assert_eq!(
             (by_schema, by_validator, by_canonical),
+            (*accepted, *accepted, *accepted),
+            "[{label}] (schema, aa-policy, aa-security) for:\n{yaml}"
+        );
+    }
+}
+
+#[test]
+fn schema_validator_and_canonical_parser_agree_on_every_tool_entry() {
+    let schema = schema();
+    for (label, yaml, accepted) in TOOL_ENTRIES {
+        let instance: Value = serde_yaml::from_str(yaml).expect("row is YAML");
+        let got = (
+            jsonschema::is_valid(&schema, &instance),
+            PolicyValidator::from_yaml(yaml).is_ok(),
+            CanonicalDocument::from_yaml(yaml).is_ok(),
+        );
+        assert_eq!(
+            got,
             (*accepted, *accepted, *accepted),
             "[{label}] (schema, aa-policy, aa-security) for:\n{yaml}"
         );
