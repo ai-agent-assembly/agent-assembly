@@ -51,7 +51,36 @@
             "description": "Condition expression that triggers a human-in-the-loop approval workflow before the tool call is dispatched. Syntax is TBD and will be defined by the policy engine (AAASM-8). Any non-empty string is accepted at the schema validation level.",
             "type": "string",
             "minLength": 1
+          },
+          "capabilities": {
+            "description": "Authority the tool's calls need, declared by the operator (trusted operator policy only). Each word names a capability domain; 'none' declares a purely logical tool that needs no lease and must be the only word. This states a requirement and grants nothing: leases stay independently authored under authority.leases. Absent means undeclared, which a governed runtime treats differently from ['none']. The launch-boundary domains 'resource' and 'workspace_transaction' are not accepted, and the '*' tool key cannot carry a declaration. 'process_creation' and 'syscall' are valid to author; a governed runtime refuses a tool that declares them.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "filesystem_read",
+                "filesystem_write",
+                "network_egress",
+                "name_resolution",
+                "syscall",
+                "process_creation",
+                "ipc",
+                "credential",
+                "none"
+              ]
+            },
+            "if": { "contains": { "const": "none" } },
+            "then": { "maxItems": 1 }
           }
+        }
+      },
+      "properties": {
+        "*": {
+          "description": "The wildcard tool entry cannot declare capabilities: declarations are matched by exact tool name, and a wildcard would make every tool declared.",
+          "type": "object",
+          "not": { "type": "object", "properties": { "capabilities": {} }, "required": ["capabilities"] }
         }
       }
     },
