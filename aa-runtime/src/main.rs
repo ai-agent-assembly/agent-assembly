@@ -121,10 +121,12 @@ fn main() {
         builder.worker_threads(config.worker_threads);
     }
 
-    let outcome = builder
-        .build()
-        .expect("failed to build Tokio runtime")
-        .block_on(aa_runtime::run(config));
+    let runtime = builder.build().expect("failed to build Tokio runtime");
+    let outcome = runtime.block_on(aa_runtime::run(config));
+    // A blocking read stuck on a dead filesystem (the lease reload) must not
+    // keep the process alive after shutdown; dropping the runtime would wait
+    // for it indefinitely.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
 
     // A refusal (e.g. governed lease mode requested but not satisfiable) must
     // be a failing exit status, never a quiet return.

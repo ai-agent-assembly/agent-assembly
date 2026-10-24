@@ -18,6 +18,9 @@ use crate::runtime::StartupRefusal;
 /// What `GET /health` publishes about governed lease mode.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LeaseGovernanceReport {
+    /// The run this runtime is bound to. A revoker must see its own run here,
+    /// or it is talking to a different (older or newer) run's runtime.
+    pub run_id: String,
     /// Generation of the revocation set the gate is deciding against.
     pub generation: u64,
     /// `governed`, or `denied_all` once the state record was found anomalous
@@ -37,9 +40,10 @@ pub struct LeaseStatus {
 
 impl LeaseStatus {
     /// A status reporting `governed` at `generation`.
-    pub fn new(generation: u64) -> Self {
+    pub fn new(run_id: &str, generation: u64) -> Self {
         Self {
             inner: Mutex::new(LeaseGovernanceReport {
+                run_id: run_id.to_string(),
                 generation,
                 state: "governed",
             }),
@@ -48,23 +52,23 @@ impl LeaseStatus {
 
     /// Record that the gate now decides against `generation`.
     pub fn set_governed(&self, generation: u64) {
-        self.set(LeaseGovernanceReport {
-            generation,
-            state: "governed",
+        self.set(|r| {
+            r.generation = generation;
+            r.state = "governed";
         });
     }
 
     /// Record that the gate is denying every request.
     pub fn set_denied_all(&self, generation: u64) {
-        self.set(LeaseGovernanceReport {
-            generation,
-            state: "denied_all",
+        self.set(|r| {
+            r.generation = generation;
+            r.state = "denied_all";
         });
     }
 
-    fn set(&self, report: LeaseGovernanceReport) {
+    fn set(&self, f: impl FnOnce(&mut LeaseGovernanceReport)) {
         // A poisoned mutex only means a panic elsewhere; the report is plain data.
-        *self.inner.lock().unwrap_or_else(|e| e.into_inner()) = report;
+        f(&mut self.inner.lock().unwrap_or_else(|e| e.into_inner()));
     }
 
     /// The current report.

@@ -18,7 +18,6 @@
 //! nothing until restart; the digest binding makes a restart with an edited
 //! policy refuse unless the operator re-initialises the record.
 
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
@@ -32,6 +31,11 @@ use crate::runtime::StartupRefusal;
 
 /// How often the state record is re-read.
 pub const RELOAD_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Longest a single read of the state record may take before the gate fails
+/// closed. A record on a hung filesystem would otherwise freeze revocation
+/// while the gate kept answering from a stale snapshot.
+pub const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Lifetime applied to a grant that states no `ttl_seconds`, counted from the
 /// record's `issued_at` (the `aasm lease init` time), not from runtime start.
@@ -94,7 +98,7 @@ pub(super) fn prepare(config: &RuntimeConfig) -> Result<GovernedLease, StartupRe
         state.clone(),
         generation,
     )));
-    let status = Arc::new(LeaseStatus::new(generation));
+    let status = Arc::new(LeaseStatus::new(state.run_id(), generation));
 
     tracing::info!(
         generation,
@@ -106,11 +110,21 @@ pub(super) fn prepare(config: &RuntimeConfig) -> Result<GovernedLease, StartupRe
     let reload_gate = Arc::clone(&gate);
     let reload_status = Arc::clone(&status);
     let path = state_path.clone();
+    let reader: Reader = Arc::new(move || state::load(&path));
     Ok(GovernedLease {
         gate,
         status,
         reload: Box::new(move |tracker, token| {
-            tracker.spawn(reload_loop(path, reload_gate, reload_status, governance, state, token));
+            let work = reload_loop(
+                reader,
+                READ_TIMEOUT,
+                Arc::clone(&reload_gate),
+                Arc::clone(&reload_status),
+                governance,
+                state,
+                token.clone(),
+            );
+            tracker.spawn(supervise(reload_gate, reload_status, token, work));
         }),
     })
 }
@@ -141,31 +155,78 @@ pub(crate) fn reload_step(current: &LeaseState, loaded: Result<LeaseState, Lease
     }
 }
 
-async fn read_state(path: &Path) -> Result<LeaseState, LeaseStateError> {
-    let p = path.to_path_buf();
+type Reader = Arc<dyn Fn() -> Result<LeaseState, LeaseStateError> + Send + Sync>;
+
+/// Why the reload loop ended normally.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LoopEnd {
+    /// The runtime is shutting down.
+    Cancelled,
+    /// An anomaly was found and deny-all is installed; nothing more to do.
+    Latched,
+}
+
+/// Read the record on a blocking thread, bounded by `timeout`. A read that does
+/// not return in time is reported as an I/O error, which trips the gate.
+async fn read_bounded(reader: Reader, timeout: std::time::Duration) -> Result<LeaseState, LeaseStateError> {
     // Blocking filesystem reads must not run on an async worker.
-    match tokio::task::spawn_blocking(move || state::load(&p)).await {
-        Ok(r) => r,
-        Err(join) => Err(LeaseStateError::Io(std::io::Error::other(join.to_string()))),
+    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || reader())).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(join)) => Err(LeaseStateError::Io(std::io::Error::other(join.to_string()))),
+        Err(_) => Err(LeaseStateError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("state read exceeded {}ms", timeout.as_millis()),
+        ))),
+    }
+}
+
+/// Install deny-all and publish it, from whatever generation the gate is at.
+fn latch_denied(gate: &PolicyLeaseGate, status: &LeaseStatus, reason: String) {
+    let generation = status.report().generation.saturating_add(1);
+    tracing::error!(%reason, "lease state anomaly: denying every request until restart");
+    if gate.install(Snapshot::deny_all(reason, generation)).is_err() {
+        tracing::error!("lease gate lock is poisoned; it keeps denying");
+    }
+    status.set_denied_all(generation);
+}
+
+/// Run `work` as its own task and fail closed if it ends any way other than
+/// the two normal ones. A reload task that panicked or was aborted would leave
+/// the gate deciding from a revocation set nothing updates any more; a gate
+/// that cannot learn of revocations must deny, not keep permitting.
+pub(crate) async fn supervise<F>(
+    gate: Arc<PolicyLeaseGate>,
+    status: Arc<LeaseStatus>,
+    token: CancellationToken,
+    work: F,
+) where
+    F: std::future::Future<Output = LoopEnd> + Send + 'static,
+{
+    match tokio::spawn(work).await {
+        Ok(LoopEnd::Latched) => {}
+        Ok(LoopEnd::Cancelled) if token.is_cancelled() => {}
+        Ok(LoopEnd::Cancelled) => latch_denied(&gate, &status, "reload task stopped without shutdown".to_string()),
+        Err(e) => latch_denied(&gate, &status, format!("reload task died: {e}")),
     }
 }
 
 async fn reload_loop(
-    path: PathBuf,
+    reader: Reader,
+    read_timeout: std::time::Duration,
     gate: Arc<PolicyLeaseGate>,
     status: Arc<LeaseStatus>,
     governance: LeaseGovernance,
     mut current: LeaseState,
     token: CancellationToken,
-) {
+) -> LoopEnd {
     let mut tick = tokio::time::interval(RELOAD_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
-            _ = token.cancelled() => return,
+            _ = token.cancelled() => return LoopEnd::Cancelled,
             _ = tick.tick() => {}
         }
-        let loaded = read_state(&path).await;
+        let loaded = read_bounded(Arc::clone(&reader), read_timeout).await;
         match reload_step(&current, loaded) {
             Reload::Unchanged => {}
             Reload::Install(new) => {
@@ -180,18 +241,13 @@ async fn reload_loop(
                     Err(e) => {
                         tracing::error!(error = %e, "lease gate cannot accept a reload; it keeps denying");
                         status.set_denied_all(generation);
-                        return;
+                        return LoopEnd::Latched;
                     }
                 }
             }
             Reload::Trip(reason) => {
-                let generation = current.generation().saturating_add(1);
-                tracing::error!(%reason, "lease state anomaly: denying every request until restart");
-                if gate.install(Snapshot::deny_all(reason, generation)).is_err() {
-                    tracing::error!("lease gate lock is poisoned; it keeps denying");
-                }
-                status.set_denied_all(generation);
-                return;
+                latch_denied(&gate, &status, reason);
+                return LoopEnd::Latched;
             }
         }
     }
@@ -258,5 +314,115 @@ mod tests {
                 "{name} must trip"
             );
         }
+    }
+
+    // ---- liveness and bounded reads -------------------------------------
+
+    use crate::pipeline::{LeaseGate, LeaseVerdict};
+    use aa_proto::assembly::common::v1::ActionType;
+    use aa_proto::assembly::policy::v1::action_context::Action;
+    use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, ToolCallContext};
+
+    fn rig() -> (Arc<PolicyLeaseGate>, Arc<LeaseStatus>, LeaseGovernance, LeaseState) {
+        let yaml = "tools:\n  calc: { allow: true, capabilities: [none] }\n";
+        let resolution = aa_policy::resolve::classify(std::path::Path::new("p.yaml"), yaml);
+        let digest = resolution
+            .content_digest()
+            .unwrap()
+            .strip_prefix("sha256:")
+            .unwrap()
+            .to_string();
+        let state = LeaseState::new_run("agent-1", &digest, 1_700_000_000).unwrap();
+        let gov = LeaseGovernance::from_state(&resolution, "agent-1", 60, "t", &state).unwrap();
+        let gate = Arc::new(PolicyLeaseGate::new(Snapshot::governed(gov.clone(), state.clone(), 1)));
+        (gate, Arc::new(LeaseStatus::new(state.run_id(), 1)), gov, state)
+    }
+
+    fn calc() -> CheckActionRequest {
+        CheckActionRequest {
+            action_type: ActionType::ToolCall as i32,
+            context: Some(ActionContext {
+                action: Some(Action::ToolCall(ToolCallContext {
+                    tool_name: "calc".into(),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn permits(gate: &PolicyLeaseGate) -> bool {
+        gate.check("agent-1", &calc(), std::time::SystemTime::now()) == LeaseVerdict::Permit
+    }
+
+    #[tokio::test]
+    async fn a_reload_task_that_panics_leaves_the_gate_denying_everything() {
+        let (gate, status, _, _) = rig();
+        assert!(permits(&gate), "positive control");
+        supervise(gate.clone(), status.clone(), CancellationToken::new(), async {
+            panic!("reload task bug");
+            #[allow(unreachable_code)]
+            LoopEnd::Latched
+        })
+        .await;
+        assert!(!permits(&gate));
+        assert_eq!(status.report().state, "denied_all");
+    }
+
+    #[tokio::test]
+    async fn a_reload_task_that_ends_without_shutdown_also_fails_closed() {
+        let (gate, status, _, _) = rig();
+        supervise(gate.clone(), status.clone(), CancellationToken::new(), async {
+            LoopEnd::Cancelled
+        })
+        .await;
+        assert!(!permits(&gate));
+        assert_eq!(status.report().state, "denied_all");
+    }
+
+    #[tokio::test]
+    async fn a_clean_shutdown_does_not_trip_the_gate() {
+        let (gate, status, _, _) = rig();
+        let token = CancellationToken::new();
+        token.cancel();
+        supervise(gate.clone(), status.clone(), token, async { LoopEnd::Cancelled }).await;
+        assert!(permits(&gate));
+        assert_eq!(status.report().state, "governed");
+    }
+
+    #[tokio::test]
+    async fn a_read_that_blocks_trips_the_gate_after_the_timeout() {
+        let (gate, status, gov, state) = rig();
+        let reader: Reader = Arc::new(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            Err(LeaseStateError::Corrupt("unreachable".into()))
+        });
+        let end = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reload_loop(
+                reader,
+                std::time::Duration::from_millis(150),
+                gate.clone(),
+                status.clone(),
+                gov,
+                state,
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .expect("a blocked read must not block the loop past its timeout");
+        assert_eq!(end, LoopEnd::Latched);
+        assert!(!permits(&gate));
+        assert_eq!(status.report().state, "denied_all");
+    }
+
+    #[tokio::test]
+    async fn read_bounded_reports_a_timeout_as_an_io_error() {
+        let slow: Reader = Arc::new(|| {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            Err(LeaseStateError::Missing("x".into()))
+        });
+        let r = read_bounded(slow, std::time::Duration::from_millis(50)).await;
+        assert!(matches!(r, Err(LeaseStateError::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut));
     }
 }

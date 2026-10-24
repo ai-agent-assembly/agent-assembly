@@ -63,6 +63,30 @@ pub trait LeaseGate: Send + Sync {
     fn check(&self, subject: &str, req: &CheckActionRequest, now: SystemTime) -> LeaseVerdict;
 }
 
+/// The tool a request names, for the runtime's own deny log only.
+///
+/// The name is SDK-supplied, so it is escaped (no raw control characters or
+/// newlines reach a log line) and cut at [`MAX_TOOL_LABEL_CHARS`]. Empty when
+/// the request carries no tool call.
+pub(crate) fn tool_label(req: &CheckActionRequest) -> String {
+    use aa_proto::assembly::policy::v1::action_context::Action;
+    let Some(Action::ToolCall(call)) = req.context.as_ref().and_then(|c| c.action.as_ref()) else {
+        return String::new();
+    };
+    let mut out: String = call
+        .tool_name
+        .chars()
+        .take(MAX_TOOL_LABEL_CHARS)
+        .flat_map(char::escape_debug)
+        .collect();
+    if call.tool_name.chars().count() > MAX_TOOL_LABEL_CHARS {
+        out.push_str("...");
+    }
+    out
+}
+
+const MAX_TOOL_LABEL_CHARS: usize = 64;
+
 /// Apply `gate` to `req`, collapsing every non-`Permit` outcome into
 /// `Err(reason)`.
 pub(crate) fn enforce(
@@ -78,5 +102,34 @@ pub(crate) fn enforce(
         Ok(LeaseVerdict::Permit) => Ok(()),
         Ok(LeaseVerdict::Deny { reason }) => Err(reason),
         Err(_) => Err("lease gate failed".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    use aa_proto::assembly::policy::v1::action_context::Action;
+    use aa_proto::assembly::policy::v1::{ActionContext, ToolCallContext};
+
+    fn call(name: &str) -> CheckActionRequest {
+        CheckActionRequest {
+            context: Some(ActionContext {
+                action: Some(Action::ToolCall(ToolCallContext {
+                    tool_name: name.to_string(),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_label_is_escaped_and_bounded() {
+        assert_eq!(tool_label(&call("reader")), "reader");
+        assert_eq!(tool_label(&call("a\nb\u{1b}[0m")), "a\\nb\\u{1b}[0m");
+        let long = tool_label(&call(&"x".repeat(500)));
+        assert_eq!(long.len(), MAX_TOOL_LABEL_CHARS + 3);
+        assert!(long.ends_with("..."));
+        assert_eq!(tool_label(&CheckActionRequest::default()), "");
     }
 }

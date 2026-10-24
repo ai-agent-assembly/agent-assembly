@@ -504,7 +504,7 @@ async fn handle_policy_query(
         let now = SystemTime::now();
         if let Err(reason) = lease_gate::enforce(gate, agent_id, &req, now) {
             ::metrics::counter!("aa_lease_gate_denials_total").increment(1);
-            tracing::warn!(connection_id, %reason, "capability lease gate denied action");
+            tracing::warn!(connection_id, tool = %lease_gate::tool_label(&req), %reason, "capability lease gate denied action");
             send_ipc_response(
                 connection_id,
                 IpcResponse::PolicyResponse(CheckActionResponse {
