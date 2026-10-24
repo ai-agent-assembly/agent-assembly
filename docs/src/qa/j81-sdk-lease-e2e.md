@@ -41,7 +41,7 @@ per scenario and a `J81_SUMMARY` line, and exits non-zero on any FAIL.
 | S8 | A second runtime with its own agent id and state is isolated: its revocation does not reach the first. |
 
 S5d only covers relabelling with the tool context still attached, which the gate denies. The
-omit-context relabel is the residual ADR 0038 section 36 documents. The SDK shim can send
+omit-context relabel is the residual Core ADR 0038 section 36 documents. The SDK shim can send
 it (`query_policy` with `tool_name=None` builds no typed context), so S5e sends it and
 reports the runtime's answer as `INFO`. It is never counted as a pass and does not gate the
 exit status. Against these runtimes, which have no gateway, the observed answer is `allow`:
