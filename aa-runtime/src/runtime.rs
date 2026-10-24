@@ -1076,12 +1076,40 @@ fn spawn_health_server(
     tracing::info!(%addr, "health server task spawned");
 }
 
+/// Why the runtime refused to start. Nothing was bound or spawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupRefusal(String);
+
+impl StartupRefusal {
+    pub(crate) fn new(msg: impl Into<String>) -> Self {
+        Self(msg.into())
+    }
+}
+
+impl std::fmt::Display for StartupRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StartupRefusal {}
+
 /// Start the runtime and block until graceful shutdown completes.
 ///
 /// This is the main async entry point called from `main()`. It creates the
 /// structured concurrency primitives, spawns subsystem tasks, waits for a
 /// shutdown signal, then drains all tasks within the configured timeout.
-pub async fn run(config: RuntimeConfig) {
+///
+/// # Errors
+///
+/// [`StartupRefusal`] when governed lease mode (`AA_LEASE_POLICY`) was
+/// requested and cannot be honoured. Nothing has been bound at that point.
+pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
+    // Governed lease mode is decided before anything is bound or spawned, so a
+    // refusal leaves no listener, socket or background task behind
+    // (AAASM-6259). `None` means not requested: AA_LEASE_POLICY unset.
+    let governed = crate::lease::wiring::prepare(&config)?;
+
     // Install global Prometheus metrics recorder.
     let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
@@ -1104,6 +1132,14 @@ pub async fn run(config: RuntimeConfig) {
     let token = CancellationToken::new();
 
     tracing::info!("structured concurrency primitives initialised");
+
+    let (lease_gate, lease_status) = match governed {
+        Some(g) => {
+            (g.reload)(&tracker, token.clone());
+            (Some(g.gate), Some(g.status))
+        }
+        None => (None, None),
+    };
 
     // Load policy rules from the mounted volume (or use empty rules if disabled/absent).
     let policy = load_policy(&config.policy_path);
@@ -1256,7 +1292,7 @@ pub async fn run(config: RuntimeConfig) {
         let pipeline_op_control = op_control.clone();
         let pipeline_verified = std::sync::Arc::clone(&verified_identities);
         tracker.spawn(async move {
-            crate::pipeline::run(
+            crate::pipeline::run_with_lease_gate(
                 inbound_rx,
                 broadcast_tx,
                 pipeline_config,
@@ -1269,6 +1305,7 @@ pub async fn run(config: RuntimeConfig) {
                 pipeline_op_control,
                 pipeline_seq,
                 pipeline_verified,
+                lease_gate,
             )
             .await;
         });
@@ -1289,6 +1326,7 @@ pub async fn run(config: RuntimeConfig) {
         active_layers,
         degraded_layers,
         protection,
+        lease_governance: lease_status,
     };
     spawn_health_server(&tracker, &config, token.clone(), health_state);
 
@@ -1327,6 +1365,7 @@ pub async fn run(config: RuntimeConfig) {
     }
 
     tracing::info!("aa-runtime stopped");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1843,6 +1882,8 @@ mod tests {
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
             devint_enabled: false,
+            lease_policy_path: None,
+            lease_state_path: None,
         }
     }
 

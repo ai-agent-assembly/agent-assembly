@@ -58,6 +58,9 @@ pub struct HealthState {
     /// coverage claim is exactly the stale-protection failure the attestation
     /// exists to prevent.
     pub protection: ProtectionAttestation,
+    /// Governed lease mode status; `None` (and absent from `/health`) when the
+    /// runtime is not governed (AAASM-6259).
+    pub lease_governance: Option<Arc<crate::lease::wiring::LeaseStatus>>,
 }
 
 /// Response body for GET /health.
@@ -86,6 +89,11 @@ pub struct HealthResponse {
     pub degraded_layers: Vec<String>,
     /// What may truthfully be claimed about each component, right now.
     pub protection: ProtectionReport,
+    /// Present only in governed lease mode: the generation of the revocation
+    /// set the gate is deciding against and whether it is `governed` or
+    /// `denied_all`. Additive; ungoverned output is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_governance: Option<crate::lease::wiring::LeaseGovernanceReport>,
 }
 
 /// The protection section of `GET /health`, evaluated at request time.
@@ -222,6 +230,7 @@ async fn health_handler(axum::extract::State(state): axum::extract::State<Health
         active_layers: state.active_layers.names(),
         degraded_layers: state.degraded_layers.clone(),
         protection: ProtectionReport::evaluate(&state.protection, now_unix_secs()),
+        lease_governance: state.lease_governance.as_ref().map(|s| s.report()),
     })
 }
 
@@ -279,6 +288,7 @@ mod tests {
             active_layers: vec!["sdk"],
             degraded_layers: vec![],
             protection: ProtectionReport::evaluate(&crate::layer::LayerDetector::attest(TEST_NOW), TEST_NOW),
+            lease_governance: None,
         };
         let json = serde_json::to_string(&resp).expect("serialization failed");
         assert!(json.contains("\"status\":\"healthy\""));
@@ -304,6 +314,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -335,6 +346,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -360,6 +372,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -389,6 +402,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -429,6 +443,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         // We call the handler manually using the recorder.
@@ -467,6 +482,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         // First request: not ready (503)
@@ -501,6 +517,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -535,6 +552,7 @@ mod tests {
             active_layers: all_layers,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -573,6 +591,7 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(now_unix_secs()),
+            lease_governance: None,
         };
 
         let app = router(state);
@@ -687,6 +706,7 @@ mod tests {
             // What `check_layer_availability` produces for an absent layer.
             degraded_layers: vec!["ebpf".to_string(), "proxy".to_string()],
             protection: attestation,
+            lease_governance: None,
         };
 
         let app = router(state);

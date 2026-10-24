@@ -237,6 +237,24 @@ pub struct RuntimeConfig {
     /// Accepts `1`/`true`/`yes` (case-insensitive); anything else is off, so a
     /// typo fails closed rather than opening the surface.
     pub devint_enabled: bool,
+
+    /// Operator policy that puts the runtime in **governed lease mode**
+    /// (AAASM-6259, ADR 0038).
+    ///
+    /// Read from `AA_LEASE_POLICY`. Governed mode is triggered by this variable
+    /// being *set*, and by nothing else: not by the policy declaring leases and
+    /// not by a state record existing, because either trigger would let an
+    /// agent that can delete a file turn governance off. A set-but-empty value
+    /// is therefore still "requested" and is refused at startup rather than
+    /// read as "disabled" (unlike `AA_POLICY_PATH`). This is a YAML policy
+    /// document, unrelated to the TOML at `AA_POLICY_PATH`.
+    pub lease_policy_path: Option<PathBuf>,
+
+    /// Lease state record the governed run is bound to.
+    ///
+    /// Read from `AA_LEASE_STATE`, the same variable `aasm lease` reads. Only
+    /// consulted in governed mode, where an unset value is refused at startup.
+    pub lease_state_path: Option<PathBuf>,
 }
 
 impl RuntimeConfig {
@@ -268,6 +286,8 @@ impl RuntimeConfig {
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
     /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
     /// | `AA_GATEWAY_TIMEOUT_MS` | `u64` | `5000` (per-RPC gateway deadline) |
+    /// | `AA_LEASE_POLICY` | `Option<PathBuf>` | `None`; **setting it enables governed lease mode** (even if empty) |
+    /// | `AA_LEASE_STATE` | `Option<PathBuf>` | `None`; **required** in governed mode |
     /// | `AA_AGENT_TEAM_ID` | `String` | `""` (op-control subscription identity) |
     /// | `AA_AGENT_ORG_ID` | `String` | `""` (op-control subscription identity) |
     /// | `AA_GATEWAY_CREDENTIAL_TOKEN` | `Option<CredentialToken>` | `None` (op-control subscription is sent unauthenticated) |
@@ -404,6 +424,10 @@ impl RuntimeConfig {
             .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
+        // `var_os`: a non-UTF-8 value still means "governed requested".
+        let lease_policy_path = std::env::var_os("AA_LEASE_POLICY").map(PathBuf::from);
+        let lease_state_path = std::env::var_os("AA_LEASE_STATE").map(PathBuf::from);
+
         Ok(Self {
             agent_id,
             agent_team_id,
@@ -428,6 +452,8 @@ impl RuntimeConfig {
             gateway_fail_closed,
             gateway_timeout_ms,
             devint_enabled,
+            lease_policy_path,
+            lease_state_path,
         })
     }
 }
