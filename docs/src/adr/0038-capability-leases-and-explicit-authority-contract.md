@@ -1575,3 +1575,38 @@ token and the trace and span ids never influence a verdict. The decision reads o
   re-checked when the approval resolves.
 - **A poisoned snapshot lock denies every call** until the process restarts, and a refused
   `install` does not heal it.
+
+### 37. Plan-time / runtime parity: `aasm run --dry-run` calls the same decision
+
+`aasm run --dry-run` prints a `--- lease plan ---` section: for every tool the policy
+declares under `tools.<name>.capabilities`, one verdict line, plus a line for an
+undeclared tool and one per typed action type. Each verdict is produced by the
+`aa_runtime::lease::decide::decide` the runtime's `PolicyLeaseGate` calls, over a
+`LeaseGovernance` built by the same `LeaseGovernance::from_resolution`, from the
+policy's authored `authority.leases` only. The preview owns no rule of its own: it
+builds the request a wrapped call would carry and formats the answer, so a change to
+the decision changes the plan with it.
+
+The parity is pinned by tests, not asserted by construction. A table of rows (lease
+held, missing, expired, cross-capability, selector-scoped, `[none]`, capabilities
+absent, unknown tool, `allow: false`, `process_creation`) is run through the plan and
+through `PolicyLeaseGate` at the same clock and must agree, and each row carries a
+hand-written expected verdict so mutating `decide` moves both sides off the pin. A
+deliberately divergent re-implementation is compared the same way and must be caught.
+
+What the plan is not:
+
+- **Point-in-time.** Leases are planned as issued at the moment of the preview, with
+  the runtime's default TTL for a grant that states none. The real run record's
+  `issued_at` is the `aasm lease init` time, so a plan cannot show a lease that has
+  lapsed in a real run.
+- **Revocation is runtime-only.** The plan evaluates against an empty revoked set and
+  says so. It reads no state record and creates none.
+- **Not authorization and not enforcement.** A `PERMIT` is not a grant and a `DENY` is
+  not a refusal; the runtime decides per call with the clock and revocation state it
+  has then, and a `PERMIT` there still falls through to the gateway and local policy.
+- **Unavailable is not permissive.** For a policy that is not an enforced load, or that
+  authors a lease governed mode cannot issue, the section states the reason and prints
+  no verdicts.
+- **Preview only, and strip-bound.** The section lives in `run.rs`, so it is removed
+  from the published crate with the rest of `aasm run`.

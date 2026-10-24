@@ -250,6 +250,42 @@ The machine-readable block is an explicit, versioned contract for scripting: a
 lines, so a consumer can anchor on the header and read records until the first
 line that is not one, without parsing prose.
 
+### Lease plan
+
+After the environment, `--dry-run` prints a `--- lease plan (PLAN: point-in-time, not
+authorization) ---` section: one verdict line per tool the policy declares under
+`tools.<name>.capabilities`, a `tool <undeclared>` line, and one `action <TYPE>` line for
+each typed action type.
+
+```text
+--- lease plan (PLAN: point-in-time, not authorization) ---
+status: PLAN ONLY. ...
+revocation: not evaluated; ...
+enforcement: runtime-only. ...
+issuance: leases from `authority.leases` only (never from tool declarations), ...
+lease: filesystem_read scope=whole
+tool calc [none]: PERMIT
+tool reader [filesystem_read]: PERMIT
+tool writer [filesystem_write]: DENY (tool "writer": no lease for `filesystem_write`)
+tool <undeclared>: DENY (...)
+action LLM_CALL: PERMIT
+action FILE_OPERATION: DENY (...)
+```
+
+The verdicts come from the same decision function the runtime's lease gate uses
+([ADR 0038 section 37](../adr/0038-capability-leases-and-explicit-authority-contract.md)),
+not from a copy of its rules. Read them with these limits:
+
+- It is a **plan**: leases are taken as issued at the moment of the preview, so a lease
+  that has lapsed in a real run cannot appear.
+- **Revocation is not evaluated.** It exists only in a running runtime's lease state;
+  the preview reads no state record.
+- It is **not authorization** and enforces nothing. A `PERMIT` is not a grant; the runtime
+  decides each call, and still passes a permitted call on to the gateway and local policy.
+- A DENY line does not change the exit code; a preview that shows refusals is a successful
+  preview. A policy that is not an enforced load prints `plan: not available` with the
+  reason and no verdicts.
+
 ## Examples
 
 Launch Claude Code under governance, with no isolation boundary (unchanged
