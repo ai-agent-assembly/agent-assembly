@@ -231,6 +231,7 @@ mod tests {
                 allow: true,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         doc.tools.insert(
@@ -239,6 +240,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: Some("path starts_with \"/etc\"".to_string()),
+                capabilities: None,
             },
         );
 

@@ -211,6 +211,20 @@ fn hash_tools(hasher: &mut Sha256, tools: &std::collections::HashMap<String, Too
         hasher.update([u8::from(tp.allow)]);
         hash_opt_u32(hasher, tp.limit_per_hour);
         hash_opt_str(hasher, tp.requires_approval_if.as_deref());
+        // AAASM-6259 — emitted ONLY when declared, so a tool without a
+        // declaration hashes byte-for-byte as before and no existing
+        // policy_doc_id moves. The marker byte cannot be mistaken for the next
+        // entry's start (a `hash_str` length prefix, whose first byte is 0 for
+        // any realistic name) or for a following section. Order is preserved,
+        // not sorted: the module promises digest equality iff `PartialEq`
+        // equality, and `Vec` equality is order-sensitive.
+        if let Some(caps) = &tp.capabilities {
+            hasher.update([0xC1u8]);
+            hasher.update((caps.len() as u64).to_be_bytes());
+            for cap in caps {
+                hash_str(hasher, cap.as_str());
+            }
+        }
     }
 }
 
@@ -470,6 +484,69 @@ mod tests {
         let mut other = with.clone();
         other.data.as_mut().unwrap().locale_packs = vec!["ja-JP".to_string()];
         assert_ne!(with.content_digest(), other.content_digest());
+    }
+
+    /// Fixture with two tools and no declaration — the shape of every policy
+    /// that predates `tools.<name>.capabilities` (AAASM-6259).
+    fn doc_with_undeclared_tools() -> PolicyDocument {
+        let mut doc = base_doc();
+        doc.tools.insert(
+            "bash".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(10),
+                requires_approval_if: Some("amount > 100".to_string()),
+                capabilities: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+                capabilities: None,
+            },
+        );
+        doc
+    }
+
+    /// AAASM-6259 — adding `capabilities` must not re-key documents whose tools
+    /// declare none, for the reason `locale_packs` and `filesystem` must not:
+    /// the digest is the `policy_doc_id` on every audit entry.
+    ///
+    /// The expected value was captured by running `content_digest` on this
+    /// fixture at commit `637374623`, the `main` that has no `capabilities`
+    /// field, before `hash_tools` was touched.
+    #[test]
+    fn legacy_tool_documents_keep_their_pre_capabilities_digest() {
+        assert_eq!(
+            doc_with_undeclared_tools().content_digest(),
+            "sha256:5ff9c02dee72e99591aad254daa7b79aa1263332af97917e0caa6e63dc534109",
+            "hashing tool capabilities re-keyed a document that declares none"
+        );
+    }
+
+    /// The other half: a declaration is part of what the policy says, so two
+    /// documents differing only in it must not share an id.
+    #[test]
+    fn declaring_tool_capabilities_changes_the_digest() {
+        use crate::document::{LeaseDomain, ToolCapability};
+        let absent = doc_with_undeclared_tools();
+        let declare = |caps: Vec<ToolCapability>| {
+            let mut d = absent.clone();
+            d.tools.get_mut("bash").unwrap().capabilities = Some(caps);
+            d.content_digest()
+        };
+        let net = declare(vec![ToolCapability::Domain(LeaseDomain::NetworkEgress)]);
+        let fs = declare(vec![ToolCapability::Domain(LeaseDomain::FilesystemWrite)]);
+        let none = declare(vec![ToolCapability::NoAuthority]);
+        let all = [absent.content_digest(), net, fs, none];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "declared sets must each hash distinctly, including absent");
+            }
+        }
     }
 
     fn base_doc() -> PolicyDocument {
@@ -822,6 +899,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         assert_ne!(base_doc().content_digest(), edited.content_digest());
@@ -833,6 +911,7 @@ mod tests {
             allow,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         };
         let mut a = base_doc();
         a.tools.insert("alpha".into(), tp(true));

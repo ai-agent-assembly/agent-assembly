@@ -30,7 +30,7 @@ exactly:
 | `schedule` | `active_hours` — `start`, `end`, `timezone` |
 | `budget` | per-agent / per-team / per-org daily and monthly USD caps, `action_on_exceed` |
 | `data` | `sensitive_patterns`, `credential_action`, `locale_packs` |
-| `tools` | per-tool `allow`, `limit_per_hour`, `requires_approval_if` |
+| `tools` | per-tool `allow`, `limit_per_hour`, `requires_approval_if`, `capabilities` |
 | `capabilities` | capability-string `allow` and `deny` lists |
 | `filesystem` | `read` and `write` path-prefix allowlists |
 | `syscalls` | kernel syscall `allow` list |
@@ -53,6 +53,39 @@ anything would load cleanly and permit everything, so the gateway refuses to loa
 it at all rather than degrade to an allow-all. The same fail-closed rule applies
 inside each section: a typo in a nested key is rejected, never ignored, so a
 misspelling cannot silently drop a restriction.
+
+### Declaring the authority a tool needs
+
+A tool entry may state the authority its calls need with `capabilities`:
+
+```yaml
+tools:
+  web_search: { allow: true, capabilities: [network_egress, name_resolution] }
+  write_note: { allow: true, capabilities: [filesystem_write] }
+  calculator: { allow: true, capabilities: [none] }   # purely logical, needs no lease
+```
+
+The words are the capability-lease domains: `filesystem_read`, `filesystem_write`,
+`network_egress`, `name_resolution`, `syscall`, `process_creation`, `ipc` and
+`credential`, plus `none` for a tool that needs no lease. `none` must stand alone.
+The list must be non-empty and free of duplicates. `resource` and
+`workspace_transaction` are not accepted: they are launch-boundary authority, not
+something one call exercises. A declaration is matched by exact tool name, so the
+`"*"` tool entry cannot carry one. `process_creation` and `syscall` are accepted when
+you write the policy; the governed runtime decision refuses a tool that declares them.
+
+Leaving `capabilities` out means the tool is **undeclared**, which is not the same as
+`[none]`. A declaration states what a tool needs and grants nothing: leases are still
+authored separately under `authority.leases`, and none is ever derived from a
+declaration.
+
+What this will be used for is an admission lease check on a cooperative SDK
+`TOOL_CALL`. It is not confinement: it does not stop a process that bypasses the SDK
+or misreports what it is doing, and a lease scoped to selectors (paths or
+destinations) never admits a tool, only a `whole`-scope lease in the declared domain
+does. It is read from trusted operator policy only. As of this change the field is
+validated and carried through policy resolution, but no runtime enforces it yet; see
+[ADR 0038](../adr/0038-capability-leases-and-explicit-authority-contract.md).
 
 Policies are **scoped and they cascade.** A document's `scope` field attaches it
 to one of five levels — `global`, `org:<id>`, `team:<id>`, `agent:<uuid>`, or

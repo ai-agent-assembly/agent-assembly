@@ -76,6 +76,21 @@ mod raw {
     pub struct Tool {
         pub allow: Option<bool>,
         pub requires_approval_if: Option<String>,
+        #[serde(default, deserialize_with = "present_string_list")]
+        pub capabilities: Option<Vec<String>>,
+    }
+
+    /// A written `capabilities` key must be a list; `null` is an error, not
+    /// "undeclared" (AAASM-6259). Same rule as `aa_policy`'s raw layer.
+    fn present_string_list<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // serde_yaml reads a bare `null` as an empty sequence for `Vec`, which would
+        // surface as a misleading "must not be empty"; name the real problem.
+        Option::<Vec<String>>::deserialize(d)?
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("capabilities must be a list of words, not null"))
     }
 }
 
@@ -131,9 +146,17 @@ impl PolicyDocument {
             None => None,
         };
 
-        let tools = spec
-            .tools
-            .unwrap_or_default()
+        let raw_tools = spec.tools.unwrap_or_default();
+        // AAASM-6259: validated and then deliberately dropped. A tool
+        // declaration is an L7 admission input, not a cross-layer dimension, so
+        // it never reaches `ToolRule`, `lower_policy` or the eBPF lowering.
+        for (name, t) in &raw_tools {
+            if let Some(words) = &t.capabilities {
+                validate_tool_capabilities(name, words)?;
+            }
+        }
+
+        let tools = raw_tools
             .into_iter()
             .map(|(name, t)| ToolRule {
                 name,
@@ -200,6 +223,72 @@ impl PolicyDocument {
 
         Ok(doc)
     }
+}
+
+/// Words a `tools.<name>.capabilities` declaration may use. Mirrors
+/// `aa_policy::ToolCapability`'s accepted vocabulary; this crate cannot depend
+/// on `aa-policy` (the edge runs the other way), so the two lists are kept in
+/// step by `aa-policy`'s `yaml_parser_parity` corpus rather than by a shared type.
+#[cfg(feature = "serde")]
+const TOOL_CAPABILITY_WORDS: &[&str] = &[
+    "filesystem_read",
+    "filesystem_write",
+    "network_egress",
+    "name_resolution",
+    "syscall",
+    "process_creation",
+    "ipc",
+    "credential",
+    "none",
+];
+
+/// Launch-boundary domains: real lease domains, but not per-call authority.
+#[cfg(feature = "serde")]
+const LAUNCH_BOUNDARY_WORDS: &[&str] = &["resource", "workspace_transaction"];
+
+/// Validate one tool's `capabilities` list with the rules `aa_policy`'s
+/// validator applies. `process_creation` and `syscall` are accepted here for
+/// the same reason they are there: refusing them is a governed-mode decision,
+/// not an authoring one.
+#[cfg(feature = "serde")]
+fn validate_tool_capabilities(tool: &str, words: &[String]) -> Result<(), PolicyParseError> {
+    let reject = |reason: String| PolicyParseError::InvalidToolCapabilities {
+        tool: tool.to_string(),
+        reason,
+    };
+    if tool == "*" {
+        return Err(reject(
+            "capabilities cannot be declared under the \"*\" tool key; declarations are matched by exact tool name"
+                .to_string(),
+        ));
+    }
+    if words.is_empty() {
+        return Err(reject(
+            "must not be empty; list the words the tool needs, or [none]".to_string(),
+        ));
+    }
+    let mut seen: Vec<&str> = Vec::with_capacity(words.len());
+    for word in words {
+        let w = word.as_str();
+        if LAUNCH_BOUNDARY_WORDS.contains(&w) {
+            return Err(reject(format!(
+                "'{w}' is launch-boundary authority, not per-call authority, and cannot be declared on a tool"
+            )));
+        }
+        if !TOOL_CAPABILITY_WORDS.contains(&w) {
+            return Err(reject(format!("unrecognised capability '{w}'")));
+        }
+        if seen.contains(&w) {
+            return Err(reject(format!("duplicate capability '{w}'")));
+        }
+        seen.push(w);
+    }
+    if seen.contains(&"none") && seen.len() > 1 {
+        return Err(reject(
+            "'none' declares that the tool needs no lease and cannot be combined with other capabilities".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parse a capability token, mapping the parse error onto [`PolicyParseError`].
@@ -296,7 +385,7 @@ const FILESYSTEM_KEYS: &[&str] = &["read", "write"];
 const PATH_SCOPE_KEYS: &[&str] = &["allow"];
 
 #[cfg(feature = "serde")]
-const TOOL_KEYS: &[&str] = &["allow", "requires_approval_if", "limit_per_hour"];
+const TOOL_KEYS: &[&str] = &["allow", "requires_approval_if", "limit_per_hour", "capabilities"];
 
 /// Reject structural typos in the security-relevant dimensions this crate owns.
 ///
@@ -760,5 +849,78 @@ spec:
             .read
             .expect("read stated")
             .permits("/workspace"));
+    }
+
+    // ── AAASM-6259 — tools.<name>.capabilities ──────────────────────────────
+
+    fn tool_caps(tool: &str, caps: &str) -> Result<PolicyDocument, PolicyParseError> {
+        PolicyDocument::from_yaml(&format!(
+            "tools:\n  {tool}:\n    allow: true\n    capabilities: {caps}\n"
+        ))
+    }
+
+    #[test]
+    fn declared_tool_capabilities_are_accepted() {
+        for caps in [
+            "[network_egress, name_resolution]",
+            "[filesystem_write]",
+            "[none]",
+            "[process_creation, syscall]",
+            "[filesystem_read, filesystem_write, network_egress, name_resolution, ipc, credential]",
+        ] {
+            tool_caps("t", caps).unwrap_or_else(|e| panic!("{caps}: {e}"));
+        }
+    }
+
+    #[test]
+    fn invalid_tool_capabilities_are_rejected_naming_the_tool() {
+        for (caps, why) in [
+            ("[]", "empty"),
+            ("[teleport]", "unrecognised"),
+            ("[Network_Egress]", "unrecognised"),
+            ("[ipc, ipc]", "duplicate"),
+            ("[none, none]", "duplicate"),
+            ("[none, ipc]", "cannot be combined"),
+            ("[ipc, none]", "cannot be combined"),
+            ("[resource]", "launch-boundary"),
+            ("[ipc, workspace_transaction]", "launch-boundary"),
+        ] {
+            let err = tool_caps("t", caps).expect_err(caps);
+            assert!(
+                matches!(&err, PolicyParseError::InvalidToolCapabilities { tool, reason } if tool == "t" && reason.contains(why)),
+                "{caps}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_under_the_wildcard_tool_key_are_rejected() {
+        let err = tool_caps("\"*\"", "[ipc]").expect_err("wildcard declaration");
+        assert!(matches!(err, PolicyParseError::InvalidToolCapabilities { ref tool, .. } if tool == "*"));
+        tool_caps("exact", "[ipc]").expect("the same words on an exact name are accepted");
+    }
+
+    #[test]
+    fn a_non_list_capabilities_value_is_rejected() {
+        for caps in ["none", "{a: b}", "[[ipc]]", "[1]"] {
+            assert!(tool_caps("t", caps).is_err(), "{caps}");
+        }
+    }
+
+    /// A declaration is an L7 admission input. It must change nothing in the
+    /// cross-layer AST or in what is lowered to the kernel.
+    #[test]
+    fn a_declaration_is_never_lowered_into_the_canonical_document_or_ebpf() {
+        let bare =
+            PolicyDocument::from_yaml("network:\n  allowlist: [a.example]\ntools:\n  t:\n    allow: true\n").unwrap();
+        let declared = PolicyDocument::from_yaml(
+            "network:\n  allowlist: [a.example]\ntools:\n  t:\n    allow: true\n    capabilities: [network_egress, process_creation]\n",
+        )
+        .unwrap();
+        assert_eq!(bare, declared);
+        assert_eq!(
+            format!("{:?}", super::super::lower_to_ebpf(&bare)),
+            format!("{:?}", super::super::lower_to_ebpf(&declared))
+        );
     }
 }

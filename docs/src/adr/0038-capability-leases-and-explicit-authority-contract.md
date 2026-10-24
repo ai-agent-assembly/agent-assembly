@@ -1434,3 +1434,80 @@ This amendment adds a seam, not an enforcement feature.
   why the seam exempts no action class.
 - A gate that holds a `std::sync::Mutex` across a panic poisons it and then denies every
   later call: fail-closed, but persistent.
+
+## Amendment (AAASM-6259): operator-declared tool capabilities
+
+This amendment fixes the authored half of per-call tool admission: the policy field an
+operator uses to say what authority a tool's calls need. **Only the schema, validation,
+digest and resolution carry-through exist today.** No runtime consumes the declaration,
+and no shipped binary denies or admits a tool call because of it; that arrives in later
+changes under the same ticket. Nothing below should be read as a statement that a tool
+call is currently checked against a lease.
+
+### 31. `tools.<name>.capabilities` is a declaration of need, never a grant
+
+```yaml
+tools:
+  web_search: { allow: true, capabilities: [network_egress, name_resolution] }
+  write_note: { allow: true, capabilities: [filesystem_write] }
+  calculator: { allow: true, capabilities: [none] }   # purely logical, needs no lease
+```
+
+The vocabulary is exactly the names `LeaseDomain::parse` accepts, mapped one to one to
+capability domains, plus `none`. The field is `Option<Vec<ToolCapability>>`: **absent is
+undeclared and is a different state from `[none]`**. `authority.leases` stays
+independently authored and is never derived from a declaration, for the reason section 2
+gives: a lease computed from the thing it is later checked against would make the check a
+tautology.
+
+The validator rejects an empty list, an unknown word, a duplicate, `none` combined with
+any other word, `resource` and `workspace_transaction` (launch-boundary authority, not
+something a single call exercises), and any declaration under the `"*"` tool key
+(declarations are matched by exact tool name, and a wildcard would make every tool
+declared). `process_creation` and `syscall` **pass** the validator: they are real domains
+a tool may need. The governed decision in section 32 refuses them; authoring is not where
+that refusal belongs. The canonical parser in `aa-security` applies the same rules and
+never lowers the field into `ToolRule` or the eBPF rule set.
+
+The field participates in `content_digest` only when present, so every existing policy id
+is unchanged. The effective-policy resolution carries the declared map (declared tools
+only) and the digest so a later decision can attribute itself to the exact document it
+read.
+
+### 32. Governed mode is triggered by `AA_LEASE_POLICY`, not by "the policy authors a lease"
+
+Decided here, implemented later. The runtime treats itself as governed when, and only when,
+`AA_LEASE_POLICY` is set. The alternative considered, "governed once the policy authors at
+least one lease", fails open: deleting the leases from a policy silently returns the
+runtime to ungoverned. An operator-set switch outside the policy document cannot be
+removed by editing the document.
+
+In governed mode an undeclared tool is denied, and a tool that declares `process_creation`
+or `syscall` is refused. Those two are refused because this admission check cannot bound
+them: a tool that may spawn a process or issue raw syscalls is not confined by a lease the
+SDK-side wrapper consulted.
+
+### 33. What this is not: admission, not confinement
+
+The check this field enables is an **admission lease check for a cooperative SDK
+`TOOL_CALL`**. `action_type` and the rest of the request are SDK-asserted (see the known
+limitation under the AAASM-6259 gate-seam amendment), so a process that bypasses the SDK or
+misreports what a tool does is not stopped by it. A declaration is also a claim by the
+operator about the tool, not a measurement of it: a tool declared `[none]` that in fact
+writes files is not caught here.
+
+Selector-scoped leases (a lease whose scope is a path or destination list) never admit a
+tool. A declaration names a domain, not a destination, and answering "may this call reach
+that destination" from a domain-level declaration would widen the lease. Only a
+`scope: whole` lease in the declared domain admits.
+
+The field is trusted operator policy. It is read only from the operator-authored document
+and never from anything an agent, SDK or tool supplies.
+
+### 34. Compatibility
+
+The key is an additive public schema change (see the protocol changelog). An rc.7 binary
+does not know the key and rejects the document as an unknown key, which is fail-closed:
+a policy carrying declarations cannot be silently loaded by a binary that would ignore
+them.
+

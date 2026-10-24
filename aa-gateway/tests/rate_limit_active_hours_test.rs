@@ -131,6 +131,7 @@ fn limit_per_hour_allows_within_limit_then_denies_when_exceeded() {
             allow: true,
             limit_per_hour: Some(1),
             requires_approval_if: None,
+            capabilities: None,
         },
     );
     engine.load_policy(doc);

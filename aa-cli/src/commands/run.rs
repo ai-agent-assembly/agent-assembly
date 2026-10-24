@@ -7913,6 +7913,8 @@ mod tests {
             egress: aa_policy::EgressPosture::NotRequired,
             credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
+            tool_capabilities: Default::default(),
+            content_digest: String::new(),
         }
     }
 
@@ -7948,6 +7950,8 @@ mod tests {
             egress: aa_policy::EgressPosture::BrokerRequired,
             credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
+            tool_capabilities: Default::default(),
+            content_digest: String::new(),
         };
         assert_eq!(resolution.egress_posture(), aa_policy::EgressPosture::BrokerRequired);
         assert_eq!(
@@ -9488,6 +9492,8 @@ mod tests {
                 egress: aa_policy::EgressPosture::NotRequired,
                 credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
+                tool_capabilities: Default::default(),
+                content_digest: String::new(),
             },
             run_policy::PolicyResolution::Permissive {
                 source: PathBuf::from("/p.yaml"),
@@ -9504,6 +9510,8 @@ mod tests {
                 egress: aa_policy::EgressPosture::NotRequired,
                 credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
+                tool_capabilities: Default::default(),
+                content_digest: String::new(),
             },
             run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
             run_policy::PolicyResolution::LoadFailed {

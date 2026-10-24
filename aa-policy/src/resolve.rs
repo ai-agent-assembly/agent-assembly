@@ -62,6 +62,10 @@ pub const POLICY_STATE_ENV: &str = "AA_POLICY_STATE";
 /// Environment variable carrying the path the policy was resolved from.
 pub const POLICY_SOURCE_ENV: &str = "AA_POLICY_SOURCE";
 
+/// Declared tool authority by exact tool name (AAASM-6259). A `BTreeMap` so
+/// iteration and `Debug` output are deterministic.
+pub type ToolCapabilityMap = std::collections::BTreeMap<String, Vec<crate::document::ToolCapability>>;
+
 /// The outcome of resolving an effective policy for a launch.
 ///
 /// # Why four variants and not `Option<PolicyDocument>`
@@ -140,6 +144,17 @@ pub enum PolicyResolution {
         /// `aa_isolation::lease_lowering::AuthoredLease` and lowers the batch
         /// once a real agent id exists; see `lease_grants()`.
         leases: Vec<crate::canonical::CanonicalLeaseGrant>,
+        /// AAASM-6259 — operator-declared `tools.<name>.capabilities`, keyed by
+        /// exact tool name and captured at the same point as `leases`. Only
+        /// *declared* tools appear: an absent key means undeclared, which is
+        /// deliberately distinguishable from `[NoAuthority]` (declared as
+        /// needing nothing). Never lowered into `canonical` and never turned
+        /// into a lease; see `tool_capabilities()`.
+        tool_capabilities: ToolCapabilityMap,
+        /// AAASM-6259 — `content_digest` of the validated document, so a
+        /// later per-call decision can attribute itself to exactly the policy
+        /// whose declarations it read.
+        content_digest: String,
     },
     /// The operator explicitly selected an allow-all artifact.
     Permissive {
@@ -169,6 +184,13 @@ pub enum PolicyResolution {
         /// does — but it is carried here for the same reason `canonical` is:
         /// this is the last point the rich document exists to read it from.
         leases: Vec<crate::canonical::CanonicalLeaseGrant>,
+        /// AAASM-6259 — always empty here, by construction: a document is
+        /// `Permissive` only when its sole tool entry is `"*"`, and a
+        /// declaration under `"*"` is refused at validation. The field exists
+        /// so both effective states answer `tool_capabilities()` with `Some`.
+        tool_capabilities: ToolCapabilityMap,
+        /// AAASM-6259 — see [`Self::Enforced`]'s `content_digest` field.
+        content_digest: String,
     },
     /// No effective policy resolved.
     Unconfigured(Unconfigured),
@@ -372,6 +394,35 @@ impl PolicyResolution {
         }
     }
 
+    /// Operator-declared `tools.<name>.capabilities` of the effective policy
+    /// (AAASM-6259), or `None` when no policy resolved (`Unconfigured` /
+    /// `LoadFailed`).
+    ///
+    /// `None` and `Some(empty map)` are different states and must stay
+    /// different: the first means there is no policy to read, the second means
+    /// a policy loaded and no tool declared anything. A governed decision must
+    /// key off `AA_LEASE_POLICY` being set and a successful `Enforced` load,
+    /// and must treat a tool missing from the map as undeclared, which is a
+    /// deny. Reading `None` as "nothing declared, nothing to check" would be
+    /// the fail-open reading.
+    pub fn tool_capabilities(&self) -> Option<&ToolCapabilityMap> {
+        match self {
+            Self::Enforced { tool_capabilities, .. } | Self::Permissive { tool_capabilities, .. } => {
+                Some(tool_capabilities)
+            }
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => None,
+        }
+    }
+
+    /// `content_digest` of the effective policy document, or `None` when no
+    /// policy resolved (AAASM-6259).
+    pub fn content_digest(&self) -> Option<&str> {
+        match self {
+            Self::Enforced { content_digest, .. } | Self::Permissive { content_digest, .. } => Some(content_digest),
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => None,
+        }
+    }
+
     /// Consume this resolution into the policy a launch may proceed under, or
     /// refuse with an explanation the operator can act on.
     ///
@@ -549,6 +600,13 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
     // AAASM-6277 — derived here for the same reason `canonical`/`egress`
     // are: this is the last point the rich validated document exists.
     let leases = validated.to_canonical_leases();
+    // AAASM-6259 — same reason again. Only tools that *declared* appear.
+    let tool_capabilities: ToolCapabilityMap = validated
+        .tools
+        .iter()
+        .filter_map(|(name, t)| t.capabilities.clone().map(|c| (name.clone(), c)))
+        .collect();
+    let content_digest = validated.content_digest();
     if is_explicit_allow_all(&validated) {
         return PolicyResolution::Permissive {
             source: source.to_path_buf(),
@@ -557,6 +615,8 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
             egress,
             credentials,
             leases,
+            tool_capabilities,
+            content_digest,
         };
     }
     PolicyResolution::Enforced {
@@ -566,6 +626,8 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
         egress,
         credentials,
         leases,
+        tool_capabilities,
+        content_digest,
     }
 }
 
@@ -1250,6 +1312,116 @@ mod tests {
         }
         .lease_grants()
         .is_empty());
+    }
+
+    // ── AAASM-6259 — declared tool capabilities ─────────────────────────────
+
+    /// The map carries exactly the tools that declared, each with its words,
+    /// and a tool with no declaration is *absent* — not `[none]`.
+    #[test]
+    fn classify_carries_declared_tool_capabilities_and_omits_undeclared_tools() {
+        use crate::document::{LeaseDomain, ToolCapability};
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "declared.yaml",
+            "tools:\n  web_search: { allow: true, capabilities: [network_egress, name_resolution] }\n  \
+             calculator: { allow: true, capabilities: [none] }\n  bash: { allow: true }\n",
+        );
+
+        let resolution = load(&path);
+        assert_eq!(resolution.state_token(), "enforced");
+        let caps = resolution.tool_capabilities().expect("enforced policy exposes its map");
+
+        assert_eq!(
+            caps.get("web_search"),
+            Some(&vec![
+                ToolCapability::Domain(LeaseDomain::NetworkEgress),
+                ToolCapability::Domain(LeaseDomain::NameResolution),
+            ])
+        );
+        assert_eq!(caps.get("calculator"), Some(&vec![ToolCapability::NoAuthority]));
+        assert!(
+            !caps.contains_key("bash"),
+            "an undeclared tool must be absent, not [none]"
+        );
+        assert_eq!(caps.len(), 2);
+    }
+
+    /// Declarations never become leases: the two are carried independently.
+    #[test]
+    fn classify_does_not_derive_leases_from_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "declared.yaml",
+            "tools:\n  web_search: { allow: true, capabilities: [network_egress] }\n",
+        );
+        let resolution = load(&path);
+        assert_eq!(resolution.tool_capabilities().map(|m| m.len()), Some(1));
+        assert!(resolution.lease_grants().is_empty());
+    }
+
+    /// The digest carried is the validated document's own, so a later decision
+    /// can name the policy whose declarations it read.
+    #[test]
+    fn classify_carries_the_documents_content_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = "tools:\n  web_search: { allow: true, capabilities: [network_egress] }\n";
+        let resolution = load(&write(&dir, "declared.yaml", yaml));
+        let expected = crate::PolicyValidator::from_yaml(yaml)
+            .unwrap()
+            .document
+            .content_digest();
+        assert_eq!(resolution.content_digest(), Some(expected.as_str()));
+
+        let other = load(&write(
+            &dir,
+            "other.yaml",
+            "tools:\n  web_search: { allow: true, capabilities: [ipc] }\n",
+        ));
+        assert_ne!(
+            other.content_digest(),
+            resolution.content_digest(),
+            "a different declaration must be a different policy id"
+        );
+    }
+
+    /// The distinction the accessor exists to keep: a loaded policy that
+    /// declares nothing is `Some(empty)`, never `None`.
+    #[test]
+    fn an_enforced_policy_with_no_declarations_is_some_empty_not_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolution = load(&write(&dir, "plain.yaml", "tools:\n  bash:\n    allow: true\n"));
+        assert_eq!(resolution.state_token(), "enforced");
+        assert_eq!(resolution.tool_capabilities().map(|m| m.is_empty()), Some(true));
+    }
+
+    #[test]
+    fn refusing_states_have_no_map_at_all_not_an_empty_one() {
+        let unconfigured = PolicyResolution::Unconfigured(Unconfigured::NoSource { searched: vec![] });
+        assert_eq!(unconfigured.tool_capabilities(), None);
+        assert_eq!(unconfigured.content_digest(), None);
+        let failed = PolicyResolution::LoadFailed {
+            source: PathBuf::from("/p.yaml"),
+            detail: "bad".to_string(),
+        };
+        assert_eq!(failed.tool_capabilities(), None);
+        assert_eq!(failed.content_digest(), None);
+    }
+
+    /// A document with an invalid declaration never resolves as enforced, so
+    /// no half-validated map can reach a decision.
+    #[test]
+    fn an_invalid_declaration_is_a_load_failure_carrying_no_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolution = load(&write(
+            &dir,
+            "bad.yaml",
+            "tools:\n  t: { allow: true, capabilities: [resource] }\n",
+        ));
+        assert_eq!(resolution.state_token(), "load_failed");
+        assert_eq!(resolution.tool_capabilities(), None);
     }
 
     #[test]

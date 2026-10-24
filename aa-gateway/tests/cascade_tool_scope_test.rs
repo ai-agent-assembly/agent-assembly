@@ -76,6 +76,7 @@ fn tool_doc(scope: PolicyScope, tool: &str, allow: bool) -> PolicyDocument {
             allow,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         },
     );
     PolicyDocument {
