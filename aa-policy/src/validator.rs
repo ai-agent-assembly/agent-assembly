@@ -6,7 +6,7 @@ use crate::{
     document::{
         ActionOnExceed, ActiveHours, ApprovalPolicy, BudgetPolicy, CredentialAction, CredentialBrokeragePosture,
         DataPolicy, EgressPosture, LeaseDomain, LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy,
-        ToolPolicy,
+        ToolCapability, ToolPolicy,
     },
     error::{ValidationError, ValidationWarning},
     raw::{
@@ -921,6 +921,11 @@ impl PolicyValidator {
                 }
             }
 
+            let capabilities = rt
+                .capabilities
+                .as_deref()
+                .and_then(|words| Self::validate_tool_capabilities(&name, words, errors));
+
             tools.insert(
                 name,
                 ToolPolicy {
@@ -933,11 +938,88 @@ impl PolicyValidator {
                     allow: rt.allow.unwrap_or(false),
                     limit_per_hour: rt.limit_per_hour,
                     requires_approval_if: rt.requires_approval_if,
-                    capabilities: None,
+                    capabilities,
                 },
             );
         }
         tools
+    }
+
+    /// Validate one `tools.<name>.capabilities` declaration (AAASM-6259).
+    ///
+    /// Returns `None` both when the field is absent (the caller never gets
+    /// here) and when any rule fails; a failing entry contributes nothing
+    /// because the non-empty `errors` already fails the whole document.
+    ///
+    /// `process_creation` and `syscall` deliberately pass: they are real
+    /// domains a tool may genuinely need, and it is the later governed-mode
+    /// decision — not authoring — that refuses them. `resource` and
+    /// `workspace_transaction` are launch-boundary authority, not something a
+    /// single tool call exercises, so declaring them per tool is meaningless
+    /// and is rejected rather than silently accepted as a no-op.
+    fn validate_tool_capabilities(
+        tool: &str,
+        words: &[String],
+        errors: &mut Vec<ValidationError>,
+    ) -> Option<Vec<ToolCapability>> {
+        let field = format!("tools.{tool}.capabilities");
+        let before = errors.len();
+
+        // Declarations are looked up by exact tool name only. A wildcard entry
+        // carrying one would make every tool "declared" by the one line, which
+        // defeats the point of an explicit per-tool declaration.
+        if tool == "*" {
+            errors.push(ValidationError::new(
+                field.clone(),
+                "capabilities cannot be declared under the \"*\" tool key; declarations are matched by exact \
+                 tool name, and a wildcard would make every tool declared",
+            ));
+        }
+
+        if words.is_empty() {
+            errors.push(ValidationError::new(
+                field.clone(),
+                "must not be empty; list the capability words the tool needs, or [none] if it needs no lease",
+            ));
+            return None;
+        }
+
+        let mut parsed: Vec<ToolCapability> = Vec::with_capacity(words.len());
+        for word in words {
+            match ToolCapability::parse(word) {
+                None => errors.push(ValidationError::new(
+                    field.clone(),
+                    format!(
+                        "unrecognised capability '{word}'; valid words are: filesystem_read, filesystem_write, \
+                         network_egress, name_resolution, syscall, process_creation, ipc, credential, none"
+                    ),
+                )),
+                Some(ToolCapability::Domain(d @ (LeaseDomain::Resource | LeaseDomain::WorkspaceTransaction))) => {
+                    errors.push(ValidationError::new(
+                        field.clone(),
+                        format!(
+                            "'{}' is launch-boundary authority, not per-call authority, and cannot be declared \
+                             on a tool",
+                            d.as_str()
+                        ),
+                    ));
+                }
+                Some(cap) if parsed.contains(&cap) => errors.push(ValidationError::new(
+                    field.clone(),
+                    format!("duplicate capability '{word}'"),
+                )),
+                Some(cap) => parsed.push(cap),
+            }
+        }
+
+        if parsed.contains(&ToolCapability::NoAuthority) && parsed.len() > 1 {
+            errors.push(ValidationError::new(
+                field,
+                "'none' declares that the tool needs no lease and cannot be combined with other capabilities",
+            ));
+        }
+
+        (errors.len() == before).then_some(parsed)
     }
 
     fn validate_approval_policy(
@@ -2701,5 +2783,162 @@ approval:
     fn an_unknown_top_level_key_lists_credentials_as_valid() {
         let errs = PolicyValidator::from_yaml("risk_tier: high\n").expect_err("unknown key");
         assert!(errs.iter().any(|e| e.message.contains("credentials")));
+    }
+
+    // ── AAASM-6259 — tools.<name>.capabilities ──────────────────────────────
+
+    fn tool_caps_yaml(tool: &str, caps: &str) -> String {
+        format!("tools:\n  {tool}:\n    allow: true\n    capabilities: {caps}\n")
+    }
+
+    fn tool_caps_errors(tool: &str, caps: &str) -> Vec<ValidationError> {
+        PolicyValidator::from_yaml(&tool_caps_yaml(tool, caps)).expect_err("must be rejected")
+    }
+
+    #[test]
+    fn the_spec_example_validates_and_carries_each_declaration() {
+        let yaml = "tools:\n  web_search: { allow: true, capabilities: [network_egress, name_resolution] }\n  \
+                    write_note: { allow: true, capabilities: [filesystem_write] }\n  \
+                    calculator: { allow: true, capabilities: [none] }\n";
+        let tools = PolicyValidator::from_yaml(yaml)
+            .expect("spec example is valid")
+            .document
+            .tools;
+        assert_eq!(
+            tools["web_search"].capabilities,
+            Some(vec![
+                ToolCapability::Domain(LeaseDomain::NetworkEgress),
+                ToolCapability::Domain(LeaseDomain::NameResolution)
+            ])
+        );
+        assert_eq!(
+            tools["write_note"].capabilities,
+            Some(vec![ToolCapability::Domain(LeaseDomain::FilesystemWrite)])
+        );
+        assert_eq!(
+            tools["calculator"].capabilities,
+            Some(vec![ToolCapability::NoAuthority])
+        );
+    }
+
+    #[test]
+    fn an_absent_capabilities_field_is_undeclared_not_none() {
+        let tools = PolicyValidator::from_yaml("tools:\n  bash:\n    allow: true\n")
+            .expect("valid")
+            .document
+            .tools;
+        assert_eq!(tools["bash"].capabilities, None);
+    }
+
+    #[test]
+    fn process_creation_and_syscall_pass_the_validator() {
+        let tools = PolicyValidator::from_yaml(&tool_caps_yaml("shell", "[process_creation, syscall]"))
+            .expect("authoring is not where these are refused")
+            .document
+            .tools;
+        assert_eq!(tools["shell"].capabilities.as_ref().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn every_non_launch_boundary_domain_is_accepted() {
+        for word in [
+            "filesystem_read",
+            "filesystem_write",
+            "network_egress",
+            "name_resolution",
+            "syscall",
+            "process_creation",
+            "ipc",
+            "credential",
+            "none",
+        ] {
+            PolicyValidator::from_yaml(&tool_caps_yaml("t", &format!("[{word}]")))
+                .unwrap_or_else(|e| panic!("{word} must be accepted: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn an_empty_capabilities_list_is_rejected() {
+        let errs = tool_caps_errors("t", "[]");
+        assert!(errs
+            .iter()
+            .any(|e| e.field == "tools.t.capabilities" && e.message.contains("empty")));
+    }
+
+    #[test]
+    fn an_unknown_capability_word_is_rejected_naming_the_word() {
+        for word in ["network", "Network_Egress", "filesystem_execute", "all", "*"] {
+            let errs = tool_caps_errors("t", &format!("[\"{word}\"]"));
+            assert!(
+                errs.iter()
+                    .any(|e| e.message.contains("unrecognised") && e.message.contains(word)),
+                "{word}: {errs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_duplicate_capability_is_rejected() {
+        let errs = tool_caps_errors("t", "[network_egress, network_egress]");
+        assert!(errs.iter().any(|e| e.message.contains("duplicate")));
+        let errs = tool_caps_errors("t", "[none, none]");
+        assert!(errs.iter().any(|e| e.message.contains("duplicate")));
+    }
+
+    #[test]
+    fn none_mixed_with_any_other_word_is_rejected_in_either_order() {
+        for caps in ["[none, ipc]", "[ipc, none]"] {
+            let errs = tool_caps_errors("t", caps);
+            assert!(errs.iter().any(|e| e.message.contains("cannot be combined")), "{caps}");
+        }
+    }
+
+    #[test]
+    fn launch_boundary_domains_are_rejected_even_alongside_valid_words() {
+        for word in ["resource", "workspace_transaction"] {
+            for caps in [format!("[{word}]"), format!("[ipc, {word}]")] {
+                let errs = tool_caps_errors("t", &caps);
+                assert!(
+                    errs.iter()
+                        .any(|e| e.message.contains("launch-boundary") && e.message.contains(word)),
+                    "{caps}: {errs:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn capabilities_under_the_wildcard_tool_key_are_rejected_even_when_the_words_are_valid() {
+        let errs = tool_caps_errors("\"*\"", "[ipc]");
+        assert!(errs
+            .iter()
+            .any(|e| e.field == "tools.*.capabilities" && e.message.contains("wildcard")));
+        // The control: the same words on an exact name are accepted, so the
+        // rejection above is about the key, not the words.
+        PolicyValidator::from_yaml(&tool_caps_yaml("exact_tool", "[ipc]")).expect("exact name accepted");
+    }
+
+    #[test]
+    fn a_wildcard_tool_entry_without_capabilities_is_still_valid() {
+        PolicyValidator::from_yaml("tools:\n  \"*\":\n    allow: true\n").expect("plain wildcard unaffected");
+    }
+
+    #[test]
+    fn a_non_list_capabilities_value_is_rejected() {
+        for caps in ["none", "network_egress", "{a: b}", "[[ipc]]", "[1]"] {
+            assert!(
+                PolicyValidator::from_yaml(&tool_caps_yaml("t", caps)).is_err(),
+                "{caps} must not be accepted as a capabilities declaration"
+            );
+        }
+    }
+
+    #[test]
+    fn declaring_capabilities_does_not_create_a_lease() {
+        let out = PolicyValidator::from_yaml(&tool_caps_yaml("t", "[network_egress]")).expect("valid");
+        assert!(
+            out.document.leases.is_empty(),
+            "leases must stay independently authored"
+        );
     }
 }

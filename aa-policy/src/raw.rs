@@ -441,6 +441,10 @@ pub struct RawToolPolicy {
     pub limit_per_hour: Option<u32>,
     /// CEL expression that triggers human-in-the-loop approval.
     pub requires_approval_if: Option<String>,
+    /// Operator-declared authority words (AAASM-6259); validated against
+    /// [`crate::document::ToolCapability`]. Kept as raw strings so an unknown
+    /// word is a validation error naming the word, not an opaque serde error.
+    pub capabilities: Option<Vec<String>>,
     /// Stray keys captured so the validator can reject them (AAASM-4330
     /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
