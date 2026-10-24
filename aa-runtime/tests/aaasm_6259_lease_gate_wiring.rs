@@ -42,6 +42,14 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 const REFUSED: i32 = 78;
+
+/// Log lines the runtime emits as it brings subsystems up. A refusal must be
+/// decided before any of them, which is what "nothing was bound" means here.
+const STARTUP_MARKERS: [&str; 3] = [
+    "aa-runtime starting",
+    "IPC server task spawned",
+    "health server task spawned",
+];
 const GATEWAY_ALLOW: &str = "gateway-allow";
 const LEASE_DENY: &str = "capability lease required";
 
@@ -118,8 +126,9 @@ fn now_secs() -> u64 {
 
 /// A temp directory (mode 0700, as the state loader requires), one agent id,
 /// a policy and its lease state record.
+#[derive(Clone)]
 struct Rig {
-    dir: tempfile::TempDir,
+    dir: Arc<tempfile::TempDir>,
     agent: String,
     policy: PathBuf,
     state: PathBuf,
@@ -143,7 +152,7 @@ impl Rig {
             state: dir_real.join("lease.json"),
             policy,
             digest,
-            dir,
+            dir: Arc::new(dir),
         }
     }
 
@@ -163,6 +172,7 @@ impl Rig {
             .env("AA_POLICY_PATH", "")
             .env("AA_METRICS_ADDR", format!("127.0.0.1:{port}"))
             .env("AA_AUDIT_BUFFER_PATH", self.dir.path().join("audit.db"))
+            .env("RUST_LOG", "info")
             .env("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "3");
         if let Some(g) = gateway {
             c.env("AA_GATEWAY_ENDPOINT", format!("http://{g}"));
@@ -171,10 +181,15 @@ impl Rig {
     }
 
     fn governed(&self, gateway: SocketAddr) -> Runtime {
-        let mut c = self.command(Some(gateway), free_port());
-        c.env("AA_LEASE_POLICY", &self.policy)
-            .env("AA_LEASE_STATE", &self.state);
-        Runtime::spawn(c, self)
+        let rig = self.clone();
+        Runtime::spawn(
+            move |port| {
+                let mut c = rig.command(Some(gateway), port);
+                c.env("AA_LEASE_POLICY", &rig.policy).env("AA_LEASE_STATE", &rig.state);
+                c
+            },
+            self,
+        )
     }
 }
 
@@ -183,37 +198,65 @@ struct Runtime {
     agent: String,
     port: u16,
     socket: PathBuf,
+    build: Box<dyn Fn(u16) -> Command + Send + Sync>,
+    log: PathBuf,
+}
+
+/// Seconds of cold-start allowance the permit windows below are sized against.
+fn warm_up_binary() {
+    // A freshly built, never-launched binary can take minutes to validate on
+    // macOS. Pay that once, here, so it cannot land inside a timed window.
+    static WARM: std::sync::Once = std::sync::Once::new();
+    WARM.call_once(|| {
+        let _ = Command::new(env!("CARGO_BIN_EXE_aa-runtime")).arg("--version").output();
+    });
 }
 
 impl Runtime {
-    fn spawn(mut c: Command, rig: &Rig) -> Self {
-        let port: u16 = c
-            .get_envs()
-            .find(|(k, _)| *k == "AA_METRICS_ADDR")
-            .and_then(|(_, v)| v?.to_str()?.rsplit(':').next()?.parse().ok())
-            .unwrap();
-        let _ = std::fs::remove_file(rig.socket());
-        let out = std::fs::File::create(rig.dir.path().join("runtime.log")).unwrap();
-        let child = c
-            .stdout(Stdio::from(out.try_clone().unwrap()))
-            .stderr(Stdio::from(out))
-            .spawn()
-            .expect("spawn aa-runtime");
+    fn spawn(build: impl Fn(u16) -> Command + Send + Sync + 'static, rig: &Rig) -> Self {
+        warm_up_binary();
+        let log = rig.dir.path().join("runtime.log");
+        let build: Box<dyn Fn(u16) -> Command + Send + Sync> = Box::new(build);
+        let (child, port) = Self::launch(&*build, rig.socket(), &log);
         Self {
             child,
             agent: rig.agent.clone(),
             port,
             socket: rig.socket(),
+            build,
+            log,
         }
     }
 
+    fn launch(build: &dyn Fn(u16) -> Command, socket: PathBuf, log: &Path) -> (Child, u16) {
+        let port = free_port();
+        let _ = std::fs::remove_file(socket);
+        let out = std::fs::File::create(log).unwrap();
+        let child = build(port)
+            .stdout(Stdio::from(out.try_clone().unwrap()))
+            .stderr(Stdio::from(out))
+            .spawn()
+            .expect("spawn aa-runtime");
+        (child, port)
+    }
+
     async fn wait_ready(&mut self) {
-        // A freshly built, never-launched binary can take minutes to validate on
-        // macOS; that is a slow start, not a hang.
         let deadline = Instant::now() + Duration::from_secs(120);
+        let mut relaunches = 0;
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
-                panic!("runtime exited early with {status}");
+                // `free_port` can lose a race for the port between probing and
+                // binding. That one failure is retried; any other early exit is real.
+                let text = std::fs::read_to_string(&self.log).unwrap_or_default();
+                assert!(
+                    relaunches < 3 && text.contains("failed to bind health server"),
+                    "runtime exited early with {status}:\n{text}"
+                );
+                relaunches += 1;
+                let (child, port) = Self::launch(&*self.build, self.socket.clone(), &self.log);
+                self.child = child;
+                self.port = port;
+                continue;
             }
             // The IPC socket appears before the health server is spawned; wait for both.
             if self.socket.exists()
@@ -225,6 +268,10 @@ impl Runtime {
             assert!(Instant::now() < deadline, "runtime never became ready");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    fn log_text(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_default()
     }
 
     async fn connect(&self) -> UnixStream {
@@ -389,16 +436,24 @@ fn lease_id(state: &LeaseState, domain: &str) -> String {
 async fn a_valid_lease_permits_and_the_gateway_is_still_consulted() {
     let (gw, calls) = start_gateway().await;
     let rig = Rig::new(&policy_yaml(&read_lease(3600)));
-    rig.init();
+    let _state = rig.init();
     let mut rt = rig.governed(gw);
     rt.wait_ready().await;
+    // The runtime's own log shows startup ordering markers (control for the
+    // refusal test's "none of these before a refusal" assertion).
+    for marker in STARTUP_MARKERS {
+        assert!(
+            rt.log_text().contains(marker),
+            "control: {marker:?} missing from a normal start"
+        );
+    }
 
     assert!(permitted(&rt.tool("reader").await));
     assert!(permitted(&rt.tool("calc").await), "a [none] tool needs no lease");
     assert_eq!(calls.load(Ordering::SeqCst), 2, "a permit falls through to the gateway");
     assert_eq!(
         rt.lease_governance().unwrap(),
-        serde_json::json!({"generation": 1, "state": "governed"})
+        serde_json::json!({"run_id": _state.run_id(), "generation": 1, "state": "governed"})
     );
 }
 
@@ -475,7 +530,9 @@ async fn sdk_asserted_identity_and_arguments_cannot_influence_the_verdict() {
 #[tokio::test]
 async fn a_lease_stops_permitting_at_expiry_with_no_grace() {
     let (gw, calls) = start_gateway().await;
-    let ttl = 8;
+    // Sized so even a slow cold start leaves a permit window; the binary is
+    // pre-warmed in `Runtime::spawn`.
+    let ttl = 15;
     let rig = Rig::new(&policy_yaml(&read_lease(ttl)));
     let state = rig.init();
     let expiry = UNIX_EPOCH + Duration::from_secs(state.issued_at() + ttl);
@@ -609,26 +666,90 @@ async fn live_corruption_or_deletion_denies_everything_and_never_heals() {
     }
 }
 
+/// Replace the record the way an operator tool would: write a sibling, then
+/// rename over it, so the runtime can never read a half-written file.
+fn replace_record_atomically(path: &Path, bytes: &[u8]) {
+    let tmp = path.with_extension("restore.tmp");
+    std::fs::write(&tmp, bytes).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
+}
+
+/// A valid record for the same run with a chosen generation and revoked set.
+fn crafted(base: &LeaseState, generation: u64, revoked: &[&str]) -> Vec<u8> {
+    let mut v: serde_json::Value = serde_json::from_slice(&base.to_bytes()).unwrap();
+    v["generation"] = generation.into();
+    v["revoked"] = serde_json::json!(revoked);
+    let bytes = serde_json::to_vec_pretty(&v).unwrap();
+    LeaseState::parse(&bytes).expect("the crafted record is itself valid");
+    bytes
+}
+
+async fn assert_trips_with(rig: &Rig, rt: &Runtime, reason: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while rt.lease_governance().unwrap()["state"] != "denied_all" {
+        assert!(Instant::now() < deadline, "never tripped (wanted {reason:?})");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(lease_denied(&rt.tool("reader").await));
+    assert!(
+        rt.log_text().contains(reason),
+        "expected {reason:?} in:\n{}",
+        rt.log_text()
+    );
+    let _ = rig;
+}
+
 #[tokio::test]
-async fn a_rolled_back_record_trips_the_gate() {
+async fn a_restored_older_record_trips_the_gate() {
     let (gw, _calls) = start_gateway().await;
     let rig = Rig::new(&policy_yaml(&read_lease(3600)));
     let state = rig.init();
     let original = state.to_bytes();
     let mut rt = rig.governed(gw);
     rt.wait_ready().await;
-
     let revoked = revoke_ids(&rig.state, &[lease_id(&state, "filesystem_read")]).unwrap();
     rt.wait_generation(revoked.generation()).await;
-    // Put the older, valid record back: that would re-grant the lease.
-    std::fs::write(&rig.state, original).unwrap();
-    std::fs::set_permissions(&rig.state, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while rt.lease_governance().unwrap()["state"] != "denied_all" {
-        assert!(Instant::now() < deadline, "rollback never tripped the gate");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert!(lease_denied(&rt.tool("reader").await));
+    // The older, valid record back: it would re-grant the lease. It is both a
+    // lower generation and a smaller revoked set; the generation check is first.
+    replace_record_atomically(&rig.state, &original);
+    assert_trips_with(&rig, &rt, "generation went backwards").await;
+}
+
+#[tokio::test]
+async fn a_record_whose_generation_went_backwards_trips_even_with_a_larger_revoked_set() {
+    let (gw, _calls) = start_gateway().await;
+    let rig = Rig::new(&policy_yaml(&read_lease(3600)));
+    let state = rig.init();
+    let mut rt = rig.governed(gw);
+    rt.wait_ready().await;
+    let revoked = revoke_ids(&rig.state, &[lease_id(&state, "filesystem_read")]).unwrap();
+    rt.wait_generation(revoked.generation()).await;
+    // Generation 1 (was 2) but a superset of the revoked set: only the
+    // generation rule can object.
+    let ids = [
+        lease_id(&state, "filesystem_read"),
+        lease_id(&state, "filesystem_write"),
+    ];
+    let mut sorted = ids.clone();
+    sorted.sort();
+    let refs: Vec<&str> = sorted.iter().map(String::as_str).collect();
+    replace_record_atomically(&rig.state, &crafted(&state, 1, &refs));
+    assert_trips_with(&rig, &rt, "generation went backwards").await;
+}
+
+#[tokio::test]
+async fn a_record_that_drops_a_revocation_trips_even_with_a_higher_generation() {
+    let (gw, _calls) = start_gateway().await;
+    let rig = Rig::new(&policy_yaml(&read_lease(3600)));
+    let state = rig.init();
+    let mut rt = rig.governed(gw);
+    rt.wait_ready().await;
+    let revoked = revoke_ids(&rig.state, &[lease_id(&state, "filesystem_read")]).unwrap();
+    rt.wait_generation(revoked.generation()).await;
+    // Generation 5 (was 2) with the revoked lease absent: only the shrink rule can object.
+    replace_record_atomically(&rig.state, &crafted(&state, 5, &["unrelated-id"]));
+    assert_trips_with(&rig, &rt, "revocation set shrank").await;
 }
 
 /// Launch with a bad setup and require: exit 78, the reason on stderr/stdout, no
@@ -662,6 +783,16 @@ fn assert_refuses(rig: &Rig, configure: impl FnOnce(&mut Command), why: &str, ex
         text.contains(expect_in_log),
         "{why}: expected {expect_in_log:?} in:\n{text}"
     );
+    // Falsifiable form of "nothing was bound": the refusal is logged and none of
+    // the lines a subsystem start-up emits precede it, so it was decided before
+    // any listener could have been created (not merely cleaned up afterwards).
+    assert!(text.contains("refused to start"), "{why}: no refusal line in:\n{text}");
+    for marker in STARTUP_MARKERS {
+        assert!(
+            !text.contains(marker),
+            "{why}: {marker:?} logged before the refusal:\n{text}"
+        );
+    }
     assert!(!rig.socket().exists(), "{why}: an IPC socket was created");
     assert!(
         std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
@@ -791,9 +922,15 @@ async fn without_aa_lease_policy_the_runtime_is_ungoverned_whatever_else_is_pres
     rig.init();
     // A state record exists and AA_LEASE_STATE is set, but only AA_LEASE_POLICY
     // may switch governed mode on.
-    let mut c = rig.command(Some(gw), free_port());
-    c.env("AA_LEASE_STATE", &rig.state);
-    let mut rt = Runtime::spawn(c, &rig);
+    let r = rig.clone();
+    let mut rt = Runtime::spawn(
+        move |port| {
+            let mut c = r.command(Some(gw), port);
+            c.env("AA_LEASE_STATE", &r.state);
+            c
+        },
+        &rig,
+    );
     rt.wait_ready().await;
 
     // No lease for `writer`, an undeclared tool, a forged agent: all reach the gateway.
