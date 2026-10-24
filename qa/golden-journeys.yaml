@@ -2725,7 +2725,101 @@ journeys:
   outcome: See AAASM-6267 for the full acceptance contract; this row is a selection index only.
   feature_refs:
   - AAASM-6171
-  lifecycle_state: gap
+  lifecycle_state: partial
+  gap_owner: AAASM-6298
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::no_grant_is_refused_for_every_operation_class_and_the_same_inputs_with_a_grant_are_admitted
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::signing_is_refused_even_with_a_grant_and_an_explicit_permit_because_no_invoker_exists
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::a_grant_for_one_class_does_not_admit_another_class_the_contract_does_not_permit
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::an_empty_permitted_set_permits_nothing_not_everything
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::a_grant_scoped_to_one_selector_refuses_a_request_for_another_and_admits_the_covered_one
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::the_authority_carries_the_requesting_identity_and_two_agents_are_distinguishable
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::another_agents_lease_does_not_grant_this_agent
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::a_revoked_lease_is_refused_and_the_same_lease_unrevoked_is_admitted
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::a_lease_valid_at_one_gate_call_is_refused_at_the_next_once_it_has_expired
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::characterisation_there_is_no_revocation_channel_into_a_built_authority
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::characterisation_a_requirement_with_no_leases_is_a_compatibility_residual_that_the_gate_admits
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::argument_injection_is_rejected_before_the_gate_and_the_gate_rejects_unknown_schemes
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::a_path_outside_the_permitted_root_is_refused_and_inside_is_admitted
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::argv_is_a_fixed_shape_with_no_shell_and_the_program_is_the_one_supplied
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::an_unavailable_broker_refuses_even_a_granted_agent_and_is_reported_as_unavailable_not_as_no_grant
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation/tests/host_capability_falsification.rs::characterisation_an_empty_scheme_allowlist_admits_any_well_formed_scheme
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::granted_xcode_list_really_runs_and_reports_the_real_scheme
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::expired_lease_file_refuses_and_runs_nothing
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::not_yet_valid_lease_file_refuses
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::missing_or_malformed_lease_file_fails_closed_not_open
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::withdrawing_the_grant_between_two_invocations_blocks_the_second
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::a_build_of_a_scheme_the_container_does_not_declare_is_refused_before_any_build
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::argument_injection_into_the_build_is_rejected_by_the_cli_before_the_gate
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::the_cli_has_no_subcommand_that_runs_an_arbitrary_host_command
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::characterisation_xcode_list_with_no_lease_file_runs_ungated
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::characterisation_simulator_list_has_no_grant_input_and_is_always_ungated
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::characterisation_only_the_fixed_operator_identity_can_hold_a_lease_on_the_cli
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/host_capability_live.rs::characterisation_a_granted_operation_emits_no_attribution_record
+  execution_lanes:
+  - pr
+  - main
+  - live_dogfood
+  fidelity: real_local_process
+  platforms:
+  - macos-apple-silicon
+  negative_control: "AAASM-6298 (ST-11b, independent QA, macOS Apple Silicon authoring host, Xcode 26.6 present). Verdict PARTIAL. AC1 (no grant => cannot invoke) PARTIAL: the gate refuses every operation class without a grant (VERIFIED at the gate and via `aasm host xcode list|build --lease-file`), but `aasm host xcode list` WITHOUT --lease-file and `aasm host simulator list` (no grant input at all) run UNGATED because HostCapabilityContract::not_required() admits unconditionally -- defect, desired contract kept in two #[ignore]d tests. Signing has no invoker (NoInvokerForOperation) so it is refused even when granted. AC2 (granted op succeeds and is attributable) PARTIAL: a granted `xcode list` really runs against the real Xcode; attribution is NOT delivered -- the CLI hard-codes the launch identity `aasm-host-operator` (a lease naming any real agent is refused), and achieved_record/refusal_record have no non-test caller so no record of a performed operation is emitted; receipt host_capability is always None. Desired contract in an #[ignore]d test. AC3 (no bypass) PARTIAL: the typed surface has no generic-exec path (closed HostOperation, newtype validation, clap rejects exec/codesign/boot and trailing argv; VERIFIED) but no OS confinement exists on macOS, so an unconfined agent runs xcrun/simctl directly (governance/capability-manifest.yaml known_bypasses; UNSUPPORTED as a confinement property). AC4 (revoke blocks next use) PARTIAL: each `aasm host` call re-reads the lease, so expiring/deleting it blocks the next call (VERIFIED live), and a Revoked lease value is refused at the gate; there is NO revocation channel into a built HostCapabilityAuthority (it copies the lease value; no ledger or shared handle), and the lease file format cannot express revocation. Mutations proven RED at GATE level only (aa-isolation/tests/host_capability_falsification.rs): grant check Denied=>Ok, permitted-operations bypass, lease validity skip, read-path scoping skip (xcode list), unknown-scheme check skip, codesign invoker enabled, broker availability skip, lease scope coverage skip. At CLI level exactly one mutation was run (lease-file contract downgraded to not_required) and only the unknown-scheme test went RED; the lease-validity and path-scope mutations were NOT shown RED at CLI level (authority_gate independently refuses expiry, and host.rs derives permitted_read and permitted_write both from --project, so CLI path scoping is self-referential: a finding, not coverage). Untested-path closure: check_process_creation_grant admits CompatibilityResidual (a ProcessCreation requirement with no leases); pinned by a characterisation test, unreachable from --lease-file. real_local_process evidence counts only on a macOS host with Xcode: the live tests are #[ignore]d (a toolchain-less host reports them skipped, and running them there panics); the evidence run was `cargo nextest run -p aa-cli --test host_capability_live --run-ignored all -E 'not test(desired_)'` on the macOS Apple Silicon authoring host with Xcode 26.6 (12 run, 12 passed). BLOCKED: real `xcodebuild build` success path and `simctl boot/install/launch` were not run (build writes compile caches under the user's home; boot/install/launch are out of the broker's scope); signing cannot be exercised (no invoker; keychain forbidden on this host). An independent review then ran further mutations that stayed GREEN, so these guards are NOT pinned by any non-ignored test: write-path scoping for the build derived-data path, read scoping for the build project root, the unknown-device check, the refusal of a fail-open broker posture, shell-wrapping the simulator-list argv, dropping -derivedDataPath from the build argv, and symlink-escape canonicalisation (which has no test); lease-validity at authority_gate alone is also masked by the host gate. Which lane runs what: only the 16 gate-level tests in host_capability_falsification.rs run in the pr and main lanes; the 15 aa-cli live tests are #[ignore]d and run only in the live_dogfood lane (macOS with Xcode, nextest --run-ignored all -E not test(desired_)), never in the default nextest, which runs zero tests in that file."
 - id: J90
   jira: AAASM-6268
   name: Confirm the re-baselined Landlock ABI holds its claimed network/IPC confinement on aa-isolation-native
