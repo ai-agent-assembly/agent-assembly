@@ -48,6 +48,7 @@
 - [aasm integrations](cli/integrations.md)
 - [aasm start / stop](cli/start-stop.md)
 - [aasm sandbox](cli/sandbox.md)
+- [aasm lease](cli/lease.md)
 - [aasm config](cli/config.md)
 - [aasm context](cli/context.md)
 - [aasm admin](cli/admin.md)

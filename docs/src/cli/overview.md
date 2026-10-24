@@ -140,6 +140,7 @@ Some commands give the exit code a documented meaning so it can gate CI:
 | [`aasm integrations`](integrations.md) | `aa-runtime` DI-API (UDS) | Install, verify, repair, remove Developer Integrations for AI dev tools. **Not in `cargo install aasm` — see below.** |
 | [`aasm start`](start-stop.md) / [`aasm stop`](start-stop.md) | Local process | Start/stop the locally-managed gateway. |
 | [`aasm sandbox`](sandbox.md) | Local | Run a WASM tool under the sandbox. |
+| [`aasm lease`](lease.md) | Local | Create, revoke against and inspect the capability-lease state record (not yet read by the runtime). |
 | [`aasm config`](config.md) | Local | Validate / boot an `agent-assembly.toml`. |
 | [`aasm context`](context.md) | Local | Manage `~/.aa/config.yaml` contexts. |
 | [`aasm admin`](admin.md) | Gateway HTTP | Administrative operations (retention). |
