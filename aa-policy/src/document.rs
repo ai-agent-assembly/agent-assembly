@@ -319,6 +319,48 @@ impl LeaseDomain {
     }
 }
 
+/// One word of an operator-authored `tools.<name>.capabilities` declaration
+/// (AAASM-6259, ADR 0038 amendment).
+///
+/// The vocabulary is exactly [`LeaseDomain::parse`]'s, mapped one-to-one, plus
+/// `none` for a tool that is purely logical and needs no lease. A declaration
+/// states what authority a tool call *needs*; it never grants any. Leases
+/// remain independently authored under `authority.leases` and are never
+/// derived from a declaration — that independence is what keeps a later
+/// "was this leased" check from becoming a tautology (see [`LeaseDomain`]).
+///
+/// This type can represent every [`LeaseDomain`], including the ones the
+/// validator refuses (`resource`, `workspace_transaction`): refusing them is a
+/// validation decision, not a limit of the vocabulary. `process_creation` and
+/// `syscall` are representable *and* accepted by the validator; a later
+/// governed-mode decision refuses a tool that declares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolCapability {
+    /// The tool needs no lease (wire word `none`). Only valid as the sole word.
+    NoAuthority,
+    /// The tool needs authority in this capability domain.
+    Domain(LeaseDomain),
+}
+
+impl ToolCapability {
+    /// Parse the wire word. `None` for an unrecognised word, so the validator
+    /// rejects a typo instead of silently dropping it.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::NoAuthority),
+            other => LeaseDomain::parse(other).map(Self::Domain),
+        }
+    }
+
+    /// The wire word this capability round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoAuthority => "none",
+            Self::Domain(d) => d.as_str(),
+        }
+    }
+}
+
 /// What within a [`LeaseDomain`] a [`LeaseGrant`] covers (AAASM-6275).
 ///
 /// Mirrors the shape of `aa_isolation::spec::RequirementScope`'s two scoped
@@ -586,6 +628,39 @@ mod tests {
     fn lease_domain_rejects_an_unrecognised_word() {
         assert_eq!(LeaseDomain::parse("filesystem_execute"), None);
         assert_eq!(LeaseDomain::parse(""), None);
+    }
+
+    #[test]
+    fn tool_capability_round_trips_every_lease_domain_word_and_none() {
+        for word in [
+            "filesystem_read",
+            "filesystem_write",
+            "network_egress",
+            "name_resolution",
+            "syscall",
+            "process_creation",
+            "ipc",
+            "credential",
+            "resource",
+            "workspace_transaction",
+            "none",
+        ] {
+            let parsed = ToolCapability::parse(word).unwrap_or_else(|| panic!("{word} must parse"));
+            assert_eq!(parsed.as_str(), word);
+        }
+        assert_eq!(ToolCapability::parse("none"), Some(ToolCapability::NoAuthority));
+        assert_eq!(
+            ToolCapability::parse("network_egress"),
+            Some(ToolCapability::Domain(LeaseDomain::NetworkEgress))
+        );
+    }
+
+    #[test]
+    fn tool_capability_rejects_unknown_and_case_variants() {
+        assert_eq!(ToolCapability::parse("None"), None);
+        assert_eq!(ToolCapability::parse("Network_Egress"), None);
+        assert_eq!(ToolCapability::parse("network"), None);
+        assert_eq!(ToolCapability::parse(""), None);
     }
 
     #[test]
