@@ -12,21 +12,46 @@
 //!
 //! # Lease ids
 //!
-//! A lease id is `"{subject}:{digest12}:{issued_at}:{domain}"` (see
+//! A lease id is `"{subject}:{digest12}:{run_id}:{issued_at}:{domain}"` (see
 //! [`lease_id`]): the subject, the first 12 characters of the policy digest,
-//! the run's `issued_at` in unix seconds, and a domain word naming what the
-//! lease covers. The id is derived, never stored, so the CLI that revokes it
-//! and the runtime that checks it cannot disagree about its shape. Because
-//! `issued_at` is part of the id, a new run mints a fresh id space and a
-//! revocation recorded against a previous run cannot match it.
+//! the run's random `run_id` (128 bits, lowercase hex), the run's `issued_at`
+//! in unix seconds, and a domain word naming what the lease covers. The id is
+//! derived, never stored, so the CLI that revokes it and the runtime that
+//! checks it cannot disagree about its shape.
+//!
+//! * **Uniqueness per run** comes from `run_id`, drawn from the OS-seeded
+//!   CSPRNG when a run is created. It does not depend on the clock, so a
+//!   stepped-back clock, two inits in one second, or `init` over an unreadable
+//!   or deleted record cannot recreate an id revoked in an earlier run.
+//!   `issued_at` is informational.
+//! * **Injective encoding.** Subjects are real agent ids and legitimately
+//!   contain `:` (`did:key:...`), so the subject component is percent-encoded
+//!   (`%` becomes `%25`, `:` becomes `%3A`). The domain word is restricted to
+//!   `[a-z0-9_-]`, 1 to 64 characters. The remaining components contain no
+//!   `:`, so distinct inputs cannot produce the same id.
 //!
 //! # Concurrency and crash safety
 //!
-//! Readers need no lock: [`write_atomic`] writes a temp file in the same
+//! Readers need no lock: `write_atomic` writes a temp file in the same
 //! directory, fsyncs it, renames it over the record and fsyncs the directory,
 //! so a reader sees the old record or the new one and never a partial one.
 //! Writers that read-modify-write ([`revoke_ids`], [`init_run`]) serialise on
 //! an exclusive `flock` of a sibling `<state>.lock` file.
+//!
+//! # What the record does and does not protect
+//!
+//! * Deleting the record and running `init` again starts a new run and drops
+//!   every revocation, by design. That is why a runtime consuming this record
+//!   must refuse to start when it is missing, never create one.
+//! * A record is at most 1 MiB and at most [`MAX_REVOKED`] revoked ids. A
+//!   revocation that would exceed either is refused before anything is
+//!   written, so the stored record is always one `load` accepts.
+//! * Rollback is not detected across loads: a restored older but valid record
+//!   is accepted by [`load`], because [`check_monotonic`] only compares two
+//!   in-memory records (AAASM-5533). Same-UID tampering is out of scope.
+//! * Parent directories that are symlinks are refused, which includes paths
+//!   under macOS `/tmp` (a symlink to `/private/tmp`) when the state file sits
+//!   directly in a symlinked directory; use the resolved path.
 //!
 //! # Trust model
 //!
@@ -60,6 +85,11 @@ const DIGEST_MIN_LEN: usize = 12;
 const DIGEST_MAX_LEN: usize = 128;
 /// Number of leading digest characters embedded in a lease id.
 const DIGEST_PREFIX_LEN: usize = 12;
+/// Upper bound on the revocation set, so the record stays well inside
+/// [`MAX_RECORD_BYTES`] and the runtime's reload stays cheap.
+pub const MAX_REVOKED: usize = 10_000;
+const RUN_ID_LEN: usize = 32;
+const MAX_DOMAIN_LEN: usize = 64;
 
 /// Why a record could not be loaded, written or accepted.
 ///
@@ -85,6 +115,9 @@ pub enum LeaseStateError {
     InsecureTarget(String),
     /// A new record is not a legal successor of the one it would replace.
     NotMonotonic(String),
+    /// The record is valid but belongs to a different subject or policy than
+    /// the caller expected.
+    Mismatch(String),
 }
 
 impl fmt::Display for LeaseStateError {
@@ -103,6 +136,7 @@ impl fmt::Display for LeaseStateError {
             Self::AlreadyExists(p) => write!(f, "a lease state record already exists at {}", p.display()),
             Self::InsecureTarget(why) => write!(f, "refusing insecure lease state location: {why}"),
             Self::NotMonotonic(why) => write!(f, "lease state change is not monotonic: {why}"),
+            Self::Mismatch(why) => write!(f, "lease state record does not match this run: {why}"),
         }
     }
 }
@@ -124,17 +158,51 @@ impl From<io::Error> for LeaseStateError {
 
 /// The durable lease record.
 ///
-/// Fields are private so every value in memory has passed [`LeaseState::validate`];
+/// Fields are private so every value in memory has passed `LeaseState::validate`;
 /// construct with [`LeaseState::new_run`] or [`LeaseState::parse`].
+///
+/// Deserialization goes through a private raw struct and `LeaseState::validate`,
+/// so a value obtained from serde is as trustworthy as one from [`LeaseState::parse`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawLeaseState")]
 pub struct LeaseState {
     version: u32,
     subject: String,
     policy_digest: String,
+    run_id: String,
     issued_at: u64,
     generation: u64,
     revoked: Vec<String>,
+}
+
+/// Unvalidated wire form; never exposed.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawLeaseState {
+    version: u32,
+    subject: String,
+    policy_digest: String,
+    run_id: String,
+    issued_at: u64,
+    generation: u64,
+    revoked: Vec<String>,
+}
+
+impl TryFrom<RawLeaseState> for LeaseState {
+    type Error = String;
+    fn try_from(r: RawLeaseState) -> Result<Self, String> {
+        let s = Self {
+            version: r.version,
+            subject: r.subject,
+            policy_digest: r.policy_digest,
+            run_id: r.run_id,
+            issued_at: r.issued_at,
+            generation: r.generation,
+            revoked: r.revoked,
+        };
+        s.validate()?;
+        Ok(s)
+    }
 }
 
 /// Reads only `version`, ignoring every other field, so an unsupported
@@ -157,6 +225,37 @@ fn check_text(what: &str, s: &str, max: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn check_subject(s: &str) -> Result<(), String> {
+    check_text("subject", s, MAX_SUBJECT_LEN)?;
+    if s.chars().any(char::is_whitespace) {
+        return Err("subject contains whitespace".to_string());
+    }
+    Ok(())
+}
+
+fn check_run_id(r: &str) -> Result<(), String> {
+    if r.len() != RUN_ID_LEN || !r.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(format!("run_id must be {RUN_ID_LEN} lowercase hex characters"));
+    }
+    Ok(())
+}
+
+fn check_domain(d: &str) -> Result<(), String> {
+    if d.is_empty()
+        || d.len() > MAX_DOMAIN_LEN
+        || !d
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
+        return Err(format!("domain must be 1..={MAX_DOMAIN_LEN} characters of [a-z0-9_-]"));
+    }
+    Ok(())
+}
+
+fn encode_subject(subject: &str) -> String {
+    subject.replace('%', "%25").replace(':', "%3A")
+}
+
 fn check_digest(d: &str) -> Result<(), String> {
     if d.len() < DIGEST_MIN_LEN || d.len() > DIGEST_MAX_LEN {
         return Err(format!(
@@ -171,11 +270,19 @@ fn check_digest(d: &str) -> Result<(), String> {
 
 impl LeaseState {
     /// A fresh run: generation 1, nothing revoked. `now` is unix seconds.
+    ///
+    /// Draws a fresh random `run_id`, which is what makes this run's lease ids
+    /// distinct from every earlier run's regardless of the clock.
     pub fn new_run(subject: &str, policy_digest: &str, now: u64) -> Result<Self, LeaseStateError> {
+        Self::new_run_with_id(subject, policy_digest, hex::encode(rand::random::<[u8; 16]>()), now)
+    }
+
+    fn new_run_with_id(subject: &str, policy_digest: &str, run_id: String, now: u64) -> Result<Self, LeaseStateError> {
         let s = Self {
             version: STATE_VERSION,
             subject: subject.to_string(),
             policy_digest: policy_digest.to_string(),
+            run_id,
             issued_at: now,
             generation: 1,
             revoked: Vec::new(),
@@ -196,7 +303,12 @@ impl LeaseState {
     pub fn policy_digest(&self) -> &str {
         &self.policy_digest
     }
-    /// Unix seconds at which the run was issued; part of every lease id.
+    /// Random per-run identifier (32 lowercase hex characters); part of every lease id.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+    /// Unix seconds at which the run was issued. Informational; uniqueness
+    /// comes from [`run_id`](Self::run_id).
     pub fn issued_at(&self) -> u64 {
         self.issued_at
     }
@@ -213,21 +325,35 @@ impl LeaseState {
         self.revoked.binary_search_by(|r| r.as_str().cmp(id)).is_ok()
     }
     /// This run's id for `domain`; see [`lease_id`].
-    pub fn lease_id(&self, domain: &str) -> String {
-        lease_id(&self.subject, &self.policy_digest, self.issued_at, domain)
+    pub fn lease_id(&self, domain: &str) -> Result<String, LeaseStateError> {
+        lease_id(&self.subject, &self.policy_digest, &self.run_id, self.issued_at, domain)
+    }
+    /// Everything in this run's lease ids before the domain word, ending in `:`.
+    pub fn lease_id_prefix(&self) -> String {
+        let digest12: String = self.policy_digest.chars().take(DIGEST_PREFIX_LEN).collect();
+        format!(
+            "{}:{digest12}:{}:{}:",
+            encode_subject(&self.subject),
+            self.run_id,
+            self.issued_at
+        )
     }
 
     fn validate(&self) -> Result<(), String> {
         if self.version != STATE_VERSION {
             return Err(format!("version {} is not {STATE_VERSION}", self.version));
         }
-        check_text("subject", &self.subject, MAX_SUBJECT_LEN)?;
+        check_subject(&self.subject)?;
         check_digest(&self.policy_digest)?;
+        check_run_id(&self.run_id)?;
         if self.issued_at == 0 {
             return Err("issued_at must be a positive unix time".to_string());
         }
         if self.generation == 0 {
             return Err("generation must be at least 1".to_string());
+        }
+        if self.revoked.len() > MAX_REVOKED {
+            return Err(format!("revoked holds more than {MAX_REVOKED} ids"));
         }
         for id in &self.revoked {
             check_text("revoked id", id, MAX_ID_LEN)?;
@@ -262,8 +388,18 @@ impl LeaseState {
             .generation
             .checked_add(1)
             .ok_or_else(|| LeaseStateError::Invalid("generation overflow".to_string()))?;
-        self.revoked = set.into_iter().collect();
-        self.generation = generation;
+        let mut candidate = self.clone();
+        candidate.revoked = set.into_iter().collect();
+        candidate.generation = generation;
+        // Refuse here, before anything is written, any record `load` would
+        // later reject for size, or the runtime could never start again.
+        candidate.validate().map_err(LeaseStateError::Invalid)?;
+        if candidate.to_bytes().len() as u64 > MAX_RECORD_BYTES {
+            return Err(LeaseStateError::Invalid(format!(
+                "revocation set would make the record larger than {MAX_RECORD_BYTES} bytes"
+            )));
+        }
+        *self = candidate;
         Ok(true)
     }
 
@@ -275,7 +411,7 @@ impl LeaseState {
     }
 
     /// Strictly parse a record. Rejects unknown or duplicated fields, trailing
-    /// garbage, an unsupported version, and any value [`LeaseState::validate`]
+    /// garbage, an unsupported version, and any value `LeaseState::validate`
     /// would refuse.
     pub fn parse(bytes: &[u8]) -> Result<Self, LeaseStateError> {
         if bytes.len() as u64 > MAX_RECORD_BYTES {
@@ -297,19 +433,34 @@ impl LeaseState {
             Some(_) => return Err(LeaseStateError::Corrupt("version is not a number".to_string())),
             None => return Err(LeaseStateError::Corrupt("version is missing".to_string())),
         }
-        let state: Self = serde_json::from_slice(bytes).map_err(|e| LeaseStateError::Corrupt(e.to_string()))?;
-        state.validate().map_err(LeaseStateError::Corrupt)?;
-        Ok(state)
+        // Validation runs inside deserialization (`try_from`).
+        serde_json::from_slice(bytes).map_err(|e| LeaseStateError::Corrupt(e.to_string()))
     }
 }
 
-/// The deterministic lease id `"{subject}:{digest12}:{issued_at}:{domain}"`.
+/// The deterministic lease id `"{subject}:{digest12}:{run_id}:{issued_at}:{domain}"`.
 ///
-/// `digest12` is the first 12 characters of `policy_digest`. Pure and total so
-/// the CLI and the runtime derive identical ids from the same record.
-pub fn lease_id(subject: &str, policy_digest: &str, issued_at: u64, domain: &str) -> String {
+/// `digest12` is the first 12 characters of `policy_digest`; the subject has
+/// `%` and `:` percent-encoded so the id is injective; `domain` must be 1-64
+/// characters of `[a-z0-9_-]`. Invalid components are an error rather than an
+/// id, so two different inputs can never share one. Pure, so the CLI and the
+/// runtime derive identical ids from the same record.
+pub fn lease_id(
+    subject: &str,
+    policy_digest: &str,
+    run_id: &str,
+    issued_at: u64,
+    domain: &str,
+) -> Result<String, LeaseStateError> {
+    check_subject(subject).map_err(LeaseStateError::Invalid)?;
+    check_digest(policy_digest).map_err(LeaseStateError::Invalid)?;
+    check_run_id(run_id).map_err(LeaseStateError::Invalid)?;
+    check_domain(domain).map_err(LeaseStateError::Invalid)?;
     let digest12: String = policy_digest.chars().take(DIGEST_PREFIX_LEN).collect();
-    format!("{subject}:{digest12}:{issued_at}:{domain}")
+    Ok(format!(
+        "{}:{digest12}:{run_id}:{issued_at}:{domain}",
+        encode_subject(subject)
+    ))
 }
 
 /// Check that `new` may replace `old` on a reload.
@@ -328,6 +479,9 @@ pub fn check_monotonic(old: &LeaseState, new: &LeaseState) -> Result<(), LeaseSt
     }
     if old.policy_digest != new.policy_digest {
         return bad("policy digest changed");
+    }
+    if old.run_id != new.run_id {
+        return bad("run_id changed");
     }
     if old.issued_at != new.issued_at {
         return bad("issued_at (run anchor) changed");
@@ -391,6 +545,13 @@ pub fn load(path: &Path) -> Result<LeaseState, LeaseStateError> {
                 path.display()
             )))
         }
+        // A FIFO or device would block `open`; refuse before opening.
+        Ok(md) if !md.is_file() => {
+            return Err(LeaseStateError::InsecureTarget(format!(
+                "{} is not a regular file",
+                path.display()
+            )))
+        }
         Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(LeaseStateError::Missing(path.to_path_buf())),
         Err(e) => return Err(e.into()),
@@ -398,7 +559,7 @@ pub fn load(path: &Path) -> Result<LeaseState, LeaseStateError> {
     check_parent(path)?;
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => LeaseStateError::Missing(path.to_path_buf()),
@@ -446,8 +607,17 @@ fn fsync_dir(path: &Path) -> io::Result<()> {
 /// fsync, rename, fsync of the directory. Refuses a symlinked target or parent.
 /// A stale temp file left by a crash is never read by [`load`] and never blocks
 /// a later write, which uses a fresh temp name.
-pub fn write_atomic(path: &Path, state: &LeaseState) -> Result<(), LeaseStateError> {
+///
+/// Crate-private: callers outside this module go through [`init_run`] and
+/// [`revoke_ids`], which hold the lock and enforce the monotonic rule.
+pub(crate) fn write_atomic(path: &Path, state: &LeaseState) -> Result<(), LeaseStateError> {
     state.validate().map_err(LeaseStateError::Invalid)?;
+    let bytes = state.to_bytes();
+    if bytes.len() as u64 > MAX_RECORD_BYTES {
+        return Err(LeaseStateError::Invalid(format!(
+            "record is larger than {MAX_RECORD_BYTES} bytes"
+        )));
+    }
     let name = path
         .file_name()
         .ok_or_else(|| LeaseStateError::Invalid("state path has no file name".to_string()))?
@@ -484,7 +654,7 @@ pub fn write_atomic(path: &Path, state: &LeaseState) -> Result<(), LeaseStateErr
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&tmp)?;
-        f.write_all(&state.to_bytes())?;
+        f.write_all(&bytes)?;
         f.sync_all()?;
         drop(f);
         fs::rename(&tmp, path)?;
@@ -519,17 +689,28 @@ impl StateLock {
     pub fn acquire(state_path: &Path) -> Result<Self, LeaseStateError> {
         check_parent(state_path)?;
         let lock = Self::lock_path(state_path);
+        match metadata_nofollow(&lock) {
+            Ok(md) if !md.is_file() => {
+                return Err(LeaseStateError::InsecureTarget(format!(
+                    "{} is not a regular file",
+                    lock.display()
+                )))
+            }
+            _ => {}
+        }
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(&lock)?;
-        if !file.metadata()?.is_file() {
+        let md = file.metadata()?;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if !md.is_file() || md.mode() & 0o077 != 0 || md.uid() != unsafe { libc::geteuid() } {
             return Err(LeaseStateError::InsecureTarget(format!(
-                "{} is not a regular file",
+                "{} must be a regular file owned by the current user with mode 0600",
                 lock.display()
             )));
         }
@@ -551,10 +732,9 @@ impl StateLock {
 /// Create the record for a new run at `path`.
 ///
 /// Refuses to touch an existing record unless `force`. With `force` the new
-/// record is generation 1 with an empty revocation set, and its `issued_at` is
-/// strictly greater than the replaced record's when that one is readable, so
-/// the new run's lease ids can never equal an old, revoked id even when both
-/// are issued within the same second.
+/// record is generation 1 with an empty revocation set and a fresh random
+/// `run_id`, so none of its lease ids can equal an id revoked in the replaced
+/// run, whether or not that record was readable and whatever the clock says.
 pub fn init_run(
     path: &Path,
     subject: &str,
@@ -563,21 +743,32 @@ pub fn init_run(
     force: bool,
 ) -> Result<LeaseState, LeaseStateError> {
     // Validate input before creating a lock file.
-    LeaseState::new_run(subject, policy_digest, now)?;
+    let state = LeaseState::new_run(subject, policy_digest, now)?;
     let _lock = StateLock::acquire(path)?;
-    let mut issued_at = now;
     match metadata_nofollow(path) {
         Ok(_) if !force => return Err(LeaseStateError::AlreadyExists(path.to_path_buf())),
-        Ok(_) => {
-            if let Ok(old) = load(path) {
-                issued_at = issued_at.max(old.issued_at.saturating_add(1));
-            }
-        }
+        Ok(_) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let state = LeaseState::new_run(subject, policy_digest, issued_at)?;
     write_atomic(path, &state)?;
+    Ok(state)
+}
+
+/// Load the record and require it to belong to `subject` and `policy_digest`.
+///
+/// This is the runtime's start-up check. Every error, `Mismatch` included,
+/// means the runtime must refuse to start.
+pub fn load_expected(path: &Path, subject: &str, policy_digest: &str) -> Result<LeaseState, LeaseStateError> {
+    let state = load(path)?;
+    if state.subject != subject {
+        return Err(LeaseStateError::Mismatch("subject differs from the record".to_string()));
+    }
+    if state.policy_digest != policy_digest {
+        return Err(LeaseStateError::Mismatch(
+            "policy digest differs from the record".to_string(),
+        ));
+    }
     Ok(state)
 }
 
@@ -612,9 +803,10 @@ mod tests {
     use std::sync::Arc;
 
     const D: &str = "0123456789abcdef0123456789abcdef";
+    const R: &str = "00112233445566778899aabbccddeeff";
 
     fn run(now: u64) -> LeaseState {
-        LeaseState::new_run("agent-1", D, now).unwrap()
+        LeaseState::new_run_with_id("agent-1", D, R.to_string(), now).unwrap()
     }
 
     fn tmp() -> tempfile::TempDir {
@@ -635,13 +827,13 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&run(5).to_bytes()).unwrap();
         assert_eq!(
             v,
-            serde_json::json!({"version":1,"subject":"agent-1","policy_digest":D,"issued_at":5,"generation":1,"revoked":[]})
+            serde_json::json!({"version":1,"subject":"agent-1","policy_digest":D,"run_id":R,"issued_at":5,"generation":1,"revoked":[]})
         );
     }
 
     fn rec(extra: &str, version: &str, subject: &str, revoked: &str) -> String {
         format!(
-            r#"{{"version":{version},"subject":"{subject}","policy_digest":"{D}","issued_at":5,"generation":1,"revoked":{revoked}{extra}}}"#
+            r#"{{"version":{version},"subject":"{subject}","policy_digest":"{D}","run_id":"{R}","issued_at":5,"generation":1,"revoked":{revoked}{extra}}}"#
         )
     }
 
@@ -747,11 +939,169 @@ mod tests {
     }
 
     #[test]
-    fn lease_id_is_deterministic_and_uses_digest_prefix() {
+    fn lease_id_is_deterministic_and_has_the_documented_form() {
         let s = run(1234);
-        assert_eq!(lease_id("agent-1", D, 1234, "net"), "agent-1:0123456789ab:1234:net");
-        assert_eq!(s.lease_id("net"), lease_id("agent-1", D, 1234, "net"));
-        assert_ne!(s.lease_id("net"), run(1235).lease_id("net"));
+        let expect = format!("agent-1:0123456789ab:{R}:1234:net");
+        assert_eq!(lease_id("agent-1", D, R, 1234, "net").unwrap(), expect);
+        assert_eq!(s.lease_id("net").unwrap(), expect);
+        assert_eq!(s.lease_id_prefix(), format!("agent-1:0123456789ab:{R}:1234:"));
+        assert_ne!(s.lease_id("net").unwrap(), s.lease_id("fs").unwrap());
+    }
+
+    #[test]
+    fn lease_id_is_injective_over_colon_bearing_inputs() {
+        // The review's collision: with raw concatenation both inputs yield the
+        // same string. Subjects may legitimately contain ':' (did:key).
+        let a = lease_id("a:aaaaaaaaaaaa:5:b", "c".repeat(12).as_str(), R, 7, "dom").unwrap();
+        // A domain containing ':' is not representable at all.
+        assert!(matches!(
+            lease_id("a", &"c".repeat(12), R, 7, "b:cccccccccccc:7:dom"),
+            Err(LeaseStateError::Invalid(_))
+        ));
+        let b = lease_id("a", &"c".repeat(12), R, 7, "dom").unwrap();
+        assert_ne!(a, b);
+        // '%' and ':' in a subject encode distinctly.
+        assert_ne!(
+            lease_id("a%3Ab", D, R, 1, "d").unwrap(),
+            lease_id("a:b", D, R, 1, "d").unwrap()
+        );
+        assert!(lease_id("did:key:z6Mk", D, R, 1, "d")
+            .unwrap()
+            .starts_with("did%3Akey%3Az6Mk:"));
+        for bad in ["", "Net", "a b", "a/b", &"x".repeat(65)] {
+            assert!(lease_id("a", D, R, 1, bad).is_err(), "{bad:?}");
+        }
+        assert!(lease_id("a b", D, R, 1, "d").is_err());
+        assert!(lease_id("a", D, "short", 1, "d").is_err());
+    }
+
+    #[test]
+    fn subject_with_colon_is_accepted_but_whitespace_is_not() {
+        LeaseState::new_run("did:key:z6MkExample", D, 5).unwrap();
+        for bad in ["a b", "a\tb", "a\nb"] {
+            assert!(matches!(
+                LeaseState::new_run(bad, D, 5),
+                Err(LeaseStateError::Invalid(_))
+            ));
+        }
+        let e = LeaseState::parse(rec("", "1", "a b", "[]").as_bytes()).unwrap_err();
+        assert!(matches!(e, LeaseStateError::Corrupt(_)), "{e}");
+    }
+
+    #[test]
+    fn serde_deserialize_cannot_bypass_validation() {
+        // Unsorted revoked would make `is_revoked`'s binary search lie.
+        let unsorted = rec("", "1", "s", r#"["b","a"]"#);
+        assert!(serde_json::from_slice::<LeaseState>(unsorted.as_bytes()).is_err());
+        let dup = rec("", "1", "s", r#"["a","a"]"#);
+        assert!(serde_json::from_slice::<LeaseState>(dup.as_bytes()).is_err());
+        let unknown = rec(r#","x":1"#, "1", "s", "[]");
+        assert!(serde_json::from_slice::<LeaseState>(unknown.as_bytes()).is_err());
+        let bad_run = rec("", "1", "s", "[]").replace(R, "ZZ");
+        assert!(serde_json::from_slice::<LeaseState>(bad_run.as_bytes()).is_err());
+        let ok: LeaseState = serde_json::from_slice(rec("", "1", "s", r#"["a","b"]"#).as_bytes()).unwrap();
+        assert!(ok.is_revoked("b"));
+    }
+
+    #[test]
+    fn run_id_is_random_per_run_and_well_formed() {
+        let a = LeaseState::new_run("s", D, 100).unwrap();
+        let b = LeaseState::new_run("s", D, 100).unwrap();
+        assert_eq!(a.run_id().len(), 32);
+        assert_ne!(a.run_id(), b.run_id());
+        assert_ne!(a.lease_id("net").unwrap(), b.lease_id("net").unwrap());
+    }
+
+    #[test]
+    fn revoke_refuses_oversize_record_before_writing() {
+        let d = tmp();
+        let p = d.path().join("lease.json");
+        write_atomic(&p, &run(5)).unwrap();
+        let big = |n: usize| format!("{n:04}{}", "x".repeat(1000));
+        // Fill close to the cap in one in-memory step, then push past it
+        // through the real revoke path one id at a time.
+        let mut filled = load(&p).unwrap();
+        filled.revoke((0..1020).map(big)).unwrap();
+        write_atomic(&p, &filled).unwrap();
+        let mut refused = false;
+        for n in 1020..1100 {
+            match revoke_ids(&p, &[big(n)]) {
+                Ok(_) => {}
+                Err(LeaseStateError::Invalid(_)) => {
+                    refused = true;
+                    break;
+                }
+                Err(e) => panic!("unexpected {e}"),
+            }
+        }
+        assert!(refused, "size cap never tripped");
+        let before = fs::read(&p).unwrap();
+        assert!(before.len() as u64 <= MAX_RECORD_BYTES);
+        assert!(matches!(revoke_ids(&p, &[big(9999)]), Err(LeaseStateError::Invalid(_))));
+        assert_eq!(fs::read(&p).unwrap(), before, "record unchanged on refusal");
+        load(&p).expect("stored record must stay loadable");
+    }
+
+    #[test]
+    fn revoke_refuses_more_than_max_revoked_ids() {
+        let mut s = run(5);
+        let ids: Vec<String> = (0..MAX_REVOKED).map(|i| format!("i{i:05}")).collect();
+        s.revoke(&ids).unwrap();
+        let g = s.generation();
+        assert!(matches!(s.revoke(["one-more"]), Err(LeaseStateError::Invalid(_))));
+        assert_eq!(s.generation(), g);
+        assert_eq!(s.revoked().len(), MAX_REVOKED);
+    }
+
+    #[test]
+    fn load_expected_distinguishes_mismatch() {
+        let d = tmp();
+        let p = d.path().join("lease.json");
+        assert!(matches!(
+            load_expected(&p, "agent-1", D),
+            Err(LeaseStateError::Missing(_))
+        ));
+        write_atomic(&p, &run(5)).unwrap();
+        load_expected(&p, "agent-1", D).unwrap();
+        assert!(matches!(
+            load_expected(&p, "agent-2", D),
+            Err(LeaseStateError::Mismatch(_))
+        ));
+        assert!(matches!(
+            load_expected(&p, "agent-1", &"f".repeat(32)),
+            Err(LeaseStateError::Mismatch(_))
+        ));
+    }
+
+    #[test]
+    fn fifo_record_and_fifo_lock_are_refused_without_blocking() {
+        let d = tmp();
+        let p = d.path().join("lease.json");
+        let c = std::ffi::CString::new(p.to_str().unwrap()).unwrap();
+        // SAFETY: c is a valid NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(load(&p), Err(LeaseStateError::InsecureTarget(_))));
+        let lock = StateLock::lock_path(&p);
+        let c = std::ffi::CString::new(lock.to_str().unwrap()).unwrap();
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            StateLock::acquire(&p),
+            Err(LeaseStateError::InsecureTarget(_))
+        ));
+    }
+
+    #[test]
+    fn loose_lock_file_mode_is_refused() {
+        let d = tmp();
+        let p = d.path().join("lease.json");
+        let lock = StateLock::lock_path(&p);
+        fs::write(&lock, b"").unwrap();
+        fs::set_permissions(&lock, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(matches!(
+            StateLock::acquire(&p),
+            Err(LeaseStateError::InsecureTarget(_))
+        ));
     }
 
     #[test]
@@ -889,6 +1239,8 @@ mod tests {
         other_subject.subject = "agent-2".into();
         let mut other_digest = old.clone();
         other_digest.policy_digest = "f".repeat(32);
+        let mut other_run = old.clone();
+        other_run.run_id = "f".repeat(32);
         let mut other_anchor = old.clone();
         other_anchor.issued_at += 1;
         let mut backwards = grown.clone();
@@ -900,6 +1252,7 @@ mod tests {
             ("subject", other_subject),
             ("digest", other_digest),
             ("anchor", other_anchor),
+            ("run_id", other_run),
             ("backwards", backwards),
             ("same-gen change", same_gen_changed),
         ] {
@@ -911,7 +1264,7 @@ mod tests {
     }
 
     #[test]
-    fn init_refuses_existing_without_force_and_new_run_outranks_old_issue_time() {
+    fn init_refuses_existing_without_force() {
         let d = tmp();
         let p = d.path().join("lease.json");
         let first = init_run(&p, "agent-1", D, 100, false).unwrap();
@@ -922,14 +1275,39 @@ mod tests {
             Err(LeaseStateError::AlreadyExists(_))
         ));
         assert_eq!(fs::read(&p).unwrap(), before, "refusal must not modify the record");
+    }
 
-        revoke_ids(&p, &[first.lease_id("net")]).unwrap();
-        // Same-second force: the new run must still get a fresh id space.
-        let second = init_run(&p, "agent-1", D, 100, true).unwrap();
-        assert_eq!(second.generation(), 1);
-        assert!(second.revoked().is_empty());
-        assert!(second.issued_at() > first.issued_at());
-        assert!(!second.is_revoked(&second.lease_id("net")));
+    #[test]
+    fn force_init_never_reuses_a_revoked_id_even_over_corrupt_record_at_earlier_clock() {
+        let d = tmp();
+        let p = d.path().join("lease.json");
+        let first = init_run(&p, "agent-1", D, 5_000, false).unwrap();
+        let revoked_id = first.lease_id("net").unwrap();
+        revoke_ids(&p, &[revoked_id.clone()]).unwrap();
+
+        // Same second.
+        let same = init_run(&p, "agent-1", D, 5_000, true).unwrap();
+        assert_eq!(same.generation(), 1);
+        assert!(same.revoked().is_empty());
+        assert_ne!(same.lease_id("net").unwrap(), revoked_id);
+        assert!(!same.is_revoked(&same.lease_id("net").unwrap()));
+
+        // Unreadable old record and a clock stepped back.
+        fs::write(&p, b"garbage").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+        let earlier = init_run(&p, "agent-1", D, 1_000, true).unwrap();
+        assert!(earlier.issued_at() < first.issued_at());
+        assert_ne!(earlier.lease_id("net").unwrap(), revoked_id);
+        assert_ne!(earlier.lease_id("net").unwrap(), same.lease_id("net").unwrap());
+    }
+
+    #[test]
+    fn two_inits_in_the_same_second_yield_different_ids() {
+        let d = tmp();
+        let a = init_run(&d.path().join("a.json"), "agent-1", D, 77, false).unwrap();
+        let b = init_run(&d.path().join("b.json"), "agent-1", D, 77, false).unwrap();
+        assert_eq!(a.issued_at(), b.issued_at());
+        assert_ne!(a.lease_id("net").unwrap(), b.lease_id("net").unwrap());
     }
 
     #[test]

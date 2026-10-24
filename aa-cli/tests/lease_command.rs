@@ -65,6 +65,8 @@ fn init_then_status_reports_the_record_with_mode_0600() {
     assert_eq!(v["policy_digest"], DIGEST);
     assert_eq!(v["generation"], 1);
     assert_eq!(v["revoked"], serde_json::json!([]));
+    assert_eq!(v["run_id"].as_str().unwrap().len(), 32);
+    assert!(stdout.contains(v["run_id"].as_str().unwrap()), "{stdout}");
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
 }
 
@@ -96,7 +98,7 @@ fn init_force_starts_a_new_run_and_retires_earlier_revocations() {
     let second = status_json(d.path(), &p);
     assert_eq!(second["generation"], 1);
     assert_eq!(second["revoked"], serde_json::json!([]));
-    assert!(second["issued_at"].as_u64() > first["issued_at"].as_u64());
+    assert_ne!(second["run_id"], first["run_id"], "a new run must mint a new id space");
 }
 
 #[test]
@@ -200,4 +202,25 @@ fn concurrent_revoke_processes_lose_no_id() {
     let v = status_json(d.path(), &p);
     assert_eq!(v["revoked"].as_array().unwrap().len(), PROCS, "an id was lost");
     assert_eq!(v["generation"], 1 + PROCS as u64);
+}
+
+#[test]
+fn init_with_did_key_subject_prints_an_encoded_prefix() {
+    let (d, p) = state_dir();
+    let out = aasm(d.path())
+        .args([
+            "lease",
+            "init",
+            "--subject",
+            "did:key:z6MkExample",
+            "--policy-digest",
+            DIGEST,
+            "--state",
+        ])
+        .arg(&p)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("did%3Akey%3Az6MkExample:0123456789ab:"));
+    assert_eq!(status_json(d.path(), &p)["subject"], "did:key:z6MkExample");
 }

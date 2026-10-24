@@ -102,7 +102,7 @@ mod imp {
 
     pub fn init(a: &InitArgs) -> Result<String, state::LeaseStateError> {
         let s = state::init_run(&a.state, &a.subject, &a.policy_digest, now_unix(), a.force)?;
-        let prefix = state::lease_id(s.subject(), s.policy_digest(), s.issued_at(), "");
+        let prefix = s.lease_id_prefix();
         Ok(format!(
             "initialized lease state at {} (generation {})\n\
              lease ids for this run have the form {}<domain>\n",
