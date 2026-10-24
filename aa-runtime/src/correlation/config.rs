@@ -87,6 +87,8 @@ mod tests {
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
             devint_enabled: false,
+            lease_policy_path: None,
+            lease_state_path: None,
         };
 
         let config = CorrelationConfig::from_runtime_config(&rc);

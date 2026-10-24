@@ -2200,11 +2200,29 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-isolation/src/authority.rs::tests::supervisor_possession_without_a_lease_is_denied_once_leases_are_in_play
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::a_valid_lease_permits_and_the_gateway_is_still_consulted
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::missing_cross_capability_undeclared_and_disallowed_calls_are_denied_before_the_gateway
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::a_lease_stops_permitting_at_expiry_with_no_grace
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::revocation_denies_on_the_next_check_and_survives_a_restart
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::live_corruption_or_deletion_denies_everything_and_never_heals
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs::startup_refuses_on_every_unsatisfiable_governed_setup
   execution_lanes:
   - pr
   - main
   fidelity: controlled_fake
-  negative_control: 'AAASM-6272 (AAASM-6277) wired policy-authored leases through to `aa-cli`''s plan-time `IsolationPlan`/`authority_gate` boundary, with real in-scope/expired/revoked/out-of-scope denial behavior proved at the gate -- not a live `aasm run` acquiring a lease end to end through `aa-runtime`. AAASM-6259''s own acceptance contract is runtime-wide: `aa-runtime::handle_policy_query` entry, denial holding across a process restart, and no grace-period ambient fallback. `grep -rn lease aa-runtime/src/pipeline/` finds no capability-lease wiring in the SDK-facing policy gate at all -- this remains a genuine gap, not yet `automated`. See AAASM-6284''s verification comment for the full AC-by-AC mapping.'
+  negative_control: 'AAASM-6259 PR4 wires the governed lease gate into `aa-runtime` (AA_LEASE_POLICY/AA_LEASE_STATE, startup refusals, revocation reload) and the runtime-wide tests above drive the real `aa-runtime` binary over its IPC socket against a counting fake gateway. This is still `partial`, not `automated`: there is no end-to-end journey with a real SDK and a real `aasm lease` operator flow (the PR6 journey), the evidence uses a fake gateway, and the gate is admission control for cooperative SDK tool calls, not confinement. Residuals are recorded in ADR 0038 section 37.'
 - id: J82
   jira: AAASM-6260
   name: Confirm monotonic capability attenuation across a sub-agent process tree

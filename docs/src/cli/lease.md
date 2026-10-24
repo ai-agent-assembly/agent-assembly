@@ -4,10 +4,13 @@ Create, revoke against and inspect the **capability-lease state record**: a
 small JSON file that records which policy digest a governed run is bound to and
 which lease ids have been revoked since.
 
-> **Status: storage and operator commands only.** The runtime does not read
-> this record yet, so creating, revoking or deleting it does not change what any
-> running agent may do. This page documents the record and the commands that
-> maintain it, not an enforcement behaviour.
+> **Status.** A runtime started with `AA_LEASE_POLICY` set reads this record: at
+> startup (it refuses to start if the record is missing, corrupt, or bound to a
+> different agent or policy digest) and every ~100 ms afterwards, so `revoke` takes
+> effect there on the next reload. A runtime started without `AA_LEASE_POLICY`
+> ignores the record entirely. See Core ADR 0038 section 37 for exactly what is and is
+> not enforced; this is admission control for cooperative SDK tool calls, not
+> confinement.
 
 ## Synopsis
 
@@ -46,7 +49,7 @@ Every refusal exits non-zero with a message on stderr.
 | `subject` | The agent id the run's leases are issued to. No whitespace or control characters; `:` is allowed (`did:key:...`). |
 | `policy_digest` | Lowercase hex digest (12-128 characters) of the policy the run is bound to. |
 | `run_id` | Random 128-bit identifier (32 lowercase hex characters) minted when the run is created. |
-| `issued_at` | Unix seconds at which the run was created. Informational. |
+| `issued_at` | Unix seconds at which the run was created. Lease lifetimes count from here, so a restart does not refresh them. |
 | `generation` | Starts at `1`; increases by one each time the revocation set grows. |
 | `revoked` | Revoked lease ids, sorted and without duplicates. |
 
@@ -88,14 +91,17 @@ earlier record was unreadable or the clock went backwards.
 * A restored older but valid record is accepted when loaded; rollback is not
   detected across loads (AAASM-5533).
 * Anyone who can write to the state directory as your user can alter the
-  record.
+  record. A running governed runtime trips to deny-all on a shrunk revocation
+  set, a changed anchor or a corrupt or missing file, and stays denied until it
+  is restarted; it cannot detect an older valid record put back *before* a
+  restart.
 
 ---
 
 ## aasm lease init
 
 ```text
-aasm lease init --state <PATH> --subject <ID> --policy-digest <HEX> [--force]
+aasm lease init --state <PATH> --subject <ID> (--policy <FILE> | --policy-digest <HEX>) [--force]
 ```
 
 Creates the record with generation `1` and nothing revoked, and prints the lease
@@ -105,19 +111,37 @@ Without `--force`, an existing record is **never** overwritten. With `--force`
 the command starts a new run: generation `1`, an empty revocation set, and a
 fresh `run_id`, so every earlier lease id is retired.
 
-`--policy-digest` is taken as given for now; it is not yet computed from a
-policy file.
+`--policy <FILE>` computes the digest from the policy file exactly as the runtime
+does at startup (the file must resolve to an enforced policy), so the two cannot
+disagree. `--policy-digest` takes a digest as given and is mutually exclusive with
+`--policy`. `--subject` must equal the runtime's `AA_AGENT_ID`.
 
 ## aasm lease revoke
 
 ```text
-aasm lease revoke --state <PATH> --lease-id <ID>...
+aasm lease revoke --state <PATH> --lease-id <ID>... [--wait-health <URL> [--wait-timeout-secs <N>]]
 ```
 
 Adds one or more lease ids (`--lease-id` may be repeated) to an existing record,
 under an exclusive lock on `<PATH>.lock`, and prints the new generation.
 Revoking ids that are all already revoked is a no-op and leaves the generation
 unchanged. A missing or corrupt record is an error; `revoke` never creates one.
+
+Without `--wait-health` the command returns once the record is written; a running
+governed runtime applies it within about 100 ms but gives no acknowledgement. With
+`--wait-health http://127.0.0.1:8080` (the runtime's `AA_METRICS_ADDR`; also read from
+`AA_LEASE_HEALTH_URL`) it polls `GET /health` and returns only when
+`lease_governance.generation` reaches the new generation, or `state` is `denied_all`
+(everything is already denied). It exits non-zero if that does not happen within
+`--wait-timeout-secs` (default 5), or if the runtime reports no `lease_governance`
+(not in governed mode). It also requires the runtime's `run_id` to match this record's, so a
+different run's runtime cannot acknowledge. The revocation is recorded in every case.
+
+Exit status: `0` applied; `1` any other failure (timeout, ungoverned or different-run
+runtime, I/O); `3` the runtime reports `denied_all` (every request is already refused after
+a lease state anomaly, but it is not governing by lease until restarted). The client
+ignores `HTTP_PROXY`-style variables and redirects, treats `--wait-timeout-secs` above one
+hour as one hour, and never prints credentials from the URL.
 
 ## aasm lease status
 

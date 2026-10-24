@@ -31,4 +31,4 @@ pub mod runtime;
 #[cfg(test)]
 mod test_env;
 
-pub use runtime::run;
+pub use runtime::{run, StartupRefusal};
