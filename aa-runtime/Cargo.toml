@@ -55,7 +55,7 @@ aa-devtool-copilot          = { path = "../aa-devtool-copilot" }
 # AAASM-6259: the runtime lease gate lowers policy-authored leases and admits
 # per-call tool requirements against them with `aa-isolation`'s own
 # `admit_lease`, so the decision cannot drift from the launch-time verdict.
-# `aa-isolation` is `publish = false`; `src/lease/{mod.rs,authored.rs,...}` are
+# `aa-isolation` is `publish = false`; `src/lease/{authored,decide,gate}.rs` are
 # stripped with this region.
 aa-isolation                = { path = "../aa-isolation", version = "0.0.1-rc.7" }
 # strip-for-publish:end devtool

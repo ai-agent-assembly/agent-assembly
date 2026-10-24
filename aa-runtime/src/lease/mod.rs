@@ -4,4 +4,5 @@
 // `aa-isolation` is `publish = false`; everything that names it is removed from
 // the crates.io build by `.ci/strip-for-publish.sh`, along with these files.
 pub mod authored;
+pub mod decide;
 // strip-for-publish:end devtool

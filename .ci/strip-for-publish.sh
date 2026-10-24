@@ -154,6 +154,7 @@ DELETED_FILES=(
     # AAASM-5280: the built-in adapter bridge consumes the stripped aa-devtool dep.
     "${REPO_ROOT}/aa-runtime/src/devint/adapters.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/authored.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/decide.rs"
 )
 
 # Strip region. Uses awk to drop lines from any
