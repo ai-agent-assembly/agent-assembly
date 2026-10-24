@@ -62,6 +62,11 @@ impl RingBufReader {
             .take_map("EVENTS")
             .ok_or_else(|| EbpfError::MapNotFound { name: "EVENTS".into() })?;
         let ring_buf = RingBuf::try_from(map)?;
+        // tokio 1.53.3 (RUSTSEC-2026-0386 fix) deprecates `AsyncFd::new`; its replacement
+        // `AsyncFd::register` is `unsafe` and needs tokio >= 1.53.3, which the workspace
+        // requirement (`tokio = "1"`) does not enforce. Keep the safe constructor, scoped to
+        // this one call, until the register migration is done deliberately.
+        #[allow(deprecated)]
         let async_fd = AsyncFd::new(ring_buf)?;
         Ok(Self { _bpf: bpf, async_fd })
     }
