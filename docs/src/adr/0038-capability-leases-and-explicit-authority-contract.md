@@ -1409,9 +1409,11 @@ This amendment adds a seam, not an enforcement feature.
   returns early.
 - **An absent gate behaves exactly as before.** This is not a decision on the
   compatibility switch of section 3; it is the absence of a gate.
-- **No production gate exists.** Nothing implements `LeaseGate` outside tests and nothing
-  supplies leases to the runtime, so no shipped binary enforces leases through this seam.
-  A later change adds the production implementation.
+- **A production gate exists only in governed mode** (section 37). `PolicyLeaseGate`
+  implements `LeaseGate` and the runtime passes it to `run_with_lease_gate` when, and only
+  when, `AA_LEASE_POLICY` is set. With it unset the runtime passes `None`, as at the time
+  this seam was added. A runtime built for crates.io has no gate and refuses to start if
+  asked to govern.
 - **Restrict-only.** `Permit` falls through to the gateway and local policy and cannot
   grant over an op-control halt, a gateway deny or a local `blocked_actions` rule.
 - **Fail closed when a gate is installed.** A `Deny`, a gate panic and an empty subject
@@ -1512,14 +1514,12 @@ a policy carrying declarations cannot be silently loaded by a binary that would 
 them.
 
 
-### 35. The governed decision (library only, not wired)
+### 35. The governed decision
 
 `aa-runtime/src/lease/decide.rs` implements the decision section 32 describes as "decided
-here, implemented later", and `lease/gate.rs` wraps it as a `LeaseGate`. **Nothing builds
-the governance, installs the gate or passes it to `run_with_lease_gate` yet, so no shipped
-binary evaluates this table.** The runtime wiring, the `AA_LEASE_POLICY` switch and the
-revocation reload are later changes under the same ticket. Nothing here should be read as
-the runtime enforcing leases today.
+here, implemented later", and `lease/gate.rs` wraps it as a `LeaseGate`. Section 37
+records how the runtime builds the governance, installs the gate and reloads revocations;
+this section and section 36 describe the decision itself.
 
 `decide(governance, revoked, request, now)` is pure. `LeaseGovernance` is built once from
 operator-trusted input: the server-side agent id, an `Enforced` policy load (a permissive,
@@ -1575,3 +1575,70 @@ token and the trace and span ids never influence a verdict. The decision reads o
   re-checked when the approval resolves.
 - **A poisoned snapshot lock denies every call** until the process restarts, and a refused
   `install` does not heal it.
+
+### 37. Wiring: what the runtime does with the gate
+
+`aa-runtime` builds the gate at the very top of `run()`, before the metrics recorder, the
+IPC socket, the health server or any task exists, so a refusal leaves nothing bound.
+`run()` now returns `Result<(), StartupRefusal>` and the binary exits with status 78.
+
+**Trigger.** `AA_LEASE_POLICY` being *set* is the only trigger (section 32). A set but empty
+value is still "requested" and is refused; this differs deliberately from `AA_POLICY_PATH`,
+where empty means disabled, because here "disabled" would be a fail-open. `AA_LEASE_STATE`
+names the record, the same variable `aasm lease` reads. A record that merely exists does not
+turn governed mode on.
+
+**Startup refuses** (exit 78, message on stderr and in the log) when: `AA_LEASE_POLICY` is
+set but this build cannot enforce leases (crates.io build without the gate, or a non-unix
+host); `AA_LEASE_STATE` is unset; the policy fails to load or is not an enforced policy;
+the record is missing, corrupt, of an unsupported version, insecure, for a different subject
+than the server `AA_AGENT_ID`, or bound to a different policy digest (the message names the
+digest to pass to `aasm lease init`); or the policy authors a lease the lowering refuses
+(`max_count`, two leases for one domain). A missing record is never created: `aasm lease
+init` is the only thing that starts a run. `process_creation` and `syscall` leases are not
+a startup refusal; the decision denies every tool that declares those classes (section 35).
+The policy is loaded from the explicit path only (`aa_policy::resolve::load`), never
+through the search path, so a missing file cannot fall back to another policy. The
+refusal for "asked to govern, build cannot" sits outside the strip region in
+`lease/wiring.rs`; only the call into the gate is stripped, so the crates.io binary refuses.
+
+**Time.** `GovernedIssuance.issued_at` is the record's `issued_at` and the lease ids come
+from the record (`LeaseGovernance::from_state`), so ids and windows agree with what
+`aasm lease init` printed. Expiry is evaluated against the wall clock at each check with no
+grace. A restart does not refresh a lease; only a new run does.
+
+**Reload.** A task re-reads the record every 100 ms off the async workers. A valid update
+that passes `check_monotonic` installs a new snapshot with the new revoked set. Any
+anomaly (unreadable, corrupt, deleted, changed anchor, subject or digest, a shrunk
+revocation set, a generation that went backwards, I/O error) installs deny-all and ends the
+task: the gate stays denied until restart and never heals, even if the original record is
+put back. The policy file is read once; editing it takes effect only at restart, and then
+only if the record is re-initialised for the new digest.
+
+**Revocation acknowledgement.** `GET /health` gains an additive `lease_governance:
+{generation, state}` object (`state` is `governed` or `denied_all`), present only in
+governed mode, so ungoverned output is unchanged. The field is written only after the gate
+accepted the snapshot. `aasm lease revoke --wait-health <URL>` (or `AA_LEASE_HEALTH_URL`)
+returns only once `/health` shows the new generation, or `denied_all`, and fails on
+timeout (default 5 s) or against a runtime that reports no `lease_governance`. Without the
+flag the revocation is recorded and applied within about one reload interval, with no
+acknowledgement. The runtime health address is not discoverable from the state record, so
+the URL is an explicit operator input.
+
+**Residuals, stated.**
+- A same-UID agent can edit the policy file, the state record and its directory. The record
+  is owner-only (0600) and rollback-checked while the runtime runs, but an agent that can
+  write it can trip deny-all or, across a restart, present an older valid record (AAASM-5533).
+- The subject is runtime-wide; the gate is point-in-time; it is admission, not confinement
+  (sections 33 and 36).
+- `aa-runtime` started by an SDK helper (for example the Python `start_runtime`) inherits
+  that process's environment, so whether it is governed is decided by what that environment
+  carries, not by anything the SDK asserts.
+- The gate sits in `handle_policy_query`. Other paths that reach a tool without an
+  SDK-wrapped policy query (the proxy, eBPF, a non-cooperative SDK) are not gated by it.
+- A hung filesystem read would delay a reload; the gate keeps answering from its last
+  snapshot meanwhile, so a revocation can lag by that long. The reload does not time out.
+
+**Evidence.** `aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs` drives the real binary over
+its IPC socket against a counting fake gateway; see the PR for the falsifier table. J81
+remains partial until the PR6 end-to-end journey.
