@@ -134,7 +134,14 @@ governed runtime applies it within about 100 ms but gives no acknowledgement. Wi
 `lease_governance.generation` reaches the new generation, or `state` is `denied_all`
 (everything is already denied). It exits non-zero if that does not happen within
 `--wait-timeout-secs` (default 5), or if the runtime reports no `lease_governance`
-(not in governed mode). The revocation is recorded in every case.
+(not in governed mode). It also requires the runtime's `run_id` to match this record's, so a
+different run's runtime cannot acknowledge. The revocation is recorded in every case.
+
+Exit status: `0` applied; `1` any other failure (timeout, ungoverned or different-run
+runtime, I/O); `3` the runtime reports `denied_all` (every request is already refused after
+a lease state anomaly, but it is not governing by lease until restarted). The client
+ignores `HTTP_PROXY`-style variables and redirects, treats `--wait-timeout-secs` above one
+hour as one hour, and never prints credentials from the URL.
 
 ## aasm lease status
 

@@ -1579,7 +1579,8 @@ token and the trace and span ids never influence a verdict. The decision reads o
 ### 37. Wiring: what the runtime does with the gate
 
 `aa-runtime` builds the gate at the very top of `run()`, before the metrics recorder, the
-IPC socket, the health server or any task exists, so a refusal leaves nothing bound.
+IPC socket, the health server or any task exists, so a refusal precedes every subsystem
+start-up log line (asserted in the wiring test) and leaves no socket or listener.
 `run()` now returns `Result<(), StartupRefusal>` and the binary exits with status 78.
 
 **Trigger.** `AA_LEASE_POLICY` being *set* is the only trigger (section 32). A set but empty
@@ -1602,7 +1603,7 @@ through the search path, so a missing file cannot fall back to another policy. T
 refusal for "asked to govern, build cannot" sits outside the strip region in
 `lease/wiring.rs`; only the call into the gate is stripped, so the crates.io binary refuses.
 
-**Time.** `GovernedIssuance.issued_at` is the record's `issued_at` and the lease ids come
+**Time.** Expiry is judged against the host's wall clock (`SystemTime::now()`) at each check, so a clock stepped forward expires leases early and one stepped back extends them; there is no monotonic-clock guard. `GovernedIssuance.issued_at` is the record's `issued_at` and the lease ids come
 from the record (`LeaseGovernance::from_state`), so ids and windows agree with what
 `aasm lease init` printed. Expiry is evaluated against the wall clock at each check with no
 grace. A restart does not refresh a lease; only a new run does.
@@ -1612,15 +1613,24 @@ that passes `check_monotonic` installs a new snapshot with the new revoked set. 
 anomaly (unreadable, corrupt, deleted, changed anchor, subject or digest, a shrunk
 revocation set, a generation that went backwards, I/O error) installs deny-all and ends the
 task: the gate stays denied until restart and never heals, even if the original record is
-put back. The policy file is read once; editing it takes effect only at restart, and then
+put back. The first I/O error latches too: there is no retry, because a transient read
+failure is indistinguishable here from a record someone is racing to restore, so the
+gate fails closed and an operator restarts it (accepted trade-off, not an oversight).
+Each read is bounded (2 s); a read that does not return in time trips the gate. The reload
+task is supervised: if it panics, is aborted, or ends without a shutdown, the supervisor
+installs deny-all, so a gate that can no longer learn of revocations stops permitting. The policy file is read once; editing it takes effect only at restart, and then
 only if the record is re-initialised for the new digest.
 
 **Revocation acknowledgement.** `GET /health` gains an additive `lease_governance:
-{generation, state}` object (`state` is `governed` or `denied_all`), present only in
+{run_id, generation, state}` object (`state` is `governed` or `denied_all`), present only in
 governed mode, so ungoverned output is unchanged. The field is written only after the gate
 accepted the snapshot. `aasm lease revoke --wait-health <URL>` (or `AA_LEASE_HEALTH_URL`)
-returns only once `/health` shows the new generation, or `denied_all`, and fails on
-timeout (default 5 s) or against a runtime that reports no `lease_governance`. Without the
+returns only once `/health` shows *this run's* `run_id` at the new generation or later, and
+fails on timeout (default 5 s, clamped to one hour), against a runtime that reports no
+`lease_governance`, or against another run's runtime. A runtime reporting `denied_all` for
+this run also acknowledges (everything is refused) but `revoke` exits 3 so a script cannot
+mistake it for "revoked and applied". The client ignores environment proxies, does not
+follow redirects, and never prints URL userinfo, query or fragment. Without the
 flag the revocation is recorded and applied within about one reload interval, with no
 acknowledgement. The runtime health address is not discoverable from the state record, so
 the URL is an explicit operator input.
@@ -1636,8 +1646,10 @@ the URL is an explicit operator input.
   carries, not by anything the SDK asserts.
 - The gate sits in `handle_policy_query`. Other paths that reach a tool without an
   SDK-wrapped policy query (the proxy, eBPF, a non-cooperative SDK) are not gated by it.
-- A hung filesystem read would delay a reload; the gate keeps answering from its last
-  snapshot meanwhile, so a revocation can lag by that long. The reload does not time out.
+- A read that hangs (a dead network filesystem) is cut off after 2 s and trips deny-all, so
+  a revocation can lag by at most that long before the gate fails closed. The blocked
+  thread itself cannot be cancelled; the binary bounds its exit with a runtime shutdown
+  timeout so it cannot keep the process alive.
 
 **Evidence.** `aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs` drives the real binary over
 its IPC socket against a counting fake gateway; see the PR for the falsifier table. J81
