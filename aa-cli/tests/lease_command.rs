@@ -391,7 +391,16 @@ fn an_enormous_wait_timeout_is_clamped_not_a_panic() {
     let (d, p) = state_dir();
     assert!(init(d.path(), &p, &[]).status.success());
     let url = fake_health(&lg(&run_id(d.path(), &p), 2, "governed"));
-    let out = revoke_wait(d.path(), &p, &url, &u64::MAX.to_string());
+    // An acknowledging runtime must return at once. A watchdog turns "waited the
+    // clamped hour because it could not reach the runtime" into a failure.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (home, state) = (d.path().to_path_buf(), p.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send(revoke_wait(&home, &state, &url, &u64::MAX.to_string()));
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("revoke did not return within 30s of an immediate acknowledgement");
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!stderr(&out).contains("panicked"));
 }
