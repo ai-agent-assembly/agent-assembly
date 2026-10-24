@@ -76,7 +76,21 @@ mod raw {
     pub struct Tool {
         pub allow: Option<bool>,
         pub requires_approval_if: Option<String>,
+        #[serde(default, deserialize_with = "present_string_list")]
         pub capabilities: Option<Vec<String>>,
+    }
+
+    /// A written `capabilities` key must be a list; `null` is an error, not
+    /// "undeclared" (AAASM-6259). Same rule as `aa_policy`'s raw layer.
+    fn present_string_list<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // serde_yaml reads a bare `null` as an empty sequence for `Vec`, which would
+        // surface as a misleading "must not be empty"; name the real problem.
+        Option::<Vec<String>>::deserialize(d)?
+            .map(Some)
+            .ok_or_else(|| serde::de::Error::custom("capabilities must be a list of words, not null"))
     }
 }
 

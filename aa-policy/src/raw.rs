@@ -444,11 +444,27 @@ pub struct RawToolPolicy {
     /// Operator-declared authority words (AAASM-6259); validated against
     /// [`crate::document::ToolCapability`]. Kept as raw strings so an unknown
     /// word is a validation error naming the word, not an opaque serde error.
+    #[serde(default, deserialize_with = "present_string_list")]
     pub capabilities: Option<Vec<String>>,
     /// Stray keys captured so the validator can reject them (AAASM-4330
     /// fail-closed: a nested typo must not silently drop a restriction).
     #[serde(flatten)]
     pub unknown: HashMap<String, serde_yaml::Value>,
+}
+
+/// Deserialize a key that, when written, must be a list. An explicit `null`
+/// (`capabilities:` with nothing after it) is an error rather than `None`:
+/// "undeclared" is spelled by omitting the key, and a bare key that reads as
+/// undeclared would hide a half-written declaration (AAASM-6259).
+fn present_string_list<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // serde_yaml reads a bare `null` as an empty sequence for `Vec`, which would
+    // surface as a misleading "must not be empty"; name the real problem.
+    Option::<Vec<String>>::deserialize(d)?
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom("capabilities must be a list of words, not null"))
 }
 
 #[cfg(test)]

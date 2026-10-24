@@ -464,7 +464,8 @@ fn golden_corpus_verdicts() {
             yaml: "budget:\n  daily_limit_usd: \"5\"\n",
             sec: Expect::Err("no enforcement section"),
             pol: Expect::Err("invalid type: string \"5\", expected f64"),
-        },        // ── tools.<name>.capabilities (AAASM-6259) ──────────────────────────
+        },
+        // ── tools.<name>.capabilities (AAASM-6259) ──────────────────────────
         Case {
             name: "tool capabilities accepted",
             yaml: "tools:\n  t:\n    allow: true\n    capabilities: [network_egress, name_resolution]\n",
@@ -530,6 +531,39 @@ fn golden_corpus_verdicts() {
             yaml: "tools:\n  t:\n    allow: true\n    capabilities: ipc\n",
             sec: Expect::Err("invalid type"),
             pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "tool capabilities null rejected, not read as undeclared",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities:\n",
+            sec: Expect::Err("must be a list of words, not null"),
+            pol: Expect::Err("must be a list of words, not null"),
+        },
+        Case {
+            name: "wildcard tool with a non-boolean allow rejected",
+            yaml: "tools:\n  \"*\":\n    allow: banana\n",
+            sec: Expect::Err("invalid type"),
+            pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "wildcard tool with an unknown key rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    bogus: 1\n",
+            sec: Expect::Err("unknown policy key \"bogus\""),
+            pol: Expect::Err("bogus"),
+        },
+        Case {
+            name: "wildcard tool with a negative limit rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    limit_per_hour: -5\n",
+            // Existing divergence, not introduced here: the canonical parser's
+            // raw tool has no `limit_per_hour` field (L7-only, owned by the
+            // gateway validator) and ignores the value.
+            sec: OK,
+            pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "plain wildcard tool still accepted",
+            yaml: "tools:\n  \"*\":\n    allow: true\n",
+            sec: OK,
+            pol: OK,
         },
     ];
 
