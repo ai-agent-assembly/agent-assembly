@@ -156,6 +156,7 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-runtime/src/lease/authored.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/decide.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/gate.rs"
+    "${REPO_ROOT}/aa-runtime/tests/aaasm_6259_policy_lease_gate.rs"
 )
 
 # Strip region. Uses awk to drop lines from any
