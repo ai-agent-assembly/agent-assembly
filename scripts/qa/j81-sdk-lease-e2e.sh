@@ -9,13 +9,18 @@
 # independently of the verdict the SDK reports. Nothing here is mocked.
 #
 # What it is not: the lease gate is admission control for cooperative SDK tool calls,
-# not confinement (ADR 0038 sections 33, 36). Scenario 5c records that residual; it
-# does not claim it is closed.
+# not confinement (ADR 0038 sections 33, 36). This is manual local evidence, not a CI
+# gate. S5d only shows that relabelling a call WITH its tool context is denied. The
+# omit-context relabel residual of section 36 is probed by S5e and reported as INFO:
+# it is a stated limit and is not claimed closed. The denial reason is deliberately
+# generic ("capability lease required"), so it does not identify WHICH check denied;
+# the sentinel file and the positive controls are what discriminate.
 #
 # Usage:
 #   scripts/qa/j81-sdk-lease-e2e.sh                  run all scenarios
-#   scripts/qa/j81-sdk-lease-e2e.sh --mutation-check run with the gate absent and
-#                                                    require scenarios 2-4 to FAIL
+#   scripts/qa/j81-sdk-lease-e2e.sh --mutation-check run once with the gate ABSENT
+#                                                    (AA_LEASE_POLICY unset): S1 must still
+#                                                    PASS and the gate scenarios must FAIL
 #   scripts/qa/j81-sdk-lease-e2e.sh --ungoverned     (mutation) AA_LEASE_POLICY unset
 #
 # Env: J81_SDK_DIR (python-sdk checkout, default ../python-sdk), J81_AASM_BIN,
@@ -33,7 +38,7 @@ for arg in "$@"; do
   case "$arg" in
     --mutation-check) MUTATION_CHECK=1 ;;
     --ungoverned) MODE=ungoverned ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -42,19 +47,22 @@ done
 REPO="$(cd "$(dirname "$0")/../.." && pwd -P)"
 
 if [ "$MUTATION_CHECK" = "1" ]; then
+  # Gate-absent control only: it shows the harness notices a runtime that does not run
+  # the gate. It says nothing about subtler gate defects (a wrong verdict, a lease that
+  # re-grants); those are what the governed run's scenarios assert.
   out="$(mktemp)"
+  trap 'rm -f "$out"' EXIT
   J81_MUTATE=ungoverned "$0" >"$out" 2>&1
   cat "$out"
-  missing=0
-  for id in S2a S2b S3 S4a S4b; do
-    if ! grep -q "^J81_RESULT|$id|FAIL|" "$out"; then
-      echo "MUTATION-CHECK: scenario $id did NOT fail with the gate absent: the harness cannot detect a missing gate" >&2
-      missing=1
-    fi
+  bad=0
+  for id in S1a S1b S1c S1d; do
+    grep -q "^J81_RESULT|$id|PASS|" "$out" || { echo "MUTATION-CHECK: positive control $id did not PASS in the mutant run" >&2; bad=1; }
   done
-  rm -f "$out"
-  if [ "$missing" = "0" ]; then
-    echo "MUTATION-CHECK: PASS (scenarios S2a S2b S3 S4a S4b all FAIL with AA_LEASE_POLICY unset)"
+  for id in S2a S2b S3 S4a S4b S5a S5b1 S5b2 S6a S6b S6c2 S7b S7d1 S7e; do
+    grep -q "^J81_RESULT|$id|FAIL|" "$out" || { echo "MUTATION-CHECK: scenario $id did NOT fail with the gate absent" >&2; bad=1; }
+  done
+  if [ "$bad" = "0" ]; then
+    echo "MUTATION-CHECK: PASS (S1 passes; gate scenarios S2-S7 fail with AA_LEASE_POLICY unset)"
     exit 0
   fi
   exit 1
@@ -85,7 +93,11 @@ cleanup() {
   for f in "$WORK"/rt-*.pid; do
     [ -e "$f" ] || continue
     p="$(cat "$f")"
-    if kill -0 "$p" 2>/dev/null; then kill "$p" 2>/dev/null; sleep 0.3; kill -9 "$p" 2>/dev/null; fi
+    # A recycled pid must not be killed: only a live process whose command is our runtime.
+    case "$(ps -p "$p" -o command= 2>/dev/null)" in
+      "$RT"*) kill "$p" 2>/dev/null; sleep 0.3; kill -9 "$p" 2>/dev/null ;;
+    esac
+    rm -f "$f"
   done
   while read -r id; do rm -f "/tmp/aa-runtime-$id.sock"; done <"$IDS"
   [ "${J81_KEEP:-0}" = "1" ] || rm -rf "$WORK"
@@ -284,16 +296,23 @@ if [ "$C_STATUS" = "allow" ] && [ "$C_EXEC" = "1" ]; then
 else
   record S5c1 FAIL "A: spoofed args on a legitimately leased tool change nothing" "status=$C_STATUS reason=$C_REASON"
 fi
-# Residual, documented (ADR 0038 section 36): a NON-cooperative client chooses action_type.
-# Reported verbatim, never gating: it is a stated limit of admission control.
+# Raw query_policy, no SDK wrapper, with the tool context still attached: the relabel is denied
+# (ADR 0038 section 36). This does NOT cover the omit-context residual; see S5e.
 for at in llm_call tool_result; do
   line="$(run_fix raw --agent "$A_ID" --tool net_fetch --action-type "$at" --args '{}' 2>/dev/null | grep '^RESULT ' | tail -1)"
   st="$(field "$line" status)"
   if [ "$st" = "deny" ]; then
-    record "S5d-$at" PASS "raw query_policy relabel net_fetch as $at (no SDK wrapper)" "status=deny reason=${line#*reason=}"
+    record "S5d-$at" PASS "raw query_policy relabel net_fetch as $at, tool context still attached (relabel-with-context only)" "status=deny reason=${line#*reason=}"
   else
-    record "S5d-$at" INFO "raw query_policy relabel net_fetch as $at (no SDK wrapper): documented residual ADR0038-36" "status=$st reason=${line#*reason=}"
+    record "S5d-$at" FAIL "raw query_policy relabel net_fetch as $at, tool context still attached" "status=$st reason=${line#*reason=}"
   fi
+done
+# Omit-context relabel: the native shim builds no typed context when tool_name is None, so the SDK
+# CAN send this. ADR 0038 section 36 documents the answer as a residual nothing in the request can
+# reveal. Reported as INFO with the observed answer; never counted as PASS and never gating.
+for at in llm_call tool_result; do
+  line="$(run_fix raw --agent "$A_ID" --action-type "$at" 2>/dev/null | grep '^RESULT ' | tail -1)"
+  record "S5e-$at" INFO "residual (ADR0038-36), no tool context: raw $at with tool_name=None, sent by the SDK shim" "observed=$(field "$line" status) reason=${line#*reason=}"
 done
 
 echo "== S8 cross-session isolation (B revokes its own lease) =="
@@ -328,8 +347,12 @@ wline="$(run_fix watch --agent "$A_ID" --tool note_reader --sentinel-dir "$WORK/
   --revoke-after 2.0 --duration 7.0 2>"$WORK/watch.err" | grep '^RESULT ' | tail -1)"
 w_rc="$(field "$wline" revoke_rc)"; w_before="$(field "$wline" allows_before_ack)"
 w_after="$(field "$wline" allows_after_ack)"; w_n="$(field "$wline" calls_after_ack)"; w_ex="$(field "$wline" executed_after_ack)"
-if [ "$w_rc" = "0" ] && [ "${w_before:-0}" -gt 0 ] && [ "${w_n:-0}" -gt 0 ] && [ "$w_after" = "0" ] && [ "$w_ex" = "0" ]; then
-  record S6b PASS "no call sent after the revoke ack was allowed or executed (positive control: allows before ack > 0)" "revoke_rc=$w_rc allows_before_ack=$w_before calls_after_ack=$w_n allows_after_ack=$w_after executed_after_ack=$w_ex"
+w_gate="$(field "$wline" gate_denies_after_ack)"
+# The ack time is taken the instant the revoke process returns. Calls sent between the revoke write
+# and that ack may be allowed by design (the reload runs every ~100 ms); only calls sent at or after
+# the ack are asserted, and every one must be a gate denial.
+if [ "$w_rc" = "0" ] && [ "${w_before:-0}" -gt 0 ] && [ "${w_n:-0}" -gt 0 ] && [ "$w_after" = "0" ] && [ "$w_ex" = "0" ] && [ "$w_gate" = "$w_n" ]; then
+  record S6b PASS "every call sent at/after the revoke ack was a lease-gate denial with no side effect (positive control: allows before ack > 0)" "revoke_rc=$w_rc allows_before_ack=$w_before calls_after_ack=$w_n allows_after_ack=$w_after executed_after_ack=$w_ex gate_denies_after_ack=$w_gate"
 else
   record S6b FAIL "continuous-call revocation" "line=${wline:-<none>} err=$(tail -2 "$WORK/watch.err" | tr '\n' ' ')"
 fi
@@ -342,8 +365,12 @@ E_ISSUED="$(lease_id "$E_STATE" filesystem_write | cut -d: -f4)"
 E_EXPIRY=$((E_ISSUED + EXP_TTL))
 start_rt e "$E_ID" "$E_STATE" "$E_POLICY" || exit 2
 do_call "$E_ID" note_writer; expect_allow S6c1 "E: ${EXP_TTL}s lease permits before expiry (positive control)"
-now="$(date +%s)"; wait_s=$((E_EXPIRY + 2 - now)); [ "$wait_s" -gt 0 ] && sleep "$wait_s"
-do_call "$E_ID" note_writer; expect_gate_deny S6c2 "E: first call after issued_at+ttl is denied, no grace, no side effect"
+# Probe as soon as the wall clock reaches issued_at+ttl; the fixture's start-up adds roughly a second
+# before the query is sent, so this bounds a grace period to about that, not to zero.
+while [ "$(date +%s)" -lt "$E_EXPIRY" ]; do sleep 0.05; done
+do_call "$E_ID" note_writer; expect_gate_deny S6c2 "E: call sent about 1s after issued_at+ttl is denied, no side effect (a grace under ~1s is not excluded here; the runtime test pins it tighter)"
+sleep 2
+do_call "$E_ID" note_writer; expect_gate_deny S6c2b "E: call sent about 3s after issued_at+ttl is denied, no side effect"
 do_call "$E_ID" calc;        expect_allow S6c3 "E: lease-free tool still allowed after expiry"
 
 echo "== S7 AC4: kill -9 and restart on the same state =="
@@ -378,9 +405,29 @@ if [ "$?" = "0" ]; then
   else
     record S7c FAIL "restart keeps run_id/generation" "gen_before=$GEN_BEFORE gen_after=$(health_field a generation) run=$(health_field a run_id)"
   fi
+  do_call "$A_ID" note_writer; expect_gate_deny S7b2 "A after restart: the revoked note_writer denial is the lease gate's, not an outage"
 else
   record S7a FAIL "runtime A restart after kill -9 on stale socket" "$(tail -3 "$(rt_file a log)" | tr '\n' ' ')"
 fi
+
+# Restart must not change the outcome in the other direction either: a still-valid lease keeps
+# permitting, and an expired lease is not refreshed by the restart.
+new_session v 3600 3600 || exit 2
+V_ID="$S_ID"; V_STATE="$S_STATE"; V_POLICY="$S_POLICY"
+V_RUN="$(lease_id "$V_STATE" x | cut -d: -f3)"
+start_rt v "$V_ID" "$V_STATE" "$V_POLICY" || exit 2
+do_call "$V_ID" note_writer; expect_allow S7h1 "V: still-valid lease permits before kill -9 (positive control)"
+V_PID="$(rt_pid v)"; kill -9 "$V_PID" 2>/dev/null; wait "$V_PID" 2>/dev/null
+start_rt v "$V_ID" "$V_STATE" "$V_POLICY" keep_socket || exit 2
+do_call "$V_ID" note_writer; expect_allow S7h2 "V: the same still-valid lease still permits after kill -9 and restart (same run_id)"
+do_call "$V_ID" ghost_tool;  expect_gate_deny S7h3 "V: undeclared tool still denied after restart"
+if [ "$MODE" = "governed" ] && [ "$(health_field v run_id)" = "$V_RUN" ]; then record S7h4 PASS "V keeps its run_id across restart" "run_id=$V_RUN"
+else record S7h4 FAIL "V keeps its run_id across restart" "run=$(health_field v run_id)"; fi
+
+E_PID="$(rt_pid e)"; kill -9 "$E_PID" 2>/dev/null; wait "$E_PID" 2>/dev/null
+start_rt e "$E_ID" "$E_STATE" "$E_POLICY" keep_socket || exit 2
+do_call "$E_ID" note_writer; expect_gate_deny S7i1 "E: restart after expiry does not refresh the TTL (lease counts from the record's issued_at)"
+do_call "$E_ID" calc;        expect_allow S7i2 "E: lease-free tool allowed after restart (positive control)"
 
 refusal_case() { # refusal_case ID "desc" NAME  (state/policy prepared by caller in $RC_STATE/$RC_POLICY)
   local id="$1" desc="$2" name="$3" i=0 rc=""
@@ -425,21 +472,23 @@ mk_refusal_state r5; "$AASM" lease init --state "$RC_STATE" --subject "someone-e
 refusal_case S7f "record for a different subject -> runtime refuses to start" r5
 
 echo "== S7g AC4: live corruption fails closed and never heals =="
-# E is governed, started above; its lease already expired. Use calc (needs no lease) as the sensor.
+# E is the restarted, governed runtime above; its lease already expired. Use calc (needs no lease) as the sensor.
 do_call "$E_ID" calc; expect_allow S7g0 "E: calc allowed before corruption (positive control)"
 cp -p "$E_STATE" "$WORK/e-state.good"
 printf 'garbage' >"$E_STATE"
 sleep 1.5
 do_call "$E_ID" calc
-if [ "$C_STATUS" = "deny" ] && [ "$C_EXEC" = "0" ]; then
-  record S7g1 PASS "after the state record is corrupted even a lease-free tool is denied (deny-all)" "status=deny reason=$C_REASON"
+case "$C_REASON" in *"$GATE_REASON"*) g_gate=1 ;; *) g_gate=0 ;; esac
+if [ "$C_STATUS" = "deny" ] && [ "$C_EXEC" = "0" ] && [ "$g_gate" = "1" ]; then
+  record S7g1 PASS "after the state record is corrupted even a lease-free tool is denied by the gate (deny-all)" "status=deny reason=$C_REASON"
 else
-  record S7g1 FAIL "live corruption must fail closed" "status=$C_STATUS sentinel_files=$C_EXEC"
+  record S7g1 FAIL "live corruption must fail closed with the gate's denial" "status=$C_STATUS sentinel_files=$C_EXEC from_lease_gate=$g_gate"
 fi
 cat "$WORK/e-state.good" >"$E_STATE"
 sleep 1.5
 do_call "$E_ID" calc
-if [ "$C_STATUS" = "deny" ] && [ "$C_EXEC" = "0" ] && [ "$(health_field e state)" = "denied_all" ]; then
+case "$C_REASON" in *"$GATE_REASON"*) g_gate=1 ;; *) g_gate=0 ;; esac
+if [ "$C_STATUS" = "deny" ] && [ "$C_EXEC" = "0" ] && [ "$g_gate" = "1" ] && [ "$(health_field e state)" = "denied_all" ]; then
   record S7g2 PASS "restoring the original record does not heal a tripped gate (state=denied_all until restart)" "status=deny state=denied_all"
 else
   record S7g2 FAIL "tripped gate must stay denied after the record is restored" "status=$C_STATUS state=$(health_field e state)"
