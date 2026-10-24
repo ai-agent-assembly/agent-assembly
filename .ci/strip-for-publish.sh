@@ -142,6 +142,8 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run_workspace_tx.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
+    # AAASM-6259: drives `aasm run --dry-run`, which the published binary lacks.
+    "${REPO_ROOT}/aa-cli/tests/run_lease_plan.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
     # AAASM-5309: the `aasm integrations` CLI suites. `integrations_command.rs`
     # drives the subcommand that no longer exists post-strip;
