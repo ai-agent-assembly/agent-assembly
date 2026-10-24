@@ -1,9 +1,9 @@
 //! The production [`LeaseGate`]: a hot-swappable snapshot answered by
 //! [`decide`] (AAASM-6259, ADR 0038 §31-34).
 //!
-//! Nothing here is wired into the runtime yet. A later change builds the
-//! governance at startup, passes the gate to `run_with_lease_gate` and feeds
-//! [`PolicyLeaseGate::install`] from a revocation reload task.
+//! `lease::governed` builds the governance at startup, passes the gate to
+//! `run_with_lease_gate` and feeds [`PolicyLeaseGate::install`] from the
+//! revocation reload task, in governed mode only (`AA_LEASE_POLICY` set).
 //!
 //! # Locking
 //!

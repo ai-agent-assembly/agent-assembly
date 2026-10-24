@@ -2,8 +2,9 @@
 //!
 //! A seam only: [`LeaseGate`] is the question `handle_policy_query` asks, after
 //! the op-control halt and before the gateway forward, when a gate is
-//! installed. No production implementation exists yet, and with no gate the
-//! pipeline behaves exactly as it did before this module existed.
+//! installed. The runtime installs `PolicyLeaseGate` only in governed mode
+//! (`AA_LEASE_POLICY` set); with no gate the pipeline behaves exactly as it did
+//! before this module existed.
 //!
 //! # Invariants enforced here, independent of the gate
 //!
