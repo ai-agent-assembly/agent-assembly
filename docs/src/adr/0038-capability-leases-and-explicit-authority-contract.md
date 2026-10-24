@@ -1654,4 +1654,6 @@ the URL is an explicit operator input.
 **Evidence.** `aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs` drives the real binary over
 its IPC socket against a counting fake gateway; see the PR for the falsifier table. J81
 remains partial until the PR6 end-to-end journey. The real Python-SDK harness for that journey is
-`scripts/qa/j81-sdk-lease-e2e.sh` (see `docs/src/qa/j81-sdk-lease-e2e.md`).
+`scripts/qa/j81-sdk-lease-e2e.sh` (see `docs/src/qa/j81-sdk-lease-e2e.md`). It is manual local evidence, not a CI gate, and the
+omit-context relabel residual of section 36 stays unexercised as a pass: the harness only reports its
+observed answer as INFO.
