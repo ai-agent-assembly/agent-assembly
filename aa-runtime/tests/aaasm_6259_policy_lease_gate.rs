@@ -109,8 +109,8 @@ fn governance_issued(subject: &str, issued_at: SystemTime, ttl: u64) -> LeaseGov
             issued_at,
             default_ttl_seconds: ttl,
             default_issuer: "test".to_string(),
-            id_prefix: "gov".to_string(),
         },
+        &|d| Ok(format!("run1:{d}")),
     )
     .expect("governance builds")
 }
@@ -264,7 +264,7 @@ async fn installing_a_new_snapshot_changes_the_next_verdict() {
     assert_forwarded(&resp, &calls, 0, "before revocation");
 
     // Revocation: same governance, the lease id is now in the revoked set.
-    let revoked: BTreeSet<String> = ["gov-0".to_string()].into();
+    let revoked: BTreeSet<String> = ["run1:filesystem_read".to_string()].into();
     gate.install(Snapshot::governed(
         governance_issued(SERVER_AGENT, SystemTime::now() - Duration::from_secs(5), 3_600),
         revoked,

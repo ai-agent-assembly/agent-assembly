@@ -13,13 +13,12 @@
 //! fail-closed, and persistent until the process restarts, because healing a
 //! lock a panic poisoned would hide that the state behind it may be wrong.
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
 use std::time::SystemTime;
 
 use aa_proto::assembly::policy::v1::CheckActionRequest;
 
-use super::decide::{decide, LeaseGovernance};
+use super::decide::{decide, LeaseGovernance, RevokedLeases};
 use crate::pipeline::{LeaseGate, LeaseVerdict};
 
 /// What the gate decides against: governance (or a refusal to govern), the
@@ -27,7 +26,7 @@ use crate::pipeline::{LeaseGate, LeaseVerdict};
 #[derive(Debug, Clone)]
 pub struct Snapshot {
     mode: Mode,
-    revoked: BTreeSet<String>,
+    revoked: Arc<dyn RevokedLeases>,
     generation: u64,
 }
 
@@ -38,12 +37,14 @@ enum Mode {
 }
 
 impl Snapshot {
-    /// A snapshot that decides with `governance` and refuses every lease in
-    /// `revoked` (ids as reported by [`LeaseGovernance::lease_ids`]).
-    pub fn governed(governance: LeaseGovernance, revoked: BTreeSet<String>, generation: u64) -> Self {
+    /// A snapshot that decides with `governance` and refuses every lease
+    /// `revoked` reports revoked (ids as reported by
+    /// [`LeaseGovernance::lease_ids`]). A reload task passes the freshly read
+    /// `LeaseState` here.
+    pub fn governed(governance: LeaseGovernance, revoked: impl RevokedLeases + 'static, generation: u64) -> Self {
         Self {
             mode: Mode::Governed(Box::new(governance)),
-            revoked,
+            revoked: Arc::new(revoked),
             generation,
         }
     }
@@ -54,7 +55,7 @@ impl Snapshot {
     pub fn deny_all(reason: impl Into<String>, generation: u64) -> Self {
         Self {
             mode: Mode::DenyAll(reason.into()),
-            revoked: BTreeSet::new(),
+            revoked: Arc::new(std::collections::BTreeSet::<String>::new()),
             generation,
         }
     }
@@ -78,7 +79,7 @@ impl Snapshot {
                         reason: "lease governance was built for a different agent id".to_string(),
                     };
                 }
-                decide(governance, &self.revoked, req, now)
+                decide(governance, self.revoked.as_ref(), req, now)
             }
         }
     }
@@ -154,6 +155,7 @@ mod tests {
     use super::*;
     use crate::lease::decide::GovernedIssuance;
     use crate::pipeline::lease_gate::enforce;
+    use std::collections::BTreeSet;
 
     const SUBJECT: &str = "server-agent";
 
@@ -174,8 +176,8 @@ mod tests {
                 issued_at: now(),
                 default_ttl_seconds: 600,
                 default_issuer: "test".to_string(),
-                id_prefix: "gov".to_string(),
             },
+            &|d| Ok(format!("run1:{d}")),
         )
         .expect("governance builds")
     }
@@ -209,7 +211,7 @@ mod tests {
 
     #[test]
     fn a_revoked_id_in_the_snapshot_denies() {
-        let revoked: BTreeSet<String> = ["gov-0".to_string()].into();
+        let revoked: BTreeSet<String> = ["run1:filesystem_read".to_string()].into();
         let gate = PolicyLeaseGate::new(Snapshot::governed(governance(SUBJECT), revoked, 2));
         assert!(matches!(
             gate.check(SUBJECT, &call("reader"), now()),

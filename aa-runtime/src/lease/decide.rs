@@ -102,9 +102,31 @@ pub struct GovernedIssuance {
     pub default_ttl_seconds: u64,
     /// Issuer recorded on a grant that names none.
     pub default_issuer: String,
-    /// Lease ids are `"{id_prefix}-{index}"`, `index` being the grant's
-    /// position in `authority.leases` (see [`LeaseGovernance::lease_ids`]).
-    pub id_prefix: String,
+}
+
+/// The set of revoked lease ids a decision consults.
+///
+/// A trait so this library does not depend on how revocation is stored:
+/// `BTreeSet<String>` serves tests and simple callers, and on unix
+/// [`LeaseState`](crate::lease::state::LeaseState) implements it directly, so
+/// the record the operator CLI writes is what the gate reads.
+pub trait RevokedLeases: std::fmt::Debug + Send + Sync {
+    /// Whether the lease with id `id` has been revoked.
+    fn is_revoked(&self, id: &str) -> bool;
+}
+
+impl RevokedLeases for BTreeSet<String> {
+    fn is_revoked(&self, id: &str) -> bool {
+        self.contains(id)
+    }
+}
+
+#[cfg(unix)]
+impl RevokedLeases for crate::lease::state::LeaseState {
+    fn is_revoked(&self, id: &str) -> bool {
+        // Inherent method of the same name; resolved first, so no recursion.
+        crate::lease::state::LeaseState::is_revoked(self, id)
+    }
 }
 
 /// Why governed mode cannot be built. Governed mode never falls back to
@@ -126,6 +148,13 @@ pub enum GovernanceError {
     Lowering(LeaseLoweringError),
     /// Two leases for one capability domain.
     Authority(AuthorityBuildError),
+    /// The caller's lease-id function refused a domain word.
+    LeaseId {
+        /// The domain word the id was requested for.
+        domain: String,
+        /// The id function's own explanation.
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for GovernanceError {
@@ -138,6 +167,7 @@ impl std::fmt::Display for GovernanceError {
             ),
             Self::Lowering(e) => write!(f, "policy authors a lease governed mode cannot issue: {e}"),
             Self::Authority(e) => write!(f, "policy authors an inconsistent lease set: {e}"),
+            Self::LeaseId { domain, detail } => write!(f, "no lease id for domain `{domain}`: {detail}"),
         }
     }
 }
@@ -153,7 +183,8 @@ pub struct LeaseGovernance {
     subject: String,
     tools: BTreeMap<String, ToolRequirement>,
     authority: EffectiveAuthority,
-    leases: Vec<CapabilityLease>,
+    /// Each lease with the id the revoked set knows it by.
+    leased: Vec<(CapabilityLease, String)>,
     policy_digest: String,
 }
 
@@ -162,7 +193,10 @@ impl LeaseGovernance {
     /// authored leases through the same path `aasm run` uses.
     ///
     /// `subject` is the runtime's server-side agent id
-    /// (`PipelineConfig.agent_id`), never an SDK-supplied one.
+    /// (`PipelineConfig.agent_id`), never an SDK-supplied one. `lease_id` maps
+    /// a lease domain word (`filesystem_read`, ...) to the id the revoked set
+    /// uses; for a record on disk it is `LeaseState::lease_id`, so the CLI and
+    /// the gate derive identical ids from the same record.
     ///
     /// # Errors
     ///
@@ -173,6 +207,7 @@ impl LeaseGovernance {
         resolution: &PolicyResolution,
         subject: &str,
         issuance: &GovernedIssuance,
+        lease_id: &dyn Fn(&str) -> Result<String, String>,
     ) -> Result<Self, GovernanceError> {
         let PolicyResolution::Enforced {
             document,
@@ -197,7 +232,8 @@ impl LeaseGovernance {
                 default_issuer: IdentityRef::root(issuance.default_issuer.clone()),
                 issued_at: issuance.issued_at,
                 default_ttl_seconds: issuance.default_ttl_seconds,
-                id_prefix: issuance.id_prefix.clone(),
+                // Internal only: the ids that matter are `lease_id`'s.
+                id_prefix: "governed".to_string(),
             },
         )
         .map_err(GovernanceError::Lowering)?;
@@ -225,7 +261,21 @@ impl LeaseGovernance {
             })
             .collect();
 
-        Self::from_parts(subject, tools, leases, content_digest.clone())
+        let leased = leases
+            .into_iter()
+            .zip(resolution.lease_grants())
+            .map(|(lease, grant)| {
+                let word = grant.domain.as_str();
+                lease_id(word)
+                    .map(|id| (lease, id))
+                    .map_err(|detail| GovernanceError::LeaseId {
+                        domain: word.to_string(),
+                        detail,
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Self::from_parts(subject, tools, leased, content_digest.clone())
     }
 
     /// Build governance from already-lowered parts.
@@ -241,18 +291,19 @@ impl LeaseGovernance {
     pub fn from_parts(
         subject: &str,
         tools: BTreeMap<String, ToolRequirement>,
-        leases: Vec<CapabilityLease>,
+        leased: Vec<(CapabilityLease, String)>,
         policy_digest: String,
     ) -> Result<Self, GovernanceError> {
         if subject.is_empty() {
             return Err(GovernanceError::EmptySubject);
         }
+        let leases: Vec<CapabilityLease> = leased.iter().map(|(l, _)| l.clone()).collect();
         let authority = EffectiveAuthority::from_leases(&leases).map_err(GovernanceError::Authority)?;
         Ok(Self {
             subject: subject.to_string(),
             tools,
             authority,
-            leases,
+            leased,
             policy_digest,
         })
     }
@@ -268,10 +319,17 @@ impl LeaseGovernance {
         &self.policy_digest
     }
 
-    /// Ids of the leases this governance holds, in `authority.leases` order.
-    /// A revoked set is matched against these.
+    /// Ids of the leases this governance holds, in `authority.leases` order:
+    /// the ids a revoked set is matched against.
     pub fn lease_ids(&self) -> impl Iterator<Item = &str> {
-        self.leases.iter().map(|l| l.id().as_str())
+        self.leased.iter().map(|(_, id)| id.as_str())
+    }
+
+    fn lease_id_for(&self, lease: &CapabilityLease) -> Option<&str> {
+        self.leased
+            .iter()
+            .find(|(l, _)| l.id() == lease.id())
+            .map(|(_, id)| id.as_str())
     }
 
     /// The declaration for `tool`, if the operator declared one.
@@ -286,11 +344,11 @@ fn deny(reason: impl Into<String>) -> LeaseVerdict {
 
 /// Decide one request. Pure: `now` and `revoked` are inputs.
 ///
-/// `revoked` holds lease ids ([`LeaseGovernance::lease_ids`]) that must not
-/// admit regardless of their own validity window.
+/// `revoked` answers for the ids in [`LeaseGovernance::lease_ids`]; a revoked
+/// lease does not admit regardless of its own validity window.
 pub fn decide(
     governance: &LeaseGovernance,
-    revoked: &BTreeSet<String>,
+    revoked: &dyn RevokedLeases,
     req: &CheckActionRequest,
     now: SystemTime,
 ) -> LeaseVerdict {
@@ -307,7 +365,7 @@ pub fn decide(
 
 fn decide_tool(
     governance: &LeaseGovernance,
-    revoked: &BTreeSet<String>,
+    revoked: &dyn RevokedLeases,
     req: &CheckActionRequest,
     now: SystemTime,
 ) -> LeaseVerdict {
@@ -354,7 +412,7 @@ fn decide_tool(
 
 fn admit_class(
     governance: &LeaseGovernance,
-    revoked: &BTreeSet<String>,
+    revoked: &dyn RevokedLeases,
     domain: CapabilityDomain,
     now: SystemTime,
 ) -> Result<(), String> {
@@ -388,7 +446,12 @@ fn admit_class(
     let AuthorityState::Leased(lease) = state else {
         return Err(format!("no lease for `{domain}`"));
     };
-    if revoked.contains(lease.id().as_str()) {
+    // A held lease with no known id cannot be checked against the revoked
+    // set, so it does not admit.
+    let Some(id) = governance.lease_id_for(lease) else {
+        return Err(format!("the lease for `{domain}` has no id"));
+    };
+    if revoked.is_revoked(id) {
         return Err(format!("the lease for `{domain}` is revoked"));
     }
     admit_lease(state, &governance.subject, domain, &RequirementScope::Whole, now)
@@ -421,8 +484,21 @@ mod tests {
             issued_at: issued(),
             default_ttl_seconds: TTL,
             default_issuer: "test:policy".to_string(),
-            id_prefix: "gov".to_string(),
         }
+    }
+
+    fn paired(leases: Vec<CapabilityLease>) -> Vec<(CapabilityLease, String)> {
+        leases
+            .into_iter()
+            .map(|l| {
+                let id = l.id().as_str().to_string();
+                (l, id)
+            })
+            .collect()
+    }
+
+    fn run_id(domain: &str) -> Result<String, String> {
+        Ok(format!("run1:{domain}"))
     }
 
     const TOOLS: &str = "tools:
@@ -461,7 +537,7 @@ mod tests {
     fn governance(leases: &[&str]) -> LeaseGovernance {
         let resolution = resolve(&policy(leases));
         assert_eq!(resolution.state_token(), "enforced", "{resolution:?}");
-        LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance()).expect("governance builds")
+        LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &run_id).expect("governance builds")
     }
 
     fn tool_call(name: &str) -> CheckActionRequest {
@@ -595,9 +671,13 @@ mod tests {
     fn a_revoked_lease_id_denies_only_what_that_lease_admits() {
         let g = governance(&["filesystem_read", "filesystem_write"]);
         let ids: Vec<&str> = g.lease_ids().collect();
-        assert_eq!(ids, ["gov-0", "gov-1"], "ids follow authority.leases order");
+        assert_eq!(
+            ids,
+            ["run1:filesystem_read", "run1:filesystem_write"],
+            "ids come from the lease-id function, in authority.leases order"
+        );
 
-        let revoked: BTreeSet<String> = ["gov-0".to_string()].into();
+        let revoked: BTreeSet<String> = ["run1:filesystem_read".to_string()].into();
         assert_deny(decide(&g, &revoked, &tool_call("reader"), mid()), "read lease revoked");
         assert_deny(
             decide(&g, &revoked, &tool_call("copier"), mid()),
@@ -606,7 +686,7 @@ mod tests {
         assert!(permitted(&decide(&g, &revoked, &tool_call("writer"), mid())));
 
         // A revoked id that names no held lease changes nothing.
-        let unrelated: BTreeSet<String> = ["gov-9".to_string()].into();
+        let unrelated: BTreeSet<String> = ["run1:ipc".to_string()].into();
         assert!(permitted(&decide(&g, &unrelated, &tool_call("reader"), mid())));
     }
 
@@ -629,14 +709,14 @@ mod tests {
             );
             let resolution = resolve(&yaml);
             assert_eq!(resolution.state_token(), "enforced", "{domain}: {resolution:?}");
-            let g = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance()).unwrap();
+            let g = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &run_id).unwrap();
             let reason = assert_deny(decide(&g, &none(), &tool_call("t"), mid()), domain);
             assert!(reason.contains("does not admit"), "{domain}: {reason}");
 
             // Control: the same document with a whole-scope lease does admit,
             // so the deny above is the scope and nothing else.
             let whole = yaml.replace("scope:\n        - /workspace", "scope: whole");
-            let g = LeaseGovernance::from_resolution(&resolve(&whole), SUBJECT, &issuance()).unwrap();
+            let g = LeaseGovernance::from_resolution(&resolve(&whole), SUBJECT, &issuance(), &run_id).unwrap();
             assert!(
                 permitted(&decide(&g, &none(), &tool_call("t"), mid())),
                 "{domain} whole"
@@ -774,12 +854,13 @@ mod tests {
         )]
         .into();
 
-        let theirs = LeaseGovernance::from_parts(SUBJECT, tools.clone(), lowered("someone-else"), "d".into()).unwrap();
+        let theirs =
+            LeaseGovernance::from_parts(SUBJECT, tools.clone(), paired(lowered("someone-else")), "d".into()).unwrap();
         let reason = assert_deny(decide(&theirs, &none(), &tool_call("reader"), mid()), "other subject");
         assert!(reason.contains("does not admit"), "{reason}");
 
         // Control: the identical lease issued to the governed subject admits.
-        let ours = LeaseGovernance::from_parts(SUBJECT, tools, lowered(SUBJECT), "d".into()).unwrap();
+        let ours = LeaseGovernance::from_parts(SUBJECT, tools, paired(lowered(SUBJECT)), "d".into()).unwrap();
         assert!(permitted(&decide(&ours, &none(), &tool_call("reader"), mid())));
     }
 
@@ -810,7 +891,7 @@ mod tests {
             (load_failed, "load_failed"),
             (unconfigured, "unconfigured"),
         ] {
-            let err = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance()).unwrap_err();
+            let err = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &run_id).unwrap_err();
             assert_eq!(err, GovernanceError::NotEnforced { state });
         }
     }
@@ -822,12 +903,12 @@ mod tests {
         );
         let resolution = resolve(&yaml);
         assert_eq!(resolution.state_token(), "enforced", "{resolution:?}");
-        let err = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance()).unwrap_err();
+        let err = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &run_id).unwrap_err();
         assert!(matches!(err, GovernanceError::Lowering(_)), "{err:?}");
 
         let ok = resolve(&policy(&[]));
         assert_eq!(
-            LeaseGovernance::from_resolution(&ok, "", &issuance()).unwrap_err(),
+            LeaseGovernance::from_resolution(&ok, "", &issuance(), &run_id).unwrap_err(),
             GovernanceError::EmptySubject
         );
     }
@@ -853,7 +934,7 @@ mod tests {
         };
         let mut leases = lowered(0);
         leases.extend(lowered(1));
-        let err = LeaseGovernance::from_parts(SUBJECT, BTreeMap::new(), leases, "d".into()).unwrap_err();
+        let err = LeaseGovernance::from_parts(SUBJECT, BTreeMap::new(), paired(leases), "d".into()).unwrap_err();
         assert_eq!(
             err,
             GovernanceError::Authority(AuthorityBuildError::DuplicateLeaseDomain(
@@ -865,11 +946,56 @@ mod tests {
     #[test]
     fn governance_records_the_policy_digest_and_declared_tools() {
         let resolution = resolve(&policy(&["filesystem_read"]));
-        let g = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance()).unwrap();
+        let g = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &run_id).unwrap();
         assert_eq!(Some(g.policy_digest()), resolution.content_digest());
         assert_eq!(g.subject(), SUBJECT);
         assert!(g.tool("reader").is_some_and(|t| t.allow));
         assert!(g.tool("denied_read").is_some_and(|t| !t.allow));
         assert!(g.tool("undeclared").is_none());
+    }
+    #[test]
+    fn a_failing_lease_id_function_refuses_governance() {
+        let resolution = resolve(&policy(&["filesystem_read"]));
+        let err = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &|_| Err("bad".to_string()))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            GovernanceError::LeaseId {
+                domain: "filesystem_read".to_string(),
+                detail: "bad".to_string()
+            }
+        );
+    }
+
+    /// The wiring contract: ids from `LeaseState::lease_id` and revocation
+    /// answered by the same `LeaseState` the operator CLI writes.
+    #[cfg(unix)]
+    #[test]
+    fn lease_state_supplies_both_the_ids_and_the_revoked_set() {
+        use crate::lease::state::LeaseState;
+
+        let resolution = resolve(&policy(&["filesystem_read", "filesystem_write"]));
+        // `content_digest` is `sha256:<hex>`; the state record stores the bare hex.
+        let digest = resolution
+            .content_digest()
+            .and_then(|d| d.strip_prefix("sha256:"))
+            .unwrap()
+            .to_string();
+        let mut state = LeaseState::new_run(SUBJECT, &digest, 1_000_000).expect("run record");
+
+        let g = LeaseGovernance::from_resolution(&resolution, SUBJECT, &issuance(), &|d| {
+            state.lease_id(d).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        let read_id = state.lease_id("filesystem_read").unwrap();
+        assert_eq!(g.lease_ids().next(), Some(read_id.as_str()));
+
+        assert!(permitted(&decide(&g, &state, &tool_call("reader"), mid())));
+        state.revoke([read_id.as_str()]).unwrap();
+        assert_deny(
+            decide(&g, &state, &tool_call("reader"), mid()),
+            "revoked in the state record",
+        );
+        assert!(permitted(&decide(&g, &state, &tool_call("writer"), mid())));
     }
 }
