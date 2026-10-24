@@ -100,15 +100,34 @@ pub fn dispatch(args: LeaseArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
+            eprintln!("error: {}", e.msg);
+            ExitCode::from(e.code)
         }
+    }
+}
+
+/// Exit status of `aasm lease revoke --wait-health` when the runtime reports
+/// `denied_all`. The revocation is recorded and everything is refused, but the
+/// runtime is no longer governing by lease; a script must not read that as the
+/// plain success of "revoked and applied".
+pub const EXIT_RUNTIME_DENYING_ALL: u8 = 3;
+
+/// A failed subcommand: the message for stderr and the process exit status.
+#[derive(Debug)]
+pub struct Failure {
+    msg: String,
+    code: u8,
+}
+
+impl From<String> for Failure {
+    fn from(msg: String) -> Self {
+        Self { msg, code: 1 }
     }
 }
 
 #[cfg(unix)]
 mod imp {
-    use super::{InitArgs, RevokeArgs, StatusArgs};
+    use super::{Failure, InitArgs, RevokeArgs, StatusArgs};
     use aa_runtime::lease::state;
 
     fn now_unix() -> u64 {
@@ -136,7 +155,7 @@ mod imp {
         }
     }
 
-    pub fn init(a: &InitArgs) -> Result<String, String> {
+    pub fn init(a: &InitArgs) -> Result<String, Failure> {
         let digest = policy_digest(a)?;
         let s = state::init_run(&a.state, &a.subject, &digest, now_unix(), a.force).map_err(|e| e.to_string())?;
         let prefix = s.lease_id_prefix();
@@ -149,55 +168,107 @@ mod imp {
         ))
     }
 
-    /// Poll `/health` until the runtime reports `generation` (or `denied_all`,
-    /// which denies everything and so also covers the revocation).
-    fn wait_for_runtime(base: &str, generation: u64, timeout: std::time::Duration) -> Result<String, String> {
-        let url = format!("{}/health", base.trim_end_matches('/'));
+    /// The most a `--wait-health` may wait. A larger request is clamped rather
+    /// than overflowing the deadline arithmetic.
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(3600);
+
+    /// `url` for display: no userinfo, query or fragment, any of which may carry
+    /// a credential.
+    fn redacted(url: &reqwest::Url) -> String {
+        let mut u = url.clone();
+        let _ = u.set_username("");
+        let _ = u.set_password(None);
+        u.set_query(None);
+        u.set_fragment(None);
+        u.to_string()
+    }
+
+    /// Poll `/health` until the runtime reports this run at `generation` or
+    /// later.
+    ///
+    /// The runtime is matched by `run_id` as well as generation: a different
+    /// run's runtime on that address (an older or newer run, or one started
+    /// against another record) can show a high generation that says nothing
+    /// about this revocation. `denied_all` for this run also acknowledges (every
+    /// request is already refused) but exits with its own status.
+    fn wait_for_runtime(
+        base: &str,
+        run_id: &str,
+        generation: u64,
+        timeout: std::time::Duration,
+    ) -> Result<String, Failure> {
+        let mut url = reqwest::Url::parse(base).map_err(|_| "--wait-health is not a valid URL".to_string())?;
+        let path = format!("{}/health", url.path().trim_end_matches('/'));
+        url.set_path(&path);
+        url.set_query(None);
+        let shown = redacted(&url);
+        // The health endpoint is the local runtime's. A proxy from the
+        // environment, or a redirect, would send the question (and any URL
+        // credentials) somewhere else and could answer it falsely.
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.without_url().to_string())?;
+        let timeout = timeout.min(MAX_WAIT);
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            let last = match client.get(&url).send().and_then(|r| r.json::<serde_json::Value>()) {
+            let last = match client
+                .get(url.clone())
+                .send()
+                .and_then(|r| r.json::<serde_json::Value>())
+            {
                 Ok(v) => match v.get("lease_governance") {
                     None => {
                         return Err(format!(
-                            "{url} reports no lease_governance: that runtime is not in governed lease mode, \
+                            "{shown} reports no lease_governance: that runtime is not in governed lease mode, \
                              so the revocation is recorded but nothing applied it"
-                        ))
+                        )
+                        .into())
                     }
                     Some(g) => {
                         let gen = g.get("generation").and_then(|x| x.as_u64()).unwrap_or(0);
                         let st = g.get("state").and_then(|x| x.as_str()).unwrap_or("");
-                        if st == "denied_all" {
-                            return Ok("runtime is denying all requests (lease state anomaly)".to_string());
-                        }
-                        if gen >= generation {
+                        if g.get("run_id").and_then(|x| x.as_str()) != Some(run_id) {
+                            "runtime is bound to a different run".to_string()
+                        } else if st == "denied_all" {
+                            return Err(Failure {
+                                msg: format!(
+                                    "revocation recorded at generation {generation}; the runtime at {shown} is denying \
+                                     all requests after a lease state anomaly, so the lease is refused but the \
+                                     runtime is not governing by lease; restart it to govern again"
+                                ),
+                                code: super::EXIT_RUNTIME_DENYING_ALL,
+                            });
+                        } else if gen >= generation {
                             return Ok(format!("runtime applied generation {gen}"));
+                        } else {
+                            format!("runtime at generation {gen}")
                         }
-                        format!("runtime at generation {gen}")
                     }
                 },
-                Err(e) => e.to_string(),
+                Err(e) => e.without_url().to_string(),
             };
             if std::time::Instant::now() >= deadline {
                 return Err(format!(
-                    "revocation recorded at generation {generation}, but the runtime did not acknowledge it \
-                     within {}s ({last}); treat the lease as still usable until it does",
+                    "revocation recorded at generation {generation}, but the runtime at {shown} did not acknowledge \
+                     it within {}s ({last}); treat the lease as still usable until it does",
                     timeout.as_secs()
-                ));
+                )
+                .into());
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
-    pub fn revoke(a: &RevokeArgs) -> Result<String, String> {
+    pub fn revoke(a: &RevokeArgs) -> Result<String, Failure> {
         let s = state::revoke_ids(&a.state, &a.lease_id).map_err(|e| e.to_string())?;
         let mut out = format!("generation {}\n", s.generation());
         if let Some(base) = &a.wait_health {
             let note = wait_for_runtime(
                 base,
+                s.run_id(),
                 s.generation(),
                 std::time::Duration::from_secs(a.wait_timeout_secs),
             )?;
@@ -207,7 +278,7 @@ mod imp {
         Ok(out)
     }
 
-    pub fn status(a: &StatusArgs) -> Result<String, String> {
+    pub fn status(a: &StatusArgs) -> Result<String, Failure> {
         let bytes = state::load(&a.state).map_err(|e| e.to_string())?.to_bytes();
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
@@ -215,18 +286,18 @@ mod imp {
 
 #[cfg(not(unix))]
 mod imp {
-    use super::{InitArgs, RevokeArgs, StatusArgs};
+    use super::{Failure, InitArgs, RevokeArgs, StatusArgs};
 
-    fn unsupported() -> Result<String, String> {
-        Err("`aasm lease` is only supported on Unix hosts".to_string())
+    fn unsupported() -> Result<String, Failure> {
+        Err("`aasm lease` is only supported on Unix hosts".to_string().into())
     }
-    pub fn init(_: &InitArgs) -> Result<String, String> {
+    pub fn init(_: &InitArgs) -> Result<String, Failure> {
         unsupported()
     }
-    pub fn revoke(_: &RevokeArgs) -> Result<String, String> {
+    pub fn revoke(_: &RevokeArgs) -> Result<String, Failure> {
         unsupported()
     }
-    pub fn status(_: &StatusArgs) -> Result<String, String> {
+    pub fn status(_: &StatusArgs) -> Result<String, Failure> {
         unsupported()
     }
 }
