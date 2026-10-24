@@ -84,6 +84,8 @@ MARKED_FILES=(
     "${REPO_ROOT}/aa-runtime/Cargo.toml"
     "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/mod.rs"
+    # AAASM-6259: the one call into the stripped gate; the refusal around it stays.
+    "${REPO_ROOT}/aa-runtime/src/lease/wiring.rs"
     "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
@@ -156,6 +158,11 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-runtime/src/lease/authored.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/decide.rs"
     "${REPO_ROOT}/aa-runtime/src/lease/gate.rs"
+    # AAASM-6259: governed-mode startup + reload task. Names the gate, so it goes
+    # with it; `lease/wiring.rs` stays and refuses to start when governed mode was
+    # requested but this build has no gate.
+    "${REPO_ROOT}/aa-runtime/src/lease/governed.rs"
+    "${REPO_ROOT}/aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs"
     "${REPO_ROOT}/aa-runtime/tests/aaasm_6259_policy_lease_gate.rs"
 )
 

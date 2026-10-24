@@ -54,6 +54,8 @@ fn lifecycle_config(agent_id: &str) -> RuntimeConfig {
         gateway_fail_closed: true,
         gateway_timeout_ms: aa_runtime::config::DEFAULT_GATEWAY_TIMEOUT_MS,
         devint_enabled: false,
+        lease_policy_path: None,
+        lease_state_path: None,
     }
 }
 
@@ -68,7 +70,7 @@ async fn run_starts_subsystems_and_shuts_down_on_sigterm() {
     let _ = std::fs::remove_file(&socket_path);
 
     let config = lifecycle_config(&agent_id);
-    let runtime = tokio::spawn(aa_runtime::run(config));
+    let runtime = tokio::spawn(async move { aa_runtime::run(config).await.expect("runtime refused to start") });
 
     // The IPC socket is created synchronously by `IpcServer::bind` inside `run()`,
     // shortly before it parks on the shutdown signal. Its appearance is the

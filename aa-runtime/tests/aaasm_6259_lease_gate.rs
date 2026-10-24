@@ -1,7 +1,7 @@
 //! AAASM-6259 — the runtime capability-lease gate seam.
 //!
-//! Drives the public pipeline loop with a test-double gate. No production gate
-//! exists yet, so these prove the seam's placement and fail-closed semantics,
+//! Drives the public pipeline loop with a test-double gate. The production
+//! wiring is covered by `aaasm_6259_lease_gate_wiring.rs`; these prove the seam's placement and fail-closed semantics,
 //! not lease issuance.
 
 use std::net::SocketAddr;

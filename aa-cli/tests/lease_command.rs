@@ -224,3 +224,201 @@ fn init_with_did_key_subject_prints_an_encoded_prefix() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("did%3Akey%3Az6MkExample:0123456789ab:"));
     assert_eq!(status_json(d.path(), &p)["subject"], "did:key:z6MkExample");
 }
+
+/// A server answering every request with the raw HTTP response `resp`.
+fn fake_http(resp: String) -> std::net::SocketAddr {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(resp.as_bytes());
+        }
+    });
+    addr
+}
+
+fn json_response(body: &str) -> String {
+    format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+fn fake_health(body: &str) -> String {
+    format!("http://{}", fake_http(json_response(body)))
+}
+
+fn lg(run_id: &str, generation: u64, state: &str) -> String {
+    format!(r#"{{"lease_governance":{{"run_id":"{run_id}","generation":{generation},"state":"{state}"}}}}"#)
+}
+
+/// A dead address standing in for a hostile or misconfigured environment proxy.
+const DEAD_PROXY: &str = "http://127.0.0.1:9";
+
+fn revoke_wait(home: &Path, state: &Path, url: &str, timeout: &str) -> Output {
+    // The proxy variables are *set to a dead address*, not removed: if `revoke`
+    // honoured them the loopback request below could never succeed.
+    aasm(home)
+        .env("HTTP_PROXY", DEAD_PROXY)
+        .env("HTTPS_PROXY", DEAD_PROXY)
+        .env("ALL_PROXY", DEAD_PROXY)
+        .env("http_proxy", DEAD_PROXY)
+        .env("https_proxy", DEAD_PROXY)
+        .env("all_proxy", DEAD_PROXY)
+        .env_remove("NO_PROXY")
+        .env_remove("no_proxy")
+        .args([
+            "lease",
+            "revoke",
+            "--lease-id",
+            "x",
+            "--wait-health",
+            url,
+            "--wait-timeout-secs",
+            timeout,
+            "--state",
+        ])
+        .arg(state)
+        .output()
+        .unwrap()
+}
+
+fn run_id(home: &Path, state: &Path) -> String {
+    status_json(home, state)["run_id"].as_str().unwrap().to_string()
+}
+
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+#[test]
+fn revoke_wait_health_returns_once_the_runtime_reports_this_run_at_the_generation() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(&lg(&run_id(d.path(), &p), 2, "governed"));
+    let out = revoke_wait(d.path(), &p, &url, "5");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("runtime applied generation 2"));
+}
+
+#[test]
+fn revoke_wait_health_ignores_a_different_runs_runtime_even_at_a_high_generation() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(&lg(&"0".repeat(32), 99, "governed"));
+    let out = revoke_wait(d.path(), &p, &url, "1");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("different run"), "{}", stderr(&out));
+}
+
+#[test]
+fn revoke_wait_health_fails_when_the_runtime_never_catches_up() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(&lg(&run_id(d.path(), &p), 1, "governed"));
+    let out = revoke_wait(d.path(), &p, &url, "1");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("did not acknowledge"));
+    // The revocation itself is recorded regardless.
+    assert_eq!(status_json(d.path(), &p)["generation"], 2);
+}
+
+#[test]
+fn revoke_wait_health_fails_against_an_ungoverned_runtime() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(r#"{"status":"healthy"}"#);
+    let out = revoke_wait(d.path(), &p, &url, "2");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("not in governed lease mode"));
+}
+
+#[test]
+fn a_denied_all_runtime_acknowledges_with_its_own_exit_status() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(&lg(&run_id(d.path(), &p), 3, "denied_all"));
+    let out = revoke_wait(d.path(), &p, &url, "5");
+    assert_eq!(out.status.code(), Some(3), "{}", stderr(&out));
+    assert!(stderr(&out).contains("denying all requests"));
+    assert_eq!(status_json(d.path(), &p)["generation"], 2, "the revocation is recorded");
+}
+
+#[test]
+fn credentials_in_the_health_url_never_reach_the_output() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    // Three failure shapes, each of which prints the URL or a transport error.
+    let ungoverned = fake_http(json_response(r#"{"status":"healthy"}"#));
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    };
+    let stale = fake_http(json_response(&lg(&run_id(d.path(), &p), 1, "governed")));
+    for addr in [ungoverned, closed, stale] {
+        let url = format!("http://alice:s3cr3t-token@{addr}/base?token=also-secret#frag");
+        let out = revoke_wait(d.path(), &p, &url, "1");
+        assert!(!out.status.success());
+        let all = format!("{}{}", stderr(&out), String::from_utf8_lossy(&out.stdout));
+        for leak in ["alice", "s3cr3t-token", "also-secret", "frag"] {
+            assert!(!all.contains(leak), "{leak:?} leaked into: {all}");
+        }
+        assert!(
+            all.contains("127.0.0.1"),
+            "the redacted URL should still say where: {all}"
+        );
+    }
+}
+
+#[test]
+fn a_redirect_is_not_followed() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let good = fake_health(&lg(&run_id(d.path(), &p), 2, "governed"));
+    let redirector = fake_http(format!(
+        "HTTP/1.1 302 Found\r\nlocation: {good}/health\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+    ));
+    let out = revoke_wait(d.path(), &p, &format!("http://{redirector}"), "1");
+    assert!(!out.status.success(), "a redirected acknowledgement must not count");
+}
+
+#[test]
+fn an_enormous_wait_timeout_is_clamped_not_a_panic() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let url = fake_health(&lg(&run_id(d.path(), &p), 2, "governed"));
+    // An acknowledging runtime must return at once. A watchdog turns "waited the
+    // clamped hour because it could not reach the runtime" into a failure.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (home, state) = (d.path().to_path_buf(), p.clone());
+    std::thread::spawn(move || {
+        let _ = tx.send(revoke_wait(&home, &state, &url, &u64::MAX.to_string()));
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("revoke did not return within 30s of an immediate acknowledgement");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("panicked"));
+}
+
+#[test]
+fn init_computes_the_digest_from_a_policy_file() {
+    let (d, p) = state_dir();
+    let pol = d.path().join("policy.yaml");
+    std::fs::write(&pol, "tools:\n  calc: { allow: true, capabilities: [none] }\n").unwrap();
+    let out = aasm(d.path())
+        .args(["lease", "init", "--subject", "agent-1", "--policy"])
+        .arg(&pol)
+        .arg("--state")
+        .arg(&p)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let digest = status_json(d.path(), &p)["policy_digest"].as_str().unwrap().to_string();
+    assert_eq!(digest.len(), 64);
+    assert!(!digest.starts_with("sha256:"));
+}
