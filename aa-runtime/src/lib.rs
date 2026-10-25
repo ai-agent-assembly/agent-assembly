@@ -25,6 +25,7 @@ pub mod lifecycle;
 pub mod op_control;
 pub mod pipeline;
 pub mod policy;
+pub mod posture;
 pub mod privilege;
 pub mod redaction_telemetry_client;
 pub mod runtime;

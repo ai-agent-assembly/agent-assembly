@@ -1127,6 +1127,45 @@ def selftest() -> int:
             os.environ["HOME"] = real
         _cleanup_homes()
 
+    # (e) every process an executor launches (other than cargo, which needs the
+    # real toolchain HOME) carries a throwaway HOME. `subprocess.run` is patched,
+    # so nothing is executed: each executor runs against a recorder and the
+    # environment it passed is what is asserted. An executor that grew a raw
+    # `_run([...])`/`subprocess.run` without `env=` would inherit the real HOME and
+    # fail here.
+    real_home = os.environ.get("HOME", "")
+    recorded: list[tuple[list[str], dict | None]] = []
+    real_run, real_ensure = subprocess.run, _ensure_binary_built
+
+    def fake_run(cmd, *args, **kw):  # noqa: ANN001
+        recorded.append((list(cmd), kw.get("env")))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    subprocess.run = fake_run  # type: ignore[assignment]
+    globals()["_ensure_binary_built"] = lambda package, binary_name: _debug_dir() / binary_name
+    try:
+        for _key, _description, fn in EXECUTORS:
+            try:
+                fn()
+            except (AssertionError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                pass  # outputs are fake; only the launch environment is under test
+        homes = set(_THROWAWAY_HOMES)
+        bad = [
+            (cmd[:3], (env or {}).get("HOME"))
+            for cmd, env in recorded
+            if cmd and Path(cmd[0]).name != "cargo" and ((env or {}).get("HOME") not in homes or (env or {}).get("HOME") == real_home)
+        ]
+        launched = [cmd for cmd, _ in recorded if cmd and Path(cmd[0]).name != "cargo"]
+        if bad or not launched:
+            print(f"SELFTEST FAILED (e): executor launches without a throwaway HOME: {bad} (launched {len(launched)})")
+            ok = False
+        else:
+            print(f"SELFTEST (e) passed: all {len(launched)} executor launches carry a throwaway HOME")
+    finally:
+        subprocess.run = real_run  # type: ignore[assignment]
+        globals()["_ensure_binary_built"] = real_ensure
+        _cleanup_homes()
+
     return 0 if ok else 1
 
 

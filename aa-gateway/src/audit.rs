@@ -185,16 +185,29 @@ impl AuditWriter {
         session_id: &str,
         receiver: mpsc::Receiver<AuditEntry>,
     ) -> io::Result<Self> {
-        tokio::fs::create_dir_all(&audit_dir).await?;
+        // AAASM-6387: the audit trail is governance metadata (org/team/agent
+        // timelines, deny reasons); owner-only, like aa-proxy's own audit file.
+        crate::storage::private_fs::create_private_dir_all(&audit_dir).await?;
 
         let filename = format!("{agent_id}-{session_id}.jsonl");
         let path = audit_dir.join(filename);
 
-        let file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await?;
+        let mut opts = tokio::fs::OpenOptions::new();
+        opts.create(true).append(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let file = opts.open(&path).await?;
+        {
+            // An audit file an older binary left 0644: tightened in the default audit dir only.
+            let existing = path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                aa_core::private_fs::tighten_file_if_in_default_dir(
+                    &existing,
+                    &aa_core::private_fs::default_state_dirs(),
+                )
+            })
+            .await;
+        }
         let file = tokio::io::BufWriter::new(file);
 
         Ok(Self {
@@ -564,5 +577,30 @@ mod tests {
         let verify = AuditWriter::verify_chain(&path).await.expect("verify_chain runs");
         assert!(verify.is_valid, "single redacted entry must verify cleanly");
         assert_eq!(verify.entries_checked, 1);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_audit_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// AAASM-6387: the audit JSONL directory and file are owner-only (aa-proxy's
+    /// own audit file already is), whatever the umask.
+    #[test]
+    fn audit_writer_creates_an_owner_only_directory_and_file() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        crate::storage::private_fs::with_umask_022(|| {
+            rt.block_on(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir = tmp.path().join("audit");
+                let (_tx, rx) = mpsc::channel(1);
+                let w = AuditWriter::new(dir.clone(), "agent", "sess", rx).await.unwrap();
+                let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode(&dir), 0o700, "directory");
+                assert_eq!(mode(&dir.join("agent-sess.jsonl")), 0o600, "file");
+                drop(w);
+            });
+        });
     }
 }

@@ -255,7 +255,7 @@ fn run_foreground(cmd: &mut std::process::Command) -> ExitCode {
 /// Open (creating) the log file and a duplicated handle for stderr.
 fn open_log_handles(log_file: &std::path::Path) -> Result<(std::fs::File, std::fs::File), ExitCode> {
     if let Some(parent) = log_file.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = aa_core::private_fs::create_private_dir_all(parent) {
             eprintln!("warning: could not create log directory {}: {e}", parent.display());
         }
     }

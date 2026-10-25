@@ -649,6 +649,61 @@ fn gateway_db_path_from(override_path: Option<PathBuf>, home: Option<String>) ->
     }
 }
 
+/// Open (creating, owner-only) the gateway SQLite DB at `db_path`, or log why
+/// the DB escalation scheduler must be disabled and return `None`.
+///
+/// Split out of [`start_db_escalation_scheduler`] so the creation modes are
+/// testable without the process-global `AA_GATEWAY_DB_PATH`.
+async fn open_gateway_db(db_path: &Path) -> Option<sqlx::SqlitePool> {
+    // `sqlite://…?mode=rwc` creates the DB *file* but not its parent
+    // directory — on a fresh `$HOME` (or a first-run `AA_GATEWAY_DB_PATH`
+    // override pointing at a not-yet-created directory) the connect below
+    // fails with exactly the "unable to open database file" error this
+    // ticket reports, independent of the nonroot/writability question.
+    //
+    // AAASM-6146: `tokio::fs` — this runs on a runtime worker during server
+    // start-up. The fallback behaviour below is unchanged.
+    if let Some(parent) = db_path.parent() {
+        // AAASM-6387: owner-only; this DB holds pending escalation rows.
+        if let Err(e) = crate::storage::private_fs::create_private_dir_all(parent).await {
+            tracing::warn!(
+                error = %e,
+                path = %parent.display(),
+                "failed to create gateway DB directory — DB escalation scheduler disabled"
+            );
+            return None;
+        }
+    }
+    // Created `0600` before SQLite opens it; SQLite is expected to give its
+    // `-wal`/`-shm` sidecars the main file's mode (verified on macOS only, not
+    // on Linux), and they are tightened afterwards below regardless.
+    if let Err(e) = crate::storage::private_fs::ensure_private_file(db_path).await {
+        tracing::warn!(error = %e, path = %db_path.display(), "failed to create gateway DB file — DB escalation scheduler disabled");
+        return None;
+    }
+    let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+    let pool = match sqlx::SqlitePool::connect(&db_url).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to open gateway SQLite DB — DB escalation scheduler disabled");
+            return None;
+        }
+    };
+    {
+        // A DB an older binary left group/world readable, tightened in the default dir only.
+        let family = db_path.to_path_buf();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::storage::private_fs::tighten_sqlite_family_if_default(
+                &family,
+                &crate::storage::private_fs::default_state_dirs(),
+            )
+        })
+        .await;
+    }
+    Some(pool)
+}
+
 /// Start the [`DbEscalationScheduler`] and its background polling task.
 ///
 /// The scheduler connects to [`default_gateway_db_path`], runs pending
@@ -664,33 +719,7 @@ async fn start_db_escalation_scheduler(
     token: CancellationToken,
 ) -> Option<Arc<DbEscalationScheduler>> {
     let db_path = default_gateway_db_path();
-    // `sqlite://…?mode=rwc` creates the DB *file* but not its parent
-    // directory — on a fresh `$HOME` (or a first-run `AA_GATEWAY_DB_PATH`
-    // override pointing at a not-yet-created directory) the connect below
-    // fails with exactly the "unable to open database file" error this
-    // ticket reports, independent of the nonroot/writability question.
-    //
-    // AAASM-6146: `tokio::fs` — this runs on a runtime worker during server
-    // start-up. The fallback behaviour below is unchanged.
-    if let Some(parent) = db_path.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            tracing::warn!(
-                error = %e,
-                path = %parent.display(),
-                "failed to create gateway DB directory — DB escalation scheduler disabled"
-            );
-            return None;
-        }
-    }
-    let db_url = format!("sqlite://{}?mode=rwc", db_path.display());
-
-    let pool = match sqlx::SqlitePool::connect(&db_url).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to open gateway SQLite DB — DB escalation scheduler disabled");
-            return None;
-        }
-    };
+    let pool = open_gateway_db(&db_path).await?;
 
     let (tx, _rx) = tokio::sync::broadcast::channel(256);
     match DbEscalationScheduler::new(
@@ -1802,5 +1831,30 @@ mod tests {
             path.exists(),
             "a non-degraded tracker's shutdown save must write the file"
         );
+    }
+}
+
+/// AAASM-6387: the gateway DB (pending escalation rows) is owner-only, whatever
+/// the umask. Its creator used to be a bare `create_dir_all` + `mode=rwc` connect.
+#[cfg(all(test, unix))]
+mod private_db_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn open_gateway_db_creates_an_owner_only_directory_and_database() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        crate::storage::private_fs::with_umask_022(|| {
+            rt.block_on(async {
+                let tmp = tempfile::tempdir().unwrap();
+                let dir = tmp.path().join(".aa");
+                let db = dir.join("aa_gateway.db");
+                let pool = open_gateway_db(&db).await.expect("opens");
+                sqlx::query("CREATE TABLE t (x INTEGER)").execute(&pool).await.unwrap();
+                let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode(&dir), 0o700, "directory");
+                assert_eq!(mode(&db), 0o600, "database");
+            });
+        });
     }
 }

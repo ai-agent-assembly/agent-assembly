@@ -40,32 +40,13 @@ pub fn pid_file_path() -> Result<PathBuf, PidFileError> {
 /// and `cat`-friendly.
 pub fn write_pid(path: &Path, pid: u32) -> Result<(), PidFileError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        // AAASM-6387: `~/.aasm` also holds the local SQLite stores, and this
+        // command can create it before the server does, so it must be
+        // owner-only from the start.
+        aa_core::private_fs::create_private_dir_all(parent)?;
     }
-    write_private_file(path, &format!("{pid}\n"))?;
+    aa_core::private_fs::write_private_file(path, format!("{pid}\n").as_bytes())?;
     Ok(())
-}
-
-/// Write `contents` to `path` readable by the owner only (`0600` on Unix),
-/// tightening a pre-existing looser file. One function so it can be swapped for
-/// `aa_gateway::storage::private_fs` once that helper (AAASM-6387, #2743) is on
-/// main; kept local so this change does not depend on that PR merging first.
-fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let mut f = opts.open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    f.write_all(contents.as_bytes())
 }
 
 /// Read the PID from `path`.
@@ -132,7 +113,7 @@ pub fn url_file_path(pid_file: &Path) -> PathBuf {
 
 /// Record the base URL the gateway just started on (see [`url_file_path`]).
 pub fn write_gateway_url(pid_file: &Path, url: &str) -> Result<(), PidFileError> {
-    write_private_file(&url_file_path(pid_file), &format!("{url}\n"))?;
+    aa_core::private_fs::write_private_file(&url_file_path(pid_file), format!("{url}\n").as_bytes())?;
     Ok(())
 }
 
@@ -390,6 +371,19 @@ mod tests {
         write_gateway_url(&pid_file, "http://localhost:1").unwrap();
         remove_pid(&pid_file).unwrap();
         assert!(!pid_file.exists() && !url_file_path(&pid_file).exists());
+    }
+
+    /// AAASM-6387 — the directory the PID file lands in is created owner-only,
+    /// because it is the same `~/.aasm` that holds the local databases.
+    #[cfg(unix)]
+    #[test]
+    fn write_pid_creates_owner_only_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(".aasm").join("gateway.pid");
+        write_pid(&path, 4242).unwrap();
+        let mode = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
     }
 
     #[test]

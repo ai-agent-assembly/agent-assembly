@@ -294,9 +294,11 @@ pub fn resolve_context(
 ) -> Result<ResolvedContext, CliError> {
     // Where `aasm start` put the gateway it left running, else where it would
     // put one by default. The fallback used to be port 8080, which nothing the
-    // CLI starts listens on (AAASM-6385).
-    let default_url = crate::commands::pidfile::running_gateway_url().unwrap_or_else(builtin_default_api_url);
-    resolve_context_with_default(config, context_flag, api_url_flag, api_key_flag, &default_url)
+    // CLI starts listens on (AAASM-6385). Lazy: it reads files and probes the
+    // recorded address, which a call that names its own URL or context never needs.
+    resolve_context_with_default(config, context_flag, api_url_flag, api_key_flag, || {
+        crate::commands::pidfile::running_gateway_url().unwrap_or_else(builtin_default_api_url)
+    })
 }
 
 /// The API URL used when nothing names one and no `aasm start` gateway is
@@ -312,7 +314,7 @@ pub fn resolve_context_with_default(
     context_flag: Option<&str>,
     api_url_flag: Option<&str>,
     api_key_flag: Option<&str>,
-    default_url: &str,
+    default_url: impl FnOnce() -> String,
 ) -> Result<ResolvedContext, CliError> {
     // If explicit --api-url is provided, use it directly (no context lookup).
     if let Some(url) = api_url_flag {
@@ -343,7 +345,7 @@ pub fn resolve_context_with_default(
     // No context specified, no default — use built-in default.
     Ok(ResolvedContext {
         name: None,
-        api_url: default_url.to_string(),
+        api_url: default_url(),
         api_key: api_key_flag.map(String::from),
     })
 }
@@ -577,7 +579,7 @@ mod tests {
             contexts: BTreeMap::new(),
             dashboard: DashboardConfig::default(),
         };
-        let resolved = resolve_context_with_default(&cfg, None, None, None, &builtin_default_api_url()).unwrap();
+        let resolved = resolve_context_with_default(&cfg, None, None, None, builtin_default_api_url).unwrap();
         // The port `aasm start` binds by default, not the old 8080 that nothing
         // the CLI starts listens on (AAASM-6385).
         assert_eq!(resolved.api_url, "http://localhost:7391");
@@ -587,10 +589,23 @@ mod tests {
     #[test]
     fn explicit_url_and_named_context_still_beat_a_running_gateways_address() {
         let cfg = sample_config();
-        let flag = resolve_context_with_default(&cfg, None, Some("http://flag:1"), None, "http://recorded:2").unwrap();
+        let flag = resolve_context_with_default(&cfg, None, Some("http://flag:1"), None, || {
+            "http://recorded:2".to_string()
+        })
+        .unwrap();
         assert_eq!(flag.api_url, "http://flag:1");
-        let ctx = resolve_context_with_default(&cfg, Some("production"), None, None, "http://recorded:2").unwrap();
+        let ctx =
+            resolve_context_with_default(&cfg, Some("production"), None, None, || "http://recorded:2".to_string())
+                .unwrap();
         assert_eq!(ctx.api_url, "https://api.example.com");
+    }
+
+    #[test]
+    fn the_fallback_is_not_evaluated_when_a_url_or_context_names_the_target() {
+        let cfg = sample_config();
+        let boom = || -> String { panic!("fallback must be lazy") };
+        resolve_context_with_default(&cfg, None, Some("http://flag:1"), None, boom).unwrap();
+        resolve_context_with_default(&cfg, Some("production"), None, None, boom).unwrap();
     }
 
     #[test]
@@ -600,7 +615,7 @@ mod tests {
             contexts: BTreeMap::new(),
             dashboard: DashboardConfig::default(),
         };
-        let r = resolve_context_with_default(&cfg, None, None, None, "http://recorded:2").unwrap();
+        let r = resolve_context_with_default(&cfg, None, None, None, || "http://recorded:2".to_string()).unwrap();
         assert_eq!(r.api_url, "http://recorded:2");
     }
 
