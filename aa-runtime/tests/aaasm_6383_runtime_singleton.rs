@@ -310,6 +310,12 @@ fn a_stale_socket_left_by_a_killed_runtime_is_still_replaced() {
         "control: nothing listens on it"
     );
     let stale_inode = std::fs::metadata(first.socket()).unwrap().ino();
+    // A freed inode number is reusable at once, so comparing inode numbers alone
+    // cannot tell "replaced" from "unlinked then re-created with the same number"
+    // (tmpfs/ext4 hand it straight back). A second hard link keeps the stale inode
+    // allocated, so a replacement must get a different number.
+    let keep_alive = first.socket().with_extension("stale-link");
+    std::fs::hard_link(first.socket(), &keep_alive).unwrap();
 
     let restarted = Runtime::start_ready(&agent);
     assert!(ipc_serves(&restarted.socket()), "the restarted runtime must serve IPC");
@@ -318,6 +324,12 @@ fn a_stale_socket_left_by_a_killed_runtime_is_still_replaced() {
         stale_inode,
         "the stale socket file must have been replaced"
     );
+    assert_eq!(
+        std::fs::metadata(&keep_alive).unwrap().ino(),
+        stale_inode,
+        "only the runtime's own path may be unlinked"
+    );
+    let _ = std::fs::remove_file(&keep_alive);
     assert!(restarted.log_text().contains("removed stale socket file"));
 }
 
