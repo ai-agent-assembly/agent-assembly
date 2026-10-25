@@ -730,14 +730,59 @@ def _exec_gateway_status_running() -> None:
 @_executor(
     "docs/src/quick-start/first-run.md", "3. Check overall status",
     "$ aasm status",
-    "`aasm status` fails closed: the gRPC gateway is up but the HTTP API on "
-    "8080 is not, so it must still report unreachable",
+    "`aasm status` fails closed: the gRPC gateway is up but nothing serves "
+    "the HTTP API on 7391 yet, so it must still report unreachable (this "
+    "single key also covers the doc's second `$ aasm status`, which "
+    "`_exec_start_then_status` asserts against a real `aasm start`)",
 )
 def _exec_status_after_gateway_start() -> None:
     r = _aasm("status", timeout=15)
     if r.returncode == 0:
         raise AssertionError(f"aasm status unexpectedly succeeded:\n{r.stdout}")
     _assert_in(r.stdout + r.stderr, "unreachable", "aasm status")
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "3. Check overall status",
+    "$ aasm start",
+    "`aasm start` serves the HTTP API on 7391 and a bare `aasm status` then "
+    "reports it healthy (AAASM-6385: it used to query 8080); stopped again "
+    "here so steps 4-5 still see no reachable API",
+)
+def _exec_start_then_status() -> None:
+    _ensure_binary_built("aa-api", "aa-api-server")
+    # `aasm start` launches `aa-api-server` by PATH lookup alone.
+    # A throwaway HOME: the configuration.md executors above leave a default
+    # context (`local`, 8080) in ~/.aa/config.yaml, and a named context correctly
+    # outranks the address `aasm start` recorded. This step is about the
+    # zero-configuration path, so it must not inherit that.
+    home = tempfile.mkdtemp(prefix="aaasm6385-home-")
+    env = {
+        **os.environ,
+        "HOME": home,
+        "PATH": f"{_debug_dir()}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    binary = str(_debug_dir() / "aasm")
+    try:
+        # Output goes to a file, not a pipe: the detached server inherits
+        # `aasm start`'s stdout/stderr, so a captured pipe would never reach EOF
+        # and `subprocess.run` would block until its timeout.
+        with tempfile.TemporaryFile("w+") as out:
+            r = subprocess.run(  # noqa: S603 - fixed argv
+                [binary, "start"], cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT
+            )
+            out.seek(0)
+            started = out.read()
+        if r.returncode != 0:
+            raise AssertionError(f"aasm start failed:\n{started}")
+        _assert_in(started, "http://localhost:7391", "aasm start")
+        s = _run([binary, "status"], cwd=REPO_ROOT, timeout=15, env=env)
+        if s.returncode != 0:
+            raise AssertionError(f"aasm status after aasm start failed:\n{s.stdout}\n{s.stderr}")
+        _assert_in(s.stdout, "Gateway:   http://localhost:7391", "aasm status")
+        _assert_in(s.stdout, "Health:    \u2713 ok", "aasm status")
+    finally:
+        _run([binary, "stop"], cwd=REPO_ROOT, timeout=30, env=env)
 
 
 @_executor(
@@ -761,6 +806,21 @@ def _exec_topology_overview_message() -> None:
     if r.returncode == 0:
         raise AssertionError(f"aasm topology overview unexpectedly succeeded:\n{r.stdout}")
     _assert_in(r.stdout + r.stderr, "unreachable", "aasm topology overview")
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "7. Stop the gateway",
+    "aasm stop",
+    "`aasm stop` is idempotent: it succeeds whether or not an `aasm start` "
+    "server is running, and afterwards `aasm status` reports unreachable",
+)
+def _exec_stop() -> None:
+    r = _aasm("stop", timeout=30)
+    if r.returncode != 0:
+        raise AssertionError(f"aasm stop failed:\n{r.stdout}\n{r.stderr}")
+    r2 = _aasm("status", timeout=15)
+    if r2.returncode == 0:
+        raise AssertionError(f"aasm status succeeded after aasm stop:\n{r2.stdout}")
 
 
 @_executor(

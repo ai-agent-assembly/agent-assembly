@@ -2,7 +2,7 @@
 
 The `aasm` binary (crate `aa-cli`) is the operator front-end for Agent
 Assembly. It talks to a running `aa-gateway` over its HTTP / OpenAPI surface
-(default `http://localhost:8080`) for registry, policy, audit, approval, cost,
+(default `http://localhost:7391`, or the address `aasm start` is serving) for registry, policy, audit, approval, cost,
 and topology operations, and manages local daemon processes (gateway, proxy,
 dashboard) directly.
 
@@ -29,7 +29,7 @@ These flags are defined on the root parser (`aa-cli/src/lib.rs`) and are
 |---|---|---|---|
 | `--context <CONTEXT>` | string | _(default context, if any)_ | Named context from `~/.aa/config.yaml` to use for the API URL and key. |
 | `--output <OUTPUT>` | `table` \| `json` \| `yaml` | `table` | Output format for list/get commands. |
-| `--api-url <API_URL>` | string | `http://localhost:8080` | Override the gateway API base URL. Takes precedence over the resolved context. |
+| `--api-url <API_URL>` | string | `http://localhost:7391` (or the address a running `aasm start` recorded) | Override the gateway API base URL. Takes precedence over the resolved context. |
 | `--api-key <API_KEY>` | string | _(none)_ | Override the API key. Takes precedence over the context's stored key. For interactive use prefer [`aasm login`](auth.md) over putting the key on argv/env (see the note below). |
 | `-h, --help` | flag | — | Print help. |
 | `-V, --version` | flag | — | Print the `aasm` version. |
@@ -83,7 +83,7 @@ The active API URL and key are resolved with this precedence (highest first):
 
 1. Explicit `--api-url` / `--api-key` flags.
 2. The named context — `--context <name>`, otherwise `default_context`.
-3. Built-in default URL `http://localhost:8080` (no key).
+3. The address of the gateway `aasm start` left running (`~/.aasm/gateway.url`, honoured only while `~/.aasm/gateway.pid` names a live process), else the built-in default URL `http://localhost:7391` (no key).
 
 Manage contexts with the [`aasm context`](context.md) command group.
 
