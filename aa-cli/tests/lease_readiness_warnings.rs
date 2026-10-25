@@ -17,7 +17,18 @@ const LEASED: &str = "tools:\n  note_writer: { allow: true, capabilities: [files
 
 fn aasm(home: &Path) -> Command {
     let mut c = Command::cargo_bin("aasm").expect("aasm binary");
-    c.env("HOME", home).env_remove("AA_LEASE_STATE");
+    // Hermetic: nothing inherited from the developer's shell may change the run.
+    c.env("HOME", home);
+    for var in [
+        "AA_LEASE_STATE",
+        "AA_LEASE_POLICY",
+        "AA_AGENT_ID",
+        "AA_POLICY",
+        "AA_POLICY_PATH",
+        "AA_LEASE_HEALTH_URL",
+    ] {
+        c.env_remove(var);
+    }
     c
 }
 
