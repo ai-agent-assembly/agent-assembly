@@ -295,14 +295,16 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = super::pidfile::write_pid(pid_file, pid) {
-        eprintln!("aasm start: failed to write pid file: {e}");
-        return ExitCode::FAILURE;
-    }
-    // Best effort: a failure here only costs the bare-`aasm status` default,
-    // and `--api-url` still works, so it must not fail a start that succeeded.
-    if let Err(e) = super::pidfile::write_gateway_url(pid_file, &client_url(addr)) {
-        eprintln!("warning: could not record the gateway address for `aasm status`: {e}");
+    // Best effort for the URL: a failure there only costs the bare-`aasm status`
+    // default, and `--api-url` still works, so it must not fail a start that
+    // succeeded. The old URL record is dropped before the PID file changes.
+    match super::pidfile::record_gateway(pid_file, pid, &client_url(addr), super::pidfile::write_gateway_url) {
+        Err(e) => {
+            eprintln!("aasm start: failed to write pid file: {e}");
+            return ExitCode::FAILURE;
+        }
+        Ok(Some(e)) => eprintln!("warning: could not record the gateway address for `aasm status`: {e}"),
+        Ok(None) => {}
     }
     match super::gw_probe::wait_for_ready(addr, Duration::from_secs(5), Duration::from_millis(100)) {
         Ok(()) => {

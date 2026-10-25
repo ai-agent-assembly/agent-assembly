@@ -25,6 +25,27 @@ fn status_json_gateway_url(home: &Path, extra: &[&str]) -> String {
     v["gateway_url"].as_str().unwrap().to_string()
 }
 
+/// A loopback server that answers every request like the aa health endpoint.
+fn fake_health() -> String {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            let mut b = [0u8; 2048];
+            let _ = s.read(&mut b);
+            let body = r#"{"status":"ok","version":"0.0.0","api_version":"v1","uptime_secs":1}"#;
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    format!("http://{addr}")
+}
+
 fn record(home: &Path, pid: u32, url: &str) {
     let dir = home.join(".aasm");
     std::fs::create_dir_all(&dir).unwrap();
@@ -41,9 +62,11 @@ fn with_no_gateway_running_the_default_is_the_port_start_uses() {
 #[test]
 fn a_gateway_started_on_another_port_is_followed() {
     let home = tempfile::tempdir().unwrap();
-    // This test process stands in for the running gateway: only its liveness matters.
-    record(home.path(), std::process::id(), "http://localhost:9123");
-    assert_eq!(status_json_gateway_url(home.path(), &[]), "http://localhost:9123");
+    // This test process stands in for the running gateway process; the fake
+    // server stands in for its API.
+    let url = fake_health();
+    record(home.path(), std::process::id(), &url);
+    assert_eq!(status_json_gateway_url(home.path(), &[]), url);
 }
 
 #[test]
@@ -53,10 +76,40 @@ fn a_stale_record_from_a_dead_gateway_is_not_followed() {
     assert_eq!(status_json_gateway_url(home.path(), &[]), "http://localhost:7391");
 }
 
+/// A recycled PID: the number is alive but nothing at the recorded address
+/// answers like the API, so the record is not trusted.
+#[test]
+fn a_live_pid_whose_recorded_address_does_not_answer_is_not_followed() {
+    let home = tempfile::tempdir().unwrap();
+    let closed = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+    record(home.path(), std::process::id(), &closed);
+    assert_eq!(status_json_gateway_url(home.path(), &[]), "http://localhost:7391");
+}
+
+#[test]
+fn a_recorded_non_loopback_or_credentialed_url_is_not_followed() {
+    for bad in [
+        "http://evil.example.com:80",
+        "http://user:pw@127.0.0.1:9",
+        "https://localhost:9123",
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        record(home.path(), std::process::id(), bad);
+        assert_eq!(
+            status_json_gateway_url(home.path(), &[]),
+            "http://localhost:7391",
+            "{bad}"
+        );
+    }
+}
+
 #[test]
 fn an_explicit_api_url_still_wins() {
     let home = tempfile::tempdir().unwrap();
-    record(home.path(), std::process::id(), "http://localhost:9123");
+    record(home.path(), std::process::id(), &fake_health());
     assert_eq!(
         status_json_gateway_url(home.path(), &["--api-url", "http://localhost:5555"]),
         "http://localhost:5555"
