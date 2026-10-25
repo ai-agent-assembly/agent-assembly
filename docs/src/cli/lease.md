@@ -115,7 +115,8 @@ fresh `run_id`, so every earlier lease id is retired.
 does at startup (the file must resolve to an enforced policy), so the two cannot
 disagree. It also prints a `warning:` on stderr for each tool a governed runtime
 would deny under this policy (a tool with no `capabilities`, or a capability with no
-matching `authority.leases` entry); `init` still succeeds, because the record is
+matching `authority.leases` entry; it considers only the tools listed under `tools:` and
+the tool-call action type, not other action types); `init` still succeeds, because the record is
 valid either way. The same check backs [`aasm policy validate`](policy.md#aasm-policy-validate). `--policy-digest` takes a digest as given and is mutually exclusive with
 `--policy`. `--subject` must equal the runtime's `AA_AGENT_ID`.
 
@@ -130,7 +131,10 @@ under an exclusive lock on `<PATH>.lock`, and prints the new generation.
 Every id not already revoked must be one this run can issue: this run's id prefix
 (the line `init` printed, or `<subject>:<digest12>:<run_id>:<issued_at>:`) followed by
 a domain word such as `filesystem_write`. Any other id (a typo, or an id from another
-run) refuses the whole call and leaves the record and its generation unchanged.
+run) refuses the whole call and leaves the record and its generation unchanged. Only the
+shape is checked: a misspelt domain word still has the right shape, so it is accepted,
+revokes nothing, and advances the generation; copy the domain exactly as it appears in
+`authority.leases`.
 Revoking ids that are all already revoked is a no-op and leaves the generation
 unchanged. A missing or corrupt record is an error; `revoke` never creates one.
 

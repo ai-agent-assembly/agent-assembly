@@ -832,8 +832,9 @@ fn revoke_checked<S: AsRef<str>>(path: &Path, ids: &[S], issued_only: bool) -> R
             .find(|id| !state.is_revoked(id) && !state.is_issuable_id(id))
         {
             return Err(LeaseStateError::Invalid(format!(
-                "{bad:?} is not a lease id of this run; ids look like {}<domain> (domain is one of the \
-                 `authority.leases` domains, e.g. filesystem_write)",
+                "{bad:?} is not a lease id of this run; ids look like {}<domain>, e.g. {}filesystem_write \
+                 (only the shape is checked; spell the domain as it appears in `authority.leases`)",
+                state.lease_id_prefix(),
                 state.lease_id_prefix()
             )));
         }

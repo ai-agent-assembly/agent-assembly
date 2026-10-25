@@ -142,7 +142,8 @@ a capability with no matching `authority.leases` entry) the command prints a
 `warning:` on stderr naming the tool and what to add. Warnings never change the exit
 status. They are computed by the runtime's own lease decision, so they cannot
 disagree with it, and they are only produced by builds that include governed lease
-mode.
+mode. They cover only the tools listed under `tools:`, judged for the tool-call action
+type; other action types are not assessed.
 
 | Name | Type | Description |
 |---|---|---|

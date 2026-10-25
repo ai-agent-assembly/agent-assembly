@@ -76,7 +76,7 @@ pub(super) fn prepare(config: &RuntimeConfig) -> Result<GovernedLease, StartupRe
     // revoked lease. The operator runs `aasm lease init`.
     let state = state::load_expected(state_path, &config.agent_id, &digest).map_err(|e| match e {
         LeaseStateError::Mismatch(_) => refuse(format!(
-            "{e}; re-run `aasm lease init --force --subject {} --policy <policy file>` for this policy and agent",
+            "{e}; re-run `aasm lease init --force --subject {} --policy <policy file>` for this policy and agent (--force starts a new run and discards the revocation history)",
             config.agent_id
         )),
         other => refuse(other.to_string()),

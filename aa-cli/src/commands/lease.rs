@@ -62,7 +62,8 @@ pub struct RevokeArgs {
     #[arg(long, env = "AA_LEASE_STATE", hide_env_values = true)]
     pub state: PathBuf,
 
-    /// Lease id(s) to revoke; repeatable.
+    /// Lease id(s) to revoke; repeatable. Only the id's shape is checked (this run's prefix
+    /// plus a domain word): a misspelt domain word is accepted and revokes nothing.
     #[arg(long = "lease-id", required = true, num_args = 1..)]
     pub lease_id: Vec<String>,
 
