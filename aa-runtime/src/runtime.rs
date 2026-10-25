@@ -963,9 +963,11 @@ async fn bring_up_ebpf_layer(
     }
 }
 
-/// Spawn the IPC server task, signalling readiness once the socket binds. A bind
-/// failure is logged and the runtime continues without IPC — dropping
-/// `inbound_tx` lets the pipeline see the channel close and exit cleanly.
+/// Spawn the IPC server task, signalling readiness once the socket binds.
+///
+/// A bind failure is a [`StartupRefusal`] (AAASM-6383): continuing would leave a
+/// runtime that serves `/health` and nothing else, indistinguishable from a
+/// working one to a probe of the health port.
 #[allow(clippy::too_many_arguments)]
 fn spawn_ipc_server(
     tracker: &TaskTracker,
@@ -976,15 +978,16 @@ fn spawn_ipc_server(
     active_connections: &std::sync::Arc<std::sync::atomic::AtomicI64>,
     response_router: &crate::ipc::ResponseRouter,
     verified_identities: &crate::ipc::VerifiedIdentityStore,
-) {
+) -> Result<(), StartupRefusal> {
     let ipc_config = crate::ipc::server::IpcServerConfig::from_runtime_config(config);
+    let ipc_socket_path = ipc_config.socket_path.clone();
     let ipc_server = match crate::ipc::server::IpcServer::bind(ipc_config) {
         Ok(ipc_server) => ipc_server,
         Err(e) => {
-            tracing::error!(error = %e, "failed to bind IPC socket — continuing without IPC");
-            // Without an IPC server the inbound_tx is dropped here;
-            // the pipeline will see the channel closed and exit cleanly.
-            return;
+            return Err(StartupRefusal::new(format!(
+                "failed to bind IPC socket {}: {e}",
+                ipc_socket_path.display()
+            )));
         }
     };
     let _ = ready_tx.send(true);
@@ -1006,6 +1009,7 @@ fn spawn_ipc_server(
             .await;
     });
     tracing::info!("IPC server task spawned");
+    Ok(())
 }
 
 /// Spawn the health/metrics HTTP server task, binding to the configured
@@ -1048,11 +1052,92 @@ fn check_metrics_bind_addr(addr: std::net::SocketAddr) -> Result<(), String> {
 /// The single-instance claims a runtime must win before it binds or serves
 /// anything (AAASM-6383).
 struct Claims {
+    /// Exclusive advisory lock on `/tmp/aa-runtime-<agent id>.lock`, held for
+    /// the life of the process. The kernel drops it on any exit including
+    /// SIGKILL, so a killed runtime never blocks its own restart.
+    _agent_lock: std::fs::File,
     /// The health/metrics listener, bound up front. `None` only when the
     /// configured address is a non-loopback bind the operator did not opt into
     /// (that path has always meant "no health server", see
-    /// [`check_metrics_bind_addr`]).
+    /// [`check_metrics_bind_addr`]). Under the default `0.0.0.0:8080` that is
+    /// the case, so the health-port claim does not apply there; only the agent
+    /// lock and socket probe do.
     health_listener: Option<std::net::TcpListener>,
+}
+
+/// What a connect probe of an existing IPC socket path proves.
+#[derive(Debug, PartialEq, Eq)]
+enum SocketProbe {
+    /// Nothing can be listening: the file is absent or a dead runtime left it.
+    Stale,
+    /// A listener answered, or the probe could not prove otherwise.
+    Live,
+}
+
+/// Only `NotFound` and `ConnectionRefused` prove a stale path. Anything else
+/// (`WouldBlock` on a full accept backlog, `PermissionDenied`, a timeout)
+/// means something may hold the path, and treating it as stale would hand it to
+/// `IpcServer::bind`, which deletes the path: the takeover this refuses.
+/// (BSD/macOS report a full backlog as `ConnectionRefused`; the agent lock, not
+/// this probe, is what covers that case for current binaries.)
+fn classify_probe(result: &std::io::Result<()>) -> SocketProbe {
+    match result {
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            SocketProbe::Stale
+        }
+        _ => SocketProbe::Live,
+    }
+}
+
+/// Connect-probe `path` without ever blocking startup: a blocking `connect`
+/// to a listener with a full backlog (or whose owner is stopped) can wait
+/// forever, so it runs on a thread and a missed deadline counts as live.
+fn probe_socket(path: &std::path::Path) -> SocketProbe {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::os::unix::net::UnixStream::connect(path).map(drop));
+    });
+    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+        Ok(result) => classify_probe(&result),
+        Err(_) => SocketProbe::Live,
+    }
+}
+
+/// Take the per-agent-id lock. Not unlinked on exit: removing a lock file
+/// races with a runtime that just opened it.
+fn lock_agent(agent_id: &str) -> Result<std::fs::File, StartupRefusal> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let path = format!("/tmp/aa-runtime-{agent_id}.lock");
+    // O_NOFOLLOW: /tmp is world-writable, so the name must not be a planted
+    // symlink. O_CLOEXEC: children (aa-proxy, ...) must not inherit the lock.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&path)
+        .map_err(|e| StartupRefusal::new(format!("cannot open agent lock {path}: {e}")))?;
+    // SAFETY: `file` owns a valid open descriptor for the duration of the call.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(StartupRefusal::new(if err.kind() == std::io::ErrorKind::WouldBlock {
+            format!(
+                "another aa-runtime already holds the lock for agent id {agent_id:?} ({path}); \
+                 stop it or use a different AA_AGENT_ID"
+            )
+        } else {
+            format!("cannot lock {path}: {err}")
+        }));
+    }
+    Ok(file)
 }
 
 /// Refuse to start as a second runtime. Runs before the metrics recorder, any
@@ -1063,36 +1148,51 @@ struct Claims {
 /// health port kept serving IPC, and one whose agent id matched a live peer's
 /// replaced that peer's socket file, orphaning its listener while `/health`
 /// still answered with the first runtime's identity.
+///
+/// The agent lock serialises runtimes of this build, so two started together
+/// cannot both pass the socket probe. The probe remains for peers that predate
+/// the lock. Residual: a pre-lock peer racing a new runtime in the window
+/// between probe and bind can still lose its socket path, and a probe that
+/// meets a full accept backlog on macOS reads as stale.
+///
+/// The health listener is bound here but only served at the end of `run()`, so
+/// a client that connects in between waits instead of being refused; poll
+/// `GET /health` for 200, not a TCP connect, to detect readiness.
 fn claim_singleton(config: &RuntimeConfig) -> Result<Claims, StartupRefusal> {
+    let agent_lock = lock_agent(&config.agent_id)?;
+
     let socket_path = crate::ipc::server::IpcServerConfig::from_runtime_config(config).socket_path;
-    // Connect-probe, not an `exists()` check: a socket file left by a killed
-    // runtime refuses connections and must still be replaced at bind time
-    // (j81 harness S7 restarts on the same path after `kill -9`).
-    if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+    if probe_socket(&socket_path) == SocketProbe::Live {
         return Err(StartupRefusal::new(format!(
-            "IPC socket {} is held by a live listener — another aa-runtime is already serving \
-             this agent id; stop it or use a different AA_AGENT_ID",
+            "IPC socket {} is held by a live listener (or one that could not be probed) - another \
+             aa-runtime is already serving this agent id; stop it or use a different AA_AGENT_ID",
             socket_path.display()
         )));
     }
 
-    let addr: std::net::SocketAddr = config
-        .metrics_addr
-        .parse()
-        .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
+    let addr: std::net::SocketAddr = config.metrics_addr.parse().map_err(|e| {
+        StartupRefusal::new(format!(
+            "invalid AA_METRICS_ADDR {:?}: {e} - must be a socket address such as 127.0.0.1:8080",
+            config.metrics_addr
+        ))
+    })?;
     if let Err(refusal) = check_metrics_bind_addr(addr) {
         tracing::error!(%refusal, "health server not started");
-        return Ok(Claims { health_listener: None });
+        return Ok(Claims {
+            _agent_lock: agent_lock,
+            health_listener: None,
+        });
     }
     let listener = std::net::TcpListener::bind(addr)
         .and_then(|l| l.set_nonblocking(true).map(|()| l))
         .map_err(|e| {
             StartupRefusal::new(format!(
-                "failed to bind health server on {addr}: {e} — AA_METRICS_ADDR is held by another \
+                "failed to bind health server on {addr}: {e} - AA_METRICS_ADDR is held by another \
                  process (likely a running aa-runtime)"
             ))
         })?;
     Ok(Claims {
+        _agent_lock: agent_lock,
         health_listener: Some(listener),
     })
 }
@@ -1160,6 +1260,10 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
 
     // Single-instance claims (AAASM-6383), also before anything is bound.
     let claims = claim_singleton(&config)?;
+    let Claims {
+        _agent_lock,
+        health_listener,
+    } = claims;
 
     // Install global Prometheus metrics recorder.
     let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -1280,7 +1384,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     let inbound_tx_health = inbound_tx.clone();
 
     // Spawn the IPC server task.
-    spawn_ipc_server(
+    if let Err(refusal) = spawn_ipc_server(
         &tracker,
         &config,
         &token,
@@ -1289,7 +1393,10 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
         &active_connections,
         &response_router,
         &verified_identities,
-    );
+    ) {
+        token.cancel();
+        return Err(refusal);
+    }
 
     // strip-for-publish:begin devtool
     // The Developer Integration API, when this runtime was asked to serve one.
@@ -1379,7 +1486,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
         protection,
         lease_governance: lease_status,
     };
-    spawn_health_server(&tracker, token.clone(), health_state, claims.health_listener);
+    spawn_health_server(&tracker, token.clone(), health_state, health_listener);
 
     // Wait for an OS shutdown signal.
     wait_for_shutdown_signal().await;
@@ -1447,6 +1554,56 @@ mod tests {
         let policy = super::load_policy(&Some(tmp.path().to_path_buf()));
         assert_eq!(policy.rules.len(), 1);
         assert_eq!(policy.rules[0].name, "test-rule");
+    }
+
+    /// AAASM-6383: only "nothing is there" errors prove a stale socket path.
+    /// Everything else must read as live, because a stale verdict sends the
+    /// path to `IpcServer::bind`, which deletes it.
+    #[test]
+    fn only_not_found_and_refused_probes_are_stale() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(super::classify_probe(&Ok(())), super::SocketProbe::Live);
+        for kind in [ErrorKind::NotFound, ErrorKind::ConnectionRefused] {
+            assert_eq!(
+                super::classify_probe(&Err(Error::from(kind))),
+                super::SocketProbe::Stale,
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            ErrorKind::WouldBlock,
+            ErrorKind::PermissionDenied,
+            ErrorKind::TimedOut,
+            ErrorKind::Interrupted,
+            ErrorKind::Other,
+        ] {
+            assert_eq!(
+                super::classify_probe(&Err(Error::from(kind))),
+                super::SocketProbe::Live,
+                "{kind:?}"
+            );
+        }
+    }
+
+    /// A listener that never accepts must not hang the probe, and a path with
+    /// no listener at all must read as stale.
+    #[test]
+    fn probe_socket_sees_a_silent_listener_as_live_and_a_dead_file_as_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        assert_eq!(super::probe_socket(&path), super::SocketProbe::Stale, "absent");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            super::probe_socket(&path),
+            super::SocketProbe::Live,
+            "listening, never accepts"
+        );
+        drop(listener);
+        assert_eq!(
+            super::probe_socket(&path),
+            super::SocketProbe::Stale,
+            "file left behind, no listener"
+        );
     }
 
     /// Loopback is unconditionally allowed regardless of the opt-in — it is
