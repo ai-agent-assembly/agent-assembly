@@ -342,7 +342,7 @@ pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(parent).map_err(|source| LocalModeError::Storage {
+    crate::storage::private_fs::create_private_dir_all_sync(parent).map_err(|source| LocalModeError::Storage {
         path: path.to_path_buf(),
         source: sqlx::Error::Io(source),
     })

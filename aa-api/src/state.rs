@@ -675,7 +675,7 @@ impl AppState {
         // this directory create sits on the start-up path of a runtime worker.
         if let Some(parent) = registry_db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
+                aa_gateway::storage::private_fs::create_private_dir_all(parent)
                     .await
                     .map_err(|source| LocalStateError::PolicyWrite {
                         path: registry_db_path.clone(),
@@ -805,7 +805,7 @@ impl AppState {
         let db_path = paths.audit_db;
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
+                aa_gateway::storage::private_fs::create_private_dir_all(parent)
                     .await
                     .map_err(|source| LocalStateError::PolicyWrite {
                         path: db_path.clone(),

@@ -158,7 +158,9 @@ impl SqliteBackend {
         // and start-up paths on runtime workers. Error mapping is unchanged.
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                // AAASM-6387: owner-only, so the registry/audit rows are not
+                // readable by other local users.
+                super::private_fs::create_private_dir_all(parent).await.map_err(|e| {
                     StorageError::ConnectionFailed(format!(
                         "failed to create parent directory {}: {e}",
                         parent.display()
@@ -166,6 +168,11 @@ impl SqliteBackend {
                 })?;
             }
         }
+        // Created `0600` before SQLite opens it, so the `-wal`/`-shm` sidecars
+        // inherit that mode instead of the umask's.
+        super::private_fs::ensure_private_file(&path)
+            .await
+            .map_err(|e| StorageError::ConnectionFailed(format!("failed to create {}: {e}", path.display())))?;
         let url = format!("sqlite://{}?mode=rwc", path.display());
         let pool = SqlitePool::connect(&url)
             .await
@@ -936,6 +943,32 @@ mod tests {
             .await
             .expect("journal_mode probe");
         assert_eq!(mode.to_lowercase(), "wal", "WAL pragma should stick");
+    }
+
+    /// AAASM-6387 — a first `open` must leave the data directory and every
+    /// SQLite file (database, `-wal`, `-shm`) owner-only, whatever the umask.
+    /// Before the fix they were `0755`/`0644`, readable by any local user.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_creates_owner_only_directory_and_database_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).expect("exists").permissions().mode() & 0o777;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let dir = tmp.path().join(".aasm");
+        let path = dir.join("local.db");
+        let backend = SqliteBackend::open(&SqliteConfig { path: path.clone() })
+            .await
+            .expect("open");
+        // Write so the WAL and shared-memory sidecars exist while the pool is open.
+        backend.migrate().await.expect("migrate");
+
+        assert_eq!(mode(&dir), 0o700, "data directory");
+        for suffix in ["", "-wal", "-shm"] {
+            let f = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+            assert!(f.exists(), "{} should exist while the pool is open", f.display());
+            assert_eq!(mode(&f), 0o600, "{}", f.display());
+        }
     }
 
     /// Read the journal mode the way an independent process would.
