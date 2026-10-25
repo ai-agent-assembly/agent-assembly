@@ -258,16 +258,28 @@ impl Runtime {
                 self.port = port;
                 continue;
             }
-            // The IPC socket appears before the health server is spawned; wait for both.
-            if self.socket.exists()
-                && UnixStream::connect(&self.socket).await.is_ok()
-                && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok()
-            {
+            // The IPC socket appears before the health server is spawned, and the
+            // health port is held (so a bare TCP connect succeeds) from before
+            // either (AAASM-6383); wait for a real `/health` answer.
+            if self.socket.exists() && UnixStream::connect(&self.socket).await.is_ok() && self.health_answers() {
                 return;
             }
             assert!(Instant::now() < deadline, "runtime never became ready");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// `/health` answers 200 (not merely accepts a connection).
+    fn health_answers(&self) -> bool {
+        use std::io::{Read, Write};
+        let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", self.port)) else {
+            return false;
+        };
+        let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = s.write_all(b"GET /health HTTP/1.0\r\nHost: x\r\n\r\n");
+        let mut head = String::new();
+        let _ = s.read_to_string(&mut head);
+        head.starts_with("HTTP/1.0 200") || head.starts_with("HTTP/1.1 200")
     }
 
     fn log_text(&self) -> String {
@@ -941,5 +953,57 @@ async fn without_aa_lease_policy_the_runtime_is_ungoverned_whatever_else_is_pres
     assert!(
         rt.lease_governance().is_none(),
         "ungoverned /health must not grow a lease field"
+    );
+}
+
+/// AAASM-6383: a governed runtime is identifiable by its lease `run_id`, which
+/// makes "the second runtime did not take over" observable on `/health` itself
+/// rather than inferred from process state. Both collisions are tried against
+/// the one governed instance: its health port, and its agent id's socket path.
+#[tokio::test]
+async fn a_second_runtime_cannot_displace_a_governed_one_on_its_port_or_its_socket() {
+    let (gw, _calls) = start_gateway().await;
+    let rig = Rig::new(&policy_yaml(&read_lease(3600)));
+    let state = rig.init();
+    let mut first = rig.governed(gw);
+    first.wait_ready().await;
+    let identity = serde_json::json!({"run_id": state.run_id(), "generation": 1, "state": "governed"});
+    assert_eq!(
+        first.lease_governance().unwrap(),
+        identity,
+        "control: first runtime identity"
+    );
+
+    let refused = |mut c: Command| {
+        let out = c.output().expect("spawn second aa-runtime");
+        let text = String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
+        assert_eq!(
+            out.status.code(),
+            Some(REFUSED),
+            "second runtime must be refused:\n{text}"
+        );
+    };
+    // Same health port, different agent id.
+    let mut other_agent = rig.command(Some(gw), first.port);
+    other_agent
+        .env("AA_AGENT_ID", format!("{}-b", rig.agent))
+        .env("AA_LEASE_POLICY", &rig.policy)
+        .env("AA_LEASE_STATE", &rig.state);
+    refused(other_agent);
+    // Same agent id (same socket path), different health port.
+    let mut same_agent = rig.command(Some(gw), free_port());
+    same_agent
+        .env("AA_LEASE_POLICY", &rig.policy)
+        .env("AA_LEASE_STATE", &rig.state);
+    refused(same_agent);
+
+    assert_eq!(
+        first.lease_governance().unwrap(),
+        identity,
+        "/health must still answer as the first runtime"
+    );
+    assert!(
+        permitted(&first.tool("reader").await),
+        "the first runtime still serves IPC"
     );
 }
