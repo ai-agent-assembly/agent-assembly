@@ -172,11 +172,18 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
-`/health` reports `status: "healthy"` when something decides on the runtime's calls
-(local policy rules, a gateway, or lease governance). A runtime with none of those
-reports `status: "ungoverned"` and allows every call; its `governance.state` field and
-its startup log say how to govern it (`AA_LEASE_POLICY`, `AA_POLICY_PATH` or
-`AA_GATEWAY_ENDPOINT`).
+`/health` reports `status: "healthy"` when something is installed to decide on the runtime's
+calls: local policy rules that block or require approval for something, a gateway client, or
+lease governance. "Installed" is not "working": an invalid `AA_GATEWAY_ENDPOINT` installs no
+client, a valid but unreachable one still counts (the runtime does not report reachability),
+and with `AA_GATEWAY_FAIL_CLOSED=false` an unreachable gateway falls back to the local rules
+and then allows (flagged as `governance.gateway_fail_open`). A runtime with none of those
+reports `status: "ungoverned"` and this runtime evaluates and allows every call; its
+`governance.state` field and startup log say how to govern it (`AA_LEASE_POLICY`,
+`AA_POLICY_PATH` or `AA_GATEWAY_ENDPOINT`). If the lease gate trips (state record corrupted
+or removed) `status` becomes `"degraded"` and `governance.state` `"denied_all"`: every call is
+denied. Other interception layers (eBPF is observe-only; the proxy only enforces through a
+gateway endpoint) add no decision source of their own here.
 
 To additionally build and run the optional egress proxy on `:8899`:
 
