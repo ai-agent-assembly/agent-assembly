@@ -1045,35 +1045,81 @@ fn check_metrics_bind_addr(addr: std::net::SocketAddr) -> Result<(), String> {
     ))
 }
 
-fn spawn_health_server(
-    tracker: &TaskTracker,
-    config: &RuntimeConfig,
-    token: CancellationToken,
-    health_state: crate::health::HealthState,
-) {
+/// The single-instance claims a runtime must win before it binds or serves
+/// anything (AAASM-6383).
+struct Claims {
+    /// The health/metrics listener, bound up front. `None` only when the
+    /// configured address is a non-loopback bind the operator did not opt into
+    /// (that path has always meant "no health server", see
+    /// [`check_metrics_bind_addr`]).
+    health_listener: Option<std::net::TcpListener>,
+}
+
+/// Refuse to start as a second runtime. Runs before the metrics recorder, any
+/// listener or any task exists, so a refusal cannot disturb the instance that
+/// already holds the port or socket.
+///
+/// Both failures used to be logged and survived: a runtime that lost the
+/// health port kept serving IPC, and one whose agent id matched a live peer's
+/// replaced that peer's socket file, orphaning its listener while `/health`
+/// still answered with the first runtime's identity.
+fn claim_singleton(config: &RuntimeConfig) -> Result<Claims, StartupRefusal> {
+    let socket_path = crate::ipc::server::IpcServerConfig::from_runtime_config(config).socket_path;
+    // Connect-probe, not an `exists()` check: a socket file left by a killed
+    // runtime refuses connections and must still be replaced at bind time
+    // (j81 harness S7 restarts on the same path after `kill -9`).
+    if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+        return Err(StartupRefusal::new(format!(
+            "IPC socket {} is held by a live listener — another aa-runtime is already serving \
+             this agent id; stop it or use a different AA_AGENT_ID",
+            socket_path.display()
+        )));
+    }
+
     let addr: std::net::SocketAddr = config
         .metrics_addr
         .parse()
         .expect("invalid AA_METRICS_ADDR — must be a valid socket address");
     if let Err(refusal) = check_metrics_bind_addr(addr) {
         tracing::error!(%refusal, "health server not started");
-        return;
+        return Ok(Claims { health_listener: None });
     }
+    let listener = std::net::TcpListener::bind(addr)
+        .and_then(|l| l.set_nonblocking(true).map(|()| l))
+        .map_err(|e| {
+            StartupRefusal::new(format!(
+                "failed to bind health server on {addr}: {e} — AA_METRICS_ADDR is held by another \
+                 process (likely a running aa-runtime)"
+            ))
+        })?;
+    Ok(Claims {
+        health_listener: Some(listener),
+    })
+}
+
+fn spawn_health_server(
+    tracker: &TaskTracker,
+    token: CancellationToken,
+    health_state: crate::health::HealthState,
+    listener: Option<std::net::TcpListener>,
+) {
+    let Some(listener) = listener else { return };
+    let addr = listener.local_addr().ok();
     tracker.spawn(async move {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => {
-                tracing::info!(%addr, "health server bound");
-                axum::serve(listener, crate::health::router(health_state))
-                    .with_graceful_shutdown(async move { token.cancelled().await })
-                    .await
-                    .ok();
-            }
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
             Err(e) => {
-                tracing::error!(error = %e, %addr, "failed to bind health server");
+                tracing::error!(error = %e, "failed to adopt health listener");
+                return;
             }
-        }
+        };
+        tracing::info!(?addr, "health server bound");
+        axum::serve(listener, crate::health::router(health_state))
+            .with_graceful_shutdown(async move { token.cancelled().await })
+            .await
+            .ok();
     });
-    tracing::info!(%addr, "health server task spawned");
+    tracing::info!(?addr, "health server task spawned");
 }
 
 /// Why the runtime refused to start. Nothing was bound or spawned.
@@ -1103,12 +1149,17 @@ impl std::error::Error for StartupRefusal {}
 /// # Errors
 ///
 /// [`StartupRefusal`] when governed lease mode (`AA_LEASE_POLICY`) was
-/// requested and cannot be honoured. Nothing has been bound at that point.
+/// requested and cannot be honoured, or when another runtime already holds the
+/// health port or this agent id's IPC socket. Nothing has been bound at that
+/// point (AAASM-6383 owns the second case).
 pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     // Governed lease mode is decided before anything is bound or spawned, so a
     // refusal leaves no listener, socket or background task behind
     // (AAASM-6259). `None` means not requested: AA_LEASE_POLICY unset.
     let governed = crate::lease::wiring::prepare(&config)?;
+
+    // Single-instance claims (AAASM-6383), also before anything is bound.
+    let claims = claim_singleton(&config)?;
 
     // Install global Prometheus metrics recorder.
     let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -1328,7 +1379,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
         protection,
         lease_governance: lease_status,
     };
-    spawn_health_server(&tracker, &config, token.clone(), health_state);
+    spawn_health_server(&tracker, token.clone(), health_state, claims.health_listener);
 
     // Wait for an OS shutdown signal.
     wait_for_shutdown_signal().await;
