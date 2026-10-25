@@ -180,6 +180,15 @@ mod imp {
         let digest = policy_digest(a)?;
         require_state_dir(&a.state)?;
         let s = state::init_run(&a.state, &a.subject, &digest, now_unix(), a.force).map_err(|e| e.to_string())?;
+        // strip-for-publish:begin devtool
+        // AAASM-6386: the record is fine, but a governed runtime may still deny
+        // tools this policy leaves uncovered; say so now rather than at the first call.
+        if let Some(policy) = &a.policy {
+            for w in crate::commands::lease_readiness::warnings_for_file(policy, &a.subject) {
+                eprintln!("warning: {w}");
+            }
+        }
+        // strip-for-publish:end devtool
         let prefix = s.lease_id_prefix();
         Ok(format!(
             "initialized lease state at {} (generation {})\n\
