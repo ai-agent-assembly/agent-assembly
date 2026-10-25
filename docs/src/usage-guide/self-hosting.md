@@ -172,6 +172,12 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
+`/health` reports `status: "healthy"` when something decides on the runtime's calls
+(local policy rules, a gateway, or lease governance). A runtime with none of those
+reports `status: "ungoverned"` and allows every call; its `governance.state` field and
+its startup log say how to govern it (`AA_LEASE_POLICY`, `AA_POLICY_PATH` or
+`AA_GATEWAY_ENDPOINT`).
+
 To additionally build and run the optional egress proxy on `:8899`:
 
 ```bash

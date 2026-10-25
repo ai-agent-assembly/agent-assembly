@@ -5289,7 +5289,8 @@ capabilities:
     plus ebpf_control.rs:211), all using `let _ = broadcast_tx.send(...)`; a WS payload type
     (aa-api/src/models/ws_payloads.rs:92-100); and NO renderer. The /health degraded_layers
     field is a snapshot moved in once at boot (aa-runtime/src/runtime.rs:1180-1188) and never
-    updates; status is the hardcoded literal "healthy" (aa-runtime/src/health/mod.rs:50).
+    updates; status is "healthy" unless the runtime has no decision source at all, when it is
+    "ungoverned" (AAASM-6384, aa-runtime/src/health/mod.rs) — it never reflects layer degradation.
   identity_source: synthesised as system:<layer>
   policy_context: []
   decision_timing: post
