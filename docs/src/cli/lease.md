@@ -29,6 +29,64 @@ variable.
 
 Every refusal exits non-zero with a message on stderr.
 
+## Worked example
+
+A governed runtime admits a tool call only when the policy does both of two things: the
+tool declares what authority it needs (`tools.<name>.capabilities`), and an
+`authority.leases` entry grants that authority. Missing either one, the runtime denies
+every call to that tool. This is the smallest policy that lets one file-writing tool
+through. Save it as `policy.yaml`:
+
+<!-- lease-example:policy -->
+```yaml
+tools:
+  write_note:
+    allow: true
+    capabilities: [filesystem_write]
+  calc:
+    allow: true
+    capabilities: [none]
+authority:
+  leases:
+    - domain: filesystem_write
+      scope: whole
+      ttl_seconds: 3600
+      reason: let write_note save notes
+```
+
+`capabilities: [none]` declares a tool that needs no authority. Every lease needs a
+`reason`; `ttl_seconds` is optional (the runtime defaults it to one hour, counted from
+`aasm lease init`, and a lapsed lease is not refreshed).
+
+Create the record, in a directory only you can write to, bound to that policy and to the
+agent id the runtime will use:
+
+```sh
+mkdir -m 700 lease
+aasm lease init --state lease/lease.json --subject my-agent --policy policy.yaml
+```
+
+`init` prints the command below with your absolute paths filled in. Run it to start a
+runtime that is governed by the record:
+
+<!-- lease-example:recipe -->
+```sh
+AA_AGENT_ID=my-agent \
+AA_LEASE_POLICY="$PWD/policy.yaml" \
+AA_LEASE_STATE="$PWD/lease/lease.json" \
+AA_METRICS_ADDR=127.0.0.1:9091 \
+aa-runtime
+```
+
+* `AA_AGENT_ID` must equal `--subject`, or the runtime refuses to start.
+* `AA_LEASE_POLICY` is what turns governed mode on, and must be the policy the record was
+  created from; editing the policy afterwards needs a new `init --force`.
+* `AA_METRICS_ADDR` must be a loopback address: the default `0.0.0.0:8080` is refused.
+
+`curl http://127.0.0.1:9091/health` then reports `lease_governance` with the record's
+`run_id` and `"state": "governed"`. This example is checked by
+`aa-cli/tests/lease_docs_example.rs`, which extracts the two blocks above and runs them.
+
 ## The record
 
 ```json
@@ -105,7 +163,9 @@ aasm lease init --state <PATH> --subject <ID> (--policy <FILE> | --policy-digest
 ```
 
 Creates the record with generation `1` and nothing revoked, and prints the lease
-id prefix for the run (everything before the domain word). The directory of `--state` must already exist.
+id prefix for the run (everything before the domain word) followed by the exact
+command that starts a runtime governed by it (see the [worked example](#worked-example)).
+The directory of `--state` must already exist.
 
 Without `--force`, an existing record is **never** overwritten. With `--force`
 the command starts a new run: generation `1`, an empty revocation set, and a

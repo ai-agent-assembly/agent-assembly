@@ -92,6 +92,9 @@ MARKED_FILES=(
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-6385: builds `LeaseGovernance` (`aa_runtime::lease::decide`, stripped below)
+    # to check the worked example in docs/src/cli/lease.md.
+    "${REPO_ROOT}/aa-cli/tests/lease_docs_example.rs"
     # AAASM-6166: execution receipts. `mod.rs` only re-exports these; each
     # file consumes `run.rs`'s own types (`ReceiptContext` borrows
     # `aa_isolation::ExecutionSpec`/`IsolationReport` that `run.rs` alone
