@@ -1153,14 +1153,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     // Detect available enforcement mechanisms (eBPF, proxy, SDK).
     let active_layers = crate::layer::LayerDetector::detect();
     // Presence of a layer is where a call can be seen, not that anything decides
-    // on it; the governance posture below is what says whether it does.
+    // on it; the governance posture (logged once the gateway client exists) is
+    // what says whether it does.
     tracing::info!(layers = %active_layers, "interception layers present");
-    let posture = crate::posture::GovernancePosture::new(
-        lease_status.is_some(),
-        policy.rules.len(),
-        config.gateway_endpoint.is_some(),
-    );
-    posture.log();
 
     let mut degraded_layers: Vec<String> = Vec::new();
     check_layer_availability(active_layers, &mut degraded_layers);
@@ -1286,6 +1281,23 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     // policy checks are forwarded to the authoritative governance gateway. When
     // no endpoint is set the pipeline falls back to local evaluation.
     let gateway_client = build_gateway_client(&config).await;
+
+    // Posture is derived from what is actually installed, so it comes after the
+    // gateway client: an invalid AA_GATEWAY_ENDPOINT yields no client and must
+    // not read as governed. A rule that blocks and requires approval for
+    // nothing is not a decision source.
+    let effective_rules = policy
+        .rules
+        .iter()
+        .filter(|r| !r.blocked_actions.is_empty() || !r.requires_approval_actions.is_empty())
+        .count();
+    let posture = crate::posture::GovernancePosture::new(
+        lease_status.is_some(),
+        effective_rules,
+        gateway_client.is_some(),
+        config.gateway_fail_closed,
+    );
+    posture.log();
 
     // AAASM-3491: shared op-control store + subscriber. The store records the
     // gateway's pause/resume/terminate signals; the pipeline consults it on
