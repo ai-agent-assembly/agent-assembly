@@ -75,16 +75,14 @@ impl std::error::Error for PolicyLoadError {}
 
 /// Load policy rules from a TOML file at `path`.
 ///
-/// - If the file does not exist, logs a warning and returns empty `PolicyRules` (no enforcement).
+/// - If the file does not exist, returns `Ok(None)`: absent is not the same as empty, and the
+///   caller must not report a missing file as a loaded policy.
 /// - If the file exists but cannot be parsed, returns `Err(PolicyLoadError::Parse)`.
 /// - Any other I/O error returns `Err(PolicyLoadError::Io)`.
-pub fn load_policy(path: &std::path::Path) -> Result<PolicyRules, PolicyLoadError> {
+pub fn load_policy(path: &std::path::Path) -> Result<Option<PolicyRules>, PolicyLoadError> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => toml::from_str(&contents).map_err(PolicyLoadError::Parse),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!(path = %path.display(), "policy file not found — starting without enforcement");
-            Ok(PolicyRules::default())
-        }
+        Ok(contents) => toml::from_str(&contents).map(Some).map_err(PolicyLoadError::Parse),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(PolicyLoadError::Io(e)),
     }
 }
@@ -137,8 +135,10 @@ mod tests {
     #[test]
     fn load_policy_returns_empty_when_file_absent() {
         let result = load_policy(std::path::Path::new("/nonexistent/path/policy.toml"));
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(
+            matches!(result, Ok(None)),
+            "absent must not read as an empty loaded policy"
+        );
     }
 
     #[test]
@@ -149,7 +149,7 @@ mod tests {
         writeln!(tmp, r#"name = "block-exfil""#).unwrap();
         writeln!(tmp, r#"blocked_actions = ["send_email"]"#).unwrap();
         tmp.flush().unwrap();
-        let result = load_policy(tmp.path()).expect("should parse");
+        let result = load_policy(tmp.path()).expect("should parse").expect("file exists");
         assert_eq!(result.rules.len(), 1);
         assert_eq!(result.rules[0].name, "block-exfil");
         assert_eq!(result.rules[0].blocked_actions, vec!["send_email"]);

@@ -204,24 +204,30 @@ mod devint_wiring_tests {
 }
 // strip-for-publish:end devtool
 
-/// Load policy rules from `config.policy_path`, or return empty rules if disabled.
+/// Load policy rules from `config.policy_path`, or return empty rules if disabled or absent.
 ///
 /// Exits the process with code 1 if the file exists but cannot be parsed —
 /// a malformed policy is a configuration error that must be fixed before startup.
 fn load_policy(policy_path: &Option<std::path::PathBuf>) -> std::sync::Arc<crate::policy::PolicyRules> {
     let rules = match policy_path {
         None => {
-            tracing::info!("policy enforcement disabled (AA_POLICY_PATH set to empty)");
+            tracing::info!("no local policy file: AA_POLICY_PATH is set to empty");
             crate::policy::PolicyRules::default()
         }
         Some(path) => match crate::policy::load_policy(path) {
-            Ok(rules) => {
+            Ok(Some(rules)) => {
                 tracing::info!(
                     path = %path.display(),
                     rule_count = rules.rules.len(),
                     "policy loaded"
                 );
                 rules
+            }
+            Ok(None) => {
+                // Deliberately not "policy loaded" and not a claim about
+                // enforcement: the posture line that follows says what that means.
+                tracing::warn!(path = %path.display(), "policy file not found; no local policy rules");
+                crate::policy::PolicyRules::default()
             }
             Err(e) => {
                 tracing::error!(error = %e, path = %path.display(), "failed to parse policy file — aborting");
@@ -1146,7 +1152,15 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
 
     // Detect available enforcement mechanisms (eBPF, proxy, SDK).
     let active_layers = crate::layer::LayerDetector::detect();
-    tracing::info!(layers = %active_layers, "active enforcement mechanisms");
+    // Presence of a layer is where a call can be seen, not that anything decides
+    // on it; the governance posture below is what says whether it does.
+    tracing::info!(layers = %active_layers, "interception layers present");
+    let posture = crate::posture::GovernancePosture::new(
+        lease_status.is_some(),
+        policy.rules.len(),
+        config.gateway_endpoint.is_some(),
+    );
+    posture.log();
 
     let mut degraded_layers: Vec<String> = Vec::new();
     check_layer_availability(active_layers, &mut degraded_layers);
@@ -1327,6 +1341,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
         degraded_layers,
         protection,
         lease_governance: lease_status,
+        governance: posture,
     };
     spawn_health_server(&tracker, &config, token.clone(), health_state);
 
