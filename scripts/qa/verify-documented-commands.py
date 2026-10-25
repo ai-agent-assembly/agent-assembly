@@ -539,7 +539,62 @@ def _ensure_binary_built(package: str, binary_name: str) -> Path:
     return binary
 
 
-def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+# Every executor runs under a throwaway HOME, never the operator's: several of
+# the documented commands start, stop and signal real processes and write
+# ~/.aasm and ~/.aa (pid files, contexts, logs), and running this script on a
+# workstation must not stop the operator's own gateway or rewrite their config.
+_THROWAWAY_HOMES: list[str] = []
+
+
+def _new_home(tag: str) -> str:
+    home = tempfile.mkdtemp(prefix=f"aaasm-docverify-{tag}-")
+    _THROWAWAY_HOMES.append(home)
+    return home
+
+
+_DOC_HOME: list[str] = []
+
+
+def _doc_home() -> str:
+    """HOME shared by the plain `_aasm` executors (contexts persist across them
+    on purpose: the configuration.md steps build on each other)."""
+    if not _DOC_HOME:
+        _DOC_HOME.append(_new_home("doc"))
+    return _DOC_HOME[0]
+
+
+_START_HOME: list[str] = []
+
+
+def _start_home() -> str:
+    """A second, separate HOME for the `aasm start` -> `status` -> `stop` steps:
+    the configuration.md executors leave a default context (8080) in
+    `_doc_home()`, and a named context correctly outranks the recorded address."""
+    if not _START_HOME:
+        _START_HOME.append(_new_home("start"))
+    return _START_HOME[0]
+
+
+def _executor_env(home: str, **extra: str) -> dict[str, str]:
+    env = {
+        **os.environ,
+        "HOME": home,
+        "PATH": f"{_debug_dir()}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    env.update(extra)
+    return env
+
+
+def _cleanup_homes() -> None:
+    import shutil
+
+    while _THROWAWAY_HOMES:
+        shutil.rmtree(_THROWAWAY_HOMES.pop(), ignore_errors=True)
+    _DOC_HOME.clear()
+    _START_HOME.clear()
+
+
+def _aasm(*args: str, timeout: int = 15, home: str | None = None) -> subprocess.CompletedProcess:
     # `cargo install --path aa-cli` (the doc's own next step) triggers its own
     # uncached release build in a separate target dir — the rust-cache /
     # `cargo build --workspace` steps above buy it nothing, so it would add a
@@ -547,7 +602,7 @@ def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     # exercises the binary `cargo build -p aa-cli` already produced instead;
     # `cargo install` itself is ALLOWLISTED (see below) with that reasoning.
     binary = _debug_dir() / "aasm"
-    return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout)
+    return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout, env=_executor_env(home or _doc_home()))
 
 
 @_executor(
@@ -742,26 +797,47 @@ def _exec_status_after_gateway_start() -> None:
     _assert_in(r.stdout + r.stderr, "unreachable", "aasm status")
 
 
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+_START_PORT: list[int] = []
+
+
+def _answers_health(port: int) -> bool:
+    """A real GET of the API's health signature (not a TCP probe, which would
+    succeed against any other listener on the port)."""
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/api/v1/health", timeout=2) as resp:
+            body = json.loads(resp.read())
+    except (OSError, ValueError):
+        return False
+    return isinstance(body.get("status"), str) and isinstance(body.get("api_version"), str)
+
+
 @_executor(
     "docs/src/quick-start/first-run.md", "3. Check overall status",
     "$ aasm start",
-    "`aasm start` serves the HTTP API on 7391 and a bare `aasm status` then "
-    "reports it healthy (AAASM-6385: it used to query 8080); stopped again "
-    "here so steps 4-5 still see no reachable API",
+    "`aasm start` serves the HTTP API and a bare `aasm status` then follows it and "
+    "reports it healthy (AAASM-6385: it used to query 8080). Runs on an ephemeral "
+    "port under a throwaway HOME, so it can neither collide with nor stop an "
+    "operator's own gateway; stopped again here so steps 4-5 see no reachable API",
 )
 def _exec_start_then_status() -> None:
     _ensure_binary_built("aa-api", "aa-api-server")
-    # `aasm start` launches `aa-api-server` by PATH lookup alone.
-    # A throwaway HOME: the configuration.md executors above leave a default
-    # context (`local`, 8080) in ~/.aa/config.yaml, and a named context correctly
-    # outranks the address `aasm start` recorded. This step is about the
-    # zero-configuration path, so it must not inherit that.
-    home = tempfile.mkdtemp(prefix="aaasm6385-home-")
-    env = {
-        **os.environ,
-        "HOME": home,
-        "PATH": f"{_debug_dir()}{os.pathsep}{os.environ.get('PATH', '')}",
-    }
+    port = _free_port()
+    if _answers_health(port):  # defensive: the port was free a moment ago
+        raise AssertionError(f"port {port} unexpectedly already serves an API; refusing to run")
+    _START_PORT[:] = [port]
+    home = _start_home()
+    env = _executor_env(home)
     binary = str(_debug_dir() / "aasm")
     try:
         # Output goes to a file, not a pipe: the detached server inherits
@@ -769,20 +845,35 @@ def _exec_start_then_status() -> None:
         # and `subprocess.run` would block until its timeout.
         with tempfile.TemporaryFile("w+") as out:
             r = subprocess.run(  # noqa: S603 - fixed argv
-                [binary, "start"], cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT
+                [binary, "start", "--port", str(port)],
+                cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT,
             )
             out.seek(0)
             started = out.read()
         if r.returncode != 0:
             raise AssertionError(f"aasm start failed:\n{started}")
-        _assert_in(started, "http://localhost:7391", "aasm start")
+        _assert_in(started, f"http://localhost:{port}", "aasm start")
+        if not _answers_health(port):
+            raise AssertionError(f"nothing on port {port} answers the API health signature:\n{started}")
         s = _run([binary, "status"], cwd=REPO_ROOT, timeout=15, env=env)
         if s.returncode != 0:
             raise AssertionError(f"aasm status after aasm start failed:\n{s.stdout}\n{s.stderr}")
-        _assert_in(s.stdout, "Gateway:   http://localhost:7391", "aasm status")
+        _assert_in(s.stdout, f"Gateway:   http://localhost:{port}", "aasm status")
         _assert_in(s.stdout, "Health:    \u2713 ok", "aasm status")
     finally:
-        _run([binary, "stop"], cwd=REPO_ROOT, timeout=30, env=env)
+        _stop_started_gateway(binary, env, home)
+
+
+def _stop_started_gateway(binary: str, env: dict[str, str], home: str) -> None:
+    _run([binary, "stop"], cwd=REPO_ROOT, timeout=30, env=env)
+    # Belt and braces for a start that half-failed: only the PID this throwaway
+    # HOME recorded, never a pattern match.
+    pid_file = Path(home) / ".aasm" / "gateway.pid"
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text().strip()), 15)
+        except (ValueError, OSError):
+            pass
 
 
 @_executor(
@@ -811,16 +902,21 @@ def _exec_topology_overview_message() -> None:
 @_executor(
     "docs/src/quick-start/first-run.md", "7. Stop the gateway",
     "aasm stop",
-    "`aasm stop` is idempotent: it succeeds whether or not an `aasm start` "
-    "server is running, and afterwards `aasm status` reports unreachable",
+    "`aasm stop` is idempotent under the same throwaway HOME as the start step: it "
+    "succeeds whether or not that server is running, removes the pid and address "
+    "records, and the API it served is no longer reachable",
 )
 def _exec_stop() -> None:
-    r = _aasm("stop", timeout=30)
+    home = _start_home()
+    r = _aasm("stop", timeout=30, home=home)
     if r.returncode != 0:
         raise AssertionError(f"aasm stop failed:\n{r.stdout}\n{r.stderr}")
-    r2 = _aasm("status", timeout=15)
-    if r2.returncode == 0:
-        raise AssertionError(f"aasm status succeeded after aasm stop:\n{r2.stdout}")
+    state = Path(home) / ".aasm"
+    for name in ("gateway.pid", "gateway.url"):
+        if (state / name).exists():
+            raise AssertionError(f"{name} survived aasm stop")
+    if _START_PORT and _answers_health(_START_PORT[0]):
+        raise AssertionError(f"port {_START_PORT[0]} still serves the API after aasm stop")
 
 
 @_executor(
@@ -859,7 +955,7 @@ def _dry_run(*args: str) -> None:
     # because the documented argv ends in `-- <program> [args]` and anything
     # appended after that would be handed to the previewed program.
     policy = REPO_ROOT / "policy-examples" / "low-risk.yaml"
-    env = {**os.environ, "AA_POLICY": str(policy)}
+    env = _executor_env(_doc_home(), AA_POLICY=str(policy))
     r = _run([str(_debug_dir() / "aasm"), "run", *args], cwd=REPO_ROOT, timeout=60, env=env)
     if r.returncode != 0:
         raise AssertionError(f"aasm run {' '.join(args)} exited {r.returncode}:\n{r.stdout}\n{r.stderr}")
@@ -934,6 +1030,13 @@ def check_coverage(units: list[Unit], allowlist: dict, executors: list) -> list[
 
 
 def run_executors(executors: list) -> list[str]:
+    try:
+        return _run_executors(executors)
+    finally:
+        _cleanup_homes()
+
+
+def _run_executors(executors: list) -> list[str]:
     failures: list[str] = []
     for key, description, fn in executors:
         try:
@@ -1002,6 +1105,27 @@ def selftest() -> int:
         ok = False
     else:
         print("SELFTEST (c) passed: an indented fence is extracted")
+
+    # (d) executors never use the operator's real HOME.
+    real = os.environ.get("HOME")
+    sentinel = tempfile.mkdtemp(prefix="aaasm-sentinel-home-")
+    os.environ["HOME"] = sentinel
+    try:
+        envs = [_executor_env(_doc_home()), _executor_env(_start_home())]
+        homes = {e["HOME"] for e in envs}
+        src = Path(__file__).read_text(encoding="utf-8")
+        leaked = [t for t in ("expanduser", "Path.home(") if t in src.replace('"' + t + '"', "")]
+        if sentinel in homes or len(homes) != 2 or leaked:
+            print(f"SELFTEST FAILED (d): executors would touch the real HOME ({homes}, {leaked})")
+            ok = False
+        else:
+            print("SELFTEST (d) passed: executors run under throwaway HOMEs, never the real one")
+    finally:
+        if real is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = real
+        _cleanup_homes()
 
     return 0 if ok else 1
 
