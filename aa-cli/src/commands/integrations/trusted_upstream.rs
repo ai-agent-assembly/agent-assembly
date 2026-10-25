@@ -195,7 +195,7 @@ pub fn write_trusted_upstream_config(args: &TrustedUpstreamArgs) -> Result<PathB
 
     let path = trusted_upstream_config_path().ok_or(TrustedUpstreamWriteError::NoStateDir)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(TrustedUpstreamWriteError::Io)?;
+        aa_core::private_fs::create_private_dir_all(parent).map_err(TrustedUpstreamWriteError::Io)?;
     }
     let body =
         serde_json::to_string_pretty(&config).map_err(|e| TrustedUpstreamWriteError::Io(std::io::Error::other(e)))?;

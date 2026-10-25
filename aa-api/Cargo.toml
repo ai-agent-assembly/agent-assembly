@@ -84,6 +84,7 @@ lettre = { version = "0.11", default-features = false, features = [
 ] }
 
 [dev-dependencies]
+libc = { workspace = true }
 # AAASM-3980: WS tenant-isolation tests construct AuditEvent to set team_id.
 aa-proto = { path = "../aa-proto" }
 axum-test = "21"

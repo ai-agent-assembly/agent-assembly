@@ -23,6 +23,11 @@ toml         = { workspace = true, optional = true }
 # user's comments and layout; `toml` alone only round-trips semantics.
 toml_edit    = { version = "0.25", optional = true, default-features = false, features = ["parse", "display"] }
 
+# AAASM-6387: owner-only local state (`private_fs`) checks the effective uid and
+# opens with O_NOFOLLOW; Unix only, and only reachable with the `std` feature.
+[target.'cfg(unix)'.dependencies]
+libc         = { workspace = true }
+
 [features]
 default    = ["std"]
 std        = ["alloc", "dep:aa-security", "dep:async-trait", "dep:thiserror", "dep:chrono", "dep:dirs", "dep:serde_json", "dep:serde_yaml", "dep:toml", "dep:toml_edit", "serde?/std"]

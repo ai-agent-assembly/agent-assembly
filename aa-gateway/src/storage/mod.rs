@@ -37,6 +37,7 @@ pub mod migrations;
 pub mod policy;
 pub mod postgres;
 pub mod postgres_config;
+pub mod private_fs;
 pub mod retention;
 pub mod retention_boot;
 pub mod retention_config;

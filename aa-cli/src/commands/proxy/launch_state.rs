@@ -48,7 +48,7 @@ pub struct PerLaunchState {
 /// agent id) still get two distinct directories.
 pub fn allocate(label: &str) -> std::io::Result<PerLaunchState> {
     let root = runs_root()?;
-    std::fs::create_dir_all(&root)?;
+    aa_core::private_fs::create_private_dir_all(&root)?;
 
     // `tempfile::Builder::tempdir_in` for the collision-proof unique suffix
     // it already implements correctly (mkdtemp-style), then `.keep()`

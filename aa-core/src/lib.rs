@@ -48,6 +48,8 @@ pub mod net;
 #[cfg(feature = "std")]
 pub mod observation;
 pub mod policy;
+#[cfg(feature = "std")]
+pub mod private_fs;
 pub mod risk_tier;
 #[cfg(feature = "std")]
 pub mod storage;
