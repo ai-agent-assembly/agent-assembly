@@ -84,6 +84,11 @@ pub fn is_pid_alive(pid: u32) -> bool {
 /// any non-`NotFound` filesystem error verbatim so the operator
 /// sees permission issues rather than a silently-stuck PID file.
 pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
+    remove_if_present(&url_file_path(path))?;
+    remove_if_present(path)
+}
+
+fn remove_if_present(path: &Path) -> Result<(), PidFileError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -91,9 +96,87 @@ pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
     }
 }
 
+/// File beside the PID file that holds the base URL `aasm start` is serving
+/// (AAASM-6385).
+///
+/// Operator commands default to a built-in API URL; without this record a
+/// gateway started with `--port`/`--host` is unreachable to a bare
+/// `aasm status`, because the start command is the only place that knows where
+/// it bound. Removed with the PID file by [`remove_pid`], so it never outlives
+/// a stopped gateway.
+pub fn url_file_path(pid_file: &Path) -> PathBuf {
+    pid_file.with_file_name("gateway.url")
+}
+
+/// Record the base URL the gateway just started on (see [`url_file_path`]).
+pub fn write_gateway_url(pid_file: &Path, url: &str) -> Result<(), PidFileError> {
+    std::fs::write(url_file_path(pid_file), format!("{url}\n"))?;
+    Ok(())
+}
+
+/// The base URL of the gateway `aasm start` left running, if one is.
+///
+/// `None` unless the PID file names a live process *and* a URL was recorded
+/// for it, so a crashed gateway's stale record is never preferred over the
+/// built-in default.
+pub fn running_gateway_url_at(pid_file: &Path) -> Option<String> {
+    let pid = read_pid(pid_file).ok()??;
+    if !is_pid_alive(pid) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(url_file_path(pid_file)).ok()?;
+    let url = raw.trim();
+    (url.starts_with("http://") && !url.contains(char::is_whitespace)).then(|| url.to_string())
+}
+
+/// [`running_gateway_url_at`] for the default PID file location.
+pub fn running_gateway_url() -> Option<String> {
+    running_gateway_url_at(&pid_file_path().ok()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recorded_url_is_returned_only_while_its_gateway_is_alive() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        assert_eq!(running_gateway_url_at(&pid_file), None, "nothing recorded");
+
+        write_pid(&pid_file, std::process::id()).unwrap();
+        write_gateway_url(&pid_file, "http://localhost:9123").unwrap();
+        assert_eq!(
+            running_gateway_url_at(&pid_file).as_deref(),
+            Some("http://localhost:9123")
+        );
+
+        // A pid that is not running (u32::MAX is not a valid pid) must not
+        // keep steering operator commands at a dead address.
+        write_pid(&pid_file, u32::MAX - 1).unwrap();
+        assert_eq!(running_gateway_url_at(&pid_file), None, "stale record");
+    }
+
+    #[test]
+    fn a_malformed_recorded_url_is_ignored() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        write_pid(&pid_file, std::process::id()).unwrap();
+        for bad in ["", "localhost:1", "http://a b", "file:///etc/passwd"] {
+            std::fs::write(url_file_path(&pid_file), bad).unwrap();
+            assert_eq!(running_gateway_url_at(&pid_file), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn remove_pid_also_removes_the_recorded_url() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        write_pid(&pid_file, 1).unwrap();
+        write_gateway_url(&pid_file, "http://localhost:1").unwrap();
+        remove_pid(&pid_file).unwrap();
+        assert!(!pid_file.exists() && !url_file_path(&pid_file).exists());
+    }
 
     #[test]
     fn pid_file_path_lives_under_aasm_directory() {

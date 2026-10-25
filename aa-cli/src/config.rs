@@ -280,7 +280,8 @@ impl ResolvedContext {
 /// Precedence (highest to lowest):
 /// 1. Explicit CLI flags (`--api-url`, `--api-key`)
 /// 2. Named context from config (`--context <name>` or `default_context`)
-/// 3. Built-in default (`http://localhost:8080`)
+/// 3. The gateway `aasm start` left running, else the built-in default
+///    (`http://localhost:7391`, `aasm start`'s own default port)
 ///
 /// Resolution itself never fails on transport safety — see
 /// [`ResolvedContext::credential_for_wire`], which is where a cleartext
@@ -291,8 +292,28 @@ pub fn resolve_context(
     api_url_flag: Option<&str>,
     api_key_flag: Option<&str>,
 ) -> Result<ResolvedContext, CliError> {
-    let default_url = "http://localhost:8080";
+    // Where `aasm start` put the gateway it left running, else where it would
+    // put one by default. The fallback used to be port 8080, which nothing the
+    // CLI starts listens on (AAASM-6385).
+    let default_url = crate::commands::pidfile::running_gateway_url().unwrap_or_else(builtin_default_api_url);
+    resolve_context_with_default(config, context_flag, api_url_flag, api_key_flag, &default_url)
+}
 
+/// The API URL used when nothing names one and no `aasm start` gateway is
+/// running: the address `aasm start` binds by default.
+pub fn builtin_default_api_url() -> String {
+    format!("http://localhost:{}", crate::commands::start::DEFAULT_PORT)
+}
+
+/// [`resolve_context`] with the final fallback supplied, so the precedence
+/// rules can be tested without reading the machine's `~/.aasm`.
+pub fn resolve_context_with_default(
+    config: &CliConfig,
+    context_flag: Option<&str>,
+    api_url_flag: Option<&str>,
+    api_key_flag: Option<&str>,
+    default_url: &str,
+) -> Result<ResolvedContext, CliError> {
     // If explicit --api-url is provided, use it directly (no context lookup).
     if let Some(url) = api_url_flag {
         return Ok(ResolvedContext {
@@ -556,9 +577,31 @@ mod tests {
             contexts: BTreeMap::new(),
             dashboard: DashboardConfig::default(),
         };
-        let resolved = resolve_context(&cfg, None, None, None).unwrap();
-        assert_eq!(resolved.api_url, "http://localhost:8080");
+        let resolved = resolve_context_with_default(&cfg, None, None, None, &builtin_default_api_url()).unwrap();
+        // The port `aasm start` binds by default, not the old 8080 that nothing
+        // the CLI starts listens on (AAASM-6385).
+        assert_eq!(resolved.api_url, "http://localhost:7391");
         assert!(resolved.name.is_none());
+    }
+
+    #[test]
+    fn explicit_url_and_named_context_still_beat_a_running_gateways_address() {
+        let cfg = sample_config();
+        let flag = resolve_context_with_default(&cfg, None, Some("http://flag:1"), None, "http://recorded:2").unwrap();
+        assert_eq!(flag.api_url, "http://flag:1");
+        let ctx = resolve_context_with_default(&cfg, Some("production"), None, None, "http://recorded:2").unwrap();
+        assert_eq!(ctx.api_url, "https://api.example.com");
+    }
+
+    #[test]
+    fn the_fallback_is_what_the_caller_supplies() {
+        let cfg = CliConfig {
+            default_context: None,
+            contexts: BTreeMap::new(),
+            dashboard: DashboardConfig::default(),
+        };
+        let r = resolve_context_with_default(&cfg, None, None, None, "http://recorded:2").unwrap();
+        assert_eq!(r.api_url, "http://recorded:2");
     }
 
     #[test]
