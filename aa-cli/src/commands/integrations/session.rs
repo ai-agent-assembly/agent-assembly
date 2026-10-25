@@ -133,6 +133,9 @@ pub trait RuntimeSpawner {
     fn spawn_runtime(&self) -> std::io::Result<u32>;
 }
 
+/// Loopback, ephemeral port: see [`ProcessSpawner::command`].
+const AUTOSTART_METRICS_ADDR: &str = "127.0.0.1:0";
+
 /// The default spawner: the real `aa-runtime` binary.
 pub struct ProcessSpawner;
 
@@ -162,11 +165,12 @@ impl ProcessSpawner {
             // Without this, the health/metrics server inherits the code
             // default (0.0.0.0:8080) and — before AAASM-5985's bind rule —
             // served unauthenticated governance-degradation state to the
-            // network. Loopback keeps local diagnostics (`curl
-            // localhost:8080/health`) working without exposing anything
-            // off-host; this runtime has nothing to enforce, so there is no
-            // remote consumer that legitimately needs this address anyway.
-            .env("AA_METRICS_ADDR", "127.0.0.1:8080")
+            // network. Loopback keeps it off-host. The port is ephemeral
+            // (AAASM-6383): the runtime now refuses to start when its health
+            // port is taken, and this child's output is discarded, so a fixed
+            // 8080 held by anything else would exit it silently and surface
+            // here only as a timeout. This runtime has no remote consumer.
+            .env("AA_METRICS_ADDR", AUTOSTART_METRICS_ADDR)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
@@ -701,5 +705,8 @@ mod tests {
             addr.ip().is_loopback(),
             "AA_METRICS_ADDR={metrics_addr} is not loopback"
         );
+        // AAASM-6383: a fixed port that anything else holds exits the runtime 78
+        // with its output discarded, surfacing only as a socket timeout.
+        assert_eq!(addr.port(), 0, "autostart must not contend for a fixed health port");
     }
 }
