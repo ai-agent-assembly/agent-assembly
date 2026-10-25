@@ -455,6 +455,13 @@ async fn a_valid_lease_permits_and_the_gateway_is_still_consulted() {
         rt.lease_governance().unwrap(),
         serde_json::json!({"run_id": _state.run_id(), "generation": 1, "state": "governed"})
     );
+    // AAASM-6384, governed case: reported as governed, not as ungoverned.
+    let health = rt.health();
+    assert_eq!(health["status"], "healthy");
+    assert_eq!(health["governance"]["state"], "lease_governed");
+    assert_eq!(health["governance"]["lease_governed"], true);
+    assert!(rt.log_text().contains("capability lease gate active"));
+    assert!(!rt.log_text().contains("UNGOVERNED"));
 }
 
 #[tokio::test]
