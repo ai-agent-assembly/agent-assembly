@@ -123,7 +123,12 @@ pub enum LeaseStateError {
 impl fmt::Display for LeaseStateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Missing(p) => write!(f, "lease state record not found at {}", p.display()),
+            Self::Missing(p) => write!(
+                f,
+                "lease state record not found at {}; create it with `aasm lease init --state {} --subject <agent id> --policy <policy file>`",
+                p.display(),
+                p.display()
+            ),
             Self::Corrupt(why) => write!(f, "lease state record is corrupt: {why}"),
             Self::VersionUnsupported(v) => {
                 write!(
@@ -133,7 +138,11 @@ impl fmt::Display for LeaseStateError {
             }
             Self::Io(e) => write!(f, "lease state I/O error: {e}"),
             Self::Invalid(why) => write!(f, "invalid lease state input: {why}"),
-            Self::AlreadyExists(p) => write!(f, "a lease state record already exists at {}", p.display()),
+            Self::AlreadyExists(p) => write!(
+                f,
+                "a lease state record already exists at {}; pass --force to replace it (this starts a new run and retires every earlier lease id)",
+                p.display()
+            ),
             Self::InsecureTarget(why) => write!(f, "refusing insecure lease state location: {why}"),
             Self::NotMonotonic(why) => write!(f, "lease state change is not monotonic: {why}"),
             Self::Mismatch(why) => write!(f, "lease state record does not match this run: {why}"),
@@ -327,6 +336,14 @@ impl LeaseState {
     /// This run's id for `domain`; see [`lease_id`].
     pub fn lease_id(&self, domain: &str) -> Result<String, LeaseStateError> {
         lease_id(&self.subject, &self.policy_digest, &self.run_id, self.issued_at, domain)
+    }
+    /// Whether `id` has the shape of a lease id this run issues: this run's
+    /// [`lease_id_prefix`](Self::lease_id_prefix) followed by a well-formed
+    /// domain word. Shape only: which domains a policy actually leases is not
+    /// recorded here.
+    pub fn is_issuable_id(&self, id: &str) -> bool {
+        id.strip_prefix(self.lease_id_prefix().as_str())
+            .is_some_and(|domain| check_domain(domain).is_ok())
     }
     /// Everything in this run's lease ids before the domain word, ending in `:`.
     pub fn lease_id_prefix(&self) -> String {
@@ -762,12 +779,16 @@ pub fn init_run(
 pub fn load_expected(path: &Path, subject: &str, policy_digest: &str) -> Result<LeaseState, LeaseStateError> {
     let state = load(path)?;
     if state.subject != subject {
-        return Err(LeaseStateError::Mismatch("subject differs from the record".to_string()));
+        return Err(LeaseStateError::Mismatch(format!(
+            "subject differs from the record (this run: {subject:?}, record: {:?})",
+            state.subject
+        )));
     }
     if state.policy_digest != policy_digest {
-        return Err(LeaseStateError::Mismatch(
-            "policy digest differs from the record".to_string(),
-        ));
+        return Err(LeaseStateError::Mismatch(format!(
+            "policy digest differs from the record (this policy: {policy_digest}, record: {})",
+            state.policy_digest
+        )));
     }
     Ok(state)
 }
@@ -777,6 +798,22 @@ pub fn load_expected(path: &Path, subject: &str, policy_digest: &str) -> Result<
 /// Fails closed: a missing or corrupt record is an error and nothing is
 /// created. Returns the record as it stands after the call.
 pub fn revoke_ids<S: AsRef<str>>(path: &Path, ids: &[S]) -> Result<LeaseState, LeaseStateError> {
+    revoke_checked(path, ids, false)
+}
+
+/// [`revoke_ids`] for an operator naming leases by hand: every id not already
+/// revoked must have the shape of an id this run issues
+/// ([`LeaseState::is_issuable_id`]), checked under the same lock as the write.
+///
+/// A typo or an id from another run would otherwise be stored as "revoked"
+/// and advance the generation while revoking nothing, which reads as success.
+/// Nothing is written and the generation does not move when any id is
+/// refused. An id already in the revoked set stays idempotent.
+pub fn revoke_issued_ids<S: AsRef<str>>(path: &Path, ids: &[S]) -> Result<LeaseState, LeaseStateError> {
+    revoke_checked(path, ids, true)
+}
+
+fn revoke_checked<S: AsRef<str>>(path: &Path, ids: &[S], issued_only: bool) -> Result<LeaseState, LeaseStateError> {
     for id in ids {
         check_text("revoked id", id.as_ref(), MAX_ID_LEN).map_err(LeaseStateError::Invalid)?;
     }
@@ -788,6 +825,20 @@ pub fn revoke_ids<S: AsRef<str>>(path: &Path, ids: &[S]) -> Result<LeaseState, L
     }
     let _lock = StateLock::acquire(path)?;
     let mut state = load(path)?;
+    if issued_only {
+        if let Some(bad) = ids
+            .iter()
+            .map(AsRef::as_ref)
+            .find(|id| !state.is_revoked(id) && !state.is_issuable_id(id))
+        {
+            return Err(LeaseStateError::Invalid(format!(
+                "{bad:?} is not a lease id of this run; ids look like {}<domain>, e.g. {}filesystem_write \
+                 (only the shape is checked; spell the domain as it appears in `authority.leases`)",
+                state.lease_id_prefix(),
+                state.lease_id_prefix()
+            )));
+        }
+    }
     let old = state.clone();
     if state.revoke(ids)? {
         check_monotonic(&old, &state)?;
@@ -811,6 +862,66 @@ mod tests {
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn issuable_ids_are_this_runs_prefix_plus_a_domain_word() {
+        let s = run(5);
+        let ok = s.lease_id("filesystem_write").unwrap();
+        assert!(s.is_issuable_id(&ok));
+        assert!(!s.is_issuable_id("notreal"));
+        assert!(!s.is_issuable_id(&s.lease_id_prefix()), "empty domain");
+        assert!(!s.is_issuable_id(&format!("{}Bad Domain", s.lease_id_prefix())));
+        let other_run = ok.replace(R, &"f".repeat(32));
+        assert!(!s.is_issuable_id(&other_run));
+    }
+
+    #[test]
+    fn revoke_issued_ids_refuses_unknown_ids_without_writing() {
+        let dir = tmp();
+        let p = dir.path().join("l.json");
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        init_run(&p, "agent-1", D, 1_700_000_000, false).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        let err = revoke_issued_ids(&p, &["notreal"]).unwrap_err();
+        assert!(matches!(err, LeaseStateError::Invalid(_)), "{err}");
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+
+        let id = load(&p).unwrap().lease_id("filesystem_write").unwrap();
+        assert_eq!(revoke_issued_ids(&p, &[&id]).unwrap().generation(), 2);
+        // Already revoked: idempotent, generation unchanged.
+        assert_eq!(revoke_issued_ids(&p, &[&id]).unwrap().generation(), 2);
+        // The unchecked variant keeps accepting arbitrary ids (library callers).
+        assert_eq!(revoke_ids(&p, &["x"]).unwrap().generation(), 3);
+    }
+
+    #[test]
+    fn operator_facing_errors_name_the_fix() {
+        let p = PathBuf::from("/s/l.json");
+        let missing = LeaseStateError::Missing(p.clone()).to_string();
+        assert!(
+            missing.contains("aasm lease init") && missing.contains("/s/l.json"),
+            "{missing}"
+        );
+        let exists = LeaseStateError::AlreadyExists(p).to_string();
+        assert!(exists.contains("--force"), "{exists}");
+    }
+
+    #[test]
+    fn a_mismatch_names_both_sides() {
+        let dir = tmp();
+        let p = dir.path().join("l.json");
+        std::fs::set_permissions(dir.path(), std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        init_run(&p, "recorded-agent", D, 1_700_000_000, false).unwrap();
+        let e = load_expected(&p, "other-agent", D).unwrap_err().to_string();
+        assert!(
+            e.contains("subject differs") && e.contains("recorded-agent") && e.contains("other-agent"),
+            "{e}"
+        );
+        let e = load_expected(&p, "recorded-agent", &"ab".repeat(16))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("policy digest differs") && e.contains(D), "{e}");
     }
 
     #[test]
