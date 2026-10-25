@@ -135,6 +135,16 @@ outcomes, and the `Budget impact` line only when a budget impact is computed.
 Validate a policy YAML file locally (no apply, no gateway contact). Exits `0`
 when valid, `1` with error details on stderr otherwise.
 
+"Valid" means the file parses and passes the schema checks; it does not mean a
+runtime in governed lease mode (`AA_LEASE_POLICY`) will admit every tool. For each
+tool that such a runtime would deny on every call (a tool with no `capabilities`, or
+a capability with no matching `authority.leases` entry) the command prints a
+`warning:` on stderr naming the tool and what to add. Warnings never change the exit
+status. They are computed by the runtime's own lease decision, so they cannot
+disagree with it, and they are only produced by builds that include governed lease
+mode. They cover only the tools listed under `tools:`, judged for the tool-call action
+type; other action types are not assessed.
+
 | Name | Type | Description |
 |---|---|---|
 | `<FILE>` | path (arg) | Path to the policy YAML file to validate. |

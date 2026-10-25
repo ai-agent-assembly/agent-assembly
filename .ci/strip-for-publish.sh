@@ -58,6 +58,11 @@ MARKED_FILES=(
     # run_registration, which the `devtool` region in commands/mod.rs above
     # already removes from the published crate. This call has to go with it.
     "${REPO_ROOT}/aa-cli/src/main.rs"
+    # AAASM-6386: the governed-lease warnings call `aa_runtime::lease::decide`,
+    # which is stripped below; their two call sites (and the module, deleted
+    # below) go with it so the published `aasm` simply prints none.
+    "${REPO_ROOT}/aa-cli/src/commands/policy/validate.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/lease.rs"
     # AAASM-2388: gateway NATS audit consumer (async-nats + publish=false
     # aa-storage-postgres). Removed so the published gateway has no held-back deps.
     "${REPO_ROOT}/aa-gateway/Cargo.toml"
@@ -95,6 +100,9 @@ DELETED_FILES=(
     # AAASM-6385: builds `LeaseGovernance` (`aa_runtime::lease::decide`, stripped below)
     # to check the worked example in docs/src/cli/lease.md.
     "${REPO_ROOT}/aa-cli/tests/lease_docs_example.rs"
+    # AAASM-6386: consumes the stripped `aa_runtime::lease::decide`.
+    "${REPO_ROOT}/aa-cli/src/commands/lease_readiness.rs"
+    "${REPO_ROOT}/aa-cli/tests/lease_readiness_warnings.rs"
     # AAASM-6166: execution receipts. `mod.rs` only re-exports these; each
     # file consumes `run.rs`'s own types (`ReceiptContext` borrows
     # `aa_isolation::ExecutionSpec`/`IsolationReport` that `run.rs` alone

@@ -51,6 +51,20 @@ fn status_json(home: &Path, state: &Path) -> serde_json::Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+/// A lease id the record's run issues for `domain`: the documented
+/// `{subject}:{digest12}:{run_id}:{issued_at}:{domain}` form (AAASM-6386
+/// made `revoke` refuse ids that are not of this shape).
+fn lease_id(home: &Path, state: &Path, domain: &str) -> String {
+    let v = status_json(home, state);
+    format!(
+        "{}:{}:{}:{}:{domain}",
+        v["subject"].as_str().unwrap(),
+        &v["policy_digest"].as_str().unwrap()[..12],
+        v["run_id"].as_str().unwrap(),
+        v["issued_at"]
+    )
+}
+
 #[test]
 fn init_then_status_reports_the_record_with_mode_0600() {
     let (d, p) = state_dir();
@@ -87,7 +101,13 @@ fn init_force_starts_a_new_run_and_retires_earlier_revocations() {
     assert!(init(d.path(), &p, &[]).status.success());
     let first = status_json(d.path(), &p);
     let revoke = aasm(d.path())
-        .args(["lease", "revoke", "--lease-id", "x", "--state"])
+        .args([
+            "lease",
+            "revoke",
+            "--lease-id",
+            &lease_id(d.path(), &p, "filesystem_write"),
+            "--state",
+        ])
         .arg(&p)
         .output()
         .unwrap();
@@ -105,6 +125,7 @@ fn init_force_starts_a_new_run_and_retires_earlier_revocations() {
 fn revoke_adds_ids_idempotently_and_prints_the_generation() {
     let (d, p) = state_dir();
     assert!(init(d.path(), &p, &[]).status.success());
+    let (a, b) = (lease_id(d.path(), &p, "a"), lease_id(d.path(), &p, "b"));
     let run = |ids: &[&str]| {
         aasm(d.path())
             .args(["lease", "revoke", "--state"])
@@ -114,13 +135,13 @@ fn revoke_adds_ids_idempotently_and_prints_the_generation() {
             .output()
             .unwrap()
     };
-    let out = run(&["b", "a"]);
+    let out = run(&[b.as_str(), a.as_str()]);
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "generation 2");
-    let out = run(&["a"]);
+    let out = run(&[a.as_str()]);
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "generation 2");
-    assert_eq!(status_json(d.path(), &p)["revoked"], serde_json::json!(["a", "b"]));
+    assert_eq!(status_json(d.path(), &p)["revoked"], serde_json::json!([a, b]));
 }
 
 #[test]
@@ -183,12 +204,16 @@ fn concurrent_revoke_processes_lose_no_id() {
     const PROCS: usize = 12;
     let (d, p) = state_dir();
     assert!(init(d.path(), &p, &[]).status.success());
-    let children: Vec<_> = (0..PROCS)
-        .map(|i| {
+    let ids: Vec<String> = (0..PROCS)
+        .map(|i| lease_id(d.path(), &p, &format!("id-{i:02}")))
+        .collect();
+    let children: Vec<_> = ids
+        .iter()
+        .map(|id| {
             aasm(d.path())
                 .args(["lease", "revoke", "--state"])
                 .arg(&p)
-                .args(["--lease-id", &format!("id-{i:02}")])
+                .args(["--lease-id", id])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -275,7 +300,7 @@ fn revoke_wait(home: &Path, state: &Path, url: &str, timeout: &str) -> Output {
             "lease",
             "revoke",
             "--lease-id",
-            "x",
+            &lease_id(home, state, "filesystem_write"),
             "--wait-health",
             url,
             "--wait-timeout-secs",
@@ -457,4 +482,98 @@ fn a_digest_only_init_recipe_has_no_shell_redirect() {
     assert!(stdout.contains("AA_LEASE_POLICY=\"$POLICY_FILE\""), "{stdout}");
     let command: String = stdout.lines().filter(|l| l.starts_with("  ")).collect();
     assert!(!command.contains('<') && !command.contains('>'), "{command}");
+}
+
+/// AAASM-6386: an id that no run issued used to be stored as "revoked" and
+/// bump the generation while revoking nothing, which reads as success.
+#[test]
+fn revoke_refuses_an_id_this_run_never_issued_without_bumping_the_generation() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let before = std::fs::read(&p).unwrap();
+    for bad in [
+        "notreal".to_string(),
+        // Right shape, another run's id space.
+        format!("agent-1:0123456789ab:{}:5:filesystem_write", "0".repeat(32)),
+        // This run's prefix but not a domain word.
+        format!("{}Not A Domain", lease_id(d.path(), &p, "")),
+    ] {
+        let out = aasm(d.path())
+            .args(["lease", "revoke", "--state"])
+            .arg(&p)
+            .args(["--lease-id", &bad])
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{bad:?} must be refused");
+        let err = stderr(&out);
+        assert!(err.contains("not a lease id of this run"), "{err}");
+        assert!(
+            err.contains(&run_id(d.path(), &p)),
+            "the message should show the expected form: {err}"
+        );
+    }
+    assert_eq!(std::fs::read(&p).unwrap(), before, "the record must be untouched");
+    assert_eq!(status_json(d.path(), &p)["generation"], 1);
+}
+
+#[test]
+fn revoke_refuses_the_whole_call_when_any_id_is_unknown() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let good = lease_id(d.path(), &p, "filesystem_write");
+    let out = aasm(d.path())
+        .args(["lease", "revoke", "--state"])
+        .arg(&p)
+        .args(["--lease-id", &good, "notreal"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let v = status_json(d.path(), &p);
+    assert_eq!(
+        v["revoked"],
+        serde_json::json!([]),
+        "no id may be recorded when one is refused"
+    );
+    assert_eq!(v["generation"], 1);
+}
+
+#[test]
+fn init_into_a_missing_directory_names_the_path_and_says_it_must_exist() {
+    let (d, _) = state_dir();
+    let missing = d.path().join("no-such-dir").join("l.json");
+    let out = init(d.path(), &missing, &[]);
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(
+        err.contains(&d.path().join("no-such-dir").display().to_string()),
+        "{err}"
+    );
+    assert!(err.contains("must exist"), "{err}");
+    assert!(
+        !d.path().join("no-such-dir").exists(),
+        "init must not create the directory"
+    );
+}
+
+#[test]
+fn init_over_an_existing_record_points_at_force() {
+    let (d, p) = state_dir();
+    assert!(init(d.path(), &p, &[]).status.success());
+    let err = stderr(&init(d.path(), &p, &[]));
+    assert!(err.contains("--force"), "{err}");
+}
+
+#[test]
+fn a_missing_record_error_names_the_command_that_creates_it() {
+    let (d, p) = state_dir();
+    for args in [["lease", "status", "--state"], ["lease", "revoke", "--state"]] {
+        let mut c = aasm(d.path());
+        c.args(args).arg(&p);
+        if args[1] == "revoke" {
+            c.args(["--lease-id", "x"]);
+        }
+        let err = stderr(&c.output().unwrap());
+        assert!(err.contains("aasm lease init"), "{err}");
+        assert!(err.contains(&p.display().to_string()), "{err}");
+    }
 }

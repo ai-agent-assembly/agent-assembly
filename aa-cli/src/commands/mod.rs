@@ -36,6 +36,8 @@ pub mod run_env_sanitize;
 pub mod trusted_upstream_path;
 // strip-for-publish:begin devtool
 pub mod host;
+#[cfg(unix)]
+pub mod lease_readiness;
 pub mod run;
 pub mod run_audit;
 pub mod run_credential_broker;

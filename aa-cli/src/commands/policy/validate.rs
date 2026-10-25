@@ -30,6 +30,17 @@ pub fn run(args: ValidateArgs) -> ExitCode {
             for w in &output.warnings {
                 eprintln!("warning: {w}");
             }
+            // strip-for-publish:begin devtool
+            // AAASM-6386: "valid" does not mean a governed lease runtime admits the
+            // tools; warn (never fail) where the runtime's own gate would deny.
+            #[cfg(unix)]
+            {
+                use crate::commands::lease_readiness::{warnings_for_file, VALIDATE_SUBJECT};
+                for w in warnings_for_file(&args.file, VALIDATE_SUBJECT) {
+                    eprintln!("warning: {w}");
+                }
+            }
+            // strip-for-publish:end devtool
             println!("Policy is valid: {}", args.file.display());
             ExitCode::SUCCESS
         }

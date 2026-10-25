@@ -62,7 +62,8 @@ pub struct RevokeArgs {
     #[arg(long, env = "AA_LEASE_STATE", hide_env_values = true)]
     pub state: PathBuf,
 
-    /// Lease id(s) to revoke; repeatable.
+    /// Lease id(s) to revoke; repeatable. Only the id's shape is checked (this run's prefix
+    /// plus a domain word): a misspelt domain word is accepted and revokes nothing.
     #[arg(long = "lease-id", required = true, num_args = 1..)]
     pub lease_id: Vec<String>,
 
@@ -155,9 +156,40 @@ mod imp {
         }
     }
 
+    /// The record goes next to existing siblings, so its directory must already
+    /// exist; creating it here would pick a mode for a directory the operator
+    /// never named. Said up front because the underlying error is a bare
+    /// "No such file or directory" with no path.
+    fn require_state_dir(path: &std::path::Path) -> Result<(), String> {
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return Ok(()),
+        };
+        if dir.is_dir() {
+            return Ok(());
+        }
+        Err(format!(
+            "the directory {} for --state {} does not exist; it must exist before `aasm lease init` (create it with \
+             `mkdir -p {}` and keep it private to your user)",
+            dir.display(),
+            path.display(),
+            dir.display()
+        ))
+    }
+
     pub fn init(a: &InitArgs) -> Result<String, Failure> {
         let digest = policy_digest(a)?;
+        require_state_dir(&a.state)?;
         let s = state::init_run(&a.state, &a.subject, &digest, now_unix(), a.force).map_err(|e| e.to_string())?;
+        // strip-for-publish:begin devtool
+        // AAASM-6386: the record is fine, but a governed runtime may still deny
+        // tools this policy leaves uncovered; say so now rather than at the first call.
+        if let Some(policy) = &a.policy {
+            for w in crate::commands::lease_readiness::warnings_for_file(policy, &a.subject) {
+                eprintln!("warning: {w}");
+            }
+        }
+        // strip-for-publish:end devtool
         let prefix = s.lease_id_prefix();
         Ok(format!(
             "initialized lease state at {} (generation {})\n\
@@ -312,7 +344,7 @@ mod imp {
     }
 
     pub fn revoke(a: &RevokeArgs) -> Result<String, Failure> {
-        let s = state::revoke_ids(&a.state, &a.lease_id).map_err(|e| e.to_string())?;
+        let s = state::revoke_issued_ids(&a.state, &a.lease_id).map_err(|e| e.to_string())?;
         let mut out = format!("generation {}\n", s.generation());
         if let Some(base) = &a.wait_health {
             let note = wait_for_runtime(
