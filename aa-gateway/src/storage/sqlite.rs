@@ -170,14 +170,24 @@ impl SqliteBackend {
         }
         // Created `0600` before SQLite opens it, so the `-wal`/`-shm` sidecars
         // inherit that mode instead of the umask's.
-        super::private_fs::ensure_private_file(&path)
-            .await
-            .map_err(|e| StorageError::ConnectionFailed(format!("failed to create {}: {e}", path.display())))?;
+        // A literal `:memory:` (or an empty path) is not a file to create.
+        if names_a_file(&path) {
+            super::private_fs::ensure_private_file(&path)
+                .await
+                .map_err(|e| StorageError::ConnectionFailed(format!("failed to create {}: {e}", path.display())))?;
+        }
         let url = format!("sqlite://{}?mode=rwc", path.display());
         let pool = SqlitePool::connect(&url)
             .await
             .map_err(|e| StorageError::ConnectionFailed(e.to_string()))?;
         enable_wal(&pool).await?;
+        // Sidecars exist only now. Tighten, in the default state dirs only, a
+        // database (and sidecars) an older binary left group/world readable.
+        let family = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            super::private_fs::tighten_sqlite_family_if_default(&family, &super::private_fs::default_state_dirs())
+        })
+        .await;
         Ok(Self { pool })
     }
 
@@ -191,6 +201,11 @@ impl SqliteBackend {
     pub(crate) fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
+
+/// Whether `path` names a file SQLite will create, as opposed to `:memory:`.
+fn names_a_file(path: &Path) -> bool {
+    path.as_os_str() != ":memory:" && !path.as_os_str().is_empty()
 }
 
 /// Encode an [`AgentId`] for storage as a TEXT column (canonical UUID
@@ -949,26 +964,69 @@ mod tests {
     /// SQLite file (database, `-wal`, `-shm`) owner-only, whatever the umask.
     /// Before the fix they were `0755`/`0644`, readable by any local user.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn open_creates_owner_only_directory_and_database_files() {
+    #[test]
+    fn open_creates_owner_only_directory_and_database_files() {
         use std::os::unix::fs::PermissionsExt;
         let mode = |p: &Path| std::fs::metadata(p).expect("exists").permissions().mode() & 0o777;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        crate::storage::private_fs::with_umask_022(|| {
+            rt.block_on(async {
+                let tmp = TempDir::new().expect("tempdir");
+                let dir = tmp.path().join(".aasm");
+                let path = dir.join("local.db");
+                let backend = SqliteBackend::open(&SqliteConfig { path: path.clone() })
+                    .await
+                    .expect("open");
+                // Write so the WAL and shared-memory sidecars exist while the pool is open.
+                backend.migrate().await.expect("migrate");
 
+                assert_eq!(mode(&dir), 0o700, "data directory");
+                for suffix in ["", "-wal", "-shm"] {
+                    let f = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
+                    assert!(f.exists(), "{} should exist while the pool is open", f.display());
+                    assert_eq!(mode(&f), 0o600, "{}", f.display());
+                }
+            });
+        });
+    }
+
+    /// An existing read-only database must still open (SQLite falls back to
+    /// read-only); the pre-create must not demand write access to it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_does_not_require_write_access_to_an_existing_database() {
+        use std::os::unix::fs::PermissionsExt;
         let tmp = TempDir::new().expect("tempdir");
-        let dir = tmp.path().join(".aasm");
-        let path = dir.join("local.db");
-        let backend = SqliteBackend::open(&SqliteConfig { path: path.clone() })
-            .await
-            .expect("open");
-        // Write so the WAL and shared-memory sidecars exist while the pool is open.
-        backend.migrate().await.expect("migrate");
-
-        assert_eq!(mode(&dir), 0o700, "data directory");
-        for suffix in ["", "-wal", "-shm"] {
-            let f = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
-            assert!(f.exists(), "{} should exist while the pool is open", f.display());
-            assert_eq!(mode(&f), 0o600, "{}", f.display());
+        let path = tmp.path().join("ro.db");
+        {
+            let b = SqliteBackend::open(&SqliteConfig { path: path.clone() })
+                .await
+                .expect("create");
+            b.migrate().await.expect("migrate");
         }
+        for s in ["", "-wal", "-shm"] {
+            let f = std::path::PathBuf::from(format!("{}{s}", path.display()));
+            if f.exists() {
+                std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
+            }
+        }
+        // A root-run test host ignores file modes; the assertion is only about
+        // `open` not failing in the pre-create step.
+        let r = SqliteBackend::open(&SqliteConfig { path: path.clone() }).await;
+        if let Err(e) = &r {
+            assert!(
+                !e.to_string().contains("failed to create"),
+                "pre-create must not fail on an existing read-only file: {e}"
+            );
+        }
+    }
+
+    /// A literal `:memory:` (or an empty path) is not a file to pre-create.
+    #[test]
+    fn memory_and_empty_paths_are_not_files_to_create() {
+        assert!(!names_a_file(Path::new(":memory:")));
+        assert!(!names_a_file(Path::new("")));
+        assert!(names_a_file(Path::new("local.db")));
     }
 
     /// Read the journal mode the way an independent process would.
