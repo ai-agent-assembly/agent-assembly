@@ -200,8 +200,8 @@ Limits: the default `AA_METRICS_ADDR` (`0.0.0.0:8080`) is non-loopback without
 agent-id protection applies. The health port is bound at startup but served at the end of it,
 so use `GET /health` returning 200, not a TCP connect, to detect readiness. A runtime
 older than this check does not take the lock, so racing one at startup can still lose its
-socket path. On macOS a full accept backlog is reported as a refused connection and so reads as stale. A probe that cannot tell (an over-full backlog elsewhere, no answer within 500 ms, an over-long path)
-refuses rather than guessing stale; the no-answer-within-500 ms branch has no test that executes it.
+socket path. On macOS a full accept backlog is reported as a refused connection and so reads as stale. A probe that cannot tell (an over-full backlog elsewhere, no answer within 2 s, an over-long path)
+refuses rather than guessing stale; the no-answer-within-2 s branch has no test that executes it.
 
 To additionally build and run the optional egress proxy on `:8899`:
 

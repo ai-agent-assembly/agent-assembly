@@ -202,8 +202,10 @@ impl Drop for Runtime {
         let _ = self.child.wait();
         if was_running {
             let _ = std::fs::remove_file(socket_for(&self.agent));
-            let _ = std::fs::remove_file(format!("/tmp/aa-runtime-{}.lock", self.agent));
         }
+        // The lock file belongs to the agent id, not to a process: remove it for
+        // refused runtimes too (all spawning is over by the time they drop).
+        let _ = std::fs::remove_file(format!("/tmp/aa-runtime-{}.lock", self.agent));
     }
 }
 
@@ -341,7 +343,7 @@ fn a_stopped_first_runtime_does_not_hang_or_lose_its_socket_to_a_second() {
 fn a_foreign_listener_that_never_accepts_holds_the_path_against_a_runtime() {
     // No lock holder exists, so only the connect probe stands between this
     // runtime and `IpcServer::bind` deleting the path: the pre-lock-peer case.
-    // The connect completes through the listener's backlog (Ok), so the 500 ms
+    // The connect completes through the listener's backlog (Ok), so the 2 s
     // deadline is not what refuses here.
     let agent = unique_agent();
     let path = socket_for(&agent);
@@ -432,6 +434,7 @@ fn an_unparseable_health_address_is_a_refusal_not_a_panic() {
         .unwrap();
     let text = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(REFUSED), "{text}");
+    let _ = std::fs::remove_file(format!("/tmp/aa-runtime-{agent}.lock"));
     assert!(text.contains("invalid AA_METRICS_ADDR"), "{text}");
     assert!(!socket_for(&agent).exists());
 }

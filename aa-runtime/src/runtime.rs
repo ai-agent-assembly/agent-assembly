@@ -1109,9 +1109,9 @@ fn probe_socket(path: &std::path::Path) -> SocketProbe {
     std::thread::spawn(move || {
         let _ = tx.send(std::os::unix::net::UnixStream::connect(path).map(drop));
     });
-    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
         Ok(result) => classify_probe(&result),
-        Err(_) => SocketProbe::Undetermined("no answer within 500 ms".to_string()),
+        Err(_) => SocketProbe::Undetermined("no answer within 2 s".to_string()),
     }
 }
 
