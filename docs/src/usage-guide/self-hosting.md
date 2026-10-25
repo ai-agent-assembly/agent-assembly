@@ -172,6 +172,23 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
 
+### One runtime per agent id
+
+`aa-runtime` refuses to start (exit status 78, reason on stderr) when another runtime
+already holds the same `AA_AGENT_ID` or, with a loopback `AA_METRICS_ADDR`, its health
+port. It takes an exclusive lock on `/tmp/aa-runtime-<agent id>.lock` for the life of the
+process (the kernel releases it on any exit, including `kill -9`), then checks that
+nothing is listening on `/tmp/aa-runtime-<agent id>.sock`; a socket file left by a killed
+runtime is replaced as before. Give each runtime on a host its own `AA_AGENT_ID` and
+metrics port.
+
+Limits: the default `AA_METRICS_ADDR` (`0.0.0.0:8080`) is non-loopback without
+`AA_METRICS_ALLOW_REMOTE=1`, so under the defaults no health server is started and only the
+agent-id protection applies. The health port is bound at startup but served at the end of it,
+so use `GET /health` returning 200, not a TCP connect, to detect readiness. A runtime
+older than this check does not take the lock, so racing one at startup can still lose its
+socket path, and on macOS a full accept backlog reads as a stale socket.
+
 To additionally build and run the optional egress proxy on `:8899`:
 
 ```bash
