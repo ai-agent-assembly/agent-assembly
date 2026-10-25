@@ -17,8 +17,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   older version is tightened (group/other bits removed, never added) when you own it and it
   is not a symlink. Nothing outside those defaults is ever touched, so a group-shared
   deployment must keep its data elsewhere (`AA_GATEWAY_DB_PATH`, `AA_AUDIT_DIR`, the configured
-  storage path). `aasm start` also never prints the generated admin API key in full on this
-  version (the installed `rc.6` did).
+  storage path).
 
 ### Changed
 
