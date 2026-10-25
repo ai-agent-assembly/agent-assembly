@@ -161,11 +161,55 @@ mod imp {
         let prefix = s.lease_id_prefix();
         Ok(format!(
             "initialized lease state at {} (generation {})\n\
-             lease ids for this run have the form {}<domain>\n",
+             lease ids for this run have the form {}<domain>\n\n{}",
             a.state.display(),
             s.generation(),
-            prefix
+            prefix,
+            runtime_recipe(&a.subject, a.policy.as_deref(), &a.state)
         ))
+    }
+
+    /// Quote `s` for a POSIX shell only when it needs it, so the common case
+    /// stays copy-pasteable and a path with a space still is.
+    fn shell_word(s: &str) -> String {
+        if !s.is_empty()
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-./:+@%=,".contains(&b))
+        {
+            s.to_string()
+        } else {
+            format!("'{}'", s.replace('\'', "'\\''"))
+        }
+    }
+
+    /// The command that starts a runtime governed by the record just created.
+    ///
+    /// Four settings are load-bearing and none has a usable default here:
+    /// `AA_AGENT_ID` must equal the record's subject or the runtime refuses to
+    /// start; `AA_LEASE_POLICY` is what turns governed mode on and must be the
+    /// policy the digest was taken from; `AA_LEASE_STATE` points at this record;
+    /// and `AA_METRICS_ADDR` must be loopback because the default
+    /// (`0.0.0.0:8080`) is refused (AAASM-5985). Printed rather than documented
+    /// only so the operator copies the values this very command validated.
+    pub(super) fn runtime_recipe(subject: &str, policy: Option<&std::path::Path>, state: &std::path::Path) -> String {
+        let absolute = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let policy_word = match policy {
+            Some(p) => shell_word(&absolute(p).display().to_string()),
+            None => "<the policy file this digest was taken from>".to_string(),
+        };
+        format!(
+            "to start a governed runtime for this run:\n\
+             \x20 AA_AGENT_ID={} \\\n\
+             \x20 AA_LEASE_POLICY={} \\\n\
+             \x20 AA_LEASE_STATE={} \\\n\
+             \x20 AA_METRICS_ADDR=127.0.0.1:9091 \\\n\
+             \x20 aa-runtime\n\
+             AA_AGENT_ID must equal --subject; AA_METRICS_ADDR must be a loopback address. \
+             Revoke with `aasm lease revoke --state <path> --lease-id <id> --wait-health http://127.0.0.1:9091`.\n",
+            shell_word(subject),
+            policy_word,
+            shell_word(&absolute(state).display().to_string()),
+        )
     }
 
     /// The most a `--wait-health` may wait. A larger request is clamped rather
