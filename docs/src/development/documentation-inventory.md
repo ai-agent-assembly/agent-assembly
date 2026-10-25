@@ -918,10 +918,12 @@ Every entry names the layer that should change under
 
 The first two are both in **this book**, so this is an intra-repository
 contradiction before it is a cross-repository one. `T1` settles the behaviour:
-`aa-cli/src/config.rs` defaults the CLI to `http://localhost:8080` while
-`aa-cli/src/commands/start.rs` defaults the local gateway's port to `7391`. The
-mismatch the second row describes is real, which makes the first row's account
-of where operator commands land wrong in local mode.
+`aa-cli/src/config.rs` used to default the CLI to `http://localhost:8080` while
+`aa-cli/src/commands/start.rs` defaults the local gateway's port to `7391`; the
+mismatch the second row describes was real. AAASM-6385 resolved it in the code:
+the CLI default is now `7391` (or the address a running `aasm start` recorded),
+and `first-run.md` was corrected to match. `8080` remains the aa-runtime
+health/metrics port.
 
 #### The compatibility matrix carries a row for a release that does not exist
 

@@ -58,7 +58,7 @@ Agent Assembly Status
   Health:    ✗ unreachable
 ─────────────────────────────────────
 ...
-Error: gateway is not running. Start it with: aasm start
+Error: no Agent Assembly API answered at http://localhost:7391. Start it with: aasm start (or point the CLI at another with --api-url)
 ```
 
 ```console

@@ -104,7 +104,7 @@ BUDGET STATUS
   Date:           --
   (no per-agent data)
 
-Error: gateway is not running. Start it with: aasm start
+Error: no Agent Assembly API answered at http://localhost:7391. Start it with: aasm start (or point the CLI at another with --api-url)
 ```
 
 The `unreachable` health reflects the split described above: the gRPC gateway is

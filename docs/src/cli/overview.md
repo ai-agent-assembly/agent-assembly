@@ -83,7 +83,7 @@ The active API URL and key are resolved with this precedence (highest first):
 
 1. Explicit `--api-url` / `--api-key` flags.
 2. The named context — `--context <name>`, otherwise `default_context`.
-3. The address of the gateway `aasm start` left running (`~/.aasm/gateway.url`, honoured only while `~/.aasm/gateway.pid` names a live process), else the built-in default URL `http://localhost:7391` (no key).
+3. The address of the gateway `aasm start` left running (`~/.aasm/gateway.url`, honoured only while `~/.aasm/gateway.pid` names a live process and the address answers the API health check), else the built-in default URL `http://localhost:7391` (no key).
 
 Manage contexts with the [`aasm context`](context.md) command group.
 
