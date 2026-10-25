@@ -431,3 +431,41 @@ fn an_unparseable_health_address_is_a_refusal_not_a_panic() {
     assert!(text.contains("invalid AA_METRICS_ADDR"), "{text}");
     assert!(!socket_for(&agent).exists());
 }
+
+#[test]
+fn a_symlinked_lock_path_is_refused_with_its_own_reason() {
+    let agent = unique_agent();
+    let lock = format!("/tmp/aa-runtime-{agent}.lock");
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("elsewhere");
+    std::fs::write(&target, b"").unwrap();
+    std::os::unix::fs::symlink(&target, &lock).unwrap();
+
+    let mut rt = Runtime::spawn(&agent, free_port());
+    let status = rt.wait_exit();
+    let log = rt.log_text();
+    let _ = std::fs::remove_file(&lock);
+
+    assert_eq!(status.code(), Some(REFUSED), "{log}");
+    assert!(log.contains("symbolic link"), "{log}");
+    assert!(!log.contains("already holds the lock"), "not a peer: {log}");
+    assert!(!socket_for(&agent).exists());
+}
+
+#[test]
+fn a_group_writable_lock_file_is_refused_with_its_own_reason() {
+    use std::os::unix::fs::PermissionsExt;
+    let agent = unique_agent();
+    let lock = format!("/tmp/aa-runtime-{agent}.lock");
+    std::fs::write(&lock, b"").unwrap();
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+    let mut rt = Runtime::spawn(&agent, free_port());
+    let status = rt.wait_exit();
+    let log = rt.log_text();
+    let _ = std::fs::remove_file(&lock);
+
+    assert_eq!(status.code(), Some(REFUSED), "{log}");
+    assert!(log.contains("is unsafe") && log.contains("writable"), "{log}");
+    assert!(!log.contains("already holds the lock"), "not a peer: {log}");
+}

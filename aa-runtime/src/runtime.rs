@@ -1109,6 +1109,22 @@ fn probe_socket(path: &std::path::Path) -> SocketProbe {
     }
 }
 
+/// Why a lock file we opened cannot be trusted, if it cannot.
+fn lock_file_problem(is_regular: bool, owner_uid: u32, mode: u32, euid: u32) -> Option<String> {
+    if !is_regular {
+        return Some("not a regular file".to_string());
+    }
+    if owner_uid != euid {
+        return Some(format!(
+            "owned by uid {owner_uid}, not this user (uid {euid}); remove it or run with a different AA_AGENT_ID"
+        ));
+    }
+    if mode & 0o022 != 0 {
+        return Some(format!("mode {:o} is group- or other-writable", mode & 0o7777));
+    }
+    None
+}
+
 /// Take the per-agent-id lock. Not unlinked on exit: removing a lock file
 /// races with a runtime that just opened it.
 fn lock_agent(agent_id: &str) -> Result<std::fs::File, StartupRefusal> {
@@ -1124,7 +1140,30 @@ fn lock_agent(agent_id: &str) -> Result<std::fs::File, StartupRefusal> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)
-        .map_err(|e| StartupRefusal::new(format!("cannot open agent lock {path}: {e}")))?;
+        .map_err(|e| {
+            StartupRefusal::new(if e.raw_os_error() == Some(libc::ELOOP) {
+                format!("agent lock {path} is a symbolic link; refusing to follow it - remove it")
+            } else {
+                format!("cannot open agent lock {path}: {e}")
+            })
+        })?;
+    // Another local user can pre-create this name in shared /tmp. A lock we do
+    // not own or that others can write is not ours to trust, and holding it
+    // would let them (or a squatter) decide whether this agent id may start.
+    // The socket path in /tmp has the same exposure and predates this check
+    // (the SDKs and tooling address it by that name), so only the new file is
+    // hardened here; this refusal is deliberately not worded as "a peer holds it".
+    let meta = file
+        .metadata()
+        .map_err(|e| StartupRefusal::new(format!("cannot stat agent lock {path}: {e}")))?;
+    // SAFETY: geteuid has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    {
+        use std::os::unix::fs::MetadataExt;
+        lock_file_problem(meta.is_file(), meta.uid(), meta.mode(), euid).map_or(Ok(()), |why| {
+            Err(StartupRefusal::new(format!("agent lock {path} is unsafe: {why}")))
+        })?;
+    }
     // SAFETY: `file` owns a valid open descriptor for the duration of the call.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let err = std::io::Error::last_os_error();
@@ -1583,6 +1622,25 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    /// AAASM-6383: a lock file another user created, or others can write, is
+    /// refused with its own reason rather than read as a running peer.
+    #[test]
+    fn an_untrusted_lock_file_is_named_not_mistaken_for_a_peer() {
+        assert_eq!(super::lock_file_problem(true, 1000, 0o100600, 1000), None);
+        assert!(super::lock_file_problem(false, 1000, 0o600, 1000)
+            .unwrap()
+            .contains("regular"));
+        assert!(super::lock_file_problem(true, 0, 0o100600, 1000)
+            .unwrap()
+            .contains("owned by uid 0"));
+        assert!(super::lock_file_problem(true, 1000, 0o100660, 1000)
+            .unwrap()
+            .contains("writable"));
+        assert!(super::lock_file_problem(true, 1000, 0o100602, 1000)
+            .unwrap()
+            .contains("writable"));
     }
 
     /// A listener that never accepts must not hang the probe, and a path with
