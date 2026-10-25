@@ -104,6 +104,13 @@ impl Runtime {
                 );
                 return false;
             }
+            // Lost the health-port race. Detected from the log so it works whether
+            // or not the runtime also exits (it only does once a refusal exists).
+            if self.log_text().contains("failed to bind health server") {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return false;
+            }
             if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() && self.health_try().is_some() {
                 return true;
             }
@@ -190,7 +197,7 @@ fn a_runtime_with_no_policy_reports_ungoverned_and_says_all_calls_are_allowed() 
 #[test]
 fn a_runtime_with_policy_rules_but_no_lease_governance_says_exactly_that() {
     let rt = Runtime::spawn(
-        Some("[[rules]]\nname = \"block-exfil\"\nblocked_actions = [\"send_email\"]\n"),
+        Some("[[rules]]\nname = \"block-exfil\"\nblocked_actions = [\"NETWORK_CALL\"]\n"),
         &[],
     );
     let health = rt.health();
@@ -257,4 +264,22 @@ fn a_fail_open_gateway_is_flagged_in_health_and_the_log() {
     let closed = Runtime::spawn(None, &[("AA_GATEWAY_ENDPOINT", "http://127.0.0.1:9")]);
     assert_eq!(closed.health()["governance"]["gateway_fail_open"], false);
     assert!(!closed.log_text().contains("fails OPEN"));
+}
+
+#[test]
+fn rules_naming_no_real_action_type_do_not_make_a_runtime_governed() {
+    // "send_email" is not an ActionType name, so the evaluator can never match it.
+    let rt = Runtime::spawn(
+        Some("[[rules]]\nname = \"typo\"\nblocked_actions = [\"send_email\"]\n"),
+        &[],
+    );
+    let health = rt.health();
+    let log = rt.log_text();
+    assert_eq!(health["status"], "ungoverned", "{health}");
+    assert_eq!(health["governance"]["local_rule_count"], 0);
+    assert!(
+        log.contains("match nothing"),
+        "the load must warn about the dead entry:\n{log}"
+    );
+    assert!(log.contains("no effective local policy rules"), "{log}");
 }
