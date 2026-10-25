@@ -169,7 +169,8 @@ impl SqliteBackend {
             }
         }
         // Created `0600` before SQLite opens it, so the `-wal`/`-shm` sidecars
-        // inherit that mode instead of the umask's.
+        // are expected to inherit that mode instead of the umask's (verified on
+        // macOS, unverified on Linux; they are tightened afterwards regardless).
         // A literal `:memory:` (or an empty path) is not a file to create.
         if names_a_file(&path) {
             super::private_fs::ensure_private_file(&path)
@@ -1010,15 +1011,17 @@ mod tests {
                 std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
             }
         }
-        // A root-run test host ignores file modes; the assertion is only about
-        // `open` not failing in the pre-create step.
-        let r = SqliteBackend::open(&SqliteConfig { path: path.clone() }).await;
-        if let Err(e) = &r {
-            assert!(
-                !e.to_string().contains("failed to create"),
-                "pre-create must not fail on an existing read-only file: {e}"
-            );
+        // A root-run host ignores file modes, so the premise does not hold there.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
         }
+        let r = SqliteBackend::open(&SqliteConfig { path: path.clone() }).await;
+        assert!(
+            r.is_ok(),
+            "an existing read-only database must still open: {:?}",
+            r.err()
+        );
     }
 
     /// A literal `:memory:` (or an empty path) is not a file to pre-create.

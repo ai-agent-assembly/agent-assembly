@@ -21,8 +21,11 @@
 //!   is left exactly as the operator made it; such deployments keep their own
 //!   modes by configuring their own directory.
 //!
-//! SQLite creates the `-wal` and `-shm` sidecars with the permissions of the main
-//! database file, so a database pre-created `0600` gets `0600` sidecars.
+//! SQLite is expected to create the `-wal` and `-shm` sidecars with the permissions
+//! of the main database file, so a database pre-created `0600` should get `0600`
+//! sidecars (observed on macOS, unverified on Linux). The sidecars of a database in
+//! a default location are tightened afterwards regardless
+//! ([`tighten_sqlite_family_if_default`]).
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -69,7 +72,10 @@ pub fn create_private_dir_all_in(path: &Path, defaults: &[PathBuf]) -> io::Resul
     std::fs::create_dir_all(path)?;
     for ancestor in path.ancestors() {
         if defaults.iter().any(|d| d == ancestor) {
-            tighten_dir_if_owned(ancestor)?;
+            // Best effort: the directory now exists and is usable. A failure to
+            // tighten an older, looser one (read-only mount, a mode that forbids
+            // opening it) must not turn a successful create into a failure.
+            let _ = tighten_dir_if_owned(ancestor);
         }
     }
     Ok(())
@@ -261,6 +267,23 @@ mod tests {
 
         create_private_dir_all_in(&other, &defaults).unwrap();
         assert_eq!(mode(&other), 0o775, "non-default dir untouched");
+    }
+
+    #[test]
+    fn a_failure_to_tighten_does_not_fail_the_create() {
+        // An owned default dir whose mode forbids opening it: tightening it errors
+        // (EACCES), but creating inside the existing directory tree still succeeds.
+        let tmp = tempfile::tempdir().unwrap();
+        let dflt = tmp.path().join(".aasm");
+        std::fs::create_dir(&dflt).unwrap();
+        chmod(&dflt, 0o000);
+        let r = create_private_dir_all_in(&dflt, std::slice::from_ref(&dflt));
+        let direct = tighten_dir_if_owned(&dflt);
+        chmod(&dflt, 0o700);
+        if unsafe { libc::geteuid() } != 0 {
+            assert!(direct.is_err(), "premise: tightening this directory fails");
+        }
+        assert!(r.is_ok(), "{r:?}");
     }
 
     #[test]

@@ -674,7 +674,9 @@ async fn open_gateway_db(db_path: &Path) -> Option<sqlx::SqlitePool> {
             return None;
         }
     }
-    // Created `0600` before SQLite opens it so its `-wal`/`-shm` sidecars inherit that.
+    // Created `0600` before SQLite opens it; SQLite is expected to give its
+    // `-wal`/`-shm` sidecars the main file's mode (verified on macOS only, not
+    // on Linux), and they are tightened afterwards below regardless.
     if let Err(e) = crate::storage::private_fs::ensure_private_file(db_path).await {
         tracing::warn!(error = %e, path = %db_path.display(), "failed to create gateway DB file — DB escalation scheduler disabled");
         return None;
