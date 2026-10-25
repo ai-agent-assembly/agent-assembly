@@ -188,12 +188,20 @@ name to keep an agent id from starting. Residual: both files live in shared `/tm
 the SDKs and tooling address `/tmp/aa-runtime-<agent id>.sock` by that name; the socket path
 could already be squatted before this check existed, and still can be.
 
+Recovery: a lock or socket file for the same `AA_AGENT_ID` that is owned by another user (for
+example left by a `sudo` run) makes a non-root start refuse; remove it as that user or as root, or
+use a different `AA_AGENT_ID`. A `/tmp` reaper (macOS periodic cleanup, systemd-tmpfiles) can unlink
+the lock file under a running runtime; the socket probe is then the only protection. The lock is held
+until the process exits, not only until the runtime's main loop returns, and a shutting-down runtime
+unlinks the socket only if it is still the file it bound.
+
 Limits: the default `AA_METRICS_ADDR` (`0.0.0.0:8080`) is non-loopback without
 `AA_METRICS_ALLOW_REMOTE=1`, so under the defaults no health server is started and only the
 agent-id protection applies. The health port is bound at startup but served at the end of it,
 so use `GET /health` returning 200, not a TCP connect, to detect readiness. A runtime
 older than this check does not take the lock, so racing one at startup can still lose its
-socket path, and on macOS a full accept backlog reads as a stale socket.
+socket path. On macOS a full accept backlog is reported as a refused connection and so reads as stale. A probe that cannot tell (an over-full backlog elsewhere, no answer within 500 ms, an over-long path)
+refuses rather than guessing stale; the no-answer-within-500 ms branch has no test that executes it.
 
 To additionally build and run the optional egress proxy on `:8899`:
 
