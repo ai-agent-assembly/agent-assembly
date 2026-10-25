@@ -321,6 +321,17 @@ Config is valid: agent-assembly.toml.example
 
 A valid file exits `0`; an invalid one reports the problem and exits non-zero.
 
+## Local state permissions
+
+The local gateway keeps its state in `~/.aasm` (registry, audit database, pid files),
+`~/.aa` (escalation database, budget file) and the default audit directory
+(`<data dir>/aa/audit`). These are created owner-only (`0700` directories, `0600` files)
+regardless of your umask, and a default location an older version left readable by group
+or others is tightened to owner-only the next time the gateway starts, provided you own it
+and it is not a symlink. Locations you point elsewhere (`AA_GATEWAY_DB_PATH`, `AA_AUDIT_DIR`,
+a `storage` path in `agent-assembly.toml`) are never changed: if you share one between
+users, create and permission that directory yourself.
+
 ## Next
 
 You are configured. Walk through starting a gateway and observing an agent in

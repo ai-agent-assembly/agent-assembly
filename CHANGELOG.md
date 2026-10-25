@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Local state is owner-only (AAASM-6387)** — `~/.aasm`, `~/.aa` and the default audit
+  directory were created `0755` and their SQLite databases (`local.db`, `audit.db`,
+  `aa_gateway.db` with `-wal`/`-shm`), `budget.json` and the audit JSONL `0644`, readable by
+  any local user. They are now created `0700`/`0600` whatever the umask, through one helper
+  (`aa_core::private_fs`). **Behaviour change:** an *existing* default location left loose by an
+  older version is tightened (group/other bits removed, never added) when you own it and it
+  is not a symlink. Nothing outside those defaults is ever touched, so a group-shared
+  deployment must keep its data elsewhere (`AA_GATEWAY_DB_PATH`, `AA_AUDIT_DIR`, the configured
+  storage path). `aasm start` also never prints the generated admin API key in full on this
+  version (the installed `rc.6` did).
+
 ### Changed
 
 - **`aasm run` wires real authority inputs into `authority_gate` (AAASM-6277,
