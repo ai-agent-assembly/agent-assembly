@@ -258,16 +258,28 @@ impl Runtime {
                 self.port = port;
                 continue;
             }
-            // The IPC socket appears before the health server is spawned; wait for both.
-            if self.socket.exists()
-                && UnixStream::connect(&self.socket).await.is_ok()
-                && std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok()
-            {
+            // The IPC socket appears before the health server is spawned, and the
+            // health port is held (so a bare TCP connect succeeds) from before
+            // either (AAASM-6383); wait for a real `/health` answer.
+            if self.socket.exists() && UnixStream::connect(&self.socket).await.is_ok() && self.health_answers() {
                 return;
             }
             assert!(Instant::now() < deadline, "runtime never became ready");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// `/health` answers 200 (not merely accepts a connection).
+    fn health_answers(&self) -> bool {
+        use std::io::{Read, Write};
+        let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", self.port)) else {
+            return false;
+        };
+        let _ = s.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = s.write_all(b"GET /health HTTP/1.0\r\nHost: x\r\n\r\n");
+        let mut head = String::new();
+        let _ = s.read_to_string(&mut head);
+        head.starts_with("HTTP/1.0 200") || head.starts_with("HTTP/1.1 200")
     }
 
     fn log_text(&self) -> String {
