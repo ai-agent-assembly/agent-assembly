@@ -155,8 +155,30 @@ mod imp {
         }
     }
 
+    /// The record goes next to existing siblings, so its directory must already
+    /// exist; creating it here would pick a mode for a directory the operator
+    /// never named. Said up front because the underlying error is a bare
+    /// "No such file or directory" with no path.
+    fn require_state_dir(path: &std::path::Path) -> Result<(), String> {
+        let dir = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => return Ok(()),
+        };
+        if dir.is_dir() {
+            return Ok(());
+        }
+        Err(format!(
+            "the directory {} for --state {} does not exist; it must exist before `aasm lease init` (create it with \
+             `mkdir -p {}` and keep it private to your user)",
+            dir.display(),
+            path.display(),
+            dir.display()
+        ))
+    }
+
     pub fn init(a: &InitArgs) -> Result<String, Failure> {
         let digest = policy_digest(a)?;
+        require_state_dir(&a.state)?;
         let s = state::init_run(&a.state, &a.subject, &digest, now_unix(), a.force).map_err(|e| e.to_string())?;
         let prefix = s.lease_id_prefix();
         Ok(format!(
@@ -263,7 +285,7 @@ mod imp {
     }
 
     pub fn revoke(a: &RevokeArgs) -> Result<String, Failure> {
-        let s = state::revoke_ids(&a.state, &a.lease_id).map_err(|e| e.to_string())?;
+        let s = state::revoke_issued_ids(&a.state, &a.lease_id).map_err(|e| e.to_string())?;
         let mut out = format!("generation {}\n", s.generation());
         if let Some(base) = &a.wait_health {
             let note = wait_for_runtime(
