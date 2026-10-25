@@ -116,6 +116,8 @@ impl IpcServer {
         let semaphore = Arc::new(Semaphore::new(self.config.max_connections));
         let listener = self.listener;
         let socket_path = self.config.socket_path.clone();
+        // Identity of the socket file this server bound, for the shutdown unlink.
+        let bound_identity = socket_identity(&socket_path);
         let inbound_channel_capacity = self.config.inbound_channel_capacity;
         let max_connections = self.config.max_connections;
         // Monotonically increasing connection ID — unique per accepted connection.
@@ -220,11 +222,35 @@ impl IpcServer {
         // AAASM-6146: `tokio::fs` — same reason as the DI-API accept loop: this
         // is the tail of an `async fn` running on a runtime worker. Still
         // best-effort.
-        if let Err(e) = tokio::fs::remove_file(&socket_path).await {
-            tracing::warn!(error = %e, "failed to remove socket file on shutdown");
+        //
+        // AAASM-6383: only if the path is still the file this server bound. A
+        // successor started during a slow shutdown (the process lives up to the
+        // shutdown timeout) may already own a fresh socket at this path, and
+        // unlinking it would orphan the successor's live listener.
+        let cleanup_path = socket_path.clone();
+        match tokio::task::spawn_blocking(move || remove_socket_if_ours(&cleanup_path, bound_identity)).await {
+            Ok(Ok(true)) | Ok(Ok(false)) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "failed to remove socket file on shutdown"),
+            Err(e) => tracing::warn!(error = %e, "socket cleanup task failed"),
         }
 
         tracing::info!("IPC server accept loop stopped");
+    }
+}
+
+/// `(device, inode)` of whatever is at `path`, if anything.
+fn socket_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// Unlink `path` only if it is still the file identified by `bound`. Returns
+/// whether it was removed. A path that is gone, or now names a different file,
+/// is left alone.
+fn remove_socket_if_ours(path: &std::path::Path, bound: Option<(u64, u64)>) -> std::io::Result<bool> {
+    match (bound, socket_identity(path)) {
+        (Some(bound), Some(now)) if bound == now => std::fs::remove_file(path).map(|()| true),
+        _ => Ok(false),
     }
 }
 
@@ -452,6 +478,35 @@ pub(super) async fn run_writer(
 
 #[cfg(test)]
 mod tests {
+    /// AAASM-6383: shutdown unlinks the socket only while it is still the file
+    /// this server bound; a successor's fresh socket at the same path survives.
+    #[test]
+    fn shutdown_unlink_leaves_a_successors_socket_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.sock");
+        let first = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let bound = super::socket_identity(&path);
+        assert!(bound.is_some());
+
+        // Unchanged: ours, removed.
+        let twin = dir.path().join("t.sock");
+        let _t = std::os::unix::net::UnixListener::bind(&twin).unwrap();
+        assert!(super::remove_socket_if_ours(&twin, super::socket_identity(&twin)).unwrap());
+        assert!(!twin.exists());
+
+        // Replaced by a successor (old file unlinked, new listener bound while
+        // the old listener is still open, so the inode cannot be reused).
+        std::fs::remove_file(&path).unwrap();
+        let _successor = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(!super::remove_socket_if_ours(&path, bound).unwrap());
+        assert!(path.exists(), "the successor's socket must not be removed");
+        drop(first);
+
+        // Already gone: nothing to do, not an error.
+        std::fs::remove_file(&path).unwrap();
+        assert!(!super::remove_socket_if_ours(&path, bound).unwrap());
+    }
+
     use super::*;
     use crate::ipc::codec::{TAG_EVENT_REPORT, TAG_HEARTBEAT, TAG_POLICY_QUERY};
     use crate::ipc::message::IpcFrame;
