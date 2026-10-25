@@ -182,7 +182,13 @@ reports `status: "ungoverned"` and this runtime evaluates and allows every call;
 `governance.state` field and startup log say how to govern it (`AA_LEASE_POLICY`,
 `AA_POLICY_PATH` or `AA_GATEWAY_ENDPOINT`). If the lease gate trips (state record corrupted
 or removed) `status` becomes `"degraded"` and `governance.state` `"denied_all"`: every call is
-denied. Other interception layers (eBPF is observe-only; the proxy only enforces through a
+denied. `/health` answers HTTP 200 for `ungoverned` and `degraded` too, so an orchestrator's
+liveness/readiness probe keeps passing while every call is allowed or denied; alert on
+`status != "healthy"` or on `governance.state` instead. A fail-closed gateway that is installed but
+unreachable denies every call while `status` stays `"healthy"`, and a fail-open one that is dead with
+no effective local rules allows every call (visible only as `gateway_fail_open`). A local rule counts
+only if it names a real action type (`TOOL_CALL`, `NETWORK_CALL`, `FILE_OPERATION`, ...; exact and
+case-sensitive); unknown names match nothing and are warned about when the policy loads. Other interception layers (eBPF is observe-only; the proxy only enforces through a
 gateway endpoint) add no decision source of their own here.
 
 To additionally build and run the optional egress proxy on `:8899`:

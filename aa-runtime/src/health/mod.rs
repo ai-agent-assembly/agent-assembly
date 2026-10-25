@@ -4,10 +4,16 @@
 //!
 //! `status` answers "is this process up". It is deliberately *not* overloaded
 //! to answer "is anything protected" — conflating the two is how an operator
-//! ends up reading a green health check as evidence of governance. The one
-//! exception is a runtime with no decision source at all, which reports
-//! `ungoverned` rather than `healthy` (AAASM-6384): it is up, but "healthy"
-//! beside a runtime that allows every call is exactly that misreading. The
+//! ends up reading a green health check as evidence of governance. The two
+//! exceptions are about whether anything decides on calls (AAASM-6384):
+//! `ungoverned` (nothing is installed to decide, so every call is allowed)
+//! and `degraded` (the lease gate tripped and denies every call). Both still
+//! answer HTTP 200, so orchestrator liveness/readiness keeps passing; alert on
+//! `status != "healthy"` or on `governance.state`. Limits: `healthy` means a
+//! decision source is *installed*, not that it works. A fail-closed gateway
+//! that is installed but unreachable denies every call while `status` stays
+//! `healthy`; a fail-open one that is dead, with no effective local rules,
+//! allows every call and shows only as `governance.gateway_fail_open`. The
 //! `protection` section (AAASM-5535) answers the second question separately,
 //! in the ADR 0033 §6 vocabulary.
 //!
