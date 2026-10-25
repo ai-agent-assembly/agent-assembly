@@ -28,7 +28,7 @@ pub fn pid_path() -> PathBuf {
 pub fn write_pid(pid: u32, listen: &str, started_at: &str) -> io::Result<()> {
     let path = pid_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        aa_core::private_fs::create_private_dir_all(parent)?;
     }
     let content = format!("{pid}\n{listen}\n{started_at}\n");
     std::fs::write(&path, content)
