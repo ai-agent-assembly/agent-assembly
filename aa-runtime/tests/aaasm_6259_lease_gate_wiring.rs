@@ -665,6 +665,11 @@ async fn live_corruption_or_deletion_denies_everything_and_never_heals() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(lease_denied(&rt.tool("calc").await), "{name}: healed after restore");
         assert_eq!(rt.lease_governance().unwrap()["state"], "denied_all");
+        // AAASM-6384: the top level must not keep saying healthy / lease_governed
+        // while every call is denied.
+        let health = rt.health();
+        assert_eq!(health["status"], "degraded", "{name}: {health}");
+        assert_eq!(health["governance"]["state"], "denied_all", "{name}");
         assert_eq!(
             calls.load(Ordering::SeqCst),
             before,

@@ -29,14 +29,25 @@ struct Runtime {
 }
 
 impl Runtime {
-    /// `policy_toml`: `None` leaves `AA_POLICY_PATH` unset, so the runtime looks
-    /// for the default `/etc/aa/policy.toml` (absent on a dev host) - the exact
-    /// "only AA_AGENT_ID" repro.
-    fn spawn(policy_toml: Option<&str>) -> Self {
+    /// `policy_toml`: `None` points `AA_POLICY_PATH` at a file that does not
+    /// exist (not the default `/etc/aa/policy.toml`, which a dev host could have).
+    /// `env` is extra environment for the runtime.
+    fn spawn(policy_toml: Option<&str>, env: &[(&str, &str)]) -> Self {
         static WARM: std::sync::Once = std::sync::Once::new();
         WARM.call_once(|| {
             let _ = Command::new(env!("CARGO_BIN_EXE_aa-runtime")).arg("--version").output();
         });
+        // `free_port` can lose a race for the port between probing and binding
+        // (the runtime now refuses to start then); retry that one failure.
+        for _ in 0..4 {
+            if let Some(rt) = Self::try_spawn(policy_toml, env) {
+                return rt;
+            }
+        }
+        panic!("could not find a free health port");
+    }
+
+    fn try_spawn(policy_toml: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
         let agent = format!(
             "s6384-{}-{}",
             std::process::id(),
@@ -50,18 +61,21 @@ impl Runtime {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("runtime.log");
         let out = std::fs::File::create(&log).unwrap();
+        let policy_path = dir.path().join("policy.toml");
+        if let Some(toml) = policy_toml {
+            std::fs::write(&policy_path, toml).unwrap();
+        }
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_aa-runtime"));
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("AA_AGENT_ID", &agent)
+            .env("AA_POLICY_PATH", &policy_path)
             .env("AA_METRICS_ADDR", format!("127.0.0.1:{port}"))
             .env("AA_AUDIT_BUFFER_PATH", dir.path().join("audit.db"))
             .env("RUST_LOG", "info")
             .env("AA_RUNTIME_SHUTDOWN_TIMEOUT_SECS", "3");
-        if let Some(toml) = policy_toml {
-            let path = dir.path().join("policy.toml");
-            std::fs::write(&path, toml).unwrap();
-            cmd.env("AA_POLICY_PATH", path);
+        for (k, v) in env {
+            cmd.env(k, v);
         }
         let child = cmd
             .stdout(Stdio::from(out.try_clone().unwrap()))
@@ -75,22 +89,36 @@ impl Runtime {
             log,
             _dir: dir,
         };
-        rt.wait_ready();
-        rt
+        rt.wait_ready().then_some(rt)
     }
 
-    fn wait_ready(&mut self) {
+    /// `false` only when the runtime lost the health-port race and exited.
+    fn wait_ready(&mut self) -> bool {
         let deadline = Instant::now() + Duration::from_secs(120);
         loop {
             if let Some(status) = self.child.try_wait().unwrap() {
-                panic!("runtime exited early with {status}:\n{}", self.log_text());
+                let text = self.log_text();
+                assert!(
+                    text.contains("failed to bind health server"),
+                    "runtime exited early with {status}:\n{text}"
+                );
+                return false;
             }
-            if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
+            if std::net::TcpStream::connect(("127.0.0.1", self.port)).is_ok() && self.health_try().is_some() {
+                return true;
             }
             assert!(Instant::now() < deadline, "runtime never became ready");
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    fn health_try(&self) -> Option<serde_json::Value> {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", self.port)).ok()?;
+        s.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
+        s.write_all(b"GET /health HTTP/1.0\r\nHost: x\r\n\r\n").ok()?;
+        let mut body = String::new();
+        s.read_to_string(&mut body).ok()?;
+        serde_json::from_str(body.split("\r\n\r\n").nth(1)?).ok()
     }
 
     fn log_text(&self) -> String {
@@ -117,13 +145,14 @@ impl Drop for Runtime {
 
 #[test]
 fn a_runtime_with_no_policy_reports_ungoverned_and_says_all_calls_are_allowed() {
-    let rt = Runtime::spawn(None);
+    let rt = Runtime::spawn(None, &[]);
     let health = rt.health();
     let log = rt.log_text();
 
     assert_eq!(health["status"], "ungoverned", "{health}");
     assert_eq!(health["governance"]["state"], "ungoverned");
     assert_eq!(health["governance"]["local_rule_count"], 0);
+    assert_eq!(health["governance"]["gateway_installed"], false);
     assert!(
         health.get("lease_governance").is_none(),
         "no lease_governance key when not governed"
@@ -143,10 +172,7 @@ fn a_runtime_with_no_policy_reports_ungoverned_and_says_all_calls_are_allowed() 
     }
 
     assert!(log.contains("UNGOVERNED"), "startup must say so:\n{log}");
-    assert!(
-        log.contains("ALLOWED"),
-        "startup must say every call is allowed:\n{log}"
-    );
+    assert!(log.contains("ALLOWS"), "startup must say every call is allowed:\n{log}");
     assert!(
         log.contains("AA_LEASE_POLICY") && log.contains("AA_POLICY_PATH"),
         "startup must name how to govern:\n{log}"
@@ -163,9 +189,10 @@ fn a_runtime_with_no_policy_reports_ungoverned_and_says_all_calls_are_allowed() 
 
 #[test]
 fn a_runtime_with_policy_rules_but_no_lease_governance_says_exactly_that() {
-    let rt = Runtime::spawn(Some(
-        "[[rules]]\nname = \"block-exfil\"\nblocked_actions = [\"send_email\"]\n",
-    ));
+    let rt = Runtime::spawn(
+        Some("[[rules]]\nname = \"block-exfil\"\nblocked_actions = [\"send_email\"]\n"),
+        &[],
+    );
     let health = rt.health();
     let log = rt.log_text();
 
@@ -187,4 +214,47 @@ fn a_runtime_with_policy_rules_but_no_lease_governance_says_exactly_that() {
         !log.contains("UNGOVERNED"),
         "a runtime with rules is not ungoverned:\n{log}"
     );
+}
+
+#[test]
+fn an_invalid_gateway_endpoint_installs_no_gateway_and_is_still_ungoverned() {
+    // An endpoint that cannot be parsed yields no gateway client, so calls fall
+    // through to (absent) local rules: configured is not installed.
+    let rt = Runtime::spawn(None, &[("AA_GATEWAY_ENDPOINT", "not a uri \u{1}")]);
+    let health = rt.health();
+    let log = rt.log_text();
+    assert_eq!(health["status"], "ungoverned", "{health}");
+    assert_eq!(health["governance"]["gateway_installed"], false);
+    assert!(log.contains("UNGOVERNED"), "{log}");
+}
+
+#[test]
+fn rules_that_decide_nothing_do_not_make_a_runtime_governed() {
+    let rt = Runtime::spawn(Some("[[rules]]\nname = \"empty\"\nblocked_actions = []\n"), &[]);
+    let health = rt.health();
+    assert_eq!(health["status"], "ungoverned", "{health}");
+    assert_eq!(health["governance"]["local_rule_count"], 0);
+}
+
+#[test]
+fn a_fail_open_gateway_is_flagged_in_health_and_the_log() {
+    // Valid endpoint, nothing listening; fail-closed explicitly turned off.
+    let rt = Runtime::spawn(
+        None,
+        &[
+            ("AA_GATEWAY_ENDPOINT", "http://127.0.0.1:9"),
+            ("AA_GATEWAY_FAIL_CLOSED", "false"),
+        ],
+    );
+    let health = rt.health();
+    let log = rt.log_text();
+    assert_eq!(health["governance"]["state"], "policy_only", "{health}");
+    assert_eq!(health["governance"]["gateway_installed"], true);
+    assert_eq!(health["governance"]["gateway_fail_open"], true);
+    assert!(log.contains("fails OPEN"), "{log}");
+
+    // And the default stays fail-closed, unflagged.
+    let closed = Runtime::spawn(None, &[("AA_GATEWAY_ENDPOINT", "http://127.0.0.1:9")]);
+    assert_eq!(closed.health()["governance"]["gateway_fail_open"], false);
+    assert!(!closed.log_text().contains("fails OPEN"));
 }
