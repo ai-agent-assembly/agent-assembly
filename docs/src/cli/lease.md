@@ -81,11 +81,16 @@ aa-runtime
 * `AA_AGENT_ID` must equal `--subject`, or the runtime refuses to start.
 * `AA_LEASE_POLICY` is what turns governed mode on, and must be the policy the record was
   created from; editing the policy afterwards needs a new `init --force`.
-* `AA_METRICS_ADDR` must be a loopback address: the default `0.0.0.0:8080` is refused.
+* `AA_METRICS_ADDR` must be a loopback address: the runtime's default `0.0.0.0:8080` is refused
+  unless you opt in to remote exposure with `AA_METRICS_ALLOW_REMOTE=1`. (`8080` here is the
+  runtime's health port, not the `aasm` API, which `aasm start` serves on `7391`.)
 
 `curl http://127.0.0.1:9091/health` then reports `lease_governance` with the record's
 `run_id` and `"state": "governed"`. This example is checked by
-`aa-cli/tests/lease_docs_example.rs`, which extracts the two blocks above and runs them.
+`aa-cli/tests/lease_docs_example.rs`, which extracts the two blocks above, validates the
+policy, runs `aasm lease init` on it, asks the runtime's own gate whether the tools are
+admitted, and checks that the recipe names the same variables and values (with `$PWD`
+expanded) as the command `init` prints. It does not start `aa-runtime`.
 
 ## The record
 
@@ -189,7 +194,8 @@ unchanged. A missing or corrupt record is an error; `revoke` never creates one.
 
 Without `--wait-health` the command returns once the record is written; a running
 governed runtime applies it within about 100 ms but gives no acknowledgement. With
-`--wait-health http://127.0.0.1:8080` (the runtime's `AA_METRICS_ADDR`; also read from
+`--wait-health http://127.0.0.1:9091` (the runtime's `AA_METRICS_ADDR`, as in the
+[worked example](#worked-example); also read from
 `AA_LEASE_HEALTH_URL`) it polls `GET /health` and returns only when
 `lease_governance.generation` reaches the new generation, or `state` is `denied_all`
 (everything is already denied). It exits non-zero if that does not happen within

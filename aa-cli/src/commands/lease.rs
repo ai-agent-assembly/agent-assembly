@@ -193,12 +193,17 @@ mod imp {
     /// only so the operator copies the values this very command validated.
     pub(super) fn runtime_recipe(subject: &str, policy: Option<&std::path::Path>, state: &std::path::Path) -> String {
         let absolute = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let policy_word = match policy {
-            Some(p) => shell_word(&absolute(p).display().to_string()),
-            None => "<the policy file this digest was taken from>".to_string(),
+        // With only a digest the file is unknown. A `<placeholder>` inside the
+        // command would be a shell redirect, so name a variable and say so in a comment.
+        let (policy_word, policy_note) = match policy {
+            Some(p) => (shell_word(&absolute(p).display().to_string()), ""),
+            None => (
+                "\"$POLICY_FILE\"".to_string(),
+                "# set POLICY_FILE to the policy file this digest was taken from\n",
+            ),
         };
         format!(
-            "to start a governed runtime for this run:\n\
+            "to start a governed runtime for this run:\n{policy_note}\
              \x20 AA_AGENT_ID={} \\\n\
              \x20 AA_LEASE_POLICY={} \\\n\
              \x20 AA_LEASE_STATE={} \\\n\

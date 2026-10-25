@@ -167,6 +167,18 @@ fn the_documented_recipe_is_what_init_prints() {
     assert_eq!(printed["AA_AGENT_ID"], SUBJECT);
     assert_eq!(doc["AA_METRICS_ADDR"], printed["AA_METRICS_ADDR"]);
     assert!(doc["AA_METRICS_ADDR"].starts_with("127.0.0.1:"), "must be loopback");
+    // The page's `$PWD` paths, expanded for the directory the test ran in, are the
+    // ones `init` printed.
+    let pwd = std::fs::canonicalize(r.dir.path()).unwrap();
+    let expand = |v: &str| PathBuf::from(v.replace("$PWD", &pwd.display().to_string()));
+    assert_eq!(
+        expand(&doc["AA_LEASE_POLICY"]),
+        PathBuf::from(&printed["AA_LEASE_POLICY"])
+    );
+    assert_eq!(
+        expand(&doc["AA_LEASE_STATE"]),
+        PathBuf::from(&printed["AA_LEASE_STATE"])
+    );
     // The printed paths are the ones this command just validated.
     assert_eq!(
         Path::new(&printed["AA_LEASE_STATE"]),

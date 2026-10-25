@@ -445,3 +445,16 @@ fn init_prints_the_runtime_start_recipe_for_this_record() {
     );
     assert!(stdout.contains("aa-runtime"), "{stdout}");
 }
+
+/// A digest-only init cannot know the policy file; the recipe must stay a runnable
+/// command (a `<placeholder>` would be a shell redirect).
+#[test]
+fn a_digest_only_init_recipe_has_no_shell_redirect() {
+    let (d, p) = state_dir();
+    let out = init(d.path(), &p, &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("# set POLICY_FILE"), "{stdout}");
+    assert!(stdout.contains("AA_LEASE_POLICY=\"$POLICY_FILE\""), "{stdout}");
+    let command: String = stdout.lines().filter(|l| l.starts_with("  ")).collect();
+    assert!(!command.contains('<') && !command.contains('>'), "{command}");
+}
