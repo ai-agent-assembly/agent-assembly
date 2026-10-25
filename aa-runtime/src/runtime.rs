@@ -221,6 +221,18 @@ fn load_policy(policy_path: &Option<std::path::PathBuf>) -> std::sync::Arc<crate
                     rule_count = rules.rules.len(),
                     "policy loaded"
                 );
+                for rule in &rules.rules {
+                    let unknown: Vec<&String> = rule.unmatchable_actions().collect();
+                    if !unknown.is_empty() {
+                        tracing::warn!(
+                            rule = %rule.name,
+                            unknown_actions = ?unknown,
+                            "policy rule names action types that no event carries (names are the \
+                             exact, case-sensitive ActionType names such as TOOL_CALL or \
+                             NETWORK_CALL); those entries match nothing"
+                        );
+                    }
+                }
                 rules
             }
             Ok(None) => {
@@ -1285,12 +1297,9 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     // Posture is derived from what is actually installed, so it comes after the
     // gateway client: an invalid AA_GATEWAY_ENDPOINT yields no client and must
     // not read as governed. A rule that blocks and requires approval for
-    // nothing is not a decision source.
-    let effective_rules = policy
-        .rules
-        .iter()
-        .filter(|r| !r.blocked_actions.is_empty() || !r.requires_approval_actions.is_empty())
-        .count();
+    // nothing is not a decision source, and neither is one naming only action types no event
+    // carries (`PolicyRule::is_effective` shares the evaluator's matching).
+    let effective_rules = policy.rules.iter().filter(|r| r.is_effective()).count();
     let posture = crate::posture::GovernancePosture::new(
         lease_status.is_some(),
         effective_rules,

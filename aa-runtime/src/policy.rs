@@ -25,6 +25,29 @@ pub struct PolicyRule {
     pub approval_timeout_secs: u32,
 }
 
+impl PolicyRule {
+    /// Entries in `blocked_actions` / `requires_approval_actions` that name no
+    /// real action type. The evaluator compares each entry verbatim to
+    /// `ActionType::as_str_name()` of the event, which is exactly the set
+    /// `ActionType::from_str_name` accepts (case-sensitive, no trimming), so an
+    /// entry failing this can never match an event.
+    pub fn unmatchable_actions(&self) -> impl Iterator<Item = &String> {
+        self.blocked_actions
+            .iter()
+            .chain(&self.requires_approval_actions)
+            .filter(|a| aa_proto::assembly::common::v1::ActionType::from_str_name(a).is_none())
+    }
+
+    /// Whether this rule can ever decide anything: at least one entry names a
+    /// real action type.
+    pub fn is_effective(&self) -> bool {
+        self.blocked_actions
+            .iter()
+            .chain(&self.requires_approval_actions)
+            .any(|a| aa_proto::assembly::common::v1::ActionType::from_str_name(a).is_some())
+    }
+}
+
 impl Default for PolicyRule {
     fn default() -> Self {
         Self {
@@ -108,6 +131,29 @@ mod tests {
             }],
         };
         assert!(!rules.is_empty());
+    }
+
+    #[test]
+    fn a_rule_is_effective_only_if_it_names_a_real_action_type() {
+        let rule = |blocked: &[&str], approval: &[&str]| PolicyRule {
+            blocked_actions: blocked.iter().map(|s| s.to_string()).collect(),
+            requires_approval_actions: approval.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(rule(&["NETWORK_CALL"], &[]).is_effective());
+        assert!(rule(&[], &["TOOL_CALL"]).is_effective());
+        assert!(rule(&["send_email", "FILE_OPERATION"], &[]).is_effective());
+        assert!(!rule(&[], &[]).is_effective());
+        assert!(!rule(&["send_email"], &[]).is_effective());
+        // Verbatim, like the evaluator: no case folding, no trimming.
+        assert!(!rule(&["network_call"], &[]).is_effective());
+        assert!(!rule(&[" NETWORK_CALL"], &[]).is_effective());
+        assert_eq!(
+            rule(&["send_email", "NETWORK_CALL"], &["nope"])
+                .unmatchable_actions()
+                .count(),
+            2
+        );
     }
 
     #[test]
