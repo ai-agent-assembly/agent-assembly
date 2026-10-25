@@ -202,6 +202,7 @@ impl Drop for Runtime {
         let _ = self.child.wait();
         if was_running {
             let _ = std::fs::remove_file(socket_for(&self.agent));
+            let _ = std::fs::remove_file(format!("/tmp/aa-runtime-{}.lock", self.agent));
         }
     }
 }
@@ -323,7 +324,8 @@ fn a_stopped_first_runtime_does_not_hang_or_lose_its_socket_to_a_second() {
     let agent = unique_agent();
     let mut first = Runtime::start_ready(&agent);
     let inode = std::fs::metadata(first.socket()).unwrap().ino();
-    // A SIGSTOPped runtime never accepts: the case a blocking probe hangs on.
+    // A SIGSTOPped first runtime still holds the agent lock, so the second is
+    // refused at the lock stage (the probe is not reached) and must not hang.
     first.signal(libc::SIGSTOP);
 
     let mut second = Runtime::spawn(&agent, free_port());
@@ -339,6 +341,8 @@ fn a_stopped_first_runtime_does_not_hang_or_lose_its_socket_to_a_second() {
 fn a_foreign_listener_that_never_accepts_holds_the_path_against_a_runtime() {
     // No lock holder exists, so only the connect probe stands between this
     // runtime and `IpcServer::bind` deleting the path: the pre-lock-peer case.
+    // The connect completes through the listener's backlog (Ok), so the 500 ms
+    // deadline is not what refuses here.
     let agent = unique_agent();
     let path = socket_for(&agent);
     let _ = std::fs::remove_file(&path);
