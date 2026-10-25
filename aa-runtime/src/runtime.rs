@@ -1070,8 +1070,13 @@ struct Claims {
 enum SocketProbe {
     /// Nothing can be listening: the file is absent or a dead runtime left it.
     Stale,
-    /// A listener answered, or the probe could not prove otherwise.
+    /// A listener accepted the connection.
     Live,
+    /// The probe could not tell (full backlog, no answer within the deadline, a
+    /// path `connect` rejects such as one over the `sun_path` limit, a file that
+    /// is not a socket, a permission error). Treated as held: guessing "stale"
+    /// would hand the path to `IpcServer::bind`, which deletes it.
+    Undetermined(String),
 }
 
 /// Only `NotFound` and `ConnectionRefused` prove a stale path. Anything else
@@ -1082,6 +1087,7 @@ enum SocketProbe {
 /// this probe, is what covers that case for current binaries.)
 fn classify_probe(result: &std::io::Result<()>) -> SocketProbe {
     match result {
+        Ok(()) => SocketProbe::Live,
         Err(e)
             if matches!(
                 e.kind(),
@@ -1090,7 +1096,7 @@ fn classify_probe(result: &std::io::Result<()>) -> SocketProbe {
         {
             SocketProbe::Stale
         }
-        _ => SocketProbe::Live,
+        Err(e) => SocketProbe::Undetermined(e.to_string()),
     }
 }
 
@@ -1105,7 +1111,7 @@ fn probe_socket(path: &std::path::Path) -> SocketProbe {
     });
     match rx.recv_timeout(std::time::Duration::from_millis(500)) {
         Ok(result) => classify_probe(&result),
-        Err(_) => SocketProbe::Live,
+        Err(_) => SocketProbe::Undetermined("no answer within 500 ms".to_string()),
     }
 }
 
@@ -1201,12 +1207,23 @@ fn claim_singleton(config: &RuntimeConfig) -> Result<Claims, StartupRefusal> {
     let agent_lock = lock_agent(&config.agent_id)?;
 
     let socket_path = crate::ipc::server::IpcServerConfig::from_runtime_config(config).socket_path;
-    if probe_socket(&socket_path) == SocketProbe::Live {
-        return Err(StartupRefusal::new(format!(
-            "IPC socket {} is held by a live listener (or one that could not be probed) - another \
-             aa-runtime is already serving this agent id; stop it or use a different AA_AGENT_ID",
-            socket_path.display()
-        )));
+    match probe_socket(&socket_path) {
+        SocketProbe::Stale => {}
+        SocketProbe::Live => {
+            return Err(StartupRefusal::new(format!(
+                "IPC socket {} is held by a live listener - another aa-runtime is already serving \
+                 this agent id; stop it or use a different AA_AGENT_ID",
+                socket_path.display()
+            )));
+        }
+        SocketProbe::Undetermined(why) => {
+            return Err(StartupRefusal::new(format!(
+                "cannot tell whether IPC socket {} is in use ({why}); refusing rather than risk \
+                 replacing a live runtime's socket. If it is a leftover owned by another user \
+                 (for example from sudo), remove it",
+                socket_path.display()
+            )));
+        }
     }
 
     let addr: std::net::SocketAddr = config.metrics_addr.parse().map_err(|e| {
@@ -1303,6 +1320,11 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
         _agent_lock,
         health_listener,
     } = claims;
+    // Held until the process exits, not until `run()` returns: IPC and other
+    // tasks can outlive `run()` for up to the shutdown timeout, and a successor
+    // that took a released lock in that window would have its fresh socket
+    // orphaned by the late tail of this process.
+    std::mem::forget(_agent_lock);
 
     // Install global Prometheus metrics recorder.
     let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -1614,33 +1636,28 @@ mod tests {
             ErrorKind::PermissionDenied,
             ErrorKind::TimedOut,
             ErrorKind::Interrupted,
+            ErrorKind::InvalidInput,
             ErrorKind::Other,
         ] {
-            assert_eq!(
-                super::classify_probe(&Err(Error::from(kind))),
-                super::SocketProbe::Live,
+            assert!(
+                matches!(
+                    super::classify_probe(&Err(Error::from(kind))),
+                    super::SocketProbe::Undetermined(_)
+                ),
                 "{kind:?}"
             );
         }
     }
 
-    /// AAASM-6383: a lock file another user created, or others can write, is
-    /// refused with its own reason rather than read as a running peer.
+    /// A path `connect` rejects (here: longer than `sun_path`) is reported as
+    /// undetermined, not as "held by a live listener".
     #[test]
-    fn an_untrusted_lock_file_is_named_not_mistaken_for_a_peer() {
-        assert_eq!(super::lock_file_problem(true, 1000, 0o100600, 1000), None);
-        assert!(super::lock_file_problem(false, 1000, 0o600, 1000)
-            .unwrap()
-            .contains("regular"));
-        assert!(super::lock_file_problem(true, 0, 0o100600, 1000)
-            .unwrap()
-            .contains("owned by uid 0"));
-        assert!(super::lock_file_problem(true, 1000, 0o100660, 1000)
-            .unwrap()
-            .contains("writable"));
-        assert!(super::lock_file_problem(true, 1000, 0o100602, 1000)
-            .unwrap()
-            .contains("writable"));
+    fn an_overlong_socket_path_is_undetermined_not_live() {
+        let long = std::path::PathBuf::from(format!("/tmp/{}", "x".repeat(300)));
+        assert!(matches!(
+            super::probe_socket(&long),
+            super::SocketProbe::Undetermined(_)
+        ));
     }
 
     /// A listener that never accepts must not hang the probe, and a path with
@@ -1662,6 +1679,25 @@ mod tests {
             super::SocketProbe::Stale,
             "file left behind, no listener"
         );
+    }
+
+    /// AAASM-6383: a lock file another user created, or others can write, is
+    /// refused with its own reason rather than read as a running peer.
+    #[test]
+    fn an_untrusted_lock_file_is_named_not_mistaken_for_a_peer() {
+        assert_eq!(super::lock_file_problem(true, 1000, 0o100600, 1000), None);
+        assert!(super::lock_file_problem(false, 1000, 0o600, 1000)
+            .unwrap()
+            .contains("regular"));
+        assert!(super::lock_file_problem(true, 0, 0o100600, 1000)
+            .unwrap()
+            .contains("owned by uid 0"));
+        assert!(super::lock_file_problem(true, 1000, 0o100660, 1000)
+            .unwrap()
+            .contains("writable"));
+        assert!(super::lock_file_problem(true, 1000, 0o100602, 1000)
+            .unwrap()
+            .contains("writable"));
     }
 
     /// Loopback is unconditionally allowed regardless of the opt-in — it is
