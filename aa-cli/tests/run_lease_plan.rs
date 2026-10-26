@@ -109,7 +109,7 @@ fn the_dry_run_prints_a_lease_plan_with_per_tool_verdicts_and_exits_zero() {
     assert!(out.contains("tool writer [filesystem_write]: DENY ("), "{out}");
     assert!(out.contains("tool spawner [process_creation]: DENY ("), "{out}");
     assert!(out.contains("tool <undeclared>: DENY ("), "{out}");
-    assert!(out.contains("action LLM_CALL: PERMIT\n"), "{out}");
+    assert!(out.contains("action LLM_CALL: DENY ("), "{out}");
     assert!(out.contains("action FILE_OPERATION: DENY ("), "{out}");
     assert!(out.contains("action PROCESS_EXEC: DENY ("), "{out}");
 }
