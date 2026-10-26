@@ -185,6 +185,17 @@ measured and what is not.
 > all carry it. Its runtime surface is off by default on every channel.
 > See the [CLI overview](docs/src/cli/overview.md).
 
+## Building the local servers from source
+
+`cargo build -p aa-cli` produces only `aasm`. The servers it launches are separate
+binaries, so a source build needs them too (`aasm start` and `aasm gateway start`
+look next to the `aasm` executable first, then on `$PATH`, then in `~/.cargo/bin`):
+
+```sh
+cargo build -p aa-api --bin aa-api-server   # `aasm start`: HTTP API + dashboard
+cargo build -p aa-gateway                   # `aasm gateway start`: gRPC gateway
+```
+
 ## Ecosystem
 
 `agent-assembly` is the open-source core of a larger governance platform. The
