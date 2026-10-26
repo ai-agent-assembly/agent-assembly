@@ -117,7 +117,7 @@ def cmd_raw(a: argparse.Namespace) -> int:
         _emit(status="unreachable", executed=0, reason="no runtime client")
         return 0
     # An empty --tool sends tool_name=None: the native shim then builds NO typed context,
-    # which is the omit-context relabel ADR 0038 section 36 names as the residual.
+    # which is the omit-context relabel ADR 0038 section 36 requires governed mode to deny.
     res = rc.query_policy(a.agent, a.action_type, a.tool or None, a.args or None)
     _emit(status=str(res.get("decision", "")), executed=0, reason=str(res.get("reason", "")))
     return 0

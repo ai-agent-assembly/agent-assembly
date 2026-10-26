@@ -1535,8 +1535,7 @@ leases lowered by the same `authored_lease_from` and `lower_leases` path `aasm r
 | `TOOL_CALL`, declared domain classes, `allow: true` | Permit only if every class has a valid, un-revoked, `whole`-scope lease naming the governed subject (`admit_lease` with `RequirementScope::Whole`) |
 | `TOOL_CALL`, undeclared tool; `allow: false`; missing or empty tool name; no `ToolCallContext` | Deny |
 | `TOOL_CALL`, tool declaring `process_creation` or `syscall`; any unrecognised class | Deny, even with a lease for that class |
-| `LLM_CALL`, `TOOL_RESULT`, context absent or of the matching kind | Permit, no lease |
-| `LLM_CALL`, `TOOL_RESULT` carrying any other typed context (notably a `ToolCallContext`) | Deny |
+| `LLM_CALL`, `TOOL_RESULT`, with or without a context | Deny |
 | `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
 
 A `Permit` only falls through to the gateway and local policy; the gate can only restrict.

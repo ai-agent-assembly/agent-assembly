@@ -270,7 +270,7 @@ tool writer [filesystem_write]: DENY (tool "writer": no lease for `filesystem_wr
 summary: 1 of 3 tools declaring capabilities would be denied
 note: a tool declared without `capabilities` is not listed above; ...
 tool <undeclared>: DENY (...)
-action LLM_CALL: PERMIT
+action LLM_CALL: DENY (...)
 action FILE_OPERATION: DENY (...)
 ```
 
