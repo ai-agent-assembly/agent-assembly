@@ -34,6 +34,11 @@ pub enum ModeArg {
     Remote,
 }
 
+/// Port `aasm start` listens on unless `--port` says otherwise. Also the port
+/// the operator commands' built-in API URL points at, so a bare `aasm status`
+/// finds a gateway that `aasm start` brought up with its defaults (AAASM-6385).
+pub const DEFAULT_PORT: u16 = 7391;
+
 /// `aasm start` command-line arguments.
 ///
 /// Defaults mirror the contract laid out in AAASM-1578: local mode,
@@ -45,7 +50,7 @@ pub struct StartArgs {
     #[arg(long, value_enum, default_value_t = ModeArg::Local)]
     pub mode: ModeArg,
     /// TCP port the gateway should listen on.
-    #[arg(long, default_value_t = 7391)]
+    #[arg(long, default_value_t = DEFAULT_PORT)]
     pub port: u16,
     /// Bind address override — an explicit opt-in to a non-default host
     /// (AAASM-6056). Unset preserves the per-mode default (`127.0.0.1` for
@@ -85,6 +90,17 @@ pub fn resolve_listen_addr(mode: ModeArg, host: Option<IpAddr>, port: u16) -> So
         ModeArg::Remote => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
     });
     SocketAddr::new(ip, port)
+}
+
+/// Base URL operator commands should use to reach a gateway bound to `addr`.
+/// An unspecified bind (`0.0.0.0`, `--mode remote`) is reached through
+/// `localhost`, since the unspecified address is not one to connect to.
+fn client_url(addr: SocketAddr) -> String {
+    if addr.ip().is_unspecified() {
+        format!("http://localhost:{}", addr.port())
+    } else {
+        display_address(addr)
+    }
 }
 
 /// Human-readable address an operator would type into a browser for the
@@ -279,9 +295,16 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
             return ExitCode::FAILURE;
         }
     };
-    if let Err(e) = super::pidfile::write_pid(pid_file, pid) {
-        eprintln!("aasm start: failed to write pid file: {e}");
-        return ExitCode::FAILURE;
+    // Best effort for the URL: a failure there only costs the bare-`aasm status`
+    // default, and `--api-url` still works, so it must not fail a start that
+    // succeeded. The old URL record is dropped before the PID file changes.
+    match super::pidfile::record_gateway(pid_file, pid, &client_url(addr), super::pidfile::write_gateway_url) {
+        Err(e) => {
+            eprintln!("aasm start: failed to write pid file: {e}");
+            return ExitCode::FAILURE;
+        }
+        Ok(Some(e)) => eprintln!("warning: could not record the gateway address for `aasm status`: {e}"),
+        Ok(None) => {}
     }
     match super::gw_probe::wait_for_ready(addr, Duration::from_secs(5), Duration::from_millis(100)) {
         Ok(()) => {
@@ -491,5 +514,25 @@ mod tests {
         // Mock's PID, not the test process's PID — proves the
         // injected spawner was actually consulted.
         assert_eq!(super::super::pidfile::read_pid(&pid_file).unwrap(), Some(424_242),);
+        // AAASM-6385: the address it bound is recorded for operator commands.
+        let recorded = std::fs::read_to_string(super::super::pidfile::url_file_path(&pid_file)).unwrap();
+        assert_eq!(recorded.trim(), format!("http://localhost:{}", addr.port()));
+    }
+
+    #[test]
+    fn client_url_reaches_an_unspecified_bind_through_localhost() {
+        let v4: SocketAddr = "0.0.0.0:9000".parse().unwrap();
+        let v6: SocketAddr = "[::]:9000".parse().unwrap();
+        let lo: SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.5:9000".parse().unwrap();
+        assert_eq!(client_url(v4), "http://localhost:9000");
+        assert_eq!(client_url(v6), "http://localhost:9000");
+        assert_eq!(client_url(lo), "http://localhost:9000");
+        assert_eq!(client_url(lan), "http://192.168.1.5:9000");
+    }
+
+    #[test]
+    fn default_port_is_the_documented_one() {
+        assert_eq!(DEFAULT_PORT, 7391);
     }
 }

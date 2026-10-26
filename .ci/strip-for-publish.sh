@@ -97,6 +97,9 @@ MARKED_FILES=(
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-6385: builds `LeaseGovernance` (`aa_runtime::lease::decide`, stripped below)
+    # to check the worked example in docs/src/cli/lease.md.
+    "${REPO_ROOT}/aa-cli/tests/lease_docs_example.rs"
     # AAASM-6386: consumes the stripped `aa_runtime::lease::decide`.
     "${REPO_ROOT}/aa-cli/src/commands/lease_readiness.rs"
     "${REPO_ROOT}/aa-cli/tests/lease_readiness_warnings.rs"

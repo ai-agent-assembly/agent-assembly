@@ -18,13 +18,14 @@ flowchart LR
     F --> G["aasm gateway stop"]
 ```
 
-> **Two endpoints, one gateway.** The gateway speaks **gRPC on `127.0.0.1:50051`**
-> — this is what SDK shims and the sidecar proxy connect to. The operator
-> commands `aasm status`, `aasm agent`, and `aasm topology` talk to the gateway's
-> **HTTP API on `http://localhost:8080`**. In the OSS alpha the gRPC listener is
-> what `aasm gateway start` brings up; until an HTTP API server is also serving
-> on `8080`, the HTTP-backed commands report `unreachable`. That is expected and
-> called out at each step below.
+> **Two servers, two commands.** `aasm gateway start` brings up the **gRPC
+> gateway on `127.0.0.1:50051`** — what SDK shims and the sidecar proxy connect to.
+> `aasm start` brings up the **local API server**: the HTTP API and embedded
+> dashboard on **`http://localhost:7391`**. The operator commands `aasm status`,
+> `aasm agent`, and `aasm topology` talk to the HTTP API, and a bare `aasm status`
+> follows the address `aasm start` is serving (7391 unless you passed `--port` or
+> `--host`). Until `aasm start` is running they report `unreachable`; that is
+> expected and called out at each step below.
 
 ## 1. Start the gateway
 
@@ -70,13 +71,15 @@ Tail the gateway log at any time with `aasm gateway logs`.
 ## 3. Check overall status
 
 `aasm status` gives the fleet-wide picture — gateway health, registered agents,
-pending approvals, and budget. It queries the **HTTP API at `http://localhost:8080`**:
+pending approvals, and budget. It queries the **HTTP API at `http://localhost:7391`**,
+the address `aasm start` serves. Only the gRPC gateway from step 1 is running so
+far, so it reports `unreachable`:
 
 ```console
 $ aasm status
 Agent Assembly Status
 ─────────────────────────────────────
-  Gateway:   http://localhost:8080
+  Gateway:   http://localhost:7391
   Health:    ✗ unreachable
 ─────────────────────────────────────
 
@@ -101,14 +104,34 @@ BUDGET STATUS
   Date:           --
   (no per-agent data)
 
-Error: gateway is not running. Start it with: aasm start
+Error: no Agent Assembly API answered at http://localhost:7391. Start it with: aasm start (or point the CLI at another with --api-url)
 ```
 
-The `unreachable` health here reflects the gRPC-vs-HTTP split described above:
-the gRPC gateway from step 1 is up, but the HTTP API on `8080` is not being
-served in this OSS-only setup. Once an API server is serving on `8080` (for
-example through the hosted control plane, or a future OSS API server), `Health`
-flips to reachable and registered agents appear in `ACTIVE AGENTS`.
+The `unreachable` health reflects the split described above: the gRPC gateway is
+up, but nothing is serving the HTTP API yet. Start the local API server and ask
+again — no flags needed, because `aasm status` reads the address `aasm start`
+recorded:
+
+```console
+$ aasm start
+✓ Agent Assembly gateway started
+  Mode:    local
+  Address: http://localhost:7391
+  PID:     74601
+
+$ aasm status
+Agent Assembly Status
+─────────────────────────────────────
+  Gateway:   http://localhost:7391
+  Health:    ✓ ok
+─────────────────────────────────────
+```
+
+(Only the header is shown; the rest of the output follows the layout above.) If you
+started the server with `--port 9123`, `aasm status` follows it there. An explicit
+`--api-url`, `--context`, or `default_context` always takes precedence, and a server
+started with `aasm start --foreground` records nothing, so pass `--api-url` for it
+if you changed the port.
 
 Add `--watch` to auto-refresh the display every 5 seconds, or `--json` for a
 machine-readable header suitable for scripting and CI.
@@ -153,7 +176,7 @@ Until then these commands report the API as unreachable:
 
 ```console
 $ aasm agent list
-error: API request failed: error sending request for url (http://localhost:8080/api/v1/agents)
+error: API request failed: error sending request for url (http://localhost:7391/api/v1/agents)
 ```
 
 ## 5. View the topology
@@ -199,8 +222,13 @@ approvals indicator, theme toggle, Settings, and Log out across the top:
 
 ## 7. Stop the gateway
 
-When you are done, shut the gateway down cleanly (SIGTERM, escalating to SIGKILL
-after the timeout):
+When you are done, shut each server down cleanly (SIGTERM, escalating to SIGKILL
+after the timeout). `aasm stop` stops what `aasm start` started; `aasm gateway stop`
+stops the gRPC gateway:
+
+```sh
+aasm stop
+```
 
 ```sh
 aasm gateway stop

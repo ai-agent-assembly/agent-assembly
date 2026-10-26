@@ -54,11 +54,11 @@ For the legacy gRPC server, supply a policy:
 $ aasm status
 Agent Assembly Status
 ─────────────────────────────────────
-  Gateway:   http://localhost:8080
+  Gateway:   http://localhost:7391
   Health:    ✗ unreachable
 ─────────────────────────────────────
 ...
-Error: gateway is not running. Start it with: aasm start
+Error: no Agent Assembly API answered at http://localhost:7391. Start it with: aasm start (or point the CLI at another with --api-url)
 ```
 
 ```console
@@ -74,11 +74,12 @@ $ aasm version
 +-----------+---------------+-------------+
 ```
 
-**Cause.** The CLI defaults to the SaaS control-plane API on
-`http://localhost:8080`. The local-mode gateway serves its API on `7391`, not
-`8080`, so the default target is unreachable.
+**Cause.** Nothing is serving the API the CLI is querying. By default that is the gateway
+`aasm start` serves (`http://localhost:7391`, or whatever `--port`/`--host` it recorded), so
+this means no `aasm start` server is running, or a named context / `--api-url` points
+somewhere else (for example the SaaS control-plane API on `8080`).
 
-**Fix.** Point the CLI at the local API:
+**Fix.** Run `aasm start`, or point the CLI at the API you mean:
 
 ```console
 $ aasm --api-url http://127.0.0.1:7391 status

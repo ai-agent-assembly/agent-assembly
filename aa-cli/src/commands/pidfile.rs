@@ -43,9 +43,9 @@ pub fn write_pid(path: &Path, pid: u32) -> Result<(), PidFileError> {
         // AAASM-6387: `~/.aasm` also holds the local SQLite stores, and this
         // command can create it before the server does, so it must be
         // owner-only from the start.
-        aa_gateway::storage::private_fs::create_private_dir_all_sync(parent)?;
+        aa_core::private_fs::create_private_dir_all(parent)?;
     }
-    std::fs::write(path, format!("{pid}\n"))?;
+    aa_core::private_fs::write_private_file(path, format!("{pid}\n").as_bytes())?;
     Ok(())
 }
 
@@ -87,6 +87,11 @@ pub fn is_pid_alive(pid: u32) -> bool {
 /// any non-`NotFound` filesystem error verbatim so the operator
 /// sees permission issues rather than a silently-stuck PID file.
 pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
+    remove_if_present(&url_file_path(path))?;
+    remove_if_present(path)
+}
+
+fn remove_if_present(path: &Path) -> Result<(), PidFileError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -94,9 +99,279 @@ pub fn remove_pid(path: &Path) -> Result<(), PidFileError> {
     }
 }
 
+/// File beside the PID file that holds the base URL `aasm start` is serving
+/// (AAASM-6385).
+///
+/// Operator commands default to a built-in API URL; without this record a
+/// gateway started with `--port`/`--host` is unreachable to a bare
+/// `aasm status`, because the start command is the only place that knows where
+/// it bound. Removed with the PID file by [`remove_pid`], so it never outlives
+/// a stopped gateway.
+pub fn url_file_path(pid_file: &Path) -> PathBuf {
+    pid_file.with_file_name("gateway.url")
+}
+
+/// Record the base URL the gateway just started on (see [`url_file_path`]).
+pub fn write_gateway_url(pid_file: &Path, url: &str) -> Result<(), PidFileError> {
+    aa_core::private_fs::write_private_file(&url_file_path(pid_file), format!("{url}\n").as_bytes())?;
+    Ok(())
+}
+
+/// Record a started gateway: PID file and, best effort, its URL.
+///
+/// The URL record is removed *before* the PID file is rewritten and again if
+/// writing it fails, so a PID that is live under the new gateway can never be
+/// paired with the previous gateway's address. `Err` is a PID-file failure (the
+/// start failed); `Ok(Some(_))` is a URL failure the caller should only warn
+/// about (a bare `aasm status` then uses the default, `--api-url` still works).
+pub fn record_gateway(
+    pid_file: &Path,
+    pid: u32,
+    url: &str,
+    write_url: impl Fn(&Path, &str) -> Result<(), PidFileError>,
+) -> Result<Option<PidFileError>, PidFileError> {
+    let url_file = url_file_path(pid_file);
+    let removed = remove_if_present(&url_file);
+    write_pid(pid_file, pid)?;
+    if let Err(e) = removed {
+        return Ok(Some(e));
+    }
+    if let Err(e) = write_url(pid_file, url) {
+        let _ = remove_if_present(&url_file);
+        return Ok(Some(e));
+    }
+    Ok(None)
+}
+
+/// A URL a recorded gateway may be trusted to have: plain `http`, no
+/// credentials in it, and a loopback host. `aasm start` only ever binds an
+/// address it can reach as `localhost` or an IP, and a file anyone could have
+/// edited must not steer every operator command at a remote host.
+fn is_trusted_gateway_url(raw: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(raw) else {
+        return false;
+    };
+    let host_ok = match url.host_str() {
+        Some(h) if h.eq_ignore_ascii_case("localhost") => true,
+        Some(h) => h
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    };
+    url.scheme() == "http"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && host_ok
+        && url.path() == "/"
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+/// Whether `base` answers like an Agent Assembly API: `GET /api/v1/health`
+/// returns JSON carrying string `status` and `api_version` fields.
+///
+/// Guards against a recycled PID (the dead gateway's number now belongs to some
+/// other process) and against a listener that merely holds the port.
+pub fn answers_health_signature(base: &str) -> bool {
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client
+        .get(format!("{}/api/v1/health", base.trim_end_matches('/')))
+        .send()
+    else {
+        return false;
+    };
+    if !resp.status().is_success() {
+        return false;
+    }
+    resp.json::<serde_json::Value>().ok().is_some_and(|v| {
+        v.get("status").is_some_and(serde_json::Value::is_string)
+            && v.get("api_version").is_some_and(serde_json::Value::is_string)
+    })
+}
+
+/// The base URL of the gateway `aasm start` left running, if one is.
+///
+/// `None` unless the PID file names a live process, a trusted loopback URL was
+/// recorded, *and* that URL answers the health signature, so neither a crashed
+/// gateway's stale record, a recycled PID, nor an edited file is preferred over
+/// the built-in default.
+pub fn running_gateway_url_at(pid_file: &Path) -> Option<String> {
+    running_gateway_url_with(pid_file, answers_health_signature)
+}
+
+fn running_gateway_url_with(pid_file: &Path, answers: impl Fn(&str) -> bool) -> Option<String> {
+    let pid = read_pid(pid_file).ok()??;
+    if !is_pid_alive(pid) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(url_file_path(pid_file)).ok()?;
+    let url = raw.trim();
+    (is_trusted_gateway_url(url) && answers(url)).then(|| url.to_string())
+}
+
+/// [`running_gateway_url_at`] for the default PID file location.
+pub fn running_gateway_url() -> Option<String> {
+    running_gateway_url_at(&pid_file_path().ok()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn live(tmp: &tempfile::TempDir, url: &str) -> PathBuf {
+        let pid_file = tmp.path().join("gateway.pid");
+        write_pid(&pid_file, std::process::id()).unwrap();
+        write_gateway_url(&pid_file, url).unwrap();
+        pid_file
+    }
+
+    #[test]
+    fn a_recorded_url_is_returned_only_while_its_gateway_is_alive_and_answering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        assert_eq!(running_gateway_url_with(&pid_file, |_| true), None, "nothing recorded");
+
+        let pid_file = live(&tmp, "http://localhost:9123");
+        assert_eq!(
+            running_gateway_url_with(&pid_file, |_| true).as_deref(),
+            Some("http://localhost:9123")
+        );
+        // PID reuse: the pid is alive but the recorded address does not answer.
+        assert_eq!(running_gateway_url_with(&pid_file, |_| false), None, "not answering");
+
+        write_pid(&pid_file, u32::MAX - 1).unwrap();
+        assert_eq!(running_gateway_url_with(&pid_file, |_| true), None, "stale record");
+    }
+
+    #[test]
+    fn only_trusted_loopback_http_urls_are_followed() {
+        for bad in [
+            "",
+            "localhost:1",
+            "http://a b",
+            "file:///etc/passwd",
+            "https://localhost:9123",
+            "http://evil.example.com:9123",
+            "http://10.0.0.5:9123",
+            "http://user:pw@localhost:9123",
+            "http://user@127.0.0.1:9123",
+            "http://localhost:9123/path",
+            "http://localhost:9123/?q=1",
+        ] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let pid_file = live(&tmp, "http://localhost:1");
+            std::fs::write(url_file_path(&pid_file), bad).unwrap();
+            assert_eq!(running_gateway_url_with(&pid_file, |_| true), None, "{bad:?}");
+        }
+        for good in [
+            "http://localhost:9123",
+            "http://127.0.0.1:9123",
+            "http://127.0.0.2:9123",
+            "http://[::1]:9123",
+        ] {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let pid_file = live(&tmp, good);
+            assert_eq!(
+                running_gateway_url_with(&pid_file, |_| true).as_deref(),
+                Some(good),
+                "{good}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_health_signature_needs_an_aa_shaped_json_answer() {
+        use std::io::{Read, Write};
+        let serve = |body: &'static str| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = l.local_addr().unwrap();
+            std::thread::spawn(move || {
+                if let Ok((mut s, _)) = l.accept() {
+                    let mut b = [0u8; 1024];
+                    let _ = s.read(&mut b);
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            format!("http://{addr}")
+        };
+        assert!(answers_health_signature(&serve(
+            r#"{"status":"ok","version":"x","api_version":"v1"}"#
+        )));
+        assert!(!answers_health_signature(&serve(r#"{"hello":"world"}"#)));
+        assert!(!answers_health_signature(&serve("not json")));
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", l.local_addr().unwrap())
+        };
+        assert!(!answers_health_signature(&closed));
+    }
+
+    #[test]
+    fn a_failed_url_write_never_leaves_the_previous_gateways_url_beside_a_live_pid() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = live(&tmp, "http://localhost:1111"); // the OLD gateway's record
+        let failing =
+            |_: &Path, _: &str| -> Result<(), PidFileError> { Err(std::io::Error::other("disk full").into()) };
+        let r = record_gateway(&pid_file, std::process::id(), "http://localhost:2222", failing).unwrap();
+        assert!(r.is_some(), "the URL failure is reported, not fatal");
+        assert!(!url_file_path(&pid_file).exists(), "old URL must not survive");
+        assert_eq!(running_gateway_url_with(&pid_file, |_| true), None);
+
+        let ok = record_gateway(
+            &pid_file,
+            std::process::id(),
+            "http://localhost:2222",
+            write_gateway_url,
+        )
+        .unwrap();
+        assert!(ok.is_none());
+        assert_eq!(
+            running_gateway_url_with(&pid_file, |_| true).as_deref(),
+            Some("http://localhost:2222")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_and_url_files_are_owner_only_even_over_a_looser_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        std::fs::write(url_file_path(&pid_file), "x").unwrap();
+        std::fs::set_permissions(url_file_path(&pid_file), std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_pid(&pid_file, 1).unwrap();
+        write_gateway_url(&pid_file, "http://localhost:1").unwrap();
+        for f in [pid_file.clone(), url_file_path(&pid_file)] {
+            assert_eq!(
+                std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "{f:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn remove_pid_also_removes_the_recorded_url() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        write_pid(&pid_file, 1).unwrap();
+        write_gateway_url(&pid_file, "http://localhost:1").unwrap();
+        remove_pid(&pid_file).unwrap();
+        assert!(!pid_file.exists() && !url_file_path(&pid_file).exists());
+    }
 
     /// AAASM-6387 — the directory the PID file lands in is created owner-only,
     /// because it is the same `~/.aasm` that holds the local databases.

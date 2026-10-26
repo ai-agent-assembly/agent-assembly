@@ -43,7 +43,8 @@ AA_API_KEY=<your-key> docker compose up
 
 `aa-runtime` starts, enforces locally from the mounted `../policy.toml`, exposes the
 IPC socket at `/tmp/aa-runtime-my-agent-001.sock`, and serves health/metrics at
-`http://localhost:8080`.
+`http://localhost:8080`. That is the `aa-runtime` health/metrics port, not the API the `aasm`
+CLI talks to: a bare `aasm status` targets the local API server (`aasm start`, port `7391`).
 
 With the optional egress proxy:
 

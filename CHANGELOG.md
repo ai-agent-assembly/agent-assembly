@@ -21,6 +21,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **BREAKING: the `aasm` CLI's built-in default API URL is now `http://localhost:7391`
+  (was `http://localhost:8080`) (AAASM-6385)** — `aasm start` serves its API on 7391, so a
+  bare `aasm status` reported a healthy gateway as unreachable. `aasm start` now also
+  records the address it bound in `~/.aasm/gateway.url` (mode 0600, removed by `aasm stop`),
+  and the default follows it only while the recorded gateway is alive, on a loopback host,
+  and answers the API health signature. To keep targeting something on 8080 pass
+  `--api-url http://localhost:8080` or save a context
+  (`aasm context set local --api-url http://localhost:8080`); explicit flags and named contexts
+  still take precedence. `aasm status` now names the URL it tried when nothing answers.
+  `aasm lease init` also prints the exact command that starts a governed runtime.
+
 - **`aasm run` wires real authority inputs into `authority_gate` (AAASM-6277,
   ADR 0038)** — `aa-policy`'s `authority.leases` grants now actually reach
   `aasm run`'s execution boundary: they are converted, validated before

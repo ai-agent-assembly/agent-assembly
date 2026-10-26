@@ -1,7 +1,7 @@
 # Configuration
 
 The `aasm` CLI works with **zero configuration** — if you never create a config
-file, it talks to a gateway API at `http://localhost:8080`. This page covers the
+file, it talks to the gateway API that `aasm start` serves, `http://localhost:7391` by default. This page covers the
 config file format, named contexts (connection profiles), the environment
 variables the CLI reads, and the separate `agent-assembly.toml` runtime config
 the gateway consumes.
@@ -15,10 +15,20 @@ API URL, an optional API key, and an output format — from the following source
 1. Explicit flags: `--api-url`, `--api-key`.
 2. A named context selected with `--context <name>`, or the `default_context`
    from the config file.
-3. The built-in default API URL: `http://localhost:8080`.
+3. The address of the gateway `aasm start` left running (recorded in `~/.aasm/gateway.url`
+   while `~/.aasm/gateway.pid` names a live process and that address answers the API health check), else the built-in default API URL:
+   `http://localhost:7391`.
 
-So `aasm status` with no flags and no config file connects to
-`http://localhost:8080`. A `--api-url` flag always wins over any context.
+So `aasm status` with no flags and no config file connects to the gateway `aasm start`
+is serving, `http://localhost:7391` unless you started it with another `--port`/`--host`.
+A `--api-url` flag always wins over any context, and a named context wins over the
+recorded address.
+
+> **Changed default (AAASM-6385).** The built-in default used to be `http://localhost:8080`.
+> If you run a gateway or control plane on `8080`, pass `--api-url http://localhost:8080` or
+> save it as a context (`aasm context set local --api-url http://localhost:8080`, as the
+> examples below do). The `8080` that `aa-runtime` serves for health and metrics is a
+> different endpoint, not the API `aasm` talks to.
 
 ## The CLI config file: `~/.aa/config.yaml`
 

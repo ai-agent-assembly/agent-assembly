@@ -166,6 +166,9 @@ AA_API_KEY=dev-local-key docker compose up
 `aa-runtime` starts, enforces locally from `../policy.toml`, exposes the IPC socket
 at `/tmp/aa-runtime-my-agent-001.sock`, and serves health/metrics on `:8080`:
 
+> Port `8080` here is `aa-runtime`'s health/metrics port, not the API the `aasm` CLI talks to;
+> a bare `aasm status` targets the local API server on `7391` (`aasm start`).
+
 ```bash
 curl http://localhost:8080/ready
 curl http://localhost:8080/health

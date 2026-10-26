@@ -260,7 +260,7 @@ async fn status_exits_1_with_hint_when_gateway_is_unreachable() {
         String::from_utf8_lossy(&out.stdout),
     );
     assert!(
-        stderr.contains("Error: gateway is not running. Start it with: aasm start"),
+        stderr.contains("no Agent Assembly API answered at") && stderr.contains("Start it with: aasm start"),
         "unreachable gateway should print the documented stderr hint; stderr:\n{stderr}",
     );
 }

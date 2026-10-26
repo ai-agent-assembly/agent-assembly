@@ -448,6 +448,42 @@ fn init_computes_the_digest_from_a_policy_file() {
     assert!(!digest.starts_with("sha256:"));
 }
 
+/// AAASM-6385: `init` prints the exact command that starts a governed runtime for
+/// the record, with the values it just validated (and quoting a path that needs it).
+#[test]
+fn init_prints_the_runtime_start_recipe_for_this_record() {
+    let (d, _) = state_dir();
+    let spaced = d.path().join("my state");
+    std::fs::create_dir(&spaced).unwrap();
+    std::fs::set_permissions(&spaced, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let p = spaced.join("lease.json");
+    let out = init(d.path(), &p, &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("AA_AGENT_ID=agent-1"), "{stdout}");
+    assert!(stdout.contains("AA_METRICS_ADDR=127.0.0.1:"), "{stdout}");
+    assert!(stdout.contains("AA_LEASE_POLICY="), "{stdout}");
+    let canonical = std::fs::canonicalize(&p).unwrap();
+    assert!(
+        stdout.contains(&format!("AA_LEASE_STATE='{}'", canonical.display())),
+        "{stdout}"
+    );
+    assert!(stdout.contains("aa-runtime"), "{stdout}");
+}
+
+/// A digest-only init cannot know the policy file; the recipe must stay a runnable
+/// command (a `<placeholder>` would be a shell redirect).
+#[test]
+fn a_digest_only_init_recipe_has_no_shell_redirect() {
+    let (d, p) = state_dir();
+    let out = init(d.path(), &p, &[]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("# set POLICY_FILE"), "{stdout}");
+    assert!(stdout.contains("AA_LEASE_POLICY=\"$POLICY_FILE\""), "{stdout}");
+    let command: String = stdout.lines().filter(|l| l.starts_with("  ")).collect();
+    assert!(!command.contains('<') && !command.contains('>'), "{command}");
+}
+
 /// AAASM-6386: an id that no run issued used to be stored as "revoked" and
 /// bump the generation while revoking nothing, which reads as success.
 #[test]
