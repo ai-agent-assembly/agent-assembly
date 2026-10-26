@@ -33,6 +33,14 @@ Point the gateway at one of the bundled reference policies. `policy-examples/`
 ships `low-risk.yaml`, `medium-risk.yaml`, and `high-risk.yaml`; `low-risk`
 allows and audits everything, which is the easiest starting point.
 
+The gRPC gateway is a separate binary, `aa-gateway`, which `cargo build -p aa-cli` does
+**not** produce. Steps 1 and 2 (and everything that connects over gRPC) need it, so on a
+source build build it first (skip this if you installed a release, which ships it):
+
+```sh
+cargo build -p aa-gateway
+```
+
 ```console
 $ aasm gateway start --policy policy-examples/low-risk.yaml
 Gateway started on grpc://127.0.0.1:50051  (pid 74472)
@@ -40,8 +48,9 @@ Logs: /Users/you/.aasm/logs/gateway.log
 ```
 
 This spawns `aa-gateway` as a detached background process listening for gRPC on
-`127.0.0.1:50051`. (If you built from source, ensure `aa-gateway` is reachable —
-`aasm gateway start` looks in `$PATH`, `~/.cargo/bin`, and `./target/{debug,release}`.)
+`127.0.0.1:50051`. (`aasm gateway start` looks for `aa-gateway` next to the `aasm`
+executable, then on `$PATH`, then in `~/.cargo/bin` — never the current directory — so on a
+source build run `./target/debug/aasm` or put `target/debug` on your `PATH`.)
 
 > **Alternative — from a source checkout without installing:** the gateway can be
 > run directly with Cargo, which is the form the rest of the book uses:
@@ -110,7 +119,15 @@ Error: no Agent Assembly API answered at http://localhost:7391. Start it with: a
 The `unreachable` health reflects the split described above: the gRPC gateway is
 up, but nothing is serving the HTTP API yet. Start the local API server and ask
 again — no flags needed, because `aasm status` reads the address `aasm start`
-recorded:
+recorded. On a source build, `aasm start` needs `aa-api-server`, which `cargo build -p aa-cli`
+does not produce:
+
+```sh
+cargo build -p aa-api --bin aa-api-server
+```
+
+`aasm start` detaches the server: its output goes to an owner-only log file, not to your
+terminal (so `aasm start | head` returns), and the command prints where it is.
 
 ```console
 $ aasm start
@@ -118,6 +135,8 @@ $ aasm start
   Mode:    local
   Address: http://localhost:7391
   PID:     74601
+
+  Log:     /Users/you/.aasm/aa-api-server.log
 
 $ aasm status
 Agent Assembly Status
@@ -132,6 +151,35 @@ started the server with `--port 9123`, `aasm status` follows it there. An explic
 `--api-url`, `--context`, or `default_context` always takes precedence, and a server
 started with `aasm start --foreground` records nothing, so pass `--api-url` for it
 if you changed the port.
+
+### The admin API key
+
+`aasm status` works without a key. `aasm agent list`, `aasm topology overview` and the other
+data commands are authenticated, and a freshly started server with no `AASM_API_KEY` set
+**generates** a random admin key, prints only its first few characters, and does not store
+it anywhere: that key cannot be recovered afterwards, so those commands answer
+`authentication required`. To get a key you can use, choose one yourself, in the form `aa_`
+followed by 32 hexadecimal characters, and start the server with it (keep it somewhere safe;
+the server never writes it down):
+
+```sh
+export AASM_API_KEY="aa_$(openssl rand -hex 16)"
+aasm start
+aasm agent list
+```
+
+(`aasm agent list` then prints `No agents found.` on an empty registry.) A key in any other
+form stops the server from starting, and `aasm start` says why instead of only timing out:
+
+```console
+$ AASM_API_KEY=not-a-key aasm start
+aasm start: aa-api-server exited before it was ready at 127.0.0.1:7391
+  aa-api-server output (full log: /Users/you/.aasm/aa-api-server.log):
+    Error: "invalid AASM_API_KEY: API key must start with 'aa_'"
+```
+
+Run `aasm stop` to stop the server (it is the only way to stop a daemon whose output you
+cannot see in your terminal).
 
 Add `--watch` to auto-refresh the display every 5 seconds, or `--json` for a
 machine-readable header suitable for scripting and CI.

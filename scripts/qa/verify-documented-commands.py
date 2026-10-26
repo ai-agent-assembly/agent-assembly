@@ -506,9 +506,11 @@ def _executor(file: str, heading: str, text: str, description: str):
     "docs/src/quick-start/installation.md", "Build from source",
     "git clone https://github.com/ai-agent-assembly/agent-assembly.git\n"
     "cd agent-assembly\n"
-    "cargo build -p aa-cli            # produces ./target/debug/aasm",
-    "build the aa-cli binary from source (clone/cd skipped: CI already runs "
-    "inside a checkout of this repo)",
+    "cargo build -p aa-cli            # produces ./target/debug/aasm\n"
+    "cargo build -p aa-api --bin aa-api-server   # `aasm start` launches this; aa-cli alone does not build it",
+    "build aasm and aa-api-server from source (clone/cd skipped: CI already runs "
+    "inside a checkout of this repo); both binaries must exist afterwards, because "
+    "`aasm start` needs the second (AAASM-6389)",
 )
 def _exec_build_aa_cli() -> None:
     r = _run(["cargo", "build", "-p", "aa-cli"], cwd=REPO_ROOT, timeout=1800)
@@ -517,6 +519,11 @@ def _exec_build_aa_cli() -> None:
     binary = _debug_dir() / "aasm"
     if not binary.exists():
         raise AssertionError(f"expected binary at {binary}, not found")
+    r = _run(["cargo", "build", "-p", "aa-api", "--bin", "aa-api-server"], cwd=REPO_ROOT, timeout=1800)
+    if r.returncode != 0:
+        raise AssertionError(f"cargo build -p aa-api --bin aa-api-server failed:\n{r.stderr}")
+    if not (_debug_dir() / "aa-api-server").exists():
+        raise AssertionError("aa-api-server not produced by `cargo build -p aa-api --bin aa-api-server`")
 
 
 def _ensure_binary_built(package: str, binary_name: str) -> Path:
@@ -874,6 +881,102 @@ def _stop_started_gateway(binary: str, env: dict[str, str], home: str) -> None:
             os.kill(int(pid_file.read_text().strip()), 15)
         except (ValueError, OSError):
             pass
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "1. Start the gateway",
+    "cargo build -p aa-gateway",
+    "`cargo build -p aa-gateway` produces the `aa-gateway` binary the gRPC steps "
+    "need (a source build of aa-cli alone does not)",
+)
+def _exec_build_aa_gateway() -> None:
+    binary = _ensure_binary_built("aa-gateway", "aa-gateway")
+    if not binary.exists():
+        raise AssertionError(f"{binary} missing after `cargo build -p aa-gateway`")
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "3. Check overall status",
+    "cargo build -p aa-api --bin aa-api-server",
+    "`cargo build -p aa-api --bin aa-api-server` produces the server `aasm start` launches",
+)
+def _exec_build_aa_api_server() -> None:
+    binary = _ensure_binary_built("aa-api", "aa-api-server")
+    if not binary.exists():
+        raise AssertionError(f"{binary} missing after `cargo build -p aa-api --bin aa-api-server`")
+
+
+def _start_cli(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """Run `aasm <args>` with output to a file, never a pipe (see
+    `_exec_start_then_status`), returning (exit code, output)."""
+    with tempfile.TemporaryFile("w+") as out:
+        r = subprocess.run(  # noqa: S603 - fixed argv
+            [str(_debug_dir() / "aasm"), *args],
+            cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT,
+        )
+        out.seek(0)
+        return r.returncode, out.read()
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "The admin API key",
+    'export AASM_API_KEY="aa_$(openssl rand -hex 16)"\n'
+    "aasm start\n"
+    "aasm agent list",
+    "starting with a self-chosen `aa_` + 32 hex key makes `aasm agent list` authenticate "
+    "(ephemeral port, throwaway HOME; the key is generated here, never printed)",
+)
+def _exec_start_with_chosen_key() -> None:
+    import secrets
+
+    _ensure_binary_built("aa-api", "aa-api-server")
+    port = _free_port()
+    home = _start_home()
+    key = "aa_" + secrets.token_hex(16)
+    env = _executor_env(home, AASM_API_KEY=key)
+    binary = str(_debug_dir() / "aasm")
+    try:
+        code, out = _start_cli(["start", "--port", str(port)], env)
+        if code != 0:
+            raise AssertionError(f"aasm start with a valid key failed:\n{out.replace(key, 'aa_<key>')}")
+        listed = _run(
+            [binary, "--api-url", f"http://127.0.0.1:{port}", "agent", "list"],
+            cwd=REPO_ROOT, timeout=15, env=env,
+        )
+        if listed.returncode != 0:
+            raise AssertionError(f"aasm agent list with the chosen key failed:\n{listed.stdout}{listed.stderr}".replace(key, "aa_<key>"))
+        _assert_in(listed.stdout, "No agents found", "aasm agent list")
+        # And without the key the same command is refused, as the page says.
+        bare = _executor_env(home)
+        bare.pop("AASM_API_KEY", None)
+        refused = _run(
+            [binary, "--api-url", f"http://127.0.0.1:{port}", "agent", "list"],
+            cwd=REPO_ROOT, timeout=15, env=bare,
+        )
+        _assert_in(refused.stdout + refused.stderr, "authentication required", "aasm agent list without a key")
+    finally:
+        _stop_started_gateway(binary, env, home)
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "The admin API key",
+    "$ AASM_API_KEY=not-a-key aasm start",
+    "a malformed key makes `aasm start` fail fast naming the key-format error from the "
+    "server's log (ephemeral port, throwaway HOME)",
+)
+def _exec_start_with_bad_key() -> None:
+    _ensure_binary_built("aa-api", "aa-api-server")
+    home = _start_home()
+    env = _executor_env(home, AASM_API_KEY="not-a-key")
+    binary = str(_debug_dir() / "aasm")
+    try:
+        code, out = _start_cli(["start", "--port", str(_free_port())], env)
+        if code == 0:
+            raise AssertionError(f"aasm start with a malformed key unexpectedly succeeded:\n{out}")
+        _assert_in(out, "exited before it was ready", "aasm start")
+        _assert_in(out, "invalid AASM_API_KEY", "aasm start")
+    finally:
+        _stop_started_gateway(binary, env, home)
 
 
 @_executor(
