@@ -21,6 +21,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`aasm start` first-run fixes (AAASM-6389)** — the daemon (`aa-api-server`) no longer
+  inherits the caller's stdout/stderr, so `aasm start | head` returns; its output goes to an
+  owner-only (0600) `~/.aasm/aa-api-server.log`, whose path `aasm start` prints. A daemon that
+  exits at startup (for example an invalid `AASM_API_KEY`) is now detected immediately and
+  reported with the tail of that log (keys redacted). A missing `aa-api-server` /
+  `aa-gateway` now names the binary, where `aasm` looked and the `cargo build` command.
+  The binary is resolved next to the running `aasm` first, then `$PATH`, then `~/.cargo/bin`
+  (a stale `$PATH` copy no longer shadows a sibling build). Docs: source-build steps include
+  `cargo build -p aa-api --bin aa-api-server` / `cargo build -p aa-gateway`, and first-run
+  explains that a generated admin key is not recoverable and how to start with your own
+  `AASM_API_KEY=aa_<32 hex>`.
 - **BREAKING: the `aasm` CLI's built-in default API URL is now `http://localhost:7391`
   (was `http://localhost:8080`) (AAASM-6385)** — `aasm start` serves its API on 7391, so a
   bare `aasm status` reported a healthy gateway as unreachable. `aasm start` now also
