@@ -12111,8 +12111,8 @@ mod tests {
             let gate = gate_for(&resolution);
             let governance = lease_plan::governance_for_plan(&resolution, SUBJECT, issued()).unwrap();
             let expected = [
-                (ActionType::LlmCall, true),
-                (ActionType::ToolResult, true),
+                (ActionType::LlmCall, false),
+                (ActionType::ToolResult, false),
                 (ActionType::FileOperation, false),
                 (ActionType::NetworkCall, false),
                 (ActionType::ProcessExec, false),

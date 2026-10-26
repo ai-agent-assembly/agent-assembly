@@ -10,9 +10,9 @@
 #
 # What it is not: the lease gate is admission control for cooperative SDK tool calls,
 # not confinement (ADR 0038 sections 33, 36). This is manual local evidence, not a CI
-# gate. S5d only shows that relabelling a call WITH its tool context is denied. The
-# omit-context relabel residual of section 36 is probed by S5e and reported as INFO:
-# it is a stated limit and is not claimed closed. The denial reason is deliberately
+# gate. S5d shows that relabelling a call WITH its tool context is denied; S5e shows
+# the same for the omit-context relabel, which governed mode now denies because only
+# TOOL_CALL can be admitted (ADR 0038 section 36). The denial reason is deliberately
 # generic ("capability lease required"), so it does not identify WHICH check denied;
 # the sentinel file and the positive controls are what discriminate.
 #
@@ -297,7 +297,7 @@ else
   record S5c1 FAIL "A: spoofed args on a legitimately leased tool change nothing" "status=$C_STATUS reason=$C_REASON"
 fi
 # Raw query_policy, no SDK wrapper, with the tool context still attached: the relabel is denied
-# (ADR 0038 section 36). This does NOT cover the omit-context residual; see S5e.
+# (ADR 0038 section 36). The omit-context form is S5e.
 for at in llm_call tool_result; do
   line="$(run_fix raw --agent "$A_ID" --tool net_fetch --action-type "$at" --args '{}' 2>/dev/null | grep '^RESULT ' | tail -1)"
   st="$(field "$line" status)"
@@ -308,11 +308,16 @@ for at in llm_call tool_result; do
   fi
 done
 # Omit-context relabel: the native shim builds no typed context when tool_name is None, so the SDK
-# CAN send this. ADR 0038 section 36 documents the answer as a residual nothing in the request can
-# reveal. Reported as INFO with the observed answer; never counted as PASS and never gating.
+# CAN send this. Governed mode admits only TOOL_CALL (ADR 0038 section 36), so it must be denied.
+# With the gate absent (--mutation-check) the runtime answers allow and this FAILs, as it should.
 for at in llm_call tool_result; do
   line="$(run_fix raw --agent "$A_ID" --action-type "$at" 2>/dev/null | grep '^RESULT ' | tail -1)"
-  record "S5e-$at" INFO "residual (ADR0038-36), no tool context: raw $at with tool_name=None, sent by the SDK shim" "observed=$(field "$line" status) reason=${line#*reason=}"
+  st="$(field "$line" status)"
+  if [ "$st" = "deny" ]; then
+    record "S5e-$at" PASS "raw $at with tool_name=None (no tool context), sent by the SDK shim, is denied" "status=deny reason=${line#*reason=}"
+  else
+    record "S5e-$at" FAIL "raw $at with tool_name=None (no tool context), sent by the SDK shim, is denied" "status=$st reason=${line#*reason=}"
+  fi
 done
 
 echo "== S8 cross-session isolation (B revokes its own lease) =="

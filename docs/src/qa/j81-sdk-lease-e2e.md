@@ -40,9 +40,9 @@ per scenario and a `J81_SUMMARY` line, and exits non-zero on any FAIL.
 | S7 | After `kill -9` and a restart on the same state file the decisions are identical, nothing revoked is re-granted, a still-valid lease still permits, and a lease already expired is not refreshed. A corrupt, truncated, empty, missing or other-subject record makes the runtime exit 78. A record corrupted while running denies everything and does not heal. |
 | S8 | A second runtime with its own agent id and state is isolated: its revocation does not reach the first. |
 
-S5d only covers relabelling with the tool context still attached, which the gate denies. The
-omit-context relabel is the residual Core ADR 0038 section 36 documents. The SDK shim can send
-it (`query_policy` with `tool_name=None` builds no typed context), so S5e sends it and
-reports the runtime's answer as `INFO`. It is never counted as a pass and does not gate the
-exit status. Against these runtimes, which have no gateway, the observed answer is `allow`:
-the residual is real and is not closed by this harness.
+S5d covers relabelling with the tool context still attached. The omit-context relabel is
+the form Core ADR 0038 section 36 used to document as a residual: the SDK shim can send it
+(`query_policy` with `tool_name=None` builds no typed context). Governed mode now admits only
+`TOOL_CALL`, so S5e sends it and expects `deny`; with the gate absent (`--mutation-check`) the
+runtime answers `allow` and S5e FAILs, which is the intended discrimination. S5e has not been
+run since that change.

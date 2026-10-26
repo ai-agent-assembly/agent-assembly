@@ -1535,8 +1535,7 @@ leases lowered by the same `authored_lease_from` and `lower_leases` path `aasm r
 | `TOOL_CALL`, declared domain classes, `allow: true` | Permit only if every class has a valid, un-revoked, `whole`-scope lease naming the governed subject (`admit_lease` with `RequirementScope::Whole`) |
 | `TOOL_CALL`, undeclared tool; `allow: false`; missing or empty tool name; no `ToolCallContext` | Deny |
 | `TOOL_CALL`, tool declaring `process_creation` or `syscall`; any unrecognised class | Deny, even with a lease for that class |
-| `LLM_CALL`, `TOOL_RESULT`, context absent or of the matching kind | Permit, no lease |
-| `LLM_CALL`, `TOOL_RESULT` carrying any other typed context (notably a `ToolCallContext`) | Deny |
+| `LLM_CALL`, `TOOL_RESULT`, with or without a context | Deny |
 | `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
 
 A `Permit` only falls through to the gateway and local policy; the gate can only restrict.
@@ -1557,15 +1556,18 @@ token and the trace and span ids never influence a verdict. The decision reads o
 - **Admission, not confinement.** It decides whether a cooperative SDK-wrapped call may
   proceed. A process that bypasses the SDK, or a tool that does more than its declaration
   says, is not stopped.
-- **`action_type` is SDK-asserted.** `LLM_CALL` and `TOOL_RESULT` need no lease, so a
-  non-cooperative SDK can relabel a tool call as one of them **and omit the tool context**
-  and skip the lease check. A relabel that leaves a `ToolCallContext` (or any other typed
-  context) in the request is denied; the omit-the-context relabel is the residual nothing in
-  the request can reveal. The gateway and local policy still apply to it.
+- **`action_type` is SDK-asserted, so only `TOOL_CALL` can be admitted.** `LLM_CALL` and
+  `TOOL_RESULT` are denied in governed mode in every form (context omitted, a
+  `ToolCallContext` left in, an empty matching context, or another typed context), because
+  a label the client chooses cannot be allowed to waive the lease check. No shipped SDK
+  sends them as a policy query (Python, Node and Go each send `TOOL_CALL` with a
+  `ToolCallContext`), so no cooperative path is lost; ungoverned runtimes are unchanged. This
+  closes the admission of a relabelled request, not a client that skips the query or runs
+  the tool without asking, which stays the advisory-layer limit above.
 - **Leases do not refresh.** Lease TTLs count from the run record's `issued_at`. After
   `issued_at + ttl` every tool that declares a leased class denies until an operator starts
-  a new run; this is fail-closed by design, not a bug. Tools declared `[none]` and the
-  lease-free action types are unaffected.
+  a new run; this is fail-closed by design, not a bug. Tools declared `[none]` are
+  unaffected.
 - **Tool names match exactly.** No case folding, trimming or wildcard expansion; a `"*"`
   entry declares nothing. A tool the operator did not declare by exact name is undeclared.
 - **The subject is runtime-wide.** Every connection to one runtime shares the server-side
@@ -1654,9 +1656,9 @@ the URL is an explicit operator input.
 **Evidence.** `aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs` drives the real binary over
 its IPC socket against a counting fake gateway; see the PR for the falsifier table. J81
 remains partial until the PR6 end-to-end journey. The real Python-SDK harness for that journey is
-`scripts/qa/j81-sdk-lease-e2e.sh` (see `docs/src/qa/j81-sdk-lease-e2e.md`). It is manual local evidence, not a CI gate, and the
-omit-context relabel residual of section 36 stays unexercised as a pass: the harness only reports its
-observed answer as INFO.
+`scripts/qa/j81-sdk-lease-e2e.sh` (see `docs/src/qa/j81-sdk-lease-e2e.md`). It is manual local evidence, not a CI gate. Its S5e rows
+send the omit-context relabel and expect a deny; they have not been run since that change
+(NOT_RUN until an independent run).
 
 ### 38. Plan-time / runtime parity: `aasm run --dry-run` calls the same decision
 

@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **Governed runtime denies `LLM_CALL` / `TOOL_RESULT` policy queries (AAASM-6259)** — in
+  lease-governed mode (`AA_LEASE_POLICY` set) the runtime used to admit these two action
+  types without a lease, so a client that relabelled a tool call and omitted its tool context
+  was answered allow. Only `TOOL_CALL` is admitted now. No shipped SDK sends the other two
+  as policy queries; ungoverned runtimes are unchanged.
 - **Local state is owner-only (AAASM-6387)** — `~/.aasm`, `~/.aa` and the default audit
   directory were created `0755` and their SQLite databases (`local.db`, `audit.db`,
   `aa_gateway.db` with `-wal`/`-shm`), `budget.json` and the audit JSONL `0644`, readable by

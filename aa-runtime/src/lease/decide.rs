@@ -16,8 +16,7 @@
 //! | `TOOL_CALL`, missing or empty tool name, or no `ToolCallContext` | Deny |
 //! | `TOOL_CALL`, tool declaring `process_creation` or `syscall` | Deny |
 //! | `TOOL_CALL`, any class this module does not recognise | Deny |
-//! | `LLM_CALL`, `TOOL_RESULT`, context absent or of the matching kind | Permit, no lease |
-//! | `LLM_CALL`, `TOOL_RESULT` carrying any other typed context (notably a `ToolCallContext`) | Deny |
+//! | `LLM_CALL`, `TOOL_RESULT`, with or without a context | Deny |
 //! | `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
 //!
 //! Tool names match exactly: no case folding, trimming or wildcard expansion,
@@ -48,12 +47,13 @@
 //! * **Admission, not confinement.** This decides whether a cooperative
 //!   SDK-wrapped call may proceed. It does not stop a process that bypasses
 //!   the SDK.
-//! * **`action_type` is SDK-asserted.** `LLM_CALL` and `TOOL_RESULT` need no
-//!   lease, so a non-cooperative SDK can relabel a call as one of them **and
-//!   omit the context** and be permitted here (still subject to the gateway and
-//!   local policy). A relabel that leaves a `ToolCallContext` behind is denied;
-//!   the omit-the-context relabel is the residual nothing in the request can
-//!   reveal.
+//! * **`action_type` is SDK-asserted.** Only `TOOL_CALL` can be admitted, so a
+//!   label buys nothing: relabelling a tool call as `LLM_CALL` or
+//!   `TOOL_RESULT`, with the context kept, omitted or replaced by an empty
+//!   matching one, is denied like every other non-`TOOL_CALL` type. No shipped
+//!   SDK sends those types as a policy query (each sends `TOOL_CALL` with a
+//!   `ToolCallContext`), so governed mode loses no cooperative path. What this
+//!   cannot do is stop a process that skips the query altogether.
 //! * **The subject is runtime-wide**, the server-side agent id, not a
 //!   per-connection identity.
 //! * **Verdicts are point-in-time.** A lease that lapses or is revoked while
@@ -419,28 +419,12 @@ pub fn decide(
     now: SystemTime,
 ) -> LeaseVerdict {
     match ActionType::try_from(req.action_type) {
-        Ok(ActionType::LlmCall) => lease_free(req, |a| matches!(a, Action::LlmCall(_)), "LLM_CALL"),
-        Ok(ActionType::ToolResult) => lease_free(req, |a| matches!(a, Action::ToolResult(_)), "TOOL_RESULT"),
         Ok(ActionType::ToolCall) => decide_tool(governance, revoked, req, now),
         Ok(other) => deny(format!("action type {other:?} is not admitted in governed mode")),
         Err(_) => deny(format!(
             "unknown action type {} is not admitted in governed mode",
             req.action_type
         )),
-    }
-}
-
-/// Permit a lease-free action type, unless its context shows it is something
-/// else. A request labelled `LLM_CALL` that carries a `ToolCallContext` (or any
-/// other typed context) is a relabelled call, and the context is what the
-/// SDK-asserted label was hiding; only an absent or matching context permits.
-/// What remains is the omit-the-context relabel, which nothing in the request
-/// can reveal.
-fn lease_free(req: &CheckActionRequest, matches_label: impl Fn(&Action) -> bool, label: &str) -> LeaseVerdict {
-    match req.context.as_ref().and_then(|c| c.action.as_ref()) {
-        None => LeaseVerdict::Permit,
-        Some(action) if matches_label(action) => LeaseVerdict::Permit,
-        Some(_) => deny(format!("{label} carries a context for a different kind of action")),
     }
 }
 
@@ -672,55 +656,53 @@ mod tests {
     // ── action table ───────────────────────────────────────────────────────
 
     #[test]
-    fn llm_call_and_tool_result_need_no_lease() {
-        let g = governance(&[]);
-        for t in [ActionType::LlmCall, ActionType::ToolResult] {
-            assert!(permitted(&decide(&g, &none(), &action(t as i32), mid())), "{t:?}");
-        }
-    }
-
-    #[test]
-    fn a_lease_free_label_over_a_tool_call_context_is_denied() {
+    fn llm_call_and_tool_result_are_denied_in_every_form() {
+        // The label is SDK-asserted, so no form of it may admit: context
+        // omitted, context kept, an empty matching context, or another typed
+        // context. Every domain is leased, so a deny is not a missing lease.
         let g = governance(&["filesystem_read"]);
         for t in [ActionType::LlmCall, ActionType::ToolResult] {
-            let mut relabelled = tool_call("writer");
-            relabelled.action_type = t as i32;
             assert_deny(
-                decide(&g, &none(), &relabelled, mid()),
+                decide(&g, &none(), &action(t as i32), mid()),
+                &format!("{t:?} omit context"),
+            );
+
+            let mut with_tool_context = tool_call("calc");
+            with_tool_context.action_type = t as i32;
+            assert_deny(
+                decide(&g, &none(), &with_tool_context, mid()),
                 &format!("{t:?} with ToolCall context"),
             );
-            // Even a tool that needs no lease: the label is what is false.
-            let mut calc = tool_call("calc");
-            calc.action_type = t as i32;
-            assert_deny(decide(&g, &none(), &calc, mid()), &format!("{t:?} calc"));
+
+            let matching = match t {
+                ActionType::LlmCall => Action::LlmCall(LlmCallContext::default()),
+                _ => Action::ToolResult(Default::default()),
+            };
+            let empty_matching = CheckActionRequest {
+                action_type: t as i32,
+                context: Some(ActionContext { action: Some(matching) }),
+                ..Default::default()
+            };
+            assert_deny(
+                decide(&g, &none(), &empty_matching, mid()),
+                &format!("{t:?} empty matching context"),
+            );
+
+            let file_context = CheckActionRequest {
+                action_type: t as i32,
+                context: Some(ActionContext {
+                    action: Some(Action::FileOp(Default::default())),
+                }),
+                ..Default::default()
+            };
+            assert_deny(
+                decide(&g, &none(), &file_context, mid()),
+                &format!("{t:?} file context"),
+            );
         }
-        // Control: matching or absent context still permits.
-        let llm = CheckActionRequest {
-            action_type: ActionType::LlmCall as i32,
-            context: Some(ActionContext {
-                action: Some(Action::LlmCall(LlmCallContext::default())),
-            }),
-            ..Default::default()
-        };
-        assert!(permitted(&decide(&g, &none(), &llm, mid())));
-        assert!(permitted(&decide(
-            &g,
-            &none(),
-            &action(ActionType::ToolResult as i32),
-            mid()
-        )));
-        // A different typed context is also a relabel.
-        let file_under_llm = CheckActionRequest {
-            action_type: ActionType::LlmCall as i32,
-            context: Some(ActionContext {
-                action: Some(Action::FileOp(Default::default())),
-            }),
-            ..Default::default()
-        };
-        assert_deny(
-            decide(&g, &none(), &file_under_llm, mid()),
-            "file context under LLM_CALL",
-        );
+        // Control: a declared `[none]` TOOL_CALL is still the one way to admit
+        // an action without a lease.
+        assert!(permitted(&decide(&g, &none(), &tool_call("calc"), mid())));
     }
 
     #[test]

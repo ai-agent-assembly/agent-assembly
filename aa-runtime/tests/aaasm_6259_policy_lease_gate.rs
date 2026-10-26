@@ -213,13 +213,11 @@ async fn permitted_requests_reach_the_gateway_and_denied_ones_never_do() {
     let calls = Arc::new(AtomicUsize::new(0));
     let gate = governed_gate(SERVER_AGENT);
 
-    // Permit: no lease needed, leased class, and the two lease-free action types.
+    // Permit: no lease needed, and a leased class.
     let mut seen = 0;
     for (label, req) in [
         ("[none] tool", tool_call("calc")),
         ("leased class", tool_call("reader")),
-        ("llm call", typed(ActionType::LlmCall)),
-        ("tool result", typed(ActionType::ToolResult)),
     ] {
         let resp = ask(&gate, SERVER_AGENT, req, &calls).await;
         assert_forwarded(&resp, &calls, seen, label);
@@ -231,6 +229,8 @@ async fn permitted_requests_reach_the_gateway_and_denied_ones_never_do() {
         ("unleased class", tool_call("writer")),
         ("undeclared tool", tool_call("ghost")),
         ("no tool name", tool_call("")),
+        ("llm call, no context", typed(ActionType::LlmCall)),
+        ("tool result, no context", typed(ActionType::ToolResult)),
         ("file operation", typed(ActionType::FileOperation)),
         ("network call", typed(ActionType::NetworkCall)),
         ("process exec", typed(ActionType::ProcessExec)),
