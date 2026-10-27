@@ -169,33 +169,48 @@ fn is_trusted_gateway_url(raw: &str) -> bool {
         && url.fragment().is_none()
 }
 
+/// The JSON body of `GET {base}/api/v1/health`, or `None` on any failure.
+///
+/// Callers pass only a loopback URL they chose. The client ignores proxy
+/// settings and never follows a redirect, so the request cannot leave the
+/// machine, and it gives up after 500 ms so a stranger on the port cannot stall
+/// the caller.
+fn fetch_health_body(base: &str) -> Option<serde_json::Value> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_millis(500))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+    let resp = client
+        .get(format!("{}/api/v1/health", base.trim_end_matches('/')))
+        .send()
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json::<serde_json::Value>().ok()
+}
+
 /// Whether `base` answers like an Agent Assembly API: `GET /api/v1/health`
 /// returns JSON carrying string `status` and `api_version` fields.
 ///
 /// Guards against a recycled PID (the dead gateway's number now belongs to some
 /// other process) and against a listener that merely holds the port.
 pub fn answers_health_signature(base: &str) -> bool {
-    let Ok(client) = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(500))
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-    else {
-        return false;
-    };
-    let Ok(resp) = client
-        .get(format!("{}/api/v1/health", base.trim_end_matches('/')))
-        .send()
-    else {
-        return false;
-    };
-    if !resp.status().is_success() {
-        return false;
-    }
-    resp.json::<serde_json::Value>().ok().is_some_and(|v| {
+    fetch_health_body(base).is_some_and(|v| {
         v.get("status").is_some_and(serde_json::Value::is_string)
             && v.get("api_version").is_some_and(serde_json::Value::is_string)
     })
+}
+
+/// The `version` the Agent Assembly API at `base` reports about itself, if it
+/// answers the health signature and carries one (AAASM-6385).
+pub fn server_reported_version(base: &str) -> Option<String> {
+    let body = fetch_health_body(base)?;
+    body.get("status")?.as_str()?;
+    body.get("api_version")?.as_str()?;
+    body.get("version")?.as_str().map(str::to_owned)
 }
 
 /// The base URL of the gateway `aasm start` left running, if one is.
@@ -317,6 +332,38 @@ mod tests {
             format!("http://{}", l.local_addr().unwrap())
         };
         assert!(!answers_health_signature(&closed));
+    }
+
+    #[test]
+    fn the_reported_version_is_read_only_from_an_aa_shaped_health_answer() {
+        use std::io::{Read, Write};
+        let serve = |body: &'static str| {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = l.local_addr().unwrap();
+            std::thread::spawn(move || {
+                if let Ok((mut s, _)) = l.accept() {
+                    let mut b = [0u8; 1024];
+                    let _ = s.read(&mut b);
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
+            });
+            format!("http://{addr}")
+        };
+        assert_eq!(
+            server_reported_version(&serve(r#"{"status":"ok","version":"0.0.1-rc.6","api_version":"v1"}"#)).as_deref(),
+            Some("0.0.1-rc.6")
+        );
+        // A listener that merely returns a `version` is not an Agent Assembly API.
+        assert_eq!(server_reported_version(&serve(r#"{"version":"9.9.9"}"#)), None);
+        // An answer with no version reports none rather than a guess.
+        assert_eq!(
+            server_reported_version(&serve(r#"{"status":"ok","api_version":"v1"}"#)),
+            None
+        );
     }
 
     #[test]
