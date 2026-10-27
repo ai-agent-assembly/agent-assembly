@@ -38,7 +38,9 @@ while True:
         else:
             b = body_for(mode)
             c.sendall(b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: %d\r\nconnection: close\r\n\r\n" % len(b) + b)
-    except Exception:
+    except OSError:
+        # The probe under test hangs up early on purpose (an oversized or slow body),
+        # so a reset or broken pipe here is the expected outcome, not a stub failure.
         pass
     finally:
         c.close()
