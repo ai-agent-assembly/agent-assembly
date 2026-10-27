@@ -3350,6 +3350,11 @@ mod plan {
         /// Runs `resolve_boundary` with a broker-required egress contract and
         /// returns the resulting `Boundary`'s refusal detail, if any.
         fn resolve(authored: Vec<AuthoredLease>) -> Boundary {
+            // `resolve_boundary` reads the proxy environment (AA_PROXY_NETWORK_FAIL_OPEN,
+            // through the broker report). Tests elsewhere set it under this same guard, so
+            // an unguarded reader here sees their fail-open posture and gets the wrong
+            // refusal (AAASM-6392). Callers never hold the guard, so this cannot deadlock.
+            let _env = crate::test_support::env_guard();
             let (identity, handle) = test_identity_and_handle();
             let command = std::process::Command::new("echo");
             let child_env = std::collections::BTreeMap::new();
@@ -3362,6 +3367,20 @@ mod plan {
             let (_, _, boundary) =
                 plan.resolve_boundary(&identity, &handle, &command, &child_env, credentials, &network);
             boundary
+        }
+
+        fn narrow_lease() -> AuthoredLease {
+            AuthoredLease {
+                domain: CapabilityDomain::NetworkEgress,
+                scope: RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
+                max_count: None,
+                ttl_seconds: Some(3_600),
+                delegable: false,
+                issuer: Some("issuer".to_string()),
+                policy_rule: None,
+                approval_ref: None,
+                reason: "test fixture: narrower than Whole".to_string(),
+            }
         }
 
         fn refusal_detail(boundary: &Boundary) -> Option<&str> {
@@ -3397,6 +3416,42 @@ mod plan {
             );
         }
 
+        /// AAASM-6392 regression: `resolve` reads the process environment, so it must wait
+        /// for whoever holds `env_guard` and has the fail-open variable set, instead of
+        /// seeing their posture. With the guard removed from `resolve` the reader finishes
+        /// while the variable is still set, which this test notices deterministically
+        /// (a finished reader, not a race to be won).
+        #[test]
+        fn resolve_waits_for_a_writer_that_holds_the_env_guard() {
+            let writer = crate::test_support::env_guard();
+            let prior = std::env::var_os("AA_PROXY_NETWORK_FAIL_OPEN");
+            std::env::set_var("AA_PROXY_NETWORK_FAIL_OPEN", "1");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let reader = std::thread::spawn(move || {
+                let boundary = resolve(vec![narrow_lease()]);
+                let _ = tx.send(refusal_detail(&boundary).unwrap_or_default().to_string());
+            });
+            let early = rx.recv_timeout(std::time::Duration::from_millis(300));
+
+            match prior {
+                Some(v) => std::env::set_var("AA_PROXY_NETWORK_FAIL_OPEN", v),
+                None => std::env::remove_var("AA_PROXY_NETWORK_FAIL_OPEN"),
+            }
+            drop(writer);
+            reader.join().unwrap();
+
+            assert!(
+                early.is_err(),
+                "resolve returned while a writer held env_guard with the fail-open variable set: {early:?}"
+            );
+            let after = rx.recv().expect("the reader reports once the guard is released");
+            assert!(
+                after.contains(&EgressRefusal::EgressScopeNotCoveredByGrant.to_string()),
+                "after the writer restored the environment the scope refusal must be the one reported: {after}"
+            );
+        }
+
         /// Pair B -- the scope arm: a `NetworkEgress` lease exists but is
         /// scoped to specific selectors while the requested scope here is
         /// `Whole` -- `egress_test_plan`'s fixture policy has no
@@ -3411,18 +3466,7 @@ mod plan {
         /// lease widened to `Whole`.
         #[test]
         fn a_lease_scoped_narrower_than_the_request_does_not_cover_it() {
-            let narrow_lease = AuthoredLease {
-                domain: CapabilityDomain::NetworkEgress,
-                scope: RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]),
-                max_count: None,
-                ttl_seconds: Some(3_600),
-                delegable: false,
-                issuer: Some("issuer".to_string()),
-                policy_rule: None,
-                approval_ref: None,
-                reason: "test fixture: narrower than Whole".to_string(),
-            };
-            let adversarial = resolve(vec![narrow_lease]);
+            let adversarial = resolve(vec![narrow_lease()]);
             let adversarial_detail = refusal_detail(&adversarial).unwrap_or_default().to_string();
             assert!(
                 adversarial_detail.contains(&EgressRefusal::EgressScopeNotCoveredByGrant.to_string()),
