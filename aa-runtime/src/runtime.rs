@@ -1342,7 +1342,7 @@ pub async fn run(config: RuntimeConfig) -> Result<(), StartupRefusal> {
     // tasks can outlive `run()` for up to the shutdown timeout, and a successor
     // that took a released lock in that window would have its fresh socket
     // orphaned by the late tail of this process.
-    std::mem::forget(_agent_lock);
+    Box::leak(Box::new(_agent_lock));
 
     // Install global Prometheus metrics recorder.
     let prometheus_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
