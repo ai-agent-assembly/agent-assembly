@@ -181,6 +181,15 @@ pub trait GatewaySpawner {
     fn log_path(&self) -> Option<PathBuf> {
         None
     }
+    /// Whether something already accepts connections on `addr` (AAASM-6385).
+    ///
+    /// Readiness is a TCP accept by anyone, so a stranger holding the port makes a
+    /// start look ready and its answers look like ours. Refusing up front is the
+    /// only check that holds, because a real server can take seconds before it
+    /// tries to bind, so its later exit is no evidence of who answered.
+    fn port_in_use(&self, _addr: SocketAddr) -> bool {
+        false
+    }
     /// The binary this spawner launches, if it resolved to a file (AAASM-6385).
     fn binary_path(&self) -> Option<PathBuf> {
         None
@@ -403,6 +412,10 @@ impl GatewaySpawner for ProcessSpawner {
         self.log_path.clone()
     }
 
+    fn port_in_use(&self, addr: SocketAddr) -> bool {
+        super::gw_probe::probe_tcp(addr, Duration::from_millis(200))
+    }
+
     fn binary_path(&self) -> Option<PathBuf> {
         aa_core::binary_resolve::resolve_binary(binary_name(self.mode))
     }
@@ -462,6 +475,16 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
     if let Some(pid) = check_already_running(pid_file, addr, Duration::from_millis(200)) {
         println!("{}", format_already_running_message(addr, pid));
         return ExitCode::SUCCESS;
+    }
+
+    // Not a gateway this command started (that case returned above): whatever holds
+    // the address would be taken for ours by the readiness probe, so do not launch.
+    if spawner.port_in_use(addr) {
+        eprintln!(
+            "aasm start: {addr} is already in use by a process this command did not start. \
+             Stop it, or choose another port with --port."
+        );
+        return ExitCode::FAILURE;
     }
 
     if args.foreground {
@@ -867,6 +890,58 @@ mod tests {
         // AAASM-6385: the address it bound is recorded for operator commands.
         let recorded = std::fs::read_to_string(super::super::pidfile::url_file_path(&pid_file)).unwrap();
         assert_eq!(recorded.trim(), format!("http://localhost:{}", addr.port()));
+    }
+
+    /// A spawner that must never be asked to launch anything.
+    struct BusyPortSpawner;
+    impl GatewaySpawner for BusyPortSpawner {
+        fn spawn_background(&self, _addr: SocketAddr) -> std::io::Result<u32> {
+            unreachable!("a start on a busy port must not spawn")
+        }
+        fn exec_foreground(&self, _addr: SocketAddr) -> std::io::Result<std::process::ExitStatus> {
+            unreachable!("a start on a busy port must not exec")
+        }
+        fn port_in_use(&self, _addr: SocketAddr) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn a_busy_port_is_refused_before_anything_is_launched_and_no_pid_is_recorded() {
+        let _net = crate::test_support::net_guard();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pid_file = tmp.path().join("gateway.pid");
+        for foreground in [false, true] {
+            let args = StartArgs {
+                mode: ModeArg::Local,
+                port: 45123,
+                host: None,
+                config: std::path::PathBuf::from("/dev/null"),
+                foreground,
+                no_dashboard: false,
+            };
+            let exit = run_with_spawner(args, &BusyPortSpawner, &pid_file);
+            assert_eq!(
+                format!("{exit:?}"),
+                format!("{:?}", ExitCode::FAILURE),
+                "foreground={foreground}"
+            );
+            assert!(
+                !pid_file.exists(),
+                "no PID may be recorded for a start that never launched"
+            );
+        }
+    }
+
+    #[test]
+    fn the_real_spawner_sees_a_listener_it_did_not_start_and_a_free_port() {
+        let _net = crate::test_support::net_guard();
+        let spawner = ProcessSpawner::new(ModeArg::Local);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let busy = listener.local_addr().unwrap();
+        assert!(spawner.port_in_use(busy));
+        drop(listener);
+        assert!(!spawner.port_in_use(busy));
     }
 
     #[test]
