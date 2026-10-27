@@ -137,6 +137,7 @@ $ aasm start
   PID:     74601
 
   Log:     /Users/you/.aasm/aa-api-server.log
+  Server:  aa-api-server 0.0.1-rc.7 from /Users/you/.cargo/bin/aa-api-server
 
 $ aasm status
 Agent Assembly Status
@@ -145,6 +146,12 @@ Agent Assembly Status
   Health:    ✓ ok
 ─────────────────────────────────────
 ```
+
+The `Server:` line names the `aa-api-server` that was launched, where it came from and the
+version it reports. `aasm start` uses the first one next to `aasm`, on `$PATH` or in
+`~/.cargo/bin`, so an older install can be picked up in place of your build. When that
+version differs from `aasm`'s own, a `warning:` on stderr names both versions and the path.
+It is a warning, not a refusal, because the pairing may be deliberate.
 
 (Only the header is shown; the rest of the output follows the layout above.) If you
 started the server with `--port 9123`, `aasm status` follows it there. An explicit
