@@ -322,6 +322,17 @@ mod tests {
     use aa_proto::assembly::policy::v1::action_context::Action;
     use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, ToolCallContext};
 
+    /// A reader that blocks its thread for `delay` and then fails, standing in for a
+    /// hung filesystem read. It is built outside the async tests because that thread
+    /// block is the point: `read_bounded` runs readers under `spawn_blocking`, so the
+    /// sleep must be a real thread sleep, not an async one.
+    fn blocking_reader(delay: std::time::Duration, fail_with: fn() -> LeaseStateError) -> Reader {
+        Arc::new(move || {
+            std::thread::sleep(delay);
+            Err(fail_with())
+        })
+    }
+
     fn rig() -> (Arc<PolicyLeaseGate>, Arc<LeaseStatus>, LeaseGovernance, LeaseState) {
         let yaml = "tools:\n  calc: { allow: true, capabilities: [none] }\n";
         let resolution = aa_policy::resolve::classify(std::path::Path::new("p.yaml"), yaml);
@@ -392,9 +403,8 @@ mod tests {
     #[tokio::test]
     async fn a_read_that_blocks_trips_the_gate_after_the_timeout() {
         let (gate, status, gov, state) = rig();
-        let reader: Reader = Arc::new(|| {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            Err(LeaseStateError::Corrupt("unreachable".into()))
+        let reader = blocking_reader(std::time::Duration::from_secs(3), || {
+            LeaseStateError::Corrupt("unreachable".into())
         });
         let end = tokio::time::timeout(
             std::time::Duration::from_secs(2),
@@ -417,9 +427,8 @@ mod tests {
 
     #[tokio::test]
     async fn read_bounded_reports_a_timeout_as_an_io_error() {
-        let slow: Reader = Arc::new(|| {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            Err(LeaseStateError::Missing("x".into()))
+        let slow = blocking_reader(std::time::Duration::from_millis(500), || {
+            LeaseStateError::Missing("x".into())
         });
         let r = read_bounded(slow, std::time::Duration::from_millis(50)).await;
         assert!(matches!(r, Err(LeaseStateError::Io(e)) if e.kind() == std::io::ErrorKind::TimedOut));
