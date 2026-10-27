@@ -25,6 +25,29 @@ pub struct PolicyRule {
     pub approval_timeout_secs: u32,
 }
 
+impl PolicyRule {
+    /// Entries in `blocked_actions` / `requires_approval_actions` that name no
+    /// real action type. The evaluator compares each entry verbatim to
+    /// `ActionType::as_str_name()` of the event, which is exactly the set
+    /// `ActionType::from_str_name` accepts (case-sensitive, no trimming), so an
+    /// entry failing this can never match an event.
+    pub fn unmatchable_actions(&self) -> impl Iterator<Item = &String> {
+        self.blocked_actions
+            .iter()
+            .chain(&self.requires_approval_actions)
+            .filter(|a| aa_proto::assembly::common::v1::ActionType::from_str_name(a).is_none())
+    }
+
+    /// Whether this rule can ever decide anything: at least one entry names a
+    /// real action type.
+    pub fn is_effective(&self) -> bool {
+        self.blocked_actions
+            .iter()
+            .chain(&self.requires_approval_actions)
+            .any(|a| aa_proto::assembly::common::v1::ActionType::from_str_name(a).is_some())
+    }
+}
+
 impl Default for PolicyRule {
     fn default() -> Self {
         Self {
@@ -75,16 +98,14 @@ impl std::error::Error for PolicyLoadError {}
 
 /// Load policy rules from a TOML file at `path`.
 ///
-/// - If the file does not exist, logs a warning and returns empty `PolicyRules` (no enforcement).
+/// - If the file does not exist, returns `Ok(None)`: absent is not the same as empty, and the
+///   caller must not report a missing file as a loaded policy.
 /// - If the file exists but cannot be parsed, returns `Err(PolicyLoadError::Parse)`.
 /// - Any other I/O error returns `Err(PolicyLoadError::Io)`.
-pub fn load_policy(path: &std::path::Path) -> Result<PolicyRules, PolicyLoadError> {
+pub fn load_policy(path: &std::path::Path) -> Result<Option<PolicyRules>, PolicyLoadError> {
     match std::fs::read_to_string(path) {
-        Ok(contents) => toml::from_str(&contents).map_err(PolicyLoadError::Parse),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::warn!(path = %path.display(), "policy file not found — starting without enforcement");
-            Ok(PolicyRules::default())
-        }
+        Ok(contents) => toml::from_str(&contents).map(Some).map_err(PolicyLoadError::Parse),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(PolicyLoadError::Io(e)),
     }
 }
@@ -113,6 +134,29 @@ mod tests {
     }
 
     #[test]
+    fn a_rule_is_effective_only_if_it_names_a_real_action_type() {
+        let rule = |blocked: &[&str], approval: &[&str]| PolicyRule {
+            blocked_actions: blocked.iter().map(|s| s.to_string()).collect(),
+            requires_approval_actions: approval.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        assert!(rule(&["NETWORK_CALL"], &[]).is_effective());
+        assert!(rule(&[], &["TOOL_CALL"]).is_effective());
+        assert!(rule(&["send_email", "FILE_OPERATION"], &[]).is_effective());
+        assert!(!rule(&[], &[]).is_effective());
+        assert!(!rule(&["send_email"], &[]).is_effective());
+        // Verbatim, like the evaluator: no case folding, no trimming.
+        assert!(!rule(&["network_call"], &[]).is_effective());
+        assert!(!rule(&[" NETWORK_CALL"], &[]).is_effective());
+        assert_eq!(
+            rule(&["send_email", "NETWORK_CALL"], &["nope"])
+                .unmatchable_actions()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
     fn policy_rule_fields_are_accessible() {
         let rule = PolicyRule {
             name: "block-exfil".to_string(),
@@ -137,8 +181,10 @@ mod tests {
     #[test]
     fn load_policy_returns_empty_when_file_absent() {
         let result = load_policy(std::path::Path::new("/nonexistent/path/policy.toml"));
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_empty());
+        assert!(
+            matches!(result, Ok(None)),
+            "absent must not read as an empty loaded policy"
+        );
     }
 
     #[test]
@@ -149,7 +195,7 @@ mod tests {
         writeln!(tmp, r#"name = "block-exfil""#).unwrap();
         writeln!(tmp, r#"blocked_actions = ["send_email"]"#).unwrap();
         tmp.flush().unwrap();
-        let result = load_policy(tmp.path()).expect("should parse");
+        let result = load_policy(tmp.path()).expect("should parse").expect("file exists");
         assert_eq!(result.rules.len(), 1);
         assert_eq!(result.rules[0].name, "block-exfil");
         assert_eq!(result.rules[0].blocked_actions, vec!["send_email"]);

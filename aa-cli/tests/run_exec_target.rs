@@ -587,6 +587,95 @@ async fn generic_run_writes_no_dev_tool_settings() {
     );
 }
 
+// --- AAASM-6297: a launch that cannot be built writes nothing ---------------
+
+/// A detected Copilot — a real `CopilotAdapter` over a throwaway extensions
+/// directory and a throwaway VS Code settings path, never the developer's own.
+fn detected_copilot(root: &Path, settings: &Path) -> Box<dyn DevToolAdapter> {
+    let extensions = root.join("extensions");
+    let ext = extensions.join("github.copilot-1.230.0");
+    std::fs::create_dir_all(&ext).expect("extension dir");
+    std::fs::write(
+        ext.join("package.json"),
+        r#"{"name":"github.copilot","version":"1.230.0"}"#,
+    )
+    .expect("extension manifest");
+    Box::new(aa_devtool::adapters::CopilotAdapter::with_paths(extensions, settings))
+}
+
+fn copilot_args() -> RunArgs {
+    let mut args = exec_args(&[]);
+    args.tool = "copilot".into();
+    args
+}
+
+/// **The defect.** Copilot is a VS Code extension with no launch command, so
+/// `aasm run copilot` can never succeed — yet the adapter's `apply_settings`
+/// used to run first, rewriting the user's VS Code settings on a command that
+/// then failed, with no receipt and nothing to undo it.
+///
+/// Measured on disk, over the real adapter: an existing settings file stays
+/// byte-identical, and an absent one is not created. The positive control runs
+/// the same harness through an adapter that *can* launch and asserts it still
+/// applies its settings and runs — so the two assertions above are not simply
+/// "this harness never writes anything".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_the_adapter_cannot_build_leaves_the_settings_file_untouched() {
+    let gateway = TestGateway::start().await.expect("start gateway");
+    let _env = GatewayEnv::point_at(gateway.endpoint());
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // --- existing settings file: byte-identical afterwards ---
+    let existing = dir.path().join("existing").join("settings.json");
+    std::fs::create_dir_all(existing.parent().unwrap()).unwrap();
+    let before: &[u8] = b"{\n  \"editor.fontSize\": 14\n}\n";
+    std::fs::write(&existing, before).unwrap();
+    let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+    adapters.insert("copilot", detected_copilot(&dir.path().join("a"), &existing));
+
+    let err = execute_with_adapters(&copilot_args(), &adapters)
+        .await
+        .expect_err("Copilot has no launch command, so the run must fail");
+    assert!(
+        err.to_string().contains("failed to build launch command"),
+        "the run must fail on the launch error, not on something earlier; got: {err}"
+    );
+    assert_eq!(
+        std::fs::read(&existing).unwrap(),
+        before,
+        "a run that cannot succeed rewrote the user's settings file"
+    );
+
+    // --- absent settings file: not created ---
+    let absent = dir.path().join("absent").join("settings.json");
+    let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+    adapters.insert("copilot", detected_copilot(&dir.path().join("b"), &absent));
+    execute_with_adapters(&copilot_args(), &adapters)
+        .await
+        .expect_err("Copilot has no launch command, so the run must fail");
+    assert!(
+        !absent.exists() && !absent.parent().unwrap().exists(),
+        "a run that cannot succeed created a settings file at {}",
+        absent.display()
+    );
+
+    // --- positive control: an adapter that can launch still applies and runs ---
+    let launchable = dir.path().join("launchable-settings.json");
+    let (adapter, _generated, applied, launched) = SettingsWritingAdapter::new(launchable.clone());
+    let mut adapters: HashMap<&str, Box<dyn DevToolAdapter>> = HashMap::new();
+    adapters.insert("spy-tool", Box::new(adapter));
+    let mut args = exec_args(&[]);
+    args.tool = "spy-tool".into();
+    let code = execute_with_adapters(&args, &adapters)
+        .await
+        .expect("the launchable control must succeed");
+    assert_eq!(code, 0);
+    assert!(
+        applied.load(Ordering::SeqCst) && launched.load(Ordering::SeqCst) && launchable.exists(),
+        "the control must apply its settings and launch, or the assertions above prove nothing"
+    );
+}
+
 // --- negative control 2: exec must not shadow a tool id --------------------
 
 /// **Negative control.** A registered tool id wins over the generic target.

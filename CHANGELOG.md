@@ -7,7 +7,46 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Governed runtime denies `LLM_CALL` / `TOOL_RESULT` policy queries (AAASM-6259)** — in
+  lease-governed mode (`AA_LEASE_POLICY` set) the runtime used to admit these two action
+  types without a lease, so a client that relabelled a tool call and omitted its tool context
+  was answered allow. Only `TOOL_CALL` is admitted now. No shipped SDK sends the other two
+  as policy queries; ungoverned runtimes are unchanged.
+- **Local state is owner-only (AAASM-6387)** — `~/.aasm`, `~/.aa` and the default audit
+  directory were created `0755` and their SQLite databases (`local.db`, `audit.db`,
+  `aa_gateway.db` with `-wal`/`-shm`), `budget.json` and the audit JSONL `0644`, readable by
+  any local user. They are now created `0700`/`0600` whatever the umask, through one helper
+  (`aa_core::private_fs`). **Behaviour change:** an *existing* default location left loose by an
+  older version is tightened (group/other bits removed, never added) when you own it and it
+  is not a symlink. Nothing outside those defaults is ever touched, so a group-shared
+  deployment must keep its data elsewhere (`AA_GATEWAY_DB_PATH`, `AA_AUDIT_DIR`, the configured
+  storage path).
+
 ### Changed
+
+- **`aasm start` first-run fixes (AAASM-6389)** — the daemon (`aa-api-server`) no longer
+  inherits the caller's stdout/stderr, so `aasm start | head` returns; its output goes to an
+  owner-only (0600) `~/.aasm/aa-api-server.log`, whose path `aasm start` prints. A daemon that
+  exits at startup (for example an invalid `AASM_API_KEY`) is now detected immediately and
+  reported with the tail of that log (keys redacted). A missing `aa-api-server` /
+  `aa-gateway` now names the binary, where `aasm` looked and the `cargo build` command.
+  The binary is resolved next to the running `aasm` first, then `$PATH`, then `~/.cargo/bin`
+  (a stale `$PATH` copy no longer shadows a sibling build). Docs: source-build steps include
+  `cargo build -p aa-api --bin aa-api-server` / `cargo build -p aa-gateway`, and first-run
+  explains that a generated admin key is not recoverable and how to start with your own
+  `AASM_API_KEY=aa_<32 hex>`.
+- **BREAKING: the `aasm` CLI's built-in default API URL is now `http://localhost:7391`
+  (was `http://localhost:8080`) (AAASM-6385)** — `aasm start` serves its API on 7391, so a
+  bare `aasm status` reported a healthy gateway as unreachable. `aasm start` now also
+  records the address it bound in `~/.aasm/gateway.url` (mode 0600, removed by `aasm stop`),
+  and the default follows it only while the recorded gateway is alive, on a loopback host,
+  and answers the API health signature. To keep targeting something on 8080 pass
+  `--api-url http://localhost:8080` or save a context
+  (`aasm context set local --api-url http://localhost:8080`); explicit flags and named contexts
+  still take precedence. `aasm status` now names the URL it tried when nothing answers.
+  `aasm lease init` also prints the exact command that starts a governed runtime.
 
 - **`aasm run` wires real authority inputs into `authority_gate` (AAASM-6277,
   ADR 0038)** — `aa-policy`'s `authority.leases` grants now actually reach

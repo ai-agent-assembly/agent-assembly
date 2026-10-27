@@ -506,9 +506,11 @@ def _executor(file: str, heading: str, text: str, description: str):
     "docs/src/quick-start/installation.md", "Build from source",
     "git clone https://github.com/ai-agent-assembly/agent-assembly.git\n"
     "cd agent-assembly\n"
-    "cargo build -p aa-cli            # produces ./target/debug/aasm",
-    "build the aa-cli binary from source (clone/cd skipped: CI already runs "
-    "inside a checkout of this repo)",
+    "cargo build -p aa-cli            # produces ./target/debug/aasm\n"
+    "cargo build -p aa-api --bin aa-api-server   # `aasm start` launches this; aa-cli alone does not build it",
+    "build aasm and aa-api-server from source (clone/cd skipped: CI already runs "
+    "inside a checkout of this repo); both binaries must exist afterwards, because "
+    "`aasm start` needs the second (AAASM-6389)",
 )
 def _exec_build_aa_cli() -> None:
     r = _run(["cargo", "build", "-p", "aa-cli"], cwd=REPO_ROOT, timeout=1800)
@@ -517,6 +519,11 @@ def _exec_build_aa_cli() -> None:
     binary = _debug_dir() / "aasm"
     if not binary.exists():
         raise AssertionError(f"expected binary at {binary}, not found")
+    r = _run(["cargo", "build", "-p", "aa-api", "--bin", "aa-api-server"], cwd=REPO_ROOT, timeout=1800)
+    if r.returncode != 0:
+        raise AssertionError(f"cargo build -p aa-api --bin aa-api-server failed:\n{r.stderr}")
+    if not (_debug_dir() / "aa-api-server").exists():
+        raise AssertionError("aa-api-server not produced by `cargo build -p aa-api --bin aa-api-server`")
 
 
 def _ensure_binary_built(package: str, binary_name: str) -> Path:
@@ -539,7 +546,62 @@ def _ensure_binary_built(package: str, binary_name: str) -> Path:
     return binary
 
 
-def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+# Every executor runs under a throwaway HOME, never the operator's: several of
+# the documented commands start, stop and signal real processes and write
+# ~/.aasm and ~/.aa (pid files, contexts, logs), and running this script on a
+# workstation must not stop the operator's own gateway or rewrite their config.
+_THROWAWAY_HOMES: list[str] = []
+
+
+def _new_home(tag: str) -> str:
+    home = tempfile.mkdtemp(prefix=f"aaasm-docverify-{tag}-")
+    _THROWAWAY_HOMES.append(home)
+    return home
+
+
+_DOC_HOME: list[str] = []
+
+
+def _doc_home() -> str:
+    """HOME shared by the plain `_aasm` executors (contexts persist across them
+    on purpose: the configuration.md steps build on each other)."""
+    if not _DOC_HOME:
+        _DOC_HOME.append(_new_home("doc"))
+    return _DOC_HOME[0]
+
+
+_START_HOME: list[str] = []
+
+
+def _start_home() -> str:
+    """A second, separate HOME for the `aasm start` -> `status` -> `stop` steps:
+    the configuration.md executors leave a default context (8080) in
+    `_doc_home()`, and a named context correctly outranks the recorded address."""
+    if not _START_HOME:
+        _START_HOME.append(_new_home("start"))
+    return _START_HOME[0]
+
+
+def _executor_env(home: str, **extra: str) -> dict[str, str]:
+    env = {
+        **os.environ,
+        "HOME": home,
+        "PATH": f"{_debug_dir()}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    env.update(extra)
+    return env
+
+
+def _cleanup_homes() -> None:
+    import shutil
+
+    while _THROWAWAY_HOMES:
+        shutil.rmtree(_THROWAWAY_HOMES.pop(), ignore_errors=True)
+    _DOC_HOME.clear()
+    _START_HOME.clear()
+
+
+def _aasm(*args: str, timeout: int = 15, home: str | None = None) -> subprocess.CompletedProcess:
     # `cargo install --path aa-cli` (the doc's own next step) triggers its own
     # uncached release build in a separate target dir — the rust-cache /
     # `cargo build --workspace` steps above buy it nothing, so it would add a
@@ -547,7 +609,7 @@ def _aasm(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     # exercises the binary `cargo build -p aa-cli` already produced instead;
     # `cargo install` itself is ALLOWLISTED (see below) with that reasoning.
     binary = _debug_dir() / "aasm"
-    return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout)
+    return _run([str(binary), *args], cwd=REPO_ROOT, timeout=timeout, env=_executor_env(home or _doc_home()))
 
 
 @_executor(
@@ -730,14 +792,191 @@ def _exec_gateway_status_running() -> None:
 @_executor(
     "docs/src/quick-start/first-run.md", "3. Check overall status",
     "$ aasm status",
-    "`aasm status` fails closed: the gRPC gateway is up but the HTTP API on "
-    "8080 is not, so it must still report unreachable",
+    "`aasm status` fails closed: the gRPC gateway is up but nothing serves "
+    "the HTTP API on 7391 yet, so it must still report unreachable (this "
+    "single key also covers the doc's second `$ aasm status`, which "
+    "`_exec_start_then_status` asserts against a real `aasm start`)",
 )
 def _exec_status_after_gateway_start() -> None:
     r = _aasm("status", timeout=15)
     if r.returncode == 0:
         raise AssertionError(f"aasm status unexpectedly succeeded:\n{r.stdout}")
     _assert_in(r.stdout + r.stderr, "unreachable", "aasm status")
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+_START_PORT: list[int] = []
+
+
+def _answers_health(port: int) -> bool:
+    """A real GET of the API's health signature (not a TCP probe, which would
+    succeed against any other listener on the port)."""
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(f"http://127.0.0.1:{port}/api/v1/health", timeout=2) as resp:
+            body = json.loads(resp.read())
+    except (OSError, ValueError):
+        return False
+    return isinstance(body.get("status"), str) and isinstance(body.get("api_version"), str)
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "3. Check overall status",
+    "$ aasm start",
+    "`aasm start` serves the HTTP API and a bare `aasm status` then follows it and "
+    "reports it healthy (AAASM-6385: it used to query 8080). Runs on an ephemeral "
+    "port under a throwaway HOME, so it can neither collide with nor stop an "
+    "operator's own gateway; stopped again here so steps 4-5 see no reachable API",
+)
+def _exec_start_then_status() -> None:
+    _ensure_binary_built("aa-api", "aa-api-server")
+    port = _free_port()
+    if _answers_health(port):  # defensive: the port was free a moment ago
+        raise AssertionError(f"port {port} unexpectedly already serves an API; refusing to run")
+    _START_PORT[:] = [port]
+    home = _start_home()
+    env = _executor_env(home)
+    binary = str(_debug_dir() / "aasm")
+    try:
+        # Output goes to a file, not a pipe: the detached server inherits
+        # `aasm start`'s stdout/stderr, so a captured pipe would never reach EOF
+        # and `subprocess.run` would block until its timeout.
+        with tempfile.TemporaryFile("w+") as out:
+            r = subprocess.run(  # noqa: S603 - fixed argv
+                [binary, "start", "--port", str(port)],
+                cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT,
+            )
+            out.seek(0)
+            started = out.read()
+        if r.returncode != 0:
+            raise AssertionError(f"aasm start failed:\n{started}")
+        _assert_in(started, f"http://localhost:{port}", "aasm start")
+        if not _answers_health(port):
+            raise AssertionError(f"nothing on port {port} answers the API health signature:\n{started}")
+        s = _run([binary, "status"], cwd=REPO_ROOT, timeout=15, env=env)
+        if s.returncode != 0:
+            raise AssertionError(f"aasm status after aasm start failed:\n{s.stdout}\n{s.stderr}")
+        _assert_in(s.stdout, f"Gateway:   http://localhost:{port}", "aasm status")
+        _assert_in(s.stdout, "Health:    \u2713 ok", "aasm status")
+    finally:
+        _stop_started_gateway(binary, env, home)
+
+
+def _stop_started_gateway(binary: str, env: dict[str, str], home: str) -> None:
+    _run([binary, "stop"], cwd=REPO_ROOT, timeout=30, env=env)
+    # Belt and braces for a start that half-failed: only the PID this throwaway
+    # HOME recorded, never a pattern match.
+    pid_file = Path(home) / ".aasm" / "gateway.pid"
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text().strip()), 15)
+        except (ValueError, OSError):
+            pass
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "1. Start the gateway",
+    "cargo build -p aa-gateway",
+    "`cargo build -p aa-gateway` produces the `aa-gateway` binary the gRPC steps "
+    "need (a source build of aa-cli alone does not)",
+)
+def _exec_build_aa_gateway() -> None:
+    binary = _ensure_binary_built("aa-gateway", "aa-gateway")
+    if not binary.exists():
+        raise AssertionError(f"{binary} missing after `cargo build -p aa-gateway`")
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "3. Check overall status",
+    "cargo build -p aa-api --bin aa-api-server",
+    "`cargo build -p aa-api --bin aa-api-server` produces the server `aasm start` launches",
+)
+def _exec_build_aa_api_server() -> None:
+    binary = _ensure_binary_built("aa-api", "aa-api-server")
+    if not binary.exists():
+        raise AssertionError(f"{binary} missing after `cargo build -p aa-api --bin aa-api-server`")
+
+
+def _start_cli(args: list[str], env: dict[str, str]) -> tuple[int, str]:
+    """Run `aasm <args>` with output to a file, never a pipe (see
+    `_exec_start_then_status`), returning (exit code, output)."""
+    with tempfile.TemporaryFile("w+") as out:
+        r = subprocess.run(  # noqa: S603 - fixed argv
+            [str(_debug_dir() / "aasm"), *args],
+            cwd=REPO_ROOT, timeout=30, env=env, stdout=out, stderr=subprocess.STDOUT,
+        )
+        out.seek(0)
+        return r.returncode, out.read()
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "The admin API key",
+    'export AASM_API_KEY="aa_$(openssl rand -hex 16)"\n'
+    "aasm start\n"
+    "aasm agent list",
+    "starting with a self-chosen `aa_` + 32 hex key makes `aasm agent list` authenticate "
+    "(ephemeral port, throwaway HOME; the key is generated here, never printed)",
+)
+def _exec_start_with_chosen_key() -> None:
+    import secrets
+
+    _ensure_binary_built("aa-api", "aa-api-server")
+    port = _free_port()
+    home = _start_home()
+    key = "aa_" + secrets.token_hex(16)
+    env = _executor_env(home, AASM_API_KEY=key)
+    binary = str(_debug_dir() / "aasm")
+    try:
+        code, out = _start_cli(["start", "--port", str(port)], env)
+        if code != 0:
+            raise AssertionError(f"aasm start with a valid key failed:\n{out.replace(key, 'aa_<key>')}")
+        listed = _run(
+            [binary, "--api-url", f"http://127.0.0.1:{port}", "agent", "list"],
+            cwd=REPO_ROOT, timeout=15, env=env,
+        )
+        if listed.returncode != 0:
+            raise AssertionError(f"aasm agent list with the chosen key failed:\n{listed.stdout}{listed.stderr}".replace(key, "aa_<key>"))
+        _assert_in(listed.stdout, "No agents found", "aasm agent list")
+        # And without the key the same command is refused, as the page says.
+        bare = _executor_env(home)
+        bare.pop("AASM_API_KEY", None)
+        refused = _run(
+            [binary, "--api-url", f"http://127.0.0.1:{port}", "agent", "list"],
+            cwd=REPO_ROOT, timeout=15, env=bare,
+        )
+        _assert_in(refused.stdout + refused.stderr, "authentication required", "aasm agent list without a key")
+    finally:
+        _stop_started_gateway(binary, env, home)
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "The admin API key",
+    "$ AASM_API_KEY=not-a-key aasm start",
+    "a malformed key makes `aasm start` fail fast naming the key-format error from the "
+    "server's log (ephemeral port, throwaway HOME)",
+)
+def _exec_start_with_bad_key() -> None:
+    _ensure_binary_built("aa-api", "aa-api-server")
+    home = _start_home()
+    env = _executor_env(home, AASM_API_KEY="not-a-key")
+    binary = str(_debug_dir() / "aasm")
+    try:
+        code, out = _start_cli(["start", "--port", str(_free_port())], env)
+        if code == 0:
+            raise AssertionError(f"aasm start with a malformed key unexpectedly succeeded:\n{out}")
+        _assert_in(out, "exited before it was ready", "aasm start")
+        _assert_in(out, "invalid AASM_API_KEY", "aasm start")
+    finally:
+        _stop_started_gateway(binary, env, home)
 
 
 @_executor(
@@ -761,6 +1000,26 @@ def _exec_topology_overview_message() -> None:
     if r.returncode == 0:
         raise AssertionError(f"aasm topology overview unexpectedly succeeded:\n{r.stdout}")
     _assert_in(r.stdout + r.stderr, "unreachable", "aasm topology overview")
+
+
+@_executor(
+    "docs/src/quick-start/first-run.md", "7. Stop the gateway",
+    "aasm stop",
+    "`aasm stop` is idempotent under the same throwaway HOME as the start step: it "
+    "succeeds whether or not that server is running, removes the pid and address "
+    "records, and the API it served is no longer reachable",
+)
+def _exec_stop() -> None:
+    home = _start_home()
+    r = _aasm("stop", timeout=30, home=home)
+    if r.returncode != 0:
+        raise AssertionError(f"aasm stop failed:\n{r.stdout}\n{r.stderr}")
+    state = Path(home) / ".aasm"
+    for name in ("gateway.pid", "gateway.url"):
+        if (state / name).exists():
+            raise AssertionError(f"{name} survived aasm stop")
+    if _START_PORT and _answers_health(_START_PORT[0]):
+        raise AssertionError(f"port {_START_PORT[0]} still serves the API after aasm stop")
 
 
 @_executor(
@@ -799,7 +1058,7 @@ def _dry_run(*args: str) -> None:
     # because the documented argv ends in `-- <program> [args]` and anything
     # appended after that would be handed to the previewed program.
     policy = REPO_ROOT / "policy-examples" / "low-risk.yaml"
-    env = {**os.environ, "AA_POLICY": str(policy)}
+    env = _executor_env(_doc_home(), AA_POLICY=str(policy))
     r = _run([str(_debug_dir() / "aasm"), "run", *args], cwd=REPO_ROOT, timeout=60, env=env)
     if r.returncode != 0:
         raise AssertionError(f"aasm run {' '.join(args)} exited {r.returncode}:\n{r.stdout}\n{r.stderr}")
@@ -874,6 +1133,13 @@ def check_coverage(units: list[Unit], allowlist: dict, executors: list) -> list[
 
 
 def run_executors(executors: list) -> list[str]:
+    try:
+        return _run_executors(executors)
+    finally:
+        _cleanup_homes()
+
+
+def _run_executors(executors: list) -> list[str]:
     failures: list[str] = []
     for key, description, fn in executors:
         try:
@@ -942,6 +1208,66 @@ def selftest() -> int:
         ok = False
     else:
         print("SELFTEST (c) passed: an indented fence is extracted")
+
+    # (d) executors never use the operator's real HOME.
+    real = os.environ.get("HOME")
+    sentinel = tempfile.mkdtemp(prefix="aaasm-sentinel-home-")
+    os.environ["HOME"] = sentinel
+    try:
+        envs = [_executor_env(_doc_home()), _executor_env(_start_home())]
+        homes = {e["HOME"] for e in envs}
+        src = Path(__file__).read_text(encoding="utf-8")
+        leaked = [t for t in ("expanduser", "Path.home(") if t in src.replace('"' + t + '"', "")]
+        if sentinel in homes or len(homes) != 2 or leaked:
+            print(f"SELFTEST FAILED (d): executors would touch the real HOME ({homes}, {leaked})")
+            ok = False
+        else:
+            print("SELFTEST (d) passed: executors run under throwaway HOMEs, never the real one")
+    finally:
+        if real is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = real
+        _cleanup_homes()
+
+    # (e) every process an executor launches (other than cargo, which needs the
+    # real toolchain HOME) carries a throwaway HOME. `subprocess.run` is patched,
+    # so nothing is executed: each executor runs against a recorder and the
+    # environment it passed is what is asserted. An executor that grew a raw
+    # `_run([...])`/`subprocess.run` without `env=` would inherit the real HOME and
+    # fail here.
+    real_home = os.environ.get("HOME", "")
+    recorded: list[tuple[list[str], dict | None]] = []
+    real_run, real_ensure = subprocess.run, _ensure_binary_built
+
+    def fake_run(cmd, *args, **kw):  # noqa: ANN001
+        recorded.append((list(cmd), kw.get("env")))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    subprocess.run = fake_run  # type: ignore[assignment]
+    globals()["_ensure_binary_built"] = lambda package, binary_name: _debug_dir() / binary_name
+    try:
+        for _key, _description, fn in EXECUTORS:
+            try:
+                fn()
+            except (AssertionError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+                pass  # outputs are fake; only the launch environment is under test
+        homes = set(_THROWAWAY_HOMES)
+        bad = [
+            (cmd[:3], (env or {}).get("HOME"))
+            for cmd, env in recorded
+            if cmd and Path(cmd[0]).name != "cargo" and ((env or {}).get("HOME") not in homes or (env or {}).get("HOME") == real_home)
+        ]
+        launched = [cmd for cmd, _ in recorded if cmd and Path(cmd[0]).name != "cargo"]
+        if bad or not launched:
+            print(f"SELFTEST FAILED (e): executor launches without a throwaway HOME: {bad} (launched {len(launched)})")
+            ok = False
+        else:
+            print(f"SELFTEST (e) passed: all {len(launched)} executor launches carry a throwaway HOME")
+    finally:
+        subprocess.run = real_run  # type: ignore[assignment]
+        globals()["_ensure_binary_built"] = real_ensure
+        _cleanup_homes()
 
     return 0 if ok else 1
 

@@ -104,11 +104,12 @@ pub fn load_or_degrade(
 /// Write budget to path atomically: write to `<path>.json.tmp`, then rename.
 pub fn save_to_disk_atomic(path: &std::path::Path, budget: &PersistedBudget) -> Result<(), PersistenceError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(PersistenceError::Io)?;
+        // AAASM-6387: spend per agent/team is not for other local users.
+        aa_core::private_fs::create_private_dir_all(parent).map_err(PersistenceError::Io)?;
     }
     let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(budget).map_err(PersistenceError::Json)?;
-    std::fs::write(&tmp, &json).map_err(PersistenceError::Io)?;
+    aa_core::private_fs::write_private_file(&tmp, json.as_bytes()).map_err(PersistenceError::Io)?;
     std::fs::rename(&tmp, path).map_err(PersistenceError::Io)?;
     Ok(())
 }
@@ -369,5 +370,35 @@ mod tests {
         assert_eq!(state.month, 0); // default from serde(default)
         assert!(state.monthly_spent_usd.is_none());
         assert_eq!(state.spent_usd, rust_decimal::Decimal::new(1000, 2));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_budget_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// AAASM-6387: budget.json (per-agent spend) is owner-only, including when it
+    /// replaces a looser file an older binary wrote.
+    #[test]
+    fn budget_file_and_directory_are_owner_only() {
+        crate::storage::private_fs::with_umask_022(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join(".aa");
+            let path = dir.join("budget.json");
+            let budget = load_from_disk(&path).unwrap();
+            save_to_disk_atomic(&path, &budget).unwrap();
+            let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&path), 0o600);
+
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            save_to_disk_atomic(&path, &budget).unwrap();
+            assert_eq!(
+                mode(&path),
+                0o600,
+                "an older, looser file is replaced by an owner-only one"
+            );
+        });
     }
 }

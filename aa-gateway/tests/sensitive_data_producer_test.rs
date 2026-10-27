@@ -94,7 +94,7 @@ fn service(store: Arc<SqliteBackend>) -> SensitiveDataProjectionService {
 /// An engine whose scope index is empty — `evaluate` reaches `evaluate_primary`.
 fn primary_engine() -> PolicyEngine {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap()
@@ -126,6 +126,7 @@ fn global_doc() -> PolicyDocument {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 

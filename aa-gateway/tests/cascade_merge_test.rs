@@ -28,6 +28,7 @@ fn allow_doc(scope: PolicyScope) -> Arc<PolicyDocument> {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     })
 }
 
@@ -40,6 +41,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
             allow: false,
             requires_approval_if: None,
             limit_per_hour: None,
+            capabilities: None,
         },
     );
     Arc::new(PolicyDocument {
@@ -59,6 +61,7 @@ fn deny_tool_doc(scope: PolicyScope, tool_name: &str) -> Arc<PolicyDocument> {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     })
 }
 
@@ -71,6 +74,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
             allow: true,
             requires_approval_if: Some("true".to_string()),
             limit_per_hour: None,
+            capabilities: None,
         },
     );
     Arc::new(PolicyDocument {
@@ -90,6 +94,7 @@ fn approval_tool_doc(scope: PolicyScope, tool_name: &str, timeout: u32) -> Arc<P
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     })
 }
 

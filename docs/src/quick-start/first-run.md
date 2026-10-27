@@ -18,19 +18,28 @@ flowchart LR
     F --> G["aasm gateway stop"]
 ```
 
-> **Two endpoints, one gateway.** The gateway speaks **gRPC on `127.0.0.1:50051`**
-> — this is what SDK shims and the sidecar proxy connect to. The operator
-> commands `aasm status`, `aasm agent`, and `aasm topology` talk to the gateway's
-> **HTTP API on `http://localhost:8080`**. In the OSS alpha the gRPC listener is
-> what `aasm gateway start` brings up; until an HTTP API server is also serving
-> on `8080`, the HTTP-backed commands report `unreachable`. That is expected and
-> called out at each step below.
+> **Two servers, two commands.** `aasm gateway start` brings up the **gRPC
+> gateway on `127.0.0.1:50051`** — what SDK shims and the sidecar proxy connect to.
+> `aasm start` brings up the **local API server**: the HTTP API and embedded
+> dashboard on **`http://localhost:7391`**. The operator commands `aasm status`,
+> `aasm agent`, and `aasm topology` talk to the HTTP API, and a bare `aasm status`
+> follows the address `aasm start` is serving (7391 unless you passed `--port` or
+> `--host`). Until `aasm start` is running they report `unreachable`; that is
+> expected and called out at each step below.
 
 ## 1. Start the gateway
 
 Point the gateway at one of the bundled reference policies. `policy-examples/`
 ships `low-risk.yaml`, `medium-risk.yaml`, and `high-risk.yaml`; `low-risk`
 allows and audits everything, which is the easiest starting point.
+
+The gRPC gateway is a separate binary, `aa-gateway`, which `cargo build -p aa-cli` does
+**not** produce. Steps 1 and 2 (and everything that connects over gRPC) need it, so on a
+source build build it first (skip this if you installed a release, which ships it):
+
+```sh
+cargo build -p aa-gateway
+```
 
 ```console
 $ aasm gateway start --policy policy-examples/low-risk.yaml
@@ -39,8 +48,9 @@ Logs: /Users/you/.aasm/logs/gateway.log
 ```
 
 This spawns `aa-gateway` as a detached background process listening for gRPC on
-`127.0.0.1:50051`. (If you built from source, ensure `aa-gateway` is reachable —
-`aasm gateway start` looks in `$PATH`, `~/.cargo/bin`, and `./target/{debug,release}`.)
+`127.0.0.1:50051`. (`aasm gateway start` looks for `aa-gateway` next to the `aasm`
+executable, then on `$PATH`, then in `~/.cargo/bin` — never the current directory — so on a
+source build run `./target/debug/aasm` or put `target/debug` on your `PATH`.)
 
 > **Alternative — from a source checkout without installing:** the gateway can be
 > run directly with Cargo, which is the form the rest of the book uses:
@@ -70,13 +80,15 @@ Tail the gateway log at any time with `aasm gateway logs`.
 ## 3. Check overall status
 
 `aasm status` gives the fleet-wide picture — gateway health, registered agents,
-pending approvals, and budget. It queries the **HTTP API at `http://localhost:8080`**:
+pending approvals, and budget. It queries the **HTTP API at `http://localhost:7391`**,
+the address `aasm start` serves. Only the gRPC gateway from step 1 is running so
+far, so it reports `unreachable`:
 
 ```console
 $ aasm status
 Agent Assembly Status
 ─────────────────────────────────────
-  Gateway:   http://localhost:8080
+  Gateway:   http://localhost:7391
   Health:    ✗ unreachable
 ─────────────────────────────────────
 
@@ -101,14 +113,82 @@ BUDGET STATUS
   Date:           --
   (no per-agent data)
 
-Error: gateway is not running. Start it with: aasm start
+Error: no Agent Assembly API answered at http://localhost:7391. Start it with: aasm start (or point the CLI at another with --api-url)
 ```
 
-The `unreachable` health here reflects the gRPC-vs-HTTP split described above:
-the gRPC gateway from step 1 is up, but the HTTP API on `8080` is not being
-served in this OSS-only setup. Once an API server is serving on `8080` (for
-example through the hosted control plane, or a future OSS API server), `Health`
-flips to reachable and registered agents appear in `ACTIVE AGENTS`.
+The `unreachable` health reflects the split described above: the gRPC gateway is
+up, but nothing is serving the HTTP API yet. Start the local API server and ask
+again — no flags needed, because `aasm status` reads the address `aasm start`
+recorded. On a source build, `aasm start` needs `aa-api-server`, which `cargo build -p aa-cli`
+does not produce:
+
+```sh
+cargo build -p aa-api --bin aa-api-server
+```
+
+`aasm start` detaches the server: its output goes to an owner-only log file, not to your
+terminal (so `aasm start | head` returns), and the command prints where it is.
+
+```console
+$ aasm start
+✓ Agent Assembly gateway started
+  Mode:    local
+  Address: http://localhost:7391
+  PID:     74601
+
+  Log:     /Users/you/.aasm/aa-api-server.log
+  Server:  aa-api-server 0.0.1-rc.7 from /Users/you/.cargo/bin/aa-api-server
+
+$ aasm status
+Agent Assembly Status
+─────────────────────────────────────
+  Gateway:   http://localhost:7391
+  Health:    ✓ ok
+─────────────────────────────────────
+```
+
+The `Server:` line names the `aa-api-server` that was launched, where it came from and the
+version it reports. `aasm start` uses the first one next to `aasm`, on `$PATH` or in
+`~/.cargo/bin`, so an older install can be picked up in place of your build. When that
+version differs from `aasm`'s own, a `warning:` on stderr names both versions and the path.
+It is a warning, not a refusal, because the pairing may be deliberate. The check runs only when
+`aasm start` launches the server: if one is already running, `aasm start` reports that and
+does not re-check it, so use `aasm status` to see the running server's version.
+
+(Only the header is shown; the rest of the output follows the layout above.) If you
+started the server with `--port 9123`, `aasm status` follows it there. An explicit
+`--api-url`, `--context`, or `default_context` always takes precedence, and a server
+started with `aasm start --foreground` records nothing, so pass `--api-url` for it
+if you changed the port.
+
+### The admin API key
+
+`aasm status` works without a key. `aasm agent list`, `aasm topology overview` and the other
+data commands are authenticated, and a freshly started server with no `AASM_API_KEY` set
+**generates** a random admin key, prints only its first few characters, and does not store
+it anywhere: that key cannot be recovered afterwards, so those commands answer
+`authentication required`. To get a key you can use, choose one yourself, in the form `aa_`
+followed by 32 hexadecimal characters, and start the server with it (keep it somewhere safe;
+the server never writes it down):
+
+```sh
+export AASM_API_KEY="aa_$(openssl rand -hex 16)"
+aasm start
+aasm agent list
+```
+
+(`aasm agent list` then prints `No agents found.` on an empty registry.) A key in any other
+form stops the server from starting, and `aasm start` says why instead of only timing out:
+
+```console
+$ AASM_API_KEY=not-a-key aasm start
+aasm start: aa-api-server exited before it was ready at 127.0.0.1:7391
+  aa-api-server output (full log: /Users/you/.aasm/aa-api-server.log):
+    Error: "invalid AASM_API_KEY: API key must start with 'aa_'"
+```
+
+Run `aasm stop` to stop the server (it is the only way to stop a daemon whose output you
+cannot see in your terminal).
 
 Add `--watch` to auto-refresh the display every 5 seconds, or `--json` for a
 machine-readable header suitable for scripting and CI.
@@ -153,7 +233,7 @@ Until then these commands report the API as unreachable:
 
 ```console
 $ aasm agent list
-error: API request failed: error sending request for url (http://localhost:8080/api/v1/agents)
+error: API request failed: error sending request for url (http://localhost:7391/api/v1/agents)
 ```
 
 ## 5. View the topology
@@ -199,8 +279,13 @@ approvals indicator, theme toggle, Settings, and Log out across the top:
 
 ## 7. Stop the gateway
 
-When you are done, shut the gateway down cleanly (SIGTERM, escalating to SIGKILL
-after the timeout):
+When you are done, shut each server down cleanly (SIGTERM, escalating to SIGKILL
+after the timeout). `aasm stop` stops what `aasm start` started; `aasm gateway stop`
+stops the gRPC gateway:
+
+```sh
+aasm stop
+```
 
 ```sh
 aasm gateway stop

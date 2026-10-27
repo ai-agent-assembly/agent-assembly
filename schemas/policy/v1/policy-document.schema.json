@@ -6,6 +6,51 @@
   "type": "object",
   "additionalProperties": false,
   "required": [],
+  "$defs": {
+    "toolPolicy": {
+      "description": "Governance rule for a single tool.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "description": "Whether this tool is permitted to be called. Set to false to block the tool outright.",
+          "type": "boolean"
+        },
+        "limit_per_hour": {
+          "description": "Maximum number of calls to this tool allowed per hour. Calls beyond this limit are denied until the next hour window.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "requires_approval_if": {
+          "description": "Condition expression that triggers a human-in-the-loop approval workflow before the tool call is dispatched. Syntax is TBD and will be defined by the policy engine (AAASM-8). Any non-empty string is accepted at the schema validation level.",
+          "type": "string",
+          "minLength": 1
+        },
+        "capabilities": {
+          "description": "Authority the tool's calls need, declared by the operator (trusted operator policy only). Each word names a capability domain; 'none' declares a purely logical tool that needs no lease and must be the only word. This states a requirement and grants nothing: leases stay independently authored under authority.leases. Absent means undeclared, which a governed runtime treats differently from ['none']. The launch-boundary domains 'resource' and 'workspace_transaction' are not accepted, and the '*' tool key cannot carry a declaration. 'process_creation' and 'syscall' are valid to author; a governed runtime refuses a tool that declares them.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "filesystem_read",
+              "filesystem_write",
+              "network_egress",
+              "name_resolution",
+              "syscall",
+              "process_creation",
+              "ipc",
+              "credential",
+              "none"
+            ]
+          },
+          "if": { "contains": { "const": "none" } },
+          "then": { "maxItems": 1 }
+        }
+      }
+    }
+  },
   "properties": {
     "approval_timeout_secs": {
       "description": "Seconds before an approval request times out and the fallback policy applies. Defaults to 300 (5 minutes) when omitted.",
@@ -33,25 +78,14 @@
     "tools": {
       "description": "Per-tool governance rules. Keys are tool names as reported by the agent (e.g. 'web_search', 'code_interpreter'). Tools not listed here inherit the gateway default policy.",
       "type": "object",
-      "additionalProperties": {
-        "description": "Governance rule for a single tool.",
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "allow": {
-            "description": "Whether this tool is permitted to be called. Set to false to block the tool outright.",
-            "type": "boolean"
-          },
-          "limit_per_hour": {
-            "description": "Maximum number of calls to this tool allowed per hour. Calls beyond this limit are denied until the next hour window.",
-            "type": "integer",
-            "minimum": 1
-          },
-          "requires_approval_if": {
-            "description": "Condition expression that triggers a human-in-the-loop approval workflow before the tool call is dispatched. Syntax is TBD and will be defined by the policy engine (AAASM-8). Any non-empty string is accepted at the schema validation level.",
-            "type": "string",
-            "minLength": 1
-          }
+      "additionalProperties": { "$ref": "#/$defs/toolPolicy" },
+      "properties": {
+        "*": {
+          "description": "The wildcard tool entry takes the same per-tool rule as any other tool, except that it cannot declare capabilities: declarations are matched by exact tool name, and a wildcard would make every tool declared.",
+          "allOf": [
+            { "$ref": "#/$defs/toolPolicy" },
+            { "not": { "type": "object", "properties": { "capabilities": {} }, "required": ["capabilities"] } }
+          ]
         }
       }
     },
@@ -225,6 +259,19 @@
       "properties": {
         "posture": {
           "description": "The required egress-mediation posture. 'not_required' states no property is required; 'broker_required' requires a mediating broker or the launch is refused.",
+          "type": "string",
+          "enum": ["not_required", "broker_required"]
+        }
+      }
+    },
+    "credentials": {
+      "description": "Required credential-brokerage posture (AAASM-6347, ADR 0038). States whether this launch must have its credentials brokered by a fail-closed broker, or whether no such property is required (the default when this section is absent). It states a requirement only and grants no authority: brokering still needs an explicit authority.leases entry with domain 'credential' and scope 'whole'.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["posture"],
+      "properties": {
+        "posture": {
+          "description": "The required credential-brokerage posture. 'not_required' states no property is required; 'broker_required' requires a fail-closed credential broker or the launch is refused.",
           "type": "string",
           "enum": ["not_required", "broker_required"]
         }

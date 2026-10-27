@@ -145,6 +145,13 @@ pub struct ToolPolicy {
     pub limit_per_hour: Option<u32>,
     /// CEL expression that triggers human-in-the-loop approval.
     pub requires_approval_if: Option<String>,
+    /// Operator-declared authority this tool's calls need (AAASM-6259).
+    ///
+    /// `None` means *undeclared*, which is not the same as `Some([NoAuthority])`
+    /// (declared as needing nothing): a later governed-mode decision denies an
+    /// undeclared tool. This crate only carries the declaration; it grants
+    /// nothing and no lease is ever derived from it.
+    pub capabilities: Option<Vec<ToolCapability>>,
 }
 
 /// Whether a policy document requires brokered egress (AAASM-6278, ADR 0038
@@ -178,6 +185,47 @@ impl EgressPosture {
     /// Parse the wire name a policy author writes (snake_case). Returns
     /// `None` for an unrecognised word, so the validator can reject a typo
     /// rather than silently falling back to [`Self::NotRequired`].
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "not_required" => Some(Self::NotRequired),
+            "broker_required" => Some(Self::BrokerRequired),
+            _ => None,
+        }
+    }
+
+    /// The wire name this posture round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::BrokerRequired => "broker_required",
+        }
+    }
+}
+
+/// Whether a policy document requires a credential broker (AAASM-6347,
+/// ADR 0038).
+///
+/// Named `CredentialBrokeragePosture`, not `CredentialPosture`, because
+/// `aa_isolation::CredentialPosture` already names a different thing (what a
+/// backend measured about credential exposure). This is only the *statement
+/// of a requirement*: it grants no authority. Authority still needs an
+/// explicit `authority.leases` entry (`domain: credential`, `scope: whole`),
+/// so `broker_required` without one is refused downstream, never admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CredentialBrokeragePosture {
+    /// No credential-brokerage property is required. The default for every
+    /// document that states no `credentials:` section.
+    #[default]
+    NotRequired,
+    /// Credentials must be brokered by a fail-closed broker, or the launch
+    /// must be refused.
+    BrokerRequired,
+}
+
+impl CredentialBrokeragePosture {
+    /// Parse the wire name a policy author writes (snake_case). `None` for an
+    /// unrecognised word so the validator rejects a typo instead of falling
+    /// back to [`Self::NotRequired`].
     pub fn parse(name: &str) -> Option<Self> {
         match name {
             "not_required" => Some(Self::NotRequired),
@@ -274,6 +322,48 @@ impl LeaseDomain {
             Self::Credential => "credential",
             Self::Resource => "resource",
             Self::WorkspaceTransaction => "workspace_transaction",
+        }
+    }
+}
+
+/// One word of an operator-authored `tools.<name>.capabilities` declaration
+/// (AAASM-6259, ADR 0038 amendment).
+///
+/// The vocabulary is exactly [`LeaseDomain::parse`]'s, mapped one-to-one, plus
+/// `none` for a tool that is purely logical and needs no lease. A declaration
+/// states what authority a tool call *needs*; it never grants any. Leases
+/// remain independently authored under `authority.leases` and are never
+/// derived from a declaration — that independence is what keeps a later
+/// "was this leased" check from becoming a tautology (see [`LeaseDomain`]).
+///
+/// This type can represent every [`LeaseDomain`], including the ones the
+/// validator refuses (`resource`, `workspace_transaction`): refusing them is a
+/// validation decision, not a limit of the vocabulary. `process_creation` and
+/// `syscall` are representable *and* accepted by the validator; a later
+/// governed-mode decision refuses a tool that declares them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolCapability {
+    /// The tool needs no lease (wire word `none`). Only valid as the sole word.
+    NoAuthority,
+    /// The tool needs authority in this capability domain.
+    Domain(LeaseDomain),
+}
+
+impl ToolCapability {
+    /// Parse the wire word. `None` for an unrecognised word, so the validator
+    /// rejects a typo instead of silently dropping it.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "none" => Some(Self::NoAuthority),
+            other => LeaseDomain::parse(other).map(Self::Domain),
+        }
+    }
+
+    /// The wire word this capability round-trips through [`Self::parse`] under.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NoAuthority => "none",
+            Self::Domain(d) => d.as_str(),
         }
     }
 }
@@ -447,6 +537,14 @@ pub struct PolicyDocument {
     /// agent itself may do) consumed by `aa_isolation::egress::egress_gate`
     /// instead.
     pub egress: EgressPosture,
+    /// AAASM-6347 — this document's required credential-brokerage posture.
+    ///
+    /// Defaults to [`CredentialBrokeragePosture::NotRequired`] when the
+    /// document states no `credentials:` section. Like [`Self::egress`], it
+    /// is never routed through [`Self::to_canonical`]: it is a requirement
+    /// stated about the run's broker, not a restriction on the agent, and it
+    /// never sets the egress contract (nor vice versa).
+    pub credentials: CredentialBrokeragePosture,
 }
 
 #[cfg(test)]
@@ -472,6 +570,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: EgressPosture::NotRequired,
+            credentials: CredentialBrokeragePosture::NotRequired,
         };
         assert!(doc.tools.is_empty());
         // AAASM-5751 — an unstated path node. Read this as "nobody said",
@@ -481,6 +580,24 @@ mod tests {
         assert!(doc.leases.is_empty());
         // AAASM-6278 — no egress section authored.
         assert_eq!(doc.egress, EgressPosture::NotRequired);
+        // AAASM-6347 — no credentials section authored.
+        assert_eq!(doc.credentials, CredentialBrokeragePosture::NotRequired);
+    }
+
+    #[test]
+    fn credential_brokerage_posture_round_trips_through_parse_and_as_str() {
+        for posture in [
+            CredentialBrokeragePosture::NotRequired,
+            CredentialBrokeragePosture::BrokerRequired,
+        ] {
+            assert_eq!(CredentialBrokeragePosture::parse(posture.as_str()), Some(posture));
+        }
+    }
+
+    #[test]
+    fn credential_brokerage_posture_rejects_an_unrecognised_word() {
+        assert_eq!(CredentialBrokeragePosture::parse("raw_fallback"), None);
+        assert_eq!(CredentialBrokeragePosture::parse(""), None);
     }
 
     #[test]
@@ -521,6 +638,39 @@ mod tests {
     }
 
     #[test]
+    fn tool_capability_round_trips_every_lease_domain_word_and_none() {
+        for word in [
+            "filesystem_read",
+            "filesystem_write",
+            "network_egress",
+            "name_resolution",
+            "syscall",
+            "process_creation",
+            "ipc",
+            "credential",
+            "resource",
+            "workspace_transaction",
+            "none",
+        ] {
+            let parsed = ToolCapability::parse(word).unwrap_or_else(|| panic!("{word} must parse"));
+            assert_eq!(parsed.as_str(), word);
+        }
+        assert_eq!(ToolCapability::parse("none"), Some(ToolCapability::NoAuthority));
+        assert_eq!(
+            ToolCapability::parse("network_egress"),
+            Some(ToolCapability::Domain(LeaseDomain::NetworkEgress))
+        );
+    }
+
+    #[test]
+    fn tool_capability_rejects_unknown_and_case_variants() {
+        assert_eq!(ToolCapability::parse("None"), None);
+        assert_eq!(ToolCapability::parse("Network_Egress"), None);
+        assert_eq!(ToolCapability::parse("network"), None);
+        assert_eq!(ToolCapability::parse(""), None);
+    }
+
+    #[test]
     fn network_policy_stores_allowlist() {
         let np = NetworkPolicy {
             allowlist: vec!["api.openai.com".to_string()],
@@ -534,6 +684,7 @@ mod tests {
             allow: true,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         };
         assert!(tp.allow);
         assert!(tp.limit_per_hour.is_none());

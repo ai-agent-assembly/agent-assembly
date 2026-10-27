@@ -91,7 +91,11 @@ pub fn dispatch(args: StatusArgs, ctx: &ResolvedContext, output: OutputFormat) -
                 render::render_all(&snapshot, output);
             }
             if snapshot.deployment.health == "unreachable" {
-                eprintln!("Error: gateway is not running. Start it with: aasm start");
+                eprintln!(
+                    "Error: no Agent Assembly API answered at {}. Start it with: aasm start \
+                     (or point the CLI at another with --api-url)",
+                    ctx.api_url
+                );
             }
             compute_exit_code(&snapshot)
         }

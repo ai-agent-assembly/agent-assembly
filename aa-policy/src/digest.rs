@@ -211,6 +211,20 @@ fn hash_tools(hasher: &mut Sha256, tools: &std::collections::HashMap<String, Too
         hasher.update([u8::from(tp.allow)]);
         hash_opt_u32(hasher, tp.limit_per_hour);
         hash_opt_str(hasher, tp.requires_approval_if.as_deref());
+        // AAASM-6259 — emitted ONLY when declared, so a tool without a
+        // declaration hashes byte-for-byte as before and no existing
+        // policy_doc_id moves. The marker byte cannot be mistaken for the next
+        // entry's start (a `hash_str` length prefix, whose first byte is 0 for
+        // any realistic name) or for a following section. Order is preserved,
+        // not sorted: the module promises digest equality iff `PartialEq`
+        // equality, and `Vec` equality is order-sensitive.
+        if let Some(caps) = &tp.capabilities {
+            hasher.update([0xC1u8]);
+            hasher.update((caps.len() as u64).to_be_bytes());
+            for cap in caps {
+                hash_str(hasher, cap.as_str());
+            }
+        }
     }
 }
 
@@ -361,6 +375,19 @@ fn hash_egress(hasher: &mut Sha256, posture: crate::document::EgressPosture) {
     hash_str(hasher, posture.as_str());
 }
 
+/// Hash the AAASM-6347 required credential-brokerage posture.
+///
+/// Emitted only when non-default, for the same byte-compatibility reason as
+/// [`hash_egress`]. The `crd\x01` tag is distinct from `egr\x01` so the two
+/// postures can never be confused for one another.
+fn hash_credentials(hasher: &mut Sha256, posture: crate::document::CredentialBrokeragePosture) {
+    if posture == crate::document::CredentialBrokeragePosture::NotRequired {
+        return;
+    }
+    hasher.update(b"crd\x01");
+    hash_str(hasher, posture.as_str());
+}
+
 impl PolicyDocument {
     /// A stable, content-derived identity for this document: `"sha256:<hex>"`
     /// where the hex is the SHA-256 of a canonical encoding of every validated
@@ -394,6 +421,7 @@ impl PolicyDocument {
         hash_syscalls(&mut hasher, self.syscall_allowlist.as_ref());
         hash_leases(&mut hasher, &self.leases);
         hash_egress(&mut hasher, self.egress);
+        hash_credentials(&mut hasher, self.credentials);
         let digest: [u8; 32] = hasher.finalize().into();
         format!("sha256:{}", hex::encode(digest))
     }
@@ -458,6 +486,69 @@ mod tests {
         assert_ne!(with.content_digest(), other.content_digest());
     }
 
+    /// Fixture with two tools and no declaration — the shape of every policy
+    /// that predates `tools.<name>.capabilities` (AAASM-6259).
+    fn doc_with_undeclared_tools() -> PolicyDocument {
+        let mut doc = base_doc();
+        doc.tools.insert(
+            "bash".to_string(),
+            ToolPolicy {
+                allow: true,
+                limit_per_hour: Some(10),
+                requires_approval_if: Some("amount > 100".to_string()),
+                capabilities: None,
+            },
+        );
+        doc.tools.insert(
+            "read_file".to_string(),
+            ToolPolicy {
+                allow: false,
+                limit_per_hour: None,
+                requires_approval_if: None,
+                capabilities: None,
+            },
+        );
+        doc
+    }
+
+    /// AAASM-6259 — adding `capabilities` must not re-key documents whose tools
+    /// declare none, for the reason `locale_packs` and `filesystem` must not:
+    /// the digest is the `policy_doc_id` on every audit entry.
+    ///
+    /// The expected value was captured by running `content_digest` on this
+    /// fixture at commit `637374623`, the `main` that has no `capabilities`
+    /// field, before `hash_tools` was touched.
+    #[test]
+    fn legacy_tool_documents_keep_their_pre_capabilities_digest() {
+        assert_eq!(
+            doc_with_undeclared_tools().content_digest(),
+            "sha256:5ff9c02dee72e99591aad254daa7b79aa1263332af97917e0caa6e63dc534109",
+            "hashing tool capabilities re-keyed a document that declares none"
+        );
+    }
+
+    /// The other half: a declaration is part of what the policy says, so two
+    /// documents differing only in it must not share an id.
+    #[test]
+    fn declaring_tool_capabilities_changes_the_digest() {
+        use crate::document::{LeaseDomain, ToolCapability};
+        let absent = doc_with_undeclared_tools();
+        let declare = |caps: Vec<ToolCapability>| {
+            let mut d = absent.clone();
+            d.tools.get_mut("bash").unwrap().capabilities = Some(caps);
+            d.content_digest()
+        };
+        let net = declare(vec![ToolCapability::Domain(LeaseDomain::NetworkEgress)]);
+        let fs = declare(vec![ToolCapability::Domain(LeaseDomain::FilesystemWrite)]);
+        let none = declare(vec![ToolCapability::NoAuthority]);
+        let all = [absent.content_digest(), net, fs, none];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "declared sets must each hash distinctly, including absent");
+            }
+        }
+    }
+
     fn base_doc() -> PolicyDocument {
         PolicyDocument {
             name: Some("baseline".to_string()),
@@ -476,6 +567,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: crate::document::EgressPosture::NotRequired,
+            credentials: crate::document::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -731,6 +823,47 @@ mod tests {
         assert_eq!(same.content_digest(), broker_required.content_digest());
     }
 
+    /// AAASM-6347 — same migration question as the egress pin above, for the
+    /// credentials node. The pinned value is the one both earlier pins use,
+    /// so an absent `credentials:` section is byte-identical by construction.
+    #[test]
+    fn legacy_documents_keep_their_pre_credentials_digest() {
+        let mut doc = base_doc();
+        doc.data = Some(crate::document::DataPolicy {
+            sensitive_patterns: vec!["sk-[a-z]+".to_string()],
+            credential_action: crate::document::CredentialAction::RedactOnly,
+            locale_packs: vec![],
+        });
+        assert_eq!(
+            doc.credentials,
+            crate::document::CredentialBrokeragePosture::NotRequired
+        );
+        assert_eq!(
+            doc.content_digest(),
+            "sha256:c4664a0acb0bd210dc52b02942ec99c70b23919c57ff04edd47d07556e0582da",
+            "adding the credentials posture node re-keyed a document that does not use it"
+        );
+    }
+
+    /// Requiring a credential broker is a different policy from not
+    /// requiring one, and is distinct from requiring an egress broker.
+    #[test]
+    fn credentials_posture_is_part_of_the_documents_identity() {
+        use crate::document::{CredentialBrokeragePosture, EgressPosture};
+
+        let none = base_doc();
+
+        let mut creds = base_doc();
+        creds.credentials = CredentialBrokeragePosture::BrokerRequired;
+
+        let mut egress = base_doc();
+        egress.egress = EgressPosture::BrokerRequired;
+
+        assert_ne!(none.content_digest(), creds.content_digest());
+        assert_ne!(creds.content_digest(), egress.content_digest());
+        assert_eq!(creds.content_digest(), creds.clone().content_digest());
+    }
+
     #[test]
     fn digest_is_prefixed_and_stable_across_calls() {
         let doc = base_doc();
@@ -766,6 +899,7 @@ mod tests {
                 allow: false,
                 limit_per_hour: None,
                 requires_approval_if: None,
+                capabilities: None,
             },
         );
         assert_ne!(base_doc().content_digest(), edited.content_digest());
@@ -777,6 +911,7 @@ mod tests {
             allow,
             limit_per_hour: None,
             requires_approval_if: None,
+            capabilities: None,
         };
         let mut a = base_doc();
         a.tools.insert("alpha".into(), tp(true));

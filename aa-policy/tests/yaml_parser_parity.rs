@@ -12,8 +12,8 @@
 //! Two entry points own YAML policy parsing and both are exercised:
 //! `aa_policy::PolicyValidator::from_yaml` (gateway/REST) and
 //! `aa_security::policy::PolicyDocument::from_yaml` (cross-layer canonical AST).
-//! Their differing verdicts on the same input (e.g. an empty document) are
-//! pinned as they are today, not as they ought to be.
+//! Where their verdicts on the same input differ, the difference is pinned as it
+//! is. (The empty-document disagreement was closed by AAASM-6337.)
 //!
 //! Every acceptance is paired with a rejection that differs in one respect, so
 //! a parser that accepts or rejects everything cannot satisfy the corpus.
@@ -85,6 +85,54 @@ fn golden_corpus_verdicts() {
             yaml: "apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: x\n",
             sec: Expect::Err("no enforcement section"),
             pol: Expect::Err("unknown top-level key 'kind'"),
+        },
+        // ── parses, but declares nothing to enforce (AAASM-6338) ────────────
+        // Both entry points reject these. Before AAASM-6338 only the canonical
+        // AST did; the gateway validator loaded each as a fully permissive
+        // policy. Added rows, not changed ones: no earlier expectation moved.
+        Case {
+            name: "version-only document rejected",
+            yaml: "version: 1\n",
+            // The canonical AST has no `version` key at all, so it refuses
+            // earlier and for a different reason; the verdict still agrees.
+            sec: Expect::Err("unknown policy key \"version\""),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "scope-only document rejected",
+            yaml: "scope: global\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "envelope with an empty spec rejected",
+            yaml: "apiVersion: v1\nkind: GovernancePolicy\nmetadata:\n  name: x\nspec: {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "bare-null network section rejected",
+            yaml: "network:\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "empty tools map rejected",
+            yaml: "tools: {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "tagged empty map rejected",
+            yaml: "!foo {}\n",
+            sec: Expect::Err("no enforcement section"),
+            pol: Expect::Err("no enforcement section"),
+        },
+        Case {
+            name: "an explicitly empty network allowlist is a declared section (deny-all)",
+            yaml: "network:\n  allowlist: []\n",
+            sec: OK,
+            pol: OK,
         },
         // ── anchors, aliases, merge keys ────────────────────────────────────
         Case {
@@ -202,23 +250,27 @@ fn golden_corpus_verdicts() {
             pol: OK,
         },
         // ── empty / null / scalar / sequence documents (AAASM-3997) ─────────
+        // AAASM-6337 deliberately flipped the three blank-document `pol` rows
+        // below from OK to Err: the validator used to turn them into a fully
+        // permissive policy while `aa_security` rejected them. Both entry
+        // points now agree.
         Case {
             name: "empty document",
             yaml: "",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "empty mapping",
             yaml: "{}",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "comment-only document",
             yaml: "# only a comment\n",
             sec: Expect::Err("empty or null policy document"),
-            pol: OK,
+            pol: Expect::Err("empty or null policy document"),
         },
         Case {
             name: "null document",
@@ -378,16 +430,16 @@ fn golden_corpus_verdicts() {
             pol: Expect::Err("invalid type: integer `15`, expected f64"),
         },
         Case {
-            name: "budget .inf accepted as infinity",
+            name: "budget .inf rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .inf\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
-            name: "budget .nan accepted as NaN",
+            name: "budget .nan rejected as non-finite (AAASM-6336, was accepted)",
             yaml: "budget:\n  daily_limit_usd: .nan\n",
             sec: Expect::Err("no enforcement section"),
-            pol: OK,
+            pol: Expect::Err("budget.daily_limit_usd: must be a finite number"),
         },
         Case {
             name: "budget u64::MAX accepted",
@@ -412,6 +464,106 @@ fn golden_corpus_verdicts() {
             yaml: "budget:\n  daily_limit_usd: \"5\"\n",
             sec: Expect::Err("no enforcement section"),
             pol: Expect::Err("invalid type: string \"5\", expected f64"),
+        },
+        // ── tools.<name>.capabilities (AAASM-6259) ──────────────────────────
+        Case {
+            name: "tool capabilities accepted",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [network_egress, name_resolution]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities none alone accepted",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [none]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities process_creation and syscall pass authoring",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [process_creation, syscall]\n",
+            sec: OK,
+            pol: OK,
+        },
+        Case {
+            name: "tool capabilities empty list rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: []\n",
+            sec: Expect::Err("must not be empty"),
+            pol: Expect::Err("must not be empty"),
+        },
+        Case {
+            name: "tool capabilities unknown word rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [teleport]\n",
+            sec: Expect::Err("unrecognised capability 'teleport'"),
+            pol: Expect::Err("unrecognised capability 'teleport'"),
+        },
+        Case {
+            name: "tool capabilities duplicate rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [ipc, ipc]\n",
+            sec: Expect::Err("duplicate capability 'ipc'"),
+            pol: Expect::Err("duplicate capability 'ipc'"),
+        },
+        Case {
+            name: "tool capabilities none mixed rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [none, ipc]\n",
+            sec: Expect::Err("cannot be combined"),
+            pol: Expect::Err("cannot be combined"),
+        },
+        Case {
+            name: "tool capabilities resource rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [resource]\n",
+            sec: Expect::Err("launch-boundary"),
+            pol: Expect::Err("launch-boundary"),
+        },
+        Case {
+            name: "tool capabilities workspace_transaction rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: [ipc, workspace_transaction]\n",
+            sec: Expect::Err("launch-boundary"),
+            pol: Expect::Err("launch-boundary"),
+        },
+        Case {
+            name: "tool capabilities under wildcard tool rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    capabilities: [ipc]\n",
+            sec: Expect::Err("\"*\" tool key"),
+            pol: Expect::Err("\"*\" tool key"),
+        },
+        Case {
+            name: "tool capabilities scalar rejected",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities: ipc\n",
+            sec: Expect::Err("invalid type"),
+            pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "tool capabilities null rejected, not read as undeclared",
+            yaml: "tools:\n  t:\n    allow: true\n    capabilities:\n",
+            sec: Expect::Err("must be a list of words, not null"),
+            pol: Expect::Err("must be a list of words, not null"),
+        },
+        Case {
+            name: "wildcard tool with a non-boolean allow rejected",
+            yaml: "tools:\n  \"*\":\n    allow: banana\n",
+            sec: Expect::Err("invalid type"),
+            pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "wildcard tool with an unknown key rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    bogus: 1\n",
+            sec: Expect::Err("unknown policy key \"bogus\""),
+            pol: Expect::Err("bogus"),
+        },
+        Case {
+            name: "wildcard tool with a negative limit rejected",
+            yaml: "tools:\n  \"*\":\n    allow: true\n    limit_per_hour: -5\n",
+            // Existing divergence, not introduced here: the canonical parser's
+            // raw tool has no `limit_per_hour` field (L7-only, owned by the
+            // gateway validator) and ignores the value.
+            sec: OK,
+            pol: Expect::Err("invalid type"),
+        },
+        Case {
+            name: "plain wildcard tool still accepted",
+            yaml: "tools:\n  \"*\":\n    allow: true\n",
+            sec: OK,
+            pol: OK,
         },
     ];
 
@@ -487,8 +639,12 @@ fn golden_corpus_typed_results() {
             .daily_limit_usd
             .unwrap()
     };
-    assert!(budget(".inf").is_infinite() && budget(".inf") > 0.0);
-    assert!(budget(".nan").is_nan());
+    // AAASM-6336 flipped `.inf` / `.nan` from accepted to rejected (they still
+    // *parse* as f64; the validator now refuses them), so they are no longer
+    // observable through an accepted document.
+    for non_finite in [".inf", ".nan"] {
+        assert!(run_pol(&format!("budget:\n  daily_limit_usd: {non_finite}\n")).is_err());
+    }
     assert_eq!(budget("18446744073709551615"), u64::MAX as f64);
     assert_eq!(budget("340282366920938463463374607431768211456"), 2f64.powi(128));
     assert_eq!(budget("12.5"), 12.5);

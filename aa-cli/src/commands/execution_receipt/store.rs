@@ -233,7 +233,7 @@ impl ReceiptStore {
             detail: e.to_string(),
         })?;
 
-        std::fs::create_dir_all(&self.root).map_err(|source| StoreError::Io {
+        aa_core::private_fs::create_private_dir_all(&self.root).map_err(|source| StoreError::Io {
             path: self.root.clone(),
             source,
         })?;

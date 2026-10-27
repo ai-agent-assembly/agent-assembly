@@ -18,7 +18,7 @@ use aa_gateway::policy::PolicyValidator;
 
 fn make_engine() -> PolicyEngine {
     let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    writeln!(tmp, "version: \"1\"").unwrap();
+    write!(tmp, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE).unwrap();
     tmp.flush().unwrap();
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap()
@@ -63,6 +63,7 @@ fn cap_doc(scope: PolicyScope, allow: &[Capability], deny: &[Capability]) -> Pol
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 
@@ -84,6 +85,7 @@ fn no_cap_doc(scope: PolicyScope) -> PolicyDocument {
         syscall_allowlist: None,
         leases: Vec::new(),
         egress: aa_gateway::policy::EgressPosture::NotRequired,
+        credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
     }
 }
 

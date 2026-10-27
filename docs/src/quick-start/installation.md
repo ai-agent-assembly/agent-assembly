@@ -140,7 +140,13 @@ workspace. This needs the [build prerequisites](requirements.md#building-from-so
 git clone https://github.com/ai-agent-assembly/agent-assembly.git
 cd agent-assembly
 cargo build -p aa-cli            # produces ./target/debug/aasm
+cargo build -p aa-api --bin aa-api-server   # `aasm start` launches this; aa-cli alone does not build it
 ```
+
+`aasm start` runs `aa-api-server` and looks for it next to the `aasm` executable, then on
+`$PATH`, then in `~/.cargo/bin`, so `./target/debug` is enough when you run `aasm` from
+there. (The gRPC gateway used by `aasm gateway start` is a third binary,
+`cargo build -p aa-gateway`; see [First run](first-run.md).)
 
 The compiled binary is at `./target/debug/aasm`. Add it to your `PATH` or run it
 by path. You can also install it onto your `PATH` with Cargo:

@@ -146,7 +146,9 @@ impl CaStore {
         // policy then crash-loops on the same immediate failure forever, which
         // from outside the container looks identical to "the proxy is hanging
         // and never accepts connections."
-        tokio::fs::create_dir_all(ca_dir).await?;
+        // AAASM-6387: the CA key lives here, and when the proxy generates the CA
+        // first this is what creates `~/.aa`; owner-only, never the umask's 0755.
+        aa_core::private_fs::create_private_dir_all(ca_dir)?;
 
         // Bounds on how long a caller will wait for another process's
         // in-flight generation before giving up, and how old an unreleased
@@ -285,7 +287,9 @@ impl CaStore {
         let ca_cert_pem = ca_cert.pem();
         let ca_key_pem = ca_key.serialize_pem();
 
-        tokio::fs::create_dir_all(ca_dir).await?;
+        // AAASM-6387: the CA key lives here, and when the proxy generates the CA
+        // first this is what creates `~/.aa`; owner-only, never the umask's 0755.
+        aa_core::private_fs::create_private_dir_all(ca_dir)?;
 
         let pid = std::process::id();
         let cert_tmp = ca_dir.join(format!("ca-cert.pem.tmp-{pid}"));
@@ -485,6 +489,32 @@ mod tests {
             ca_pair_matches(&ca.ca_cert_pem, &ca.ca_key_pem).unwrap(),
             "must return a matched pair even on a first-ever cold start"
         );
+    }
+
+    /// AAASM-6387: a proxy that generates the CA first is what creates `~/.aa`;
+    /// every directory it makes is owner-only, whatever the umask (forced to 022
+    /// so a reverted fix fails on any host).
+    #[cfg(unix)]
+    #[test]
+    fn generated_ca_directories_are_owner_only_under_umask_022() {
+        use std::os::unix::fs::PermissionsExt;
+        static UMASK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = UMASK.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: umask only swaps the process file-creation mask.
+        let old = unsafe { libc::umask(0o022) };
+        let parent = TempDir::new().unwrap();
+        let ca_dir = parent.path().join(".aa").join("ca");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let r = rt.block_on(CaStore::load_or_create(&ca_dir));
+        // SAFETY: as above.
+        unsafe { libc::umask(old) };
+        r.expect("generates");
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&parent.path().join(".aa")), 0o700, "~/.aa-style parent");
+        assert_eq!(mode(&ca_dir), 0o700, "ca dir");
     }
 
     #[tokio::test]

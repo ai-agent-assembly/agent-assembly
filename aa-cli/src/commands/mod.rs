@@ -20,6 +20,7 @@ pub mod cost;
 pub mod dashboard;
 pub mod gateway;
 pub mod gw_probe;
+pub mod lease;
 // strip-for-publish:begin devtool
 pub mod execution_receipt;
 pub mod integrations;
@@ -35,6 +36,8 @@ pub mod run_env_sanitize;
 pub mod trusted_upstream_path;
 // strip-for-publish:begin devtool
 pub mod host;
+#[cfg(unix)]
+pub mod lease_readiness;
 pub mod run;
 pub mod run_audit;
 pub mod run_credential_broker;
@@ -114,6 +117,8 @@ pub enum Commands {
     /// List and manage AI dev tools on this system.
     Tools(tools::ToolsArgs),
     // strip-for-publish:end devtool
+    /// Create, revoke and inspect the capability-lease state record.
+    Lease(lease::LeaseArgs),
     /// Visualize agent topology, trees, lineage, and statistics.
     Topology(topology::TopologyArgs),
     /// Manage the aa-proxy sidecar — lifecycle, CA trust, and log tailing.
@@ -159,6 +164,7 @@ pub fn dispatch(cmd: Commands, ctx: &ResolvedContext, output: OutputFormat) -> E
         // strip-for-publish:begin devtool
         Commands::Tools(args) => tools::dispatch(args),
         // strip-for-publish:end devtool
+        Commands::Lease(args) => lease::dispatch(args),
         Commands::Topology(args) => topology::dispatch(args, ctx, output),
         Commands::Proxy(args) => proxy::dispatch(args),
         Commands::Start(args) => start::run(args),

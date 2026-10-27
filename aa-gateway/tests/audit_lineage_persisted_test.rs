@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 use tonic::Request;
 
-const ALLOW_ALL_YAML: &str = "version: \"1\"\n";
+const ALLOW_ALL_YAML: &str = aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE;
 
 /// Mirror `registry::convert::proto_agent_id_to_key` so the registered record
 /// is keyed the same way the service looks it up.

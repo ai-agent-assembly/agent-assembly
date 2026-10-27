@@ -149,7 +149,7 @@ services. Values below are taken directly from that file.
 |---|---|---|
 | `AA_PROXY_ADDR` | `0.0.0.0:8899` | Proxy listen address. |
 | `AA_PROXY_LLM_ONLY` | `false` | Intercept all egress, not just LLM calls. |
-| `AA_PROXY_MCP_FAIL_OPEN` | `1` | **Demo only** — lets the proxy start without a reachable gateway. The proxy normally fails **closed** when its gateway is unreachable. |
+| `AA_PROXY_MCP_FAIL_OPEN` | `1` | **Demo only** — lets the proxy start without a reachable gateway. The proxy normally fails **closed** when its gateway is unreachable. Governs only request-side `tools/call` checks and start-up; a failed gateway evaluation of an MCP *response* is always withheld regardless of this setting. |
 | `AA_PROXY_GATEWAY_ENDPOINT` | _(unset)_ | Set to a gateway endpoint (self-hosted or SaaS) to enforce through it. |
 
 ## Quickstart
@@ -166,11 +166,64 @@ AA_API_KEY=dev-local-key docker compose up
 `aa-runtime` starts, enforces locally from `../policy.toml`, exposes the IPC socket
 at `/tmp/aa-runtime-my-agent-001.sock`, and serves health/metrics on `:8080`:
 
+> Port `8080` here is `aa-runtime`'s health/metrics port, not the API the `aasm` CLI talks to;
+> a bare `aasm status` targets the local API server on `7391` (`aasm start`).
+
 ```bash
 curl http://localhost:8080/ready
 curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 ```
+
+`/health` reports `status: "healthy"` when something is installed to decide on the runtime's
+calls: local policy rules that block or require approval for something, a gateway client, or
+lease governance. "Installed" is not "working": an invalid `AA_GATEWAY_ENDPOINT` installs no
+client, a valid but unreachable one still counts (the runtime does not report reachability),
+and with `AA_GATEWAY_FAIL_CLOSED=false` an unreachable gateway falls back to the local rules
+and then allows (flagged as `governance.gateway_fail_open`). A runtime with none of those
+reports `status: "ungoverned"` and this runtime evaluates and allows every call; its
+`governance.state` field and startup log say how to govern it (`AA_LEASE_POLICY`,
+`AA_POLICY_PATH` or `AA_GATEWAY_ENDPOINT`). If the lease gate trips (state record corrupted
+or removed) `status` becomes `"degraded"` and `governance.state` `"denied_all"`: every call is
+denied. `/health` answers HTTP 200 for `ungoverned` and `degraded` too, so an orchestrator's
+liveness/readiness probe keeps passing while every call is allowed or denied; alert on
+`status != "healthy"` or on `governance.state` instead. A fail-closed gateway that is installed but
+unreachable denies every call while `status` stays `"healthy"`, and a fail-open one that is dead with
+no effective local rules allows every call (visible only as `gateway_fail_open`). A local rule counts
+only if it names a real action type (`TOOL_CALL`, `NETWORK_CALL`, `FILE_OPERATION`, ...; exact and
+case-sensitive); unknown names match nothing and are warned about when the policy loads. Other interception layers (eBPF is observe-only; the proxy only enforces through a
+gateway endpoint) add no decision source of their own here.
+
+### One runtime per agent id
+
+`aa-runtime` refuses to start (exit status 78, reason on stderr) when another runtime
+already holds the same `AA_AGENT_ID` or, with a loopback `AA_METRICS_ADDR`, its health
+port. It takes an exclusive lock on `/tmp/aa-runtime-<agent id>.lock` for the life of the
+process (the kernel releases it on any exit, including `kill -9`), then checks that
+nothing is listening on `/tmp/aa-runtime-<agent id>.sock`; a socket file left by a killed
+runtime is replaced as before. Give each runtime on a host its own `AA_AGENT_ID` and
+metrics port.
+
+The lock file is refused (distinct from "a peer holds it") if it is a symlink, not a regular
+file, owned by another user, or group/other-writable, so a local user cannot squat the
+name to keep an agent id from starting. Residual: both files live in shared `/tmp` because
+the SDKs and tooling address `/tmp/aa-runtime-<agent id>.sock` by that name; the socket path
+could already be squatted before this check existed, and still can be.
+
+Recovery: a lock or socket file for the same `AA_AGENT_ID` that is owned by another user (for
+example left by a `sudo` run) makes a non-root start refuse; remove it as that user or as root, or
+use a different `AA_AGENT_ID`. A `/tmp` reaper (macOS periodic cleanup, systemd-tmpfiles) can unlink
+the lock file under a running runtime; the socket probe is then the only protection. The lock is held
+until the process exits, not only until the runtime's main loop returns, and a shutting-down runtime
+unlinks the socket only if it is still the file it bound.
+
+Limits: the default `AA_METRICS_ADDR` (`0.0.0.0:8080`) is non-loopback without
+`AA_METRICS_ALLOW_REMOTE=1`, so under the defaults no health server is started and only the
+agent-id protection applies. The health port is bound at startup but served at the end of it,
+so use `GET /health` returning 200, not a TCP connect, to detect readiness. A runtime
+older than this check does not take the lock, so racing one at startup can still lose its
+socket path. On macOS a full accept backlog is reported as a refused connection and so reads as stale. A probe that cannot tell (an over-full backlog elsewhere, no answer within 2 s, an over-long path)
+refuses rather than guessing stale; the no-answer-within-2 s branch has no test that executes it.
 
 To additionally build and run the optional egress proxy on `:8899`:
 

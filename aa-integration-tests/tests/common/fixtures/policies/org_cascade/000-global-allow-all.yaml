@@ -6,9 +6,12 @@ metadata:
 
 # AAASM-2023 ST-org-4 cascade fixture — Global-scoped default policy
 # layered under the org-alpha-scoped deny in 100-org-alpha-deny-bash.yaml.
-# Empty rules list = allow-by-default for any tool the agent invokes
-# unless a higher-precedence document in the cascade denies it.
+# An explicit allow-all tool entry = allow-by-default for any tool the agent
+# invokes unless a higher-precedence document in the cascade denies it. (A
+# bare `tools: {}` states nothing and is rejected, AAASM-6338.)
 #
 # Default scope is `global` when the field is absent.
 spec:
-  tools: {}
+  tools:
+    "*":
+      allow: true

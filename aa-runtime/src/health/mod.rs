@@ -4,7 +4,16 @@
 //!
 //! `status` answers "is this process up". It is deliberately *not* overloaded
 //! to answer "is anything protected" — conflating the two is how an operator
-//! ends up reading a green health check as evidence of governance. The
+//! ends up reading a green health check as evidence of governance. The two
+//! exceptions are about whether anything decides on calls (AAASM-6384):
+//! `ungoverned` (nothing is installed to decide, so every call is allowed)
+//! and `degraded` (the lease gate tripped and denies every call). Both still
+//! answer HTTP 200, so orchestrator liveness/readiness keeps passing; alert on
+//! `status != "healthy"` or on `governance.state`. Limits: `healthy` means a
+//! decision source is *installed*, not that it works. A fail-closed gateway
+//! that is installed but unreachable denies every call while `status` stays
+//! `healthy`; a fail-open one that is dead, with no effective local rules,
+//! allows every call and shows only as `governance.gateway_fail_open`. The
 //! `protection` section (AAASM-5535) answers the second question separately,
 //! in the ADR 0033 §6 vocabulary.
 //!
@@ -58,12 +67,20 @@ pub struct HealthState {
     /// coverage claim is exactly the stale-protection failure the attestation
     /// exists to prevent.
     pub protection: ProtectionAttestation,
+    /// Governed lease mode status; `None` (and absent from `/health`) when the
+    /// runtime is not governed (AAASM-6259).
+    pub lease_governance: Option<Arc<crate::lease::wiring::LeaseStatus>>,
+    /// Whether anything decides on this runtime's calls (AAASM-6384).
+    pub governance: crate::posture::GovernancePosture,
 }
 
 /// Response body for GET /health.
 #[derive(serde::Serialize)]
 pub struct HealthResponse {
-    /// Process liveness only. Never a protection claim — see the module docs.
+    /// `healthy`: the process is up and something decides on its calls.
+    /// `ungoverned`: up, but nothing does, so every call is allowed.
+    /// `degraded`: the lease gate tripped and denies every call (AAASM-6384).
+    /// Never a protection claim — see the module docs.
     pub status: &'static str,
     pub uptime_secs: u64,
     pub events_processed: u64,
@@ -86,6 +103,14 @@ pub struct HealthResponse {
     pub degraded_layers: Vec<String>,
     /// What may truthfully be claimed about each component, right now.
     pub protection: ProtectionReport,
+    /// Present only in governed lease mode: the generation of the revocation
+    /// set the gate is deciding against and whether it is `governed` or
+    /// `denied_all`. Additive; ungoverned output is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_governance: Option<crate::lease::wiring::LeaseGovernanceReport>,
+    /// Additive (AAASM-6384): which decision sources are installed, with the
+    /// lease gate's live state. Absent from older runtimes.
+    pub governance: crate::posture::GovernancePosture,
 }
 
 /// The protection section of `GET /health`, evaluated at request time.
@@ -215,13 +240,21 @@ pub fn router(state: HealthState) -> Router {
 // --- Stub handlers (replaced in Tasks 6–8) ---
 
 async fn health_handler(axum::extract::State(state): axum::extract::State<HealthState>) -> axum::Json<HealthResponse> {
+    let lease_governance = state.lease_governance.as_ref().map(|s| s.report());
+    let governance = state.governance.live(lease_governance.as_ref().map(|r| r.state));
     axum::Json(HealthResponse {
-        status: "healthy",
+        status: match governance.state {
+            "ungoverned" => "ungoverned",
+            "denied_all" => "degraded",
+            _ => "healthy",
+        },
         uptime_secs: state.start_time.elapsed().as_secs(),
         events_processed: state.pipeline_metrics.processed(),
         active_layers: state.active_layers.names(),
         degraded_layers: state.degraded_layers.clone(),
         protection: ProtectionReport::evaluate(&state.protection, now_unix_secs()),
+        lease_governance,
+        governance,
     })
 }
 
@@ -279,6 +312,8 @@ mod tests {
             active_layers: vec!["sdk"],
             degraded_layers: vec![],
             protection: ProtectionReport::evaluate(&crate::layer::LayerDetector::attest(TEST_NOW), TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
         let json = serde_json::to_string(&resp).expect("serialization failed");
         assert!(json.contains("\"status\":\"healthy\""));
@@ -304,6 +339,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -317,6 +354,74 @@ mod tests {
         assert_eq!(json["status"], "healthy");
         assert!(json["uptime_secs"].as_u64().is_some());
         assert_eq!(json["events_processed"], 0);
+    }
+
+    /// AAASM-6384: `status` and `governance` come from the same posture, and an
+    /// ungoverned runtime must not read as healthy. Each posture is served
+    /// through the real router.
+    #[tokio::test]
+    async fn health_status_and_governance_follow_the_posture() {
+        use crate::posture::GovernancePosture;
+        for (posture, status, state, tripped) in [
+            (
+                GovernancePosture::new(false, 0, false, true),
+                "ungoverned",
+                "ungoverned",
+                false,
+            ),
+            (
+                GovernancePosture::new(false, 2, false, true),
+                "healthy",
+                "policy_only",
+                false,
+            ),
+            (
+                GovernancePosture::new(true, 0, false, true),
+                "healthy",
+                "lease_governed",
+                false,
+            ),
+            // The gate tripped after startup: every call is denied, which is
+            // neither healthy nor the startup posture.
+            (
+                GovernancePosture::new(true, 0, false, true),
+                "degraded",
+                "denied_all",
+                true,
+            ),
+        ] {
+            let lease = posture.lease_governed.then(|| {
+                let status = crate::lease::wiring::LeaseStatus::new("run", 1);
+                if tripped {
+                    status.set_denied_all(2);
+                }
+                Arc::new(status)
+            });
+            let (_, ready_rx) = tokio::sync::watch::channel(true);
+            let (inbound_tx, _) = tokio::sync::mpsc::channel(1);
+            let app = router(HealthState {
+                start_time: std::time::Instant::now(),
+                pipeline_metrics: Arc::new(crate::pipeline::PipelineMetrics::default()),
+                ready_rx,
+                prometheus_handle: make_prometheus_handle(),
+                active_connections: Arc::new(AtomicI64::new(0)),
+                inbound_tx,
+                active_layers: crate::layer::LayerSet::SDK,
+                degraded_layers: vec![],
+                protection: crate::layer::LayerDetector::attest(TEST_NOW),
+                lease_governance: lease,
+                governance: posture,
+            });
+            let response = app
+                .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "liveness probes must keep passing");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["status"], status, "{posture:?}");
+            assert_eq!(json["governance"]["state"], state, "{posture:?}");
+        }
     }
 
     #[tokio::test]
@@ -335,6 +440,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -360,6 +467,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -389,6 +498,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -429,6 +540,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         // We call the handler manually using the recorder.
@@ -467,6 +580,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         // First request: not ready (503)
@@ -501,6 +616,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -535,6 +652,8 @@ mod tests {
             active_layers: all_layers,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(TEST_NOW),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -573,6 +692,8 @@ mod tests {
             active_layers: crate::layer::LayerSet::SDK,
             degraded_layers: vec![],
             protection: crate::layer::LayerDetector::attest(now_unix_secs()),
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);
@@ -687,6 +808,8 @@ mod tests {
             // What `check_layer_availability` produces for an absent layer.
             degraded_layers: vec!["ebpf".to_string(), "proxy".to_string()],
             protection: attestation,
+            lease_governance: None,
+            governance: crate::posture::GovernancePosture::new(false, 1, false, true),
         };
 
         let app = router(state);

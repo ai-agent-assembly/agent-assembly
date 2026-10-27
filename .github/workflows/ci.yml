@@ -260,7 +260,8 @@ on:
     # rather than by line, because a line number in a 4400-line file is stale
     # the moment anyone edits above it:
     #
-    #   run-coverage    the `sonar` and `coverage` jobs
+    #   run-coverage    the `sonar` and `coverage` jobs (`coverage` also runs on any
+    #                   PR touching aa-integration-tests Rust sources, AAASM-6326)
     #   run-benchmark   the `benchmark` job
     #
     # Both labels must also EXIST. A `contains(labels.*.name, 'x')` against a
@@ -318,6 +319,7 @@ jobs:
       # `changes` router — same reasoning as the satellites above.
       workflow_syntax_gate: ${{ steps.filter.outputs.workflow_syntax_gate }}
       excluded_workspaces: ${{ steps.filter.outputs.excluded_workspaces }}
+      integration_tests: ${{ steps.filter.outputs.integration_tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -453,6 +455,22 @@ jobs:
               - 'proto/devint.proto'
               - 'aa-runtime/src/devint/**'
               - '.github/workflows/ci.yml'
+            # AAASM-6326: a PR that adds or edits an integration test must run it
+            # under `cargo llvm-cov` BEFORE merge. `Coverage` is label-gated on
+            # PRs (cost), so a test that only fails under instrumentation (e.g.
+            # `default_*.profraw` written into a sanitised child's workspace)
+            # passed every PR lane and turned `main` red after merge (#2639).
+            # Narrower than `rust` on purpose: only integration-test sources
+            # select the instrumented lane automatically; everything else keeps
+            # the `run-coverage` opt-in. `on.pull_request` is not path-filtered
+            # (AAASM-5675), so this filter is evaluated on every PR. It does not
+            # list ci.yml: that would run the heavy lane on every workflow edit.
+            # This makes the failure VISIBLE before merge; Coverage stays
+            # advisory (CONTRIBUTING.md) and is not in `CI Success`' needs, and
+            # `sonar` still needs the `run-coverage` label.
+            integration_tests:
+              - 'aa-integration-tests/**/*.rs'
+              - 'aa-integration-tests/Cargo.toml'
             conformance:
               - 'aa-cli/src/commands/start.rs'
               - 'aa-gateway/src/local_mode.rs'
@@ -730,7 +748,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -741,7 +759,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
       - name: Upload dashboard dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -768,9 +786,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       # AAASM-6005: rust-cache's own target-artifact cache didn't reliably
@@ -785,7 +803,7 @@ jobs:
         with:
           cache-targets: "false"
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -878,9 +896,9 @@ jobs:
           # ancestry present. No `ref:` — the default merge ref is the point.
           fetch-depth: 0
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -915,16 +933,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -1001,9 +1019,9 @@ jobs:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - name: Free up runner disk space
         # AAASM-2581: selecting mold changes the rust-cache key (it hashes
         # RUSTFLAGS), so the first run rebuilds the workspace cold. The Test
@@ -1022,7 +1040,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -1030,7 +1048,7 @@ jobs:
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -1129,7 +1147,7 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     needs: [changes, dashboard-assets]
-    if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
+    if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
       # AAASM-1741: lets the env-gated storage::postgres::tests run under
       # cargo llvm-cov so codecov/patch sees coverage for the PG backend.
@@ -1163,9 +1181,9 @@ jobs:
           repository: ai-agent-assembly/node-sdk
           path: node-sdk
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install mold linker
-        run: sudo apt-get install -y mold
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           components: llvm-tools-preview
@@ -1177,7 +1195,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -1185,7 +1203,7 @@ jobs:
             dashboard/pnpm-lock.yaml
             aa-integration-tests/tests/fixtures/agents/typescript/pnpm-lock.yaml
       - name: Download prebuilt dashboard assets (required by aa-cli)
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -1253,7 +1271,7 @@ jobs:
           verbose: true
           fail_ci_if_error: false
       - name: Upload Rust coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rust-coverage-lcov
           path: lcov.info
@@ -1293,7 +1311,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -1337,7 +1355,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2027,7 +2045,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Install ajv-cli
@@ -2074,7 +2092,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2093,7 +2111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       - name: Install Spectral CLI
@@ -2129,7 +2147,7 @@ jobs:
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime) for the
         # multi-layer integration test step.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # nightly branch @ 2026-06-27
         with:
           # AAASM-5311: pin the actual nightly *release* date, not just the
@@ -2264,7 +2282,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
         # Required by aa-proto (transitive dep of aa-runtime/aa-gateway).
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install curl
         # curl is the libssl-backed agent for tests 1, 3, 4 — its `SSL_write`
         # call is what fires the TLS uprobe. ubuntu-latest already ships curl;
@@ -2403,7 +2421,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Run criterion benchmarks
@@ -2435,7 +2453,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -2504,7 +2522,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: Node.js SDK conformance (not yet implemented)
@@ -2544,7 +2562,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -2572,7 +2590,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -2585,7 +2603,7 @@ jobs:
       - name: Build production bundle
         run: pnpm build
       - name: Upload dist artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -2604,7 +2622,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -2617,7 +2635,7 @@ jobs:
       - name: Run tests with coverage
         run: pnpm test:coverage
       - name: Upload TypeScript coverage (LCOV) for SonarCloud
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage/lcov.info
@@ -2660,7 +2678,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -2680,7 +2698,7 @@ jobs:
       - name: Generate API types from OpenAPI spec
         run: pnpm generate:api
       - name: Download dashboard dist artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -2694,14 +2712,14 @@ jobs:
       # mode this gate is meant to remove.
       - name: Upload Playwright HTML report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-report
           path: dashboard/playwright-report/
           retention-days: 14
       - name: Upload Playwright traces, screenshots + JUnit XML
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-results
           path: dashboard/test-results/
@@ -2775,7 +2793,7 @@ jobs:
         #   Could not find `protoc` … try setting the `PROTOC` environment variable
         # which is what took this lane red on its first CI run while it passed
         # locally, where protoc happened to be installed.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
 
       - name: Pre-build aasm binary (AAASM-5904)
         # AAASM-5904's fixture harness (`proxy_trust_support::mod.rs`,
@@ -2926,7 +2944,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -2948,14 +2966,14 @@ jobs:
       # existence. A missing artifact fails at `download-artifact` itself.
       - name: Download dashboard dist (dashboard-gated build)
         if: needs.changes.outputs.dashboard == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist
           path: dashboard/dist/
 
       - name: Download dashboard dist (rust-gated build)
         if: needs.changes.outputs.dashboard != 'true' && needs.changes.outputs.rust == 'true'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist-rust
           path: dashboard/dist/
@@ -3017,7 +3035,7 @@ jobs:
 
       - name: Upload real-backend report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dashboard-e2e-real-backend-results
           path: dashboard/test-results/
@@ -3046,7 +3064,7 @@ jobs:
           shared-key: workspace-debug
           save-if: "false"
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - name: Pre-build aa-api-server (AAASM-5904)
@@ -3131,7 +3149,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
           node-version-file: dashboard/.nvmrc
@@ -3152,10 +3170,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - name: Download dashboard dist artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-dist
           path: dashboard/dist/
@@ -3191,7 +3209,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protobuf compiler
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
@@ -3201,7 +3219,7 @@ jobs:
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           cache: pnpm
@@ -3241,7 +3259,7 @@ jobs:
       # ---- Rust coverage + clippy (only when the Rust side ran) --------------
       - name: Install protobuf compiler
         if: needs.coverage.result == 'success'
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: needs.coverage.result == 'success'
         with:
@@ -3253,7 +3271,7 @@ jobs:
         run: cargo clippy --all-targets --all-features --exclude aa-ebpf --message-format=json 2>&1 | tee clippy-report.json || true
       - name: Download Rust coverage (LCOV) from the Coverage job
         if: needs.coverage.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: rust-coverage-lcov
           path: .
@@ -3337,7 +3355,7 @@ jobs:
       # AAASM-3197 full-snapshot invariant still requires dashboard coverage).
       - name: Download TypeScript coverage (LCOV) from the Dashboard test job
         if: needs.dashboard-test.result == 'success'
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dashboard-coverage-lcov
           path: dashboard/coverage
@@ -3346,7 +3364,7 @@ jobs:
         if: needs.dashboard-test.result != 'success'
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: needs.dashboard-test.result != 'success'
         with:
           # AAASM-6202: .nvmrc is the source; scripts/check_dashboard_node_version.py enforces it.
@@ -3648,7 +3666,7 @@ jobs:
         # `aa-cli` transitively compiles `aa-proto`, whose build.rs invokes
         # `protoc`, and the runner does not ship it. Needed since this lane
         # started building `aa-cli` for the `run_isolation_linux` binary below.
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler
       - name: Build the native launcher for the auto-selection scenario
         # AAASM-5808's `an_auto_selected_native_backend_kills_a_syscall_outside_its_allowlist`
         # scenario calls `NativeBackend::discover()` (not `discover_with_launcher`),
@@ -4071,11 +4089,11 @@ jobs:
       # absent it, that family degrades to `skipped` rather than measuring
       # anything, and the CI-hosted `ubuntu-latest` image does not ship it.
       - name: Install protobuf compiler and ripgrep
-        run: sudo apt-get install -y protobuf-compiler ripgrep
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler ripgrep
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 10.9.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - name: Build the aasm, aa-gateway and aa-isolation-launch binaries
@@ -4265,7 +4283,7 @@ jobs:
         # not captured in the result JSON) — without these a failed family's
         # exit code has no accompanying diagnostic.
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: isolation-benchmark-three-arm-results
           path: |
@@ -4346,7 +4364,7 @@ jobs:
         # builds `aa-cli`). build-essential: the "launch compiler tooling"
         # scenario compiles a small C fixture with `cc`, which the runner
         # image does not guarantee ships pre-installed.
-        run: sudo apt-get install -y protobuf-compiler build-essential
+        run: sudo apt-get update -qq && sudo apt-get install -y protobuf-compiler build-essential
       - name: Build the aasm and aa-gateway binaries
         # Both, for the same reason `isolation-benchmark-confined-arm`
         # builds both: a live (non-dry-run) `aasm run` refuses to launch
@@ -4405,7 +4423,7 @@ jobs:
         run: $AABENCH_AASM_BIN gateway stop || true
       - name: Upload dogfood evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: isolation-dogfood-scenarios-results
           path: |

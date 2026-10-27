@@ -400,7 +400,7 @@ impl ReceiptStore {
     /// truncated receipt that would then fail its own integrity check and lock
     /// the user out of their own integration.
     fn write_secure(&self, path: &Path, body: &str) -> Result<(), StoreError> {
-        std::fs::create_dir_all(&self.root).map_err(|source| StoreError::Io {
+        crate::private_fs::create_private_dir_all(&self.root).map_err(|source| StoreError::Io {
             path: self.root.clone(),
             source,
         })?;

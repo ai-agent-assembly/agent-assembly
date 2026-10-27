@@ -1443,6 +1443,7 @@ pub(crate) mod graph_tests {
                             allow: *allow,
                             limit_per_hour: None,
                             requires_approval_if: None,
+                            capabilities: None,
                         },
                     )
                 })
@@ -1452,6 +1453,7 @@ pub(crate) mod graph_tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: aa_gateway::policy::EgressPosture::NotRequired,
+            credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 

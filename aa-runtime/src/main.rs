@@ -66,6 +66,9 @@ CONFIGURATION:
     Common:
       AA_GATEWAY_ENDPOINT      Gateway URL for policy/event RPCs (e.g. http://gateway:50051)
       AA_POLICY_PATH           Path to policy.toml (default: /etc/aa/policy.toml)
+      AA_LEASE_POLICY          Operator policy; SETTING IT enables governed lease mode (empty is
+                                still set, and is refused). Requires AA_LEASE_STATE.
+      AA_LEASE_STATE           Lease state record created by `aasm lease init`
       AA_METRICS_ADDR          Prometheus metrics bind address (default: 0.0.0.0:8080; a
                                 non-loopback bind is refused unless AA_METRICS_ALLOW_REMOTE=1,
                                 AAASM-5985)
@@ -118,10 +121,20 @@ fn main() {
         builder.worker_threads(config.worker_threads);
     }
 
-    builder
-        .build()
-        .expect("failed to build Tokio runtime")
-        .block_on(aa_runtime::run(config));
+    let runtime = builder.build().expect("failed to build Tokio runtime");
+    let outcome = runtime.block_on(aa_runtime::run(config));
+    // A blocking read stuck on a dead filesystem (the lease reload) must not
+    // keep the process alive after shutdown; dropping the runtime would wait
+    // for it indefinitely.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    // A refusal (e.g. governed lease mode requested but not satisfiable) must
+    // be a failing exit status, never a quiet return.
+    if let Err(refusal) = outcome {
+        tracing::error!(%refusal, "aa-runtime refused to start");
+        eprintln!("aa-runtime: refusing to start: {refusal}");
+        std::process::exit(78);
+    }
 }
 
 #[cfg(test)]

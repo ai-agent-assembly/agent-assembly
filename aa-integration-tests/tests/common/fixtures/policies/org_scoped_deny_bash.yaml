@@ -8,9 +8,9 @@ metadata:
 # Only agents whose registered org_id is "org-alpha" should hit this
 # policy. Agents in any other org fall through to the next document in
 # the cascade (allow-by-default in our test setup).
-scope: org:org-alpha
-
+# `scope` lives INSIDE `spec:`; beside it the envelope drops it (AAASM-6344).
 spec:
+  scope: org:org-alpha
   tools:
     bash:
       allow: false

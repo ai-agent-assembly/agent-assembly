@@ -1077,15 +1077,20 @@ changes, and no production caller changes (production passes only `Ancestry::Roo
 
 ### §11 (amended): parent edges, a transitive check, and the new refusals
 
-- **Edges.** Each ledger entry is `{state, link}` with `link` one of `Root`,
+- **Edges.** Each ledger entry is `{state, link, content}` (content added by AAASM-6312) with `link` one of `Root`,
   `Parent(LeaseId)` or `Unlinked`. `derive_child` inserts the child with a `Parent`
   edge under the ledger lock. `revoke` changes state only and keeps the edge; revoking
   an id the ledger does not know inserts it as `Unlinked`.
 - **No resurrection, no severing.** `derive_child` refuses a child id the ledger already
-  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) and the auto-registration
-  of an unknown parent accept only a lease with no delegation provenance; a mid-chain
-  lease is refused (`AncestryUnverifiable`), because registering it as a root would cut
-  its link to the ancestors above it. Registering a known id is `DuplicateLeaseId`.
+  knows (`DuplicateLeaseId`). `register_parent` (now `Result`) accepts only a lease with
+  no delegation provenance; a mid-chain lease is refused (`AncestryUnverifiable`),
+  because registering it as a root would cut its link to the ancestors above it.
+  Registering a known id is `DuplicateLeaseId`. Since AAASM-6312 `derive_child` no
+  longer auto-registers an unknown parent (that let any caller seed its own chain with a
+  forged lease); an unknown parent is `AncestryUnverifiable`, and roots enter only
+  through `register_parent`. A ledger built with `with_trusted_issuer` accepts a root
+  only when the lease's own claimed issuer matches (`UntrustedIssuer`); `new()` is
+  unrestricted and is for in-process/test use.
 - **Derive time.** `derive_child` walks the parent's whole chain and returns
   `ParentRevoked` ("the parent or any ancestor") if any hop is revoked and
   `AncestryUnverifiable` if a hop is unknown or unlinked. The walk is bounded by the
@@ -1113,12 +1118,587 @@ the chain check above. `StaleParentGeneration` remains a comparison against the
 - The chain is observed under the ledger lock at gate time. A revocation recorded a
   moment later is not seen by a gate call already past that point, and this ADR still
   makes no revocation-latency claim.
-- A ledger entry does not copy a lease's scope, expiry or limits; those are still taken
-  from the lease value in the `ParentAuthority`. The ledger authenticates *state and
-  ancestry by id*, not lease content.
+- Since AAASM-6312 the ledger records each lease's content (every field except the
+  mutable revocation state) and the gate refuses a parent or tracked child whose content
+  differs from the record (`LedgerContentMismatch`, `DelegationDenied::ContentMismatch`),
+  so a wider snapshot reusing a tracked id no longer passes. This binds content to the
+  ledger's record; it does not authenticate the issuer, which is asserted-only
+  (AAASM-5533), and the ledger is still chosen by the caller of `from_gated_spec`.
 - The ledger is chosen by the caller of `from_gated_spec`. Nothing ties a lease to the
   ledger that issued it: a provenance-free lease can be registered as a root in any
   ledger, which would not see a revocation recorded in another. `LedgerUnverifiable`
   therefore means "this ledger has no record", not "this is the issuing ledger".
-  Which ledger is authoritative across processes is for AAASM-6273 to settle.
+  Across processes the supervisor registry is the authoritative ledger (§27–§29.4);
+  AAASM-6273 owns its design.
 - Cross-process handoff (AAASM-6273) is unchanged and still open.
+
+## Amendment (AAASM-6347/6348/6349): `credentials: posture` — authoring the credential-brokerage requirement
+
+The AAASM-6164 amendment built `credential_gate` but left no way to ask for it:
+`aasm run` constructed `CredentialContract::not_required()` for every launch. J84
+(golden journey, AAASM-6262) therefore had a brokerage mechanism no operator could
+require. This amendment adds the authoring surface and the one enforcement point
+that reads it.
+
+### 22. A two-value `credentials:` policy node
+
+`credentials: { posture: not_required | broker_required }` (`aa-policy`, AAASM-6347)
+lowers to `CredentialContract::not_required()` or `CredentialContract::broker_required()`
+(`credential_contract_for` in `aa-cli/src/commands/run.rs`). Only the posture is
+authorable. The required mode, raw-fallback policy and ceilings stay at the weakest
+contract `broker_required()` builds (`AnySecretlessMode`, raw fallback refused, no
+ceilings); a stronger contract needs a schema change, not a reinterpretation. The node
+counts as an enforcement section, so a `credentials:`-only document loads, while a
+document with nothing but `posture: not_required` is still "no enforcement section".
+
+### 23. `--isolation none` runs the credential gates, and says it is not a boundary
+
+Credential brokerage is a statement about which secrets reach the child, not about
+confinement, so `--isolation none` no longer drops it. When the policy states
+`broker_required`, the none arm runs `authority_gate` and then `credential_gate`
+(`unconfined_credential_refusal`) and refuses the launch if either refuses. The
+refusal text names `credentials: posture: broker_required` and the gate's reason.
+The backend arm runs the same two gates before it consults a backend. The none arm
+establishes no boundary and claims none.
+
+`credential_gate` admits only when all four facts hold:
+
+1. the broker is available and does not fail open;
+2. at least one upstream service is brokered (`no upstream service is covered by any
+   credential brokerage` otherwise);
+3. an explicit `authority.leases` entry for domain `credential` covers the launch
+   (`no explicit grant authorizes credential brokerage for this run` otherwise), and
+   that lease is valid at launch time and was issued to this launch's identity;
+4. every brokered env name is withheld from the child's environment.
+
+### 24. Egress authority is never credential authority
+
+A brokered-egress posture (`egress: broker_required`) or an egress lease does not
+supply fact 3. `credential_contract_for` reads only the credentials node, and the
+none-arm spec carries no `Credential` requirement, so the no-lease state is `Denied`
+rather than `CompatibilityResidual`. That second property is an invariant of the
+none-arm spec, documented on `unconfined_credential_refusal`; a spec that gained a
+`Credential` requirement without a lease would read as the compatibility residual and
+`check_credential_grant` would admit it.
+
+### What this amendment claims, and does not
+
+- **Verified live** (AAASM-6349, macOS, real `aasm run`, default `--isolation none`):
+  with `broker_required` and no credential lease, or a lease but no brokered service,
+  the launch is refused and the child never starts; with a lease and a brokered
+  service the launch is admitted and a synthetic sentinel in the ambient provider-key
+  variable is absent from the child's env, argv and open descriptors and from every
+  state, receipt and log file the run wrote. A `not_required` control shows the same
+  sentinel does reach the child, so the absence is not an artifact of the detector.
+- **Not verified live**: an isolated backend. None is usable on the macOS host used
+  for that evidence; the backend-arm gates are covered by unit tests only.
+- **Residual, not solved**: the withholding is by env *name* the broker covers. An
+  ambient credential under any other name still reaches an unconfined child, and the
+  gate does not look at values. The `aasm` supervisor's own exec-time environment
+  still holds the operator's real key, and a same-uid descendant can read it (`ps
+  -Eww -p <supervisor pid>` on macOS, `/proc/<pid>/environ` on Linux). Nothing here
+  makes the secret unreadable by a same-uid process, and no plaintext-secret
+  isolation is claimed.
+- **Timing**: the none-arm refusal happens at bind time, after registration and the
+  launch audit record. A refused run leaves a registered identity and a launch record;
+  only the child is never started.
+- J84 stays `partial`: the live evidence is macOS-only, the isolated-backend arm has
+  none, and the `ps -E` channel is open.
+
+## Amendment (AAASM-6273): cross-process parent-authority handoff — direction decided, implementation gated
+
+AAASM-6273 was recorded above as the one place a real multi-process sub-agent tree's
+attenuation guarantee stays partial. This amendment records the owner decision on its
+direction and the acceptance contract any implementation must meet. It changes no code
+and enables nothing: the cross-process handoff is **not implemented, and must be
+neither built nor enabled in any environment until the B3 evidence gate below
+passes.** What may land before the gate is limited to: this documentation; and the
+gate's own evidence harness (§30), which runs against a stand-in fixture directory
+(never the production registry), is never shipped as handoff code and is not reachable
+behind a flag. Everything else waits for the implementation Story, which starts only
+after the gate passes: the supervisor registry, the §28 refusal on real launches (its
+registry path is a configured input; enabling it can refuse launches whose write scope
+is an ancestor of that path, for example a home or working directory, and that
+compatibility effect is assessed in the Story), and the §29.2–§29.4 tests, which
+exercise handoff code. Before the gate the harness exercises kernel-level denial (§30.3)
+against the stand-in directory only; the §29.1 refusal cases, including the
+remove-the-check falsification, need the admission check and run in the Story.
+
+### 27. Supervisor-mediated authority; no serialized or caller-supplied parent authority
+
+A parent's authority stays inside the supervisor that launched the child. A child
+process presents no authority material of its own: its place in the ancestry is
+established by the supervisor that launched it, never by a value the child (or its
+caller) hands over. Consequently:
+
+- `ParentAuthority` is **not serialized** across a process boundary, in any form. The
+  witness-gating of §2, §8 and §15 exists to make a `ParentAuthority` unforgeable; any
+  encoding a second process can construct reopens that hole.
+- There is **no caller-controlled parent-authority file or flag** (the
+  `--parent-authority-file` shape already rejected in the AAASM-6272 amendment).
+- A receipt-derived re-derivation of the parent in the child is excluded for the same
+  reason: it is an artifact a second process can construct. Revisiting this requires a
+  new amendment to this ADR.
+
+### 28. Universal requirement: a confined launch must not hold write authority over the supervisor registry
+
+Whatever the supervisor records about the processes it launched is only as trustworthy
+as the exclusivity of its writer. Therefore **every confined AASM launch must be
+refused if it would give the child effective write authority over the supervisor
+registry directory or over any ancestor of that directory.** The rule is universal over
+confined launches: it is not conditional on whether the launch participates in a
+handoff, on the policy domain, or on which isolation backend is in use.
+
+- *Effective write authority* means any route by which the child could create, modify,
+  rename, replace or unlink an entry in that directory, or rename, replace or unlink
+  the directory or any ancestor itself (which lets it substitute a path component), or
+  write a registry file or socket inside it, or hard-link a registry entry into a
+  location it can write. It is computed from all of: the launch's filesystem-write
+  scopes; inherited descriptors, including `O_PATH` and directory descriptors used with
+  `*at` calls; mount, root and alias resolution (symlinks, `..`, bind mounts, a
+  different mount namespace or `chroot`, `/proc/self/fd`, `/proc/<pid>/root`); and
+  discretionary access (the child's uid and gid, group-write bits, ACLs, and whether the
+  child owns, or can chmod or chown, the registry directory or any ancestor of it) —
+  and from same-uid control of whoever writes the registry: `ptrace`,
+  `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd` against the supervisor or
+  any registry-capable process, and a descriptor obtained after launch (passed over
+  `SCM_RIGHTS` or taken with `pidfd_getfd`) as well as an inherited one. Where the
+  child shares a uid with the supervisor, the launch must also separate them (a
+  distinct uid, or a PID namespace with the routes denied) or establish that those
+  routes are denied by mechanisms the kernel actually provides: Yama
+  `ptrace_scope` of at least 1 (a host-wide sysctl the launch cannot set, which
+  `CAP_SYS_PTRACE` bypasses, so the admission check verifies both), or a child Landlock
+  domain that is more restricted than the supervisor's, which Landlock's own ptrace rule
+  uses to refuse the child's attach. Landlock's `LANDLOCK_SCOPE_*` flags (abstract unix
+  sockets, signals) do not cover these routes. Otherwise the launch is refused.
+  The computation is only the admission check. The control for filesystem write routes is the
+  kernel-enforced Landlock domain, which is checked when a path is opened. It does not
+  mediate metadata changes (`chmod`, `chown`, `setxattr`, ACL changes, `utimes`), so
+  those are denied by a distinct uid, by DAC ownership, or by admission refusal, and
+  are tested that way, not as Landlock denials; it does not
+  revoke a writable descriptor the child already holds, so descriptors are handled by
+  hygiene (every descriptor except stdio is closed or close-on-exec at launch, and no
+  registry-capable process sends descriptors to the child) together with the ptrace and
+  `pidfd_getfd` denial above. A confined launch on a backend with no equivalent
+  kernel-enforced control is refused under the fail-closed rule below. Once a registry
+  is configured that refuses every such launch (for example on macOS), handoff or not;
+  with no registry configured the rule has nothing to protect and is vacuous. What
+  counts as an equivalent control is defined in the Story, with the J84 isolated backend
+  as its first test case, and the Story's compatibility assessment covers this effect.
+  The supervisor must not call `prctl(PR_SET_PTRACER)` to widen Yama access to a child.
+- The check **fails closed**: when the launch's write authority cannot be resolved or
+  compared, the launch is refused and the reason is reported.
+- An unconfined launch (`--isolation none`) establishes no boundary and claims none
+  (§23 of the AAASM-6347 amendment). It therefore cannot carry a cross-process
+  attenuation claim: the handoff stays refused for it.
+
+### 29. Acceptance contract for the implementation Story
+
+Tests are required, not optional, and each pairs an adversarial case with a positive
+control that moves with the condition under test (a check that cannot fail proves
+nothing):
+
+1. **Registry write-protection.** Refused: a write scope equal to the registry
+   directory; to an ancestor of it; a path that resolves to either through a symlink,
+   `..` or a bind-mount alias; an inherited descriptor (including `O_PATH`) that
+   reaches it; rename or replacement of the registry directory or of an ancestor
+   component; a hard link between a registry entry and a child-writable directory; a
+   writable registry file or socket; write access obtained through the child's uid,
+   gid, group bits, ACL, or ownership of (or chmod/chown over) the registry directory
+   or any ancestor; `ptrace`, `process_vm_writev`, `/proc/<pid>/mem` or `pidfd_getfd`
+   against the supervisor; a descriptor received after launch over `SCM_RIGHTS` (exercising the hygiene and `pidfd_getfd` denial above). Admitted (positive
+   control): a sibling directory outside the registry's ancestor chain, with an
+   identical-shape launch. The refusal tests must fail when the check is removed.
+2. **Cross-tree impersonation.** A child launched in tree A that claims a parent, or a
+   sibling's identity, in tree B is refused; so is a replay of a child-asserted claim after
+   its parent exited or its process identity was reused. Positive control: a child
+   legitimately launched in the same tree is accepted with the same claim shape.
+3. **Authority escalation.** A child lease wider than its parent's is refused at every
+   hop (the §8–§11 monotonic rule, now across processes); a child-forged or
+   hand-built claim of ancestry, and an entry the child planted in the registry, are not
+   honoured. Positive control: a child lease equal to or narrower than its parent's is
+   admitted at the same hop.
+4. **Transitive revocation across the process boundary.** Revoking any ancestor's
+   lease refuses the descendants, including an already-launched one (the AAASM-6307
+   property, shown with real separate processes rather than an in-process ledger).
+   Positive control: with no ancestor revoked, the same descendants keep running.
+
+Properties that depend on kernel behaviour are evidenced on a real kernel only (§30).
+A test that is skipped, or that exercises a mock or fake kernel, is recorded as *not
+run* and never counted toward acceptance.
+
+### 30. The B3 evidence gate (mandatory before any implementation is built or enabled)
+
+The handoff's security rests on five kernel-level assumptions. Each must be
+demonstrated, with a positive and an adversarial negative control, on a real Linux
+kernel whose relevant capabilities were verified *first*:
+
+1. **Landlock cross-process restriction** — a confined process cannot reach the
+   registry or lift its own restriction, and a process in another tree is unaffected
+   by this tree's ruleset. The kernel's Landlock ABI is queried at run time and must
+   cover rename/link (`REFER`, ABI 2) and truncate (ABI 3) rights, so ABI 3 or newer is
+   required; an older ABI is not accepted as evidence for §28 (ABI 1 denies
+   cross-directory rename and link outright rather than letting a ruleset govern them,
+   and ABI 1–2 cannot restrict truncation).
+2. **pidfs identity** — a process identity obtained as a pidfd is stable against pid
+   reuse. The evidence records the exact
+   kernel version, the kernel documentation relied on, and the runtime behaviour shown:
+   a pidfd the supervisor obtained at clone time (`CLONE_PIDFD`) stays bound to its own
+   process; once that process is reaped, `pidfd_send_signal` on it returns `ESRCH` and
+   never reaches a later holder of the same pid; and the runtime check shows that the pidfd's pidfs inode number (`fstat`
+   `st_ino`) distinguishes two different processes and stays stable across pid reuse;
+   `kcmp` is not used, because it compares open files, not processes. The evidence
+   records the kernel version at which that inode behaviour was observed; this ADR
+   asserts no minimum version. A pidfd is not a secret (`pidfd_open` needs no permission), so the claim is stability, not
+   unforgeability.
+3. **Registry write isolation** — a confined child's attempts to write the registry
+   (§28) fail at the kernel, including through aliases. Metadata changes are outside
+   Landlock's reach (§28) and are evidenced under item 5 and the DAC separation.
+4. **Real multi-process ancestry** — the launched tree's parent/child relation is
+   observed from real processes, not synthesized.
+5. **Same-uid control denied** — a confined child sharing the supervisor's uid cannot
+   `ptrace`, `process_vm_writev`, read or write `/proc/<pid>/mem`, or `pidfd_getfd` the
+   supervisor or a registry-capable process, and cannot use a descriptor the supervisor
+   did not give it; the evidence records `ptrace_scope`, the child's capabilities, and a
+   positive control in which the same operation succeeds when the separation is
+   removed.
+
+An environment that cannot show a property (a kernel without Landlock compiled in or
+not in the active LSM list, a kernel whose pidfd behaviour fails §30.2, a container whose host kernel
+was not itself verified) yields *no evidence*, not a pass. The gate is not waivable by
+reading source, by unit tests, or by an unsupported configuration.
+
+### Current state, stated precisely
+
+- **J82 (monotonic capability attenuation across sub-agent trees, AAASM-6161 /
+  AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently verified. No production path builds `Ancestry::Parent` from another process; the
+  multi-process case remains refused, not accepted.
+- **Verified on the available host (2026-10-22):** the only Linux kernel reachable
+  from the development host is Docker Desktop's VM, `6.10.14-linuxkit` (aarch64). Its
+  `/proc/config.gz` reports `# CONFIG_SECURITY_LANDLOCK is not set` and
+  `CONFIG_LSM="yama,loadpin,safesetid,integrity,bpf"`. **B3 cannot be established
+  there.** The development host itself
+  is macOS, which has no Landlock.
+- **Missing capability, minimally stated:** a Linux kernel built with
+  `CONFIG_SECURITY_LANDLOCK=y`, with `landlock` in the active LSM list
+  (`/sys/kernel/security/lsm`) and an ABI of 3 or newer, whose pidfd behaviour passes
+  the runtime checks in §30.2, with Yama `ptrace_scope` of at least 1 or a uid/PID
+  namespace separation available for §30.5, that the operator may run isolated,
+  bounded, multi-process tests on without touching the host network.
+
+### What this amendment does not decide
+
+- The on-disk or in-memory design of the supervisor registry. Any record of a launched
+  process's place in the ancestry is supervisor-side only and unreachable by the
+  child; there is no child-held attestation. The design and record format belong to the
+  implementation Story, which starts only after the gate (see the order above), and
+  must satisfy §27–§30.
+- Any receipt-schema change (`LeaseBinding`), or cryptographic identity binding
+  (AAASM-5533 still owns verification).
+- That the gate passes. It records the gate; it does not claim any of it.
+
+## Amendment (AAASM-6259): runtime gate seam in `handle_policy_query`
+
+This amendment adds a seam, not an enforcement feature.
+
+- `aa-runtime/src/pipeline/lease_gate.rs` defines `LeaseGate`, which answers
+  `Permit` or `Deny { reason }` for `(server-side agent id, CheckActionRequest, now)`.
+  `pipeline::run_with_lease_gate` takes an `Option<Arc<dyn LeaseGate>>`; `pipeline::run`
+  is unchanged and passes `None`. In `handle_policy_query` the gate runs after the
+  op-control halt and before the gateway forward, because a handled gateway response
+  returns early.
+- **An absent gate behaves exactly as before.** This is not a decision on the
+  compatibility switch of section 3; it is the absence of a gate.
+- **A production gate exists only in governed mode** (section 37). `PolicyLeaseGate`
+  implements `LeaseGate` and the runtime passes it to `run_with_lease_gate` when, and only
+  when, `AA_LEASE_POLICY` is set. With it unset the runtime passes `None`, as at the time
+  this seam was added. A runtime built for crates.io has no gate and refuses to start if
+  asked to govern.
+- **Restrict-only.** `Permit` falls through to the gateway and local policy and cannot
+  grant over an op-control halt, a gateway deny or a local `blocked_actions` rule.
+- **Fail closed when a gate is installed.** A `Deny`, a gate panic and an empty subject
+  all deny before any gateway forward. The SDK receives a generic "capability lease
+  required" message; the gate's detail goes only to the runtime log.
+- **The gate is consulted for every action type**, including `LLM_CALL`, `TOOL_RESULT`
+  and unspecified or unknown codes. The seam exempts nothing: the gate owns
+  classification and decides which classes need no lease.
+- The subject is the runtime's server-side `agent_id`, never the SDK-asserted
+  `CheckActionRequest.agent_id`, and it is runtime-wide rather than per connection.
+  The clock is read once per query and passed to the gate.
+- The verdict is point-in-time and `check` runs inline in the single pipeline loop with
+  no timeout, so a real gate must answer from an in-memory snapshot. Panic containment
+  needs `panic = "unwind"`.
+- `ParentAuthority` is not serialized and no cross-process handoff is introduced
+  (sections 27 to 30 are unchanged).
+- **Known limitation.** `action_type` and the rest of the request are SDK-asserted, so
+  this seam belongs to the advisory layer. It binds cooperative, SDK-wrapped calls and
+  does not stop a process that bypasses the SDK or misreports what it is doing. This is
+  why the seam exempts no action class.
+- A gate that holds a `std::sync::Mutex` across a panic poisons it and then denies every
+  later call: fail-closed, but persistent.
+
+## Amendment (AAASM-6259): operator-declared tool capabilities
+
+This amendment fixes the authored half of per-call tool admission: the policy field an
+operator uses to say what authority a tool's calls need. **Only the schema, validation,
+digest and resolution carry-through exist today.** No runtime consumes the declaration,
+and no shipped binary denies or admits a tool call because of it; that arrives in later
+changes under the same ticket. Nothing below should be read as a statement that a tool
+call is currently checked against a lease.
+
+### 31. `tools.<name>.capabilities` is a declaration of need, never a grant
+
+```yaml
+tools:
+  web_search: { allow: true, capabilities: [network_egress, name_resolution] }
+  write_note: { allow: true, capabilities: [filesystem_write] }
+  calculator: { allow: true, capabilities: [none] }   # purely logical, needs no lease
+```
+
+The vocabulary is exactly the names `LeaseDomain::parse` accepts, mapped one to one to
+capability domains, plus `none`. The field is `Option<Vec<ToolCapability>>`: **absent is
+undeclared and is a different state from `[none]`**. `authority.leases` stays
+independently authored and is never derived from a declaration, for the reason section 2
+gives: a lease computed from the thing it is later checked against would make the check a
+tautology.
+
+The validator rejects an empty list, an unknown word, a duplicate, `none` combined with
+any other word, `resource` and `workspace_transaction` (launch-boundary authority, not
+something a single call exercises), and any declaration under the `"*"` tool key
+(declarations are matched by exact tool name, and a wildcard would make every tool
+declared). `process_creation` and `syscall` **pass** the validator: they are real domains
+a tool may need. The governed decision in section 32 refuses them; authoring is not where
+that refusal belongs. The canonical parser in `aa-security` applies the same rules and
+never lowers the field into `ToolRule` or the eBPF rule set.
+
+The field participates in `content_digest` only when present, so every existing policy id
+is unchanged. The effective-policy resolution carries the declared map (declared tools
+only) and the digest so a later decision can attribute itself to the exact document it
+read.
+
+### 32. Governed mode is triggered by `AA_LEASE_POLICY`, not by "the policy authors a lease"
+
+Decided here, implemented later. The runtime treats itself as governed when, and only when,
+`AA_LEASE_POLICY` is set. The alternative considered, "governed once the policy authors at
+least one lease", fails open: deleting the leases from a policy silently returns the
+runtime to ungoverned. An operator-set switch outside the policy document cannot be
+removed by editing the document.
+
+In governed mode an undeclared tool is denied, and a tool that declares `process_creation`
+or `syscall` is refused. Those two are refused because this admission check cannot bound
+them: a tool that may spawn a process or issue raw syscalls is not confined by a lease the
+SDK-side wrapper consulted.
+
+### 33. What this is not: admission, not confinement
+
+The check this field enables is an **admission lease check for a cooperative SDK
+`TOOL_CALL`**. `action_type` and the rest of the request are SDK-asserted (see the known
+limitation under the AAASM-6259 gate-seam amendment), so a process that bypasses the SDK or
+misreports what a tool does is not stopped by it. A declaration is also a claim by the
+operator about the tool, not a measurement of it: a tool declared `[none]` that in fact
+writes files is not caught here.
+
+Selector-scoped leases (a lease whose scope is a path or destination list) never admit a
+tool. A declaration names a domain, not a destination, and answering "may this call reach
+that destination" from a domain-level declaration would widen the lease. Only a
+`scope: whole` lease in the declared domain admits.
+
+The field is trusted operator policy. It is read only from the operator-authored document
+and never from anything an agent, SDK or tool supplies.
+
+### 34. Compatibility
+
+The key is an additive public schema change (see the protocol changelog). An rc.7 binary
+does not know the key and rejects the document as an unknown key, which is fail-closed:
+a policy carrying declarations cannot be silently loaded by a binary that would ignore
+them.
+
+
+### 35. The governed decision
+
+`aa-runtime/src/lease/decide.rs` implements the decision section 32 describes as "decided
+here, implemented later", and `lease/gate.rs` wraps it as a `LeaseGate`. Section 37
+records how the runtime builds the governance, installs the gate and reloads revocations;
+this section and section 36 describe the decision itself.
+
+`decide(governance, revoked, request, now)` is pure. `LeaseGovernance` is built once from
+operator-trusted input: the server-side agent id, an `Enforced` policy load (a permissive,
+unconfigured or failed load is a construction error, and governed mode never falls back to
+ungoverned), the tool table from `tools.<name>.capabilities` joined with `allow`, and the
+leases lowered by the same `authored_lease_from` and `lower_leases` path `aasm run` uses
+(the conversion now lives in `aa-runtime` and `aa-cli` calls it). A policy that authors
+`max_count` or two leases for one domain cannot be governed and refuses to start.
+
+| request | verdict |
+|---|---|
+| `TOOL_CALL`, tool declared `[none]`, `allow: true` | Permit |
+| `TOOL_CALL`, declared domain classes, `allow: true` | Permit only if every class has a valid, un-revoked, `whole`-scope lease naming the governed subject (`admit_lease` with `RequirementScope::Whole`) |
+| `TOOL_CALL`, undeclared tool; `allow: false`; missing or empty tool name; no `ToolCallContext` | Deny |
+| `TOOL_CALL`, tool declaring `process_creation` or `syscall`; any unrecognised class | Deny, even with a lease for that class |
+| `LLM_CALL`, `TOOL_RESULT`, with or without a context | Deny |
+| `FILE_OPERATION`, `NETWORK_CALL`, `PROCESS_EXEC`, `AGENT_SPAWN`, `UNSPECIFIED`, unknown codes | Deny |
+
+A `Permit` only falls through to the gateway and local policy; the gate can only restrict.
+The typed action types deny because admitting one would need a typed filesystem or network
+claim, and the request carries only an SDK-asserted `action_type`; there is nothing
+trustworthy to check a lease against. `process_creation` and `syscall` deny because an
+admission check cannot bound a class that subsumes every other. A lease selected by named
+selectors never admits a tool (section 33) because the requirement is `Whole`, which a
+selector lease does not cover. Revocation is a set of lease ids supplied by the caller;
+the library does not read lease state.
+
+`agent_id`, `caller_agent_id`, `args_json`, `tool_source`, `target_url`, the credential
+token and the trace and span ids never influence a verdict. The decision reads only
+`action_type`, the tool name and operator-trusted state.
+
+### 36. Limits of the governed decision
+
+- **Admission, not confinement.** It decides whether a cooperative SDK-wrapped call may
+  proceed. A process that bypasses the SDK, or a tool that does more than its declaration
+  says, is not stopped.
+- **`action_type` is SDK-asserted, so only `TOOL_CALL` can be admitted.** `LLM_CALL` and
+  `TOOL_RESULT` are denied in governed mode in every form (context omitted, a
+  `ToolCallContext` left in, an empty matching context, or another typed context), because
+  a label the client chooses cannot be allowed to waive the lease check. No shipped SDK
+  sends them as a policy query (Python, Node and Go each send `TOOL_CALL` with a
+  `ToolCallContext`), so no cooperative path is lost; ungoverned runtimes are unchanged. This
+  closes the admission of a relabelled request, not a client that skips the query or runs
+  the tool without asking, which stays the advisory-layer limit above.
+- **Leases do not refresh.** Lease TTLs count from the run record's `issued_at`. After
+  `issued_at + ttl` every tool that declares a leased class denies until an operator starts
+  a new run; this is fail-closed by design, not a bug. Tools declared `[none]` are
+  unaffected.
+- **Tool names match exactly.** No case folding, trimming or wildcard expansion; a `"*"`
+  entry declares nothing. A tool the operator did not declare by exact name is undeclared.
+- **The subject is runtime-wide.** Every connection to one runtime shares the server-side
+  agent id, so a lease admits all of them, not one caller.
+- **Verdicts are point-in-time.** Expiry and revocation are read when the query is
+  decided; a lease that lapses or is revoked while an approval is pending is not
+  re-checked when the approval resolves.
+- **A poisoned snapshot lock denies every call** until the process restarts, and a refused
+  `install` does not heal it.
+
+### 37. Wiring: what the runtime does with the gate
+
+`aa-runtime` builds the gate at the very top of `run()`, before the metrics recorder, the
+IPC socket, the health server or any task exists, so a refusal precedes every subsystem
+start-up log line (asserted in the wiring test) and leaves no socket or listener.
+`run()` now returns `Result<(), StartupRefusal>` and the binary exits with status 78.
+
+**Trigger.** `AA_LEASE_POLICY` being *set* is the only trigger (section 32). A set but empty
+value is still "requested" and is refused; this differs deliberately from `AA_POLICY_PATH`,
+where empty means disabled, because here "disabled" would be a fail-open. `AA_LEASE_STATE`
+names the record, the same variable `aasm lease` reads. A record that merely exists does not
+turn governed mode on.
+
+**Startup refuses** (exit 78, message on stderr and in the log) when: `AA_LEASE_POLICY` is
+set but this build cannot enforce leases (crates.io build without the gate, or a non-unix
+host); `AA_LEASE_STATE` is unset; the policy fails to load or is not an enforced policy;
+the record is missing, corrupt, of an unsupported version, insecure, for a different subject
+than the server `AA_AGENT_ID`, or bound to a different policy digest (the message names the
+digest to pass to `aasm lease init`); or the policy authors a lease the lowering refuses
+(`max_count`, two leases for one domain). A missing record is never created: `aasm lease
+init` is the only thing that starts a run. `process_creation` and `syscall` leases are not
+a startup refusal; the decision denies every tool that declares those classes (section 35).
+The policy is loaded from the explicit path only (`aa_policy::resolve::load`), never
+through the search path, so a missing file cannot fall back to another policy. The
+refusal for "asked to govern, build cannot" sits outside the strip region in
+`lease/wiring.rs`; only the call into the gate is stripped, so the crates.io binary refuses.
+
+**Time.** Expiry is judged against the host's wall clock (`SystemTime::now()`) at each check, so a clock stepped forward expires leases early and one stepped back extends them; there is no monotonic-clock guard. `GovernedIssuance.issued_at` is the record's `issued_at` and the lease ids come
+from the record (`LeaseGovernance::from_state`), so ids and windows agree with what
+`aasm lease init` printed. Expiry is evaluated against the wall clock at each check with no
+grace. A restart does not refresh a lease; only a new run does.
+
+**Reload.** A task re-reads the record every 100 ms off the async workers. A valid update
+that passes `check_monotonic` installs a new snapshot with the new revoked set. Any
+anomaly (unreadable, corrupt, deleted, changed anchor, subject or digest, a shrunk
+revocation set, a generation that went backwards, I/O error) installs deny-all and ends the
+task: the gate stays denied until restart and never heals, even if the original record is
+put back. The first I/O error latches too: there is no retry, because a transient read
+failure is indistinguishable here from a record someone is racing to restore, so the
+gate fails closed and an operator restarts it (accepted trade-off, not an oversight).
+Each read is bounded (2 s); a read that does not return in time trips the gate. The reload
+task is supervised: if it panics, is aborted, or ends without a shutdown, the supervisor
+installs deny-all, so a gate that can no longer learn of revocations stops permitting. The policy file is read once; editing it takes effect only at restart, and then
+only if the record is re-initialised for the new digest.
+
+**Revocation acknowledgement.** `GET /health` gains an additive `lease_governance:
+{run_id, generation, state}` object (`state` is `governed` or `denied_all`), present only in
+governed mode, so ungoverned output is unchanged. The field is written only after the gate
+accepted the snapshot. `aasm lease revoke --wait-health <URL>` (or `AA_LEASE_HEALTH_URL`)
+returns only once `/health` shows *this run's* `run_id` at the new generation or later, and
+fails on timeout (default 5 s, clamped to one hour), against a runtime that reports no
+`lease_governance`, or against another run's runtime. A runtime reporting `denied_all` for
+this run also acknowledges (everything is refused) but `revoke` exits 3 so a script cannot
+mistake it for "revoked and applied". The client ignores environment proxies, does not
+follow redirects, and never prints URL userinfo, query or fragment. Without the
+flag the revocation is recorded and applied within about one reload interval, with no
+acknowledgement. The runtime health address is not discoverable from the state record, so
+the URL is an explicit operator input.
+
+**Residuals, stated.**
+- A same-UID agent can edit the policy file, the state record and its directory. The record
+  is owner-only (0600) and rollback-checked while the runtime runs, but an agent that can
+  write it can trip deny-all or, across a restart, present an older valid record (AAASM-5533).
+- The subject is runtime-wide; the gate is point-in-time; it is admission, not confinement
+  (sections 33 and 36).
+- `aa-runtime` started by an SDK helper (for example the Python `start_runtime`) inherits
+  that process's environment, so whether it is governed is decided by what that environment
+  carries, not by anything the SDK asserts.
+- The gate sits in `handle_policy_query`. Other paths that reach a tool without an
+  SDK-wrapped policy query (the proxy, eBPF, a non-cooperative SDK) are not gated by it.
+- A read that hangs (a dead network filesystem) is cut off after 2 s and trips deny-all, so
+  a revocation can lag by at most that long before the gate fails closed. The blocked
+  thread itself cannot be cancelled; the binary bounds its exit with a runtime shutdown
+  timeout so it cannot keep the process alive.
+
+**Evidence.** `aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs` drives the real binary over
+its IPC socket against a counting fake gateway; see the PR for the falsifier table. J81
+remains partial until the PR6 end-to-end journey. The real Python-SDK harness for that journey is
+`scripts/qa/j81-sdk-lease-e2e.sh` (see `docs/src/qa/j81-sdk-lease-e2e.md`). It is manual local evidence, not a CI gate. Its S5e rows
+send the omit-context relabel and expect a deny; they have not been run since that change
+(NOT_RUN until an independent run).
+
+### 38. Plan-time / runtime parity: `aasm run --dry-run` calls the same decision
+
+`aasm run --dry-run` prints a `--- lease plan ---` section: for every tool the policy
+declares under `tools.<name>.capabilities`, one verdict line, plus a line for an
+undeclared tool and one per typed action type. Each verdict is produced by the
+`aa_runtime::lease::decide::decide` the runtime's `PolicyLeaseGate` calls, over a
+`LeaseGovernance` built by the same `LeaseGovernance::from_resolution`, from the
+policy's authored `authority.leases` only. The section describes what a *governed* runtime
+(section 32: one started with `AA_LEASE_POLICY` and a record from `aasm lease init`) would
+decide; a runtime started without `AA_LEASE_POLICY` runs no lease gate at all, and the
+preview says so. The preview owns no rule of its own: it
+builds the request a wrapped call would carry and formats the answer, so a change to
+the decision changes the plan with it.
+
+The parity is pinned by tests, not asserted by construction. A table of rows (lease
+held, missing, expired, cross-capability, selector-scoped, `[none]`, capabilities
+absent, unknown tool, `allow: false`, `process_creation`) is run through the plan and
+through `PolicyLeaseGate` at the same clock and must agree, and each row carries a
+hand-written expected verdict so mutating `decide` moves both sides off the pin. A
+deliberately divergent re-implementation is compared the same way and must be caught.
+
+What the plan is not:
+
+- **Point-in-time.** Leases are planned as issued at the moment of the preview, with
+  the `aasm run` launch default (3600s, the same value governed mode uses; a test pins the
+  two together) for a grant that states none; each `lease:` line prints its `ttl` and
+  whether it was `authored` or `default`. The real run record's
+  `issued_at` is the `aasm lease init` time, so a plan cannot show a lease that has
+  lapsed in a real run.
+- **Revocation is runtime-only.** The plan evaluates against an empty revoked set and
+  says so. It reads no state record and creates none.
+- **Not authorization and not enforcement.** A `PERMIT` is not a grant and a `DENY` is
+  not a refusal; the runtime decides per call with the clock and revocation state it
+  has then, and a `PERMIT` there still falls through to the gateway and local policy.
+- **Unavailable is not permissive.** For a policy that is not an enforced load, or that
+  authors a lease governed mode cannot issue, the section states the reason and prints
+  no verdicts.
+- **Preview only, and strip-bound.** The section lives in `run.rs`, so it is removed
+  from the published crate with the rest of `aasm run`.
+- **Tools without `capabilities` are not listed.** The plan lists tools that declare
+  capabilities, a `summary:` of how many would be denied, and one `tool <undeclared>` line
+  that also covers any tool declared without `capabilities` (a governed runtime denies it).

@@ -10,10 +10,12 @@ use crate::error::ProxyError;
 /// Action the proxy takes when its `CredentialScanner` produces a finding
 /// inside a flowing request body.
 ///
-/// Mirrors `aa_gateway::policy::document::CredentialAction` but lives in the
-/// proxy crate so the data path can enforce policy locally without taking
-/// a dependency on the gateway. The variants and their semantics are
-/// intentionally identical so a single YAML field can drive both layers.
+/// Mirrors the variants of `aa_gateway::policy::document::CredentialAction`
+/// but lives in the proxy crate so the data path can enforce locally without
+/// depending on the gateway. It is NOT driven by the gateway policy: the proxy
+/// reads it from its own environment (`AA_PROXY_CREDENTIAL_ACTION`), and its
+/// scanner holds built-in patterns only, so a gateway policy's custom
+/// patterns or locale packs are not applied by the proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CredentialAction {
     /// Refuse the request: the proxy returns 403 to the client and **never**
@@ -154,6 +156,11 @@ pub struct ProxyConfig {
     ///
     /// This knob only affects MCP `tools/call` enforcement. Non-MCP traffic
     /// is unaffected and continues to flow.
+    ///
+    /// It never governs the response direction (AAASM-6355): when the gateway
+    /// cannot evaluate an upstream MCP response, the response is withheld even
+    /// with this set, because forwarding it would let a gateway-only sensitive
+    /// value reach the client.
     ///
     /// Env: `AA_PROXY_MCP_FAIL_OPEN` — `1`/`true` to fail open; default `false`.
     pub mcp_fail_open: bool,

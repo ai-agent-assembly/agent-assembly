@@ -62,11 +62,10 @@ Commands:
 
 Two global flags appear in nearly every example below:
 
-- `--api-url <URL>` — where the CLI sends its requests. Defaults to the SaaS
-  control-plane API on `http://localhost:8080`. When you run the local gateway
-  (`aasm start` / `aa-gateway --mode local`) it serves its HTTP API on
-  `http://127.0.0.1:7391`, so the local-mode examples pass
-  `--api-url http://127.0.0.1:7391`.
+- `--api-url <URL>` — where the CLI sends its requests. Defaults to the local gateway
+  `aasm start` serves (`http://127.0.0.1:7391`, or the address it recorded), so the
+  local-mode examples work with or without the flag. Pass it to target something else,
+  such as the SaaS control-plane API.
 - `--output <table|json|yaml>` — table for humans, `json`/`yaml` for scripting.
 
 > **A note on ports.** The gRPC policy server listens on `127.0.0.1:50051`

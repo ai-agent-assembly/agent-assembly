@@ -107,7 +107,65 @@ mod stub_coding_agent {
         File(Vec<u8>),
     }
 
+    /// Directory that receives a raw witness of every snapshot, or `None`.
+    ///
+    /// HORO-1718 X2 needs the fixture tree as it was observed before and after
+    /// a run, not only the in-test assertion that the two were equal. Setting
+    /// this variable is an opt-in recording hook: it changes nothing a test
+    /// compares and is unset in every ordinary lane.
+    const WITNESS_ENV: &str = "AASM_STUB_SNAPSHOT_WITNESS_DIR";
+
+    /// Write one witness file per `snapshot` call: the calling test, a
+    /// process-wide sequence number, and for every entry its kind, length and
+    /// sha256. Failures to record are reported, never swallowed, because a
+    /// witness that silently stopped being written would read as absence.
+    fn record_snapshot_witness(root: &Path, snap: &BTreeMap<String, Entry>) {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let Some(dir) = std::env::var_os(WITNESS_ENV).filter(|v| !v.is_empty()) else {
+            return;
+        };
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create witness dir");
+        let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+        let test = std::thread::current().name().unwrap_or("unnamed").to_string();
+        let entries: BTreeMap<&String, serde_json::Value> = snap
+            .iter()
+            .map(|(path, entry)| {
+                let value = match entry {
+                    Entry::Dir => serde_json::json!({ "kind": "dir" }),
+                    Entry::File(bytes) => serde_json::json!({
+                        "kind": "file",
+                        "len": bytes.len(),
+                        "sha256": hex::encode(Sha256::digest(bytes)),
+                    }),
+                };
+                (path, value)
+            })
+            .collect();
+        let doc = serde_json::json!({
+            "test": test,
+            "seq": seq,
+            "pid": std::process::id(),
+            "root_name": root.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "entries": entries,
+        });
+        let safe: String = test
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let file = dir.join(format!("{safe}-{seq:04}.json"));
+        std::fs::write(&file, serde_json::to_vec_pretty(&doc).expect("witness json")).expect("write witness");
+    }
+
     fn snapshot(root: &Path) -> BTreeMap<String, Entry> {
+        let out = take_snapshot(root);
+        record_snapshot_witness(root, &out);
+        out
+    }
+
+    fn take_snapshot(root: &Path) -> BTreeMap<String, Entry> {
         let mut out = BTreeMap::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
@@ -164,6 +222,111 @@ mod stub_coding_agent {
         Ok(out)
     }
 
+    /// The one variable the sanitised launch forwards: the coverage runner's
+    /// profile pattern. `aasm run --workspace-tx` runs with the fixture tree as
+    /// its cwd, so an instrumented `aasm` that never sees this writes its
+    /// `default_*.profraw` into the tree the exact-change-set oracle compares.
+    /// Forwarding the runner's own pattern (already outside any fixture) keeps
+    /// the full snapshot honest and the profile collected.
+    const PROFILE_ENV: &str = "LLVM_PROFILE_FILE";
+
+    /// Resolve `dir` through every symlink that exists, appending any not-yet-
+    /// created tail verbatim. Lets the containment check run BEFORE anything is
+    /// created, so a refused sink leaves no directories behind. A dangling
+    /// symlink is an error, not a missing tail: creating through it would land
+    /// wherever it points.
+    fn canonicalize_with_missing_tail(dir: &Path) -> io::Result<PathBuf> {
+        let mut missing = Vec::new();
+        let mut cur = dir;
+        loop {
+            match cur.canonicalize() {
+                Ok(mut resolved) => {
+                    resolved.extend(missing.iter().rev());
+                    return Ok(resolved);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound && cur.symlink_metadata().is_err() => {
+                    let (Some(name), Some(parent)) = (cur.file_name(), cur.parent()) else {
+                        return Err(e);
+                    };
+                    missing.push(name);
+                    cur = parent;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("{PROFILE_ENV} directory crosses a dangling symlink"),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Validate the ambient coverage profile pattern for pass-through. `None`
+    /// (ordinary lane) forwards nothing.
+    ///
+    /// Supported pattern: an absolute path whose directory part is literal
+    /// (no `..` component, no `%` token) and whose final component is the
+    /// file name, which may carry `%p`/`%m` tokens -- what `cargo llvm-cov`
+    /// sets. (`Path::components` already drops interior `.` components, and
+    /// `/a/./b` resolves exactly like `/a/b`, so `.` needs no refusal.) LLVM
+    /// expands tokens in directory components into names this check cannot
+    /// see, so they are refused rather than checked as literal directories.
+    /// The directory and the fixture root are resolved through symlinks, and
+    /// the sink directory must not lie inside the fixture root (a directory
+    /// that contains the root is accepted: profiles land in that directory
+    /// itself, not in the root's subtree); only then is the directory created.
+    /// The returned pattern is the *resolved* directory joined with the
+    /// original file name, so for a token-free file name the destination that
+    /// was checked is the one forwarded, and `%` tokens in a file name still
+    /// expand. A concrete (token-free) existing file name must not be a
+    /// symlink; a file name with tokens is NOT resolved, so what LLVM expands
+    /// it to is not checked, and a hard link to a fixture file is not
+    /// detected. A same-user process racing the directory after this check is
+    /// out of scope: the sink is a private directory of the harness's runner.
+    fn validated_profile_sink(raw: Option<std::ffi::OsString>, tree: &Path) -> io::Result<Option<PathBuf>> {
+        let Some(raw) = raw.filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let pattern = PathBuf::from(raw);
+        let bad = |why: &str| io::Error::new(io::ErrorKind::InvalidInput, format!("{PROFILE_ENV} {why}"));
+        if !pattern.is_absolute() {
+            return Err(bad("must be an absolute path"));
+        }
+        let dir = pattern.parent().ok_or_else(|| bad("has no directory"))?;
+        let leaf = pattern.file_name().ok_or_else(|| bad("has no file name"))?;
+        if dir
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+        {
+            return Err(bad("directory must not contain . or .. components"));
+        }
+        if dir.to_string_lossy().contains('%') {
+            return Err(bad("directory must not contain % tokens; only the file name may"));
+        }
+        let tree = tree.canonicalize()?;
+        let resolved_dir = canonicalize_with_missing_tail(dir)?;
+        if resolved_dir.starts_with(&tree) {
+            return Err(bad("must point outside the fixture tree"));
+        }
+        std::fs::create_dir_all(&resolved_dir)?;
+        let resolved = resolved_dir.join(leaf);
+        if !leaf.to_string_lossy().contains('%')
+            && std::fs::symlink_metadata(&resolved).is_ok_and(|m| m.file_type().is_symlink())
+        {
+            return Err(bad("file name must not be a symlink"));
+        }
+        Ok(Some(resolved))
+    }
+
+    /// Forward only the validated profile pattern into an already
+    /// `env_clear`ed launch; every other ambient variable stays cleared.
+    fn apply_profile_sink(cmd: &mut Command, sink: Option<&Path>) {
+        if let Some(pattern) = sink {
+            cmd.env(PROFILE_ENV, pattern);
+        }
+    }
+
     /// Everything one test host shares: a CA, the deterministic upstream, a
     /// real gateway with `PolicyService`, and the trusted-proxy precondition.
     struct Host {
@@ -174,12 +337,23 @@ mod stub_coding_agent {
         state: PathBuf,
         gateway_endpoint: String,
         policy: PathBuf,
+        profile_sink: Option<PathBuf>,
         upstream: ConformanceUpstream,
         proxy: TrustedProxy,
     }
 
     impl Host {
         async fn start(deny_test_allowed: bool) -> anyhow::Result<Self> {
+            Self::start_with_profile_env(deny_test_allowed, std::env::var_os(PROFILE_ENV)).await
+        }
+
+        /// `start` with the coverage profile pattern supplied explicitly, so a
+        /// test can exercise the real launch path under a chosen sink instead
+        /// of whatever the runner happens to export.
+        async fn start_with_profile_env(
+            deny_test_allowed: bool,
+            profile_env: Option<std::ffi::OsString>,
+        ) -> anyhow::Result<Self> {
             install_crypto_provider();
             let tmp = tempfile::tempdir()?;
             let root = tmp.path().to_path_buf();
@@ -190,6 +364,7 @@ mod stub_coding_agent {
                 std::fs::create_dir_all(d)?;
             }
             let policy = write_policy(&root, "aaasm6297-stub", deny_test_allowed)?;
+            let profile_sink = validated_profile_sink(profile_env, &root)?;
             let (gateway_endpoint, _registry) = super::conformance_gateway_support::start_full_gateway(&policy).await?;
             let ca = CaStore::load_or_create(&ca_dir)
                 .await
@@ -206,6 +381,7 @@ mod stub_coding_agent {
                 state,
                 gateway_endpoint,
                 policy,
+                profile_sink,
                 upstream,
                 proxy,
             })
@@ -214,6 +390,13 @@ mod stub_coding_agent {
         /// `aasm run --workspace-tx exec -- sh stub_agent.sh <session> <ca> <mode>`
         /// with an explicit environment -- nothing ambient crosses in.
         fn launch(&self, agent_id: &str, project: &Path, mode: &str) -> io::Result<std::process::Child> {
+            self.launch_command(agent_id, project, mode)?.spawn()
+        }
+
+        /// The exact `Command` `launch` spawns, exposed so a test can assert the
+        /// sanitised environment the real launch path builds rather than a
+        /// re-derivation of it.
+        fn launch_command(&self, agent_id: &str, project: &Path, mode: &str) -> io::Result<Command> {
             let home = self.root.join(format!("home-{agent_id}"));
             std::fs::create_dir_all(&home)?;
             let mut cmd = Command::new(self.proxy.aasm());
@@ -238,7 +421,8 @@ mod stub_coding_agent {
                 .arg(mode)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            cmd.spawn()
+            apply_profile_sink(&mut cmd, self.profile_sink.as_deref());
+            Ok(cmd)
         }
     }
 
@@ -265,6 +449,294 @@ mod stub_coding_agent {
             Some(Entry::File(b)) => String::from_utf8_lossy(b).into_owned(),
             other => panic!("expected file at {key}, got {other:?}"),
         }
+    }
+
+    /// The exact-change-set oracle must see an arbitrary file whose name merely
+    /// ends in `.profraw`; only the external sink may keep profiles out of the tree.
+    #[test]
+    fn snapshot_detects_an_arbitrary_profraw_file_as_an_unapproved_change() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let before = snapshot(tree.path());
+
+        std::fs::write(tree.path().join("unexpected.profraw"), b"not a profile").expect("write");
+
+        let after = snapshot(tree.path());
+        assert_ne!(before, after, "an unexpected .profraw file must change the snapshot");
+        assert_eq!(
+            after.get("unexpected.profraw"),
+            Some(&Entry::File(b"not a profile".to_vec()))
+        );
+    }
+
+    /// A `.profraw`-named directory is not a free pass for what it contains.
+    #[test]
+    fn snapshot_detects_an_unapproved_file_inside_a_profraw_directory() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let before = snapshot(tree.path());
+
+        let dir = tree.path().join("unexpected.profraw");
+        std::fs::create_dir(&dir).expect("mkdir");
+        std::fs::write(dir.join("child.rs"), b"fn unapproved() {}").expect("write");
+
+        let after = snapshot(tree.path());
+        assert_ne!(before, after, "a .profraw directory subtree must change the snapshot");
+        assert_eq!(after.get("unexpected.profraw"), Some(&Entry::Dir));
+        assert_eq!(
+            after.get("unexpected.profraw/child.rs"),
+            Some(&Entry::File(b"fn unapproved() {}".to_vec()))
+        );
+    }
+
+    /// The sink validator accepts only an absolute pattern whose directory
+    /// resolves outside the fixture tree, and an unset variable forwards nothing.
+    #[test]
+    fn profile_sink_validation_accepts_only_an_external_absolute_pattern() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let sink_dir = tempfile::tempdir().expect("sink dir");
+
+        let pattern = sink_dir.path().join("cov").join("aa-%p-%m.profraw");
+        let sink = validated_profile_sink(Some(pattern.clone().into_os_string()), tree.path())
+            .expect("external sink is valid")
+            .expect("sink present");
+        let resolved = sink_dir
+            .path()
+            .canonicalize()
+            .expect("canonical")
+            .join("cov")
+            .join("aa-%p-%m.profraw");
+        assert_eq!(sink, resolved, "directory is resolved, file name text is unchanged");
+        assert!(pattern.parent().expect("dir").is_dir(), "harness creates the sink dir");
+
+        let inside = tree.path().join("aa-%p.profraw");
+        assert!(validated_profile_sink(Some(inside.into_os_string()), tree.path()).is_err());
+        assert!(validated_profile_sink(Some("relative/aa.profraw".into()), tree.path()).is_err());
+        assert_eq!(validated_profile_sink(None, tree.path()).expect("unset"), None);
+    }
+
+    fn assert_refused(result: io::Result<Option<PathBuf>>) {
+        let err = result.expect_err("sink must be refused");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidInput,
+            "refused for the wrong reason: {err}"
+        );
+    }
+
+    /// A concrete external file name that is a symlink into the tree would let
+    /// the profile writer follow it into the fixture.
+    #[test]
+    fn profile_sink_refuses_an_external_leaf_symlink_into_the_tree() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let leaf = ext.path().join("leaf.profraw");
+        std::os::unix::fs::symlink(tree.path().join("src/lib.txt"), &leaf).expect("symlink");
+
+        assert_refused(validated_profile_sink(Some(leaf.into_os_string()), tree.path()));
+    }
+
+    /// A symlinked directory component resolves into the tree even though the
+    /// spelled path looks external.
+    #[test]
+    fn profile_sink_refuses_a_symlinked_directory_into_the_tree() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let lnk = ext.path().join("lnk");
+        std::os::unix::fs::symlink(tree.path(), &lnk).expect("symlink");
+
+        assert_refused(validated_profile_sink(
+            Some(lnk.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
+    }
+
+    /// The fixture root is canonicalised too: naming it through an alias must
+    /// not hide an in-tree sink spelled the canonical way (macOS `/var` vs
+    /// `/private/var` is the same shape).
+    #[test]
+    fn profile_sink_refuses_an_in_tree_dir_when_the_root_is_given_as_an_alias() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let alias = ext.path().join("alias");
+        std::os::unix::fs::symlink(tree.path(), &alias).expect("symlink");
+        let canonical_tree = tree.path().canonicalize().expect("canonical");
+
+        assert_refused(validated_profile_sink(
+            Some(canonical_tree.join("aa-%p.profraw").into_os_string()),
+            &alias,
+        ));
+    }
+
+    /// LLVM expands tokens in directory components too, so the validated
+    /// directory would not be where profiles land.
+    #[test]
+    fn profile_sink_refuses_a_token_in_a_directory_component() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+
+        assert_refused(validated_profile_sink(
+            Some(ext.path().join("%p").join("a.profraw").into_os_string()),
+            tree.path(),
+        ));
+    }
+
+    /// `..` would let a literal-looking directory resolve somewhere else.
+    #[test]
+    fn profile_sink_refuses_a_parent_dir_component() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let sneaky = ext.path().join("cov").join("..").join("a.profraw");
+
+        assert_refused(validated_profile_sink(Some(sneaky.into_os_string()), tree.path()));
+    }
+
+    /// A refused sink must leave nothing behind: not a new in-tree directory,
+    /// and not one reached through a dangling symlink that points into the tree.
+    #[test]
+    fn profile_sink_refusal_creates_no_directories() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+
+        let literal = tree.path().join("newdir");
+        assert_refused(validated_profile_sink(
+            Some(literal.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
+        assert!(!literal.exists(), "an in-tree sink directory must not be created");
+
+        let target = tree.path().join("viadangling");
+        let lnk = ext.path().join("dangling");
+        std::os::unix::fs::symlink(&target, &lnk).expect("symlink");
+        assert_refused(validated_profile_sink(
+            Some(lnk.join("aa-%p.profraw").into_os_string()),
+            tree.path(),
+        ));
+        assert!(!target.exists(), "creation must not go through a dangling symlink");
+    }
+
+    /// What `cargo llvm-cov` actually sets: tokens only in the file name. The
+    /// file name is forwarded verbatim (so `%m`/`%p` still expand) under the
+    /// resolved directory.
+    #[test]
+    fn profile_sink_accepts_a_file_name_token_pattern_and_keeps_the_tokens() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let pattern = ext.path().join("cov").join("default_%m_%p.profraw");
+
+        let sink = validated_profile_sink(Some(pattern.into_os_string()), tree.path())
+            .expect("valid")
+            .expect("present");
+        assert_eq!(
+            sink,
+            ext.path()
+                .canonicalize()
+                .expect("canonical")
+                .join("cov")
+                .join("default_%m_%p.profraw")
+        );
+    }
+
+    /// A token-free external file name that already exists as a regular file is
+    /// a legitimate sink.
+    #[test]
+    fn profile_sink_accepts_an_existing_external_regular_file() {
+        let tree = tempfile::tempdir().expect("tempdir");
+        copy_fixture(tree.path()).expect("fixture");
+        let ext = tempfile::tempdir().expect("ext");
+        let pattern = ext.path().join("existing.profraw");
+        std::fs::write(&pattern, b"old").expect("write");
+
+        let sink = validated_profile_sink(Some(pattern.into_os_string()), tree.path())
+            .expect("valid")
+            .expect("present");
+        assert_eq!(
+            sink,
+            ext.path().canonicalize().expect("canonical").join("existing.profraw")
+        );
+    }
+
+    /// Variables the sanitised launch sets itself; anything else crossing in is
+    /// a leak the exact-change-set oracle was not written to tolerate.
+    const LAUNCH_ENV: [&str; 9] = [
+        "PATH",
+        "HOME",
+        "AASM_STATE_DIR",
+        "AA_CA_DIR",
+        "AA_DATA_DIR",
+        "AA_GATEWAY_ENDPOINT",
+        "AA_TEST_PROXY_UPSTREAM",
+        "AA_PROXY_LLM_ONLY",
+        "AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY",
+    ];
+
+    fn launch_env(cmd: &Command) -> BTreeMap<String, Option<String>> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    /// The real `Host::launch` environment, with an external sink: the one
+    /// extra variable is the validated pattern, `env_clear` still applies, and
+    /// nothing else is added. Deleting the forward in `launch`, or adding any
+    /// further `.env()`, changes this key set and fails here.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_forwards_only_the_validated_profile_sink() -> anyhow::Result<()> {
+        let sink_dir = tempfile::tempdir()?;
+        let pattern = sink_dir.path().join("cov").join("aa-%p-%m.profraw");
+        let resolved = sink_dir.path().canonicalize()?.join("cov").join("aa-%p-%m.profraw");
+        let host = Host::start_with_profile_env(false, Some(pattern.clone().into_os_string())).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+
+        let cmd = host.launch_command("aaasm6297-env", &project, "allow")?;
+        let env = launch_env(&cmd);
+
+        let mut expected: BTreeSet<String> = LAUNCH_ENV.iter().map(|k| k.to_string()).collect();
+        expected.insert(PROFILE_ENV.to_string());
+        assert_eq!(env.keys().cloned().collect::<BTreeSet<_>>(), expected);
+        assert_eq!(
+            env.get(PROFILE_ENV),
+            Some(&Some(resolved.to_string_lossy().into_owned())),
+            "the resolved sink with the original file name pattern is forwarded"
+        );
+        assert!(
+            format!("{cmd:?}").contains(" env -i "),
+            "launch must stay env_clear'ed: {cmd:?}"
+        );
+        Ok(())
+    }
+
+    /// Ordinary lane: with no sink the real launch environment carries no
+    /// coverage variable at all.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_without_a_profile_sink_forwards_nothing() -> anyhow::Result<()> {
+        let host = Host::start_with_profile_env(false, None).await?;
+        let project = host.root.join("project");
+        copy_fixture(&project)?;
+
+        let cmd = host.launch_command("aaasm6297-env", &project, "allow")?;
+        let env = launch_env(&cmd);
+
+        assert_eq!(
+            env.keys().cloned().collect::<BTreeSet<_>>(),
+            LAUNCH_ENV.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>()
+        );
+        assert!(!env.contains_key(PROFILE_ENV));
+        Ok(())
     }
 
     /// The composite stub workflow: edit + shell + allowed call + DENIED call,

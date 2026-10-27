@@ -413,12 +413,13 @@ mod plan {
     use aa_isolation::host_capability::{host_capability_gate, HostCapabilityAuthority, HostCapabilityContract};
     use aa_isolation::lease_lowering::{lower_leases, AuthoredLease, LeaseIssuance};
     use aa_isolation::{
-        authority_gate, effective_authority_for_report, egress_gate, Ancestry, CapabilityDomain, ControlRequirement,
-        CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec, HostCapabilityBinding,
-        HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope, SessionRef, TargetRef,
-        XcodeListRequest,
+        authority_gate, effective_authority_for_report, egress_gate, Ancestry, BrokeragePosture, CapabilityDomain,
+        ControlRequirement, CredentialPosture, DomainAuthoritySummary, EgressAuthority, ExecutionSpec,
+        HostCapabilityBinding, HostOperation, IdentityRef, IsolationBackend, IsolationReport, RequirementScope,
+        SessionRef, TargetRef, XcodeListRequest,
     };
     use aa_policy::resolve as run_policy;
+    use aa_runtime::lease::authored::authored_lease_from;
 
     use super::{run_registration, RegistrationHandle, RunArgs};
 
@@ -1005,9 +1006,13 @@ mod plan {
         /// `PolicyResolution` states read `NotRequired`).
         egress: aa_isolation::EgressContract,
         /// This launch's credential-brokerage contract (AAASM-6164, ADR 0038
-        /// amendment). [`CredentialContract::not_required`] for every launch
-        /// today — no policy path issues a stronger contract yet — but
-        /// threaded through `resolve_boundary` exactly as `egress` is.
+        /// amendment), lowered from the effective policy's `credentials:` node
+        /// (AAASM-6348): [`CredentialContract::broker_required`] when the
+        /// policy states `posture: broker_required`,
+        /// [`CredentialContract::not_required`] otherwise. Threaded through
+        /// `resolve_boundary` exactly as `egress` is; the posture states a
+        /// requirement only and never supplies the explicit credential lease
+        /// `credential_gate` also needs.
         credential_contract: CredentialContract,
         /// This launch's host-capability contract (AAASM-6171, ADR 0038
         /// amendment). [`HostCapabilityContract::not_required`] for every
@@ -1018,75 +1023,11 @@ mod plan {
         host_capability_contract: HostCapabilityContract,
     }
 
-    /// Convert one authored [`aa_policy::CanonicalLeaseGrant`] into this
-    /// crate's own [`AuthoredLease`] (AAASM-6277).
-    ///
-    /// `aa-isolation` cannot depend on `aa-policy`'s type — see
-    /// `aa_isolation::lease_lowering`'s own module documentation, "Why the
-    /// input is not `aa_policy`'s own type" — so `aa-cli`, which already
-    /// depends on both, is where this conversion has to live. The domain
-    /// match is **exhaustive, with no wildcard arm**: a future
-    /// `LeaseDomain`/`CapabilityDomain` variant added to one side without a
-    /// corresponding arm here is a compile error, never a silently dropped
-    /// grant.
-    ///
-    /// `LeaseScope::Selectors` is converted through
-    /// [`aa_isolation::permit_only_selector`] — never passed through
-    /// verbatim. `aa_isolation::lowering::lower_policy`'s own requirement
-    /// selectors, `egress_gate`'s coverage check and `scope_order`'s
-    /// comparator all operate on the `permit-only:`-prefixed vocabulary;
-    /// `authority.leases`' own validator fixtures author bare selectors
-    /// (e.g. `api.example.com`, not `permit-only:api.example.com`). Without
-    /// this conversion, no authored selector lease would ever match anything
-    /// it is meant to cover. An author who writes the prefix themselves gets
-    /// double-prefixed (`permit-only:permit-only:x`), which can never match —
-    /// that is a safe refusal, not a silent admission, which is why this
-    /// applies the prefix unconditionally rather than detecting and skipping
-    /// an already-prefixed selector.
-    pub(super) fn authored_lease_from(grant: &aa_policy::CanonicalLeaseGrant) -> AuthoredLease {
-        use aa_policy::LeaseDomain;
-
-        let domain = match grant.domain {
-            LeaseDomain::FilesystemRead => CapabilityDomain::FilesystemRead,
-            LeaseDomain::FilesystemWrite => CapabilityDomain::FilesystemWrite,
-            LeaseDomain::NetworkEgress => CapabilityDomain::NetworkEgress,
-            LeaseDomain::NameResolution => CapabilityDomain::NameResolution,
-            LeaseDomain::Syscall => CapabilityDomain::Syscall,
-            LeaseDomain::ProcessCreation => CapabilityDomain::ProcessCreation,
-            LeaseDomain::Ipc => CapabilityDomain::Ipc,
-            LeaseDomain::Credential => CapabilityDomain::Credential,
-            LeaseDomain::Resource => CapabilityDomain::Resource,
-            LeaseDomain::WorkspaceTransaction => CapabilityDomain::WorkspaceTransaction,
-        };
-
-        let scope = match &grant.scope {
-            aa_policy::LeaseScope::Whole => RequirementScope::Whole,
-            aa_policy::LeaseScope::Selectors(selectors) => RequirementScope::Selectors(
-                selectors
-                    .iter()
-                    .map(|s| aa_isolation::permit_only_selector(s))
-                    .collect(),
-            ),
-        };
-
-        AuthoredLease {
-            domain,
-            scope,
-            max_count: grant.max_count,
-            ttl_seconds: grant.ttl_seconds,
-            delegable: grant.delegable,
-            issuer: grant.issuer.clone(),
-            policy_rule: grant.policy_rule.clone(),
-            approval_ref: grant.approval_ref.clone(),
-            reason: grant.reason.clone(),
-        }
-    }
-
     /// The default lease TTL applied when an authored grant states no
     /// `ttl_seconds` (AAASM-6277). One hour: short enough that a stale grant
     /// does not quietly outlive the session it was authored for, long
     /// enough that an ordinary `aasm run` invocation does not expire mid-launch.
-    const DEFAULT_LEASE_TTL_SECONDS: u64 = 3_600;
+    pub(super) const DEFAULT_LEASE_TTL_SECONDS: u64 = 3_600;
 
     /// The issuer label recorded on a lease whose authored grant states none
     /// (AAASM-6277). Never a per-launch identity: this is the component that
@@ -1144,9 +1085,11 @@ mod plan {
     /// any registration exists — `posture.refuse(...)`, exactly like the
     /// pre-existing `--isolation-backend`/`broker_required` contradiction
     /// checks in `resolve_isolation`'s `IsolationIntent::None` arm. Relying
-    /// on the gate alone would leave two gaps: `--isolation none` never
-    /// reaches `authority_gate` at all (`resolve_boundary` returns from the
-    /// no-backend arm before it), and every other path reaches the gate only
+    /// on the gate alone would leave two gaps: `--isolation none` does not
+    /// reach `authority_gate` over the lowered requirements (`resolve_boundary`'s
+    /// no-backend arm runs it only when the policy states `credentials:
+    /// posture: broker_required`, AAASM-6348, and then over a spec that
+    /// carries no lowered requirements), and every other path reaches the gate only
     /// *after* `bind()`, which runs after registration — a gate-only refusal
     /// would abandon a registration `resolve()`'s own contract says must
     /// never be created for a launch that is going to refuse.
@@ -1220,9 +1163,11 @@ mod plan {
         // has no such variant). Refuse early, by name, rather than letting
         // an operator who combined a lease with a resource ceiling hit a
         // confusing refusal three gates downstream. `--isolation none`
-        // never reaches a `Resource` requirement at all (it is refused, or
-        // establishes no boundary, before any requirement is checked), so
-        // this check is intentionally independent of that one.
+        // does not run this refusal: with no `credentials: broker_required`
+        // it checks no requirement at all, and with it the none-arm
+        // `authority_gate` (AAASM-6348) can still refuse a `--max-*`
+        // `Resource` requirement at bind time, reported with the policy
+        // named in the detail.
         if !authored.is_empty()
             && args.isolation != super::IsolationIntent::None
             && !super::resource_requirements(args).is_empty()
@@ -1259,7 +1204,7 @@ mod plan {
             lease_grants: authored,
             ancestry: resolve_ancestry(args, posture)?,
             egress,
-            credential_contract: CredentialContract::not_required(),
+            credential_contract: credential_contract_for(resolution),
             host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
         })
     }
@@ -1304,11 +1249,13 @@ mod plan {
     /// `CompatibilityResidual`.
     ///
     /// AAASM-6285 — `isolation_establishes_boundary` must be
-    /// `args.isolation != IsolationIntent::None`: under `--isolation none`,
-    /// `resolve_isolation` never calls `resolve_boundary`, so
-    /// `authority_gate` is never reached at all. The warning text is worded
-    /// differently for that case rather than claiming a refusal that cannot
-    /// happen — see this ticket for the wording bug this replaced.
+    /// `args.isolation != IsolationIntent::None`: under `--isolation none`
+    /// no backend arm runs, so `authority_gate` does not check the lowered
+    /// domains' requirements. It does run, over a spec with no lowered
+    /// requirements, when the policy states `credentials: posture:
+    /// broker_required` (AAASM-6348). The warning text is worded differently
+    /// for that case rather than claiming a refusal that cannot happen —
+    /// see AAASM-6285 for the wording bug this replaced.
     fn warn_on_uncovered_lease_domains(
         lowering: &aa_isolation::PolicyLowering,
         authored: &[AuthoredLease],
@@ -1328,8 +1275,9 @@ mod plan {
     /// AAASM-6285 — the two branches must stay behaviorally distinct: the
     /// `true` branch's claim ("refuses this launch at the authority gate")
     /// is only true when an isolation boundary is actually established,
-    /// since `--isolation none` never reaches `resolve_boundary`/
-    /// `authority_gate` at all. Collapsing them back into one wording for
+    /// since under `--isolation none` the gate never checks the lowered
+    /// domains (it runs only for a `broker_required` credentials posture,
+    /// over a spec without them). Collapsing them back into one wording for
     /// both cases would reintroduce this ticket's bug.
     fn uncovered_lease_domains_warning(
         missing: &[CapabilityDomain],
@@ -1353,8 +1301,10 @@ mod plan {
                 "warning: this policy authors at least one capability lease, which puts every domain its \
                  own requirements name under ADR 0038's all-or-nothing rule. Not covered by any authored \
                  lease: {}. Under `--isolation none`, no execution-isolation boundary is established, so \
-                 `authority_gate` is never reached and this launch proceeds unconfined despite the gap — \
-                 it will refuse once an `--isolation process`/`auto` boundary is established instead. \
+                 `authority_gate` does not check these domains and this launch proceeds unconfined despite \
+                 the gap (the gate runs under `--isolation none` only for a `credentials: posture: \
+                 broker_required` policy, and then only over the credential contract and any `--max-*` \
+                 ceilings) — it will refuse once an `--isolation process`/`auto` boundary is established. \
                  Author a lease for each, or remove every authored lease to opt back into the rc.7 \
                  compatibility residual.",
                 names.join(", "),
@@ -1550,6 +1500,66 @@ mod plan {
             Some(spec)
         }
 
+        /// The refusal, if any, that a `credentials: broker_required` policy
+        /// raises for a launch that selects no backend (AAASM-6348).
+        ///
+        /// Runs `authority_gate` and then `credential_gate` over `spec`, the
+        /// same two gates `resolve_boundary`'s backend arm runs before it
+        /// consults a backend. `spec` carries the launch's issued leases, so
+        /// the credential state is `Leased` only for an authored
+        /// `credential`/`whole` lease; nothing else — including an egress
+        /// posture — can supply one.
+        ///
+        /// Invariant this relies on: `spec` carries no `Credential`
+        /// requirement (lowering marks the domain unrepresentable, and this
+        /// path never applies the lowering). A spec that carried one, with no
+        /// lease, would read `CompatibilityResidual` and `check_credential_grant`
+        /// would admit it; the no-lease refusal is `Denied`, which holds only
+        /// because that requirement is absent.
+        fn unconfined_credential_refusal(
+            &self,
+            spec: &ExecutionSpec,
+            now: std::time::SystemTime,
+            broker: &aa_isolation::CredentialBrokerReport,
+            credentials: &CredentialPosture,
+        ) -> Option<String> {
+            let witness = match authority_gate(spec, &self.authority.ancestry, now) {
+                Ok(witness) => witness,
+                Err(refusal) => return Some(refusal.to_string()),
+            };
+            let authority = CredentialAuthority::from_gated_spec(spec, &witness);
+            // `authority_gate` validates a lease only for a domain the spec
+            // requires, and this spec requires no `Credential` (see the
+            // invariant above), so the credential lease's validity and
+            // subject are checked here, as the gate would for a requirement.
+            if let Some(lease) = authority.credential_lease() {
+                if let Err(reason) = lease.validate_at(now) {
+                    return Some(format!("the credential lease is not valid for this launch: {reason:?}"));
+                }
+                if lease.subject().agent_id != spec.identity().agent_id {
+                    return Some(format!(
+                        "the credential lease was issued to `{}`, not to this launch",
+                        lease.subject().agent_id
+                    ));
+                }
+            }
+            let scope = spec
+                .requirements()
+                .iter()
+                .find(|r| r.domain() == CapabilityDomain::Credential)
+                .map(|r| r.scope().clone())
+                .unwrap_or(RequirementScope::Whole);
+            credential_gate(
+                &self.authority.credential_contract,
+                broker,
+                &authority,
+                credentials,
+                &scope,
+            )
+            .err()
+            .map(|refusal| refusal.to_string())
+        }
+
         /// Resolve this launch's execution boundary: the spec, the canonical
         /// projection of what was asked and achieved, and what execution must do
         /// about it.
@@ -1610,6 +1620,18 @@ mod plan {
                          exists to negotiate one against"
                             .to_string(),
                     ),
+                    // AAASM-6348: under `credentials: broker_required` the gates
+                    // below cannot run without a spec, and launching anyway would
+                    // drop the stated requirement silently.
+                    None if self.authority.credential_contract.posture() == BrokeragePosture::BrokerRequired => {
+                        Boundary::Refused(
+                            "the effective policy requires brokered credentials (`credentials: posture: \
+                             broker_required`) and this launch cannot be described faithfully — its program \
+                             or an argument is not valid UTF-8 — so the credential gate has no specification \
+                             to check"
+                                .to_string(),
+                        )
+                    }
                     None => Boundary::Absent,
                 };
                 return (None, report, boundary);
@@ -1674,6 +1696,46 @@ mod plan {
                     &crate::commands::run_credential_broker::provider_key_hosts_env(),
                     network_fail_open_env(),
                 );
+                // AAASM-6348: a policy that states `credentials: posture:
+                // broker_required` is a statement about brokered credentials,
+                // not about confinement, so `--isolation none` must not drop
+                // it the way it drops every other backend-dependent
+                // requirement. Run the same authority and credential gates the
+                // backend arm below runs, and refuse rather than launch when
+                // they fail. No boundary exists on this path and none is
+                // claimed: this admits or refuses a launch on the four facts
+                // `credential_gate` checks (a fail-closed broker, a brokered
+                // service, an explicit credential lease, brokered env names
+                // withheld), and nothing here confines the child or removes
+                // an ambient credential the broker does not cover.
+                //
+                // Timing: this runs at bind time, after registration, the
+                // proxy guard and the launch audit record. A refused run
+                // therefore still leaves a registered identity and a launch
+                // record behind; only the child process is never started.
+                if self.authority.credential_contract.posture() == BrokeragePosture::BrokerRequired {
+                    if let Some(refusal) =
+                        self.unconfined_credential_refusal(&base, now, &credential_broker, &credentials)
+                    {
+                        let detail = format!(
+                            "the launch is refused: the effective policy requires brokered credentials \
+                             (`credentials: posture: broker_required`): {refusal}"
+                        );
+                        let mut report = IsolationReport::no_boundary(
+                            session,
+                            identity_ref,
+                            TargetRef::of(&base),
+                            credentials,
+                            detail.clone(),
+                        );
+                        if let Some(lowering) = &self.lowering {
+                            report = report.with_policy(lowering);
+                        }
+                        report = report.with_credential_brokerage(credential_broker.services().to_vec());
+                        report = self.with_selection(report);
+                        return (Some(base), report, Boundary::Refused(detail));
+                    }
+                }
                 let mut report = IsolationReport::no_boundary(
                     session,
                     identity_ref,
@@ -1824,9 +1886,9 @@ mod plan {
             // mediating component (or explicit authority) cannot actually
             // provide, or whose posture shows a "secretless" name still
             // reaching the child, is refused before backend capability is in
-            // the picture. `self.authority.credential_contract` is
-            // `CredentialContract::not_required()` for every launch today, so
-            // this is inert until a policy source issues a stronger contract.
+            // the picture. `self.authority.credential_contract` is lowered
+            // from the policy's `credentials:` node (AAASM-6348), so this is
+            // inert for a policy that does not state `broker_required`.
             let credential_authority = CredentialAuthority::from_gated_spec(&spec, &witness);
             let credential_scope = spec
                 .requirements()
@@ -2653,6 +2715,21 @@ mod plan {
         match resolution.egress_posture() {
             aa_policy::EgressPosture::NotRequired => aa_isolation::EgressContract::not_required(),
             aa_policy::EgressPosture::BrokerRequired => aa_isolation::EgressContract::broker_required(),
+        }
+    }
+
+    /// Lower a resolved policy's authored credentials posture (AAASM-6348,
+    /// ADR 0038 amendment) into the contract type
+    /// [`IsolationPlan::authority`] carries.
+    ///
+    /// Only the posture is read. The weakest contract `broker_required()`
+    /// builds is used as-is: no required mode, raw-fallback permission or
+    /// ceiling is authorable, and the egress posture is never consulted, so
+    /// brokered egress can never be read as credential authority.
+    pub(super) fn credential_contract_for(resolution: &run_policy::PolicyResolution) -> CredentialContract {
+        match resolution.credentials_posture() {
+            aa_policy::CredentialBrokeragePosture::NotRequired => CredentialContract::not_required(),
+            aa_policy::CredentialBrokeragePosture::BrokerRequired => CredentialContract::broker_required(),
         }
     }
 
@@ -4006,6 +4083,603 @@ mod plan {
         }
     }
 
+    /// AAASM-6348 -- the `--isolation none` arm of `resolve_boundary` applies
+    /// the credential gate when the plan's contract is `broker_required`.
+    ///
+    /// Every negative case below differs from the positive case
+    /// (`a_fully_satisfied_broker_required_launch_is_admitted_unconfined`) by
+    /// exactly one knob, and the same knob under a `not_required` contract is
+    /// admitted, so each refusal is the POLICY's credential contract rejecting
+    /// the launch -- not a missing backend (there is never a backend on this
+    /// path) and not a harness that refuses everything.
+    ///
+    /// The broker report is read from the process environment by
+    /// `report_for_launch`, so every test holds `env_guard` and restores what
+    /// it set. Only env var NAMES and a placeholder host list are used; no
+    /// credential value is read or formatted.
+    #[cfg(test)]
+    mod credential_none_arm_tests {
+        use super::*;
+        use aa_isolation::credential_broker::{BrokerageMode, BrokeredService, CredentialBrokerReport};
+        use aa_isolation::{CredentialRefusal, FailurePosture};
+
+        const BROKERED_NAME: &str = "ANTHROPIC_API_KEY";
+        const ENV_KEYS: [&str; 4] = [
+            "AA_PROXY_PROVIDER_KEYS",
+            "AA_PROXY_NETWORK_FAIL_OPEN",
+            "AA_PROXY_LLM_ONLY",
+            "AA_PROXY_MITM_HOSTS",
+        ];
+
+        /// Sets the proxy env the broker report reads and restores the prior
+        /// values on drop.
+        struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+        impl EnvRestore {
+            fn apply(provider_keys: Option<&str>, fail_open: bool) -> Self {
+                let prior = ENV_KEYS.iter().map(|k| (*k, std::env::var_os(k))).collect();
+                for key in ENV_KEYS {
+                    std::env::remove_var(key);
+                }
+                if let Some(keys) = provider_keys {
+                    std::env::set_var("AA_PROXY_PROVIDER_KEYS", keys);
+                }
+                if fail_open {
+                    std::env::set_var("AA_PROXY_NETWORK_FAIL_OPEN", "1");
+                }
+                Self(prior)
+            }
+        }
+
+        impl Drop for EnvRestore {
+            fn drop(&mut self) {
+                for (key, value) in self.0.drain(..) {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+
+        /// One launch's worth of variables. `Default` is the fully satisfied
+        /// launch; each test moves one field.
+        struct Scenario {
+            contract: CredentialContract,
+            endpoint: Option<&'static str>,
+            provider_keys: Option<&'static str>,
+            fail_open: bool,
+            credential_lease: bool,
+            leaked_name: bool,
+        }
+
+        impl Default for Scenario {
+            fn default() -> Self {
+                Self {
+                    contract: CredentialContract::broker_required(),
+                    endpoint: Some("127.0.0.1:9"),
+                    provider_keys: Some("api.anthropic.com=placeholder"),
+                    fail_open: false,
+                    credential_lease: true,
+                    leaked_name: false,
+                }
+            }
+        }
+
+        fn credential_lease() -> AuthoredLease {
+            AuthoredLease {
+                domain: CapabilityDomain::Credential,
+                scope: RequirementScope::Whole,
+                max_count: None,
+                ttl_seconds: Some(3_600),
+                delegable: false,
+                issuer: Some("issuer".to_string()),
+                policy_rule: None,
+                approval_ref: None,
+                reason: "test fixture: credential none arm".to_string(),
+            }
+        }
+
+        fn none_args() -> RunArgs {
+            RunArgs {
+                tool: "claude".to_string(),
+                tool_args: vec![],
+                // Pinned: a lease's subject must equal the launch identity.
+                agent_id: Some("agent-under-test".to_string()),
+                team_id: None,
+                root_agent: None,
+                governance_level: None,
+                no_proxy: false,
+                policy: None,
+                workdir: None,
+                workspace_tx: false,
+                workspace_tx_exclude: vec![],
+                workspace_tx_protect: vec![],
+                workspace_tx_approve: false,
+                dry_run: false,
+                enforcement_mode: None,
+                observe: false,
+                isolation: super::super::IsolationIntent::None,
+                isolation_backend: None,
+                max_memory_bytes: None,
+                max_pids: None,
+                max_open_files: None,
+                max_file_size_bytes: None,
+                max_wall_clock_seconds: None,
+                max_cpu_seconds: None,
+            }
+        }
+
+        fn identity_and_handle() -> (IdentityPlan, RegistrationHandle) {
+            let args = none_args();
+            let identity = IdentityPlan::of(&args);
+            let handle = identity.preview_handle();
+            (identity, handle)
+        }
+
+        fn none_plan(scenario: &Scenario) -> IsolationPlan {
+            let policy = aa_security::policy::PolicyDocument::default();
+            IsolationPlan {
+                lowering: Some(aa_isolation::lower_policy(
+                    &policy,
+                    &aa_isolation::LoweringOptions::strict(),
+                )),
+                backend: None,
+                absent: Some("no backend: --isolation none".to_string()),
+                authority: ResolvedAuthority {
+                    lease_grants: if scenario.credential_lease {
+                        vec![credential_lease()]
+                    } else {
+                        vec![]
+                    },
+                    credential_contract: scenario.contract.clone(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        fn posture(leaked: bool) -> CredentialPosture {
+            CredentialPosture {
+                removed: if leaked {
+                    vec![]
+                } else {
+                    vec![BROKERED_NAME.to_string()]
+                },
+                delegated: vec![],
+                ambient_unremoved: if leaked {
+                    vec![BROKERED_NAME.to_string()]
+                } else {
+                    vec![]
+                },
+            }
+        }
+
+        fn run(scenario: &Scenario, command: &std::process::Command) -> Boundary {
+            let _guard = crate::test_support::env_guard();
+            let _env = EnvRestore::apply(scenario.provider_keys, scenario.fail_open);
+            let (identity, handle) = identity_and_handle();
+            let network = NetworkPlan {
+                endpoint: scenario.endpoint.map(str::to_string),
+                no_proxy: false,
+            };
+            let mut plan = none_plan(scenario);
+            let child_env = std::collections::BTreeMap::new();
+            let (_, _, boundary) = plan.resolve_boundary(
+                &identity,
+                &handle,
+                command,
+                &child_env,
+                posture(scenario.leaked_name),
+                &network,
+            );
+            boundary
+        }
+
+        fn launch(scenario: &Scenario) -> Boundary {
+            run(scenario, &std::process::Command::new("echo"))
+        }
+
+        fn describe(boundary: &Boundary) -> String {
+            match boundary {
+                Boundary::Absent => "Absent (launch proceeds unconfined)".to_string(),
+                Boundary::Refused(detail) => format!("Refused: {detail}"),
+                _ => "another boundary".to_string(),
+            }
+        }
+
+        fn refusal_text(boundary: &Boundary) -> Option<&str> {
+            match boundary {
+                Boundary::Refused(detail) => Some(detail.as_str()),
+                _ => None,
+            }
+        }
+
+        /// Asserts `scenario` is refused for exactly `reason`, and that the
+        /// same scenario under `not_required` is admitted.
+        fn assert_policy_refuses(scenario: Scenario, reason: CredentialRefusal) {
+            let refused = launch(&scenario);
+            let detail = refusal_text(&refused)
+                .unwrap_or_else(|| panic!("expected a refusal for `{reason}`, got {}", describe(&refused)));
+            assert!(
+                detail.contains("credentials: posture: broker_required"),
+                "the refusal must name the policy statement that caused it: {detail}"
+            );
+            assert!(
+                detail.contains(&reason.to_string()),
+                "refused, but not for `{reason}`: {detail}"
+            );
+            let control = launch(&Scenario {
+                contract: CredentialContract::not_required(),
+                ..scenario
+            });
+            assert!(
+                matches!(control, Boundary::Absent),
+                "control: the identical launch under a not_required contract must be admitted, so the \
+                 refusal above is the credential contract's and not the harness's: {}",
+                describe(&control)
+            );
+        }
+
+        /// The supported positive path: every fact the gate checks holds, so
+        /// the unconfined launch proceeds.
+        #[test]
+        fn a_fully_satisfied_broker_required_launch_is_admitted_unconfined() {
+            let boundary = launch(&Scenario::default());
+            assert!(matches!(boundary, Boundary::Absent), "{}", describe(&boundary));
+        }
+
+        #[test]
+        fn no_broker_endpoint_is_refused_by_the_policy() {
+            assert_policy_refuses(
+                Scenario {
+                    endpoint: None,
+                    ..Default::default()
+                },
+                CredentialRefusal::BrokerRequiredButUnavailable {
+                    reason: "no governed egress endpoint is bound for this launch".to_string(),
+                },
+            );
+        }
+
+        #[test]
+        fn a_fail_open_broker_is_refused_by_the_policy() {
+            assert_policy_refuses(
+                Scenario {
+                    fail_open: true,
+                    ..Default::default()
+                },
+                CredentialRefusal::BrokerRequiredButFailsOpen {
+                    posture: FailurePosture::FailOpen,
+                },
+            );
+        }
+
+        #[test]
+        fn a_broker_covering_no_service_is_refused_by_the_policy() {
+            assert_policy_refuses(
+                Scenario {
+                    provider_keys: None,
+                    ..Default::default()
+                },
+                CredentialRefusal::NoServiceBrokered,
+            );
+        }
+
+        #[test]
+        fn a_brokered_name_still_reaching_the_child_is_refused_by_the_policy() {
+            assert_policy_refuses(
+                Scenario {
+                    leaked_name: true,
+                    ..Default::default()
+                },
+                CredentialRefusal::BrokeredCredentialStillReachesChild {
+                    name: BROKERED_NAME.to_string(),
+                    service: "api.anthropic.com".to_string(),
+                },
+            );
+        }
+
+        /// Brokerage alone is not authority: without an explicit credential
+        /// lease the gate refuses, even with a healthy broker.
+        #[test]
+        fn a_broker_without_a_credential_lease_is_refused_by_the_policy() {
+            assert_policy_refuses(
+                Scenario {
+                    credential_lease: false,
+                    ..Default::default()
+                },
+                CredentialRefusal::NoCredentialGrant,
+            );
+        }
+
+        /// An egress lease must not stand in for credential authority.
+        #[test]
+        fn an_egress_lease_does_not_supply_credential_authority() {
+            let _guard = crate::test_support::env_guard();
+            let _env = EnvRestore::apply(Some("api.anthropic.com=placeholder"), false);
+            let scenario = Scenario::default();
+            let mut plan = none_plan(&scenario);
+            plan.authority.lease_grants = vec![AuthoredLease {
+                domain: CapabilityDomain::NetworkEgress,
+                ..credential_lease()
+            }];
+            let (identity, handle) = identity_and_handle();
+            let network = NetworkPlan {
+                endpoint: Some("127.0.0.1:9".to_string()),
+                no_proxy: false,
+            };
+            let (_, _, boundary) = plan.resolve_boundary(
+                &identity,
+                &handle,
+                &std::process::Command::new("echo"),
+                &std::collections::BTreeMap::new(),
+                posture(false),
+                &network,
+            );
+            let detail = refusal_text(&boundary).unwrap_or_default();
+            assert!(
+                detail.contains(&CredentialRefusal::NoCredentialGrant.to_string()),
+                "{}",
+                describe(&boundary)
+            );
+        }
+
+        /// A spec carrying the fixture credential lease, issued to
+        /// `lease_subject` at `issued_at`, for a launch identified as
+        /// `spec_agent`. Used to drive `unconfined_credential_refusal`'s
+        /// `authority_gate` branch directly, since the live path always
+        /// issues a matching, just-issued lease.
+        fn leased_spec(spec_agent: &str, lease_subject: &str, issued_at: std::time::SystemTime) -> ExecutionSpec {
+            let base = ExecutionSpec::new("echo", IdentityRef::root(spec_agent));
+            lower_leases(
+                &[credential_lease()],
+                &LeaseIssuance {
+                    subject: IdentityRef::root(lease_subject),
+                    default_issuer: IdentityRef::root(DEFAULT_LEASE_ISSUER),
+                    issued_at,
+                    default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                    id_prefix: "authority-gate-test".to_string(),
+                },
+            )
+            .expect("fixture lease lowers")
+            .into_iter()
+            .fold(base, ExecutionSpec::with_lease)
+        }
+
+        fn healthy_broker() -> CredentialBrokerReport {
+            CredentialBrokerReport::new(FailurePosture::FailClosed).with_service(BrokeredService {
+                service: "api.anthropic.com".to_string(),
+                env_names: vec![BROKERED_NAME.to_string()],
+                mode: BrokerageMode::BrokerPerformsRequest {
+                    mechanism_detail: "test fixture".to_string(),
+                },
+            })
+        }
+
+        /// The `authority_gate` half of the none arm: a `--max-*` ceiling
+        /// lowers to a `Resource` requirement no lease covers, so a
+        /// `broker_required` launch that otherwise satisfies every credential
+        /// fact is refused for the Resource domain; under `not_required` the
+        /// identical launch is admitted because no gate runs.
+        #[test]
+        fn a_max_ceiling_with_a_credential_lease_is_refused_by_the_authority_gate() {
+            let run_with_ceiling = |contract: CredentialContract| {
+                let scenario = Scenario {
+                    contract,
+                    ..Default::default()
+                };
+                let _guard = crate::test_support::env_guard();
+                let _env = EnvRestore::apply(scenario.provider_keys, scenario.fail_open);
+                let (identity, handle) = identity_and_handle();
+                let mut plan = none_plan(&scenario);
+                plan.resource_requirements = vec![ControlRequirement::prevent(CapabilityDomain::Resource)];
+                let network = NetworkPlan {
+                    endpoint: scenario.endpoint.map(str::to_string),
+                    no_proxy: false,
+                };
+                plan.resolve_boundary(
+                    &identity,
+                    &handle,
+                    &std::process::Command::new("echo"),
+                    &std::collections::BTreeMap::new(),
+                    posture(false),
+                    &network,
+                )
+                .2
+            };
+            let refused = run_with_ceiling(CredentialContract::broker_required());
+            let detail = refusal_text(&refused).unwrap_or_default();
+            assert!(
+                detail.contains("credentials: posture: broker_required") && detail.contains("resource"),
+                "{}",
+                describe(&refused)
+            );
+            let control = run_with_ceiling(CredentialContract::not_required());
+            assert!(matches!(control, Boundary::Absent), "{}", describe(&control));
+        }
+
+        /// A lease past its TTL, or issued to a different subject than the
+        /// launch, is refused by `authority_gate` before the credential gate
+        /// runs; the same lease valid and matching is admitted.
+        #[test]
+        fn an_expired_or_mismatched_credential_lease_is_refused_by_the_authority_gate() {
+            let scenario = Scenario::default();
+            let plan = none_plan(&scenario);
+            let now = std::time::SystemTime::now();
+            let broker = healthy_broker();
+
+            let valid = leased_spec("agent-a", "agent-a", now);
+            assert_eq!(
+                plan.unconfined_credential_refusal(&valid, now, &broker, &posture(false)),
+                None,
+                "control: a valid, matching lease must be admitted"
+            );
+
+            let expired_at = now + std::time::Duration::from_secs(DEFAULT_LEASE_TTL_SECONDS.max(3_600) + 3_600);
+            let expired = plan.unconfined_credential_refusal(&valid, expired_at, &broker, &posture(false));
+            assert!(expired.is_some(), "an expired lease must be refused");
+
+            let mismatched = leased_spec("agent-a", "agent-b", now);
+            let refusal = plan.unconfined_credential_refusal(&mismatched, now, &broker, &posture(false));
+            assert!(refusal.is_some(), "a lease issued to another subject must be refused");
+        }
+
+        /// The no-lease refusal relies on the none-arm spec carrying no
+        /// `Credential` requirement (see `unconfined_credential_refusal`).
+        #[test]
+        fn lowering_never_produces_a_credential_requirement() {
+            let scenario = Scenario::default();
+            let plan = none_plan(&scenario);
+            let lowering = plan.lowering.as_ref().expect("fixture lowering");
+            let carries_credential = match lowering.apply_to(ExecutionSpec::new("echo", IdentityRef::root("agent-a"))) {
+                Ok(spec) => spec
+                    .requirements()
+                    .iter()
+                    .any(|r| r.domain() == CapabilityDomain::Credential),
+                Err(_) => false,
+            };
+            assert!(
+                !carries_credential,
+                "lowering must never produce a Credential requirement"
+            );
+        }
+
+        /// `report_for_launch` never reports a raw fallback today, so the
+        /// raw-fallback refusal is reached by handing the production helper
+        /// the report such a broker would produce.
+        #[test]
+        fn a_raw_fallback_broker_is_refused_by_the_policy() {
+            let (identity, handle) = identity_and_handle();
+            let scenario = Scenario::default();
+            let plan = none_plan(&scenario);
+            let now = std::time::SystemTime::now();
+            let spec = {
+                let base = ExecutionSpec::new("echo", identity.identity_ref(&handle.agent_id));
+                lower_leases(
+                    &plan.authority.lease_grants,
+                    &LeaseIssuance {
+                        subject: identity.identity_ref(&handle.agent_id),
+                        default_issuer: IdentityRef::root(DEFAULT_LEASE_ISSUER),
+                        issued_at: now,
+                        default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                        id_prefix: "raw-fallback-test".to_string(),
+                    },
+                )
+                .expect("fixture lease lowers")
+                .into_iter()
+                .fold(base, ExecutionSpec::with_lease)
+            };
+            let service = |mode| {
+                CredentialBrokerReport::new(FailurePosture::FailClosed).with_service(BrokeredService {
+                    service: "api.anthropic.com".to_string(),
+                    env_names: vec![BROKERED_NAME.to_string()],
+                    mode,
+                })
+            };
+            let raw = service(BrokerageMode::RawInjectionFallback {
+                justification: "test fixture".to_string(),
+                tracked_by: None,
+            });
+            let refusal = plan
+                .unconfined_credential_refusal(&spec, now, &raw, &posture(false))
+                .expect("a raw fallback must be refused under the default contract");
+            assert!(
+                refusal.contains(
+                    &CredentialRefusal::RawFallbackNotPermitted {
+                        service: "api.anthropic.com".to_string()
+                    }
+                    .to_string()
+                ),
+                "{refusal}"
+            );
+            let control = service(BrokerageMode::BrokerPerformsRequest {
+                mechanism_detail: "test fixture".to_string(),
+            });
+            assert_eq!(
+                plan.unconfined_credential_refusal(&spec, now, &control, &posture(false)),
+                None,
+                "control: the same launch with a non-raw mode must be admitted"
+            );
+        }
+
+        /// A launch the gate cannot describe must not slip past it.
+        #[cfg(unix)]
+        #[test]
+        fn an_undescribable_launch_is_refused_under_broker_required_and_not_otherwise() {
+            use std::os::unix::ffi::OsStrExt;
+            let mut command = std::process::Command::new("echo");
+            command.arg(std::ffi::OsStr::from_bytes(&[0x80]));
+
+            let refused = run(&Scenario::default(), &command);
+            assert!(
+                refusal_text(&refused).is_some_and(|d| d.contains("broker_required")),
+                "{}",
+                describe(&refused)
+            );
+            let control = run(
+                &Scenario {
+                    contract: CredentialContract::not_required(),
+                    ..Default::default()
+                },
+                &command,
+            );
+            assert!(matches!(control, Boundary::Absent), "{}", describe(&control));
+        }
+
+        /// The policy side end to end: a document whose only content is
+        /// `credentials: broker_required` plus the explicit credential lease
+        /// resolves through the real parse path into the contract and the
+        /// lease, and the launch it describes is admitted; the identical
+        /// document minus the lease is refused for exactly that reason.
+        #[test]
+        fn a_credentials_only_policy_admits_with_a_lease_and_refuses_without_one() {
+            let with_lease = run_policy::classify(
+                std::path::Path::new("/credentials-only-with-lease.yaml"),
+                "credentials:\n  posture: broker_required\nauthority:\n  leases:\n    - domain: credential\n      \
+                 scope: whole\n      reason: test\n",
+            );
+            let without_lease = run_policy::classify(
+                std::path::Path::new("/credentials-only-without-lease.yaml"),
+                "credentials:\n  posture: broker_required\n",
+            );
+            let boundary_for = |resolution: &run_policy::PolicyResolution| {
+                let _guard = crate::test_support::env_guard();
+                let _env = EnvRestore::apply(Some("api.anthropic.com=placeholder"), false);
+                let mut plan = RunPlanner::resolve_isolation(&none_args(), PlanPosture::Launch, resolution)
+                    .unwrap_or_else(|e| panic!("a credentials-only policy must plan under --isolation none: {e}"));
+                assert_eq!(
+                    plan.authority.credential_contract,
+                    CredentialContract::broker_required()
+                );
+                let (identity, handle) = identity_and_handle();
+                let network = NetworkPlan {
+                    endpoint: Some("127.0.0.1:9".to_string()),
+                    no_proxy: false,
+                };
+                plan.resolve_boundary(
+                    &identity,
+                    &handle,
+                    &std::process::Command::new("echo"),
+                    &std::collections::BTreeMap::new(),
+                    posture(false),
+                    &network,
+                )
+                .2
+            };
+
+            let admitted = boundary_for(&with_lease);
+            assert!(matches!(admitted, Boundary::Absent), "{}", describe(&admitted));
+
+            let refused = boundary_for(&without_lease);
+            assert!(
+                refusal_text(&refused).is_some_and(|d| d.contains(&CredentialRefusal::NoCredentialGrant.to_string())),
+                "{}",
+                describe(&refused)
+            );
+        }
+    }
+
     /// AAASM-6277 — the authority collapse itself: `resolve_authority`'s
     /// lease wiring, the duplicate-domain/`max_count` preflight, the
     /// Owner-Decision-1 ancestry refusal, the `--max-*`/lease conflict, the
@@ -4372,8 +5046,7 @@ mod plan {
         }
 
         /// AAASM-6285 regression (the bug itself) — under `--isolation
-        /// none`, `resolve_isolation` never calls `resolve_boundary`, so
-        /// `authority_gate` is never reached at all. The warning must not
+        /// none`, `authority_gate` does not check the lowered domains. The warning must not
         /// claim a gate refusal that cannot happen, and must say so
         /// explicitly instead of silently omitting the distinction.
         #[test]
@@ -4385,7 +5058,8 @@ mod plan {
                 "message must not claim a refusal that cannot happen under --isolation none: {message}"
             );
             assert!(
-                message.contains("--isolation none") && message.contains("authority_gate` is never reached"),
+                message.contains("--isolation none")
+                    && message.contains("authority_gate` does not check these domains"),
                 "message must explain why the gate is unreachable: {message}"
             );
             assert!(message.contains("filesystem_write"));
@@ -6259,6 +6933,239 @@ fn forward_termination(backend: &dyn aa_isolation::IsolationBackend, handle: &aa
     }
 }
 
+/// The `--dry-run` lease plan: what the runtime's lease gate would answer for the
+/// tools this policy declares (AAASM-6259, ADR 0038 "Plan-time / runtime parity").
+///
+/// # One decision function, not a second copy
+///
+/// Every verdict printed here is produced by [`aa_runtime::lease::decide::decide`],
+/// the function the runtime's `PolicyLeaseGate` calls, against a
+/// [`LeaseGovernance`] built by the same [`LeaseGovernance::from_resolution`] the
+/// runtime builds from. This module only (a) builds the request a wrapped tool
+/// call would carry and (b) formats the answer. It must not grow a rule of its
+/// own: a plan that disagreed with the gate would report a tool as admitted that
+/// the runtime refuses, or the reverse, which is worse than printing nothing. The
+/// parity tests pin this by comparing each row against the gate's own verdict, and
+/// carry a deliberately divergent copy to show the comparison can fail.
+///
+/// # What a plan is not
+///
+/// Point-in-time, no state record, revocation not evaluated (the revoked set is
+/// empty here by construction; revocation exists only in a running runtime's
+/// `aasm lease` state). Leases are issued "now" because no record exists to say
+/// otherwise, so a TTL cannot have lapsed at plan time. It is not authorization:
+/// the runtime decides, and a `PERMIT` here is neither a promise nor a grant.
+///
+/// Lives inside `run.rs`, like `mod plan`, so it is stripped from the published
+/// crate with the file and needs no packaging edit.
+mod lease_plan {
+    use std::collections::BTreeSet;
+    use std::time::SystemTime;
+
+    use aa_policy::resolve::PolicyResolution;
+    use aa_proto::assembly::common::v1::ActionType;
+    use aa_proto::assembly::policy::v1::action_context::Action;
+    use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, ToolCallContext};
+    use aa_runtime::lease::decide::{decide, GovernanceError, GovernedIssuance, LeaseGovernance, RevokedLeases};
+    use aa_runtime::pipeline::LeaseVerdict;
+
+    use crate::sanitize::sanitize_terminal;
+
+    /// The launch's own default lease lifetime, applied to a grant that states
+    /// no `ttl_seconds`. One definition, shared with `aasm run`'s real launch.
+    use super::plan::DEFAULT_LEASE_TTL_SECONDS;
+
+    /// Action types whose verdict the plan reports, in the order printed. Every
+    /// value the decision table names other than `TOOL_CALL`, which is reported
+    /// per tool.
+    const TYPED_ACTIONS: [ActionType; 6] = [
+        ActionType::LlmCall,
+        ActionType::ToolResult,
+        ActionType::FileOperation,
+        ActionType::NetworkCall,
+        ActionType::ProcessExec,
+        ActionType::AgentSpawn,
+    ];
+
+    /// A tool name this governance does not declare, for the "undeclared tool"
+    /// line. Probed against the governance rather than assumed, because a tool
+    /// name is an arbitrary YAML key and any fixed string could be declared.
+    pub(super) fn undeclared_probe(governance: &LeaseGovernance) -> String {
+        let mut name = "undeclared-tool".to_string();
+        while governance.tool(&name).is_some() {
+            name.push('_');
+        }
+        name
+    }
+
+    /// The request a wrapped tool call to `name` carries.
+    pub(super) fn tool_call(name: &str) -> CheckActionRequest {
+        CheckActionRequest {
+            action_type: ActionType::ToolCall as i32,
+            context: Some(ActionContext {
+                action: Some(Action::ToolCall(ToolCallContext {
+                    tool_name: name.to_string(),
+                    ..Default::default()
+                })),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The request for a typed action that carries no context.
+    pub(super) fn typed_action(action_type: ActionType) -> CheckActionRequest {
+        CheckActionRequest {
+            action_type: action_type as i32,
+            ..Default::default()
+        }
+    }
+
+    /// Governance for a plan: the runtime's own constructor, leases issued at
+    /// `issued_at`, nothing revoked.
+    pub(super) fn governance_for_plan(
+        resolution: &PolicyResolution,
+        subject: &str,
+        issued_at: SystemTime,
+    ) -> Result<LeaseGovernance, GovernanceError> {
+        LeaseGovernance::from_resolution(
+            resolution,
+            subject,
+            &GovernedIssuance {
+                issued_at,
+                default_ttl_seconds: DEFAULT_LEASE_TTL_SECONDS,
+                default_issuer: "aasm-run:plan".to_string(),
+            },
+            &|domain| Ok(format!("plan:{domain}")),
+        )
+    }
+
+    /// The verdict for one declared or probed tool name.
+    pub(super) fn tool_verdict(
+        governance: &LeaseGovernance,
+        revoked: &dyn RevokedLeases,
+        name: &str,
+        now: SystemTime,
+    ) -> LeaseVerdict {
+        decide(governance, revoked, &tool_call(name), now)
+    }
+
+    /// The verdict for one typed action type.
+    pub(super) fn action_verdict(
+        governance: &LeaseGovernance,
+        revoked: &dyn RevokedLeases,
+        action_type: ActionType,
+        now: SystemTime,
+    ) -> LeaseVerdict {
+        decide(governance, revoked, &typed_action(action_type), now)
+    }
+
+    pub(super) fn show(verdict: &LeaseVerdict) -> String {
+        match verdict {
+            LeaseVerdict::Permit => "PERMIT".to_string(),
+            LeaseVerdict::Deny { reason } => format!("DENY ({})", sanitize_terminal(reason)),
+        }
+    }
+
+    /// The `--- lease plan ---` section, ending in a newline.
+    ///
+    /// `issued_at` and `now` are separate inputs only so tests can place the
+    /// clock past a TTL; `--dry-run` passes the same instant for both.
+    pub(super) fn render(
+        resolution: &PolicyResolution,
+        subject: &str,
+        issued_at: SystemTime,
+        now: SystemTime,
+    ) -> String {
+        let mut out = String::from(
+            "\n--- lease plan (PLAN: point-in-time, not authorization) ---\n\
+             status: PLAN ONLY. These are the verdicts a governed runtime would give a wrapped call under \
+             this policy. A runtime is governed only when started with AA_LEASE_POLICY (and a record from \
+             `aasm lease init` in AA_LEASE_STATE); without it no lease gate runs and nothing below is in force \
+             (ADR 0038 sections 32 and 37). Nothing is recorded, issued or enforced by this preview.\n\
+             revocation: not evaluated; revocation exists only in a running runtime's lease state \
+             (`aasm lease revoke`), so a plan can never show one.\n\
+             enforcement: runtime-only. A PERMIT here is not a grant and a DENY here is not a refusal; \
+             the runtime decides, per call, with the clock and revocation state it has then.\n",
+        );
+
+        let governance = match governance_for_plan(resolution, subject, issued_at) {
+            Ok(g) => g,
+            Err(e) => {
+                out.push_str(&format!(
+                    "plan: not available: {}. Governed lease mode would refuse to start for this policy.\n",
+                    sanitize_terminal(&e.to_string())
+                ));
+                return out;
+            }
+        };
+        let revoked: BTreeSet<String> = BTreeSet::new();
+
+        out.push_str(&format!(
+            "issuance: leases from `authority.leases` only (never from tool declarations), issued at plan time, \
+             default ttl {DEFAULT_LEASE_TTL_SECONDS}s\n"
+        ));
+        let grants = resolution.lease_grants();
+        if grants.is_empty() {
+            out.push_str("leases: none authored\n");
+        }
+        for grant in grants {
+            let scope = match &grant.scope {
+                aa_policy::LeaseScope::Whole => "whole".to_string(),
+                aa_policy::LeaseScope::Selectors(s) => format!("selectors({})", s.len()),
+            };
+            let (ttl, source) = match grant.ttl_seconds {
+                Some(t) => (t, "authored"),
+                None => (DEFAULT_LEASE_TTL_SECONDS, "default"),
+            };
+            out.push_str(&format!(
+                "lease: {} scope={scope} ttl={ttl}s ({source})\n",
+                grant.domain.as_str()
+            ));
+        }
+
+        // `from_resolution` succeeded, so the resolution is enforced and carries
+        // a capability map; the empty fallback is unreachable, not a default.
+        let mut denied = 0usize;
+        let mut total = 0usize;
+        if let Some(tools) = resolution.tool_capabilities() {
+            for (name, capabilities) in tools {
+                let words: Vec<String> = capabilities.iter().map(|c| c.as_str().to_string()).collect();
+                let verdict = tool_verdict(&governance, &revoked, name, now);
+                total += 1;
+                denied += usize::from(matches!(verdict, LeaseVerdict::Deny { .. }));
+                out.push_str(&format!(
+                    "tool {} [{}]: {}\n",
+                    sanitize_terminal(name),
+                    words.join(", "),
+                    show(&verdict)
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "summary: {denied} of {total} tools declaring capabilities would be denied\n\
+             note: a tool declared without `capabilities` is not listed above; it is covered by the \
+             `<undeclared>` line below (a governed runtime denies it)\n"
+        ));
+        out.push_str(&format!(
+            "tool <undeclared>: {}\n",
+            show(&tool_verdict(
+                &governance,
+                &revoked,
+                &undeclared_probe(&governance),
+                now
+            ))
+        ));
+        for action_type in TYPED_ACTIONS {
+            out.push_str(&format!(
+                "action {}: {}\n",
+                action_type.as_str_name(),
+                show(&action_verdict(&governance, &revoked, action_type, now))
+            ));
+        }
+        out
+    }
+}
+
 /// Render the `--dry-run` preview for `args`.
 ///
 /// Returns the payload instead of printing it so a test can assert on the whole
@@ -6314,6 +7221,16 @@ fn dry_run_preview(target: plan::RunTarget, adapter: Option<&dyn DevToolAdapter>
         bound.fidelity(),
         bound.isolation(),
     );
+
+    // AAASM-6259: the same decision function the runtime's lease gate uses,
+    // printed as a point-in-time PLAN. Not enforcement and not authorization.
+    let plan_now = std::time::SystemTime::now();
+    output.push_str(&lease_plan::render(
+        resolved.policy().resolution(),
+        &handle.agent_id,
+        plan_now,
+        plan_now,
+    ));
 
     // AAASM-6162: a preview never opens a transaction (no state directory is
     // created, nothing is copied) — it only names what a live run with these
@@ -6536,6 +7453,17 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         anyhow::bail!("refusing to launch: {why}");
     }
 
+    // A launch the adapter cannot build fails here, before any settings write
+    // (AAASM-6297). Copilot is the load-bearing case: a VS Code extension has no
+    // launch command, so `build_launch_command` always errors — applying managed
+    // settings first would mutate the user's VS Code config, with no receipt and
+    // nothing to undo it, on a command that cannot succeed. Raised here rather
+    // than at bind time because `bind` also serves `--dry-run`, which must
+    // report the error instead of raising it.
+    if let Some(e) = bound.adapter_error() {
+        anyhow::bail!("failed to build launch command: {e}");
+    }
+
     // Managed settings are a dev-tool artifact, so they are generated and applied
     // only where there is a dev tool. A generic command has no adapter, no
     // settings schema and no configuration file of its own; writing one would put
@@ -6552,12 +7480,6 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             .apply_settings(&settings)
             .await
             .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
-    }
-
-    // Raised here rather than at bind time so the failure still lands where it
-    // always has: after the managed settings have been applied, not before.
-    if let Some(e) = bound.adapter_error() {
-        anyhow::bail!("failed to build launch command: {e}");
     }
 
     // AAASM-6331: a managed-settings file is not evidence of the boundary the
@@ -7223,7 +8145,10 @@ mod tests {
             // give every one of them an execution boundary they never asked for.
             canonical: aa_security::policy::PolicyDocument::default(),
             egress: aa_policy::EgressPosture::NotRequired,
+            credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
+            tool_capabilities: Default::default(),
+            content_digest: String::new(),
         }
     }
 
@@ -7257,7 +8182,10 @@ mod tests {
             },
             canonical: aa_security::policy::PolicyDocument::default(),
             egress: aa_policy::EgressPosture::BrokerRequired,
+            credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
             leases: Vec::new(),
+            tool_capabilities: Default::default(),
+            content_digest: String::new(),
         };
         assert_eq!(resolution.egress_posture(), aa_policy::EgressPosture::BrokerRequired);
         assert_eq!(
@@ -7275,6 +8203,47 @@ mod tests {
         assert_eq!(
             plan::egress_contract_for(&unconfigured),
             aa_isolation::EgressContract::not_required()
+        );
+    }
+
+    /// AAASM-6348 -- `credential_contract_for` reads only the `credentials:`
+    /// node, and the `egress:` node reads only into the egress contract.
+    #[test]
+    fn credential_contract_for_reads_only_the_credentials_node() {
+        let classify = |yaml: &str| run_policy::classify(std::path::Path::new("/contract-for.yaml"), yaml);
+        let not_required = aa_isolation::CredentialContract::not_required();
+        let broker_required = aa_isolation::CredentialContract::broker_required();
+
+        let plain = classify("tools:\n  bash:\n    allow: true\n");
+        assert_eq!(plan::credential_contract_for(&plain), not_required);
+
+        let authored = classify("credentials:\n  posture: broker_required\n");
+        assert_eq!(plan::credential_contract_for(&authored), broker_required);
+        assert_eq!(
+            plan::egress_contract_for(&authored),
+            aa_isolation::EgressContract::not_required()
+        );
+
+        let egress_only = classify("egress:\n  posture: broker_required\n");
+        assert_eq!(
+            plan::credential_contract_for(&egress_only),
+            not_required,
+            "brokered egress must never be read as a credential requirement"
+        );
+        assert_eq!(
+            plan::egress_contract_for(&egress_only),
+            aa_isolation::EgressContract::broker_required()
+        );
+    }
+
+    /// The two non-launching states lower to the safe default.
+    #[test]
+    fn credential_contract_for_is_not_required_for_non_launching_states() {
+        let unconfigured =
+            run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] });
+        assert_eq!(
+            plan::credential_contract_for(&unconfigured),
+            aa_isolation::CredentialContract::not_required()
         );
     }
 
@@ -8755,7 +9724,10 @@ mod tests {
                 },
                 canonical: aa_security::policy::PolicyDocument::default(),
                 egress: aa_policy::EgressPosture::NotRequired,
+                credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
+                tool_capabilities: Default::default(),
+                content_digest: String::new(),
             },
             run_policy::PolicyResolution::Permissive {
                 source: PathBuf::from("/p.yaml"),
@@ -8770,7 +9742,10 @@ mod tests {
                 },
                 canonical: aa_security::policy::PolicyDocument::default(),
                 egress: aa_policy::EgressPosture::NotRequired,
+                credentials: aa_policy::CredentialBrokeragePosture::NotRequired,
                 leases: Vec::new(),
+                tool_capabilities: Default::default(),
+                content_digest: String::new(),
             },
             run_policy::PolicyResolution::Unconfigured(run_policy::Unconfigured::NoSource { searched: vec![] }),
             run_policy::PolicyResolution::LoadFailed {
@@ -10954,5 +11929,417 @@ mod tests {
              launch's own credential posture already reports as removed, or the real child \
              process still inherits it from the ambient environment despite the report"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // AAASM-6259: plan-time / runtime parity for the `--dry-run` lease plan.
+    // ---------------------------------------------------------------------
+
+    mod lease_plan_parity {
+        use std::collections::BTreeSet;
+        use std::path::Path;
+        use std::time::{Duration, SystemTime};
+
+        use aa_policy::resolve::PolicyResolution;
+        use aa_proto::assembly::common::v1::ActionType;
+        use aa_runtime::lease::decide::{GovernedIssuance, LeaseGovernance};
+        use aa_runtime::lease::gate::{PolicyLeaseGate, Snapshot};
+        use aa_runtime::pipeline::{LeaseGate, LeaseVerdict};
+
+        use super::super::lease_plan;
+
+        const SUBJECT: &str = "parity-subject";
+        const TOOLS: &str = "tools:
+  calc: { allow: true, capabilities: [none] }
+  reader: { allow: true, capabilities: [filesystem_read] }
+  writer: { allow: true, capabilities: [filesystem_write] }
+  denied: { allow: false, capabilities: [filesystem_read] }
+  spawner: { allow: true, capabilities: [process_creation] }
+  undeclared_caps: { allow: true }
+";
+
+        fn issued() -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(5_000_000)
+        }
+
+        /// One policy, one tool, one clock reading, and the verdict `decide`
+        /// is pinned to give. `expect_permit` is hand-written, not derived from
+        /// either side, so mutating `decide` moves it out from under BOTH.
+        struct Row {
+            label: &'static str,
+            leases: &'static str,
+            tool: &'static str,
+            seconds_after_issue: u64,
+            expect_permit: bool,
+        }
+
+        const READ_WHOLE: &str =
+            "authority:\n  leases:\n    - domain: filesystem_read\n      scope: whole\n      reason: t\n";
+        const READ_SHORT_TTL: &str =
+            "authority:\n  leases:\n    - domain: filesystem_read\n      scope: whole\n      ttl_seconds: 60\n      reason: t\n";
+        const READ_SELECTORS: &str =
+            "authority:\n  leases:\n    - domain: filesystem_read\n      scope:\n        - /workspace\n      reason: t\n";
+        const PROC_WHOLE: &str =
+            "authority:\n  leases:\n    - domain: process_creation\n      scope: whole\n      reason: t\n";
+        const NET_WHOLE: &str =
+            "authority:\n  leases:\n    - domain: network_egress\n      scope: whole\n      reason: t\n";
+
+        fn rows() -> Vec<Row> {
+            vec![
+                Row {
+                    label: "held",
+                    leases: READ_WHOLE,
+                    tool: "reader",
+                    seconds_after_issue: 0,
+                    expect_permit: true,
+                },
+                Row {
+                    label: "missing",
+                    leases: "",
+                    tool: "reader",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "expired",
+                    leases: READ_SHORT_TTL,
+                    tool: "reader",
+                    seconds_after_issue: 120,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "not yet expired",
+                    leases: READ_SHORT_TTL,
+                    tool: "reader",
+                    seconds_after_issue: 30,
+                    expect_permit: true,
+                },
+                Row {
+                    label: "cross-capability",
+                    leases: NET_WHOLE,
+                    tool: "reader",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "selector-scoped",
+                    leases: READ_SELECTORS,
+                    tool: "reader",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "none-declared",
+                    leases: "",
+                    tool: "calc",
+                    seconds_after_issue: 0,
+                    expect_permit: true,
+                },
+                Row {
+                    label: "capabilities absent",
+                    leases: READ_WHOLE,
+                    tool: "undeclared_caps",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "unknown tool",
+                    leases: READ_WHOLE,
+                    tool: "no_such_tool",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "allow:false even with lease",
+                    leases: READ_WHOLE,
+                    tool: "denied",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "process_creation",
+                    leases: READ_WHOLE,
+                    tool: "spawner",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "process_creation even with a lease",
+                    leases: PROC_WHOLE,
+                    tool: "spawner",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+                Row {
+                    label: "lease held, other tool unleased",
+                    leases: READ_WHOLE,
+                    tool: "writer",
+                    seconds_after_issue: 0,
+                    expect_permit: false,
+                },
+            ]
+        }
+
+        fn resolve(leases: &str) -> PolicyResolution {
+            let resolution = aa_policy::resolve::classify(Path::new("parity.yaml"), &format!("{TOOLS}{leases}"));
+            assert_eq!(resolution.state_token(), "enforced", "{resolution:?}");
+            resolution
+        }
+
+        /// The runtime side, built the way the runtime builds it: its own
+        /// `from_resolution` call, its own ids, behind the real `PolicyLeaseGate`.
+        fn gate_for(resolution: &PolicyResolution) -> PolicyLeaseGate {
+            let governance = LeaseGovernance::from_resolution(
+                resolution,
+                SUBJECT,
+                &GovernedIssuance {
+                    issued_at: issued(),
+                    default_ttl_seconds: 3_600,
+                    default_issuer: "aa-runtime:policy".to_string(),
+                },
+                &|d| Ok(format!("runtime-run:{d}")),
+            )
+            .expect("runtime governance builds");
+            PolicyLeaseGate::new(Snapshot::governed(governance, BTreeSet::<String>::new(), 1))
+        }
+
+        fn gate_verdict(row: &Row) -> LeaseVerdict {
+            let now = issued() + Duration::from_secs(row.seconds_after_issue);
+            gate_for(&resolve(row.leases)).check(SUBJECT, &lease_plan::tool_call(row.tool), now)
+        }
+
+        fn plan_verdict(row: &Row) -> LeaseVerdict {
+            let now = issued() + Duration::from_secs(row.seconds_after_issue);
+            let governance = lease_plan::governance_for_plan(&resolve(row.leases), SUBJECT, issued())
+                .expect("plan governance builds");
+            lease_plan::tool_verdict(&governance, &BTreeSet::<String>::new(), row.tool, now)
+        }
+
+        /// A deliberately independent re-implementation of "does this tool have
+        /// a lease": it looks only at whether some authored grant names the
+        /// domain. It is what a dry-run with its own copy of the rules would
+        /// look like, and exists only to prove the comparison can fail.
+        fn private_copy_verdict(row: &Row) -> LeaseVerdict {
+            let resolution = resolve(row.leases);
+            let Some(caps) = resolution.tool_capabilities().and_then(|m| m.get(row.tool)) else {
+                return LeaseVerdict::Deny {
+                    reason: "undeclared".into(),
+                };
+            };
+            let granted: Vec<&str> = resolution.lease_grants().iter().map(|g| g.domain.as_str()).collect();
+            let covered = !caps.is_empty()
+                && caps
+                    .iter()
+                    .all(|c| c.as_str() == "none" || granted.contains(&c.as_str()));
+            if covered {
+                LeaseVerdict::Permit
+            } else {
+                LeaseVerdict::Deny {
+                    reason: "no grant".into(),
+                }
+            }
+        }
+
+        fn is_permit(v: &LeaseVerdict) -> bool {
+            matches!(v, LeaseVerdict::Permit)
+        }
+
+        #[test]
+        fn the_dry_run_plan_gives_the_runtime_gates_verdict_for_every_row() {
+            for row in rows() {
+                let gate = gate_verdict(&row);
+                let plan = plan_verdict(&row);
+                assert_eq!(plan, gate, "plan != runtime gate for row `{}`", row.label);
+                assert_eq!(
+                    is_permit(&gate),
+                    row.expect_permit,
+                    "pinned verdict for row `{}`: {gate:?}",
+                    row.label
+                );
+            }
+        }
+
+        #[test]
+        fn typed_action_types_match_the_runtime_gate() {
+            let resolution = resolve(READ_WHOLE);
+            let gate = gate_for(&resolution);
+            let governance = lease_plan::governance_for_plan(&resolution, SUBJECT, issued()).unwrap();
+            let expected = [
+                (ActionType::LlmCall, false),
+                (ActionType::ToolResult, false),
+                (ActionType::FileOperation, false),
+                (ActionType::NetworkCall, false),
+                (ActionType::ProcessExec, false),
+                (ActionType::AgentSpawn, false),
+                (ActionType::ActionUnspecified, false),
+            ];
+            for (action_type, permit) in expected {
+                let from_gate = gate.check(SUBJECT, &lease_plan::typed_action(action_type), issued());
+                let from_plan =
+                    lease_plan::action_verdict(&governance, &BTreeSet::<String>::new(), action_type, issued());
+                assert_eq!(from_plan, from_gate, "{action_type:?}");
+                assert_eq!(is_permit(&from_gate), permit, "{action_type:?}");
+            }
+        }
+
+        /// Every declared tool's printed line must be the line the gate's own
+        /// verdict formats to, for every row's policy and clock — not for one
+        /// hand-picked policy. A renderer that substituted or dropped a verdict
+        /// for any row (expired, selector-scoped, ...) fails here.
+        #[test]
+        fn the_rendered_plan_prints_exactly_the_gates_verdict_for_each_declared_tool_in_every_row() {
+            for row in rows() {
+                let resolution = resolve(row.leases);
+                let gate = gate_for(&resolution);
+                let now = issued() + Duration::from_secs(row.seconds_after_issue);
+                let out = lease_plan::render(&resolution, SUBJECT, issued(), now);
+                for (name, caps) in resolution.tool_capabilities().expect("enforced") {
+                    let words: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
+                    let verdict = gate.check(SUBJECT, &lease_plan::tool_call(name), now);
+                    let line = format!("tool {name} [{}]: {}\n", words.join(", "), lease_plan::show(&verdict));
+                    assert!(
+                        out.contains(&line),
+                        "row `{}`: missing line {line:?} in:\n{out}",
+                        row.label
+                    );
+                }
+                let governance = lease_plan::governance_for_plan(&resolution, SUBJECT, issued()).unwrap();
+                let undeclared = gate.check(
+                    SUBJECT,
+                    &lease_plan::tool_call(&lease_plan::undeclared_probe(&governance)),
+                    now,
+                );
+                assert!(
+                    out.contains(&format!("tool <undeclared>: {}\n", lease_plan::show(&undeclared))),
+                    "row `{}`: {out}",
+                    row.label
+                );
+            }
+        }
+
+        #[test]
+        fn the_header_says_a_governed_runtime_would_decide_and_names_the_trigger() {
+            let out = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            assert!(out.contains("a governed runtime would give"), "{out}");
+            assert!(out.contains("only when started with AA_LEASE_POLICY"), "{out}");
+            assert!(out.contains("without it no lease gate runs"), "{out}");
+            assert!(
+                !out.contains("the runtime lease gate would give"),
+                "must not read as if every runtime enforces: {out}"
+            );
+            assert!(
+                out.contains("PLAN") && out.contains("revocation: not evaluated"),
+                "{out}"
+            );
+            assert!(out.contains("not authorization"), "{out}");
+        }
+
+        #[test]
+        fn each_lease_line_states_its_ttl_and_where_it_came_from() {
+            let authored = lease_plan::render(&resolve(READ_SHORT_TTL), SUBJECT, issued(), issued());
+            assert!(
+                authored.contains("lease: filesystem_read scope=whole ttl=60s (authored)\n"),
+                "{authored}"
+            );
+            let default = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            let expected = format!(
+                "lease: filesystem_read scope=whole ttl={}s (default)\n",
+                super::super::plan::DEFAULT_LEASE_TTL_SECONDS
+            );
+            assert!(default.contains(&expected), "{default}");
+        }
+
+        /// The plan's default lifetime is the launch's, and the launch's is the
+        /// value governed mode uses; if either moves, the plan would misreport.
+        #[test]
+        fn the_default_ttl_is_the_one_governed_mode_uses() {
+            assert_eq!(
+                super::super::plan::DEFAULT_LEASE_TTL_SECONDS,
+                aa_runtime::lease::governed::DEFAULT_LEASE_TTL_SECONDS
+            );
+        }
+
+        #[test]
+        fn the_summary_counts_denied_tools_and_the_note_covers_tools_without_capabilities() {
+            let out = lease_plan::render(&resolve(READ_WHOLE), SUBJECT, issued(), issued());
+            // Declaring capabilities: calc, reader, writer, denied, spawner. Permitted: calc, reader.
+            assert!(
+                out.contains("summary: 3 of 5 tools declaring capabilities would be denied\n"),
+                "{out}"
+            );
+            assert!(!out.contains("tool undeclared_caps"), "{out}");
+            assert!(
+                out.contains("declared without `capabilities` is not listed above"),
+                "{out}"
+            );
+        }
+
+        /// Through the real preview entry point, not `render` directly: the
+        /// section is actually appended, and each line is the gate's verdict.
+        #[test]
+        fn the_dry_run_preview_carries_the_gates_verdicts() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let spec: String = format!("{TOOLS}{READ_WHOLE}")
+                .lines()
+                .map(|l| format!("  {l}\n"))
+                .collect();
+            let path = dir.path().join("p.yaml");
+            std::fs::write(
+                &path,
+                format!("apiVersion: agent-assembly/v1\nkind: Policy\nmetadata:\n  name: p\nspec:\n{spec}"),
+            )
+            .expect("write policy");
+            let mut args = super::planning_args(super::super::EXEC_TARGET);
+            args.tool_args = vec!["/bin/echo".into(), "hi".into()];
+            args.policy = Some(path);
+            args.dry_run = true;
+            let target = super::super::plan::RunTarget::command(&args.tool_args).expect("program");
+            let out = super::super::dry_run_preview(target, None, &args);
+
+            let resolution = resolve(READ_WHOLE);
+            let gate = gate_for(&resolution);
+            for (name, caps) in resolution.tool_capabilities().expect("enforced") {
+                let words: Vec<&str> = caps.iter().map(|c| c.as_str()).collect();
+                let verdict = gate.check(SUBJECT, &lease_plan::tool_call(name), issued());
+                let line = format!("tool {name} [{}]: {}\n", words.join(", "), lease_plan::show(&verdict));
+                assert!(out.contains(&line), "preview lacks {line:?}:\n{out}");
+            }
+            assert!(out.contains("--- lease plan (PLAN"), "{out}");
+        }
+
+        /// The falsifier for the comparison itself: an evaluator with its own
+        /// rules disagrees with the gate on exactly the rows where the real
+        /// rules do something the copy does not. If this stops failing, the
+        /// parity test above no longer proves the plan calls `decide`.
+        #[test]
+        fn a_private_copy_of_the_rules_is_caught_by_the_parity_comparison() {
+            let divergent: Vec<&str> = rows()
+                .iter()
+                .filter(|row| {
+                    private_copy_verdict(row) != gate_verdict(row)
+                        && is_permit(&private_copy_verdict(row)) != is_permit(&gate_verdict(row))
+                })
+                .map(|row| row.label)
+                .collect();
+            for must_catch in [
+                "expired",
+                "selector-scoped",
+                "process_creation even with a lease",
+                "allow:false even with lease",
+            ] {
+                assert!(
+                    divergent.contains(&must_catch),
+                    "private copy not caught on `{must_catch}`: {divergent:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_policy_that_is_not_enforced_prints_no_verdicts() {
+            let resolution = aa_policy::resolve::classify(Path::new("empty.yaml"), "");
+            let out = lease_plan::render(&resolution, SUBJECT, issued(), issued());
+            assert!(out.contains("plan: not available"), "{out}");
+            assert!(!out.contains("\ntool ") && !out.contains("\naction "), "{out}");
+        }
     }
 }

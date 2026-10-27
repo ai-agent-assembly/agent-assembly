@@ -211,6 +211,79 @@ whenever it cannot measure:
 Read exit `6` on an otherwise-clean install as **"not measured"**, not as
 **"measured and failed"** — and read `status` for which it is.
 
+## `alert_only` records an MCP response detection; it does not stop the response
+
+When `aa-proxy` is configured with a gateway endpoint and decrypts the host, it
+asks the gateway to evaluate the response to **any recognised MCP exchange** — a
+`tools/call`, `resources/read`, `prompts/get`, a JSON-RPC batch, or any request
+carrying an `Mcp-Session-Id` / `MCP-Protocol-Version` header — and withholds it
+(HTTP `502`) on `Deny`, on a `Redact` it cannot apply, and on any RPC failure,
+timeout (10 s), undecodable or oversized body. That path is always fail-closed and
+is independent of `AA_PROXY_MCP_FAIL_OPEN`, which governs only the request-side
+`tools/call` check. If an endpoint is configured but the proxy holds no live
+gateway connection (start-up connect failed under `AA_PROXY_MCP_FAIL_OPEN=1`),
+every recognised MCP response is withheld; an empty `202`/`204` reply is forwarded.
+
+Under `credential_action: alert_only` the gateway records the detection and raises
+a `SecretAlert` (credential kinds and a count, never the matched value), then
+allows. The matching content reaches the client **unchanged**. That is observing,
+not protecting: it does not prevent disclosure and it does not mask the value. The
+alert is attributed to the proxy's synthetic identity (`aa-proxy`), not to the
+agent whose traffic it was, because the proxy holds no per-agent credential.
+
+Boundaries of this check, stated plainly:
+
+- **Standalone mode applies no response scanning.** With no gateway endpoint
+  configured, the proxy relays responses on a decrypted non-LLM host unchanged; the
+  proxy's built-in-pattern redaction of MCP responses runs only on the
+  gateway-enforced path above.
+- **A `text/event-stream` response on an enforcing proxy is judged event by
+  event.** Each event is re-serialised in canonical form (comments and fields
+  other than `data`, `event`, `id` and `retry` are dropped), scanned with the
+  built-in patterns and evaluated by the gateway; exactly what was judged is what
+  is forwarded. A denied event, a gateway failure or timeout, an oversized or
+  non-UTF-8 event, a framing error, or an event left unfinished for 30 s ends the
+  stream with a fixed JSON-RPC error event (`mcp_fail_open` never applies).
+  Limits: events are judged one at a time, so a value split **across** events is
+  not seen whole; an HTTP `200` head has already been sent when a later event is
+  stopped; and a stream that is compressed, declares a non-UTF-8 charset or has no
+  live gateway client is withheld with a `502` before any byte. This applies to
+  any request on the host, including a bodyless `GET`. The check is a
+  case-insensitive search for `text/event-stream` in any `Content-Type` value,
+  and looks past interim `1xx` heads. Other responses to an unrecognised request
+  are relayed byte-for-byte even when their head is unusual (oversized headers,
+  Latin-1 bytes), up to a 1 MiB head.
+- **Plain-HTTP (non-TLS) MCP is not covered**; only traffic decrypted inside a
+  `CONNECT` tunnel is.
+- **A host the proxy treats as an LLM endpoint is not checked as MCP.** A built-in
+  LLM provider host, or an operator-declared enterprise LLM endpoint, takes the LLM
+  interception path, whose responses are relayed without the MCP checks above. An
+  MCP server served from the same host as an LLM gateway (for example an `/mcp`
+  route on it) therefore gets no MCP response evaluation.
+- **Tool-scoped rules also see `mcp-method:*` names.** A non-`tools/call` response
+  is evaluated under a synthetic tool name of the form `mcp-method:<method>` (for
+  example `mcp-method:resources/read`). A policy with a tool allowlist or a
+  default-deny on tool names will judge those names too, and can withhold MCP
+  traffic such as `initialize` or `tools/list`. Allow the `mcp-method:*` names you
+  intend to permit.
+- **A secret split across separate messages** is evaluated one message at a time.
+- **A non-JSON-RPC body** sent to a server that tolerates it is not recognised as
+  MCP, so its response is relayed unchanged. Recognition is lenient (a `jsonrpc`
+  key or a string `method`, in an object or batch), but it is not a guarantee.
+- Each recognised response costs one extra gateway round trip.
+
+The same path decodes bodies the way a lenient peer would (BOM, invalid bytes,
+every JSON escape, SSE framing, 200-deep or `NaN` bodies) and denies a `tools/call`
+whose keys collide after Go-style case folding. It **denies JSON it cannot decode
+identically to every peer**: `utf-7` or any unknown charset, repeated `charset`
+parameters, UTF-16/32, JSON declared ISO-8859-1 / us-ascii / windows-1252 with
+non-ASCII bytes, two `Content-Type` headers on JSON, and any request (whatever its
+media type) declaring a charset outside the allowlist; MCP responses are withheld under the same rules. **Not covered:**
+JSON5/JSONC peers; inexact-case argument keys that do not collide (e.g. only
+`"PATH"` for a Go or .NET binder); first-key-wins duplicate keys inside
+`arguments`; and a secret split across separate `content[]` parts. See "MCP tool
+results through `aa-proxy`" in the policy reference.
+
 ## `AASM_STATE_DIR` can redirect the Claude Code launch-env store — a named, un-closed gap (Core ADR 036 D6, gap #3)
 
 A governed `aasm run` launch strips ambient `HTTP_PROXY`/`HTTPS_PROXY`/
@@ -419,6 +492,15 @@ Two consequences follow deliberately from accepting this rather than working
 around it. Fingerprints are taken over **canonical JSON**, so a reformat is
 correctly reported as *no drift*. And a removal report **states the limitation**
 rather than implying a guarantee the write path cannot keep.
+
+Codex is the exception for its TOML `config.toml` on install and removal: the
+lifecycle edits it in place, so your comments and layout are kept. For an LF
+file you did not otherwise change, removal restores the original bytes. It stays
+semantic where the spelling cannot be recovered (a single-quoted value comes
+back double-quoted), a CRLF file is normalised to LF line endings, and comments
+inside a managed table that Agent Assembly replaces are not kept. `aasm run` is
+not covered yet: it still rewrites the file without preserving comments
+(AAASM-6373).
 
 The alternative — preserving the original document verbatim — was rejected as
 disproportionate for the MVP: it needs a format-preserving JSON editor no in-tree

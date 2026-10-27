@@ -97,7 +97,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Upload aa-runtime image artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: aa-runtime-smoke-image
           path: /tmp/aa-runtime-smoke.tar
@@ -126,7 +126,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Upload governed-call probe image artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
         with:
           name: aa-governed-probe-smoke-image
           path: /tmp/aa-governed-probe-smoke.tar
@@ -151,7 +151,7 @@ jobs:
       # without this action resolves `FROM` from the engine image store, where
       # both the base image and the loaded aa-runtime:smoke tag live.
       - name: Download aa-runtime image artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aa-runtime-smoke-image
           path: /tmp
@@ -161,7 +161,7 @@ jobs:
         # mode, but with cache-from: type=gha it is a cache hit, not a rebuild.
         run: docker load -i /tmp/aa-runtime-smoke.tar
       - name: Download governed-call probe image artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: aa-governed-probe-smoke-image
           path: /tmp

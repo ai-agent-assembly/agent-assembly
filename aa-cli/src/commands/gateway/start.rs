@@ -84,7 +84,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         }
     };
     if let Some(parent) = log_file.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
+        if let Err(e) = aa_core::private_fs::create_private_dir_all(parent) {
             eprintln!("warning: could not create log directory {}: {e}", parent.display());
         }
     }

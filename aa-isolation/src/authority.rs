@@ -203,8 +203,27 @@ impl EffectiveAuthority {
             return Ok(authority);
         }
 
-        for (index, lease) in spec.leases().iter().enumerate() {
-            if spec.leases()[..index].iter().any(|l| l.domain() == lease.domain()) {
+        Self::from_leases(spec.leases())
+    }
+
+    /// Record `leases` as [`AuthorityState::Leased`], one per domain, with
+    /// every other domain denied.
+    ///
+    /// Unlike [`from_spec`](Self::from_spec) this never takes the rc.7
+    /// compatibility path: the caller already holds leases, so there is no
+    /// requirement-only spec to fall back on. It exists so a caller that has
+    /// leases but no [`ExecutionSpec`] reaches the same duplicate-domain
+    /// refusal and the same recorded state as the launch path does.
+    ///
+    /// # Errors
+    ///
+    /// [`AuthorityBuildError::DuplicateLeaseDomain`] when two leases name the
+    /// same domain, for the reason given on [`from_spec`](Self::from_spec).
+    pub fn from_leases(leases: &[CapabilityLease]) -> Result<Self, AuthorityBuildError> {
+        let mut authority = Self::deny_all();
+
+        for (index, lease) in leases.iter().enumerate() {
+            if leases[..index].iter().any(|l| l.domain() == lease.domain()) {
                 return Err(AuthorityBuildError::DuplicateLeaseDomain(lease.domain()));
             }
             authority.set(lease.domain(), AuthorityState::Leased(Box::new(lease.clone())));
@@ -419,6 +438,15 @@ pub enum AuthorityRefusal {
         /// The first lease on the chain that could not be verified.
         lease: LeaseId,
     },
+    /// The ledger tracks a lease with this id but not with the content the gate
+    /// was handed (AAASM-6312): a forged or widened snapshot reusing a known id.
+    /// Fails closed; the id matching is no evidence the content is genuine.
+    LedgerContentMismatch {
+        /// The domain whose lease content disagrees with the ledger's record.
+        domain: CapabilityDomain,
+        /// The lease whose content does not match.
+        lease: LeaseId,
+    },
     /// A resolved parent (`Ancestry::Parent`) is in play, but the child's own
     /// spec carries no lease at all for `domain` (AAASM-6282/D4).
     ///
@@ -460,6 +488,7 @@ impl AuthorityRefusal {
             | Self::LeaseSubjectMismatch { domain, .. }
             | Self::RevokedInLedger { domain, .. }
             | Self::LedgerUnverifiable { domain, .. }
+            | Self::LedgerContentMismatch { domain, .. }
             | Self::ChildMustBeLeaseAware { domain } => Some(*domain),
             Self::Malformed(AuthorityBuildError::DuplicateLeaseDomain(domain)) => Some(*domain),
             Self::AncestryUnresolved { .. } | Self::AncestryMismatch { .. } => None,
@@ -563,6 +592,13 @@ impl core::fmt::Display for AuthorityRefusal {
                      to the ledger or has no recorded parent"
                 )
             }
+            Self::LedgerContentMismatch { domain, lease } => {
+                write!(
+                    f,
+                    "lease `{lease}` for domain `{domain}` is tracked by the ledger with different content than \
+                     the one presented"
+                )
+            }
             Self::ChildMustBeLeaseAware { domain } => {
                 write!(
                     f,
@@ -613,6 +649,45 @@ fn covered(state: &AuthorityState, domain: CapabilityDomain, scope: &Requirement
             }
         }
     }
+}
+
+/// Decide whether `state` admits `subject` using `scope` of `domain` at `now`.
+///
+/// This is the per-domain check [`authority_gate`] applies to each
+/// requirement, extracted so a caller that holds an [`AuthorityState`] but no
+/// [`ExecutionSpec`] (a runtime checking one action against a lease) cannot
+/// drift from the launch-time verdict. Side-effect free; `now` is a parameter
+/// for the reason given on [`authority_gate`].
+///
+/// A [`AuthorityState::Leased`] state must be valid at `now`, name `subject`
+/// (AAASM-6279/D-b: a lease proves what its named subject was authorized for,
+/// not what some other agent may do), and cover `scope`. The other states
+/// defer to [`covered`]: [`AuthorityState::Denied`] refuses, and
+/// [`AuthorityState::CompatibilityResidual`] admits everything, because the
+/// lease-only checks (validity, subject, scope) do not apply to it.
+///
+/// # Errors
+///
+/// The [`AuthorityRefusal`] for the first failing check, in that order.
+pub fn admit_lease(
+    state: &AuthorityState,
+    subject: &str,
+    domain: CapabilityDomain,
+    scope: &RequirementScope,
+    now: SystemTime,
+) -> Result<(), AuthorityRefusal> {
+    if let AuthorityState::Leased(lease) = state {
+        if let Err(reason) = lease.validate_at(now) {
+            return Err(AuthorityRefusal::LeaseInvalid { domain, reason });
+        }
+        if lease.subject().agent_id != subject {
+            return Err(AuthorityRefusal::LeaseSubjectMismatch {
+                domain,
+                lease_subject: lease.subject().agent_id.clone(),
+            });
+        }
+    }
+    covered(state, domain, scope)
 }
 
 /// Check every requirement `spec` states against the explicit authority it
@@ -702,20 +777,7 @@ pub fn authority_gate(
     for requirement in spec.requirements() {
         let domain = requirement.domain();
         let state = authority.state(domain);
-        if let AuthorityState::Leased(lease) = state {
-            if let Err(reason) = lease.validate_at(now) {
-                return Err(AuthorityRefusal::LeaseInvalid { domain, reason });
-            }
-            // AAASM-6279/D-b: a lease is proof of what its named subject was
-            // authorized for, not of what this launch was authorized for.
-            if lease.subject().agent_id != spec.identity().agent_id {
-                return Err(AuthorityRefusal::LeaseSubjectMismatch {
-                    domain,
-                    lease_subject: lease.subject().agent_id.clone(),
-                });
-            }
-        }
-        covered(state, domain, requirement.scope())?;
+        admit_lease(state, &spec.identity().agent_id, domain, requirement.scope(), now)?;
 
         if let Some(parent) = parent {
             check_attenuation(parent, domain, state, spec.identity(), now)?;
@@ -821,11 +883,26 @@ fn check_attenuation(
                 ChainFault::Unverifiable { lease } => AuthorityRefusal::LedgerUnverifiable { domain, lease },
             });
         }
+        // AAASM-6312: the id being known is not enough — the snapshot's CONTENT
+        // (scope, expiry, limits, delegation rights, basis) must be the one the
+        // ledger recorded, or a wider lease reusing a tracked id would pass.
+        if !parent.ledger().content_matches(parent_lease) {
+            return Err(AuthorityRefusal::LedgerContentMismatch {
+                domain,
+                lease: parent_lease.id().clone(),
+            });
+        }
     }
     // A child lease the ledger knows and has revoked is refused even when its
     // parent chain is intact. A child the ledger has never seen (hand-built,
     // or independently issued) is not an error here: absence of the child is
     // not absence of authority above it.
+    if parent.ledger().knows(child_lease.id()) && !parent.ledger().content_matches(child_lease) {
+        return Err(AuthorityRefusal::LedgerContentMismatch {
+            domain,
+            lease: child_lease.id().clone(),
+        });
+    }
     if let Some(reason) = parent.ledger().revoked_reason(child_lease.id()) {
         return Err(AuthorityRefusal::RevokedInLedger {
             domain,
@@ -845,15 +922,17 @@ fn check_attenuation(
                 ScopeOrdering::Narrower | ScopeOrdering::Equal => {
                     if child_lease.expires_at() > parent_lease.expires_at() {
                         Some(AuthorityRefusal::ChildExtendsExpiry { domain })
-                    } else if let Some(child_limits) = child_lease.limits() {
+                    } else {
+                        // AAASM-6334: a child with NO stated limits is unbounded, not
+                        // "no restriction requested". Compare it as the all-`None`
+                        // default so it cannot exceed a parent that has a ceiling.
                         let parent_limits = parent_lease.limits().copied().unwrap_or_default();
-                        if limits_narrower_or_equal(&parent_limits, child_limits) {
+                        let child_limits = child_lease.limits().copied().unwrap_or_default();
+                        if limits_narrower_or_equal(&parent_limits, &child_limits) {
                             None
                         } else {
                             Some(AuthorityRefusal::ChildExceedsLimits { domain })
                         }
-                    } else {
-                        None
                     }
                 }
             }
@@ -870,7 +949,18 @@ fn check_attenuation(
             // already computed above is the more actionable answer than a
             // generic "not independently approved".
             Err(refusal)
-        } else if basis.is_independently_attributable(child_identity, parent.identity()) {
+        } else if basis.is_independently_attributable(child_identity, parent.identity())
+            // AAASM-6346: `basis.issuer` is self-asserted by whoever built the
+            // lease, so a same-UID child can forge an "independent" issuer and
+            // approval_ref. Only a lease the ledger itself issued/recorded
+            // carries independent attribution; a never-recorded lease skips
+            // the content check above, so require presence and equality here.
+            // On a ledger built with `with_trusted_issuer`, an escalation is
+            // therefore reachable only for grants whose issuer is that trusted
+            // issuer; any other claimed issuer is refused (fail closed).
+            && parent.ledger().knows(child_lease.id())
+            && parent.ledger().content_matches(child_lease)
+        {
             // An independent issuer explicitly granted authority beyond what
             // the parent held — this is escalation, not attenuation, and it
             // is authorized. Provenance-integrity checks below are about a
@@ -878,8 +968,9 @@ fn check_attenuation(
             // grant is not, so they do not apply here.
             Ok(())
         } else {
-            // Attribution was attempted, but the issuer is the parent's own
-            // subject or the child's own — self-approval, refused under the
+            // Attribution was attempted but not established: the issuer is the
+            // parent's or child's own subject (self-approval), or the ledger
+            // never issued this lease (forged basis). Refused under the
             // specific name for that failure rather than the generic one.
             Err(AuthorityRefusal::EscalationNotIndependentlyApproved { domain })
         };
@@ -1747,6 +1838,258 @@ mod tests {
             assert!(authority_gate(&child_spec, &control_ancestry, t(1_500)).is_ok());
         }
 
+        /// AAASM-6312: the gate must compare the parent snapshot's CONTENT with
+        /// the ledger's record. A wider lease reusing the tracked id used to
+        /// pass, because `verify_chain` looked at the id alone.
+        #[test]
+        fn a_forged_parent_snapshot_reusing_a_tracked_id_is_refused_by_content() {
+            let genuine = parent_fs_lease(RequirementScope::Selectors(
+                vec!["permit-only:/workspace/a".to_string()],
+            ));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&genuine).expect("root registers");
+            let child_lease = ledger
+                .derive_child(
+                    &genuine,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a narrower child derives from the genuine parent");
+            let child_spec = child_spec_with_lease(
+                child_lease,
+                RequirementScope::Selectors(vec!["permit-only:/workspace/a/x".to_string()]),
+            );
+
+            // Positive control: the genuine parent snapshot admits the child.
+            let genuine_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), genuine.clone())));
+            assert!(authority_gate(&child_spec, &genuine_ancestry, t(1_500)).is_ok());
+
+            // Forged: same id and issuer, wider scope. The id is known to the
+            // ledger and its chain verifies, but the content is not the recorded one.
+            let forged = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/".to_string()]));
+            assert_eq!(forged.id(), genuine.id());
+            let forged_ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), forged)));
+            assert_eq!(
+                authority_gate(&child_spec, &forged_ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: genuine.id().clone(),
+                })
+            );
+        }
+
+        /// AAASM-6312: a child the ledger tracks is bound by content too. A
+        /// registered NotDelegable child presented with widened delegation
+        /// rights is refused; before the check it passed whenever its scope fit.
+        #[test]
+        fn a_tracked_child_presented_with_widened_delegation_is_refused() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let child = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("child-fs-lease"),
+                        child_subject: child_identity(),
+                        child_scope: RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("narrower child derives");
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace/a".to_string()]);
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+            // positive control
+            assert!(authority_gate(
+                &child_spec_with_lease(child.clone(), scope.clone()),
+                &ancestry,
+                t(1_500)
+            )
+            .is_ok());
+            let widened = child
+                .clone()
+                .with_delegation(DelegationRule::DelegableWithNarrowerScope);
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(widened, scope), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::LedgerContentMismatch {
+                    domain: CapabilityDomain::FilesystemRead,
+                    lease: child.id().clone(),
+                })
+            );
+        }
+
+        /// AAASM-6334: a child that states no limits is unbounded, so it must
+        /// not pass under a parent that has a ceiling, and a derived child must
+        /// inherit that ceiling instead of dropping it.
+        #[test]
+        fn a_child_without_limits_cannot_exceed_a_parent_that_has_them() {
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let capped = crate::spec::ResourceLimits {
+                max_pids: Some(4),
+                ..Default::default()
+            };
+            let parent_lease = parent_fs_lease(scope.clone()).with_limits(capped);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease.clone())));
+
+            // A hand-built, untracked child stating no limits: refused.
+            let unbounded = CapabilityLease::new(
+                crate::lease::LeaseId::new("hand-built"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            );
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(unbounded, scope.clone()), &ancestry, t(1_500)),
+                Err(AuthorityRefusal::ChildExceedsLimits {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // Positive controls: within the ceiling admits, and a derived child
+            // that states no limits inherits the ceiling and admits.
+            let within = CapabilityLease::new(
+                crate::lease::LeaseId::new("within"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                scope.clone(),
+                t(1_000),
+                t(4_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+            )
+            .with_limits(crate::spec::ResourceLimits {
+                max_pids: Some(2),
+                ..Default::default()
+            });
+            assert!(authority_gate(&child_spec_with_lease(within, scope.clone()), &ancestry, t(1_500)).is_ok());
+            let derived = ledger
+                .derive_child(
+                    &parent_lease,
+                    ChildLeaseRequest {
+                        child_id: crate::lease::LeaseId::new("derived"),
+                        child_subject: child_identity(),
+                        child_scope: scope.clone(),
+                        child_expires_at: t(4_000),
+                        mode: InheritanceMode::Narrower,
+                        child_delegation: DelegationRule::NotDelegable,
+                        child_limits: None,
+                    },
+                    t(1_100),
+                )
+                .expect("a child with no stated limits derives");
+            assert_eq!(
+                derived.limits(),
+                Some(&capped),
+                "the derived child inherits the parent's ceiling"
+            );
+            assert!(authority_gate(&child_spec_with_lease(derived, scope), &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6334: every `ResourceLimits` ceiling is attenuated on its own.
+        /// Each case isolates one field so dropping any single field from the
+        /// comparison turns a named case red, and each refusal differs from its
+        /// positive control in exactly one variable.
+        #[test]
+        fn every_resource_limit_field_is_attenuated_independently() {
+            use crate::spec::ResourceLimits;
+
+            type Set = fn(&mut ResourceLimits, u32);
+            let cases: [(&str, Set); 6] = [
+                ("max_memory_bytes", |l, v| l.max_memory_bytes = Some(v.into())),
+                ("max_cpu_seconds", |l, v| l.max_cpu_seconds = Some(v.into())),
+                ("max_pids", |l, v| l.max_pids = Some(v)),
+                ("max_wall_clock_seconds", |l, v| {
+                    l.max_wall_clock_seconds = Some(v.into())
+                }),
+                ("max_file_size_bytes", |l, v| l.max_file_size_bytes = Some(v.into())),
+                ("max_open_files", |l, v| l.max_open_files = Some(v)),
+            ];
+
+            // Adding a `ResourceLimits` field breaks this literal at compile time;
+            // the setter check below then fails until the new field gets a case.
+            let every_field = ResourceLimits {
+                max_memory_bytes: Some(1),
+                max_cpu_seconds: Some(1),
+                max_pids: Some(1),
+                max_wall_clock_seconds: Some(1),
+                max_file_size_bytes: Some(1),
+                max_open_files: Some(1),
+            };
+            let mut covered = ResourceLimits::default();
+            for (_, set) in &cases {
+                set(&mut covered, 1);
+            }
+            assert_eq!(covered, every_field, "every ResourceLimits field needs a case");
+
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let gate = |parent: Option<ResourceLimits>, child: Option<ResourceLimits>| {
+                let mut parent_lease = parent_fs_lease(scope.clone());
+                if let Some(limits) = parent {
+                    parent_lease = parent_lease.with_limits(limits);
+                }
+                let ledger = Arc::new(DelegationLedger::new());
+                ledger.register_parent(&parent_lease).expect("root registers");
+                let ancestry = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease)));
+                let mut child_lease = CapabilityLease::new(
+                    crate::lease::LeaseId::new("hand-built"),
+                    child_identity(),
+                    CapabilityDomain::FilesystemRead,
+                    scope.clone(),
+                    t(1_000),
+                    t(4_000),
+                    crate::lease::LeaseBasis::new(IdentityRef::root("issuer"), "hand built"),
+                );
+                if let Some(limits) = child {
+                    child_lease = child_lease.with_limits(limits);
+                }
+                authority_gate(&child_spec_with_lease(child_lease, scope.clone()), &ancestry, t(1_500)).map(|_| ())
+            };
+            let refused = Err(AuthorityRefusal::ChildExceedsLimits {
+                domain: CapabilityDomain::FilesystemRead,
+            });
+            let only = |set: Set, v: u32| {
+                let mut l = ResourceLimits::default();
+                set(&mut l, v);
+                l
+            };
+
+            // (e) Nothing bounded on either side admits.
+            assert_eq!(gate(None, None), Ok(()), "unbounded parent, limitless child");
+            assert_eq!(gate(Some(ResourceLimits::default()), None), Ok(()));
+
+            for (name, set) in &cases {
+                let parent = Some(only(*set, 4));
+                // (a) child states no limits, (b) child explicitly unbounded.
+                assert_eq!(gate(parent, None), refused, "{name}: limitless child");
+                assert_eq!(
+                    gate(parent, Some(ResourceLimits::default())),
+                    refused,
+                    "{name}: explicitly unbounded child"
+                );
+                // (c) positive controls: below and equal to the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 3))), Ok(()), "{name}: below ceiling");
+                assert_eq!(gate(parent, Some(only(*set, 4))), Ok(()), "{name}: at ceiling");
+                // (d) above the ceiling.
+                assert_eq!(gate(parent, Some(only(*set, 5))), refused, "{name}: above ceiling");
+            }
+        }
+
         /// A root launch and a legacy no-lease spec are both unaffected by
         /// ancestry attenuation — the rc.7 compatibility regression.
         #[test]
@@ -1893,7 +2236,9 @@ mod tests {
         #[test]
         fn a_wider_child_lease_is_refused_unless_an_independent_issuer_approved_it() {
             let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
-            let parent = gated_parent(parent_lease);
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
             let ancestry = Ancestry::Parent(Box::new(parent));
 
             let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
@@ -1947,8 +2292,52 @@ mod tests {
                 crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "explicit break-glass approval")
                     .with_approval_ref("approval-3"),
             );
+            // AAASM-6346: admission now requires the supervisor to have
+            // recorded this exact lease; the issuer string alone is forgeable.
+            ledger
+                .register_parent(&issuer_is_third_party)
+                .expect("supervisor records the independently issued lease");
             let spec_iii = child_spec_with_lease(issuer_is_third_party, wider_scope);
             assert!(authority_gate(&spec_iii, &ancestry, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6346: a child that forges an independent `LeaseBasis` on a
+        /// lease the ledger never issued must not be admitted as an
+        /// escalation; recording the identical grant (supervisor-issued) is
+        /// the positive control that shows the refusal is about provenance,
+        /// not the grant's shape.
+        #[test]
+        fn a_forged_independent_basis_on_an_unrecorded_lease_is_refused_unless_ledger_issued() {
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let parent = gated_parent_in(Arc::clone(&ledger), parent_lease);
+            let ancestry = Ancestry::Parent(Box::new(parent));
+            let wider_scope = RequirementScope::Selectors(vec!["permit-only:/etc".to_string()]);
+
+            let forged = CapabilityLease::new(
+                crate::lease::LeaseId::new("child-fs-lease-forged"),
+                child_identity(),
+                CapabilityDomain::FilesystemRead,
+                wider_scope.clone(),
+                t(1_000),
+                t(2_000),
+                crate::lease::LeaseBasis::new(IdentityRef::root("compliance-officer"), "self-asserted approval")
+                    .with_approval_ref("approval-forged"),
+            );
+            let spec = child_spec_with_lease(forged.clone(), wider_scope);
+
+            // (a) negative: never recorded by the ledger.
+            assert_eq!(
+                authority_gate(&spec, &ancestry, t(1_500)),
+                Err(AuthorityRefusal::EscalationNotIndependentlyApproved {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+
+            // (b) positive control: the identical grant, recorded by the supervisor.
+            ledger.register_parent(&forged).expect("supervisor records the grant");
+            assert!(authority_gate(&spec, &ancestry, t(1_500)).is_ok());
         }
 
         /// §4.3: a child cannot reuse a parent credential lease unless
@@ -2003,5 +2392,128 @@ mod tests {
             );
             assert!(allowed.is_ok());
         }
+    }
+
+    /// `admit_lease` is the extracted body of `authority_gate`'s per-domain
+    /// check. The expected refusals below are written out by hand, not read
+    /// back from `admit_lease`, so a reordered check or a changed variant or
+    /// payload fails here instead of passing by agreeing with itself. The
+    /// combined-failure rows pin the order: validity, then subject, then scope.
+    #[test]
+    fn admit_lease_agrees_with_authority_gate() {
+        let domain = CapabilityDomain::FilesystemRead;
+        let workspace = || RequirementScope::Selectors(vec!["/workspace".to_string()]);
+        let revoked = || {
+            lease_for(domain, workspace()).with_revocation(RevocationState::Revoked {
+                generation: 1,
+                reason: "operator revoked".to_string(),
+            })
+        };
+        let other_subject = || {
+            CapabilityLease::new(
+                LeaseId::new("lease-other"),
+                IdentityRef::root("someone-else"),
+                domain,
+                workspace(),
+                t(1_000),
+                t(2_000),
+                LeaseBasis::new(IdentityRef::root("issuer"), "test fixture"),
+            )
+        };
+        let requested = workspace();
+        let uncovered = RequirementScope::Selectors(vec!["/etc".to_string()]);
+        let invalid = |reason| Err(AuthorityRefusal::LeaseInvalid { domain, reason });
+        let wrong_subject = Err(AuthorityRefusal::LeaseSubjectMismatch {
+            domain,
+            lease_subject: "someone-else".to_string(),
+        });
+
+        type Row<'a> = (
+            &'a str,
+            CapabilityLease,
+            &'a RequirementScope,
+            SystemTime,
+            Result<(), AuthorityRefusal>,
+        );
+        let table: Vec<Row> = vec![
+            ("valid", lease_for(domain, workspace()), &requested, t(1_500), Ok(())),
+            (
+                "expired",
+                lease_for(domain, workspace()),
+                &requested,
+                t(2_500),
+                invalid(LeaseInvalid::Expired { expires_at: t(2_000) }),
+            ),
+            (
+                "not yet valid",
+                lease_for(domain, workspace()),
+                &requested,
+                t(500),
+                invalid(LeaseInvalid::NotYetValid { not_before: t(1_000) }),
+            ),
+            (
+                "revoked",
+                revoked(),
+                &requested,
+                t(1_500),
+                invalid(LeaseInvalid::Revoked {
+                    reason: "operator revoked".to_string(),
+                }),
+            ),
+            (
+                "wrong subject",
+                other_subject(),
+                &requested,
+                t(1_500),
+                wrong_subject.clone(),
+            ),
+            (
+                "uncovered scope",
+                lease_for(domain, workspace()),
+                &uncovered,
+                t(1_500),
+                Err(AuthorityRefusal::LeaseScopeInsufficient { domain }),
+            ),
+            (
+                "expired and wrong subject: validity first",
+                other_subject(),
+                &requested,
+                t(2_500),
+                invalid(LeaseInvalid::Expired { expires_at: t(2_000) }),
+            ),
+            (
+                "wrong subject and uncovered scope: subject first",
+                other_subject(),
+                &uncovered,
+                t(1_500),
+                wrong_subject,
+            ),
+        ];
+
+        for (name, lease, scope, now, expected) in table {
+            let spec = base_spec().with_requirement(ControlRequirement::observe(domain).with_scope(scope.clone()));
+            let spec = attach_lease(spec, lease.clone());
+            let via_gate = authority_gate(&spec, &Ancestry::Root, now).map(|_| ());
+            let authority = EffectiveAuthority::from_leases(&[lease]).expect("single lease builds");
+            let via_admit = admit_lease(authority.state(domain), &identity().agent_id, domain, scope, now);
+            assert_eq!(via_admit, expected, "{name}: admit_lease verdict");
+            assert_eq!(via_gate, expected, "{name}: authority_gate verdict");
+        }
+    }
+
+    /// `from_leases` itself refuses two leases for one domain, so a caller that
+    /// never goes through `from_spec` gets the same malformed-input refusal.
+    #[test]
+    fn from_leases_rejects_duplicate_domain() {
+        let leases = [
+            lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
+            lease_for(CapabilityDomain::NetworkEgress, RequirementScope::Whole),
+        ];
+        assert_eq!(
+            EffectiveAuthority::from_leases(&leases),
+            Err(AuthorityBuildError::DuplicateLeaseDomain(
+                CapabilityDomain::NetworkEgress
+            ))
+        );
     }
 }

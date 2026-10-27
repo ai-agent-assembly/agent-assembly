@@ -22,6 +22,10 @@ pub(crate) struct Withheld {
     /// `true` when the existing value has no rank (kept as-is); `false` when
     /// AA's value would have been less strict.
     pub unrankable: bool,
+    /// `true` when the key was unset in the user's config, so nothing of theirs
+    /// was lowered; the managed value was dropped because it was not the
+    /// strictest one AA can write. `existing` is empty then.
+    pub absent: bool,
 }
 
 const SANDBOX: &str = "sandbox_mode";
@@ -64,12 +68,30 @@ fn approval_rank(v: &toml::Value) -> Option<u8> {
     }
 }
 
-/// The line `aasm run` prints when it leaves an unrankable value alone.
+/// The line `aasm run` prints when it leaves a managed key alone.
 pub(crate) fn warning(w: &Withheld) -> String {
-    format!(
-        "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
-        w.key, w.existing
-    )
+    if w.absent {
+        format!(
+            "warning: not setting `{}` in your Codex config: it is unset there and the managed value is not the strictest Agent Assembly can write, so it is left unset",
+            w.key
+        )
+    } else if w.unrankable {
+        format!(
+            "warning: not changing `{}` in your Codex config: its value `{}` is not one Agent Assembly can compare, so it is left as you set it",
+            w.key, w.existing
+        )
+    } else {
+        format!(
+            "warning: not changing `{}` in your Codex config: the managed value would be less strict than your `{}`, so it is left as you set it",
+            w.key, w.existing
+        )
+    }
+}
+
+/// Writes one [`warning`] line per withheld key, so a skipped relaxation is
+/// never silent.
+pub(crate) fn report(withheld: &[Withheld], out: &mut impl std::io::Write) -> std::io::Result<()> {
+    withheld.iter().try_for_each(|w| writeln!(out, "{}", warning(w)))
 }
 
 fn describe(v: &toml::Value) -> String {
@@ -89,6 +111,12 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
         let Some(current) = existing.get(key) else {
             // Absent ranks strictest: only the strictest AA value may land.
             if !rank(aa).is_some_and(|r| r >= strictest(key)) {
+                withheld.push(Withheld {
+                    key,
+                    existing: String::new(),
+                    unrankable: false,
+                    absent: true,
+                });
                 managed.remove(key);
             }
             continue;
@@ -100,6 +128,7 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
                     key,
                     existing: describe(current),
                     unrankable: false,
+                    absent: false,
                 });
                 managed.remove(key);
             }
@@ -108,6 +137,7 @@ pub(crate) fn withhold_relaxations(existing: &toml::Table, managed: &mut toml::T
                     key,
                     existing: describe(current),
                     unrankable: true,
+                    absent: false,
                 });
                 managed.remove(key);
             }
@@ -181,9 +211,12 @@ mod tests {
             "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-failure\"",
         );
         assert!(m.is_empty(), "{m:?}");
-        assert!(w.is_empty());
-        let (m, _) = run("", "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"");
+        // The drop is reported (AAASM-6361), once per key, as an absent key.
+        assert_eq!(w.iter().filter(|x| x.absent).count(), 2, "{w:?}");
+        assert!(w.iter().all(|x| !x.unrankable && x.existing.is_empty()));
+        let (m, w) = run("", "sandbox_mode = \"read-only\"\napproval_policy = \"on-request\"");
         assert_eq!(m.len(), 2);
+        assert!(w.is_empty(), "the strictest value lands and says nothing: {w:?}");
     }
 
     #[test]
@@ -229,9 +262,62 @@ mod tests {
     fn other_managed_keys_pass_through() {
         let (m, _) = run(
             "sandbox_mode = \"read-only\"",
-            "sandbox_mode = \"workspace-write\"\nallowed_domains = [\"a\"]",
+            "sandbox_mode = \"workspace-write\"\nsome_other_key = [\"a\"]",
         );
         assert!(!m.contains_key("sandbox_mode"));
-        assert!(m.contains_key("allowed_domains"));
+        assert!(m.contains_key("some_other_key"));
+    }
+
+    /// Ranking pin. Checked against codex-cli 0.163.0 with a private
+    /// `CODEX_HOME` (no auth read, no prompt observed):
+    /// - `codex --help` lists `--ask-for-approval` values `on-request` ("The
+    ///   model decides when to ask the user for approval") and `never`; it does
+    ///   NOT list or describe `on-failure`.
+    /// - A `config.toml` with `approval_policy` = `on-failure` or `on-request`
+    ///   loads (`codex mcp list` succeeds); `untrusted` fails with "is no longer
+    ///   supported"; an unknown value fails listing `untrusted`, `on-failure`,
+    ///   `on-request`, `granular`, `never`.
+    ///
+    /// So 0.163.0 confirms both strings are accepted and defines `on-request`
+    /// as can-prompt-before-acting, but gives no definition of `on-failure`.
+    /// The order below (`on-failure` asks only after a sandboxed command fails)
+    /// is therefore a reading, not something this binary states; this pins it
+    /// so changing it has to be deliberate.
+    #[test]
+    fn on_request_outranks_on_failure_per_codex_0_163_0() {
+        let rank = |s: &str| approval_rank(&toml::Value::String(s.into())).unwrap();
+        assert!(rank("on-request") > rank("on-failure"));
+    }
+
+    #[test]
+    fn warning_for_a_relaxation_says_the_value_would_be_less_strict() {
+        let (_, w) = run("approval_policy = \"on-request\"", "approval_policy = \"on-failure\"");
+        assert!(!w[0].unrankable);
+        let line = warning(&w[0]);
+        assert!(
+            line.contains("approval_policy") && line.contains("on-request") && line.contains("less strict"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn a_withheld_relaxation_is_reported_and_a_tightening_is_not() {
+        // Negative control: relaxation withheld AND reported.
+        let (m, w) = run("approval_policy = \"on-request\"", "approval_policy = \"on-failure\"");
+        assert!(!m.contains_key("approval_policy"));
+        let mut out = Vec::new();
+        report(&w, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(
+            text.contains("approval_policy") && text.contains("on-request"),
+            "{text}"
+        );
+        // Positive control: a genuine tightening is applied and says nothing.
+        let (m, w) = run("approval_policy = \"on-failure\"", "approval_policy = \"on-request\"");
+        assert!(m.contains_key("approval_policy"));
+        let mut out = Vec::new();
+        report(&w, &mut out).unwrap();
+        assert!(out.is_empty());
     }
 }

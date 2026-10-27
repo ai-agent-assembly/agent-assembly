@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use aa_devtool_contract::{
-    AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, GovernanceLevel, McpServerInfo, PolicyDocument,
+    merge_managed_keys, AdapterError, DevToolAdapter, DevToolInfo, DevToolKind, DocumentFormat, GovernanceLevel,
+    McpServerInfo, PolicyDocument,
 };
 use async_trait::async_trait;
 
@@ -161,6 +162,12 @@ pub struct CodexAdapter {
     /// Overrides `$HOME` for config-path resolution. `None` → read `$HOME`.
     /// Set via [`Self::with_home_dir`]; intended for integration tests only.
     home_dir_override: Option<PathBuf>,
+    /// Pins `CODEX_HOME`. Needed alongside `home_dir_override` because
+    /// `CodexPaths::with_home` discards an ambient `CODEX_HOME`; without this an
+    /// integration built from paths that name a `CODEX_HOME` would plan against
+    /// `$CODEX_HOME/config.toml` while the adapter wrote `$HOME/.codex` - a file
+    /// Codex does not read (AAASM-6332 review).
+    codex_home_override: Option<PathBuf>,
     /// Overrides `AASM_STATE_DIR` for launch-environment resolution. `None` →
     /// read the environment. Set via [`Self::with_state_dir`]; without it a
     /// unit test would resolve `CodexPaths::from_env`'s state root from the
@@ -177,6 +184,7 @@ impl CodexAdapter {
             locator,
             probe,
             home_dir_override: None,
+            codex_home_override: None,
             state_dir_override: None,
         }
     }
@@ -186,6 +194,13 @@ impl CodexAdapter {
     #[doc(hidden)]
     pub fn with_home_dir(mut self, path: PathBuf) -> Self {
         self.home_dir_override = Some(path);
+        self
+    }
+
+    /// Pin `CODEX_HOME` for config-path resolution (see `codex_home_override`).
+    #[doc(hidden)]
+    pub fn with_codex_home_dir(mut self, path: PathBuf) -> Self {
+        self.codex_home_override = Some(path);
         self
     }
 
@@ -205,10 +220,14 @@ impl CodexAdapter {
     /// `ClaudeCodeAdapter::launch_paths`, plus a state override Claude's does
     /// not need because its unit tests exercise `installed_environment`
     /// directly rather than through `build_launch_command`).
-    fn launch_paths(&self) -> crate::scope::CodexPaths {
+    pub(crate) fn launch_paths(&self) -> crate::scope::CodexPaths {
         let mut paths = crate::scope::CodexPaths::from_env();
         if let Some(home) = &self.home_dir_override {
             paths = paths.with_home(home.clone());
+        }
+        // After `with_home`, which clears any ambient CODEX_HOME.
+        if let Some(codex_home) = &self.codex_home_override {
+            paths = paths.with_codex_home(codex_home.clone());
         }
         if let Some(state) = &self.state_dir_override {
             paths = paths.with_state(state.clone());
@@ -223,6 +242,7 @@ impl Default for CodexAdapter {
             locator: Box::new(DefaultBinaryLocator),
             probe: Box::new(CommandVersionProbe),
             home_dir_override: None,
+            codex_home_override: None,
             state_dir_override: None,
         }
     }
@@ -306,9 +326,12 @@ impl DevToolAdapter for CodexAdapter {
         // removes the `exists()`-then-read window, in which the file could be
         // removed between the two calls and the absence reported as a read
         // failure instead.
-        let mut merged: toml::value::Table = match tokio::fs::read_to_string(&config_path).await {
+        // `raw_current` is kept so the managed keys can be merged into the
+        // user's own text (AAASM-6373) instead of reserialising the whole
+        // parsed table, which discards comments and key order.
+        let (merged, raw_current): (toml::value::Table, String) = match tokio::fs::read_to_string(&config_path).await {
             Ok(raw) => match toml::from_str::<toml::Value>(&raw) {
-                Ok(toml::Value::Table(t)) => t,
+                Ok(toml::Value::Table(t)) => (t, raw),
                 Ok(_) => {
                     return Err(AdapterError::SettingsApplyFailed(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
@@ -328,7 +351,7 @@ impl DevToolAdapter for CodexAdapter {
                     )));
                 }
             },
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::value::Table::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (toml::value::Table::new(), String::new()),
             // Any other read failure — a permission denial, a directory in the
             // file's place — still refuses, as the mapped `?` did before.
             Err(e) => return Err(AdapterError::SettingsApplyFailed(e)),
@@ -337,16 +360,27 @@ impl DevToolAdapter for CodexAdapter {
         // AA-managed keys win; user-managed keys not present in `settings` survive.
         // ...except that a security setting the user already holds is never
         // lowered (AAASM-6327), and one that cannot be ranked is never replaced.
+        let mut managed = toml::value::Table::new();
         if let toml::Value::Table(mut new_table) = new_val {
-            for w in strictness::withhold_relaxations(&merged, &mut new_table) {
-                if w.unrankable {
-                    eprintln!("{}", strictness::warning(&w));
-                }
-            }
-            merged.extend(new_table);
+            let withheld = strictness::withhold_relaxations(&merged, &mut new_table);
+            // Best effort: a closed stderr must not fail the settings write.
+            let _ = strictness::report(&withheld, &mut std::io::stderr());
+            managed = new_table;
         }
 
-        let content = toml::to_string_pretty(&merged).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        // AAASM-6373: merge only the managed keys into the user's own text, so
+        // their comments, layout and key order survive an `aasm run`. The
+        // merge fails closed (nothing is returned for writing) if the edit
+        // would not mean exactly what the canonical merge means.
+        let managed_keys: Vec<String> = managed.keys().cloned().collect();
+        let incoming = toml::to_string(&managed).map_err(|e| AdapterError::Serde(e.to_string()))?;
+        let content =
+            merge_managed_keys(DocumentFormat::Toml, &raw_current, &incoming, &managed_keys).map_err(|e| {
+                AdapterError::SettingsApplyFailed(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{}: {e}", config_path.display()),
+                ))
+            })?;
 
         // Ensure ~/.codex/ exists.
         if let Some(parent) = config_path.parent() {

@@ -4,6 +4,7 @@
 //! and the interceptor. It is the top-level runtime object of the proxy.
 
 pub mod http;
+mod sse;
 
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -26,13 +27,17 @@ use crate::credentials::CredentialStore;
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
-use crate::intercept::mcp::{is_unenforceable_tool_call, parse_mcp_request};
+use crate::intercept::mcp::{
+    classify_mcp_exchange, has_reserved_label_prefix, is_unenforceable_tool_call, parse_mcp_request,
+    request_encoding_hazard, MCP_LABEL_STREAM, MCP_LABEL_UNKNOWN,
+};
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
-    read_http_request, read_http_response, read_line_capped, serialize_http_request, serialize_http_request_with_auth,
-    serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES, MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
+    read_http_request, read_http_response_body, read_line_capped, serialize_http_request,
+    serialize_http_request_with_auth, serialize_http_response, HttpRequest, MAX_BODY_LEN, MAX_HEADER_BYTES,
+    MAX_HEADER_COUNT, MAX_HEADER_LINE_LEN,
 };
 use crate::tls::{CaStore, CertCache};
 use crate::transmission_evidence::{self, DecisionRecord, ForwardAuthorized, ForwardObservation};
@@ -67,6 +72,73 @@ const TRUSTED_PROXY_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::fro
 /// immediately. Bounding the read keeps a stalled upstream a bounded,
 /// explicit fail-closed withhold rather than a silent hang.
 const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Bound on one RESPONSE-side gateway `ToolResult` evaluation (AAASM-6356): the
+/// whole `evaluate_mcp_result` future, so it covers waiting for the shared
+/// `Mutex<GatewayClient>` as well as the `CheckAction` RPC itself. On expiry the
+/// response is withheld; a response RPC failure always withholds.
+///
+/// It bounds nothing else. In particular the request-side `evaluate_mcp_call`
+/// (the `tools/call` decision) has no timeout of its own: that is pre-existing
+/// behaviour this constant does not change. The gateway client has no timeout
+/// either, and every connection task shares the one mutex, which is why the
+/// response side needs the bound.
+const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long an event stream may sit on an event that has started but not
+/// finished (AAASM-6356 PR2). Idle time *between* events is unbounded (a quiet
+/// server-push stream is legitimate); a half-written event that never ends is
+/// not, and holds buffered, unjudged bytes, so it ends the stream.
+const SSE_PARTIAL_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether the proxy can read an event stream's bytes as the UTF-8 text it
+/// parses: no `Content-Encoding` (the body would be compressed bytes) and, if
+/// a charset is declared, UTF-8 or ASCII.
+fn event_stream_head_is_judgeable(headers: &[(String, String)]) -> bool {
+    let encoded = headers.iter().any(|(k, v)| {
+        k.eq_ignore_ascii_case("content-encoding") && !v.trim().is_empty() && !v.trim().eq_ignore_ascii_case("identity")
+    });
+    let foreign_charset = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .any(|(_, v)| {
+            let v = v.to_ascii_lowercase();
+            v.split("charset=").skip(1).any(|rest| {
+                let name = rest
+                    .trim_start_matches(['"', ' '])
+                    .split([';', '"', ',', ' '])
+                    .next()
+                    .unwrap_or("");
+                !matches!(name, "utf-8" | "us-ascii" | "utf8")
+            })
+        });
+    !encoded && !foreign_charset
+}
+
+/// The head is re-serialised for the client, so a bare CR, LF or NUL inside the
+/// status line or a header would let a peer that treats a lone CR as a line end
+/// read an injected header.
+fn head_is_safe_to_reserialise(head: &http::HttpResponseHead) -> bool {
+    let clean = |s: &str| !s.contains(['\r', '\n', '\0']);
+    clean(&head.version)
+        && clean(&head.status_code)
+        && clean(&head.reason)
+        && head.headers.iter().all(|(k, v)| clean(k) && clean(v))
+}
+
+/// A fixed, content-free label for why an upstream response could not be read.
+/// The parser's own messages quote the offending bytes (a header line, a status
+/// line, a chunk size), which are upstream-controlled and must not reach logs.
+fn upstream_failure_class(error: &ProxyError) -> &'static str {
+    match error {
+        ProxyError::Io(_) => "I/O error reading the upstream response",
+        _ => "upstream response rejected (malformed, oversized, unsupported framing, or timed out)",
+    }
+}
+
+/// Interim `1xx` heads tolerated before the real response head; more is treated
+/// as an evasion attempt and withheld (AAASM-6356).
+const MAX_INTERIM_HEADS: usize = 16;
 
 /// A transport this proxy can lay TLS over, type-erased.
 ///
@@ -315,10 +387,13 @@ fn build_jsonrpc_error_response(code: i32, message: &str) -> String {
 /// envelope so the agent gets a clean, secret-free failure. The returned bytes
 /// never contain any upstream content.
 fn mcp_unparseable_response_bytes() -> Vec<u8> {
-    let body = build_jsonrpc_error_response(
-        -32000,
-        "MCP response could not be inspected for secrets and was withheld (fail-closed)",
-    );
+    mcp_withheld_response_bytes("MCP response could not be inspected for secrets and was withheld (fail-closed)")
+}
+
+/// The 502 JSON-RPC error envelope for a withheld MCP response. `message` is a
+/// fixed string chosen by the caller; no upstream content ever reaches it.
+fn mcp_withheld_response_bytes(message: &str) -> Vec<u8> {
+    let body = build_jsonrpc_error_response(-32000, message);
     format!(
         "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -343,7 +418,16 @@ enum McpEvalOutcome {
     Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// Denied — connection should be closed after writing the given response.
     Deny(String),
-    /// No MCP call detected, or gateway unavailable with fail-open — proceed without MCP handling.
+    /// The request RPC failed under `mcp_fail_open`: the call is forwarded
+    /// unevaluated (the documented request-side opt-in), but the response must
+    /// still be scanned and gateway-evaluated, which always fails closed.
+    ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
+    /// A recognised MCP exchange that is not a `tools/call` (AAASM-6356): there
+    /// is nothing to authorise on the request side, so no request RPC and no
+    /// `ToolCall` event, but the response is still scanned and
+    /// gateway-evaluated under the call's reserved `mcp-method:` label.
+    ForwardResponseOnly(crate::intercept::mcp::McpToolCall),
+    /// Not recognised as MCP — proceed without MCP handling.
     Skip,
 }
 
@@ -1129,15 +1213,61 @@ impl ProxyServer {
     /// Evaluate an MCP call against the gateway and return the routing outcome.
     ///
     /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
+    ///
+    /// `gateway` is `None` when an endpoint is configured but no live client
+    /// exists (the startup connect failed under `mcp_fail_open`). That is
+    /// treated exactly like a failed RPC for a `tools/call`: forwarded
+    /// unevaluated only under `mcp_fail_open`, denied otherwise.
     async fn evaluate_mcp_request(
         &self,
-        gateway: &Arc<Mutex<GatewayClient>>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
         req: &HttpRequest,
         host: &str,
     ) -> McpEvalOutcome {
-        let Some(call) = parse_mcp_request(&req.body) else {
+        // AAASM-6354: inspect the *decoded* body. A `gzip`/`deflate` JSON-RPC
+        // `tools/call` is opaque bytes to the parser, so it used to fall into
+        // `Skip` and reach the upstream with no `CheckAction`. An encoding the
+        // proxy cannot decode (br, zstd, layered, corrupt, over the size cap)
+        // is denied rather than forwarded unevaluated.
+        let request_encoding = req.content_encoding();
+        let decoded: std::borrow::Cow<'_, [u8]> = match request_encoding
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty() && !e.eq_ignore_ascii_case("identity"))
+        {
+            None => std::borrow::Cow::Borrowed(req.body.as_slice()),
+            Some(enc) => match http::decompress_content_encoding(enc, &req.body) {
+                Ok(plain) => std::borrow::Cow::Owned(plain),
+                Err(e) => {
+                    let reason = "MCP request body has a Content-Encoding the proxy cannot decode, so it cannot be enforced and was rejected (fail-closed)";
+                    tracing::warn!(%host, error = %e, "{reason}");
+                    self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+                    return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+                }
+            },
+        };
+        // Rounds 4-5: peers disagree on how to decode a JSON body with an exotic
+        // or conflicting charset (Node honours it, Python auto-detects UTF-16/32),
+        // so such a request is never judged on the UTF-8 reading alone.
+        let content_types: Vec<&str> = req
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let has_mcp_header = req
+            .headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("mcp-session-id") || k.eq_ignore_ascii_case("mcp-protocol-version"));
+        if request_encoding_hazard(&decoded, &content_types, has_mcp_header) {
+            let reason = "MCP request body is in an encoding the proxy cannot judge (non-UTF-8 charset, conflicting charsets, or UTF-16/32), so it cannot be enforced and was rejected (fail-closed)";
+            tracing::warn!(%host, "{reason}");
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+        }
+        let Some(call) = parse_mcp_request(&decoded) else {
             // Not a parseable MCP call — check for bypass attempt.
-            if is_unenforceable_tool_call(&req.body) {
+            if is_unenforceable_tool_call(&decoded) {
                 let reason = "MCP tools/call in unsupported JSON-RPC framing (batch array or malformed envelope) cannot be enforced and was rejected (fail-closed)";
                 tracing::warn!(
                     %host,
@@ -1147,18 +1277,45 @@ impl ProxyServer {
                 self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
                 return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
             }
-            return McpEvalOutcome::Skip;
+            // AAASM-6356: any other JSON-RPC exchange (resources/read,
+            // prompts/get, a batch, ...) has no request-side decision to make,
+            // but its response can carry the same secrets a tool result can.
+            let label = classify_mcp_exchange(&decoded).or_else(|| {
+                ["mcp-session-id", "mcp-protocol-version"]
+                    .iter()
+                    .any(|h| req.header(h).is_some())
+                    .then(|| MCP_LABEL_UNKNOWN.to_string())
+            });
+            return match label {
+                Some(tool_name) => McpEvalOutcome::ForwardResponseOnly(crate::intercept::mcp::McpToolCall {
+                    tool_name,
+                    arguments: serde_json::Value::Null,
+                }),
+                None => McpEvalOutcome::Skip,
+            };
         };
+
+        if has_reserved_label_prefix(&call.tool_name) {
+            // `mcp-method:` names the gateway-evaluation label of non-`tools/call`
+            // exchanges; a tool called that would be indistinguishable from one.
+            let reason =
+                "MCP tools/call names a tool in the reserved `mcp-method:` namespace and was rejected (fail-closed)";
+            tracing::warn!(%host, "{reason}");
+            self.interceptor.emit_mcp_decision("unknown", &[], true, reason).await;
+            return McpEvalOutcome::Deny(http_jsonrpc_error_response(-32600, reason));
+        }
 
         let target_url = format!("https://{host}{path}", path = req.target);
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
 
-        match evaluate_mcp_call(gateway, &call, &target_url, "", "").await {
-            // `Redact` is bucketed with `Allow` as a forward: the proxy's own
-            // DLP scanner redacts both request and upstream response (see the
-            // `McpDecision::Redact` doc), so the gateway's `RedactInstructions`
-            // need no separate replay here.
-            Ok(McpDecision::Allow) | Ok(McpDecision::Redact { .. }) => {
+        let decision = match gateway {
+            Some(gw) => evaluate_mcp_call(gw, &call, &target_url, "", "").await,
+            None => Err(anyhow::anyhow!(
+                "no live gateway client (the startup connect to the configured endpoint failed)"
+            )),
+        };
+        match decision {
+            Ok(McpDecision::Allow) => {
                 tracing::info!(
                     tool_name = %call.tool_name,
                     %host,
@@ -1168,6 +1325,30 @@ impl ProxyServer {
                     .emit_mcp_decision(&call.tool_name, &args_bytes, false, "")
                     .await;
                 McpEvalOutcome::Forward(call, args_bytes)
+            }
+            // AAASM-6353: every gateway `Redact` is denied, fail-closed, like
+            // `network_enforce` (Redact -> Deny). The proxy cannot apply the
+            // gateway's redaction: it never receives the gateway's patterns
+            // (custom `sensitive_patterns`, locale packs) and does not replay
+            // `RedactInstructions`. Its own scan finding *something* does not
+            // show it covered what the gateway found (a body can mix a built-in
+            // secret with a gateway-only value), so no scan outcome can
+            // authorize the forward.
+            //
+            // The response direction is evaluated separately and withholds on
+            // `Redact` for the same reason (AAASM-6355).
+            Ok(McpDecision::Redact { .. }) => {
+                let reason = "gateway required redaction of this MCP call that the proxy cannot apply (fail-closed); \
+                              change the policy to alert/allow, or wait for proxy redaction support";
+                tracing::warn!(
+                    tool_name = %call.tool_name,
+                    %host,
+                    "{reason}",
+                );
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, &args_bytes, true, reason)
+                    .await;
+                McpEvalOutcome::Deny(http_jsonrpc_error_response(-32000, reason))
             }
             Ok(McpDecision::Deny { reason }) => {
                 tracing::info!(
@@ -1188,7 +1369,7 @@ impl ProxyServer {
                     error = %e,
                     "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
-                McpEvalOutcome::Skip
+                McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
             Err(e) => {
                 let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
@@ -1207,42 +1388,105 @@ impl ProxyServer {
         }
     }
 
-    /// Handle MCP response scanning and relay to the client.
+    /// Relay the upstream response of an enforcing proxy (a gateway endpoint is
+    /// configured) back to the client, on a MitM'd non-LLM host.
     ///
-    /// Extracted from `handle_non_llm_mitm` to reduce cognitive complexity.
-    async fn relay_mcp_response(
+    /// `mcp_call` is `Some` for a recognised MCP exchange; its response is
+    /// buffered, scanned and gateway-evaluated. For anything else the response
+    /// is relayed byte-for-byte, except a `text/event-stream` response, which
+    /// is judged event by event ([`Self::relay_event_stream`]): an SSE stream is
+    /// unbounded and cannot be buffered, and relaying it raw would let any MCP
+    /// server (or a bodyless `GET` carrying `Last-Event-ID`) bypass response
+    /// enforcement.
+    async fn relay_enforced_response(
         &self,
         // AAASM-5922: was `TlsStream<TcpStream>` — `dial_upstream_tls`'s
         // transport is now type-erased (`BoxedTransport`) so its chained arm
         // (ADR 0036 N2) type-checks against the same call sites as before.
         upstream_read: tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
-        call: &crate::intercept::mcp::McpToolCall,
-        args_bytes: &[u8],
+        mcp_call: Option<&(crate::intercept::mcp::McpToolCall, Vec<u8>)>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
         let mut upstream_reader = BufReader::new(upstream_read);
-        let read_result =
-            match tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, read_http_response(&mut upstream_reader)).await {
-                Ok(result) => result,
-                Err(_elapsed) => Err(ProxyError::Config(format!(
-                    "MCP response not read within {MCP_RESPONSE_READ_TIMEOUT:?}; refusing (fail-closed)"
-                ))),
+        let Some((call, args_bytes)) = mcp_call else {
+            return self
+                .relay_unrecognised_response(&mut upstream_reader, client_tls, gateway, source_url)
+                .await;
+        };
+
+        enum Upstream {
+            Closed,
+            /// The raw head, for the streaming relay to re-parse.
+            EventStream(Vec<u8>),
+            Buffered(http::HttpResponse),
+        }
+        let read_result = tokio::time::timeout(MCP_RESPONSE_READ_TIMEOUT, async {
+            // Interim `1xx` heads (100, 103) precede the real response on the
+            // same connection; judge the head that follows, not the interim one.
+            let mut interim = 0usize;
+            let head = loop {
+                let Some(raw) = http::read_raw_response_head(&mut upstream_reader, http::MAX_RAW_HEAD_BYTES).await?
+                else {
+                    return Ok(Upstream::Closed);
+                };
+                // The lenient byte scan runs on the raw head so an odd head the
+                // strict parser rejects cannot hide an event stream.
+                if http::raw_head_is_event_stream(&raw) {
+                    return Ok(Upstream::EventStream(raw));
+                }
+                if http::raw_head_is_interim(&raw) {
+                    interim += 1;
+                    if interim > MAX_INTERIM_HEADS {
+                        return Err(ProxyError::Config(
+                            "upstream sent too many interim 1xx heads; refusing (fail-closed)".into(),
+                        ));
+                    }
+                    continue;
+                }
+                break http::parse_raw_response_head(&raw)?;
             };
+            if head.is_event_stream() {
+                return Ok(Upstream::EventStream(head.raw));
+            }
+            let body = read_http_response_body(&head, &mut upstream_reader).await?;
+            Ok(Upstream::Buffered(http::HttpResponse {
+                version: head.version,
+                status_code: head.status_code,
+                reason: head.reason,
+                headers: head.headers,
+                body,
+            }))
+        })
+        .await
+        .unwrap_or_else(|_elapsed| {
+            Err(ProxyError::Config(format!(
+                "MCP response not read within {MCP_RESPONSE_READ_TIMEOUT:?}; refusing (fail-closed)"
+            )))
+        });
         match read_result {
-            Ok(Some(resp)) => {
-                let content_encoding = resp
-                    .headers
-                    .iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case("content-encoding"))
-                    .map(|(_, v)| v.as_str());
-                self.handle_mcp_response_body(&resp, content_encoding, client_tls, call, args_bytes)
+            Ok(Upstream::Buffered(resp)) => {
+                self.handle_mcp_response_body(&resp, client_tls, call, args_bytes, gateway, source_url)
                     .await
             }
-            Ok(None) => Ok(()), // Upstream closed without writing a response.
+            Ok(Upstream::EventStream(raw)) => {
+                self.relay_event_stream(
+                    &raw,
+                    &mut upstream_reader,
+                    client_tls,
+                    call,
+                    args_bytes,
+                    gateway,
+                    source_url,
+                )
+                .await
+            }
+            Ok(Upstream::Closed) => Ok(()), // Upstream closed without writing a response.
             Err(e) => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
-                    error = %e,
+                    failure = upstream_failure_class(&e),
                     "MCP response parse failed; withholding unredacted upstream body (fail-closed)",
                 );
                 self.interceptor
@@ -1259,16 +1503,433 @@ impl ProxyServer {
         }
     }
 
-    /// Handle MCP response body scanning and forwarding.
-    async fn handle_mcp_response_body(
+    /// Response relay for a request an enforcing proxy did not recognise as
+    /// MCP: the upstream bytes are forwarded unchanged (head verbatim, then the
+    /// rest as a stream) with no gateway call, except `text/event-stream`,
+    /// which is judged event by event (see [`Self::relay_enforced_response`]).
+    ///
+    /// "Is this an event stream" is decided by a lenient byte scan of the raw
+    /// head (see [`http::raw_head_is_event_stream`]), so a head the strict
+    /// parser would refuse (oversized header, Latin-1 bytes, obs-fold, odd
+    /// status line) is still relayed unchanged; only a head past
+    /// [`http::MAX_RAW_HEAD_BYTES`] is withheld. Interim `1xx` heads are
+    /// relayed and the next head judged. There is deliberately no read timeout here — this is
+    /// ordinary traffic, whose first-byte latency the proxy must not start
+    /// capping.
+    async fn relay_unrecognised_response(
         &self,
-        resp: &http::HttpResponse,
-        content_encoding: Option<&str>,
+        upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
+    ) -> Result<(), ProxyError> {
+        let stream_label = MCP_LABEL_STREAM;
+        let mut interim = 0usize;
+        loop {
+            let raw = match http::read_raw_response_head(upstream_reader, http::MAX_RAW_HEAD_BYTES).await {
+                Ok(None) => return Ok(()),
+                Ok(Some(raw)) => raw,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "upstream response head exceeds the raw-head cap on an enforcing host; withholding (fail-closed)",
+                    );
+                    self.interceptor
+                        .emit_mcp_decision(
+                            stream_label,
+                            &[],
+                            true,
+                            "response head too large to inspect, withheld (fail-closed)",
+                        )
+                        .await;
+                    client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                    return Ok(());
+                }
+            };
+            if http::raw_head_is_event_stream(&raw) {
+                // An event stream with no recognised request (a bodyless `GET`
+                // resuming with `Last-Event-ID`) is judged per event under the
+                // reserved stream label.
+                let call = crate::intercept::mcp::McpToolCall {
+                    tool_name: stream_label.to_string(),
+                    arguments: serde_json::Value::Null,
+                };
+                return self
+                    .relay_event_stream(&raw, upstream_reader, client_tls, &call, &[], gateway, source_url)
+                    .await;
+            }
+            // Not an event stream: relay the head unchanged, whatever its shape.
+            client_tls.write_all(&raw).await?;
+            if http::raw_head_is_interim(&raw) {
+                interim += 1;
+                if interim > MAX_INTERIM_HEADS {
+                    return self
+                        .withhold_response(
+                            client_tls,
+                            stream_label,
+                            &[],
+                            "too many interim 1xx heads, withheld (fail-closed)",
+                            "MCP response sent too many interim heads and was withheld (fail-closed)",
+                        )
+                        .await;
+                }
+                continue;
+            }
+            tokio::io::copy(upstream_reader, client_tls).await?;
+            return Ok(());
+        }
+    }
+
+    /// Relay an `text/event-stream` response on an enforcing host, one event at
+    /// a time (AAASM-6356 PR2).
+    ///
+    /// Each event is canonicalised ([`sse::SseParser`]), scanned with the
+    /// built-in patterns and judged by the gateway as a `ToolResult`, and what
+    /// is forwarded is exactly what was judged. The head goes out first (a
+    /// quiet stream must not stall its client), re-framed as close-delimited
+    /// with no `Content-Length`/`Transfer-Encoding`/`Content-Encoding`. A
+    /// denial, a gateway failure or timeout, an uninspectable event, a stalled
+    /// partial event or a framing error ends the stream: a fixed JSON-RPC error
+    /// event replaces whatever was next, and no later event is forwarded.
+    /// Like the buffered path, none of this is governed by `mcp_fail_open`.
+    ///
+    /// Events are judged one by one, so a value split across two events is not
+    /// seen whole. A stream that cannot be read at all (compressed, a foreign
+    /// charset, no gateway client) is withheld with a 502 before any byte.
+    #[allow(clippy::too_many_arguments)]
+    async fn relay_event_stream(
+        &self,
+        raw_head: &[u8],
+        upstream_reader: &mut BufReader<tokio::io::ReadHalf<tokio_rustls::client::TlsStream<BoxedTransport>>>,
         client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
         call: &crate::intercept::mcp::McpToolCall,
         args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
     ) -> Result<(), ProxyError> {
-        match self.interceptor.redact_response_body(&resp.body, content_encoding) {
+        let Some(gw) = gateway else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        let Ok(head) = http::parse_raw_response_head(raw_head) else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        let Ok(mut body) = http::BodyStream::new(&head) else {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        };
+        if !event_stream_head_is_judgeable(&head.headers) || !head_is_safe_to_reserialise(&head) {
+            return self
+                .withhold_event_stream(client_tls, &call.tool_name, args_bytes)
+                .await;
+        }
+
+        let mut out = format!("{} {} {}\r\n", head.version, head.status_code, head.reason).into_bytes();
+        for (k, v) in &head.headers {
+            let drop = [
+                "content-length",
+                "transfer-encoding",
+                "connection",
+                "keep-alive",
+                "content-encoding",
+                "upgrade",
+                "te",
+                "trailer",
+                "proxy-connection",
+            ]
+            .iter()
+            .any(|h| k.eq_ignore_ascii_case(h));
+            if !drop {
+                out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+            }
+        }
+        out.extend_from_slice(b"Connection: close\r\n\r\n");
+        client_tls.write_all(&out).await?;
+        client_tls.flush().await?;
+
+        let mut parser = sse::SseParser::new();
+        let mut partial_since: Option<tokio::time::Instant> = None;
+        loop {
+            let read = match partial_since {
+                Some(since) => {
+                    let left = SSE_PARTIAL_EVENT_TIMEOUT.saturating_sub(since.elapsed());
+                    match tokio::time::timeout(left, body.next_piece(upstream_reader)).await {
+                        Ok(r) => r,
+                        Err(_elapsed) => {
+                            return self
+                                .end_event_stream(
+                                    client_tls,
+                                    call,
+                                    args_bytes,
+                                    "event stream stalled inside an event, withheld (fail-closed)",
+                                )
+                                .await;
+                        }
+                    }
+                }
+                None => body.next_piece(upstream_reader).await,
+            };
+            let piece = match read {
+                Ok(Some(piece)) => piece,
+                // A clean end drops any unfinished event, as an SSE client does.
+                Ok(None) => return Ok(()),
+                Err(_) => {
+                    return self
+                        .end_event_stream(
+                            client_tls,
+                            call,
+                            args_bytes,
+                            "event stream framing error, withheld (fail-closed)",
+                        )
+                        .await;
+                }
+            };
+            let events = match parser.push(&piece) {
+                Ok(events) => events,
+                Err(_) => {
+                    return self
+                        .end_event_stream(
+                            client_tls,
+                            call,
+                            args_bytes,
+                            "event not inspectable (oversized or not UTF-8), withheld (fail-closed)",
+                        )
+                        .await;
+                }
+            };
+            partial_since = match (parser.has_partial(), events.is_empty(), partial_since) {
+                (false, _, _) => None,
+                (true, true, since) => since.or(Some(tokio::time::Instant::now())),
+                (true, false, _) => Some(tokio::time::Instant::now()),
+            };
+            for event in events {
+                let send = if event == sse::KEEPALIVE {
+                    event
+                } else {
+                    let scan = self.interceptor.redact_response_body(&event, None);
+                    match self
+                        .evaluate_response_candidate(gw, call, scan, &event, None, source_url)
+                        .await
+                    {
+                        Ok(ResponseScan::Forward) => event,
+                        Ok(ResponseScan::Redact(redacted)) => {
+                            self.interceptor
+                                .emit_mcp_decision(&call.tool_name, args_bytes, false, "response event redacted")
+                                .await;
+                            redacted
+                        }
+                        Ok(ResponseScan::Withhold) => {
+                            return self
+                                .end_event_stream(
+                                    client_tls,
+                                    call,
+                                    args_bytes,
+                                    "event not inspectable, withheld (fail-closed)",
+                                )
+                                .await;
+                        }
+                        Err(reason) => return self.end_event_stream(client_tls, call, args_bytes, &reason).await,
+                    }
+                };
+                client_tls.write_all(&send).await?;
+                client_tls.flush().await?;
+            }
+        }
+    }
+
+    /// End a stream already under way: audit the denial and send one fixed
+    /// JSON-RPC error event in place of everything that would have followed.
+    /// `reason` goes to the audit trail only; the client sees a fixed message,
+    /// so nothing from the upstream reaches it.
+    async fn end_event_stream(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+        reason: &str,
+    ) -> Result<(), ProxyError> {
+        tracing::warn!(tool_name = %call.tool_name, "{reason}; ending event stream");
+        self.interceptor
+            .emit_mcp_decision(&call.tool_name, args_bytes, true, reason)
+            .await;
+        let error = build_jsonrpc_error_response(
+            -32000,
+            "MCP event stream ended: an event could not be cleared for delivery (fail-closed)",
+        );
+        client_tls
+            .write_all(format!("event: message\ndata: {error}\n\n").as_bytes())
+            .await?;
+        client_tls.flush().await?;
+        Ok(())
+    }
+
+    /// Answer the client with the withheld envelope in place of an SSE stream,
+    /// before any event byte has been forwarded.
+    async fn withhold_event_stream(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        tool_name: &str,
+        args_bytes: &[u8],
+    ) -> Result<(), ProxyError> {
+        self.withhold_response(
+            client_tls,
+            tool_name,
+            args_bytes,
+            "event-stream response not inspectable, withheld (fail-closed)",
+            "MCP event-stream response cannot be inspected for secrets and was withheld (fail-closed)",
+        )
+        .await
+    }
+
+    /// Withhold a response before any of its body is forwarded: audit
+    /// `audit_reason` and answer the client with a `502` carrying only the
+    /// fixed `client_message`. Both are caller-chosen constants, so the audit
+    /// trail names the actual cause and no upstream content reaches either.
+    async fn withhold_response(
+        &self,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        tool_name: &str,
+        args_bytes: &[u8],
+        audit_reason: &str,
+        client_message: &str,
+    ) -> Result<(), ProxyError> {
+        tracing::warn!(%tool_name, "{audit_reason}");
+        self.interceptor
+            .emit_mcp_decision(tool_name, args_bytes, true, audit_reason)
+            .await;
+        client_tls
+            .write_all(&mcp_withheld_response_bytes(client_message))
+            .await?;
+        Ok(())
+    }
+
+    /// Scan one buffered response and have the gateway evaluate what would be
+    /// sent, returning the final verdict: [`ResponseScan::Forward`] or
+    /// [`ResponseScan::Redact`] (the built-in redaction to send). `Err` carries
+    /// the reason to withhold.
+    ///
+    /// The proxy's scanner holds built-in patterns only, so after its own
+    /// redaction the gateway evaluates the candidate (the redacted body, or the
+    /// decoded original when the scan was clean) — AAASM-6355. Anything but
+    /// `Allow` withholds: the gateway's `Redact` cannot be applied here (no
+    /// replayable instructions, no gateway patterns). An already-`Withhold`
+    /// scan passes through untouched, with no gateway call.
+    ///
+    /// Deliberately NOT governed by `mcp_fail_open`: that knob is the documented
+    /// opt-in for forwarding a `tools/call` when the gateway is unreachable.
+    /// Failing a response evaluation open would let a gateway-only sensitive
+    /// value reach the client during an outage. The RPC is bounded by
+    /// [`MCP_GATEWAY_RPC_TIMEOUT`]; a timeout is a failure.
+    async fn evaluate_response_candidate(
+        &self,
+        gateway: &Arc<Mutex<GatewayClient>>,
+        call: &crate::intercept::mcp::McpToolCall,
+        scan: ResponseScan,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        source_url: &str,
+    ) -> Result<ResponseScan, String> {
+        if matches!(scan, ResponseScan::Withhold) {
+            return Ok(scan);
+        }
+        let sent = match &scan {
+            ResponseScan::Redact(bytes) => Some(bytes.as_slice()),
+            _ => None,
+        };
+        let Some(bodies) = self.interceptor.gateway_candidates(body, content_encoding, sent) else {
+            return Err("response body could not be decoded for gateway evaluation".to_string());
+        };
+        for body in &bodies {
+            let evaluation = tokio::time::timeout(
+                MCP_GATEWAY_RPC_TIMEOUT,
+                evaluate_mcp_result(gateway, call, body, source_url, "", ""),
+            )
+            .await;
+            match evaluation {
+                Ok(Ok(McpDecision::Allow)) => {}
+                Ok(Ok(McpDecision::Deny { reason })) => {
+                    return Err(format!("gateway denied the MCP response: {reason}"));
+                }
+                Ok(Ok(McpDecision::Redact { .. })) => {
+                    return Err(
+                        "gateway required redaction of this MCP response that the proxy cannot apply (fail-closed)"
+                            .to_string(),
+                    );
+                }
+                Ok(Err(e)) => return Err(format!("MCP response enforcement unavailable: {e} (fail-closed)")),
+                Err(_elapsed) => {
+                    return Err(format!(
+                        "MCP response enforcement unavailable: gateway did not answer within {MCP_GATEWAY_RPC_TIMEOUT:?} (fail-closed)"
+                    ));
+                }
+            }
+        }
+        Ok(scan)
+    }
+
+    /// Handle MCP response body scanning and forwarding.
+    ///
+    /// When a gateway endpoint is configured but `gateway` is `None` (no live
+    /// client), the required evaluator is missing and the response is
+    /// withheld; `mcp_fail_open` does not apply to responses.
+    async fn handle_mcp_response_body(
+        &self,
+        resp: &http::HttpResponse,
+        client_tls: &mut tokio_rustls::server::TlsStream<TcpStream>,
+        call: &crate::intercept::mcp::McpToolCall,
+        args_bytes: &[u8],
+        gateway: Option<&Arc<Mutex<GatewayClient>>>,
+        source_url: &str,
+    ) -> Result<(), ProxyError> {
+        let enforcing = self.config.gateway_endpoint.is_some();
+        let response_encoding = http::joined_content_encoding(&resp.headers);
+        let content_encoding = response_encoding.as_deref();
+        // A bodiless reply (a `202 Accepted` to a notification, a `204`) carries
+        // nothing to leak and nothing for the gateway to judge.
+        if self.interceptor.response_body_is_empty(&resp.body, content_encoding) {
+            client_tls.write_all(&serialize_http_response(resp, &resp.body)).await?;
+            return Ok(());
+        }
+        let response_types: Vec<&str> = resp
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.as_str())
+            .collect();
+        let scan = if self
+            .interceptor
+            .response_encoding_unjudgeable(&resp.body, content_encoding, &response_types)
+        {
+            ResponseScan::Withhold
+        } else {
+            self.interceptor.redact_response_body(&resp.body, content_encoding)
+        };
+        let verdict = match (gateway, enforcing) {
+            (Some(gw), _) => {
+                self.evaluate_response_candidate(gw, call, scan, &resp.body, content_encoding, source_url)
+                    .await
+            }
+            (None, true) => {
+                Err("gateway configured for MCP enforcement but no live client is connected (fail-closed)".to_string())
+            }
+            (None, false) => Ok(scan),
+        };
+        let scan = match verdict {
+            Ok(scan) => scan,
+            Err(reason) => {
+                tracing::warn!(tool_name = %call.tool_name, "{reason}; withholding response");
+                self.interceptor
+                    .emit_mcp_decision(&call.tool_name, args_bytes, true, &reason)
+                    .await;
+                client_tls.write_all(&mcp_unparseable_response_bytes()).await?;
+                return Ok(());
+            }
+        };
+        match scan {
             ResponseScan::Withhold => {
                 tracing::warn!(
                     tool_name = %call.tool_name,
@@ -1317,15 +1978,24 @@ impl ProxyServer {
     ///
     /// Branches:
     ///
-    /// * **MCP detected, gateway returns `Allow` or `Redact`** — forward the
+    /// * **MCP detected, gateway returns `Allow`** — forward the
     ///   (DLP-scanned) body to upstream and relay the redacted response.
+    /// * **MCP detected, gateway returns `Redact`** — deny fail-closed
+    ///   (AAASM-6353): the proxy cannot apply the gateway's redaction.
     /// * **MCP detected, gateway returns `Deny`** — write a JSON-RPC 2.0
     ///   error envelope to the client TLS stream, do not dial upstream.
     /// * **MCP detected, gateway RPC failed** — deny (fail-closed) unless
     ///   `mcp_fail_open` is set.
-    /// * **Body is not MCP (or no gateway)** — DLP-scan, then forward the
-    ///   (possibly redacted) body and relay the upstream response. A `Block`
-    ///   verdict returns 403 without dialing upstream.
+    /// * **MCP exchange that is not a `tools/call`** (AAASM-6356) — no request
+    ///   decision; the response is still scanned and gateway-evaluated.
+    /// * **Gateway endpoint configured, no live client** — a `tools/call` is
+    ///   treated like a failed RPC (`mcp_fail_open` decides); every recognised
+    ///   MCP response is withheld.
+    /// * **Body is not MCP (or no gateway endpoint)** — DLP-scan, then forward
+    ///   the (possibly redacted) body and relay the upstream response
+    ///   unchanged. A `Block` verdict returns 403 without dialing upstream.
+    ///   On an enforcing proxy only a `text/event-stream` response differs: it
+    ///   is judged event by event (see [`Self::relay_enforced_response`]).
     async fn handle_non_llm_mitm(
         self: &Arc<Self>,
         client_tls: tokio_rustls::server::TlsStream<TcpStream>,
@@ -1369,10 +2039,16 @@ impl ProxyServer {
             return Ok(());
         }
 
-        // MCP detection — only when a gateway is configured.
-        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match gateway {
-            Some(gw) => match self.evaluate_mcp_request(gw, &req, host).await {
-                McpEvalOutcome::Forward(call, args_bytes) => Some((call, args_bytes)),
+        // MCP detection — whenever a gateway endpoint is configured, even if no
+        // client is live: `enforcing` is the operator's configuration, not the
+        // connection's health, so an outage cannot quietly switch it off.
+        let enforcing = self.config.gateway_endpoint.is_some();
+        let mcp_call: Option<(crate::intercept::mcp::McpToolCall, Vec<u8>)> = match enforcing {
+            true => match self.evaluate_mcp_request(gateway, &req, host).await {
+                McpEvalOutcome::Forward(call, args_bytes) | McpEvalOutcome::ForwardUnevaluated(call, args_bytes) => {
+                    Some((call, args_bytes))
+                }
+                McpEvalOutcome::ForwardResponseOnly(call) => Some((call, Vec::new())),
                 McpEvalOutcome::Deny(resp) => {
                     tracing::info!(
                         %host,
@@ -1395,14 +2071,14 @@ impl ProxyServer {
                 }
                 McpEvalOutcome::Skip => None,
             },
-            None => None,
+            false => None,
         };
 
         // AAASM-4126: run credential-DLP on the request body for EVERY MitM'd
         // non-LLM host.
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
         if verdict.decision == VerdictDecision::Block {
@@ -1462,12 +2138,19 @@ impl ProxyServer {
         let (upstream_read, mut upstream_write) = tokio::io::split(upstream_tls);
         upstream_write.write_all(&outgoing).await?;
 
-        if let Some((call, args_bytes)) = mcp_call {
-            // MCP response path: read, scan, and relay the upstream response.
-            self.relay_mcp_response(upstream_read, &mut client_tls, &call, &args_bytes)
-                .await?;
+        if enforcing {
+            // Enforcing proxy: recognised MCP responses are scanned and
+            // gateway-evaluated; everything else is relayed unchanged.
+            self.relay_enforced_response(
+                upstream_read,
+                &mut client_tls,
+                mcp_call.as_ref(),
+                gateway,
+                &format!("https://{host}{}", req.target),
+            )
+            .await?;
         } else {
-            // Not MCP — relay only the upstream response back to the client.
+            // No gateway configured — relay only the upstream response back to the client.
             let mut upstream_read = upstream_read;
             tokio::io::copy(&mut upstream_read, &mut client_tls).await?;
         }
@@ -1623,7 +2306,10 @@ impl ProxyServer {
     ///
     /// When the in-tunnel host is empty (no Host header, origin-form target) the
     /// CONNECT-time check already covered the destination, so this is a no-op.
-    /// An empty allowlist keeps the default-open behaviour unchanged.
+    /// An empty allowlist keeps the default-open behaviour unchanged for a
+    /// well-formed host, but an ambiguous authority (duplicate or malformed
+    /// `Host`, userinfo, delimiters) is refused regardless of policy: which host
+    /// a client dials is undecidable, so there is nothing to default-open to.
     ///
     /// AAASM-5851: routes both candidate hosts through [`Self::egress_deny_reason`]
     /// (not just the local check), so a gateway-configured deployment cannot be
@@ -1639,6 +2325,9 @@ impl ProxyServer {
         // disallowed host in the `Host` header (or vice versa). Previously only
         // the target-preferred "effective" host was checked, so a mismatched
         // pair let the un-checked half slip past the allowlist.
+        if Self::request_authority_is_ambiguous(req) {
+            return Some(EgressDenyReason::NetworkAllowlist);
+        }
         for host in [Self::target_request_host(req), Self::header_request_host(req)]
             .into_iter()
             .flatten()
@@ -1666,13 +2355,33 @@ impl ProxyServer {
     /// `http://host/...`), with brackets/port stripped, or `None` for an
     /// origin-form target (`/path`).
     fn target_request_host(req: &HttpRequest) -> Option<&str> {
-        let rest = req
-            .target
-            .strip_prefix("https://")
-            .or_else(|| req.target.strip_prefix("http://"))?;
-        let host_port = rest.split('/').next().unwrap_or(rest);
-        let host = strip_host_port(host_port);
+        let rest = strip_http_scheme(&req.target)?;
+        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+        let host = strip_host_port(&rest[..end]);
         (!host.is_empty()).then_some(host)
+    }
+
+    /// AAASM-6313: whether the in-tunnel request names a destination authority
+    /// that is ambiguous (userinfo, a non-numeric port, stray delimiters). Both
+    /// the absolute-form target and the `Host` header are checked; an absent
+    /// header or origin-form target names nothing and is not ambiguous.
+    fn request_authority_is_ambiguous(req: &HttpRequest) -> bool {
+        let target_authority =
+            strip_http_scheme(&req.target).map(|rest| &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]);
+        let mut hosts = req
+            .headers
+            .iter()
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case("host"))
+            .map(|(_, v)| v.trim());
+        let host = hosts.next();
+        // Two `Host` headers: a server may act on either, the proxy checked one.
+        if hosts.next().is_some() {
+            return true;
+        }
+        target_authority
+            .into_iter()
+            .chain(host)
+            .any(|a| aa_core::policy::egress_host_from_authority(a).is_none())
     }
 
     /// Host named by the `Host` header, with brackets/port stripped, or `None`
@@ -1738,7 +2447,7 @@ impl ProxyServer {
 
         let verdict = self.interceptor.intercept_request(
             &req.body,
-            req.header("content-encoding"),
+            req.content_encoding().as_deref(),
             self.config.credential_action,
         );
 
@@ -1989,6 +2698,31 @@ impl ProxyServer {
         // classified Unknown and raw-tunnelled under llm_only, and case/dot
         // variants would evade the denylist. `target` (with port) is retained
         // for the DNS/connect calls, which tolerate the trailing dot.
+        // AAASM-6313: refuse an authority that two parsers could read differently
+        // (userinfo, a non-numeric "port", path/query/fragment bytes, brackets
+        // that are not an IPv6 literal) BEFORE it is reduced to a host:
+        // `strip_host_port` keeps `api.openai.com` out of `api.openai.com:@evil`,
+        // so the allowlist would vouch for a name the dial never reaches.
+        if aa_core::policy::egress_host_from_authority(target).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "CONNECT denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method: "CONNECT",
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                probe_correlation,
+            );
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                .await?;
+            return Ok(());
+        }
         let host = canonical_host(target);
         let host = host.as_str();
 
@@ -2288,6 +3022,55 @@ impl ProxyServer {
         // (before any upstream dial), mirroring the CONNECT path's 403.
         // AAASM-5851: routed through `egress_deny_reason` too, so a
         // scheme-downgrade cannot also bypass gateway-mode network policy.
+        // AAASM-6313: the dial uses the absolute-form target when there is one, so
+        // a `Host` header naming something else (or a second `Host`) would reach
+        // the upstream unchecked. Refuse the disagreement and the duplicate.
+        let host_values: Vec<&str> = plain_http_host_values(&headers).collect();
+        let target_authority = strip_http_scheme(target).map(|_| host.as_str());
+        let disagrees = target_authority.is_some_and(|t| {
+            host_values.first().is_some_and(|h| {
+                aa_core::policy::egress_host_from_authority(h.trim()) != aa_core::policy::egress_host_from_authority(t)
+            })
+        });
+        let not_origin_form = !target.starts_with('/') && target != "*" && strip_http_scheme(target).is_none();
+        // A WHATWG client reads `\` in the authority as `/`, an RFC 3986 one does
+        // not; `parse_plain_http_host` cuts there, so refuse rather than pick a reading.
+        let backslash_authority = strip_http_scheme(target)
+            .is_some_and(|rest| rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].contains('\\'));
+        if host_values.len() > 1 || disagrees || not_origin_form || backslash_authority {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "plain-HTTP egress denied: conflicting destination (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
+            return self.refuse_plain_http_403(reader, "").await;
+        }
+        // AAASM-6313: an authority that cannot be read one way (see the CONNECT
+        // path) is refused before the allowlist sees a stripped, vouched-for host.
+        if aa_core::policy::egress_host_from_authority(&host).is_none() {
+            tracing::info!(
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "plain-HTTP egress denied: ambiguous authority (fail-closed)",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host: "",
+                    method,
+                    target,
+                },
+                EgressDenyReason::NetworkAllowlist.rule(),
+                Self::probe_correlation_plain(&headers),
+            );
+            return self.refuse_plain_http_403(reader, "").await;
+        }
         let deny_host = strip_host_port(&host);
         if let Some(reason) = self.egress_deny_reason(deny_host, 80, "http").await {
             tracing::info!(
@@ -2488,7 +3271,7 @@ impl ProxyServer {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body).await?;
 
-        let content_encoding = plain_http_header_value(headers, "content-encoding");
+        let content_encoding = plain_http_content_encoding(headers);
         let scanned =
             self.interceptor
                 .intercept_request(&body, content_encoding.as_deref(), self.config.credential_action);
@@ -2639,24 +3422,59 @@ fn parse_connect_authority_port(authority: &str) -> Option<u16> {
 /// requests grow proxy memory without bound. Returning an owned value keeps the
 /// host on the stack frame and frees it when the request completes.
 fn parse_plain_http_host(target: &str, headers: &[String]) -> String {
-    if let Some(url_host) = target.strip_prefix("http://") {
-        url_host.split('/').next().unwrap_or(url_host).to_string()
+    if let Some(url_host) = strip_http_scheme(target) {
+        let end = url_host.find(['/', '?', '#', '\\']).unwrap_or(url_host.len());
+        url_host[..end].to_string()
     } else {
-        headers
-            .iter()
-            .find_map(|h| {
-                let lower = h.to_ascii_lowercase();
-                lower
-                    .starts_with("host:")
-                    .then(|| h["host:".len()..].trim().to_string())
-            })
+        plain_http_host_values(headers)
+            .next()
+            .map(|v| v.trim().to_string())
             .unwrap_or_default()
     }
+}
+
+/// The remainder of an absolute-form `http://` / `https://` target, matching the
+/// scheme case-insensitively (RFC 3986 §3.1) so `HTTP://evil.com/` is not
+/// mistaken for an origin-form target (AAASM-6313).
+fn strip_http_scheme(target: &str) -> Option<&str> {
+    ["http://", "https://"].into_iter().find_map(|scheme| {
+        target
+            .get(..scheme.len())
+            .filter(|head| head.eq_ignore_ascii_case(scheme))
+            .map(|_| &target[scheme.len()..])
+    })
+}
+
+/// Every `Host` header value in the raw plain-HTTP header lines. More than one
+/// is itself ambiguous: servers disagree on whether the first or the last wins.
+fn plain_http_host_values(headers: &[String]) -> impl Iterator<Item = &str> {
+    headers.iter().filter_map(|h| {
+        let (name, value) = h.split_once(':')?;
+        name.trim().eq_ignore_ascii_case("host").then_some(value)
+    })
 }
 
 /// Find the value of a plain-HTTP header by name (case-insensitive) from the
 /// raw header lines captured in [`ProxyServer::handle_plain_http`]. Each line
 /// still carries its trailing CRLF, so the value is trimmed.
+/// Every `Content-Encoding` line joined, so a repeated header reads as the
+/// layered encoding it is (see `http::joined_content_encoding`).
+fn plain_http_content_encoding(headers: &[String]) -> Option<String> {
+    // Header names are case-insensitive and HTTP tolerates whitespace before the
+    // colon in lenient peers; matching only `content-encoding:` let
+    // `Content-Encoding : gzip` pass as unencoded (AAASM-6355 review L2).
+    let values: Vec<String> = headers
+        .iter()
+        .filter_map(|h| {
+            let (name, value) = h.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case("content-encoding")
+                .then(|| value.trim().to_string())
+        })
+        .collect();
+    (!values.is_empty()).then(|| values.join(", "))
+}
+
 fn plain_http_header_value(headers: &[String], name: &str) -> Option<String> {
     let prefix = format!("{}:", name.to_ascii_lowercase());
     headers.iter().find_map(|h| {
@@ -2708,6 +3526,78 @@ fn rewrite_plain_http_content_length(headers: &mut [String], new_len: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AAASM-6356 review: the log label for a parse failure must never carry
+    // the upstream bytes the parser's message quotes.
+    #[test]
+    fn upstream_failure_class_never_echoes_the_parser_message() {
+        let quoted = ProxyError::Config("malformed response header line: \"X-Leak: SECRET-VALUE\"".into());
+        assert!(!upstream_failure_class(&quoted).contains("SECRET-VALUE"));
+        let io = ProxyError::Io(std::io::Error::other("SECRET-VALUE"));
+        assert!(!upstream_failure_class(&io).contains("SECRET-VALUE"));
+    }
+
+    fn hdrs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_head_with_a_bare_cr_lf_or_nul_is_not_reserialised() {
+        let head = |reason: &str, header: (&str, &str)| http::HttpResponseHead {
+            version: "HTTP/1.1".into(),
+            status_code: "200".into(),
+            reason: reason.into(),
+            headers: vec![(header.0.into(), header.1.into())],
+            raw: Vec::new(),
+        };
+        assert!(head_is_safe_to_reserialise(&head("OK", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK\rSet-Cookie: x", ("X-A", "b"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\rSet-Cookie: x"))));
+        assert!(!head_is_safe_to_reserialise(&head("OK", ("X-A", "b\0"))));
+    }
+
+    // AAASM-6356 PR2: only a stream whose bytes are readable UTF-8 text can be
+    // judged event by event; anything else is withheld before the first byte.
+    #[test]
+    fn event_stream_head_judgeability_depends_on_encoding_and_charset() {
+        for ok in [
+            hdrs(&[("Content-Type", "text/event-stream")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=utf-8")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=\"UTF-8\"")]),
+            hdrs(&[("Content-Type", "text/event-stream"), ("Content-Encoding", "identity")]),
+        ] {
+            assert!(event_stream_head_is_judgeable(&ok), "{ok:?}");
+        }
+        for bad in [
+            hdrs(&[("Content-Type", "text/event-stream"), ("Content-Encoding", "gzip")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=utf-16")]),
+            hdrs(&[("Content-Type", "text/event-stream; charset=iso-8859-1")]),
+        ] {
+            assert!(!event_stream_head_is_judgeable(&bad), "{bad:?}");
+        }
+    }
+
+    // AAASM-6355 review L2: header-name matching is case-insensitive and
+    // tolerates whitespace before the colon.
+    #[test]
+    fn plain_http_content_encoding_tolerates_case_and_space_before_colon() {
+        let h = |s: &str| vec![format!("{s}\r\n")];
+        for line in [
+            "Content-Encoding: gzip",
+            "content-encoding : gzip",
+            "CONTENT-ENCODING\t: gzip",
+        ] {
+            assert_eq!(plain_http_content_encoding(&h(line)).as_deref(), Some("gzip"), "{line}");
+        }
+        // Controls: other headers, and a header merely containing the name.
+        assert_eq!(plain_http_content_encoding(&h("Content-Length: 4")), None);
+        assert_eq!(plain_http_content_encoding(&h("X-Content-Encoding: gzip")), None);
+        let two = vec![
+            "Content-Encoding: gzip\r\n".to_string(),
+            "content-encoding : br\r\n".to_string(),
+        ];
+        assert_eq!(plain_http_content_encoding(&two).as_deref(), Some("gzip, br"));
+    }
 
     #[test]
     fn unparseable_mcp_response_is_fail_closed_and_carries_no_upstream_bytes() {
@@ -2821,6 +3711,78 @@ mod tests {
         // Origin-form `http://host/path` targets resolve the host from the URL.
         let host = parse_plain_http_host("http://api.openai.com/v1/chat", &[]);
         assert_eq!(host, "api.openai.com");
+    }
+
+    #[test]
+    fn plain_http_host_stops_at_query_fragment_and_backslash() {
+        // AAASM-6313: the authority ends at the first `/ ? # \`, as a client reads it.
+        for (target, want) in [
+            ("http://evil.com?x=api.openai.com", "evil.com"),
+            ("http://evil.com#api.openai.com", "evil.com"),
+            ("http://evil.com\\api.openai.com", "evil.com"),
+            ("http://api.openai.com:80/v1", "api.openai.com:80"),
+        ] {
+            assert_eq!(parse_plain_http_host(target, &[]), want, "{target}");
+        }
+    }
+
+    #[test]
+    fn absolute_form_scheme_is_matched_case_insensitively() {
+        // AAASM-6313: `HTTP://evil.com/` is absolute-form, not an origin-form target.
+        assert_eq!(strip_http_scheme("HTTP://evil.com/x"), Some("evil.com/x"));
+        assert_eq!(strip_http_scheme("hTtPs://evil.com"), Some("evil.com"));
+        assert_eq!(strip_http_scheme("/v1/chat"), None);
+        assert_eq!(strip_http_scheme("ftp://evil.com"), None);
+        assert_eq!(strip_http_scheme("http:/"), None);
+        let headers = vec!["Host: api.openai.com\r\n".to_string()];
+        assert_eq!(parse_plain_http_host("HTTP://evil.com/", &headers), "evil.com");
+    }
+
+    #[test]
+    fn duplicate_host_headers_are_all_visible() {
+        let headers = vec![
+            "Host: api.openai.com\r\n".to_string(),
+            "host : evil.com\r\n".to_string(),
+            "X-Host: other\r\n".to_string(),
+        ];
+        assert_eq!(plain_http_host_values(&headers).count(), 2);
+    }
+
+    #[test]
+    fn in_tunnel_request_with_an_ambiguous_authority_is_flagged() {
+        let req = |target: &str, host: Option<&str>| HttpRequest {
+            method: "POST".into(),
+            target: target.into(),
+            version: "HTTP/1.1".into(),
+            headers: host.map(|h| ("Host".to_string(), h.to_string())).into_iter().collect(),
+            body: Vec::new(),
+        };
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "/v1",
+            Some("api.openai.com")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req(
+            "https://api.openai.com/v1",
+            Some("api.openai.com:443")
+        )));
+        assert!(!ProxyServer::request_authority_is_ambiguous(&req("/v1", None)));
+        let mut dup = req("/v1", Some("api.openai.com"));
+        dup.headers.push(("host".into(), "evil.com".into()));
+        assert!(ProxyServer::request_authority_is_ambiguous(&dup));
+        for (target, host) in [
+            ("/v1", Some("api.openai.com:@evil.com")),
+            ("/v1", Some("evil.com@api.openai.com")),
+            ("/v1", Some("")),
+            ("https://api.openai.com@evil.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com:x/v1", None),
+            ("HTTPS://evil.com@api.openai.com/v1", Some("api.openai.com")),
+            ("https://api.openai.com\\@evil.com/v1", Some("api.openai.com")),
+        ] {
+            assert!(
+                ProxyServer::request_authority_is_ambiguous(&req(target, host)),
+                "{target} {host:?}"
+            );
+        }
     }
 
     #[test]
@@ -3647,6 +4609,67 @@ mod tests {
             !serialized.contains(EVIDENCE_TEST_SECRET),
             "SECURITY INVARIANT VIOLATED: raw value in the persisted record: {serialized}"
         );
+    }
+
+    /// AAASM-6313 (F3): the ambiguous-authority refusals, driven through the
+    /// real `handle_connection` entry point under a default-open policy (empty
+    /// allowlist), so only the ambiguity check can be what refuses them. Each
+    /// must answer 403 and persist an allowlist-rule, not-forwarded record.
+    async fn assert_ambiguity_refused(request: &str) {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, request).await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{request:?} -> {response:?}");
+        let entry = audit_rx
+            .try_recv()
+            .unwrap_or_else(|_| panic!("{request:?}: the refusal persisted no record"));
+        assert_eq!(entry.decision, ProxyAuditDecision::Blocked, "{request:?}");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::EgressAllowlist), "{request:?}");
+        assert!(entry.execution.establishes_non_transmission(), "{request:?}");
+    }
+
+    #[tokio::test]
+    async fn connect_with_an_ambiguous_authority_is_refused() {
+        for target in [
+            "api.openai.com:@evil.com:443",
+            "evil.com#.openai.com:443",
+            "api.openai.com\\@evil.com:443",
+            "user@api.openai.com:443",
+            "api.openai.com:44x",
+        ] {
+            assert_ambiguity_refused(&format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n")).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn plain_http_with_an_ambiguous_authority_is_refused() {
+        for request in [
+            // two Host headers: a downstream parser may pick either
+            "GET /x HTTP/1.1\r\nHost: api.openai.com\r\nHost: evil.com\r\n\r\n",
+            // absolute-form target disagrees with Host
+            "GET http://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // neither origin-form, absolute-form nor `*`
+            "GET evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // userinfo smuggled into the absolute-form authority
+            "GET http://api.openai.com@evil.com/x HTTP/1.1\r\nHost: api.openai.com@evil.com\r\n\r\n",
+            // backslash in the authority: WHATWG and RFC 3986 clients disagree
+            "GET http://api.openai.com\\@evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+            // upper-case scheme must not hide the target authority
+            "GET HTTP://evil.com/x HTTP/1.1\r\nHost: api.openai.com\r\n\r\n",
+        ] {
+            assert_ambiguity_refused(request).await;
+        }
+    }
+
+    /// Positive control for the two tests above: a well-formed request that is
+    /// refused for a *different* reason carries a different rule, so the
+    /// ambiguity assertion is not satisfied by "anything refused".
+    #[tokio::test]
+    async fn a_well_formed_authority_is_not_refused_as_ambiguous() {
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::Block, None).await;
+        let response = drive_plain_http(&server, "GET http://127.0.0.1/x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").await;
+        assert!(response.starts_with("HTTP/1.1 403"), "{response:?}");
+        let entry = audit_rx.try_recv().expect("the SSRF refusal persisted a record");
+        assert_eq!(entry.refusal_rule, Some(RefusalRule::SsrfBlockedAddress));
     }
 
     /// Redaction **forwards** the scrubbed bytes. The record must say

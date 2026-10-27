@@ -58,6 +58,11 @@ MARKED_FILES=(
     # run_registration, which the `devtool` region in commands/mod.rs above
     # already removes from the published crate. This call has to go with it.
     "${REPO_ROOT}/aa-cli/src/main.rs"
+    # AAASM-6386: the governed-lease warnings call `aa_runtime::lease::decide`,
+    # which is stripped below; their two call sites (and the module, deleted
+    # below) go with it so the published `aasm` simply prints none.
+    "${REPO_ROOT}/aa-cli/src/commands/policy/validate.rs"
+    "${REPO_ROOT}/aa-cli/src/commands/lease.rs"
     # AAASM-2388: gateway NATS audit consumer (async-nats + publish=false
     # aa-storage-postgres). Removed so the published gateway has no held-back deps.
     "${REPO_ROOT}/aa-gateway/Cargo.toml"
@@ -83,12 +88,21 @@ MARKED_FILES=(
     # publishes, so that surface could only ever answer "no tools detected".
     "${REPO_ROOT}/aa-runtime/Cargo.toml"
     "${REPO_ROOT}/aa-runtime/src/devint/mod.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/mod.rs"
+    # AAASM-6259: the one call into the stripped gate; the refusal around it stays.
+    "${REPO_ROOT}/aa-runtime/src/lease/wiring.rs"
     "${REPO_ROOT}/aa-runtime/src/runtime.rs"
 )
 
 # ---- Files to delete outright (they consume held-back deps) ----
 DELETED_FILES=(
     "${REPO_ROOT}/aa-cli/src/commands/run.rs"
+    # AAASM-6385: builds `LeaseGovernance` (`aa_runtime::lease::decide`, stripped below)
+    # to check the worked example in docs/src/cli/lease.md.
+    "${REPO_ROOT}/aa-cli/tests/lease_docs_example.rs"
+    # AAASM-6386: consumes the stripped `aa_runtime::lease::decide`.
+    "${REPO_ROOT}/aa-cli/src/commands/lease_readiness.rs"
+    "${REPO_ROOT}/aa-cli/tests/lease_readiness_warnings.rs"
     # AAASM-6166: execution receipts. `mod.rs` only re-exports these; each
     # file consumes `run.rs`'s own types (`ReceiptContext` borrows
     # `aa_isolation::ExecutionSpec`/`IsolationReport` that `run.rs` alone
@@ -139,6 +153,8 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run_workspace_tx.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
+    # AAASM-6259: drives `aasm run --dry-run`, which the published binary lacks.
+    "${REPO_ROOT}/aa-cli/tests/run_lease_plan.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run.rs"
     # AAASM-5309: the `aasm integrations` CLI suites. `integrations_command.rs`
     # drives the subcommand that no longer exists post-strip;
@@ -152,6 +168,15 @@ DELETED_FILES=(
     "${REPO_ROOT}/aa-gateway/tests/audit_consumer_e2e.rs"
     # AAASM-5280: the built-in adapter bridge consumes the stripped aa-devtool dep.
     "${REPO_ROOT}/aa-runtime/src/devint/adapters.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/authored.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/decide.rs"
+    "${REPO_ROOT}/aa-runtime/src/lease/gate.rs"
+    # AAASM-6259: governed-mode startup + reload task. Names the gate, so it goes
+    # with it; `lease/wiring.rs` stays and refuses to start when governed mode was
+    # requested but this build has no gate.
+    "${REPO_ROOT}/aa-runtime/src/lease/governed.rs"
+    "${REPO_ROOT}/aa-runtime/tests/aaasm_6259_lease_gate_wiring.rs"
+    "${REPO_ROOT}/aa-runtime/tests/aaasm_6259_policy_lease_gate.rs"
 )
 
 # Strip region. Uses awk to drop lines from any

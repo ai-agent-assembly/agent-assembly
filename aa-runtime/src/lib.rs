@@ -20,14 +20,16 @@ pub mod invalidation_client;
 pub mod ipc;
 pub mod l1_cache;
 pub mod layer;
+pub mod lease;
 pub mod lifecycle;
 pub mod op_control;
 pub mod pipeline;
 pub mod policy;
+pub mod posture;
 pub mod privilege;
 pub mod redaction_telemetry_client;
 pub mod runtime;
 #[cfg(test)]
 mod test_env;
 
-pub use runtime::run;
+pub use runtime::{run, StartupRefusal};

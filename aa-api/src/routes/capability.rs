@@ -1036,6 +1036,7 @@ mod tests {
                             allow: *allow,
                             limit_per_hour: None,
                             requires_approval_if: None,
+                            capabilities: None,
                         },
                     )
                 })
@@ -1045,6 +1046,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: aa_gateway::policy::EgressPosture::NotRequired,
+            credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
         }
     }
 
@@ -1516,6 +1518,7 @@ mod tests {
                     allow: false,
                     limit_per_hour: None,
                     requires_approval_if: Some("size > 1".to_string()),
+                    capabilities: None,
                 },
             )]),
             capabilities: Some(caps),
@@ -1523,6 +1526,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: aa_gateway::policy::EgressPosture::NotRequired,
+            credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
         };
 
         let rules = project_rules(&doc);

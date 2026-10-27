@@ -136,6 +136,9 @@ impl CodexIntegration {
         if let Some(home) = paths.home() {
             adapter = adapter.with_home_dir(home.to_path_buf());
         }
+        if let Some(codex_home) = paths.codex_home() {
+            adapter = adapter.with_codex_home_dir(codex_home.to_path_buf());
+        }
         Self {
             paths,
             adapter,
@@ -765,13 +768,17 @@ async fn refuse_to_relax(path: &std::path::Path, managed_toml: &str) -> Result<(
     };
     let mut managed: toml::Table =
         toml::from_str(managed_toml).map_err(|e| AdapterError::SettingsGenerationFailed(e.to_string()))?;
-    // Only keys the user already holds are reported, and install writes the
+    // Only keys the user already holds are refused (an unset key is not a value
+    // of theirs to protect, so `absent` entries are skipped), and install writes the
     // strictest values AA has, so the one thing it can collide with is a value
     // AA cannot rank (`never`, a granular table, an unknown string).
     // `managed_settings_toml_pins_exact_values_per_profile` pins that premise;
     // if a profile ever writes less than the strictest, a lower-ranked existing
     // value is refused here with the same message rather than silently kept.
-    if let Some(w) = crate::strictness::withhold_relaxations(&existing, &mut managed).first() {
+    if let Some(w) = crate::strictness::withhold_relaxations(&existing, &mut managed)
+        .iter()
+        .find(|w| !w.absent)
+    {
         return Err(invalid(format!(
             "{} sets `{}` = `{}`, which Agent Assembly will not lower or replace; change it yourself if you want the managed value, then re-run",
             path.display(),
@@ -1015,6 +1022,38 @@ mod tests {
         }
     }
 
+    /// AAASM-6361: an unset key yields an `absent` withheld entry, which is not
+    /// a user value to protect, so install must still proceed.
+    #[tokio::test]
+    async fn refuse_to_relax_ignores_keys_that_are_only_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let managed = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-failure\"\n";
+        let missing = dir.path().join("missing.toml");
+        refuse_to_relax(&missing, managed)
+            .await
+            .expect("a missing config holds no value to protect");
+        let empty = dir.path().join("empty.toml");
+        std::fs::write(&empty, "").unwrap();
+        refuse_to_relax(&empty, managed)
+            .await
+            .expect("an empty config holds no value to protect");
+    }
+
+    /// Positive control for the test above: a real user value is still refused,
+    /// and the refusal names that key even when an unset key is reported first.
+    #[tokio::test]
+    async fn refuse_to_relax_still_refuses_a_value_the_user_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "approval_policy = \"never\"\n").unwrap();
+        let managed = "sandbox_mode = \"workspace-write\"\napproval_policy = \"on-request\"\n";
+        let err = refuse_to_relax(&path, managed).await.unwrap_err().to_string();
+        assert!(
+            err.contains("approval_policy") && err.contains("never") && err.contains("will not lower"),
+            "{err}"
+        );
+    }
+
     #[tokio::test]
     async fn only_codex_ca_certificate_is_injected_never_ssl_cert_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1065,6 +1104,36 @@ mod tests {
             plan.planned_level,
             ProtectionLevel::GatewayProtected,
             "Codex has no endpoint-managed settings surface, so HostEnforced is never reachable"
+        );
+    }
+
+    /// AAASM-6332 review: the integration plans against `paths.settings_path`
+    /// while the adapter applies launch settings against its own paths. With a
+    /// CODEX_HOME they must name the same file, or `apply_settings` writes
+    /// `$HOME/.codex/config.toml`, which Codex does not read.
+    #[test]
+    fn the_adapter_resolves_the_same_settings_file_as_the_integration_plan() {
+        use aa_devtool_contract::SettingsScope::User;
+        let home = tempfile::tempdir().unwrap();
+        let codex_home = tempfile::tempdir().unwrap();
+        let paths = CodexPaths::default()
+            .with_home(home.path().to_path_buf())
+            .with_codex_home(codex_home.path().to_path_buf());
+        let integ = CodexIntegration::with_paths(paths.clone());
+        let planned = paths.settings_path(User).unwrap();
+        assert_eq!(planned, codex_home.path().join("config.toml"));
+        assert_eq!(integ.adapter.launch_paths().settings_path(User).unwrap(), planned);
+
+        // Control: with no CODEX_HOME both fall back to $HOME/.codex.
+        let plain = CodexPaths::default().with_home(home.path().to_path_buf());
+        let integ = CodexIntegration::with_paths(plain.clone());
+        assert_eq!(
+            integ.adapter.launch_paths().settings_path(User).unwrap(),
+            plain.settings_path(User).unwrap()
+        );
+        assert_eq!(
+            plain.settings_path(User).unwrap(),
+            home.path().join(".codex/config.toml")
         );
     }
 }

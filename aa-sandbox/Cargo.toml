@@ -9,7 +9,37 @@ description = "WebAssembly/WASI sandbox runtime for Agent Assembly tool executio
 [dependencies]
 aa-core       = { path = "../aa-core", version = "0.0.1-rc.7" }
 thiserror     = { workspace = true }
-wasmtime      = "49"
+# `cache` is deliberately omitted from wasmtime's default features: it is the only
+# route to `zstd` (wasmtime-internal-cache), whose 0.13.x line carries RUSTSEC-2026-0391/
+# 0398/0403/0410, and the sandbox compiles in memory with no on-disk compilation cache.
+# Every other default feature is kept so the engine's behaviour is otherwise unchanged.
+wasmtime      = { version = "49", default-features = false, features = [
+    "anyhow",
+    "async",
+    "backtrace",
+    "gc",
+    "gc-copying",
+    "gc-drc",
+    "gc-null",
+    "wat",
+    "profiling",
+    "parallel-compilation",
+    "cranelift",
+    "pooling-allocator",
+    "demangle",
+    "addr2line",
+    "coredump",
+    "debug-builtins",
+    "runtime",
+    "component-model",
+    "component-model-async",
+    "threads",
+    "stack-switching",
+    "std",
+    "debug",
+    "compile-time-builtins",
+    "wit-parser",
+]}
 wasmtime-wasi = "49"
 
 [dev-dependencies]

@@ -102,6 +102,12 @@ async fn apply_settings_creates_config_toml_with_correct_content() {
 /// Seeds `~/.codex/config.toml`, applies a one-rule policy through the real
 /// generate+apply path, and returns the parsed result.
 async fn apply_one_rule(seed: &str, pattern: &str, decision: PolicyDecision) -> toml::Value {
+    toml::from_str(&apply_one_rule_text(seed, pattern, decision).await).unwrap()
+}
+
+/// Same as [`apply_one_rule`] but returns the written text, for tests that
+/// assert on the user's own bytes (comments, layout).
+async fn apply_one_rule_text(seed: &str, pattern: &str, decision: PolicyDecision) -> String {
     let tmp = tempfile::tempdir().unwrap();
     let bin = tmp.path().join("codex");
     std::fs::write(&bin, "").unwrap();
@@ -121,7 +127,7 @@ async fn apply_one_rule(seed: &str, pattern: &str, decision: PolicyDecision) -> 
     };
     let settings = adapter.generate_managed_settings(&policy).await.unwrap();
     adapter.apply_settings(&settings).await.unwrap();
-    toml::from_str(&std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()).unwrap()
+    std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()
 }
 
 /// AAASM-6327: a permissive all-Allow policy must not lower the user's own
@@ -135,6 +141,28 @@ async fn apply_settings_never_relaxes_the_users_security_settings() {
     )
     .await;
     assert_eq!(parsed["user_theme"].as_str(), Some("dark"));
+    assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
+    assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
+}
+
+/// AAASM-6373: the withhold path (a looser managed value is dropped to keep the
+/// user's stricter one) must also keep the user's text byte-for-byte: the
+/// stricter lines with their trailing comments are untouched.
+#[tokio::test]
+async fn apply_settings_keeps_withheld_keys_and_their_comments_verbatim() {
+    let seed =
+        "# keep me\nsandbox_mode = \"read-only\"   # stricter, mine\napproval_policy = \"on-request\"   # also mine\n";
+    let written = apply_one_rule_text(seed, "*", PolicyDecision::Allow).await;
+    let mut at = 0;
+    for line in seed.lines() {
+        let found = written
+            .lines()
+            .skip(at)
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("user line lost or altered: {line:?}\n--- written ---\n{written}"));
+        at += found + 1;
+    }
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
     assert_eq!(parsed["sandbox_mode"].as_str(), Some("read-only"));
     assert_eq!(parsed["approval_policy"].as_str(), Some("on-request"));
 }
@@ -176,6 +204,40 @@ async fn apply_settings_writes_no_permissive_value_onto_an_empty_config() {
     let parsed = apply_one_rule("", "*", PolicyDecision::Allow).await;
     assert!(parsed.get("sandbox_mode").is_none());
     assert!(parsed.get("approval_policy").is_none());
+}
+
+const STDERR_CHILD_ENV: &str = "AA_TEST_WITHHELD_STDERR_CHILD";
+const STDERR_CHILD_TEST: &str = "apply_settings_child_for_stderr_capture";
+
+/// Child half of the test below: does nothing unless the parent set the env
+/// var, so it is an inert pass in a normal run.
+#[tokio::test]
+async fn apply_settings_child_for_stderr_capture() {
+    if std::env::var_os(STDERR_CHILD_ENV).is_none() {
+        return;
+    }
+    apply_one_rule("approval_policy = \"on-request\"\n", "*", PolicyDecision::Allow).await;
+}
+
+/// AAASM-6361: the withheld-relaxation line must reach the process's real
+/// stderr through `apply_settings`, not just `strictness::report`'s writer.
+/// `apply_settings` writes to `std::io::stderr()`, which an in-process test
+/// cannot capture, so the test re-runs this binary and reads the child's fd 2.
+#[test]
+fn apply_settings_prints_the_withheld_relaxation_to_the_real_stderr() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", STDERR_CHILD_TEST, "--nocapture", "--test-threads=1"])
+        .env(STDERR_CHILD_ENV, "1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "child failed: {stderr}");
+    assert!(
+        stderr.lines().any(|l| l.contains("not changing `approval_policy`")
+            && l.contains("on-request")
+            && l.contains("less strict")),
+        "withheld relaxation not on stderr: {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -228,6 +290,62 @@ async fn apply_settings_preserves_a_user_written_sub_table() {
         parsed["sandbox_mode"].as_str(),
         Some("read-only"),
         "AA-managed key must still be applied"
+    );
+}
+
+/// Applies the fixture policy over a seeded `~/.codex/config.toml` and returns
+/// the written text, for tests that assert on the user's own bytes.
+async fn apply_fixture_over(seed: &str) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let bin = tmp.path().join("codex");
+    std::fs::write(&bin, "").unwrap();
+    let codex_dir = tmp.path().join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(codex_dir.join("config.toml"), seed).unwrap();
+    let adapter =
+        CodexAdapter::new(Box::new(FixedLocator(bin)), Box::new(FixedProbe)).with_home_dir(tmp.path().to_path_buf());
+    let settings = adapter.generate_managed_settings(&fixture_policy()).await.unwrap();
+    adapter.apply_settings(&settings).await.unwrap();
+    std::fs::read_to_string(codex_dir.join("config.toml")).unwrap()
+}
+
+/// AAASM-6373: an `aasm run` apply must not rewrite the user's file through a
+/// sorted table. Every line the user wrote is still there, in the same
+/// relative order (`command` before `args`, which a sorted table reverses),
+/// with its comments.
+#[tokio::test]
+async fn apply_settings_keeps_the_users_comments_and_key_order() {
+    let seed = "# my codex config -- hand written\nmodel = \"o4-mini\"   # trailing comment\n\n[mcp_servers.docs]\ncommand = \"npx\"\nargs = [\"-y\", \"docs-server\"]\n";
+    let written = apply_fixture_over(seed).await;
+
+    let mut at = 0;
+    for line in seed.lines().filter(|l| !l.is_empty()) {
+        let found = written
+            .lines()
+            .skip(at)
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("user line lost or reordered: {line:?}\n--- written ---\n{written}"));
+        at += found + 1;
+    }
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "managed key applied"
+    );
+}
+
+/// AAASM-6373: the user's trailing comment on a key the policy tightens stays
+/// with that key.
+#[tokio::test]
+async fn apply_settings_keeps_a_trailing_comment_on_a_tightened_key() {
+    let written = apply_fixture_over("sandbox_mode = \"danger-full-access\"   # my choice\n").await;
+    assert!(written.contains("# my choice"), "{written}");
+    let parsed: toml::Value = toml::from_str(&written).unwrap();
+    assert_eq!(
+        parsed["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "tightened by the Deny rule"
     );
 }
 

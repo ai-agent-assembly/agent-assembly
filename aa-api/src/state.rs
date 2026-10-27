@@ -675,7 +675,7 @@ impl AppState {
         // this directory create sits on the start-up path of a runtime worker.
         if let Some(parent) = registry_db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
+                aa_gateway::storage::private_fs::create_private_dir_all(parent)
                     .await
                     .map_err(|source| LocalStateError::PolicyWrite {
                         path: registry_db_path.clone(),
@@ -805,7 +805,7 @@ impl AppState {
         let db_path = paths.audit_db;
         if let Some(parent) = db_path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
+                aa_gateway::storage::private_fs::create_private_dir_all(parent)
                     .await
                     .map_err(|source| LocalStateError::PolicyWrite {
                         path: db_path.clone(),
@@ -852,7 +852,7 @@ impl AppState {
         // `audit_file_path`, made `pub` for this), rather than reseeding to
         // zero every boot. This is the fix for the defect where aa-api's local
         // audit chain silently forked from itself on every restart.
-        tokio::fs::create_dir_all(&paths.audit_jsonl_dir)
+        aa_gateway::storage::private_fs::create_private_dir_all(&paths.audit_jsonl_dir)
             .await
             .map_err(|source| LocalStateError::PolicyWrite {
                 path: paths.audit_jsonl_dir.clone(),
@@ -1065,6 +1065,7 @@ mod tests {
             syscall_allowlist: None,
             leases: Vec::new(),
             egress: aa_gateway::policy::EgressPosture::NotRequired,
+            credentials: aa_gateway::policy::CredentialBrokeragePosture::NotRequired,
         });
 
         state
@@ -1169,5 +1170,47 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// AAASM-6387: the durable registry and audit-db directories `local_hardened_at`
+    /// creates are owner-only. It creates them *before* `SqliteBackend::open` runs,
+    /// so a reverted creator would leave them `0755` whatever the backend does later.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn local_hardened_at_creates_owner_only_durable_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        // The mask is set (and the directories created) inside one critical section
+        // that does not span an await: `local_hardened_at` is run on a private
+        // current-thread runtime from a blocking thread.
+        let out = tokio::task::spawn_blocking(|| {
+            let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: umask only swaps the process file-creation mask.
+            let old = unsafe { libc::umask(0o022) };
+            let root = tempfile::tempdir().unwrap();
+            let paths = LocalDurablePaths {
+                registry_db: root.path().join(".aasm/registry/local.db"),
+                audit_jsonl_dir: root.path().join(".aasm/audit-jsonl"),
+                audit_db: root.path().join(".aasm/audit/audit.db"),
+            };
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let r = rt.block_on(AppState::local_hardened_at(LocalAuth::Off, paths));
+            // SAFETY: as above.
+            unsafe { libc::umask(old) };
+            let mode = |p: std::path::PathBuf| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            let modes = [
+                mode(root.path().join(".aasm/registry")),
+                mode(root.path().join(".aasm/audit-jsonl")),
+                mode(root.path().join(".aasm/audit")),
+            ];
+            (r.is_ok(), modes)
+        })
+        .await
+        .unwrap();
+        assert!(out.0, "local_hardened_at should succeed");
+        assert_eq!(out.1, [0o700, 0o700, 0o700], "registry, audit-jsonl, audit directories");
     }
 }

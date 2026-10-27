@@ -122,6 +122,44 @@ fn scan_source<'a>(body: &'a [u8], content_encoding: Option<&str>) -> ScanSource
     }
 }
 
+/// Every way a response body can be read by a peer: the raw (BOM-stripped,
+/// lossy) text and, when it carries backslash escapes, every string token with
+/// the escapes decoded. Non-UTF-8 responses never reach here: they are withheld
+/// by [`Interceptor::response_encoding_unjudgeable`].
+///
+/// The decoded forms come from a lexical decoder, never from a JSON parse, so a
+/// body serde rejects but a peer accepts (200-deep nesting, `NaN`, `1e400`),
+/// repeated keys, and non-JSON framing such as SSE `data: {...}` cannot hide
+/// anything. A form exists only when it differs in kind, so an ordinary body
+/// reaches the gateway exactly once, as sent (AAASM-6355 review F4/V1/rounds 3-4).
+struct ResponseForms {
+    raw: String,
+    extra: Vec<String>,
+}
+
+impl ResponseForms {
+    /// Texts the built-in scanner must find clean, and the gateway must `Allow`
+    /// each as its own request.
+    fn texts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.raw.as_str()).chain(self.extra.iter().map(String::as_str))
+    }
+}
+
+/// `None` when the body cannot be judged: its decoded strings exceed the
+/// decoder's cap.
+fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
+    let raw = mcp::lenient_json_text(bytes).into_owned();
+    let mut extra = Vec::new();
+    if raw.contains('\\') {
+        let decoded = mcp::decode_json_strings(&raw)?;
+        // One gateway request per distinct text (no duplicate alerts).
+        if decoded != raw {
+            extra.push(decoded);
+        }
+    }
+    Some(ResponseForms { raw, extra })
+}
+
 /// Inspects a decrypted HTTP request/response pair, decides whether it is an
 /// LLM API call, and extracts audit-relevant fields from the body.
 ///
@@ -376,10 +414,22 @@ impl Interceptor {
             ScanSource::Plaintext { bytes, encoded } => (bytes, encoded),
             ScanSource::Uninspectable => return ResponseScan::Withhold,
         };
-        let text = String::from_utf8_lossy(&bytes);
-        let scan = scanner.scan(&text);
-        if scan.is_clean() {
-            return ResponseScan::Forward;
+        // The raw text and the escape-resolved text hide different things (see
+        // `scan_forms`), so both are scanned. A raw finding is redacted on the raw
+        // text, which keeps the rest of the body byte-faithful; a finding only the
+        // escape-resolved text shows cannot be redacted without forwarding a
+        // re-serialisation, so it withholds (AAASM-6355 review V1/V2/L1).
+        let Some(forms) = response_forms(&bytes) else {
+            return ResponseScan::Withhold;
+        };
+        let raw_scan = scanner.scan(&forms.raw);
+        if raw_scan.is_clean() {
+            let hidden_in_escapes = forms.texts().skip(1).any(|t| !scanner.scan(t).is_clean());
+            return if hidden_in_escapes {
+                ResponseScan::Withhold
+            } else {
+                ResponseScan::Forward
+            };
         }
         if encoded {
             // Findings inside a compressed body cannot be re-encoded to the
@@ -387,7 +437,63 @@ impl Interceptor {
             // compressed bytes would relay the secret. Withhold (fail closed).
             return ResponseScan::Withhold;
         }
-        ResponseScan::Redact(scan.redact(&text).into_bytes())
+        let redacted = raw_scan.redact(&forms.raw);
+        // Redaction can leave an escape-hidden or duplicate-shadowed secret
+        // behind; whatever is still findable in what would be sent withholds.
+        match response_forms(redacted.as_bytes()) {
+            Some(after) if after.texts().all(|t| scanner.scan(t).is_clean()) => {
+                ResponseScan::Redact(redacted.into_bytes())
+            }
+            _ => ResponseScan::Withhold,
+        }
+    }
+
+    /// True when the response's encoding cannot be judged (round 5): more than one
+    /// declared charset, a charset outside the allowlist, a non-7-bit body under a
+    /// single-byte charset, or a body Python would detect as UTF-16/32. `body` is
+    /// decoded per `content_encoding` first; an undecodable body is left to the
+    /// caller's existing withhold. Unconditional because the response already
+    /// belongs to a recognised MCP `tools/call`.
+    pub fn response_encoding_unjudgeable(
+        &self,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        content_types: &[&str],
+    ) -> bool {
+        match scan_source(body, content_encoding) {
+            ScanSource::Plaintext { bytes, .. } => mcp::encoding_unjudgeable(&bytes, content_types),
+            ScanSource::Uninspectable => false,
+        }
+    }
+
+    /// True when the response body decodes (per `content_encoding`) to nothing:
+    /// a bodiless reply carries nothing to leak or for the gateway to judge.
+    /// An undecodable body is not empty.
+    pub fn response_body_is_empty(&self, body: &[u8], content_encoding: Option<&str>) -> bool {
+        matches!(scan_source(body, content_encoding), ScanSource::Plaintext { bytes, .. } if bytes.is_empty())
+    }
+
+    /// The texts the gateway should judge for a response that will be sent as
+    /// `sent` (the redacted body when the scan redacted, else the decoded
+    /// original): the raw form and, when it carries escapes, the decoded strings.
+    /// Every one must be `Allow`ed, so a value hidden by escapes is still seen.
+    /// The decoded form is plain text (no JSON structure), so structure-aware
+    /// policy applies to the raw form only. `None` when the body cannot be decoded or judged
+    /// (callers must then withhold, not forward). AAASM-6355.
+    pub fn gateway_candidates(
+        &self,
+        body: &[u8],
+        content_encoding: Option<&str>,
+        sent: Option<&[u8]>,
+    ) -> Option<Vec<Vec<u8>>> {
+        let forms = match sent {
+            Some(redacted) => response_forms(redacted),
+            None => match scan_source(body, content_encoding) {
+                ScanSource::Plaintext { bytes, .. } => response_forms(&bytes),
+                ScanSource::Uninspectable => None,
+            },
+        }?;
+        Some(forms.texts().map(|t| t.as_bytes().to_vec()).collect())
     }
 
     /// Emit an audit event recording the gateway's decision for an MCP
@@ -1024,6 +1130,187 @@ mod tests {
     }
 
     // ── redact_response_body ────────────────────────────────────────────────
+
+    fn response_scan(body: &[u8]) -> ResponseScan {
+        make_interceptor().redact_response_body(body, None)
+    }
+
+    const AWS_KEY: &str = "AKIAIOSFODNN7EXAMPLE";
+
+    // AAASM-6355 review V1: a shadowed duplicate key is invisible once
+    // normalised, so the raw text must be scanned and redacted losslessly.
+    #[test]
+    fn response_secret_in_a_shadowed_duplicate_key_is_redacted_on_the_raw_text() {
+        let body = format!(r#"{{"result":{{"text":"{AWS_KEY}","text":"ok"}}}}"#);
+        let ResponseScan::Redact(out) = response_scan(body.as_bytes()) else {
+            panic!("expected Redact");
+        };
+        let out = String::from_utf8(out).unwrap();
+        assert!(!out.contains(AWS_KEY));
+        assert!(out.contains(r#""text":"ok""#), "later key kept: {out}");
+    }
+
+    #[test]
+    fn response_clean_duplicate_keys_forward() {
+        assert_eq!(
+            response_scan(br#"{"result":{"text":"a","text":"ok"}}"#),
+            ResponseScan::Forward
+        );
+    }
+
+    // L1: redaction must not re-serialise the rest of the body.
+    #[test]
+    fn response_redaction_keeps_big_integers_and_spacing() {
+        let body = format!(r#"{{ "id": 123456789012345678901234567890, "t": "{AWS_KEY}" }}"#);
+        let ResponseScan::Redact(out) = response_scan(body.as_bytes()) else {
+            panic!("expected Redact");
+        };
+        let out = String::from_utf8(out).unwrap();
+        assert!(
+            out.contains(r#"{ "id": 123456789012345678901234567890, "t": ""#),
+            "{out}"
+        );
+    }
+
+    // V2: a secret visible only after escape resolution withholds (not forwarded
+    // re-serialised); BOM / invalid bytes do not stop the decode.
+    #[test]
+    fn response_escape_hidden_secret_withholds_even_with_bom_or_invalid_byte() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let json = format!(r#"{{"t":"{escaped}"}}"#);
+        assert_eq!(response_scan(json.as_bytes()), ResponseScan::Withhold);
+        let mut bom = b"\xEF\xBB\xBF".to_vec();
+        bom.extend(json.as_bytes());
+        assert_eq!(response_scan(&bom), ResponseScan::Withhold);
+        let with_ff = format!(r#"{{"p":"\u00ff","q":"\xFF","t":"{escaped}"}}"#).replace("\\xFF", "\u{fffd}");
+        let mut raw = with_ff.into_bytes();
+        raw.insert(7, 0xFF);
+        assert_eq!(response_scan(&raw), ResponseScan::Withhold);
+    }
+
+    #[test]
+    fn response_clean_escapes_with_bom_forward() {
+        let mut body = b"\xEF\xBB\xBF".to_vec();
+        body.extend(br#"{"t":"harmless \u0041"}"#);
+        assert_eq!(response_scan(&body), ResponseScan::Forward);
+    }
+
+    const FAKE_DB_URL: &str = "postgres://user:pw@localhost/db";
+
+    fn deep(n: usize) -> String {
+        format!("{}{}", "[".repeat(n), "]".repeat(n))
+    }
+
+    // Round 3 F2: bodies serde rejects (nesting > 128, NaN, 1e400) but real
+    // peers accept must still have their escapes decoded and scanned.
+    #[test]
+    fn response_escape_hidden_secret_withholds_when_serde_would_reject_the_body() {
+        let hidden = FAKE_DB_URL.replace('/', "\\/");
+        for tail in [
+            format!(r#""d":{}"#, deep(200)),
+            r#""n":NaN"#.to_string(),
+            r#""n":1e400"#.to_string(),
+        ] {
+            let body = format!(r#"{{"t":"{hidden}",{tail}}}"#);
+            assert!(serde_json::from_str::<serde_json::Value>(&body).is_err() || tail.contains("1e400"));
+            assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold, "{tail:.20}");
+            // control: same shape, harmless escaped value
+            let ok = format!(r#"{{"t":"a\/b",{tail}}}"#);
+            assert_eq!(response_scan(ok.as_bytes()), ResponseScan::Forward, "{tail:.20}");
+        }
+    }
+
+    // A raw finding plus an escape-hidden one: never partially redacted.
+    #[test]
+    fn response_raw_secret_plus_escaped_secret_withholds_instead_of_partial_redact() {
+        let hidden = FAKE_DB_URL.replace('/', "\\/");
+        let body = format!(r#"{{"a":"{AWS_KEY}","t":"{hidden}","d":{}}}"#, deep(200));
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        // control: raw secret alone is redacted
+        let alone = format!(r#"{{"a":"{AWS_KEY}","d":{}}}"#, deep(200));
+        assert!(matches!(response_scan(alone.as_bytes()), ResponseScan::Redact(_)));
+    }
+
+    // Unparseable JSON-looking body: escapes are still decoded and judged.
+    #[test]
+    fn response_unparseable_json_is_judged_by_its_decoded_strings() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        assert_eq!(
+            response_scan(format!(r#"{{"t":"{escaped}" BROKEN"#).as_bytes()),
+            ResponseScan::Withhold
+        );
+        assert_eq!(response_scan(br#"{"t":"\u0041" BROKEN"#), ResponseScan::Forward);
+        assert_eq!(response_scan(br#"plain \u0041 text"#), ResponseScan::Forward);
+    }
+
+    // A huge run of escapes is linear work and still judged.
+    #[test]
+    fn response_escape_bomb_is_bounded_and_withheld() {
+        let mut body = String::from(r#"{"pad":""#);
+        body.push_str(&"\\u0041".repeat(1_500_000));
+        body.push_str(&format!(r#"","t":"{}"}}"#, AWS_KEY.replacen('A', "\\u0041", 1)));
+        let started = std::time::Instant::now();
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    // Rounds 4-5 (response): non-UTF-8 responses are withheld, not NUL-stripped.
+    #[test]
+    fn response_encoding_gate_withholds_unjudgeable_encodings_only() {
+        let i = make_interceptor();
+        let le = |s: &str| s.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<u8>>();
+        let secret = le(&format!(r#"{{"x":"\u{{4122}}","t":"{AWS_KEY}"}}"#));
+        assert!(i.response_encoding_unjudgeable(&secret, None, &[]));
+        assert!(i.response_encoding_unjudgeable(b"data: +AHs-", None, &["text/event-stream; charset=utf-7"]));
+        assert!(i.response_encoding_unjudgeable(b"{}", None, &["a; charset=utf-8; charset=utf-16le"]));
+        assert!(i.response_encoding_unjudgeable(b"{\"a\":\"\xe9\"}", None, &["application/json; charset=iso-8859-1"]));
+        // controls
+        assert!(!i.response_encoding_unjudgeable(br#"{"t":"ok"}"#, None, &["application/json; charset=utf-8"]));
+        assert!(!i.response_encoding_unjudgeable(b"data: {}", None, &["text/event-stream"]));
+        assert!(!i.response_encoding_unjudgeable(br#"{"t":"ok"}"#, None, &["application/json; charset=iso-8859-1"]));
+    }
+
+    // Round 4 V3: non-JSON framing (SSE) still gets its escapes decoded.
+    #[test]
+    fn response_sse_framed_escaped_secret_withholds() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let sse = format!("event: message\ndata: {{\"t\":\"{escaped}\"}}\n\n");
+        assert_eq!(response_scan(sse.as_bytes()), ResponseScan::Withhold);
+        assert_eq!(
+            response_scan(b"event: message\ndata: {\"t\":\"ok \\u0041\"}\n\n"),
+            ResponseScan::Forward
+        );
+        assert_eq!(
+            response_scan(b"event: message\ndata: {\"t\":\"ok\"}\n\n"),
+            ResponseScan::Forward
+        );
+    }
+
+    #[test]
+    fn gateway_candidates_include_raw_and_escape_resolved_forms() {
+        let i = make_interceptor();
+        let body = br#"{"a":"x","a":"\u0041"}"#;
+        let forms = i.gateway_candidates(body, None, None).unwrap();
+        assert_eq!(forms.len(), 2);
+        assert_eq!(forms[0], body.to_vec());
+        // Duplicate keys are all kept, escapes decoded.
+        assert_eq!(String::from_utf8_lossy(&forms[1]), "a\nx\na\nA\n");
+        // An escape-free body yields exactly one candidate, even when the
+        // re-serialisation would differ (whitespace): one gateway evaluation.
+        assert_eq!(i.gateway_candidates(b"plain", None, None).unwrap().len(), 1);
+        assert_eq!(i.gateway_candidates(br#"{ "a" : 1 }"#, None, None).unwrap().len(), 1);
+    }
+
+    // An escape-hidden secret in a SHADOWED duplicate key: neither the raw text
+    // nor a last-key-wins parse shows it.
+    #[test]
+    fn response_escape_hidden_secret_in_a_shadowed_duplicate_key_withholds() {
+        let escaped = AWS_KEY.replacen('A', "\\u0041", 1);
+        let body = format!(r#"{{"t":"{escaped}","t":"ok"}}"#);
+        assert_eq!(response_scan(body.as_bytes()), ResponseScan::Withhold);
+        // control: same shape, harmless escaped value
+        assert_eq!(response_scan(br#"{"t":"\u0041bc","t":"ok"}"#), ResponseScan::Forward);
+    }
 
     #[test]
     fn redact_response_body_disabled_scanner_forwards() {

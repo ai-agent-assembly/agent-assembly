@@ -477,6 +477,88 @@ Sensitive-data / credential handling. Backed by `DataPolicy`.
 
 Any other value is a validation error.
 
+#### MCP responses through `aa-proxy`
+
+When `aa-proxy` is configured with a gateway endpoint, it sends the **response**
+body (after decoding `Content-Encoding`) of every recognised MCP exchange to the
+gateway as a `ToolResult` action, so `sensitive_patterns`, `locale_packs` and
+`tool_result.*` conditions apply to what the server returned. This covers
+`tools/call` and every other JSON-RPC method (`resources/read`, `prompts/get`,
+batches, and requests carrying an `Mcp-Session-Id` or `MCP-Protocol-Version`
+header). For a `tools/call` the action's `tool_name` is the real tool name; for any
+other exchange it is a label starting with `mcp-method:`: `mcp-method:<method>` with
+the method restricted to `[A-Za-z0-9/_.-]` (other characters become `_`, at most 64
+characters), or one of the reserved `mcp-method:#batch`, `mcp-method:#unknown`,
+`mcp-method:#stream` (`#` cannot appear in a sanitised method, so a literal method
+named `batch` is `mcp-method:batch`). A `tools/call` whose tool name starts with
+`mcp-method:` is refused, so a label is never also a tool name. A JSON-RPC batch is
+evaluated only under its `#batch` label, never per element, so a rule that targets a
+method inside a batch does not match it. A JSON-looking request body the proxy cannot
+parse at all (for example nested deeper than 128 levels) is `#unknown`, so its
+response is still evaluated. The proxy's own scanner holds only the built-in patterns; it redacts those
+itself and the gateway evaluates what would actually be sent.
+
+Response-direction evaluation **always fails closed**. The proxy withholds the
+response (HTTP `502`, body not forwarded) when the gateway answers `Deny`, answers
+`Redact` (the proxy cannot apply the gateway's redaction, so it does not forward
+the original), cannot be reached, errors or times out (10 s), or when the body
+cannot be decoded or exceeds the inspection limit. If an endpoint is configured but
+the proxy holds no live gateway connection, recognised responses are withheld
+too. `AA_PROXY_MCP_FAIL_OPEN` does not change this: it governs only the
+request-side `tools/call` check and proxy start-up without a gateway, and never
+causes a failed response check to be forwarded. There is no response-side
+fail-open setting.
+
+Without a configured gateway endpoint (standalone mode) **no response scanning is
+applied** to MCP responses. A `text/event-stream` response on an enforcing proxy is
+judged **event by event** (each event is scanned and sent to the gateway as a
+`ToolResult`; a denied or unjudgeable event ends the stream with a fixed JSON-RPC
+error event, and nothing after it is forwarded), and plain-HTTP MCP is not covered. The `SecretAlert` the gateway raises for a response names the proxy's
+synthetic identity (`aa-proxy`), not the agent.
+
+**What the proxy decodes the way a lenient peer does** (so a value or a
+`tools/call` hidden from a strict JSON parser is still judged):
+
+- A UTF-8 BOM and invalid UTF-8 bytes are tolerated, and every JSON string escape
+  (`\uXXXX`, `\/`, ...) is decoded by a linear lexical decoder that needs no
+  successful parse: deeply nested, `NaN`, `1e400`, repeated-key and SSE
+  `data:` framed bodies are covered. The raw and decoded texts are both scanned
+  and, when they differ, both sent to the gateway (one request per distinct text).
+- A `tools/call` request is denied (fail-closed) when its keys collide after
+  Go-style case folding (ASCII case, U+017F, U+212A) or spell an envelope field
+  inexactly, including collisions nested inside `arguments`; or when a repeated
+  `method` key or an unparseable body carries a `tools/call` token.
+
+**Encodings.** Peers disagree on how to decode a JSON body (Node honours the
+declared charset, Python auto-detects UTF-16/32, httpx honours the declared
+charset), so the proxy judges only bodies every peer reads identically. A request
+is *JSON-typed* when any `Content-Type` value mentions `json` (a near-miss such as
+`application/json5`, or a quoted parameter, counts: the Node MCP SDK accepts any
+value merely containing `application/json`), an `Mcp-Session-Id` /
+`MCP-Protocol-Version` header is present, or the body reads as a JSON document
+under the encoding Python would detect. A JSON-typed request is denied unless it
+has at most one `charset` parameter, that charset is absent, `utf-8`, or
+ASCII-compatible (`us-ascii`, `iso-8859-1`, `latin1`, `windows-1252`) with a pure
+7-bit body, and the body is UTF-8 (BOM allowed). **The charset rule applies to any
+request that declares a charset, whatever its media type**, so a form or text POST
+declaring `charset=utf-7` is denied too (negligible cost). Compatibility denials:
+non-ASCII JSON declared ISO-8859-1/latin1/windows-1252; two `Content-Type` headers
+on JSON; any POST declaring a non-allowlisted charset; `utf-7`, unknown charsets,
+repeated charset parameters and UTF-16/32. Binary, multipart and form bodies
+without a charset parameter are untouched. An MCP response is withheld under the same rules, applied
+unconditionally, including `text/event-stream; charset=...`.
+
+**Not covered:** peers that accept JSON5/JSONC (comments, single-quoted strings);
+*inexact-case* argument keys with no collision (a Go struct binder or .NET binder
+reading only `"PATH"` for a policy written against `path`) -- only collisions are
+detected; a first-key-wins duplicate key inside `arguments` that is not a case
+collision; and a secret split across separate `content[]` parts or string tokens.
+
+`alert_only` is the exception that is not enforcement. The gateway records the
+detection and raises an alert, then allows, so the matching content **continues
+unchanged to the client**. It does not prevent disclosure and does not mask the
+value. Use `block` or `redact_only` when the value must not reach the client.
+
 ### `sensitive_patterns` regex syntax
 
 Each entry is a regular expression compiled by the Rust `regex` crate (RE2-style

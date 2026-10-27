@@ -342,7 +342,7 @@ pub(crate) fn ensure_storage_parent(path: &Path) -> Result<(), LocalModeError> {
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(parent).map_err(|source| LocalModeError::Storage {
+    crate::storage::private_fs::create_private_dir_all_sync(parent).map_err(|source| LocalModeError::Storage {
         path: path.to_path_buf(),
         source: sqlx::Error::Io(source),
     })
@@ -823,6 +823,21 @@ mod tests {
     /// must `mkdir -p` the parent tree before the SQLite file can
     /// be written. Verifies the helper creates nested missing
     /// directories rather than only the immediate parent.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_storage_parent_creates_owner_only_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::storage::private_fs::with_umask_022(|| {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let nested = tmp.path().join(".aasm/sub/local.db");
+            ensure_storage_parent(&nested).expect("ensure_storage_parent");
+            for d in [".aasm", ".aasm/sub"] {
+                let mode = std::fs::metadata(tmp.path().join(d)).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "{d}");
+            }
+        });
+    }
+
     #[test]
     fn ensure_storage_parent_creates_nested_directories() {
         let tmp = tempfile::tempdir().expect("tempdir");
