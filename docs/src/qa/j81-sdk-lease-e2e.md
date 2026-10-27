@@ -44,5 +44,8 @@ S5d covers relabelling with the tool context still attached. The omit-context re
 the form Core ADR 0038 section 36 used to document as a residual: the SDK shim can send it
 (`query_policy` with `tool_name=None` builds no typed context). Governed mode now admits only
 `TOOL_CALL`, so S5e sends it and expects `deny`; with the gate absent (`--mutation-check`) the
-runtime answers `allow` and S5e FAILs, which is the intended discrimination. S5e has not been
-run since that change.
+runtime answers `allow` and S5e FAILs, which is the intended discrimination. A producer run on main 2c553741d (2026-10-27) had both S5e rows PASS
+(`deny`, "capability lease required"), and under `--mutation-check` both FAIL with `allow`.
+`--mutation-check` now requires the S5d and S5e rows to FAIL with the gate absent, so its
+exit code covers them (before AAASM-6385 its list omitted them). That run is producer
+evidence, not independent QA.

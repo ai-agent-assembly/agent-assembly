@@ -181,6 +181,15 @@ pub trait GatewaySpawner {
     fn log_path(&self) -> Option<PathBuf> {
         None
     }
+    /// The binary this spawner launches, if it resolved to a file (AAASM-6385).
+    fn binary_path(&self) -> Option<PathBuf> {
+        None
+    }
+    /// The version the started server reports about itself, if it answers
+    /// (AAASM-6385). `None` when it is unreachable or reports none.
+    fn server_version(&self, _addr: SocketAddr) -> Option<String> {
+        None
+    }
 }
 
 /// The build command for the binary `mode` launches, for error text and docs.
@@ -208,6 +217,38 @@ fn not_found_error(mode: ModeArg) -> std::io::Error {
             build_command(mode)
         ),
     )
+}
+
+/// What `aasm start` says about the server it launched (AAASM-6385).
+///
+/// `aasm start` runs whichever binary the resolver finds first, so an older one
+/// earlier on `$PATH` is used silently and the only trace is a version in
+/// `aasm status`. Returns the line to print and, when the server's reported
+/// version differs from `aasm`'s own, a warning naming both versions, where the
+/// server binary came from and how to fix it. A mismatch warns rather than
+/// refuses: the pairing may be deliberate, and refusing would block a start that
+/// works. An unreported version is said so, never guessed.
+fn server_identity(
+    name: &str,
+    path: Option<&Path>,
+    reported: Option<&str>,
+    cli_version: &str,
+) -> (String, Option<String>) {
+    let from = path.map_or_else(|| "path unknown".to_string(), |p| p.display().to_string());
+    let Some(reported) = reported else {
+        return (format!("  Server:  {name} (version not reported) from {from}"), None);
+    };
+    let line = format!("  Server:  {name} {reported} from {from}");
+    if reported == cli_version {
+        return (line, None);
+    }
+    let warning = format!(
+        "warning: {name} is {reported} but aasm is {cli_version} ({from}). \
+         `aasm start` uses the first `{name}` next to aasm, on $PATH or in ~/.cargo/bin, \
+         so a stale install can shadow your build. Put the matching binary first, \
+         or reinstall both from the same build."
+    );
+    (line, Some(warning))
 }
 
 /// Replace anything shaped like a full API key (`aa_` + 32 hex) with a marker.
@@ -361,6 +402,18 @@ impl GatewaySpawner for ProcessSpawner {
     fn log_path(&self) -> Option<PathBuf> {
         self.log_path.clone()
     }
+
+    fn binary_path(&self) -> Option<PathBuf> {
+        aa_core::binary_resolve::resolve_binary(binary_name(self.mode))
+    }
+
+    fn server_version(&self, addr: SocketAddr) -> Option<String> {
+        // Only the local API server serves `/api/v1/health` with a version.
+        match self.mode {
+            ModeArg::Local => super::pidfile::server_reported_version(&client_url(addr)),
+            ModeArg::Remote => None,
+        }
+    }
 }
 
 /// Open the daemon log for append, owner-only, truncated first so a failed start
@@ -447,6 +500,22 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
             if let Some(log) = &log {
                 println!("  Log:     {}", log.display());
             }
+            if args.mode == ModeArg::Local {
+                // The version is the answer from whatever holds the port. A start
+                // that lost the port to a stranger makes our child exit, so only an
+                // answer given while the child is still alive is attributed to it.
+                let reported = spawner.server_version(addr).filter(|_| !child_exited(pid));
+                let (line, warning) = server_identity(
+                    binary_name(args.mode),
+                    spawner.binary_path().as_deref(),
+                    reported.as_deref(),
+                    env!("CARGO_PKG_VERSION"),
+                );
+                println!("{line}");
+                if let Some(warning) = warning {
+                    eprintln!("{warning}");
+                }
+            }
             ExitCode::SUCCESS
         }
         Err(failure) => {
@@ -532,6 +601,52 @@ mod tests {
             remote.contains("`aa-gateway`") && remote.contains("cargo build -p aa-gateway"),
             "{remote}"
         );
+    }
+
+    #[test]
+    fn a_matching_server_version_is_reported_without_a_warning() {
+        let (line, warning) = server_identity(
+            "aa-api-server",
+            Some(Path::new("/opt/aa/bin/aa-api-server")),
+            Some("0.0.1-rc.7"),
+            "0.0.1-rc.7",
+        );
+        assert_eq!(
+            line,
+            "  Server:  aa-api-server 0.0.1-rc.7 from /opt/aa/bin/aa-api-server"
+        );
+        assert_eq!(warning, None);
+    }
+
+    #[test]
+    fn a_stale_server_binary_is_named_with_both_versions_and_its_path() {
+        let (line, warning) = server_identity(
+            "aa-api-server",
+            Some(Path::new("/opt/homebrew/bin/aa-api-server")),
+            Some("0.0.1-rc.6"),
+            "0.0.1-rc.7",
+        );
+        assert!(
+            line.contains("0.0.1-rc.6") && line.contains("/opt/homebrew/bin/aa-api-server"),
+            "{line}"
+        );
+        let warning = warning.expect("a version mismatch must warn");
+        assert!(
+            warning.contains("0.0.1-rc.6") && warning.contains("0.0.1-rc.7"),
+            "{warning}"
+        );
+        assert!(warning.contains("/opt/homebrew/bin/aa-api-server"), "{warning}");
+        assert!(warning.contains("$PATH") && warning.contains("shadow"), "{warning}");
+    }
+
+    #[test]
+    fn an_unreported_server_version_is_said_so_and_never_warned_as_a_mismatch() {
+        let (line, warning) = server_identity("aa-api-server", None, None, "0.0.1-rc.7");
+        assert_eq!(
+            line,
+            "  Server:  aa-api-server (version not reported) from path unknown"
+        );
+        assert_eq!(warning, None);
     }
 
     #[test]

@@ -92,6 +92,31 @@ policy, runs `aasm lease init` on it, asks the runtime's own gate whether the to
 admitted, and checks that the recipe names the same variables and values (with `$PWD`
 expanded) as the command `init` prints. It does not start `aa-runtime`.
 
+### See an allow and a deny
+
+`/health` only shows that the runtime is governed. To see it decide, ask it for a verdict
+on each tool. This probe uses the native client of the installed Python SDK
+(`agent_assembly.core.runtime_interceptor`, an internal helper rather than a stable API,
+so treat it as a diagnostic). Run it in the same shell, while the runtime above is running:
+
+```sh
+AA_AGENT_ID=my-agent python - <<'PY'
+from agent_assembly.core.runtime_interceptor import connect_runtime_client
+rc = connect_runtime_client("my-agent")
+for tool in ("write_note", "calc", "ghost"):
+    r = rc.query_policy("my-agent", "tool_call", tool, None)
+    print(tool, r.get("decision"), r.get("reason"))
+PY
+```
+
+Against the policy above it prints `allow` for `write_note` and `calc`, and `deny` with the
+reason `capability lease required` for `ghost`, a tool the policy does not declare.
+`connect_runtime_client` returns `None` when the runtime is not reachable, when the SDK's
+native extension is not built, or when the default socket path is held by a file you do not
+own, and the loop then fails on `None`; start the runtime first and use an SDK with its native
+module built. This is a verdict only, not confinement: it shows
+what the gate answers, and a tool is stopped only if the calling SDK honours the answer.
+
 ## The record
 
 ```json
