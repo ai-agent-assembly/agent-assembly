@@ -58,7 +58,7 @@ if [ "$MUTATION_CHECK" = "1" ]; then
   for id in S1a S1b S1c S1d; do
     grep -q "^J81_RESULT|$id|PASS|" "$out" || { echo "MUTATION-CHECK: positive control $id did not PASS in the mutant run" >&2; bad=1; }
   done
-  for id in S2a S2b S3 S4a S4b S5a S5b1 S5b2 S6a S6b S6c2 S7b S7d1 S7e; do
+  for id in S2a S2b S3 S4a S4b S5a S5b1 S5b2 S5d-llm_call S5d-tool_result S5e-llm_call S5e-tool_result S6a S6b S6c2 S7b S7d1 S7e; do
     grep -q "^J81_RESULT|$id|FAIL|" "$out" || { echo "MUTATION-CHECK: scenario $id did NOT fail with the gate absent" >&2; bad=1; }
   done
   if [ "$bad" = "0" ]; then
