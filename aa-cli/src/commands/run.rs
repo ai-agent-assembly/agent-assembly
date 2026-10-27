@@ -6343,6 +6343,22 @@ fn unknown_tool_error(tool: &str) -> anyhow::Error {
 /// Windsurf's paths depend on `$HOME`, which may be unresolvable). Folding
 /// this into [`unknown_tool_error`] would send an operator chasing a typo
 /// that isn't there.
+/// The tool id the launch-boundary check is keyed on (AAASM-6331).
+///
+/// `aasm run exec -- codex ...` is the generic target: no adapter answers to
+/// `exec`, so keying the check on the tool string alone would launch Codex
+/// under Enforce with nothing measured. When the program being run is a file
+/// named `codex`, check it as Codex. A renamed or wrapped Codex (`npx codex`, a
+/// shell script) cannot be recognised this way and is not covered.
+fn boundary_probe_tool<'a>(tool: &'a str, program: &std::ffi::OsStr) -> &'a str {
+    let is_codex_program = std::path::Path::new(program).file_name() == Some(std::ffi::OsStr::new("codex"));
+    if tool == EXEC_TARGET && is_codex_program {
+        "codex"
+    } else {
+        tool
+    }
+}
+
 fn unresolvable_adapter_error(tool: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "{tool} is a supported tool, but its configuration could not be resolved in this \
@@ -7488,7 +7504,8 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // (a trusted project config beats what was just written), and before spawn.
     // Enforce refuses anything short of a verified boundary; Observe launches
     // and says what was not verified. Disabled is hermetic-test-only.
-    if mode == aa_core::EnforcementMode::Disabled && args.tool == "codex" {
+    let probe_tool = boundary_probe_tool(&args.tool, bound.command().get_program());
+    if mode == aa_core::EnforcementMode::Disabled && probe_tool == "codex" {
         eprintln!(
             "note: Codex's effective sandbox/approval/network boundary was NOT measured (enforcement is disabled)"
         );
@@ -7499,13 +7516,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             confined_by_backend: resolved.has_backend(),
         };
         if let Some(check) = aa_devtool::registry::verify_launch_boundary_in(
-            &args.tool,
+            probe_tool,
             bound.command(),
             &launch_ctx,
             &managed_policy,
             mode == aa_core::EnforcementMode::Enforce,
         ) {
-            eprintln!("--- {} boundary (machine-readable) ---", args.tool);
+            eprintln!("--- {probe_tool} boundary (machine-readable) ---");
             eprintln!("{}", check.report);
             match check.decision {
                 aa_devtool::registry::LaunchDecision::Refuse(why) => {
@@ -7652,6 +7669,28 @@ mod tests {
     #[derive(clap::Subcommand)]
     enum TestCommands {
         Run(RunArgs),
+    }
+
+    // --- launch-boundary tool key (AAASM-6331) ---
+
+    #[test]
+    fn the_generic_target_running_codex_is_checked_as_codex() {
+        use std::ffi::OsStr;
+        // The adversarial form: no adapter answers to `exec`, so the tool string alone
+        // would skip the boundary check for a Codex launch.
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("codex")), "codex");
+        assert_eq!(
+            boundary_probe_tool("exec", OsStr::new("/opt/homebrew/bin/codex")),
+            "codex"
+        );
+        // Controls: a registered tool id is used as given, and other programs are not Codex.
+        assert_eq!(boundary_probe_tool("codex", OsStr::new("codex")), "codex");
+        assert_eq!(boundary_probe_tool("claude", OsStr::new("codex")), "claude");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("echo")), "exec");
+        // Only an exact file name counts: a lookalike is not Codex.
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("codex-helper")), "exec");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("mycodex")), "exec");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("/tmp/codex/echo")), "exec");
     }
 
     // --- parse tests (carried forward from AAASM-927) ---
