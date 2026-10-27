@@ -111,8 +111,10 @@ PY
 
 Against the policy above it prints `allow` for `write_note` and `calc`, and `deny` with the
 reason `capability lease required` for `ghost`, a tool the policy does not declare.
-`connect_runtime_client` returns `None` when the runtime is not reachable, and the loop then
-fails on `None`; start the runtime first. This is a verdict only, not confinement: it shows
+`connect_runtime_client` returns `None` when the runtime is not reachable, when the SDK's
+native extension is not built, or when the default socket path is held by a file you do not
+own, and the loop then fails on `None`; start the runtime first and use an SDK with its native
+module built. This is a verdict only, not confinement: it shows
 what the gate answers, and a tool is stopped only if the calling SDK honours the answer.
 
 ## The record

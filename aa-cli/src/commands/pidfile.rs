@@ -169,13 +169,18 @@ fn is_trusted_gateway_url(raw: &str) -> bool {
         && url.fragment().is_none()
 }
 
+/// The most of a health body that is read. A real one is a few hundred bytes;
+/// the cap stops a stranger on the port from streaming data into memory.
+const MAX_HEALTH_BODY: u64 = 64 * 1024;
+
 /// The JSON body of `GET {base}/api/v1/health`, or `None` on any failure.
 ///
-/// Callers pass only a loopback URL they chose. The client ignores proxy
-/// settings and never follows a redirect, so the request cannot leave the
-/// machine, and it gives up after 500 ms so a stranger on the port cannot stall
-/// the caller.
+/// The client ignores proxy settings and never follows a redirect, and gives up
+/// after 500 ms so a stranger on the port cannot stall the caller. `base` is the
+/// address the caller bound, which is loopback unless the operator passed a
+/// non-loopback `--host`; the request carries no credential either way.
 fn fetch_health_body(base: &str) -> Option<serde_json::Value> {
+    use std::io::Read;
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_millis(500))
         .no_proxy()
@@ -189,7 +194,9 @@ fn fetch_health_body(base: &str) -> Option<serde_json::Value> {
     if !resp.status().is_success() {
         return None;
     }
-    resp.json::<serde_json::Value>().ok()
+    let mut body = Vec::new();
+    resp.take(MAX_HEALTH_BODY).read_to_end(&mut body).ok()?;
+    serde_json::from_slice(&body).ok()
 }
 
 /// Whether `base` answers like an Agent Assembly API: `GET /api/v1/health`
@@ -210,7 +217,15 @@ pub fn server_reported_version(base: &str) -> Option<String> {
     let body = fetch_health_body(base)?;
     body.get("status")?.as_str()?;
     body.get("api_version")?.as_str()?;
-    body.get("version")?.as_str().map(str::to_owned)
+    let version = body.get("version")?.as_str()?;
+    // Printed on the operator's terminal, so a value that is not a plain version
+    // (control characters, an escape sequence, a novel) is treated as absent.
+    let plain = !version.is_empty()
+        && version.len() <= 64
+        && version
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'+' | b'-'));
+    plain.then(|| version.to_owned())
 }
 
 /// The base URL of the gateway `aasm start` left running, if one is.
@@ -359,6 +374,13 @@ mod tests {
         );
         // A listener that merely returns a `version` is not an Agent Assembly API.
         assert_eq!(server_reported_version(&serve(r#"{"version":"9.9.9"}"#)), None);
+        // A version that is not a plain version string is dropped, not printed.
+        assert_eq!(
+            server_reported_version(&serve(
+                r#"{"status":"ok","version":"1.0\u001b[2J fake line","api_version":"v1"}"#
+            )),
+            None
+        );
         // An answer with no version reports none rather than a guess.
         assert_eq!(
             server_reported_version(&serve(r#"{"status":"ok","api_version":"v1"}"#)),

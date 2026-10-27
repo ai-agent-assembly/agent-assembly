@@ -501,10 +501,14 @@ pub fn run_with_spawner<S: GatewaySpawner>(args: StartArgs, spawner: &S, pid_fil
                 println!("  Log:     {}", log.display());
             }
             if args.mode == ModeArg::Local {
+                // The version is the answer from whatever holds the port. A start
+                // that lost the port to a stranger makes our child exit, so only an
+                // answer given while the child is still alive is attributed to it.
+                let reported = spawner.server_version(addr).filter(|_| !child_exited(pid));
                 let (line, warning) = server_identity(
                     binary_name(args.mode),
                     spawner.binary_path().as_deref(),
-                    spawner.server_version(addr).as_deref(),
+                    reported.as_deref(),
                     env!("CARGO_PKG_VERSION"),
                 );
                 println!("{line}");
