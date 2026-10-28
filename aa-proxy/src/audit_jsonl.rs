@@ -135,6 +135,10 @@ pub enum RefusalRule {
     /// the audit record names the control plane, not local config, as the
     /// decider.
     GatewayEgressPolicy,
+    /// AAASM-6262: the credential brokered for this host was revoked at the
+    /// broker, so the request was refused rather than forwarded with the
+    /// agent's own headers.
+    CredentialRevoked,
 }
 
 /// A single audit record emitted by the proxy's data path.
