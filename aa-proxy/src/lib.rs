@@ -22,6 +22,8 @@
 
 pub mod audit_jsonl;
 pub mod config;
+#[cfg(unix)]
+pub mod control;
 pub mod credentials;
 pub mod error;
 pub mod hardening;
