@@ -202,6 +202,112 @@ fn classify_provider_for_host(host: &str) -> Option<aa_core::llm::Provider> {
     }
 }
 
+/// Environment flag (not a secret) saying the provider keys arrive on the
+/// proxy's stdin instead of in its environment (AAASM-6395).
+///
+/// An environment variable is readable by every process of the same user
+/// (`ps -Eww` on macOS, `/proc/<pid>/environ` on Linux), and a governed agent is
+/// such a process. A pipe that is closed after one read is not.
+pub const PROVIDER_KEYS_STDIN_FLAG: &str = "AA_PROXY_PROVIDER_KEYS_STDIN";
+
+/// Largest provider-key payload accepted on stdin. Kept below the smallest
+/// anonymous-pipe buffer (16 KiB on macOS) so the supervisor's single write can
+/// never block waiting for a reader that has not started yet.
+pub const MAX_PROVIDER_KEYS_BYTES: usize = 8192;
+
+/// Why a provider-key payload was refused.
+///
+/// Deliberately carries no input text: the payload is key material, and an
+/// error that quoted a malformed entry would write a credential into a log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKeysError {
+    /// Keys were supplied both on stdin and in the environment; which one wins
+    /// would be a guess.
+    Ambiguous,
+    /// The stdin pipe could not be read.
+    Unreadable,
+    /// Stdin was selected but carried no usable entry.
+    Empty,
+    /// More than [`MAX_PROVIDER_KEYS_BYTES`] bytes.
+    TooLarge,
+    /// Not valid UTF-8.
+    NotUtf8,
+    /// The `index`-th (1-based) non-empty entry is not `host=key`.
+    Malformed {
+        /// Position of the offending entry.
+        index: usize,
+    },
+}
+
+impl fmt::Display for ProviderKeysError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ambiguous => write!(f, "provider keys were given on stdin and in the environment"),
+            Self::Unreadable => write!(f, "provider keys could not be read from stdin"),
+            Self::Empty => write!(f, "provider keys were selected on stdin but none were delivered"),
+            Self::TooLarge => write!(f, "provider keys exceed {MAX_PROVIDER_KEYS_BYTES} bytes"),
+            Self::NotUtf8 => write!(f, "provider keys are not valid UTF-8"),
+            Self::Malformed { index } => write!(f, "provider key entry {index} is not host=key"),
+        }
+    }
+}
+
+impl std::error::Error for ProviderKeysError {}
+
+/// Parse `host=key,host2=key2` strictly.
+///
+/// Unlike [`CredentialStore::from_env`], which skips a bad entry so a typo does
+/// not take the proxy down, a payload delivered on stdin is the operator's
+/// explicit instruction, so a bad entry refuses the whole payload rather than
+/// leaving a host silently un-brokered.
+///
+/// # Errors
+///
+/// [`ProviderKeysError::Malformed`] for a non-empty entry that is not
+/// `host=key` with both halves non-empty; [`ProviderKeysError::Empty`] when no
+/// entry remains.
+pub fn parse_provider_keys(raw: &str) -> Result<Vec<(String, Vec<u8>)>, ProviderKeysError> {
+    let mut pairs = Vec::new();
+    for (position, entry) in raw.split(',').map(str::trim).filter(|e| !e.is_empty()).enumerate() {
+        match entry.split_once('=') {
+            Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
+                pairs.push((host.trim().to_string(), key.as_bytes().to_vec()));
+            }
+            _ => return Err(ProviderKeysError::Malformed { index: position + 1 }),
+        }
+    }
+    if pairs.is_empty() {
+        return Err(ProviderKeysError::Empty);
+    }
+    Ok(pairs)
+}
+
+/// Read a bounded provider-key payload from `reader` and parse it.
+///
+/// Reads at most [`MAX_PROVIDER_KEYS_BYTES`] + 1 bytes, so an oversized or
+/// endless writer is refused instead of buffered.
+///
+/// # Errors
+///
+/// Any [`ProviderKeysError`] other than [`ProviderKeysError::Ambiguous`].
+pub fn read_provider_keys(reader: impl std::io::Read) -> Result<Vec<(String, Vec<u8>)>, ProviderKeysError> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    reader
+        .take(MAX_PROVIDER_KEYS_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|_| ProviderKeysError::Unreadable)?;
+    let outcome = if buf.len() > MAX_PROVIDER_KEYS_BYTES {
+        Err(ProviderKeysError::TooLarge)
+    } else {
+        std::str::from_utf8(&buf)
+            .map_err(|_| ProviderKeysError::NotUtf8)
+            .and_then(parse_provider_keys)
+    };
+    buf.zeroize();
+    outcome
+}
+
 /// A per-host map of real provider credentials.
 ///
 /// Construct with [`CredentialStore::from_env`] (operator configuration) or
@@ -285,6 +391,49 @@ impl CredentialStore {
                 store
             }
             _ => Self::default(),
+        }
+    }
+
+    /// Load the store the way the proxy process is started (AAASM-6395).
+    ///
+    /// * [`PROVIDER_KEYS_STDIN_FLAG`] set to `1`: read the keys from stdin (see
+    ///   [`read_provider_keys`]) and return `Some(store)`. Combined with a
+    ///   non-empty `AA_PROXY_PROVIDER_KEYS` this is refused as ambiguous.
+    /// * Flag absent: return `None`; the legacy environment path
+    ///   ([`Self::from_env`]) keeps working for a proxy started directly, with a
+    ///   warning, because that variable is visible to the proxy owner's other
+    ///   processes.
+    ///
+    /// Blocks until the writer closes the pipe. The supervisor writes the whole
+    /// payload and closes it before it waits for readiness, so this returns
+    /// promptly; if it ever does not, the supervisor's readiness timeout ends the
+    /// launch, which fails closed.
+    ///
+    /// # Errors
+    ///
+    /// A [`ProviderKeysError`]; the proxy must refuse to start on it.
+    pub fn load_startup() -> Result<Option<Self>, ProviderKeysError> {
+        let env_present = std::env::var("AA_PROXY_PROVIDER_KEYS").is_ok_and(|v| !v.is_empty());
+        let stdin_selected = std::env::var(PROVIDER_KEYS_STDIN_FLAG).is_ok_and(|v| v == "1");
+        match (stdin_selected, env_present) {
+            (true, true) => Err(ProviderKeysError::Ambiguous),
+            (true, false) => {
+                let pairs = read_provider_keys(std::io::stdin().lock())?;
+                let store = Self::from_pairs(pairs);
+                tracing::info!(
+                    hosts = store.len(),
+                    "loaded provider credentials for egress injection from stdin"
+                );
+                Ok(Some(store))
+            }
+            (false, true) => {
+                tracing::warn!(
+                    "provider keys came from the AA_PROXY_PROVIDER_KEYS environment variable, which other \
+                     processes of this user can read; start the proxy through `aasm` so they are delivered on stdin"
+                );
+                Ok(None)
+            }
+            (false, false) => Ok(None),
         }
     }
 
@@ -753,5 +902,96 @@ mod tests {
         store.revoke("api.anthropic.com");
         let dbg = format!("{store:?}");
         assert!(!dbg.contains("QA6262"), "Debug leaked secret material: {dbg}");
+    }
+    // ── AAASM-6395: provider keys delivered on stdin ────────────────────────
+
+    #[test]
+    fn a_valid_payload_parses_and_the_store_built_from_it_injects() {
+        let pairs =
+            parse_provider_keys(" Api.Anthropic.com=sk-ant-QA6395-synth , api.openai.com=sk-QA6395-two ,").unwrap();
+        assert_eq!(pairs.len(), 2);
+        let store = CredentialStore::from_pairs(pairs);
+        // Positive control for every refusal below: the same parser, fed a good payload,
+        // produces a store that actually injects.
+        assert!(matches!(
+            store.injection_for("api.anthropic.com"),
+            Injection::Inject("x-api-key", ref v) if v == b"sk-ant-QA6395-synth"
+        ));
+    }
+
+    #[test]
+    fn a_malformed_entry_refuses_the_whole_payload_and_the_error_never_quotes_it() {
+        for bad in [
+            "api.x.com=ok,SECRETMARK6395",
+            "=SECRETMARK6395",
+            "api.x.com=",
+            "api.x.com=ok,,host-no-equals",
+        ] {
+            let err = parse_provider_keys(bad).unwrap_err();
+            assert!(matches!(err, ProviderKeysError::Malformed { .. }), "{bad}: {err:?}");
+            let text = format!("{err} / {err:?}");
+            assert!(!text.contains("SECRETMARK6395"), "error quoted the input: {text}");
+        }
+        assert_eq!(
+            parse_provider_keys("api.x.com=ok,SECRETMARK6395").unwrap_err(),
+            ProviderKeysError::Malformed { index: 2 }
+        );
+    }
+
+    #[test]
+    fn nothing_usable_is_empty_not_an_empty_store() {
+        for blank in ["", "  ", ",,", " , "] {
+            assert_eq!(
+                parse_provider_keys(blank).unwrap_err(),
+                ProviderKeysError::Empty,
+                "{blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reading_is_bounded_and_refuses_oversize_endless_and_non_utf8_input() {
+        let at_limit = format!("h={}", "a".repeat(MAX_PROVIDER_KEYS_BYTES - 2));
+        assert_eq!(at_limit.len(), MAX_PROVIDER_KEYS_BYTES);
+        assert!(
+            read_provider_keys(at_limit.as_bytes()).is_ok(),
+            "exactly the limit is accepted"
+        );
+        let over = format!("h={}", "a".repeat(MAX_PROVIDER_KEYS_BYTES - 1));
+        assert_eq!(
+            read_provider_keys(over.as_bytes()).unwrap_err(),
+            ProviderKeysError::TooLarge
+        );
+        // An endless writer must be refused after the bound, not buffered forever.
+        assert_eq!(
+            read_provider_keys(std::io::repeat(b'a')).unwrap_err(),
+            ProviderKeysError::TooLarge
+        );
+        assert_eq!(
+            read_provider_keys(&b"h=\xff\xfe"[..]).unwrap_err(),
+            ProviderKeysError::NotUtf8
+        );
+        assert_eq!(read_provider_keys(&b""[..]).unwrap_err(), ProviderKeysError::Empty);
+    }
+
+    #[test]
+    fn stdin_and_environment_together_are_refused_before_stdin_is_touched() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var("AA_PROXY_PROVIDER_KEYS", "api.x.com=sk-QA6395-env");
+        std::env::set_var(PROVIDER_KEYS_STDIN_FLAG, "1");
+        let outcome = CredentialStore::load_startup();
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        std::env::remove_var(PROVIDER_KEYS_STDIN_FLAG);
+        assert_eq!(outcome.err(), Some(ProviderKeysError::Ambiguous));
+    }
+
+    #[test]
+    fn without_the_flag_the_legacy_environment_path_is_left_alone() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::remove_var(PROVIDER_KEYS_STDIN_FLAG);
+        std::env::set_var("AA_PROXY_PROVIDER_KEYS", "api.x.com=sk-QA6395-env");
+        let outcome = CredentialStore::load_startup();
+        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        assert!(matches!(outcome, Ok(None)));
     }
 }

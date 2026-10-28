@@ -61,6 +61,12 @@ pub async fn run(
     // Best-effort: a failure is logged, not fatal.
     let _ = hardening::harden_process();
 
+    // AAASM-6395: provider keys delivered on stdin are read here, before anything
+    // else can fail, and a bad payload refuses the start. The legacy environment
+    // path is left to the server constructor.
+    let startup_credentials =
+        credentials::CredentialStore::load_startup().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
+
     // AAASM-3131: shout if upstream TLS verification is disabled. This is a
     // debug-only test affordance (the env var is ignored in release builds);
     // the banner makes an accidentally-enabled run impossible to miss in logs.
@@ -139,7 +145,10 @@ pub async fn run(
         }
     }
 
-    let server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    let mut server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    if let Some(store) = startup_credentials {
+        server = server.with_credentials(store);
+    }
     server.run().await?;
     Ok(())
 }
