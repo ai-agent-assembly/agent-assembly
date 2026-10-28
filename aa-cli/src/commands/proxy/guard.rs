@@ -273,7 +273,7 @@ impl ProxyGuard {
 
         // AAASM-6395: refuse a launch whose provider keys the proxy would refuse,
         // before anything is spawned.
-        super::provider_keys::preflight()
+        super::provider_keys::preflight(binary)
             .map_err(|reason| ProxyGuardError::SpawnFailed(std::io::Error::other(reason)))?;
         let mut cmd = build_command(binary, &opts);
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;

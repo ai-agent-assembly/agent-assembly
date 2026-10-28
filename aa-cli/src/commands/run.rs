@@ -6564,8 +6564,9 @@ fn effective_child_env(
     // shared by every launch shape (including isolation backends that treat this map
     // as the child's whole environment), so the tool's environment is stripped here
     // too, by name, as a second independent guard.
-    env.remove("AA_PROXY_PROVIDER_KEYS");
-    removed.push("AA_PROXY_PROVIDER_KEYS".to_string());
+    if env.remove("AA_PROXY_PROVIDER_KEYS").is_some() {
+        removed.push("AA_PROXY_PROVIDER_KEYS".to_string());
+    }
     (env, removed)
 }
 
@@ -9454,6 +9455,27 @@ mod tests {
     /// just `HTTPS_PROXY`/`HTTP_PROXY` — are stripped from the returned map
     /// itself, independent of any Command-level step a caller may or may not
     /// also apply.
+    #[test]
+    fn effective_child_env_never_carries_the_provider_keys_to_the_tool() {
+        // AAASM-6395: the governed tool must not receive the operator's provider keys,
+        // whatever launch shape built `child_env`. The control is the same call with a
+        // variable that must survive.
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        child_env.insert("AA_PROXY_PROVIDER_KEYS".to_string(), "api.x.com=sk-QA6395".to_string());
+        child_env.insert("UNRELATED_SETTING".to_string(), "kept".to_string());
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        let (effective, removed) = effective_child_env(&cmd, &child_env, false, &[]);
+        assert!(!effective.contains_key("AA_PROXY_PROVIDER_KEYS"), "{effective:?}");
+        assert!(removed.iter().any(|n| n == "AA_PROXY_PROVIDER_KEYS"));
+        assert_eq!(effective.get("UNRELATED_SETTING").map(String::as_str), Some("kept"));
+        // When the variable was never there, it is not reported as something removed.
+        let (_, removed_when_absent) = effective_child_env(&cmd, &HashMap::new(), false, &[]);
+        assert!(!removed_when_absent.iter().any(|n| n == "AA_PROXY_PROVIDER_KEYS"));
+    }
+
     #[test]
     fn effective_child_env_strips_all_eight_proxy_variants_for_every_caller() {
         let adapter = StubEnvContributing;

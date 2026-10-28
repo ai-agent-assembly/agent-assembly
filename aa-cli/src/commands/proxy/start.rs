@@ -240,7 +240,7 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     }
 
     // AAASM-6395: a payload the proxy would refuse is refused here, before spawn.
-    if let Err(reason) = super::provider_keys::preflight() {
+    if let Err(reason) = super::provider_keys::preflight(&binary) {
         eprintln!("error: {reason}");
         return ExitCode::FAILURE;
     }
