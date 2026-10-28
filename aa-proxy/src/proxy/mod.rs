@@ -602,6 +602,41 @@ impl ProxyServer {
             }
         }
 
+        // AAASM-6262: re-apply durable credential revocations before the proxy
+        // accepts a single connection, then open the revoke-only control socket.
+        // Both are read from the environment like the credential store and the
+        // telemetry endpoint, so they stay off the enforcement config surface.
+        // A record that cannot be trusted stops the start (fail-closed): "cannot
+        // tell what was revoked" must not be read as "nothing was revoked".
+        #[cfg(unix)]
+        {
+            let control = crate::control::ControlConfig::from_env();
+            if let Some(path) = &control.revocations_file {
+                match crate::control::apply_persisted(&self.credentials, path) {
+                    Ok(revoked) => tracing::info!(revoked, "re-applied durable credential revocations"),
+                    Err(e) => {
+                        tracing::error!(error = %e, "credential revocation record cannot be trusted; refusing to start (fail-closed)");
+                        return Err(ProxyError::Config(format!(
+                            "credential revocation record cannot be trusted: {e} (fail-closed)"
+                        )));
+                    }
+                }
+            }
+            if let Some(socket) = &control.socket {
+                let control_listener = crate::control::bind_hardened(socket)
+                    .map_err(|e| ProxyError::Config(format!("cannot bind the credential control socket: {e}")))?;
+                tracing::info!(
+                    durable = control.revocations_file.is_some(),
+                    "credential revocation control socket listening"
+                );
+                tokio::spawn(crate::control::serve(
+                    control_listener,
+                    Arc::clone(&self.credentials),
+                    control.revocations_file.clone(),
+                ));
+            }
+        }
+
         let listener = TcpListener::bind(self.config.bind_addr).await?;
         let bound_addr = listener.local_addr()?;
         tracing::info!(addr = %bound_addr, "proxy listening");
