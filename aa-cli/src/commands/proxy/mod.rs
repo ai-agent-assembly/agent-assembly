@@ -8,6 +8,8 @@ pub mod launch_state;
 pub mod logs;
 pub mod pid;
 pub mod readiness;
+#[cfg(unix)]
+pub mod revoke;
 pub mod start;
 pub mod status;
 pub mod stop;
@@ -32,6 +34,9 @@ pub enum ProxyCommands {
     UninstallCa(ca::CaArgs),
     /// Tail the proxy log file.
     Logs(logs::LogsArgs),
+    /// Revoke a brokered provider credential in the running aa-proxy.
+    #[cfg(unix)]
+    RevokeCredential(revoke::RevokeArgs),
 }
 
 /// Arguments for `aasm proxy`.
@@ -49,5 +54,7 @@ pub fn dispatch(args: ProxyArgs) -> ExitCode {
         ProxyCommands::InstallCa(a) => ca::install(a),
         ProxyCommands::UninstallCa(a) => ca::uninstall(a),
         ProxyCommands::Logs(a) => logs::dispatch(a),
+        #[cfg(unix)]
+        ProxyCommands::RevokeCredential(a) => revoke::dispatch(a),
     }
 }

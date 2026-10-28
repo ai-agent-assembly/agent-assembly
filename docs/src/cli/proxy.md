@@ -19,6 +19,7 @@ aasm proxy <SUBCOMMAND> [OPTIONS]
 | [`install-ca`](#aasm-proxy-install-ca) | Install the proxy CA into the OS trust store. |
 | [`uninstall-ca`](#aasm-proxy-uninstall-ca) | Remove the proxy CA from the OS trust store. |
 | [`logs`](#aasm-proxy-logs) | Tail the proxy log file. |
+| [`revoke-credential`](#aasm-proxy-revoke-credential) | Revoke a brokered provider credential in the running proxy (Unix). |
 
 ---
 
@@ -162,3 +163,34 @@ Tail the proxy log file, with optional level/time filtering.
 ```bash
 aasm proxy logs --follow --level warn --since 10m
 ```
+
+---
+
+## aasm proxy revoke-credential
+
+Revoke the provider credential the running proxy injects for a host. Every later request to that host is refused with `403` and a `credential_revoked` body instead of being forwarded, so the agent's own headers are never passed through in its place. The request that is already in flight when you revoke completes.
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--host <HOST>` | string | required | The host whose credential to revoke, for example `api.anthropic.com`. |
+| `--socket <PATH>` | path | the proxy's control socket | Control socket of the running proxy. |
+
+```bash
+aasm proxy revoke-credential --host api.anthropic.com
+```
+
+`aasm proxy start` gives the proxy a control socket and a durable revocation record beside its state file (`AA_PROXY_CONTROL_SOCKET`, `AA_PROXY_REVOCATIONS_FILE`). A revocation is written to that record, so restarting the proxy re-applies it before the proxy accepts a connection. A record that cannot be read, is writable by group or others, or has an invalid line stops the proxy from starting, because not knowing what was revoked must not read as nothing being revoked.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Revoked (or already revoked) and written to the durable record. |
+| `1` | Nothing was revoked: no credential is configured for the host, the request was refused, or the proxy could not be reached. |
+| `3` | Revoked in the running proxy but **not** written to a durable record, so a restart can bring the credential back. |
+
+What this does and does not do:
+
+- It can only remove access. There is no command to install, rotate or read a credential, and nothing the command prints is derived from a secret.
+- A host with no configured credential is reported and left alone, so a mistyped host does not start refusing traffic.
+- The control socket is owner-only and refuses any peer that is not the proxy's own user, but it does not authenticate the operator: a process running as the same user can connect. Because it can only remove access, the worst that process can do is deny service.
+- A per-launch proxy started by `aasm run` has no control socket yet; use the standalone proxy.
+

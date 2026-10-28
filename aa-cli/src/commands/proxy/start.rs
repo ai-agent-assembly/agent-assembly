@@ -201,6 +201,13 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     };
     let binary = canonical_binary(binary);
 
+    // AAASM-6262: the control socket and revocation record live beside the state
+    // file, and the proxy cannot bind there until the directory exists.
+    #[cfg(unix)]
+    if let Some(dir) = super::revoke::control_socket_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+
     let mut cmd = build_start_command(&binary, &args);
 
     if args.no_detach {
@@ -230,6 +237,16 @@ fn build_start_command(binary: &Path, args: &StartArgs) -> std::process::Command
     let mut cmd = std::process::Command::new(binary);
     for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
         cmd.env(key, value);
+    }
+    // AAASM-6262: give the standalone proxy a revoke-only control socket and a
+    // durable revocation record beside its state file, so
+    // `aasm proxy revoke-credential` can revoke a brokered credential in the
+    // running proxy and a restart cannot bring it back. Both paths carry no
+    // secret.
+    #[cfg(unix)]
+    {
+        cmd.env("AA_PROXY_CONTROL_SOCKET", super::revoke::control_socket_path());
+        cmd.env("AA_PROXY_REVOCATIONS_FILE", super::revoke::revocations_path());
     }
     if let Some(ref ca_dir) = args.ca_dir {
         cmd.env("AA_CA_DIR", ca_dir);
