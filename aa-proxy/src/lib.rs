@@ -147,7 +147,14 @@ pub async fn run(
 
     let mut server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
     if let Some(store) = startup_credentials {
+        let expected = store.len();
         server = server.with_credentials(store);
+        // `with_credentials` only logs when the server is already shared; a proxy
+        // that kept the env-built (empty) store would forward the agent's own
+        // credential header, so verify the swap instead of trusting it.
+        if server.credentials().len() != expected {
+            anyhow::bail!("refusing to start: the delivered provider credentials were not installed");
+        }
     }
     server.run().await?;
     Ok(())

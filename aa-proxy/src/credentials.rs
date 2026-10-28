@@ -210,6 +210,10 @@ fn classify_provider_for_host(host: &str) -> Option<aa_core::llm::Provider> {
 /// such a process. A pipe that is closed after one read is not.
 pub const PROVIDER_KEYS_STDIN_FLAG: &str = "AA_PROXY_PROVIDER_KEYS_STDIN";
 
+/// What `aa-proxy --capabilities` prints when this build can consume provider
+/// keys from stdin ([`PROVIDER_KEYS_STDIN_FLAG`]).
+pub const PROVIDER_KEYS_STDIN_CAPABILITY: &str = "provider-keys-stdin";
+
 /// Largest provider-key payload accepted on stdin. Kept below the smallest
 /// anonymous-pipe buffer (16 KiB on macOS) so the supervisor's single write can
 /// never block waiting for a reader that has not started yet.
@@ -415,11 +419,20 @@ impl CredentialStore {
     pub fn load_startup() -> Result<Option<Self>, ProviderKeysError> {
         let env_present = std::env::var("AA_PROXY_PROVIDER_KEYS").is_ok_and(|v| !v.is_empty());
         let stdin_selected = std::env::var(PROVIDER_KEYS_STDIN_FLAG).is_ok_and(|v| v == "1");
+        Self::load_with(stdin_selected, env_present, std::io::stdin().lock())
+    }
+
+    /// [`Self::load_startup`] with its three inputs explicit, so each branch can
+    /// be driven without touching the process environment or real stdin.
+    fn load_with(
+        stdin_selected: bool,
+        env_present: bool,
+        stdin: impl std::io::Read,
+    ) -> Result<Option<Self>, ProviderKeysError> {
         match (stdin_selected, env_present) {
             (true, true) => Err(ProviderKeysError::Ambiguous),
             (true, false) => {
-                let pairs = read_provider_keys(std::io::stdin().lock())?;
-                let store = Self::from_pairs(pairs);
+                let store = Self::from_pairs(read_provider_keys(stdin)?);
                 tracing::info!(
                     hosts = store.len(),
                     "loaded provider credentials for egress injection from stdin"
@@ -975,23 +988,48 @@ mod tests {
     }
 
     #[test]
-    fn stdin_and_environment_together_are_refused_before_stdin_is_touched() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        std::env::set_var("AA_PROXY_PROVIDER_KEYS", "api.x.com=sk-QA6395-env");
-        std::env::set_var(PROVIDER_KEYS_STDIN_FLAG, "1");
-        let outcome = CredentialStore::load_startup();
-        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
-        std::env::remove_var(PROVIDER_KEYS_STDIN_FLAG);
-        assert_eq!(outcome.err(), Some(ProviderKeysError::Ambiguous));
+    fn stdin_and_environment_together_are_refused_before_stdin_is_read() {
+        // A reader that panics proves stdin is not touched when the request is ambiguous.
+        struct Untouchable;
+        impl std::io::Read for Untouchable {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("stdin was read for an ambiguous request");
+            }
+        }
+        assert_eq!(
+            CredentialStore::load_with(true, true, Untouchable).err(),
+            Some(ProviderKeysError::Ambiguous)
+        );
     }
 
     #[test]
-    fn without_the_flag_the_legacy_environment_path_is_left_alone() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        std::env::remove_var(PROVIDER_KEYS_STDIN_FLAG);
-        std::env::set_var("AA_PROXY_PROVIDER_KEYS", "api.x.com=sk-QA6395-env");
-        let outcome = CredentialStore::load_startup();
-        std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
-        assert!(matches!(outcome, Ok(None)));
+    fn selecting_stdin_loads_the_delivered_store_and_a_bad_payload_refuses() {
+        let store = CredentialStore::load_with(true, false, &b"api.anthropic.com=sk-ant-QA6395-stdin"[..])
+            .expect("a valid payload loads")
+            .expect("stdin selected yields a store");
+        assert!(matches!(
+            store.injection_for("api.anthropic.com"),
+            Injection::Inject("x-api-key", ref v) if v == b"sk-ant-QA6395-stdin"
+        ));
+        // The same path with nothing delivered refuses; it must never yield an empty store.
+        assert_eq!(
+            CredentialStore::load_with(true, false, &b""[..]).err(),
+            Some(ProviderKeysError::Empty)
+        );
+    }
+
+    #[test]
+    fn without_the_flag_nothing_is_read_from_stdin_and_the_legacy_path_is_left_alone() {
+        struct Untouchable;
+        impl std::io::Read for Untouchable {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("stdin was read although it was not selected");
+            }
+        }
+        assert!(matches!(CredentialStore::load_with(false, true, Untouchable), Ok(None)));
+        assert!(matches!(
+            CredentialStore::load_with(false, false, Untouchable),
+            Ok(None)
+        ));
     }
 }
