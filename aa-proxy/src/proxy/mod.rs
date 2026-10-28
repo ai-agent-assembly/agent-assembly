@@ -536,6 +536,13 @@ impl ProxyServer {
         self
     }
 
+    /// The shared credential store, so whatever owns a control surface for this
+    /// server (the revoke-only control socket, [`crate::control`]) and integration
+    /// tests can revoke on the live server rather than on a copy.
+    pub fn credentials(&self) -> Arc<CredentialStore> {
+        Arc::clone(&self.credentials)
+    }
+
     /// Bind the TCP listener and enter the accept loop.
     ///
     /// This future runs until the process is killed or an unrecoverable error
