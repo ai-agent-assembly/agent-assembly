@@ -220,7 +220,9 @@ carrying an `Mcp-Session-Id` / `MCP-Protocol-Version` header — and withholds i
 (HTTP `502`) on `Deny`, on a `Redact` it cannot apply, and on any RPC failure,
 timeout (10 s), undecodable or oversized body. That path is always fail-closed and
 is independent of `AA_PROXY_MCP_FAIL_OPEN`, which governs only the request-side
-`tools/call` check. If an endpoint is configured but the proxy holds no live
+`tools/call` check (a call whose gateway check fails or does not finish within 10 s,
+including time spent queued for the shared gateway client, is forwarded unevaluated
+under that flag and denied otherwise). If an endpoint is configured but the proxy holds no live
 gateway connection (start-up connect failed under `AA_PROXY_MCP_FAIL_OPEN=1`),
 every recognised MCP response is withheld; an empty `202`/`204` reply is forwarded.
 

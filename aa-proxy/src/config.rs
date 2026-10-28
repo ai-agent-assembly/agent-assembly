@@ -154,6 +154,15 @@ pub struct ProxyConfig {
     /// this to `true` to restore the historical soft-degradation behaviour
     /// (forward without enforcement).
     ///
+    /// A per-call evaluation that does not finish counts as the gateway
+    /// being unreachable (AAASM-6364): the `CheckAction` RPC failing, or not
+    /// answering within 10 s, or the call waiting that long for the shared
+    /// gateway client behind other in-flight calls. With this set, such a call
+    /// is forwarded unevaluated; by default it is denied. Because the queue
+    /// behind a stalled gateway is reachable by any agent that issues many
+    /// concurrent calls, setting this lets that agent obtain unevaluated
+    /// forwards; it is a demo/availability knob, not a production setting.
+    ///
     /// This knob only affects MCP `tools/call` enforcement. Non-MCP traffic
     /// is unaffected and continues to flow.
     ///

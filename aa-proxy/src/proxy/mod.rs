@@ -32,7 +32,7 @@ use crate::intercept::mcp::{
     request_encoding_hazard, MCP_LABEL_STREAM, MCP_LABEL_UNKNOWN,
 };
 use crate::intercept::{InterceptVerdict, Interceptor, ResponseScan, VerdictDecision};
-use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, McpDecision};
+use crate::mcp_enforce::{evaluate_mcp_call, evaluate_mcp_result, fail_closed_reason, McpDecision};
 use crate::probe_adjudication::{ProbeAdjudication, ProbeCorrelation, PROBE_CORRELATION_HEADER};
 use crate::proxy::http::{
     read_http_request, read_http_response_body, read_line_capped, serialize_http_request,
@@ -78,11 +78,10 @@ const MCP_RESPONSE_READ_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// `Mutex<GatewayClient>` as well as the `CheckAction` RPC itself. On expiry the
 /// response is withheld; a response RPC failure always withholds.
 ///
-/// It bounds nothing else. In particular the request-side `evaluate_mcp_call`
-/// (the `tools/call` decision) has no timeout of its own: that is pre-existing
-/// behaviour this constant does not change. The gateway client has no timeout
-/// either, and every connection task shares the one mutex, which is why the
-/// response side needs the bound.
+/// It bounds nothing else. The request-side `evaluate_mcp_call` (the
+/// `tools/call` decision) carries its own bound (AAASM-6364). The gateway
+/// client has no timeout, and every connection task shares the one mutex,
+/// which is why each side needs one.
 const MCP_GATEWAY_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How long an event stream may sit on an event that has started but not
@@ -418,9 +417,12 @@ enum McpEvalOutcome {
     Forward(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// Denied — connection should be closed after writing the given response.
     Deny(String),
-    /// The request RPC failed under `mcp_fail_open`: the call is forwarded
-    /// unevaluated (the documented request-side opt-in), but the response must
-    /// still be scanned and gateway-evaluated, which always fails closed.
+    /// The request-side evaluation did not complete under `mcp_fail_open` (the
+    /// RPC failed or did not answer within the bound, the call waited past the
+    /// bound for the shared gateway client, or no live client exists): the call
+    /// is forwarded unevaluated (the documented request-side opt-in), but the
+    /// response must still be scanned and gateway-evaluated, which always fails
+    /// closed.
     ForwardUnevaluated(crate::intercept::mcp::McpToolCall, Vec<u8>),
     /// A recognised MCP exchange that is not a `tools/call` (AAASM-6356): there
     /// is nothing to authorise on the request side, so no request RPC and no
@@ -1367,17 +1369,17 @@ impl ProxyServer {
                     tool_name = %call.tool_name,
                     %host,
                     error = %e,
-                    "gateway CheckAction failed; forwarding without enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
+                    "gateway evaluation did not complete; forwarding WITHOUT enforcement (AA_PROXY_MCP_FAIL_OPEN is set, failing OPEN)",
                 );
                 McpEvalOutcome::ForwardUnevaluated(call, args_bytes)
             }
             Err(e) => {
-                let reason = "MCP enforcement unavailable: gateway CheckAction failed (fail-closed)";
+                let reason = fail_closed_reason(&e);
                 tracing::error!(
                     tool_name = %call.tool_name,
                     %host,
                     error = %e,
-                    "gateway CheckAction failed; denying MCP call (fail-closed). \
+                    "gateway evaluation did not complete; denying MCP call (fail-closed). \
                      Set AA_PROXY_MCP_FAIL_OPEN=1 to forward without enforcement instead.",
                 );
                 self.interceptor
