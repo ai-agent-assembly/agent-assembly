@@ -130,8 +130,14 @@ impl fmt::Debug for Secret {
 /// `expires_at == None` means the entry never expires (the default for keys
 /// configured statically at startup). A `Some(instant)` in the past makes the
 /// entry expired — [`CredentialStore`] refuses to inject it (AAASM-3586).
+///
+/// `secret == None` is a revocation tombstone (AAASM-6262): the secret has been
+/// dropped (zeroized) but the host stays in the map. Removing the entry instead
+/// would make the host indistinguishable from "no credential configured", and
+/// the data path forwards the agent's own headers unchanged in that case — a
+/// revoke that falls back to pass-through is fail-open.
 struct Entry {
-    secret: Secret,
+    secret: Option<Secret>,
     expires_at: Option<std::time::Instant>,
 }
 
@@ -139,6 +145,38 @@ impl Entry {
     fn is_expired(&self) -> bool {
         matches!(self.expires_at, Some(deadline) if std::time::Instant::now() >= deadline)
     }
+}
+
+/// What the data path must do for a host, decided from one read of the store.
+///
+/// One accessor, one lock acquisition: asking "is it revoked?" and "what is the
+/// secret?" separately would leave a window where a revoke lands between the two
+/// and the request is injected with a credential that was just revoked, or
+/// forwarded uninjected.
+pub enum Injection {
+    /// Inject this auth header `(name, value)` into the outgoing request.
+    Inject(&'static str, Vec<u8>),
+    /// No credential is configured for the host: the agent's own headers are
+    /// forwarded unchanged (the backward-compatible default).
+    NotConfigured,
+    /// The configured credential expired (AAASM-3586); forwarded unchanged, as
+    /// before this type existed.
+    Expired,
+    /// The credential was revoked (AAASM-6262): the request must be refused,
+    /// never forwarded with the agent's own headers.
+    Revoked,
+}
+
+/// Result of [`CredentialStore::revoke`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevokeOutcome {
+    /// A live credential was dropped and the host is now revoked.
+    Revoked,
+    /// The host was already revoked; nothing changed.
+    AlreadyRevoked,
+    /// No credential is configured for the host; nothing changed. Deliberately
+    /// not a revocation: a mistyped host must not start refusing traffic.
+    NotConfigured,
 }
 
 /// Classify the LLM provider for an egress `host`, to pick the correct
@@ -198,7 +236,7 @@ impl CredentialStore {
                 (
                     host.to_ascii_lowercase(),
                     Entry {
-                        secret: Secret::new(bytes),
+                        secret: Some(Secret::new(bytes)),
                         expires_at: None,
                     },
                 )
@@ -268,21 +306,76 @@ impl CredentialStore {
     /// The secret bytes are expanded only into the returned owned buffer; they
     /// are never logged or copied into a `String`. This is the single accessor
     /// the data path uses, so TTL and rotation are honoured uniformly.
+    ///
+    /// A revoked host (AAASM-6262) also yields `None` here, which for a caller
+    /// that forwards on `None` is pass-through. The data path must use
+    /// [`Self::injection_for`], which tells a revoked host apart.
     pub fn authorization_for(&self, host: &str) -> Option<(&'static str, Vec<u8>)> {
-        let guard = self.entries.read().ok()?;
-        let entry = guard.get(&host.to_ascii_lowercase())?;
+        match self.injection_for(host) {
+            Injection::Inject(name, value) => Some((name, value)),
+            Injection::NotConfigured | Injection::Expired | Injection::Revoked => None,
+        }
+    }
+
+    /// Decide what to do for `host` from a single read of the store: inject,
+    /// forward unchanged, or refuse because the credential was revoked.
+    ///
+    /// A poisoned lock reads as [`Injection::NotConfigured`], matching how
+    /// [`Self::authorization_for`] has always behaved (`.ok()?`).
+    pub fn injection_for(&self, host: &str) -> Injection {
+        let Ok(guard) = self.entries.read() else {
+            return Injection::NotConfigured;
+        };
+        let Some(entry) = guard.get(&host.to_ascii_lowercase()) else {
+            return Injection::NotConfigured;
+        };
+        let Some(secret) = entry.secret.as_ref() else {
+            return Injection::Revoked;
+        };
         if entry.is_expired() {
             tracing::debug!(%host, "configured provider credential has expired; not injecting");
-            return None;
+            return Injection::Expired;
         }
-        let key = entry.secret.expose();
+        let key = secret.expose();
         match classify_provider_for_host(host) {
-            Some(aa_core::llm::Provider::Anthropic) => Some(("x-api-key", key.to_vec())),
+            Some(aa_core::llm::Provider::Anthropic) => Injection::Inject("x-api-key", key.to_vec()),
             _ => {
                 let mut buf = Vec::with_capacity(key.len() + 7);
                 buf.extend_from_slice(b"Bearer ");
                 buf.extend_from_slice(key);
-                Some(("Authorization", buf))
+                Injection::Inject("Authorization", buf)
+            }
+        }
+    }
+
+    /// Revoke the credential for `host` (AAASM-6262): drop and zeroize the
+    /// secret and leave a tombstone, so every later [`Self::injection_for`]
+    /// returns [`Injection::Revoked`].
+    ///
+    /// Takes the write lock, so a lookup that starts after this returns is
+    /// refused; a request that already read the credential completes. Revoking
+    /// a host the store does not hold changes nothing
+    /// ([`RevokeOutcome::NotConfigured`]).
+    ///
+    /// Revocation is in-memory: a restarted proxy re-reads
+    /// `AA_PROXY_PROVIDER_KEYS`. [`Self::rotate`] on a revoked host installs a
+    /// fresh credential on purpose: it is the seam an authorized rotator uses to
+    /// provision a replacement.
+    pub fn revoke(&self, host: &str) -> RevokeOutcome {
+        let Ok(mut guard) = self.entries.write() else {
+            // Cannot prove the secret is gone; report it rather than claim it.
+            tracing::error!(%host, "credential store lock poisoned; revocation not applied");
+            return RevokeOutcome::NotConfigured;
+        };
+        match guard.get_mut(&host.to_ascii_lowercase()) {
+            None => RevokeOutcome::NotConfigured,
+            Some(entry) if entry.secret.is_none() => RevokeOutcome::AlreadyRevoked,
+            Some(entry) => {
+                // Dropping the Secret zeroizes and munlocks it while the write
+                // lock is held, so no reader can observe it afterwards.
+                entry.secret = None;
+                entry.expires_at = None;
+                RevokeOutcome::Revoked
             }
         }
     }
@@ -297,7 +390,7 @@ impl CredentialStore {
     pub fn rotate(&self, host: &str, new_secret: Vec<u8>, ttl: Option<std::time::Duration>) {
         let expires_at = ttl.map(|d| std::time::Instant::now() + d);
         let entry = Entry {
-            secret: Secret::new(new_secret),
+            secret: Some(Secret::new(new_secret)),
             expires_at,
         };
         if let Ok(mut guard) = self.entries.write() {
@@ -589,5 +682,76 @@ mod tests {
             Some(("Authorization", b"Bearer sk-ok".to_vec()))
         );
         std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+    }
+    // AAASM-6262: revocation at the Credential Broker (J84 AC3). Synthetic
+    // secrets only.
+    const SYNTHETIC: &[u8] = b"sk-ant-QA6262-synthetic";
+
+    #[test]
+    fn revoke_stops_injection_and_is_not_the_same_as_not_configured() {
+        let store = CredentialStore::from_pairs([("api.anthropic.com".to_string(), SYNTHETIC.to_vec())]);
+        // Positive control: the credential injects before the revoke.
+        assert!(matches!(
+            store.injection_for("api.anthropic.com"),
+            Injection::Inject("x-api-key", ref v) if v == SYNTHETIC
+        ));
+        assert_eq!(store.revoke("api.anthropic.com"), RevokeOutcome::Revoked);
+        // The discriminator: a remove-only revoke would answer NotConfigured
+        // here, and the data path forwards NotConfigured with the agent's own
+        // headers, which is fail-open.
+        assert!(matches!(store.injection_for("api.anthropic.com"), Injection::Revoked));
+        assert_eq!(store.authorization_for("api.anthropic.com"), None);
+    }
+
+    #[test]
+    fn revoke_is_case_insensitive_and_idempotent() {
+        let store = CredentialStore::from_pairs([("API.Anthropic.com".to_string(), SYNTHETIC.to_vec())]);
+        assert_eq!(store.revoke("api.ANTHROPIC.com"), RevokeOutcome::Revoked);
+        assert_eq!(store.revoke("api.anthropic.com"), RevokeOutcome::AlreadyRevoked);
+        assert!(matches!(store.injection_for("API.ANTHROPIC.COM"), Injection::Revoked));
+    }
+
+    #[test]
+    fn revoking_an_unconfigured_host_changes_nothing() {
+        let store = CredentialStore::from_pairs([("api.openai.com".to_string(), b"sk-synthetic".to_vec())]);
+        assert_eq!(store.revoke("api.anthropic.com"), RevokeOutcome::NotConfigured);
+        // A mistyped host must not start refusing traffic.
+        assert!(matches!(
+            store.injection_for("api.anthropic.com"),
+            Injection::NotConfigured
+        ));
+        assert!(matches!(store.injection_for("api.openai.com"), Injection::Inject(..)));
+    }
+
+    #[test]
+    fn revoking_one_host_leaves_the_others_injecting() {
+        let store = CredentialStore::from_pairs([
+            ("api.anthropic.com".to_string(), SYNTHETIC.to_vec()),
+            ("api.openai.com".to_string(), b"sk-synthetic".to_vec()),
+        ]);
+        assert_eq!(store.revoke("api.anthropic.com"), RevokeOutcome::Revoked);
+        assert!(matches!(
+            store.injection_for("api.openai.com"),
+            Injection::Inject("Authorization", ref v) if v == b"Bearer sk-synthetic"
+        ));
+    }
+
+    #[test]
+    fn rotate_after_revoke_installs_a_fresh_credential() {
+        let store = CredentialStore::from_pairs([("api.anthropic.com".to_string(), SYNTHETIC.to_vec())]);
+        store.revoke("api.anthropic.com");
+        store.rotate("api.anthropic.com", b"sk-ant-QA6262-replacement".to_vec(), None);
+        assert!(matches!(
+            store.injection_for("api.anthropic.com"),
+            Injection::Inject("x-api-key", ref v) if v == b"sk-ant-QA6262-replacement"
+        ));
+    }
+
+    #[test]
+    fn a_revoked_store_still_never_formats_the_secret() {
+        let store = CredentialStore::from_pairs([("api.anthropic.com".to_string(), SYNTHETIC.to_vec())]);
+        store.revoke("api.anthropic.com");
+        let dbg = format!("{store:?}");
+        assert!(!dbg.contains("QA6262"), "Debug leaked secret material: {dbg}");
     }
 }
