@@ -67,7 +67,7 @@ pub fn revocations_path() -> PathBuf {
 /// listens on one is for [`ping`] to say, since a crashed proxy leaves its
 /// socket file behind.
 pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let prefix = format!("{}-", super::launch_state::sanitize_label(agent));
     let Ok(entries) = std::fs::read_dir(runs_root) else {
         return Vec::new();
@@ -78,6 +78,13 @@ pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
             let name = entry.file_name().to_string_lossy().into_owned();
             let suffix = name.strip_prefix(&prefix)?;
             if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+            // Only a launch directory this user owns and nobody else can write:
+            // `aasm run` creates it 0700, so anything else was not made by it.
+            let dir_meta = std::fs::symlink_metadata(entry.path()).ok()?;
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            if !dir_meta.is_dir() || dir_meta.uid() != unsafe { libc::geteuid() } || dir_meta.mode() & 0o077 != 0 {
                 return None;
             }
             let socket = entry.path().join("ctl.sock");
@@ -110,8 +117,15 @@ pub fn ping(socket: &Path) -> bool {
     serde_json::from_str::<Response>(raw.trim()).is_ok_and(|r| r.outcome == Outcome::Pong)
 }
 
-/// The newest live control socket for `agent`, or why there is none.
-fn resolve_agent_socket(agent: &str) -> Result<PathBuf, String> {
+/// Every live control socket for `agent`, or why there is none.
+///
+/// All of them, not the newest: with `--agent` the CLI picks sockets out of a
+/// directory the agent's own user can write under isolation `none`, so a process
+/// could plant a newer `ctl.sock` that answers "revoked" without revoking
+/// anything. Revoking on every live candidate means a planted socket cannot
+/// shadow the real proxy's. It does not authenticate the proxy: a launch record
+/// the agent cannot forge needs confinement, which isolation `none` lacks.
+fn resolve_agent_sockets(agent: &str) -> Result<Vec<PathBuf>, String> {
     let root =
         super::launch_state::runs_root().map_err(|e| format!("cannot locate the launch state directory: {e}"))?;
     let candidates = candidate_sockets(&root, agent);
@@ -122,13 +136,15 @@ fn resolve_agent_socket(agent: &str) -> Result<PathBuf, String> {
             root.display()
         ));
     }
-    candidates.iter().find(|s| ping(s)).cloned().ok_or_else(|| {
-        format!(
+    let live: Vec<PathBuf> = candidates.iter().filter(|s| ping(s)).cloned().collect();
+    if live.is_empty() {
+        return Err(format!(
             "found {} launch(es) for agent {agent} but no proxy answers on any control socket; \
              the launch has probably ended",
             candidates.len()
-        )
-    })
+        ));
+    }
+    Ok(live)
 }
 
 /// Why a revoke request produced no answer.
@@ -181,39 +197,48 @@ pub fn exit_code_for(response: &Response) -> u8 {
     }
 }
 
-/// Run `aasm proxy revoke-credential`.
-pub fn dispatch(args: RevokeArgs) -> ExitCode {
-    let socket = match (args.socket, &args.agent) {
-        (Some(socket), _) => socket,
-        (None, Some(agent)) => match resolve_agent_socket(agent) {
-            Ok(socket) => socket,
-            Err(reason) => {
-                eprintln!("error: {reason}");
-                return ExitCode::FAILURE;
-            }
-        },
-        (None, None) => control_socket_path(),
-    };
-    let response = match request_revoke(&socket, &args.host) {
+/// Combine the per-socket results of one `--agent` revoke into one exit status.
+///
+/// Each element is `(exit code for that socket, whether it was a hard failure)`.
+/// A hard failure (unreachable, refused or unparseable) makes the whole command
+/// fail: it cannot claim the credential is revoked everywhere. A socket that
+/// merely held no credential for the host is not a failure, but at least one
+/// socket must have revoked for the command to succeed. When several succeeded,
+/// the weakest guarantee wins: any memory-only revocation makes the status `3`.
+pub fn combine_exit_codes(results: &[(u8, bool)]) -> u8 {
+    if results.iter().any(|(_, hard)| *hard) {
+        return 1;
+    }
+    results
+        .iter()
+        .map(|(code, _)| *code)
+        .filter(|code| matches!(code, 0 | 3))
+        .max()
+        .unwrap_or(1)
+}
+
+/// Send the revoke to one socket, print what happened, and return the exit code
+/// for it and whether it was a hard failure.
+fn revoke_on(socket: &Path, host: &str, label: &str) -> (u8, bool) {
+    let response = match request_revoke(socket, host) {
         Ok(response) => response,
         Err(e) => {
             eprintln!(
-                "error: could not revoke the credential for {}: {e}\n\
+                "error: could not revoke the credential for {host}{label}: {e}\n\
                  Is the proxy running with a control socket? `aasm proxy start` configures one at {}.",
-                args.host,
                 socket.display()
             );
-            return ExitCode::FAILURE;
+            return (1, true);
         }
     };
-    let host = response.host.as_deref().unwrap_or(&args.host);
+    let named = response.host.as_deref().unwrap_or(host);
     match response.outcome {
-        Outcome::Revoked => println!("Revoked the credential for {host}: later requests to it are refused."),
-        Outcome::AlreadyRevoked => println!("The credential for {host} was already revoked."),
-        Outcome::NotConfigured => eprintln!("No credential is configured for {host}; nothing was revoked."),
-        Outcome::Pong => eprintln!("error: the proxy answered a ping instead of a revocation"),
+        Outcome::Revoked => println!("Revoked the credential for {named}{label}: later requests to it are refused."),
+        Outcome::AlreadyRevoked => println!("The credential for {named}{label} was already revoked."),
+        Outcome::NotConfigured => eprintln!("No credential is configured for {named}{label}; nothing was revoked."),
+        Outcome::Pong => eprintln!("error: the proxy answered a ping instead of a revocation{label}"),
         Outcome::Rejected => eprintln!(
-            "error: the proxy refused the request: {}",
+            "error: the proxy refused the request{label}: {}",
             response.error.as_deref().unwrap_or("no reason given")
         ),
     }
@@ -226,7 +251,37 @@ pub fn dispatch(args: RevokeArgs) -> ExitCode {
                 .unwrap_or("the revocation was not written to a durable record.")
         );
     }
-    ExitCode::from(exit_code_for(&response))
+    let hard = matches!(response.outcome, Outcome::Pong | Outcome::Rejected);
+    (exit_code_for(&response), hard)
+}
+
+/// Run `aasm proxy revoke-credential`.
+pub fn dispatch(args: RevokeArgs) -> ExitCode {
+    let host = args.host.as_str();
+    let results: Vec<(u8, bool)> = match (&args.socket, &args.agent) {
+        (Some(socket), _) => vec![revoke_on(socket, host, "")],
+        (None, Some(agent)) => match resolve_agent_sockets(agent) {
+            Ok(sockets) => sockets
+                .iter()
+                .map(|socket| revoke_on(socket, host, &format!(" (launch {})", launch_name(socket))))
+                .collect(),
+            Err(reason) => {
+                eprintln!("error: {reason}");
+                return ExitCode::FAILURE;
+            }
+        },
+        (None, None) => vec![revoke_on(&control_socket_path(), host, "")],
+    };
+    ExitCode::from(combine_exit_codes(&results))
+}
+
+/// The launch directory name a socket belongs to, for messages.
+fn launch_name(socket: &Path) -> String {
+    socket
+        .parent()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -269,22 +324,67 @@ mod tests {
         std::os::unix::net::UnixListener::bind(path).unwrap()
     }
 
+    /// A launch directory as `aasm run` makes it: owner-only.
+    fn private(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
     #[test]
     fn candidate_sockets_belong_to_exactly_one_agent_and_skip_non_sockets() {
         let root = tempfile::tempdir().unwrap();
         let mine = root.path().join("agent_one-Ab12Cd");
         let _a = bind_socket(&mine.join("ctl.sock"));
+        private(&mine);
         // Agent `agent` must not claim the directory of agent `agent-one`.
-        let _other = bind_socket(&root.path().join("agent_one-x-Ef34Gh").join("ctl.sock"));
+        let other = root.path().join("agent_one-x-Ef34Gh");
+        let _other = bind_socket(&other.join("ctl.sock"));
+        private(&other);
         // A regular file named ctl.sock is not a socket.
         let plain = root.path().join("agent_one-Zz99Zz");
         std::fs::create_dir_all(&plain).unwrap();
         std::fs::write(plain.join("ctl.sock"), b"x").unwrap();
+        private(&plain);
         // Positive control: the right agent finds its own socket.
         assert_eq!(candidate_sockets(root.path(), "agent_one"), vec![mine.join("ctl.sock")]);
         // Prefix collision in the other direction yields nothing.
         assert!(candidate_sockets(root.path(), "agent").is_empty());
         assert!(candidate_sockets(root.path(), "nobody").is_empty());
+    }
+
+    #[test]
+    fn a_launch_directory_others_can_write_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let trusted = root.path().join("agent_two-Ab12Cd");
+        let planted = root.path().join("agent_two-Zz99Zz");
+        let _a = bind_socket(&trusted.join("ctl.sock"));
+        let _b = bind_socket(&planted.join("ctl.sock"));
+        std::fs::set_permissions(&trusted, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // Positive control: with both private, both are candidates.
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(candidate_sockets(root.path(), "agent_two").len(), 2);
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            candidate_sockets(root.path(), "agent_two"),
+            vec![trusted.join("ctl.sock")]
+        );
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn several_sockets_combine_so_one_failure_or_all_nothing_revoked_fails_the_command() {
+        // Every socket revoked durably.
+        assert_eq!(combine_exit_codes(&[(0, false), (0, false)]), 0);
+        // One memory-only revocation among durable ones: the weakest guarantee wins.
+        assert_eq!(combine_exit_codes(&[(0, false), (3, false)]), 3);
+        // A socket that held no credential is not a failure while another revoked.
+        assert_eq!(combine_exit_codes(&[(1, false), (3, false)]), 3);
+        // Nothing revoked anywhere.
+        assert_eq!(combine_exit_codes(&[(1, false), (1, false)]), 1);
+        // A hard failure on any socket means revoked-everywhere cannot be claimed.
+        assert_eq!(combine_exit_codes(&[(3, false), (1, true)]), 1);
+        assert_eq!(combine_exit_codes(&[]), 1);
     }
 
     #[test]

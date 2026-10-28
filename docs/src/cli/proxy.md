@@ -174,7 +174,7 @@ Revoke the provider credential the running proxy injects for a host. Every later
 |---|---|---|---|
 | `--host <HOST>` | string | required | The host whose credential to revoke, for example `api.anthropic.com`. |
 | `--socket <PATH>` | path | the proxy's control socket | Control socket of the running proxy. |
-| `--agent <ID>` | string | — | Revoke in the proxy `aasm run` started for this registered agent id, instead of the standalone proxy. Uses the newest of that agent's launches whose proxy still answers. Cannot be combined with `--socket`. |
+| `--agent <ID>` | string | — | Revoke in the proxy `aasm run` started for this registered agent id, instead of the standalone proxy. Revokes in every launch of that agent whose proxy still answers (not only the newest), and fails if any of them cannot be reached. Cannot be combined with `--socket`. |
 
 ```bash
 aasm proxy revoke-credential --host api.anthropic.com
@@ -193,5 +193,5 @@ What this does and does not do:
 - It can only remove access. There is no command to install, rotate or read a credential, and nothing the command prints is derived from a secret.
 - A host with no configured credential is reported and left alone, so a mistyped host does not start refusing traffic.
 - The control socket is owner-only and refuses any peer that is not the proxy's own user, but it does not authenticate the operator: a process running as the same user can connect. Because it can only remove access, the worst that process can do is deny service.
-- A per-launch proxy started by `aasm run` has a control socket inside its own private launch directory, reached with `--agent`. That proxy lives for one launch and is never restarted, so it keeps no durable record: revoking there exits `3` (revoked in the running proxy, memory only), which is accurate and expected. A later `aasm run` starts from whatever credentials it is given, so stop provisioning a credential to stop it reaching future launches. When the launch directory's socket path is too long for a Unix socket address (about 100 bytes), the launch runs without a control socket.
+- A per-launch proxy started by `aasm run` has a control socket inside its own private launch directory, reached with `--agent`. That proxy lives for one launch and is never restarted, so it keeps no durable record: revoking there exits `3` (revoked in the running proxy, memory only), which is accurate and expected. A later `aasm run` starts from whatever credentials it is given, so stop provisioning a credential to stop it reaching future launches. `--agent` finds sockets by directory name under the launch state directory, trusting only directories this user owns and nobody else can write; it does not authenticate the proxy behind a socket, and under isolation `none` a process running as the same user can plant a socket there. Revoking on every live launch means a planted socket cannot stand in for the real one, but a confined launch is what makes the launch directory unforgeable. When the launch directory's socket path is too long for a Unix socket address (about 100 bytes), the launch runs without a control socket.
 
