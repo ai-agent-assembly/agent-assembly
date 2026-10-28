@@ -552,12 +552,12 @@ population smaller than the one claimed shows up as a sum that does not close:
 ```
 count: [R16] ids: 81 in the manifest, 81 in …-matrix.yaml, 81 shared, 0 manifest-only, 0 seed-only
 count: [R16] fields: 51 in the union of the two schemas = 29 compared + 22 excluded with a named reason + 0 unclassified
-count: [R16] seed: 81 ids x 29 fields = 2349 pairs; 1375 agree, 32 diverge, 942 one-side-silent; 0 skipped
-count: [R16] seed_companion: 81 coverage cells read, 0 ragged rows skipped; 81 of 81 shared ids compared, 76 agree, 5 diverge
-count: [R16] divergences: 37 found; declarations claim 37 (row, representation) pair(s) across 4 entries, 37 matched
+count: [R16] seed: 81 ids x 29 fields = 2349 pairs; 1368 agree, 39 diverge, 942 one-side-silent; 0 skipped
+count: [R16] seed_companion: 81 coverage cells read, 0 ragged rows skipped; 81 of 81 shared ids compared, 75 agree, 6 diverge
+count: [R16] divergences: 45 found; declarations claim 45 (row, representation) pair(s) across 11 entries, 45 matched
 ```
 
-The 32 seed divergences are 8 + 24. The 8: the five `coverage` rows above, plus
+The 39 seed divergences are 8 + 24 + 7. The 8: the five `coverage` rows above, plus
 `L7` and `P3` demoted off `host_enforced` by R14, plus `L5`, where the seed's
 `current_level` enum admitted the GovernanceLevel `l1_observe` on the
 ProtectionState axis and R7 rejects it. **Each names the rule that forces it**,
@@ -570,6 +570,14 @@ full list differs per row while the delta does not, and the AAASM-5527 survey
 never enumerated the channel — its own `schema.enums` has eight channel values
 and `ghcr` is not among them. R16 flagged all of them as undeclared on the first
 run of that change, which is the rule doing its job on work written after it.
+
+The last 7 are `M6` (AAASM-6362), and they are the first declarations that record a
+deliberate **strengthening**: the manifest says more than the seed because AAASM-6356
+gave the SSE leg a mechanism the seed's survey found absent. Every other declaration
+above is a weakening or an addition forced by a rule. A strengthening is not forced by
+anything, so each of its seven declarations states the evidence that justifies it, and
+the validator's undeclared-divergence and stale-declaration clauses apply to it
+unchanged: change either value and the declaration stops matching.
 
 **Two rules, one hazard, swept rather than patched.** R16 and R17 each had a
 clause whose driver lived in the manifest they gate, so one edit to the artifact
@@ -602,7 +610,7 @@ sweep for, not to fix where you happened to notice it.
   term to deny it, which is what `H2` ("explicitly *not* Denied before
   execution") and `C2` do.
 - One-side-silent is neither agreement nor divergence. It is counted and
-  printed — 931 of the 2320 pairs — because a field one representation never
+  printed — 942 of the 2349 pairs — because a field one representation never
   carried says nothing about the other, and folding it into "agree" would
   inflate the gate's apparent reach by 40%.
 
