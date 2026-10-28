@@ -2,6 +2,8 @@
 
 pub mod build_identity;
 pub mod ca;
+#[cfg(unix)]
+pub mod ctl_path;
 pub mod guard;
 pub mod identity;
 pub mod launch_state;
