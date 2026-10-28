@@ -22,6 +22,7 @@ use aa_devtool_contract::{
 use async_trait::async_trait;
 
 mod approval;
+pub mod boundary;
 pub mod executor;
 pub mod launch_env;
 pub mod lifecycle;

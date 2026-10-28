@@ -97,6 +97,182 @@ pub fn launch_warnings(tool: &str, tool_args: &[String]) -> Vec<String> {
     }
 }
 
+pub use aa_devtool_codex::boundary::LaunchDecision;
+
+/// What verifying a launch's effective boundary concluded (AAASM-6331).
+#[derive(Debug, PartialEq, Eq)]
+pub struct BoundaryCheck {
+    /// Whether the launch may go ahead.
+    pub decision: LaunchDecision,
+    /// One machine-readable line per fact, for the launch report. Empty when the
+    /// tool has no verification (the launch is then simply not verified).
+    pub report: String,
+}
+
+/// Verifies, before launch, the boundary the tool will ACTUALLY run under —
+/// not the one a written config file claims. Only Codex is verified today; for
+/// every other tool this returns `None` and the caller must not claim a
+/// verified boundary.
+///
+/// `command` is the fully bound launch command (program, argv, working
+/// directory and environment changes), so the probes see the same
+/// configuration the launch will. `enforce` is true under Enforce mode, where
+/// anything short of a verified boundary refuses the launch.
+pub fn verify_launch_boundary(
+    tool: &str,
+    command: &std::process::Command,
+    policy: &aa_devtool_contract::PolicyDocument,
+    enforce: bool,
+) -> Option<BoundaryCheck> {
+    verify_launch_boundary_in(tool, command, &LaunchContext::default(), policy, enforce)
+}
+
+/// What the launch adds to, or does to, the bound command that the command
+/// itself does not show (AAASM-6331 review).
+#[derive(Debug, Default)]
+pub struct LaunchContext<'a> {
+    /// Environment the launch merges UNDER the command's own changes
+    /// (`aasm run`'s `child_env`), which the spawned tool also sees.
+    pub child_env: Option<&'a std::collections::HashMap<String, String>>,
+    /// The tool will run inside an isolation backend, with its own filesystem
+    /// and HOME, which host-side probes cannot see into.
+    pub confined_by_backend: bool,
+}
+
+/// [`verify_launch_boundary`] with the launch's extra environment and whether an
+/// isolation backend will confine the tool.
+pub fn verify_launch_boundary_in(
+    tool: &str,
+    command: &std::process::Command,
+    ctx: &LaunchContext<'_>,
+    policy: &aa_devtool_contract::PolicyDocument,
+    enforce: bool,
+) -> Option<BoundaryCheck> {
+    use aa_devtool_codex::boundary::{launch_decision, required_floor, verify, CommandRunner, Verdict};
+    if tool != "codex" {
+        return None;
+    }
+    let argv: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    // The environment the spawned tool gets: `child_env` first, then the
+    // command's own changes over it (a `None` removes), as the launch applies them.
+    let mut launch_env: std::collections::BTreeMap<std::ffi::OsString, Option<std::ffi::OsString>> = ctx
+        .child_env
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| (k.into(), Some(v.into())))
+        .collect();
+    for (k, v) in command.get_envs() {
+        launch_env.insert(k.to_owned(), v.map(std::ffi::OsStr::to_owned));
+    }
+    let runner = CommandRunner {
+        program: command.get_program().into(),
+        cwd: command.get_current_dir().map(std::path::Path::to_path_buf),
+        env: launch_env.clone().into_iter().collect(),
+        timeout: aa_devtool_codex::boundary::DEFAULT_PROBE_TIMEOUT,
+    };
+    let mut verdict = verify(&runner, &argv, required_floor(policy));
+    // Allow rules the prompt-input probe does not list still run unsandboxed.
+    if let Verdict::Checked(r) = &verdict {
+        if r.allows_launch() {
+            let from_env = |k: &str| {
+                launch_env
+                    .get(std::ffi::OsStr::new(k))
+                    .map(|v| v.clone().map(std::path::PathBuf::from))
+                    .unwrap_or_else(|| std::env::var_os(k).map(std::path::PathBuf::from))
+                    .filter(|p| !p.as_os_str().is_empty())
+            };
+            // A relative path is resolved by the OS against the process cwd at
+            // spawn, and (for CODEX_HOME) by Codex against its own cwd, so both
+            // spellings are candidates; the scan is a superset on purpose.
+            let process_cwd = std::env::current_dir().ok();
+            let absolutise = |p: &std::path::Path| -> Vec<std::path::PathBuf> {
+                if p.is_absolute() {
+                    vec![p.to_path_buf()]
+                } else {
+                    process_cwd.iter().map(|c| c.join(p)).collect()
+                }
+            };
+            let mut bases: Vec<std::path::PathBuf> = match command.get_current_dir() {
+                Some(d) => absolutise(d),
+                None => process_cwd.iter().cloned().collect(),
+            };
+            if let Ok(aa_devtool_codex::boundary::Invocation::AgentRun { cd: Some(cd), .. }) =
+                aa_devtool_codex::boundary::parse_invocation(&argv)
+            {
+                let joined: Vec<_> = bases.iter().map(|b| b.join(&cd)).collect();
+                bases.extend(joined);
+            }
+            let mut homes: Vec<std::path::PathBuf> = Vec::new();
+            match (from_env("CODEX_HOME"), from_env("HOME")) {
+                (Some(h), _) if h.is_absolute() => homes.push(h),
+                (Some(h), _) => {
+                    homes.extend(bases.iter().map(|b| b.join(&h)));
+                    homes.extend(absolutise(&h));
+                }
+                (None, Some(h)) => {
+                    // A relative HOME is resolved by Codex against the launch
+                    // directory, like a relative CODEX_HOME (review F1).
+                    homes.extend(bases.iter().map(|b| b.join(&h).join(".codex")));
+                    homes.extend(absolutise(&h.join(".codex")));
+                }
+                (None, None) => {}
+            }
+            let rules = if homes.is_empty() {
+                // Neither CODEX_HOME nor HOME resolves: the user rules cannot be
+                // located, so the boundary cannot be called verified.
+                vec![std::path::PathBuf::from("<CODEX_HOME not locatable>")]
+            } else {
+                aa_devtool_codex::boundary::execpolicy_rule_files(&homes, &bases)
+            };
+            if !rules.is_empty() {
+                verdict = Verdict::Checked(aa_devtool_codex::boundary::BoundaryReport::below(format!(
+                    "{} execpolicy rule file(s) can run commands outside the sandbox (e.g. {})",
+                    rules.len(),
+                    rules
+                        .iter()
+                        .take(3)
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        }
+    }
+    let report = match &verdict {
+        Verdict::NotApplicable => "codex_boundary=not_applicable\ncodex_boundary_scope=sandbox_approval_network_only".to_string(),
+        Verdict::Refused(why) => format!(
+            "codex_boundary=unverifiable\ncodex_boundary_scope=sandbox_approval_network_only\ncodex_boundary_reason={why:?}"
+        ),
+        Verdict::Checked(r) => format!(
+            "codex_boundary={}\ncodex_boundary_scope=sandbox_approval_network_only\ncodex_boundary_filesystem={:?}\ncodex_boundary_network={:?}\ncodex_boundary_approval={:?}",
+            if r.allows_launch() { "verified" } else { "not_met" },
+            r.filesystem,
+            r.network,
+            r.approval
+        ),
+    };
+    // The probes above ran on the host. Inside an isolation backend the tool has
+    // its own filesystem and HOME, so a clean host result says nothing about the
+    // boundary it will actually run under: never call that verified.
+    if ctx.confined_by_backend && matches!(&verdict, Verdict::Checked(r) if r.allows_launch()) {
+        let why = "Codex will run inside an isolation backend with its own filesystem and HOME; the host-side probes do not measure that boundary".to_string();
+        return Some(BoundaryCheck {
+            decision: if enforce {
+                LaunchDecision::Refuse(why.clone())
+            } else {
+                LaunchDecision::ProceedDegraded(why.clone())
+            },
+            report: format!(
+                "codex_boundary=unverified_inside_backend\ncodex_boundary_scope=sandbox_approval_network_only\ncodex_boundary_reason={why:?}"
+            ),
+        });
+    }
+    Some(BoundaryCheck {
+        decision: launch_decision(&verdict, enforce),
+        report,
+    })
+}
+
 /// Construct one adapter per [`SUPPORTED_TOOLS`] entry that could be built in
 /// this environment, in that order.
 ///
@@ -122,6 +298,289 @@ pub fn built_in_adapters() -> Vec<Box<dyn DevToolAdapter>> {
 
 #[cfg(test)]
 mod tests {
+    // ---- AAASM-6331: verify_launch_boundary against fake `codex` scripts ----
+
+    fn fake_codex(dir: &std::path::Path, prompt: &str, doctor: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(dir.join("prompt.json"), prompt).unwrap();
+        std::fs::write(dir.join("doctor.json"), doctor).unwrap();
+        let path = dir.join("codex");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n doctor) cat '{d}/doctor.json';;\n debug) cat '{d}/prompt.json';;\nesac\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Hand-written JSON (no serde_json dev-dependency, so this crate's manifest
+    /// and the lockfile stay untouched).
+    fn read_only_prompt() -> String {
+        r#"[
+  {"role":"developer","content":[{"text":"<permissions instructions>\n`sandbox_mode` is `read-only`: x. Network access is restricted.\n"}]},
+  {"role":"user","content":[{"text":"<environment_context>\n<cwd>/w</cwd><filesystem><workspace_roots><root>/w</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>\n</environment_context>"}]}
+]"#
+        .to_string()
+    }
+
+    fn doctor_json(fs: &str) -> String {
+        format!(
+            r#"{{"codexVersion":"{}","checks":{{"config.load":{{"status":"ok"}},"sandbox.helpers":{{"details":{{"approval policy":"OnRequest","filesystem sandbox":"{fs}","network sandbox":"restricted"}}}}}}}}"#,
+            aa_devtool_codex::boundary::MEASURED_CODEX_VERSION
+        )
+    }
+
+    fn deny_policy() -> aa_devtool_contract::PolicyDocument {
+        aa_devtool_contract::PolicyDocument {
+            version: 1,
+            name: "deny".into(),
+            enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
+            rules: vec![aa_devtool_contract::PolicyRule {
+                action_pattern: "fs:write".into(),
+                decision: aa_devtool_contract::PolicyDecision::Deny,
+            }],
+        }
+    }
+
+    fn command_for(program: &std::path::Path, args: &[&str]) -> std::process::Command {
+        let mut c = std::process::Command::new(program);
+        c.args(args);
+        // Hermetic: never read the developer's real ~/.codex/rules, and never
+        // walk up from the repository checkout (which lives under $HOME).
+        c.env("CODEX_HOME", program.parent().unwrap());
+        c.current_dir(program.parent().unwrap());
+        c
+    }
+
+    #[test]
+    fn only_codex_has_a_boundary_verdict() {
+        let cmd = std::process::Command::new("true");
+        assert!(verify_launch_boundary("claude", &cmd, &deny_policy(), true).is_none());
+        assert!(verify_launch_boundary("copilot", &cmd, &deny_policy(), true).is_none());
+    }
+
+    #[test]
+    fn a_verified_boundary_proceeds_and_reports_its_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let check = verify_launch_boundary("codex", &command_for(&prog, &["exec", "do it"]), &deny_policy(), true)
+            .expect("codex is verified");
+        assert_eq!(check.decision, LaunchDecision::Proceed, "{}", check.report);
+        assert!(check.report.contains("codex_boundary=verified"));
+        assert!(check
+            .report
+            .contains("codex_boundary_scope=sandbox_approval_network_only"));
+    }
+
+    #[test]
+    fn an_unmet_boundary_is_refused_under_enforce_and_degraded_under_observe() {
+        let dir = tempfile::tempdir().unwrap();
+        // doctor says unrestricted while the prompt says read-only: disagreement.
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("unrestricted"));
+        let cmd = command_for(&prog, &["exec", "do it"]);
+        let enforce = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(enforce.decision, LaunchDecision::Refuse(_)), "{enforce:?}");
+        assert!(enforce.report.contains("codex_boundary=not_met"));
+        let observe = verify_launch_boundary("codex", &cmd, &deny_policy(), false).unwrap();
+        assert!(
+            matches!(observe.decision, LaunchDecision::ProceedDegraded(_)),
+            "{observe:?}"
+        );
+    }
+
+    #[test]
+    fn an_execpolicy_rules_file_blocks_a_verified_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let home = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "do it"]);
+        cmd.env("CODEX_HOME", home.path());
+        // Control: no rules file, same probes -> verified.
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed);
+        std::fs::create_dir_all(home.path().join("rules")).unwrap();
+        std::fs::write(
+            home.path().join("rules/default.rules"),
+            "prefix_rule(pattern=[\"bash\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+        assert!(bad.report.contains("codex_boundary=not_met"), "{}", bad.report);
+    }
+
+    /// AAASM-6331 final review: with `approval_policy=never` Codex lists no allow
+    /// rules, so project rules found only by the directory scan must still void
+    /// the claim - from an ancestor of the launch dir and from a `-C` target.
+    #[test]
+    fn project_rules_void_the_claim_from_an_ancestor_and_from_a_cd_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let proj = tempfile::tempdir().unwrap();
+        let sub = proj.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(proj.path().join(".git")).unwrap();
+
+        let from_sub = || {
+            let mut c = command_for(&prog, &["exec", "x"]);
+            c.current_dir(&sub);
+            c
+        };
+        let via_cd = || command_for(&prog, &["-C", sub.to_str().unwrap(), "exec", "x"]);
+        // Controls: no rules file yet -> both launches verify.
+        for cmd in [from_sub(), via_cd()] {
+            let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+            assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        }
+        std::fs::create_dir_all(proj.path().join(".codex/rules")).unwrap();
+        std::fs::write(
+            proj.path().join(".codex/rules/a.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        for cmd in [from_sub(), via_cd()] {
+            let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+            assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+        }
+    }
+
+    /// AAASM-6331 final review F4: a relative CODEX_HOME is resolved by Codex
+    /// against the launch directory, not the aasm process's.
+    #[test]
+    fn a_relative_codex_home_is_resolved_against_the_launch_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let lab = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.current_dir(lab.path()).env("CODEX_HOME", "home");
+        // Control: no rules under lab/home -> verified.
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        std::fs::create_dir_all(lab.path().join("home/rules")).unwrap();
+        std::fs::write(
+            lab.path().join("home/rules/u.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+    }
+
+    /// Final-delta review F1: a relative HOME (no CODEX_HOME) is resolved by
+    /// Codex against the launch directory.
+    #[test]
+    fn a_relative_home_is_resolved_against_the_launch_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let lab = tempfile::tempdir().unwrap();
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.current_dir(lab.path()).env_remove("CODEX_HOME").env("HOME", "hh");
+        let ok = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        std::fs::create_dir_all(lab.path().join("hh/.codex/rules")).unwrap();
+        std::fs::write(
+            lab.path().join("hh/.codex/rules/a.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+    }
+
+    /// Review F2: environment that only `aasm run`'s `child_env` supplies is part
+    /// of the launch, so the rules under a CODEX_HOME set there are found.
+    #[test]
+    fn child_env_supplied_codex_home_is_probed_and_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let lab = tempfile::tempdir().unwrap();
+        // Not `command_for`: that pins CODEX_HOME on the command itself, which
+        // (correctly) outranks `child_env`.
+        let mut cmd = std::process::Command::new(&prog);
+        cmd.args(["exec", "x"]).current_dir(dir.path());
+        let mut child_env = std::collections::HashMap::new();
+        child_env.insert("CODEX_HOME".to_string(), lab.path().display().to_string());
+        let ctx = LaunchContext {
+            child_env: Some(&child_env),
+            confined_by_backend: false,
+        };
+        // Control: nothing under that CODEX_HOME -> verified.
+        let ok = verify_launch_boundary_in("codex", &cmd, &ctx, &deny_policy(), true).unwrap();
+        assert_eq!(ok.decision, LaunchDecision::Proceed, "{}", ok.report);
+        std::fs::create_dir_all(lab.path().join("rules")).unwrap();
+        std::fs::write(
+            lab.path().join("rules/u.rules"),
+            "prefix_rule(pattern=[\"env\"], decision=\"allow\")",
+        )
+        .unwrap();
+        let bad = verify_launch_boundary_in("codex", &cmd, &ctx, &deny_policy(), true).unwrap();
+        assert!(matches!(bad.decision, LaunchDecision::Refuse(_)), "{:?}", bad.decision);
+        // The command's own change still wins over child_env.
+        cmd.env("CODEX_HOME", dir.path());
+        let own = verify_launch_boundary_in("codex", &cmd, &ctx, &deny_policy(), true).unwrap();
+        assert_eq!(own.decision, LaunchDecision::Proceed, "{}", own.report);
+    }
+
+    /// Review F1: a clean host result is not a verified boundary when an
+    /// isolation backend will run the tool.
+    #[test]
+    fn a_clean_host_probe_is_not_verified_inside_an_isolation_backend() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let cmd = command_for(&prog, &["exec", "x"]);
+        let confined = LaunchContext {
+            child_env: None,
+            confined_by_backend: true,
+        };
+        let enforce = verify_launch_boundary_in("codex", &cmd, &confined, &deny_policy(), true).unwrap();
+        assert!(
+            matches!(enforce.decision, LaunchDecision::Refuse(_)),
+            "{:?}",
+            enforce.decision
+        );
+        assert!(
+            enforce.report.contains("codex_boundary=unverified_inside_backend"),
+            "{}",
+            enforce.report
+        );
+        let observe = verify_launch_boundary_in("codex", &cmd, &confined, &deny_policy(), false).unwrap();
+        assert!(
+            matches!(observe.decision, LaunchDecision::ProceedDegraded(_)),
+            "{:?}",
+            observe.decision
+        );
+        // Control: the identical launch with no backend is verified.
+        let free = verify_launch_boundary_in("codex", &cmd, &LaunchContext::default(), &deny_policy(), true).unwrap();
+        assert_eq!(free.decision, LaunchDecision::Proceed, "{}", free.report);
+    }
+
+    /// With neither CODEX_HOME nor HOME the user rules cannot be located, so the
+    /// claim is withheld rather than assumed clean.
+    #[test]
+    fn an_unlocatable_codex_home_is_not_a_verified_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), &read_only_prompt(), &doctor_json("restricted"));
+        let mut cmd = command_for(&prog, &["exec", "x"]);
+        cmd.env_remove("CODEX_HOME").env_remove("HOME");
+        let r = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(r.decision, LaunchDecision::Refuse(_)), "{:?}", r.decision);
+        assert!(r.report.contains("codex_boundary=not_met"), "{}", r.report);
+    }
+
+    #[test]
+    fn unverifiable_arguments_never_reach_codex() {
+        let dir = tempfile::tempdir().unwrap();
+        let prog = fake_codex(dir.path(), "not even json", "not even json");
+        let cmd = command_for(&prog, &["--dangerously-bypass-approvals-and-sandbox"]);
+        let check = verify_launch_boundary("codex", &cmd, &deny_policy(), true).unwrap();
+        assert!(matches!(check.decision, LaunchDecision::Refuse(_)));
+        assert!(check.report.contains("codex_boundary=unverifiable"));
+    }
+
     use std::sync::Mutex;
 
     use super::*;

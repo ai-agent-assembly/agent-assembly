@@ -282,12 +282,59 @@ async fn send_through_proxy(
     ("success", format!("response: {response_head}"))
 }
 
+fn canned_prompt_input() -> String {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let permissions = "<permissions instructions>\nFilesystem sandboxing. `sandbox_mode` is `read-only`: stand-in. Network access is restricted.\n";
+    let environment = format!(
+        "<environment_context>\n  <cwd>{cwd}</cwd>\n  <filesystem><workspace_roots><root>{cwd}</root></workspace_roots><permission_profile type=\"managed\"><file_system type=\"restricted\"><entry access=\"read\"><special>:root</special></entry></file_system></permission_profile></filesystem>\n</environment_context>"
+    );
+    serde_json::json!([
+        {"type":"message","role":"developer","content":[{"type":"input_text","text":permissions}]},
+        {"type":"message","role":"user","content":[{"type":"input_text","text":environment}]}
+    ])
+    .to_string()
+}
+
+fn canned_doctor() -> String {
+    serde_json::json!({
+        "codexVersion": "0.160.0",
+        "checks": {
+            "config.load": {"status": "ok"},
+            "sandbox.helpers": {"details": {
+                "approval policy": "OnRequest",
+                "filesystem sandbox": "restricted",
+                "network sandbox": "restricted"
+            }}
+        }
+    })
+    .to_string()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--version") {
         println!("codex-cli 0.129.0");
         return Ok(());
+    }
+    // AAASM-6331: `aasm run codex` measures the launch boundary with Codex's own
+    // `debug prompt-input` and `doctor --json` before it spawns. This stand-in
+    // answers both with a read-only, network-restricted profile (which meets every
+    // floor) so the run reaches the CA-trust behaviour this file measures. It is
+    // NOT evidence about Codex's real boundary: `boundary_live.rs` runs the real
+    // binary for that.
+    match args.get(1).map(String::as_str) {
+        Some("debug") => {
+            println!("{}", canned_prompt_input());
+            return Ok(());
+        }
+        Some("doctor") => {
+            println!("{}", canned_doctor());
+            return Ok(());
+        }
+        _ => {}
     }
 
     tracing_subscriber::fmt()

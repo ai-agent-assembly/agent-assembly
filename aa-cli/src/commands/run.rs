@@ -1385,6 +1385,11 @@ mod plan {
     }
 
     impl IsolationPlan {
+        /// Whether a backend was selected, without taking it.
+        pub(super) fn has_backend(&self) -> bool {
+            self.backend.is_some()
+        }
+
         /// Take the selected backend, leaving none behind.
         ///
         /// Consuming rather than borrowing because the launch path needs it as
@@ -2300,6 +2305,11 @@ mod plan {
                 isolation,
                 boundary,
             }
+        }
+
+        /// Whether an isolation backend was selected (and will confine the tool).
+        pub(super) fn has_backend(&self) -> bool {
+            self.isolation.has_backend()
         }
 
         /// Take the selected isolation backend, leaving none behind.
@@ -6377,6 +6387,22 @@ fn unknown_tool_error(tool: &str) -> anyhow::Error {
 /// Windsurf's paths depend on `$HOME`, which may be unresolvable). Folding
 /// this into [`unknown_tool_error`] would send an operator chasing a typo
 /// that isn't there.
+/// The tool id the launch-boundary check is keyed on (AAASM-6331).
+///
+/// `aasm run exec -- codex ...` is the generic target: no adapter answers to
+/// `exec`, so keying the check on the tool string alone would launch Codex
+/// under Enforce with nothing measured. When the program being run is a file
+/// named `codex`, check it as Codex. A renamed or wrapped Codex (`npx codex`, a
+/// shell script) cannot be recognised this way and is not covered.
+fn boundary_probe_tool<'a>(tool: &'a str, program: &std::ffi::OsStr) -> &'a str {
+    let is_codex_program = std::path::Path::new(program).file_name() == Some(std::ffi::OsStr::new("codex"));
+    if tool == EXEC_TARGET && is_codex_program {
+        "codex"
+    } else {
+        tool
+    }
+}
+
 fn unresolvable_adapter_error(tool: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "{tool} is a supported tool, but its configuration could not be resolved in this \
@@ -7326,6 +7352,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
 
     if args.dry_run {
         print!("{}", dry_run_preview(target, adapter, args));
+        // AAASM-6331: a dry run starts no probe (`codex doctor` writes under
+        // CODEX_HOME), so it must not read as a verified boundary.
+        if args.tool == "codex" {
+            eprintln!(
+                "note: Codex's effective sandbox/approval/network boundary was NOT measured (--dry-run runs no probes)"
+            );
+        }
         return Ok(0);
     }
 
@@ -7509,6 +7542,44 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             .map_err(|e| anyhow::anyhow!("failed to apply settings: {e}"))?;
     }
 
+    // AAASM-6331: a managed-settings file is not evidence of the boundary the
+    // tool will run under — a `-c` flag, a trusted project config or a profile
+    // can override it. Ask the tool itself, after the settings were applied
+    // (a trusted project config beats what was just written), and before spawn.
+    // Enforce refuses anything short of a verified boundary; Observe launches
+    // and says what was not verified. Disabled is hermetic-test-only.
+    let probe_tool = boundary_probe_tool(&args.tool, bound.command().get_program());
+    if mode == aa_core::EnforcementMode::Disabled && probe_tool == "codex" {
+        eprintln!(
+            "note: Codex's effective sandbox/approval/network boundary was NOT measured (enforcement is disabled)"
+        );
+    }
+    if mode != aa_core::EnforcementMode::Disabled {
+        let launch_ctx = aa_devtool::registry::LaunchContext {
+            child_env: Some(bound.child_env()),
+            confined_by_backend: resolved.has_backend(),
+        };
+        if let Some(check) = aa_devtool::registry::verify_launch_boundary_in(
+            probe_tool,
+            bound.command(),
+            &launch_ctx,
+            &managed_policy,
+            mode == aa_core::EnforcementMode::Enforce,
+        ) {
+            eprintln!("--- {probe_tool} boundary (machine-readable) ---");
+            eprintln!("{}", check.report);
+            match check.decision {
+                aa_devtool::registry::LaunchDecision::Refuse(why) => {
+                    anyhow::bail!("refusing to launch: {why}")
+                }
+                aa_devtool::registry::LaunchDecision::ProceedDegraded(why) => {
+                    eprintln!("warning: boundary NOT verified (degraded coverage): {why}");
+                }
+                aa_devtool::registry::LaunchDecision::Proceed => {}
+            }
+        }
+    }
+
     // AAASM-6166: captured before `resolved`/`bound` are consumed below. Mirrors
     // the same two values `IsolationPlan::resolve_boundary` built this report
     // from (`SessionRef::new(&handle.session_id, &handle.trace_id)` at that call
@@ -7642,6 +7713,28 @@ mod tests {
     #[derive(clap::Subcommand)]
     enum TestCommands {
         Run(RunArgs),
+    }
+
+    // --- launch-boundary tool key (AAASM-6331) ---
+
+    #[test]
+    fn the_generic_target_running_codex_is_checked_as_codex() {
+        use std::ffi::OsStr;
+        // The adversarial form: no adapter answers to `exec`, so the tool string alone
+        // would skip the boundary check for a Codex launch.
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("codex")), "codex");
+        assert_eq!(
+            boundary_probe_tool("exec", OsStr::new("/opt/homebrew/bin/codex")),
+            "codex"
+        );
+        // Controls: a registered tool id is used as given, and other programs are not Codex.
+        assert_eq!(boundary_probe_tool("codex", OsStr::new("codex")), "codex");
+        assert_eq!(boundary_probe_tool("claude", OsStr::new("codex")), "claude");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("echo")), "exec");
+        // Only an exact file name counts: a lookalike is not Codex.
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("codex-helper")), "exec");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("mycodex")), "exec");
+        assert_eq!(boundary_probe_tool("exec", OsStr::new("/tmp/codex/echo")), "exec");
     }
 
     // --- parse tests (carried forward from AAASM-927) ---

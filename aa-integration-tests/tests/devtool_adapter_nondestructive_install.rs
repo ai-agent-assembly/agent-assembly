@@ -287,6 +287,56 @@ async fn codex_update_of_a_pre_6319_install_writes_loadable_values() {
     assert_eq!(t["approval_policy"].as_str(), Some("on-request"));
 }
 
+/// AAASM-6331 rollback: the user's own `read-only` / `on-request` must survive a
+/// full `aasm run codex` -> install -> remove cycle unchanged. The run path
+/// (`apply_settings` with an all-Allow policy) is the one that used to lower them.
+#[tokio::test]
+async fn codex_run_then_install_then_remove_never_relaxes_and_restores_the_users_values() {
+    use aa_devtool_codex::CodexAdapter;
+    use aa_devtool_contract::{DevToolAdapter, PolicyDecision, PolicyDocument, PolicyRule};
+
+    let w = World::new();
+    let cfg = "model = \"o4-mini\"\nsandbox_mode = \"read-only\"\napproval_policy = \"on-request\"\n";
+    std::fs::write(w.config(), cfg).unwrap();
+    let original: toml::Table = cfg.parse().unwrap();
+
+    // 1. `aasm run codex` under a permissive policy.
+    let adapter = CodexAdapter::default().with_home_dir(w.home.clone());
+    let allow_all = PolicyDocument {
+        version: 1,
+        name: "allow-all".into(),
+        enforcement_mode: aa_devtool_contract::EnforcementMode::default(),
+        rules: vec![PolicyRule {
+            action_pattern: "*".into(),
+            decision: PolicyDecision::Allow,
+        }],
+    };
+    let settings = adapter.generate_managed_settings(&allow_all).await.unwrap();
+    adapter.apply_settings(&settings).await.unwrap();
+    let after_run = parse(&w.config());
+    assert_eq!(
+        after_run["sandbox_mode"].as_str(),
+        Some("read-only"),
+        "run must not relax"
+    );
+    assert_eq!(
+        after_run["approval_policy"].as_str(),
+        Some("on-request"),
+        "run must not relax"
+    );
+    assert_eq!(after_run["model"].as_str(), Some("o4-mini"));
+
+    // 2. install, then 3. remove: back to exactly what the user had.
+    install(&w, 1_000).await.unwrap();
+    let out = remove(&w);
+    assert!(out.residual.is_empty(), "{:?}", out.residual);
+    assert_eq!(
+        parse(&w.config()),
+        original,
+        "the user's original values must come back"
+    );
+}
+
 /// DESIRED: remove restores the user's file byte for byte.
 #[tokio::test]
 async fn desired_codex_remove_restores_the_original_bytes() {
