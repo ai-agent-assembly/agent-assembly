@@ -29,8 +29,8 @@ flowchart LR
 
 ## 1. Start the gateway
 
-Point the gateway at one of the bundled reference policies. `policy-examples/`
-ships `low-risk.yaml`, `medium-risk.yaml`, and `high-risk.yaml`; `low-risk`
+Point the gateway at one of the bundled reference policies. The repository's `policy-examples/`
+directory has `low-risk.yaml`, `medium-risk.yaml`, and `high-risk.yaml`; `low-risk`
 allows and audits everything, which is the easiest starting point.
 
 The gRPC gateway is a separate binary, `aa-gateway`, which `cargo build -p aa-cli` does
@@ -235,6 +235,15 @@ Until then these commands report the API as unreachable:
 $ aasm agent list
 error: API request failed: error sending request for url (http://localhost:7391/api/v1/agents)
 ```
+
+### See a governed allow and deny
+
+The gateway is not needed to watch a decision. To see a capability-lease runtime allow one
+tool and deny another in a few commands, follow the
+[worked example](../cli/lease.md#worked-example) and then
+[See an allow and a deny](../cli/lease.md#see-an-allow-and-a-deny) on the `aasm lease`
+page. It starts `aa-runtime` on its own, with a policy and a lease record you create, and
+needs the Python SDK installed with its native module built.
 
 ## 5. View the topology
 
