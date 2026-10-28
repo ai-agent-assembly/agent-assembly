@@ -159,6 +159,32 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     if let Some(audit_path) = &opts.audit_jsonl_path {
         cmd.env("AA_PROXY_AUDIT_JSONL_PATH", audit_path);
     }
+    // AAASM-6262: a revoke-only control socket inside this launch's own private
+    // directory, so `aasm proxy revoke-credential --agent <id>` can revoke a
+    // brokered credential in this running proxy. Set (or removed) explicitly
+    // rather than inherited, for the reason given for the settings above: an
+    // ambient `AA_PROXY_CONTROL_SOCKET` must not decide this launch's surface.
+    //
+    // The revocation record is deliberately NOT wired: a per-launch proxy lives
+    // for exactly one launch and is never restarted, so there is no restart for a
+    // durable record to survive, and a record shared across launches would carry
+    // a revocation into every later launch with nothing to undo it. A revoke here
+    // is therefore reported as memory-only (`aasm` exit status 3), which is
+    // accurate. The socket path must also fit in `sun_path`; when it does not the
+    // launch still runs, without a control socket.
+    #[cfg(unix)]
+    {
+        let socket = opts.ready_file.parent().map(|dir| dir.join("ctl.sock"));
+        match socket {
+            Some(socket) if socket.as_os_str().len() <= aa_proxy::control::MAX_SOCKET_PATH_BYTES => {
+                cmd.env("AA_PROXY_CONTROL_SOCKET", socket);
+            }
+            _ => {
+                cmd.env_remove("AA_PROXY_CONTROL_SOCKET");
+            }
+        }
+        cmd.env_remove("AA_PROXY_REVOCATIONS_FILE");
+    }
     // AAASM-5923/F2 (independent review): `aa-proxy`'s own doc comment on
     // `ProxyConfig::from_env` says explicitly that `AA_PROXY_TRUSTED_CONFIG_PATH`
     // is what `aasm run`/`ProxyGuard` is expected to pass at spawn time — but

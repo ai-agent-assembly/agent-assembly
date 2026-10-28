@@ -85,7 +85,7 @@ pub fn allocate(label: &str) -> std::io::Result<PerLaunchState> {
 /// `${AASM_STATE_DIR:-~/.aasm}/runs` — sibling of
 /// `aa-proxy/src/config.rs::integration_state_dir`'s `integrations/` under
 /// the same state root, so both respect the same override.
-fn runs_root() -> std::io::Result<PathBuf> {
+pub(super) fn runs_root() -> std::io::Result<PathBuf> {
     let base = match std::env::var_os("AASM_STATE_DIR") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => dirs::home_dir()
@@ -100,7 +100,7 @@ fn runs_root() -> std::io::Result<PathBuf> {
 /// hostile to shell-glob and log-grep ergonomics, so they (and anything else
 /// outside a conservative safe set) become `_`. Never the sole source of
 /// uniqueness — see [`allocate`]'s doc.
-fn sanitize_label(label: &str) -> String {
+pub(super) fn sanitize_label(label: &str) -> String {
     let cleaned: String = label
         .chars()
         .map(|c| {

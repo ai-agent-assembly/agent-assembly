@@ -35,8 +35,13 @@ pub struct RevokeArgs {
     pub host: String,
     /// Control socket of the running proxy. Defaults to the one
     /// `aasm proxy start` configures.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "agent")]
     pub socket: Option<PathBuf>,
+    /// Revoke in the proxy `aasm run` started for this registered agent id,
+    /// instead of the standalone proxy. Picks the newest of that agent's launches
+    /// whose proxy still answers.
+    #[arg(long)]
+    pub agent: Option<String>,
 }
 
 /// Where `aasm proxy start` tells the proxy to listen for control requests.
@@ -51,6 +56,79 @@ pub fn control_socket_path() -> PathBuf {
 /// record, beside the state file for the same reason.
 pub fn revocations_path() -> PathBuf {
     pid_path().with_file_name("proxy-revoked-credentials")
+}
+
+/// Control sockets of `agent`'s `aasm run` launches under `runs_root`, newest first.
+///
+/// A launch directory is `<sanitized agent id>-<random alphanumerics>`, so a
+/// directory belongs to `agent` only when what follows the agent's prefix is
+/// purely alphanumeric: agent `a` must not claim the directory of agent `a-b`.
+/// Only entries that are really sockets are returned; whether anything still
+/// listens on one is for [`ping`] to say, since a crashed proxy leaves its
+/// socket file behind.
+pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
+    use std::os::unix::fs::FileTypeExt;
+    let prefix = format!("{}-", super::launch_state::sanitize_label(agent));
+    let Ok(entries) = std::fs::read_dir(runs_root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let suffix = name.strip_prefix(&prefix)?;
+            if suffix.is_empty() || !suffix.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return None;
+            }
+            let socket = entry.path().join("ctl.sock");
+            let metadata = std::fs::symlink_metadata(&socket).ok()?;
+            metadata
+                .file_type()
+                .is_socket()
+                .then(|| (metadata.modified().unwrap_or(std::time::UNIX_EPOCH), socket))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, socket)| socket).collect()
+}
+
+/// Whether a proxy answers a ping on `socket`.
+pub fn ping(socket: &Path) -> bool {
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(IO_TIMEOUT)).is_err() || stream.set_write_timeout(Some(IO_TIMEOUT)).is_err() {
+        return false;
+    }
+    if stream.write_all(b"{\"op\":\"ping\"}\n").is_err() {
+        return false;
+    }
+    let mut raw = String::new();
+    if stream.read_to_string(&mut raw).is_err() {
+        return false;
+    }
+    serde_json::from_str::<Response>(raw.trim()).is_ok_and(|r| r.outcome == Outcome::Pong)
+}
+
+/// The newest live control socket for `agent`, or why there is none.
+fn resolve_agent_socket(agent: &str) -> Result<PathBuf, String> {
+    let root =
+        super::launch_state::runs_root().map_err(|e| format!("cannot locate the launch state directory: {e}"))?;
+    let candidates = candidate_sockets(&root, agent);
+    if candidates.is_empty() {
+        return Err(format!(
+            "no control socket found for agent {agent} under {}. A launch only has one when its path fits a \
+             Unix socket address; revoke in a standalone proxy with --socket or without flags.",
+            root.display()
+        ));
+    }
+    candidates.iter().find(|s| ping(s)).cloned().ok_or_else(|| {
+        format!(
+            "found {} launch(es) for agent {agent} but no proxy answers on any control socket; \
+             the launch has probably ended",
+            candidates.len()
+        )
+    })
 }
 
 /// Why a revoke request produced no answer.
@@ -105,7 +183,17 @@ pub fn exit_code_for(response: &Response) -> u8 {
 
 /// Run `aasm proxy revoke-credential`.
 pub fn dispatch(args: RevokeArgs) -> ExitCode {
-    let socket = args.socket.unwrap_or_else(control_socket_path);
+    let socket = match (args.socket, &args.agent) {
+        (Some(socket), _) => socket,
+        (None, Some(agent)) => match resolve_agent_socket(agent) {
+            Ok(socket) => socket,
+            Err(reason) => {
+                eprintln!("error: {reason}");
+                return ExitCode::FAILURE;
+            }
+        },
+        (None, None) => control_socket_path(),
+    };
     let response = match request_revoke(&socket, &args.host) {
         Ok(response) => response,
         Err(e) => {
@@ -174,6 +262,38 @@ mod tests {
     fn the_control_paths_sit_beside_the_state_file() {
         assert_eq!(control_socket_path().parent(), pid_path().parent());
         assert_eq!(revocations_path().parent(), pid_path().parent());
+    }
+
+    fn bind_socket(path: &Path) -> std::os::unix::net::UnixListener {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::net::UnixListener::bind(path).unwrap()
+    }
+
+    #[test]
+    fn candidate_sockets_belong_to_exactly_one_agent_and_skip_non_sockets() {
+        let root = tempfile::tempdir().unwrap();
+        let mine = root.path().join("agent_one-Ab12Cd");
+        let _a = bind_socket(&mine.join("ctl.sock"));
+        // Agent `agent` must not claim the directory of agent `agent-one`.
+        let _other = bind_socket(&root.path().join("agent_one-x-Ef34Gh").join("ctl.sock"));
+        // A regular file named ctl.sock is not a socket.
+        let plain = root.path().join("agent_one-Zz99Zz");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(plain.join("ctl.sock"), b"x").unwrap();
+        // Positive control: the right agent finds its own socket.
+        assert_eq!(candidate_sockets(root.path(), "agent_one"), vec![mine.join("ctl.sock")]);
+        // Prefix collision in the other direction yields nothing.
+        assert!(candidate_sockets(root.path(), "agent").is_empty());
+        assert!(candidate_sockets(root.path(), "nobody").is_empty());
+    }
+
+    #[test]
+    fn a_stale_socket_file_is_not_a_live_proxy() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ctl.sock");
+        drop(bind_socket(&socket)); // the file remains, nothing listens
+        assert!(socket.exists());
+        assert!(!ping(&socket));
     }
 
     #[test]

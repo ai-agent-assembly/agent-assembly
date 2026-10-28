@@ -49,7 +49,7 @@ const DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// `sockaddr_un.sun_path` is 104 bytes on macOS and 108 on Linux; stay under the
 /// smaller so a path that works on one host does not fail to bind on the other.
-const MAX_SOCKET_PATH_BYTES: usize = 100;
+pub const MAX_SOCKET_PATH_BYTES: usize = 100;
 
 /// What the proxy was asked to do, read from the environment like the other
 /// enforcement-adjacent settings (the credential store, the telemetry endpoint)
