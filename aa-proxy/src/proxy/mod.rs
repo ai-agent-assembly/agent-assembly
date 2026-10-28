@@ -23,7 +23,7 @@ use aa_runtime::redaction_telemetry_client::{new_redaction_event, RedactionTelem
 
 use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
 use crate::config::ProxyConfig;
-use crate::credentials::CredentialStore;
+use crate::credentials::{CredentialStore, Injection};
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
@@ -2564,6 +2564,43 @@ impl ProxyServer {
             return Ok(());
         }
 
+        // AAASM-6262: a revoked credential refuses the request here, before the
+        // "forwarded" audit record and before any upstream dial. The lookup is
+        // made once and its result is the one used to build the egress header
+        // below, so a revoke cannot land between "is it revoked?" and "inject
+        // it". `NotConfigured`/`Expired` keep forwarding the agent's own
+        // headers; `Revoked` must never fall through to that, or revoking would
+        // fail open.
+        let injection = self.credentials.injection_for(host);
+        if matches!(injection, Injection::Revoked) {
+            tracing::info!(
+                %host,
+                transmission = NOT_FORWARDED_BY_RULE.transmission.as_str(),
+                "credential revoked at the broker: refusing forward, returning 403",
+            );
+            self.emit_rule_refusal(
+                RequestIdentity {
+                    host,
+                    method: &req.method,
+                    target: &req.target,
+                },
+                RefusalRule::CredentialRevoked,
+                Self::probe_correlation(&req),
+            );
+            // A body distinct from an upstream 401, so the agent and the
+            // operator can tell "the broker refused" from "the provider
+            // rejected the key".
+            let body = r#"{"error":"credential_revoked"}"#;
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let mut client_tls = client_reader.into_inner();
+            client_tls.write_all(response.as_bytes()).await?;
+            let _ = client_tls.shutdown().await;
+            return Ok(());
+        }
+
         // AAASM-5358: the audit entry for a forwarding branch used to be emitted
         // *after* the dial, so a request whose dial failed left no record at
         // all. It is now written here, before the dial, and writing it is what
@@ -2593,7 +2630,10 @@ impl ProxyServer {
         // The secret is expanded only into this local buffer, never logged.
         // When no key is configured (or it has expired, AAASM-3586) the
         // agent's request is forwarded unchanged (backward compatible).
-        let injected_auth: Option<(&'static str, Vec<u8>)> = self.credentials.authorization_for(host);
+        let injected_auth: Option<(&'static str, Vec<u8>)> = match injection {
+            Injection::Inject(name, value) => Some((name, value)),
+            Injection::NotConfigured | Injection::Expired | Injection::Revoked => None,
+        };
         if injected_auth.is_some() {
             tracing::debug!(%host, "injecting real provider credential at egress");
         }

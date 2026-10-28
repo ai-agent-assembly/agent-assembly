@@ -638,6 +638,53 @@ mod attacker {
     }
 
     #[tokio::test]
+    async fn revoked_credential_refuses_the_request_instead_of_passing_the_agents_header_through() {
+        // AAASM-6262 (J84 AC3). A revoked host must be REFUSED. The agent's own
+        // header carries a bogus key here on purpose: an implementation that
+        // merely stops injecting (a remove instead of a tombstone) would forward
+        // this request unchanged, the stub upstream would see it, and the test
+        // would go red. The positive control is the injecting test above, which
+        // runs the same request shape against an unrevoked store.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        assert_eq!(
+            creds.revoke(ALLOWED_HOST),
+            aa_proxy::credentials::RevokeOutcome::Revoked
+        );
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\n\
+             Authorization: Bearer agent-bogus\r\nContent-Length: 2\r\n\r\nhi"
+        );
+        let response = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("403"),
+            "a revoked credential must be refused with 403, got: {response_str}"
+        );
+        assert!(
+            response_str.contains("credential_revoked"),
+            "the refusal must be distinguishable from an upstream 401: {response_str}"
+        );
+        assert!(
+            !response_str.contains(REAL_KEY),
+            "the revoked key must never reach the agent: {response_str}"
+        );
+        // Give any (erroneous) dial a moment, then assert the upstream saw nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "upstream must never be dialed for a revoked credential"
+        );
+    }
+
+    #[tokio::test]
     async fn forged_in_tunnel_host_is_rejected_and_evil_host_never_dialed() {
         // AC2: CONNECT an allowlisted host, then forge `Host: evil.attacker.com`
         // inside the tunnel. The proxy must reject with 403 and never dial the
