@@ -262,9 +262,6 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
 
-    /// Serialises the tests that mutate the process environment.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn envs(cmd: &Command) -> Vec<(String, Option<String>)> {
         cmd.get_envs()
             .map(|(k, v)| {
@@ -286,7 +283,7 @@ mod tests {
 
     #[test]
     fn with_keys_the_variable_is_removed_the_flag_set_and_no_value_is_in_the_command() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         std::env::set_var(VAR, "api.anthropic.com=sk-ant-QA6395-synth");
         let mut cmd = Command::new("true");
         configure(&mut cmd);
@@ -305,7 +302,7 @@ mod tests {
 
     #[test]
     fn without_keys_the_flag_is_removed_even_when_set_ambiently() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         std::env::remove_var(VAR);
         std::env::set_var(PROVIDER_KEYS_STDIN_FLAG, "1");
         let mut cmd = Command::new("true");
@@ -318,7 +315,7 @@ mod tests {
 
     #[test]
     fn a_real_child_receives_the_payload_on_stdin_and_not_in_its_environment() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         std::env::set_var(VAR, "api.anthropic.com=sk-ant-QA6395-synth");
         // The stub prints whether its own environment holds the value, then echoes stdin.
         let mut cmd = Command::new("sh");
@@ -340,7 +337,7 @@ mod tests {
 
     #[test]
     fn keys_with_no_stdin_pipe_are_a_delivery_error_not_a_silent_no_op() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         std::env::set_var(VAR, "api.x.com=sk-QA6395");
         let mut child = Command::new("true")
             .stdin(Stdio::null())
@@ -357,7 +354,7 @@ mod tests {
 
     #[test]
     fn preflight_refuses_what_cannot_be_delivered_without_quoting_it() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         let dir = tempfile::tempdir().unwrap();
         let capable = stub_proxy(dir.path(), "echo provider-keys-stdin");
 
@@ -390,7 +387,7 @@ mod tests {
             Captured::from_os(Some(std::ffi::OsString::from_vec(b"h=\xff\xfe".to_vec()))),
             Captured::NotUtf8
         );
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         std::env::set_var(VAR, std::ffi::OsString::from_vec(b"h=\xff\xfe".to_vec()));
         let dir = tempfile::tempdir().unwrap();
         let outcome = preflight(&stub_proxy(dir.path(), "echo provider-keys-stdin"));
@@ -405,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_proxy_that_predates_stdin_delivery_is_refused_and_a_capable_one_is_not() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = crate::test_support::env_guard();
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var(VAR, "api.x.com=sk-QA6395");
         // An old aa-proxy rejects the unknown flag; one that is silent or wrong is also not capable.

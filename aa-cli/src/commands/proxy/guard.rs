@@ -23,7 +23,11 @@ use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 
 use super::build_identity::{probe, ProxyBuildEvidence};
+#[cfg(unix)]
+use super::ctl_path::FALLBACK_BASE;
 use super::readiness::{wait_for_ready_file, ReadyFileOutcome};
+#[cfg(not(unix))]
+const FALLBACK_BASE: &str = "/tmp";
 
 /// How long to wait for the dedicated proxy to report readiness before
 /// treating the launch as failed. Generous relative to a normal bind (which
@@ -95,6 +99,11 @@ pub enum ProxyGuardError {
     /// is the closest thing to a root cause a caller has (stderr, if wanted,
     /// belongs to a later increment's log-capture work — out of scope here).
     ChildExitedBeforeReady(ExitStatus),
+    /// This launch brokers a provider credential, which must be revocable while
+    /// the launch runs, and no working revoke path could be established. The
+    /// launch is refused rather than started with a credential nobody can revoke
+    /// (AAASM-6262, AC3).
+    RevocationUnavailable(String),
 }
 
 impl std::fmt::Display for ProxyGuardError {
@@ -112,42 +121,17 @@ impl std::fmt::Display for ProxyGuardError {
             Self::ChildExitedBeforeReady(status) => {
                 write!(f, "aa-proxy exited before reporting readiness (status: {status})")
             }
+            Self::RevocationUnavailable(why) => write!(
+                f,
+                "refusing to launch: this launch brokers a provider credential, which must be revocable while it \
+                 runs, but its revocation control socket is unavailable ({why}). Shorten AASM_STATE_DIR or the \
+                 agent id, or fix the fallback directory, and retry."
+            ),
         }
     }
 }
 
 impl std::error::Error for ProxyGuardError {}
-
-/// Where this launch's revoke-only control socket goes, or `None` when that path
-/// would not fit a Unix socket address (`sun_path`, [`MAX_SOCKET_PATH_BYTES`]).
-///
-/// [`MAX_SOCKET_PATH_BYTES`]: aa_proxy::control::MAX_SOCKET_PATH_BYTES
-#[cfg(unix)]
-fn control_socket_for(ready_file: &std::path::Path) -> Option<PathBuf> {
-    let socket = ready_file.parent()?.join("ctl.sock");
-    (socket.as_os_str().len() <= aa_proxy::control::MAX_SOCKET_PATH_BYTES).then_some(socket)
-}
-
-/// What the operator must be told when a launch that brokers a credential has no
-/// way to revoke it, or `None` when revocation is reachable or nothing is brokered.
-///
-/// The launch still runs: a missing control socket is a loss of the ability to
-/// revoke mid-launch, not a loss of enforcement. But it used to be silent, so
-/// `aasm proxy revoke-credential --agent <id>` simply found nothing and an operator
-/// who believed a credential was revocable had no way to learn otherwise.
-#[cfg(unix)]
-pub(crate) fn revocation_unavailable_notice(opts: &ProxyGuardOptions, brokered: bool) -> Option<String> {
-    if !brokered || control_socket_for(&opts.ready_file).is_some() {
-        return None;
-    }
-    Some(format!(
-        "warning: this launch brokers a provider credential but its proxy has no revocation control socket \
-         (the launch directory path would exceed {} bytes), so `aasm proxy revoke-credential --agent {}` \
-         cannot reach it. Use a shorter AASM_STATE_DIR or agent id to enable revocation for this launch.",
-        aa_proxy::control::MAX_SOCKET_PATH_BYTES,
-        opts.agent_id.as_deref().unwrap_or("<agent id>"),
-    ))
-}
 
 /// Build the (unspawned) command for a dedicated proxy from `opts`.
 ///
@@ -157,6 +141,22 @@ pub(crate) fn revocation_unavailable_notice(opts: &ProxyGuardOptions, brokered: 
 /// coverage proving any of this wiring actually happens (a deleted line here
 /// would pass every existing test silently).
 fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::process::Command {
+    #[cfg(unix)]
+    let control = opts.ready_file.parent().and_then(super::ctl_path::primary_socket);
+    #[cfg(not(unix))]
+    let control: Option<PathBuf> = None;
+    build_command_with_control(binary, opts, control.as_deref())
+}
+
+/// [`build_command`] with the control-socket path decided by the caller.
+///
+/// `None` removes `AA_PROXY_CONTROL_SOCKET` explicitly: an ambient value must
+/// never decide whether this launch has a control socket.
+fn build_command_with_control(
+    binary: &std::path::Path,
+    opts: &ProxyGuardOptions,
+    control_socket: Option<&std::path::Path>,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new(binary);
     cmd.env("AA_PROXY_ADDR", "127.0.0.1:0");
     cmd.env("AA_PROXY_READY_FILE", &opts.ready_file);
@@ -201,11 +201,12 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     // durable record to survive, and a record shared across launches would carry
     // a revocation into every later launch with nothing to undo it. A revoke here
     // is therefore reported as memory-only (`aasm` exit status 3), which is
-    // accurate. The socket path must also fit in `sun_path`; when it does not the
-    // launch still runs, without a control socket.
+    // accurate. The socket path must also fit in `sun_path`: the caller picks it
+    // (`ctl_path::plan`), using a short private fallback when the launch directory
+    // is too long, and refuses a launch that brokers a credential when no path works.
     #[cfg(unix)]
     {
-        match control_socket_for(&opts.ready_file) {
+        match control_socket {
             Some(socket) => {
                 cmd.env("AA_PROXY_CONTROL_SOCKET", socket);
             }
@@ -266,6 +267,9 @@ pub struct ProxyGuard {
     ready_file: PathBuf,
     bound_addr: SocketAddr,
     build_evidence: ProxyBuildEvidence,
+    /// A control socket kept outside the launch directory (the short-path
+    /// fallback); the launch directory is not removed with the guard, so this is.
+    fallback_socket: Option<PathBuf>,
 }
 
 impl ProxyGuard {
@@ -295,6 +299,16 @@ impl ProxyGuard {
         binary: &std::path::Path,
         opts: ProxyGuardOptions,
     ) -> Result<Self, ProxyGuardError> {
+        Self::spawn_with_binary_in(binary, opts, std::path::Path::new(FALLBACK_BASE))
+    }
+
+    /// [`Self::spawn_with_binary`] with the base directory of the short-path
+    /// fallback named by the caller, so tests never touch the real `/tmp`.
+    pub(crate) fn spawn_with_binary_in(
+        binary: &std::path::Path,
+        opts: ProxyGuardOptions,
+        fallback_base: &std::path::Path,
+    ) -> Result<Self, ProxyGuardError> {
         // AAASM-5984: ask the resolved binary what build it is before
         // spawning it long-running — see `build_identity`'s module doc for
         // why this is a separate bounded probe rather than capturing the
@@ -305,27 +319,59 @@ impl ProxyGuard {
         // before anything is spawned.
         super::provider_keys::preflight(binary)
             .map_err(|reason| ProxyGuardError::SpawnFailed(std::io::Error::other(reason)))?;
-        #[cfg(unix)]
-        if let Some(notice) = revocation_unavailable_notice(&opts, super::provider_keys::delivering()) {
-            eprintln!("{notice}");
-        }
-        let mut cmd = build_command(binary, &opts);
+
+        // AAASM-6262 (AC3): a launch that brokers a credential must be able to
+        // revoke it while it runs. The control socket is therefore required for
+        // such a launch: it is placed in the launch directory when that fits, in a
+        // short private fallback otherwise, and the launch is refused when neither
+        // works. A launch that brokers nothing keeps its previous behaviour
+        // (a socket when the path fits, none otherwise, nothing created).
+        let brokered = super::provider_keys::delivering();
+        let (control_path, fallback_socket) = Self::plan_control_socket(&opts, brokered, fallback_base)?;
+        let discard_fallback = |socket: &Option<PathBuf>| {
+            if let Some(socket) = socket {
+                let _ = std::fs::remove_file(socket);
+            }
+        };
+
+        let mut cmd = build_command_with_control(binary, &opts, control_path.as_deref());
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;
         if let Err(e) = super::provider_keys::deliver(&mut child) {
             // A proxy without its keys would forward the agent's own credential
             // header unchanged, so the launch is refused rather than degraded.
             terminate_gracefully(&mut child);
             let _ = std::fs::remove_file(&opts.ready_file);
+            discard_fallback(&fallback_socket);
             return Err(ProxyGuardError::SpawnFailed(e));
         }
 
         match wait_for_ready_file(&opts.ready_file, READINESS_TIMEOUT, &mut child) {
-            ReadyFileOutcome::Ready(bound_addr) => Ok(ProxyGuard {
-                child,
-                ready_file: opts.ready_file,
-                bound_addr,
-                build_evidence,
-            }),
+            ReadyFileOutcome::Ready(bound_addr) => {
+                // The proxy binds the control socket before it reports ready, so a
+                // socket that was required and is not answering is a proxy that
+                // cannot be revoked. Prove it answers, and that it is THIS proxy
+                // that answers, before the launch is allowed to proceed.
+                if brokered {
+                    let proven = control_path
+                        .as_deref()
+                        .is_some_and(|socket| Self::control_socket_answers(socket, child.id()));
+                    if !proven {
+                        terminate_gracefully(&mut child);
+                        let _ = std::fs::remove_file(&opts.ready_file);
+                        discard_fallback(&fallback_socket);
+                        return Err(ProxyGuardError::RevocationUnavailable(
+                            "the proxy's control socket did not answer as the spawned proxy".to_string(),
+                        ));
+                    }
+                }
+                Ok(ProxyGuard {
+                    child,
+                    ready_file: opts.ready_file,
+                    bound_addr,
+                    build_evidence,
+                    fallback_socket,
+                })
+            }
             ReadyFileOutcome::Timeout => {
                 // Not yet a ProxyGuard, so Drop will never run for this
                 // child — the same graceful-then-forceful teardown has to
@@ -333,13 +379,69 @@ impl ProxyGuard {
                 // exactly the process the refusal is supposed to prevent.
                 terminate_gracefully(&mut child);
                 let _ = std::fs::remove_file(&opts.ready_file);
+                discard_fallback(&fallback_socket);
                 Err(ProxyGuardError::ReadinessTimeout)
             }
             ReadyFileOutcome::ChildExited(status) => {
                 let _ = std::fs::remove_file(&opts.ready_file);
+                discard_fallback(&fallback_socket);
                 Err(ProxyGuardError::ChildExitedBeforeReady(status))
             }
         }
+    }
+
+    /// Decide this launch's control socket: `(path handed to the proxy, fallback socket to remove)`.
+    ///
+    /// A launch that brokers a credential must be revocable while it runs, so for
+    /// one the answer is a working path or an error. A launch that brokers nothing
+    /// keeps its previous behaviour. On a platform without Unix sockets nothing can
+    /// revoke, so a brokered launch is refused there too rather than started blind.
+    #[cfg(unix)]
+    fn plan_control_socket(
+        opts: &ProxyGuardOptions,
+        brokered: bool,
+        fallback_base: &std::path::Path,
+    ) -> Result<(Option<PathBuf>, Option<PathBuf>), ProxyGuardError> {
+        let plan = match opts.ready_file.parent() {
+            Some(dir) => super::ctl_path::plan(dir, brokered, fallback_base)
+                .map_err(|e| ProxyGuardError::RevocationUnavailable(e.to_string()))?,
+            None if brokered => {
+                return Err(ProxyGuardError::RevocationUnavailable(
+                    "the launch has no directory to hold a control socket".to_string(),
+                ))
+            }
+            None => None,
+        };
+        let fallback = plan
+            .as_ref()
+            .filter(|p| p.is_fallback())
+            .map(|p| p.path().to_path_buf());
+        Ok((plan.map(|p| p.path().to_path_buf()), fallback))
+    }
+
+    #[cfg(not(unix))]
+    fn plan_control_socket(
+        _opts: &ProxyGuardOptions,
+        brokered: bool,
+        _fallback_base: &std::path::Path,
+    ) -> Result<(Option<PathBuf>, Option<PathBuf>), ProxyGuardError> {
+        if brokered {
+            return Err(ProxyGuardError::RevocationUnavailable(
+                "credential revocation needs Unix sockets, which this platform does not provide".to_string(),
+            ));
+        }
+        Ok((None, None))
+    }
+
+    /// Whether `socket` answers a ping as the process we spawned.
+    #[cfg(unix)]
+    fn control_socket_answers(socket: &std::path::Path, pid: u32) -> bool {
+        super::revoke::ping_as(socket, Some(pid))
+    }
+
+    #[cfg(not(unix))]
+    fn control_socket_answers(_socket: &std::path::Path, _pid: u32) -> bool {
+        false
     }
 
     /// The address to route this launch's tool at (`HTTPS_PROXY`/`HTTP_PROXY`).
@@ -379,6 +481,9 @@ impl Drop for ProxyGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.ready_file);
         terminate_gracefully(&mut self.child);
+        if let Some(socket) = &self.fallback_socket {
+            let _ = std::fs::remove_file(socket);
+        }
     }
 }
 
@@ -529,15 +634,9 @@ mod tests {
         );
     }
 
-    /// Machine-checks the env-var wiring `ProxyGuard::spawn` depends on,
-    /// without spawning anything: review found `spawn()` had no coverage
-    /// proving this wiring happens at all, so a deleted `cmd.env(...)` line
-    /// — including `AA_PROXY_PARENT_PID`, which the parent-watch shutdown
-    /// path (`aa-proxy/src/proxy/mod.rs`) depends on entirely — would have
-    /// passed every existing test silently.
-    fn options_with_ready_file(ready_file: &str) -> ProxyGuardOptions {
+    fn options_with_ready_file(ready_file: &std::path::Path) -> ProxyGuardOptions {
         ProxyGuardOptions {
-            ready_file: PathBuf::from(ready_file),
+            ready_file: ready_file.to_path_buf(),
             ca_dir: PathBuf::from("/tmp/ca"),
             agent_id: Some("agent-under-test".to_string()),
             gateway_endpoint: None,
@@ -546,45 +645,283 @@ mod tests {
         }
     }
 
-    /// A launch directory too long for a Unix socket address loses its control
-    /// socket, and a launch that brokers a credential must say so out loud. Every
-    /// arm differs from the positive control by one input.
-    #[cfg(unix)]
-    #[test]
-    fn a_launch_path_too_long_for_a_socket_has_no_control_socket_and_says_so() {
-        let short = options_with_ready_file("/tmp/runs/a-1/ready");
-        let long_dir = format!("/tmp/{}", "d".repeat(aa_proxy::control::MAX_SOCKET_PATH_BYTES));
-        let long = options_with_ready_file(&format!("{long_dir}/ready"));
-
-        // Positive control: a short path gets the socket and no notice.
-        let env_of = |opts: &ProxyGuardOptions| {
-            build_command(std::path::Path::new("/usr/bin/aa-proxy"), opts)
-                .get_envs()
-                .find(|(k, _)| *k == std::ffi::OsStr::new("AA_PROXY_CONTROL_SOCKET"))
-                .map(|(_, v)| v.map(std::ffi::OsStr::to_os_string))
-        };
-        assert_eq!(
-            env_of(&short),
-            Some(Some(std::ffi::OsString::from("/tmp/runs/a-1/ctl.sock")))
-        );
-        assert_eq!(revocation_unavailable_notice(&short, true), None);
-
-        // The long path: the variable is explicitly removed, and a brokered launch is told.
-        assert_eq!(env_of(&long), Some(None), "an ambient value must not survive either");
-        let notice = revocation_unavailable_notice(&long, true).expect("a brokered launch must be warned");
-        assert!(
-            notice.contains("agent-under-test") && notice.contains("revoke-credential"),
-            "{notice}"
-        );
-        assert!(
-            !notice.contains(&long_dir),
-            "the notice should not echo the long path: {notice}"
-        );
-
-        // Nothing brokered, nothing to revoke: no warning noise.
-        assert_eq!(revocation_unavailable_notice(&long, false), None);
+    /// `AA_PROXY_CONTROL_SOCKET` as `build_command_with_control` leaves it on the
+    /// command: `Some(Some(v))` set, `Some(None)` explicitly removed, `None` untouched.
+    fn control_env(cmd: &std::process::Command) -> Option<Option<std::ffi::OsString>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("AA_PROXY_CONTROL_SOCKET"))
+            .map(|(_, v)| v.map(std::ffi::OsStr::to_os_string))
     }
 
+    #[test]
+    fn the_control_socket_variable_is_set_when_given_and_removed_when_not() {
+        let opts = options_with_ready_file(std::path::Path::new("/tmp/runs/a-1/ready"));
+        let bin = std::path::Path::new("/usr/bin/aa-proxy");
+        let with = build_command_with_control(bin, &opts, Some(std::path::Path::new("/tmp/x/ctl.sock")));
+        assert_eq!(
+            control_env(&with),
+            Some(Some(std::ffi::OsString::from("/tmp/x/ctl.sock")))
+        );
+        // None must REMOVE it explicitly, so an ambient value cannot decide the launch's surface.
+        let without = build_command_with_control(bin, &opts, None);
+        assert_eq!(control_env(&without), Some(None));
+        // The default builder derives the in-launch-directory socket when it fits.
+        assert_eq!(
+            control_env(&build_command(bin, &opts)),
+            Some(Some(std::ffi::OsString::from("/tmp/runs/a-1/ctl.sock")))
+        );
+    }
+
+    /// A stand-in `aa-proxy` for the spawn-level tests. As the SAME process (`exec`),
+    /// it reads the delivered payload, binds the control socket it was given when
+    /// `serve_control`, reports ready, and answers pings with a pong, like the real
+    /// proxy's order of startup. Records its pid and the control-socket variable it
+    /// saw, and touches `marker` only on a real start (not for `--version` /
+    /// `--capabilities` probes).
+    #[cfg(unix)]
+    fn write_stub_proxy(
+        dir: &std::path::Path,
+        ready: &std::path::Path,
+        serve_control: bool,
+    ) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        assert!(
+            std::process::Command::new("python3")
+                .arg("--version")
+                .output()
+                .is_ok_and(|o| o.status.success()),
+            "the spawn-level proxy tests need python3 on PATH"
+        );
+        let marker = dir.join("started.marker");
+        let pidfile = dir.join("stub.pid");
+        let ctlenv = dir.join("ctlenv.txt");
+        let py = dir.join("stub_proxy.py");
+        std::fs::write(
+            &py,
+            r#"import os, sys, socket, time
+ready, pidfile, ctlenv, serve = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+open(pidfile, "w").write(str(os.getpid()))
+sock = os.environ.get("AA_PROXY_CONTROL_SOCKET")
+open(ctlenv, "w").write(repr(sock))
+sys.stdin.read()
+if serve and sock:
+    s = socket.socket(socket.AF_UNIX); s.bind(sock); os.chmod(sock, 0o600); s.listen(4)
+open(ready + ".tmp", "w").write("127.0.0.1:59999\n"); os.rename(ready + ".tmp", ready)
+while True:
+    if serve and sock:
+        c, _ = s.accept(); c.recv(1024); c.sendall(b'{"outcome":"pong"}\n'); c.close()
+    else:
+        time.sleep(0.05)
+"#,
+        )
+        .unwrap();
+        let stub = dir.join("aa-proxy");
+        std::fs::write(
+            &stub,
+            format!(
+                "#!/bin/sh
+                 if [ \"$1\" = \"--version\" ]; then echo 'aa-proxy 0.0.1-rc.8'; echo 'build-sha: {sha}'; \
+                 echo 'build-identity-source: checkout'; exit 0; fi
+                 if [ \"$1\" = \"--capabilities\" ]; then echo provider-keys-stdin; exit 0; fi
+                 touch \"{marker}\"
+                 exec python3 \"{py}\" \"{ready}\" \"{pidfile}\" \"{ctlenv}\" {serve}
+",
+                sha = "f".repeat(40),
+                marker = marker.display(),
+                py = py.display(),
+                ready = ready.display(),
+                pidfile = pidfile.display(),
+                ctlenv = ctlenv.display(),
+                serve = u8::from(serve_control),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (stub, marker, pidfile, ctlenv)
+    }
+
+    /// Sets (or clears) the brokered-credential variable for one test and always
+    /// clears it again, including when an assertion panics first.
+    #[cfg(unix)]
+    struct BrokeredEnv;
+
+    #[cfg(unix)]
+    impl BrokeredEnv {
+        fn set() -> Self {
+            std::env::set_var("AA_PROXY_PROVIDER_KEYS", "api.anthropic.com=sk-ant-QA6262-synthetic");
+            Self
+        }
+
+        fn unset() -> Self {
+            std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+            Self
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for BrokeredEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("AA_PROXY_PROVIDER_KEYS");
+        }
+    }
+
+    /// A launch directory whose `ctl.sock` cannot fit a socket address, under a
+    /// short temp root so the FALLBACK path does fit.
+    #[cfg(unix)]
+    fn long_launch(root: &std::path::Path) -> PathBuf {
+        let dir = root
+            .join("s".repeat(aa_proxy::control::MAX_SOCKET_PATH_BYTES))
+            .join("runs")
+            .join("agent-x-AbC123");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn short_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new().tempdir_in("/tmp").unwrap()
+    }
+
+    #[cfg(unix)]
+    fn pid_gone(pidfile: &std::path::Path) -> bool {
+        let pid: i32 = std::fs::read_to_string(pidfile).unwrap().trim().parse().unwrap();
+        // The child was already waited on by the guard, so a gone process fails kill(0).
+        unsafe { libc::kill(pid, 0) != 0 }
+    }
+
+    /// AC3: a brokered launch whose launch directory is too long for a socket still
+    /// gets a WORKING revoke path, at the short private fallback, proven by a ping
+    /// answered by the spawned proxy itself; and the fallback socket is removed with
+    /// the launch.
+    #[cfg(unix)]
+    #[test]
+    fn a_brokered_launch_with_a_long_path_gets_a_working_fallback_socket() {
+        let _lock = crate::test_support::env_guard();
+        let _keys = BrokeredEnv::set();
+        let root = short_tempdir();
+        let fallback_base = short_tempdir();
+        let launch = long_launch(root.path());
+        assert!(
+            super::super::ctl_path::primary_socket(&launch).is_none(),
+            "precondition"
+        );
+        let ready = launch.join("ready");
+        let (stub, _marker, _pid, ctlenv) = write_stub_proxy(root.path(), &ready, true);
+
+        let guard = ProxyGuard::spawn_with_binary_in(&stub, options_with_ready_file(&ready), fallback_base.path());
+        let guard = guard.expect("a brokered launch with a long path must get the fallback socket");
+
+        let socket = guard.fallback_socket.clone().expect("the fallback was used");
+        assert!(socket.starts_with(super::super::ctl_path::fallback_dir_in(fallback_base.path())));
+        assert_eq!(
+            std::fs::read_to_string(&ctlenv).unwrap(),
+            format!("{:?}", socket.to_string_lossy()).replace('"', "'")
+        );
+        assert!(
+            super::super::revoke::ping_as(&socket, Some(guard.pid())),
+            "the spawned proxy answers on it"
+        );
+        drop(guard);
+        assert!(!socket.exists(), "the fallback socket is removed with the launch");
+    }
+
+    /// Fail closed: with nowhere trustworthy to put the socket, a brokered launch is
+    /// REFUSED before anything is started. The control for the refusal is the test
+    /// above (the same launch with a sound fallback directory is admitted).
+    #[cfg(unix)]
+    #[test]
+    fn a_brokered_launch_is_refused_when_no_control_path_can_be_made() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = crate::test_support::env_guard();
+        let _keys = BrokeredEnv::set();
+        let root = short_tempdir();
+        let fallback_base = short_tempdir();
+        let bad = super::super::ctl_path::fallback_dir_in(fallback_base.path());
+        std::fs::create_dir(&bad).unwrap();
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let launch = long_launch(root.path());
+        let ready = launch.join("ready");
+        let (stub, marker, _pid, _ctlenv) = write_stub_proxy(root.path(), &ready, true);
+
+        let outcome = ProxyGuard::spawn_with_binary_in(&stub, options_with_ready_file(&ready), fallback_base.path());
+        assert!(
+            matches!(outcome, Err(ProxyGuardError::RevocationUnavailable(_))),
+            "got {:?}",
+            outcome.err().map(|e| e.to_string())
+        );
+        assert!(!marker.exists(), "the proxy must not have been started");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_brokered_launch_with_no_launch_directory_is_refused_before_anything_starts() {
+        let _lock = crate::test_support::env_guard();
+        let _keys = BrokeredEnv::set();
+        let root = short_tempdir();
+        let (stub, marker, _pid, _ctlenv) = write_stub_proxy(root.path(), &root.path().join("ready"), true);
+        // `/` has no parent, so there is nowhere to hold a control socket.
+        let outcome =
+            ProxyGuard::spawn_with_binary_in(&stub, options_with_ready_file(std::path::Path::new("/")), root.path());
+        assert!(matches!(outcome, Err(ProxyGuardError::RevocationUnavailable(_))));
+        assert!(!marker.exists(), "the proxy must not have been started");
+    }
+
+    /// "Working" is demonstrated, not assumed: a proxy that reports ready but does
+    /// not answer on its control socket cannot be revoked, so the launch is refused
+    /// and the proxy it started is stopped.
+    #[cfg(unix)]
+    #[test]
+    fn a_brokered_launch_is_refused_when_the_ready_proxy_has_no_working_control_socket() {
+        let _lock = crate::test_support::env_guard();
+        let _keys = BrokeredEnv::set();
+        let root = short_tempdir();
+        let launch = root.path().join("runs").join("agent-x-AbC123");
+        std::fs::create_dir_all(&launch).unwrap();
+        let ready = launch.join("ready");
+        let (stub, marker, pidfile, _ctlenv) = write_stub_proxy(root.path(), &ready, false);
+
+        let outcome = ProxyGuard::spawn_with_binary_in(&stub, options_with_ready_file(&ready), root.path());
+        assert!(matches!(outcome, Err(ProxyGuardError::RevocationUnavailable(_))));
+        assert!(marker.exists(), "control: it WAS started, then refused");
+        assert!(
+            pid_gone(&pidfile),
+            "the refused proxy must be stopped, not left running"
+        );
+    }
+
+    /// The default for a launch that brokers nothing is unchanged: a long path just
+    /// has no control socket, nothing is created, and the launch is not refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_launch_that_brokers_nothing_keeps_its_old_behaviour_with_a_long_path() {
+        let _lock = crate::test_support::env_guard();
+        let _keys = BrokeredEnv::unset();
+        let root = short_tempdir();
+        let fallback_base = short_tempdir();
+        let launch = long_launch(root.path());
+        let ready = launch.join("ready");
+        let (stub, _marker, _pid, ctlenv) = write_stub_proxy(root.path(), &ready, false);
+
+        let guard = ProxyGuard::spawn_with_binary_in(&stub, options_with_ready_file(&ready), fallback_base.path())
+            .expect("nothing brokered, nothing to refuse");
+        assert!(guard.fallback_socket.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&ctlenv).unwrap(),
+            "None",
+            "no control socket was handed to the proxy"
+        );
+        assert!(
+            !super::super::ctl_path::fallback_dir_in(fallback_base.path()).exists(),
+            "the default path must not create the fallback directory"
+        );
+    }
+
+    /// Machine-checks the env-var wiring `ProxyGuard::spawn` depends on,
+    /// without spawning anything: review found `spawn()` had no coverage
+    /// proving this wiring happens at all, so a deleted `cmd.env(...)` line
+    /// — including `AA_PROXY_PARENT_PID`, which the parent-watch shutdown
+    /// path (`aa-proxy/src/proxy/mod.rs`) depends on entirely — would have
+    /// passed every existing test silently.
     #[test]
     fn build_command_sets_every_env_var_it_promises() {
         let opts = ProxyGuardOptions {

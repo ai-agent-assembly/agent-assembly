@@ -231,11 +231,13 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        if let Some(reason) = control_surface_unusable_reason() {
-            eprintln!(
-                "warning: starting aa-proxy without credential revocation ({reason}); \
-                 `aasm proxy revoke-credential` will not work for this proxy"
-            );
+        match control_surface_policy(control_surface_unusable_reason(), super::provider_keys::delivering()) {
+            ControlSurface::Usable => {}
+            ControlSurface::WarnAndContinue(message) => eprintln!("{message}"),
+            ControlSurface::Refuse(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
         }
     }
 
@@ -301,6 +303,36 @@ fn build_start_command(binary: &Path, args: &StartArgs) -> std::process::Command
     // AAASM-6395: provider keys travel on stdin, never in the proxy's environment.
     super::provider_keys::configure(&mut cmd);
     cmd
+}
+
+/// What standalone start does about an unusable control surface.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum ControlSurface {
+    Usable,
+    /// No credential is brokered, so nothing needs revoking: start, and say so.
+    WarnAndContinue(String),
+    /// A credential would be brokered with no way to revoke it: do not start.
+    Refuse(String),
+}
+
+/// The decision, separated from the spawn so it is testable. A proxy that brokers
+/// a credential must be revocable while it runs (AAASM-6262, AC3), so an unusable
+/// control surface refuses instead of warning; one that brokers nothing keeps the
+/// warning it always had.
+#[cfg(unix)]
+fn control_surface_policy(unusable_reason: Option<String>, brokered: bool) -> ControlSurface {
+    match unusable_reason {
+        None => ControlSurface::Usable,
+        Some(reason) if brokered => ControlSurface::Refuse(format!(
+            "error: refusing to start aa-proxy: it would broker a provider credential but its revocation control \
+             socket is unavailable ({reason}). Shorten AASM_STATE_DIR or fix the directory, and retry."
+        )),
+        Some(reason) => ControlSurface::WarnAndContinue(format!(
+            "warning: starting aa-proxy without credential revocation ({reason}); \
+             `aasm proxy revoke-credential` will not work for this proxy"
+        )),
+    }
 }
 
 /// Why the standalone proxy cannot be given a control socket and revocation
@@ -899,5 +931,21 @@ mod tests {
             Some(v) => std::env::set_var("AA_DATA_DIR", v),
             None => std::env::remove_var("AA_DATA_DIR"),
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_unusable_control_surface_refuses_a_brokered_start_and_only_warns_otherwise() {
+        let why = Some("the control socket path is longer than 100 bytes".to_string());
+        assert_eq!(control_surface_policy(None, true), ControlSurface::Usable);
+        assert_eq!(control_surface_policy(None, false), ControlSurface::Usable);
+        assert!(matches!(
+            control_surface_policy(why.clone(), true),
+            ControlSurface::Refuse(m) if m.contains("refusing to start") && m.contains("revocation")
+        ));
+        // The non-brokered default is exactly what it was: a warning, and the start proceeds.
+        assert!(matches!(
+            control_surface_policy(why, false),
+            ControlSurface::WarnAndContinue(m) if m.starts_with("warning: starting aa-proxy without credential revocation")
+        ));
     }
 }

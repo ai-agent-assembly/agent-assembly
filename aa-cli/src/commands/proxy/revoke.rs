@@ -67,6 +67,12 @@ pub fn revocations_path() -> PathBuf {
 /// listens on one is for [`ping`] to say, since a crashed proxy leaves its
 /// socket file behind.
 pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
+    candidate_sockets_in(runs_root, agent, Path::new(super::ctl_path::FALLBACK_BASE))
+}
+
+/// [`candidate_sockets`] with the base of the short-path fallback named by the
+/// caller, so tests never read the real `/tmp`.
+pub fn candidate_sockets_in(runs_root: &Path, agent: &str, fallback_base: &Path) -> Vec<PathBuf> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
     let prefix = format!("{}-", super::launch_state::sanitize_label(agent));
     let Ok(entries) = std::fs::read_dir(runs_root) else {
@@ -87,12 +93,20 @@ pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
             if !dir_meta.is_dir() || dir_meta.uid() != unsafe { libc::geteuid() } || dir_meta.mode() & 0o077 != 0 {
                 return None;
             }
-            let socket = entry.path().join("ctl.sock");
-            let metadata = std::fs::symlink_metadata(&socket).ok()?;
-            metadata
-                .file_type()
-                .is_socket()
-                .then(|| (metadata.modified().unwrap_or(std::time::UNIX_EPOCH), socket))
+            // The socket is in the launch directory, or, when that path was too long
+            // for a socket address, at the short path `ctl_path` derives from the
+            // directory's name (only trusted from a fallback directory that verifies).
+            let in_launch = entry.path().join("ctl.sock");
+            let fallback = super::ctl_path::fallback_socket_in(fallback_base, &entry.path()).filter(|socket| {
+                socket
+                    .parent()
+                    .is_some_and(|d| super::ctl_path::verify_fallback_dir(d).is_ok())
+            });
+            [Some(in_launch), fallback].into_iter().flatten().find_map(|socket| {
+                let metadata = std::fs::symlink_metadata(&socket).ok()?;
+                (metadata.file_type().is_socket() && metadata.uid() == unsafe { libc::geteuid() })
+                    .then(|| (metadata.modified().unwrap_or(std::time::UNIX_EPOCH), socket))
+            })
         })
         .collect();
     found.sort_by_key(|entry| std::cmp::Reverse(entry.0));
@@ -101,9 +115,24 @@ pub fn candidate_sockets(runs_root: &Path, agent: &str) -> Vec<PathBuf> {
 
 /// Whether a proxy answers a ping on `socket`.
 pub fn ping(socket: &Path) -> bool {
+    ping_as(socket, None)
+}
+
+/// Whether a proxy answers a ping on `socket`, and, when `expected_pid` is given
+/// and the kernel reports the peer's pid, that it is that process.
+///
+/// A per-launch proxy is a child `aasm` spawned, so its pid is known: requiring it
+/// stops another process that took over the path from being mistaken for the
+/// proxy. Where the platform reports no peer pid the answer alone decides.
+pub fn ping_as(socket: &Path, expected_pid: Option<u32>) -> bool {
     let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
         return false;
     };
+    if let (Some(expected), Some(actual)) = (expected_pid, peer_pid(&stream)) {
+        if expected != actual {
+            return false;
+        }
+    }
     if stream.set_read_timeout(Some(IO_TIMEOUT)).is_err() || stream.set_write_timeout(Some(IO_TIMEOUT)).is_err() {
         return false;
     }
@@ -133,8 +162,10 @@ fn resolve_agent_sockets(agent: &str) -> Result<Vec<PathBuf>, String> {
     let candidates = candidate_sockets(&root, agent);
     if candidates.is_empty() {
         return Err(format!(
-            "no control socket found for agent {agent} under {}. A launch only has one when its path fits a \
-             Unix socket address; revoke in a standalone proxy with --socket or without flags.",
+            "no control socket found for agent {agent} under {}. A launch that brokers a credential has one in \
+             its launch directory or, when that path is too long for a socket address, in the per-user fallback \
+             directory; a launch that brokers nothing may have none. Revoke in a standalone proxy with --socket \
+             or without flags.",
             root.display()
         ));
     }
@@ -568,5 +599,66 @@ mod tests {
         let unknown = request_revoke(&socket, "api.mistral.ai").unwrap();
         assert_eq!(unknown.outcome, Outcome::NotConfigured);
         assert_eq!(exit_code_for(&unknown), 1);
+    }
+    /// A listener that answers every ping with a pong, in this process.
+    fn pong_listener(path: &Path) -> std::os::unix::net::UnixListener {
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        let accept = listener.try_clone().unwrap();
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _)) = accept.accept() {
+                let mut buf = [0u8; 256];
+                let _ = std::io::Read::read(&mut stream, &mut buf);
+                let _ = stream.write_all(b"{\"outcome\":\"pong\"}\n");
+            }
+        });
+        listener
+    }
+
+    #[test]
+    fn ping_as_accepts_the_expected_pid_and_rejects_another_process_on_the_path() {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let socket = dir.path().join("p.sock");
+        let _listener = pong_listener(&socket);
+        let me = std::process::id();
+        // Positive controls: with no expectation, and with the real owner's pid, it answers.
+        assert!(ping_as(&socket, None));
+        if peer_pid(&std::os::unix::net::UnixStream::connect(&socket).unwrap()).is_some() {
+            assert!(
+                ping_as(&socket, Some(me)),
+                "the listening process is the one that answers"
+            );
+            // An impostor holding the path has a different pid than the proxy we spawned.
+            assert!(
+                !ping_as(&socket, Some(me.wrapping_add(1))),
+                "a different pid must not pass as the proxy"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fallback_socket_is_discovered_only_from_a_trustworthy_fallback_directory() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let runs = tempfile::tempdir_in("/tmp").unwrap();
+        let base = tempfile::tempdir_in("/tmp").unwrap();
+        let launch = runs.path().join("agent-AbC123");
+        std::fs::create_dir(&launch).unwrap();
+        std::fs::set_permissions(&launch, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let fdir = super::super::ctl_path::fallback_dir_in(base.path());
+        std::fs::DirBuilder::new().mode(0o700).create(&fdir).ok();
+        std::fs::set_permissions(&fdir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = super::super::ctl_path::fallback_socket_in(base.path(), &launch).unwrap();
+        let _listener = pong_listener(&socket);
+
+        // Positive control: a private fallback directory yields the socket for this launch.
+        assert_eq!(
+            candidate_sockets_in(runs.path(), "agent", base.path()),
+            vec![socket.clone()]
+        );
+        // Another agent does not claim it.
+        assert!(candidate_sockets_in(runs.path(), "nobody", base.path()).is_empty());
+        // The same socket in a directory others can enter is not trusted.
+        std::fs::set_permissions(&fdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(candidate_sockets_in(runs.path(), "agent", base.path()).is_empty());
+        std::fs::set_permissions(&fdir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
