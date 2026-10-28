@@ -30,8 +30,10 @@ pub const BROKERED_PROVIDER_ENV_NAMES: &[(&str, &str)] = &[
 /// spawned proxy will actually inject a credential for — never more, never
 /// fewer.
 pub fn provider_key_hosts_env() -> Vec<String> {
-    match std::env::var("AA_PROXY_PROVIDER_KEYS") {
-        Ok(val) if !val.is_empty() => val
+    // Through `provider_keys()`, not the environment: `aasm` scrubs the variable
+    // at startup (AAASM-6395), so the environment no longer holds it.
+    match crate::commands::proxy::provider_keys::provider_keys() {
+        Some(val) => val
             .split(',')
             .filter_map(|entry| {
                 let entry = entry.trim();

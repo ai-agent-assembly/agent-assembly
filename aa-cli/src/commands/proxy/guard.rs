@@ -210,6 +210,9 @@ fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::pro
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::null());
     cmd.stdin(std::process::Stdio::null());
+    // AAASM-6395: provider keys travel on stdin, never in this proxy's (or the
+    // governed tool's) environment. Must follow the `stdin(null)` above.
+    super::provider_keys::configure(&mut cmd);
 
     // ADR 0036 D6: this boundary has no `--no-proxy` concept (it spawns the
     // dedicated `aa-proxy` itself, not a governed tool) and never has a
@@ -268,8 +271,19 @@ impl ProxyGuard {
         // child's own startup log.
         let build_evidence = probe(binary);
 
+        // AAASM-6395: refuse a launch whose provider keys the proxy would refuse,
+        // before anything is spawned.
+        super::provider_keys::preflight()
+            .map_err(|reason| ProxyGuardError::SpawnFailed(std::io::Error::other(reason)))?;
         let mut cmd = build_command(binary, &opts);
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;
+        if let Err(e) = super::provider_keys::deliver(&mut child) {
+            // A proxy without its keys would forward the agent's own credential
+            // header unchanged, so the launch is refused rather than degraded.
+            terminate_gracefully(&mut child);
+            let _ = std::fs::remove_file(&opts.ready_file);
+            return Err(ProxyGuardError::SpawnFailed(e));
+        }
 
         match wait_for_ready_file(&opts.ready_file, READINESS_TIMEOUT, &mut child) {
             ReadyFileOutcome::Ready(bound_addr) => Ok(ProxyGuard {

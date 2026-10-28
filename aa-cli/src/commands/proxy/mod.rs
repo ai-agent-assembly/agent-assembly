@@ -7,6 +7,7 @@ pub mod identity;
 pub mod launch_state;
 pub mod logs;
 pub mod pid;
+pub mod provider_keys;
 pub mod readiness;
 #[cfg(unix)]
 pub mod revoke;

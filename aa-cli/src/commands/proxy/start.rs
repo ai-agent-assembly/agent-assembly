@@ -239,6 +239,12 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
         }
     }
 
+    // AAASM-6395: a payload the proxy would refuse is refused here, before spawn.
+    if let Err(reason) = super::provider_keys::preflight() {
+        eprintln!("error: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     let mut cmd = build_start_command(&binary, &args);
 
     if args.no_detach {
@@ -292,6 +298,8 @@ fn build_start_command(binary: &Path, args: &StartArgs) -> std::process::Command
     for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
         cmd.env_remove(name);
     }
+    // AAASM-6395: provider keys travel on stdin, never in the proxy's environment.
+    super::provider_keys::configure(&mut cmd);
     cmd
 }
 
@@ -318,7 +326,20 @@ fn control_surface_unusable_reason() -> Option<String> {
 
 /// Foreground start: inherit stdio and block until the process exits.
 fn run_foreground(cmd: &mut std::process::Command) -> ExitCode {
-    match cmd.status() {
+    // `status()` would hide the child's stdin, which is where the provider keys go.
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to run aa-proxy: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = super::provider_keys::deliver(&mut child) {
+        eprintln!("error: could not deliver the provider keys to aa-proxy: {e}");
+        pid::terminate_child(&mut child);
+        return ExitCode::FAILURE;
+    }
+    match child.wait() {
         Ok(s) if s.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(e) => {
@@ -384,9 +405,12 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         Err(code) => return code,
     };
 
-    cmd.stdout(Stdio::from(log_out))
-        .stderr(Stdio::from(log_err))
-        .stdin(Stdio::null());
+    cmd.stdout(Stdio::from(log_out)).stderr(Stdio::from(log_err));
+    // The provider-key pipe, when there is one, was set by `provider_keys::configure`
+    // and must not be replaced by the null device.
+    if !super::provider_keys::delivering() {
+        cmd.stdin(Stdio::null());
+    }
 
     // Create a new process group so the child isn't killed by the parent's SIGHUP.
     #[cfg(unix)]
@@ -402,6 +426,12 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(e) = super::provider_keys::deliver(&mut child) {
+        eprintln!("error: could not deliver the provider keys to aa-proxy: {e}");
+        pid::terminate_child(&mut child);
+        return ExitCode::FAILURE;
+    }
 
     let child_pid = child.id();
     record_proxy_state(child_pid, binary, &args.listen);

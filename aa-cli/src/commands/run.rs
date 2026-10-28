@@ -6559,6 +6559,13 @@ fn effective_child_env(
         env.remove(name);
         removed.push(name.clone());
     }
+    // AAASM-6395: the operator's provider keys are for the proxy and never for the
+    // governed tool. `aasm` scrubs the variable at startup, but this merge point is
+    // shared by every launch shape (including isolation backends that treat this map
+    // as the child's whole environment), so the tool's environment is stripped here
+    // too, by name, as a second independent guard.
+    env.remove("AA_PROXY_PROVIDER_KEYS");
+    removed.push("AA_PROXY_PROVIDER_KEYS".to_string());
     (env, removed)
 }
 

@@ -21,6 +21,13 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
+    // AAASM-6395: take the operator's provider keys out of this process's
+    // environment before anything can read it (`ps -Eww`, `/proc/<pid>/environ`) and
+    // before any thread exists. Only the commands that start a proxy need them.
+    if matches!(cli.command, commands::Commands::Run(_) | commands::Commands::Proxy(_)) {
+        commands::proxy::provider_keys::capture_and_scrub();
+    }
+
     let cfg = match config::load() {
         Ok(c) => c,
         Err(e) => {
