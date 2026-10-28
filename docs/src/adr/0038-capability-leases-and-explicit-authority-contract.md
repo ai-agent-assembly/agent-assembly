@@ -1702,3 +1702,99 @@ What the plan is not:
 - **Tools without `capabilities` are not listed.** The plan lists tools that declare
   capabilities, a `summary:` of how many would be denied, and one `tool <undeclared>` line
   that also covers any tool declared without `capabilities` (a governed runtime denies it).
+
+## Amendment (AAASM-6312, 2026-10-28): the ledger is authoritative for generation, and only an issuer-bound writer can change it
+
+**Status: design, not yet implemented.** Nothing below is in the code on `main`. No production path builds a
+`DelegationLedger` today, and none may until AAASM-6273's security and kernel evidence gates (B3, §29/§30) pass.
+
+### Decision (founder, 2026-10-28)
+
+Cross-process delegated authority must be issuer-bound and verified against an authoritative ledger. The gate must
+not trust a lease id alone, a caller-provided lease snapshot, a self-claimed issuer, or an unverified approval
+reference. Unknown or unverifiable delegated authority fails closed. Legitimate attenuation and delegation are
+preserved.
+
+### What was wrong
+
+`StaleParentGeneration` compared a child's recorded `parent_generation` with the generation inside the
+`ParentAuthority` *snapshot's* lease value. `CapabilityLease::with_revocation` is public and `same_content` excludes
+`revocation` on purpose (a revocation must not read as a content change), so a caller-built snapshot chose the number it
+was compared against. Reaffirmation was detectable only if the caller happened to hand the gate the reaffirmed snapshot.
+
+### Semantics
+
+1. **The ledger holds the generation.** Each ledger entry records the lease's authoritative generation. It starts at the
+   generation of the lease as registered or derived, and only two ledger operations change it: `revoke` (existing:
+   the entry becomes `Revoked` at the stated generation) and a new `reaffirm`.
+2. **`reaffirm(id, generation)` is a writer-only operation.** It is refused unless the lease is known, currently
+   `Active` in the ledger, its whole chain verifies, and `generation` is strictly greater than the recorded one. It
+   cannot resurrect a revoked lease and cannot move a generation backwards. It does not touch the lease's content,
+   so a reaffirmation never makes `content_matches` fail.
+3. **The gate compares against the ledger.** For a child with provenance, `check_attenuation` compares
+   `provenance.parent_generation` with the ledger's current generation for the parent's id. The snapshot's own
+   `revocation` field is no longer an input to that comparison. A parent id the ledger does not know is
+   `LedgerUnverifiable`, as before.
+4. **Reaffirmation keeps its meaning.** A child derived at generation `g` is stale once the parent is reaffirmed to
+   `g' > g`: `StaleParentGeneration`, re-derive under the new generation. This is the behaviour the existing text
+   describes ("a child derived at an earlier generation, then gated against a later-reaffirmed-but-still-`Active`
+   parent is still stale"), now detected whenever the ledger was reaffirmed and not only when the caller supplies the
+   newer snapshot.
+5. **Derivation stamps from the ledger.** `derive_child` already records the generation it observes under the ledger
+   lock; that remains the only source of a child's `parent_generation`.
+6. **Snapshots remain inputs for what the ledger does not decide.** Scope, expiry, limits and delegation rights are
+   still compared from the snapshot, because `content_matches` has already bound the snapshot to the ledger's record
+   of exactly those fields.
+
+### Issuer binding
+
+7. **Only the ledger's writer registers roots, reaffirms, or revokes.** The ledger is created for one issuer
+   identity and hands back a writer token; the `Arc` the gate holds cannot write. A root whose `basis.issuer` is not
+   that identity is refused (`UntrustedIssuer`). This removes the unrestricted `DelegationLedger::new()` and the
+   string-comparing `with_trusted_issuer`: the writer capability, not a claimed string, is what makes a ledger entry
+   trustworthy.
+8. **Escalation is admitted only for a ledger-recorded root.** A child wider than its parent passes only when the
+   ledger recorded it as a `Root` through the writer with matching content, carries a `policy_rule` bound by content,
+   and its recorded issuer is neither the child's nor the parent's subject. An `approval_ref` alone, or a claimed
+   issuer on a lease the ledger never recorded, is refused (`EscalationNotIndependentlyApproved`). Nothing today can
+   verify an `approval_ref` against a lease's scope, so refusing it is the correct default; checking approvals
+   against the approval store would be a separate feature.
+9. **A child the ledger never saw is refused under `Ancestry::Parent`.** Presenting a hand-built narrower child is
+   not delegation. Legitimate attenuation goes through `derive_child`, which records the child and its edge.
+
+### Fail-closed matrix
+
+| Case | Refusal |
+|---|---|
+| Parent not registered | `LedgerUnverifiable` |
+| Root whose issuer is not the ledger's | `UntrustedIssuer` |
+| Lease registered in a different ledger | `LedgerUnverifiable` |
+| Known id, different content | `LedgerContentMismatch` |
+| Child the ledger never saw | `LedgerUnverifiable` on the child |
+| Child whose edge names another parent | `ProvenanceMismatch` |
+| Child stamped at an older generation than the ledger's | `StaleParentGeneration` |
+| `reaffirm` to an equal or lower generation, or on a revoked lease | refused, ledger unchanged |
+| Escalation backed only by `approval_ref`, or by an unrecorded claimed issuer | `EscalationNotIndependentlyApproved` |
+| Any revoked hop | `RevokedInLedger` |
+
+### Required tests (each refused case paired with an otherwise identical admitted case)
+
+- A snapshot rebuilt with `with_revocation` at the child's stamped generation is refused when the ledger's generation
+  differs; reverting the comparison to read the snapshot makes this test fail (mutation check).
+- `reaffirm` advances the generation; a child derived before it is `StaleParentGeneration`; a child re-derived after it
+  is admitted; `reaffirm` to the same or a lower generation, and on a revoked lease, is refused.
+- A reaffirmation does not change `content_matches` for the lease.
+- A hand-built narrower child under `Ancestry::Parent` is refused; the same shape produced by `derive_child` is
+  admitted.
+- A root with a foreign issuer is refused; the same lease with the ledger's issuer registers; a lease registered in
+  ledger B does not verify in ledger A.
+- Escalation with `approval_ref` only is refused; the same recorded root with a `policy_rule` is admitted; an issuer equal
+  to the parent's subject is refused.
+- The existing attenuation positive controls, the transitive revocation tests and the native Linux test stay green.
+
+### What this still does not claim
+
+The ledger issuer's identity string, the in-process `spec.identity`, what an `approval_ref` says and what a
+`policy_rule` string means remain asserted, not authenticated; identity is owned by AAASM-5533. Cross-process
+operation stays behind the §27 contract (the supervisor holds authority, the child presents nothing, nothing is
+serialized) and the B3 evidence on a real Linux kernel with Landlock ABI 3 or newer. This amendment activates nothing.
