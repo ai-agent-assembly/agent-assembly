@@ -1973,6 +1973,7 @@ mod tests {
             RefusalRule::SsrfBlockedAddress,
             RefusalRule::PlaintextLlmDowngrade,
             RefusalRule::McpToolCall,
+            RefusalRule::CredentialRevoked,
         ];
         let mut seen = Vec::new();
         for rule in rules {
@@ -1983,6 +1984,16 @@ mod tests {
             seen.push(json);
         }
         assert_eq!(seen.len(), rules.len());
+    }
+
+    /// The token a consumer filters on for AAASM-6262 refusals is pinned, so a rename
+    /// cannot silently orphan an alert or a dashboard keyed on it.
+    #[test]
+    fn credential_revoked_has_a_pinned_wire_token() {
+        assert_eq!(
+            serde_json::to_string(&RefusalRule::CredentialRevoked).unwrap(),
+            "\"credential_revoked\""
+        );
     }
 
     /// A probe's own traffic must be identifiable in the record, so a consumer

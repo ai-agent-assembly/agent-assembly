@@ -119,12 +119,14 @@ pub fn ping(socket: &Path) -> bool {
 
 /// Every live control socket for `agent`, or why there is none.
 ///
-/// All of them, not the newest: with `--agent` the CLI picks sockets out of a
-/// directory the agent's own user can write under isolation `none`, so a process
-/// could plant a newer `ctl.sock` that answers "revoked" without revoking
-/// anything. Revoking on every live candidate means a planted socket cannot
-/// shadow the real proxy's. It does not authenticate the proxy: a launch record
-/// the agent cannot forge needs confinement, which isolation `none` lacks.
+/// All of them, not the newest, so a stale or extra socket cannot make the
+/// command pick the wrong one. This is NOT a defence against a process running
+/// as the same user: it can unlink the real `ctl.sock` and bind its own, which
+/// leaves the real proxy unreachable while the impostor answers "revoked". No
+/// launch record the agent cannot forge exists without confinement, so `--agent`
+/// does not verify who answers (the default standalone path does; see
+/// [`verify_standalone_peer`]). Under isolation `none` revocation of a
+/// per-launch proxy is therefore best-effort against a hostile same-user agent.
 fn resolve_agent_sockets(agent: &str) -> Result<Vec<PathBuf>, String> {
     let root =
         super::launch_state::runs_root().map_err(|e| format!("cannot locate the launch state directory: {e}"))?;
@@ -147,6 +149,77 @@ fn resolve_agent_sockets(agent: &str) -> Result<Vec<PathBuf>, String> {
     Ok(live)
 }
 
+/// The process id of the peer connected to `stream`.
+///
+/// The kernel reports it for a local socket and the peer cannot choose it, so an
+/// impostor that unlinked the real socket and bound its own is a different pid
+/// from the proxy the state file records.
+#[cfg(target_os = "macos")]
+pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    // SAFETY: `pid` and `len` are valid for the call and sized as the option requires.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0 && pid > 0).then_some(pid as u32)
+}
+
+/// The process id of the peer connected to `stream` (Linux: `SO_PEERCRED`).
+#[cfg(target_os = "linux")]
+pub fn peer_pid(stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `cred` and `len` are valid for the call and sized as the option requires.
+    let rc = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut cred as *mut libc::ucred).cast(),
+            &mut len,
+        )
+    };
+    (rc == 0 && cred.pid > 0).then_some(cred.pid as u32)
+}
+
+/// No peer credential on this platform: the answer cannot be verified.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn peer_pid(_stream: &std::os::unix::net::UnixStream) -> Option<u32> {
+    None
+}
+
+/// Require that the process on `stream` is the standalone proxy the state file
+/// records, using the same trust rules the other `aasm proxy` commands apply
+/// (the record names the proxy binary and the recorded PID is still the same
+/// live incarnation), plus that the socket's peer IS that pid.
+///
+/// This stops a stale, second or accidentally substituted socket from answering.
+/// It is not proof against a hostile same-user process: the existing trust model
+/// already concedes a same-user process can forge a record, so this raises the
+/// bar and removes the silent failures without claiming more.
+fn verify_standalone_peer(stream: &std::os::unix::net::UnixStream) -> Result<(), String> {
+    let state = super::pid::read_state().ok_or("no readable proxy state record; is the proxy running?")?;
+    super::trust::verify_process(&state).map_err(|e| format!("the recorded proxy cannot be trusted: {e}"))?;
+    let peer = peer_pid(stream).ok_or("cannot determine which process is on the control socket")?;
+    if peer == state.pid {
+        Ok(())
+    } else {
+        Err(format!(
+            "the control socket is answered by pid {peer}, not the recorded proxy (pid {})",
+            state.pid
+        ))
+    }
+}
+
 /// Why a revoke request produced no answer.
 #[derive(Debug)]
 pub enum RevokeError {
@@ -154,6 +227,9 @@ pub enum RevokeError {
     Io(std::io::Error),
     /// The proxy answered with something that is not a control response.
     BadResponse(String),
+    /// Whoever answered could not be shown to be the recorded proxy, so nothing
+    /// was sent to it.
+    Unverified(String),
 }
 
 impl std::fmt::Display for RevokeError {
@@ -161,6 +237,7 @@ impl std::fmt::Display for RevokeError {
         match self {
             Self::Io(e) => write!(f, "{e}"),
             Self::BadResponse(raw) => write!(f, "unexpected control response: {raw}"),
+            Self::Unverified(why) => write!(f, "refusing to trust the control socket: {why}"),
         }
     }
 }
@@ -172,7 +249,26 @@ impl std::fmt::Display for RevokeError {
 /// [`RevokeError`] when the socket cannot be used or the answer is not a
 /// control response.
 pub fn request_revoke(socket: &Path, host: &str) -> Result<Response, RevokeError> {
+    request(socket, host, false)
+}
+
+/// Like [`request_revoke`], but first requires that whoever answers on `socket`
+/// is the standalone proxy recorded in the state file, before the host name is
+/// sent to it.
+///
+/// # Errors
+///
+/// [`RevokeError::Unverified`] when the recorded proxy cannot be trusted or the
+/// peer is a different process; otherwise as [`request_revoke`].
+pub fn request_revoke_verified(socket: &Path, host: &str) -> Result<Response, RevokeError> {
+    request(socket, host, true)
+}
+
+fn request(socket: &Path, host: &str, verify_peer: bool) -> Result<Response, RevokeError> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(RevokeError::Io)?;
+    if verify_peer {
+        verify_standalone_peer(&stream).map_err(RevokeError::Unverified)?;
+    }
     stream.set_read_timeout(Some(IO_TIMEOUT)).map_err(RevokeError::Io)?;
     stream.set_write_timeout(Some(IO_TIMEOUT)).map_err(RevokeError::Io)?;
     let mut line = serde_json::to_vec(&serde_json::json!({ "op": "revoke_credential", "host": host }))
@@ -219,8 +315,13 @@ pub fn combine_exit_codes(results: &[(u8, bool)]) -> u8 {
 
 /// Send the revoke to one socket, print what happened, and return the exit code
 /// for it and whether it was a hard failure.
-fn revoke_on(socket: &Path, host: &str, label: &str) -> (u8, bool) {
-    let response = match request_revoke(socket, host) {
+fn revoke_on(socket: &Path, host: &str, label: &str, verify_peer: bool) -> (u8, bool) {
+    let sent = if verify_peer {
+        request_revoke_verified(socket, host)
+    } else {
+        request_revoke(socket, host)
+    };
+    let response = match sent {
         Ok(response) => response,
         Err(e) => {
             eprintln!(
@@ -259,18 +360,18 @@ fn revoke_on(socket: &Path, host: &str, label: &str) -> (u8, bool) {
 pub fn dispatch(args: RevokeArgs) -> ExitCode {
     let host = args.host.as_str();
     let results: Vec<(u8, bool)> = match (&args.socket, &args.agent) {
-        (Some(socket), _) => vec![revoke_on(socket, host, "")],
+        (Some(socket), _) => vec![revoke_on(socket, host, "", false)],
         (None, Some(agent)) => match resolve_agent_sockets(agent) {
             Ok(sockets) => sockets
                 .iter()
-                .map(|socket| revoke_on(socket, host, &format!(" (launch {})", launch_name(socket))))
+                .map(|socket| revoke_on(socket, host, &format!(" (launch {})", launch_name(socket)), false))
                 .collect(),
             Err(reason) => {
                 eprintln!("error: {reason}");
                 return ExitCode::FAILURE;
             }
         },
-        (None, None) => vec![revoke_on(&control_socket_path(), host, "")],
+        (None, None) => vec![revoke_on(&control_socket_path(), host, "", true)],
     };
     ExitCode::from(combine_exit_codes(&results))
 }
@@ -385,6 +486,32 @@ mod tests {
         // A hard failure on any socket means revoked-everywhere cannot be claimed.
         assert_eq!(combine_exit_codes(&[(3, false), (1, true)]), 1);
         assert_eq!(combine_exit_codes(&[]), 1);
+    }
+
+    #[test]
+    fn the_peer_of_a_local_server_is_reported_as_that_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ctl.sock");
+        let _server = bind_socket(&socket);
+        let client = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        // The server is this process, so its pid is ours: the kernel's answer, not the peer's claim.
+        assert_eq!(peer_pid(&client), Some(std::process::id()));
+    }
+
+    #[test]
+    fn a_standalone_revoke_with_no_state_record_refuses_before_sending_anything() {
+        let _lock = crate::test_support::env_guard();
+        let state = tempfile::tempdir().unwrap();
+        let prior = std::env::var_os("AA_DATA_DIR");
+        std::env::set_var("AA_DATA_DIR", state.path());
+        let socket = state.path().join("ctl.sock");
+        let _server = bind_socket(&socket);
+        let result = request_revoke_verified(&socket, "api.anthropic.com");
+        match prior {
+            Some(v) => std::env::set_var("AA_DATA_DIR", v),
+            None => std::env::remove_var("AA_DATA_DIR"),
+        }
+        assert!(matches!(result, Err(RevokeError::Unverified(_))), "{result:?}");
     }
 
     #[test]

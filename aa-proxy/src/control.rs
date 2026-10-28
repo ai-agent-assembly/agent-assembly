@@ -44,6 +44,14 @@ pub const MAX_REQUEST_BYTES: u64 = 1024;
 /// How long a peer has to deliver its request line.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Most control connections served at once. Past it a connection is dropped
+/// immediately rather than queued, so a connection flood cannot exhaust file
+/// descriptors and starve the operator's revoke.
+const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+
+/// Pause after a failed `accept` before trying again.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
+
 /// How long to keep discarding a peer's leftover request bytes after replying.
 const DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -174,9 +182,32 @@ pub fn bind_hardened(path: &Path) -> std::io::Result<UnixListener> {
     // directory: they could remove it and bind their own in its place.
     revocations::verify_private_parent(path)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string()))?;
-    // A stale socket from a previous run would make bind fail.
-    if path.exists() {
-        std::fs::remove_file(path)?;
+    // Replace only a STALE socket. Removing whatever sits at the path would let a
+    // second proxy (or any same-user process) unlink a live proxy's socket and take
+    // its place, leaving the first proxy unreachable and a revoke answered by the
+    // wrong process. So: if something answers, refuse; if the path is not a socket,
+    // refuse; only a socket nobody answers on is removed.
+    {
+        use std::os::unix::fs::FileTypeExt;
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_socket() => {
+                if std::os::unix::net::UnixStream::connect(path).is_ok() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        "a proxy already answers on the control socket",
+                    ));
+                }
+                std::fs::remove_file(path)?;
+            }
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "the control socket path exists and is not a socket; refusing to remove it",
+                ));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
     }
     // Tighten the umask so the inode is created 0600 and never group/other
     // accessible between bind and the explicit chmod below (the same window
@@ -200,18 +231,28 @@ pub async fn serve(listener: UnixListener, credentials: Arc<CredentialStore>, re
     // Serializes writes to the durable record so two concurrent revocations
     // cannot interleave a read-modify-rename and lose one.
     let persist_lock = Arc::new(tokio::sync::Mutex::new(()));
+    let slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(e) => {
-                tracing::error!(error = %e, "control socket accept failed; control channel stopped");
-                return;
+                // Stopping here would make revocation impossible until the proxy
+                // restarts (a connection flood can cause EMFILE), so back off and
+                // keep serving.
+                tracing::error!(error = %e, "control socket accept failed; retrying");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
             }
+        };
+        let Ok(permit) = Arc::clone(&slots).try_acquire_owned() else {
+            tracing::warn!("control socket busy; connection dropped");
+            continue;
         };
         let credentials = Arc::clone(&credentials);
         let revocations_file = revocations_file.clone();
         let persist_lock = Arc::clone(&persist_lock);
         tokio::spawn(async move {
+            let _permit = permit;
             match stream.peer_cred() {
                 Ok(cred) if cred.uid() == own_uid => {}
                 _ => {
@@ -544,6 +585,60 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
         assert!(!socket.exists(), "a refused bind must not leave a socket behind");
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_live_control_socket_is_never_replaced_by_a_second_bind() {
+        let credentials = store();
+        let (dir, socket) = start(Arc::clone(&credentials), None).await;
+        // Positive control: the first proxy answers.
+        assert_eq!(ask(&socket, b"{\"op\":\"ping\"}\n").await.outcome, Outcome::Pong);
+        let err = bind_hardened(&socket).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+        // The first proxy is still the one answering.
+        assert_eq!(ask(&socket, b"{\"op\":\"ping\"}\n").await.outcome, Outcome::Pong);
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_stale_socket_file_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ctl.sock");
+        drop(std::os::unix::net::UnixListener::bind(&socket).unwrap()); // file stays, nobody listens
+        assert!(socket.exists());
+        assert!(bind_hardened(&socket).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_regular_file_at_the_socket_path_is_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ctl.sock");
+        std::fs::write(&path, b"precious").unwrap();
+        let err = bind_hardened(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&path).unwrap(), b"precious");
+    }
+
+    #[tokio::test]
+    async fn the_channel_keeps_serving_after_a_burst_of_connections() {
+        let credentials = store();
+        let (_dir, socket) = start(Arc::clone(&credentials), None).await;
+        // More idle connections than the concurrency cap, held open without a request.
+        let mut held = Vec::new();
+        for _ in 0..(MAX_CONCURRENT_CONNECTIONS + 8) {
+            if let Ok(stream) = UnixStream::connect(&socket).await {
+                held.push(stream);
+            }
+        }
+        drop(held);
+        // After the burst is gone the operator can still revoke.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reply = ask(
+            &socket,
+            b"{\"op\":\"revoke_credential\",\"host\":\"api.anthropic.com\"}\n",
+        )
+        .await;
+        assert_eq!(reply.outcome, Outcome::Revoked);
     }
 
     #[test]

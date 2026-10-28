@@ -87,7 +87,10 @@ impl From<std::io::Error> for RevocationFileError {
 /// by bare host, so a port, a path or whitespace can never match one and is
 /// refused rather than silently stored.
 pub fn normalize_host(raw: &str) -> Option<String> {
-    let host = raw.trim().to_ascii_lowercase();
+    // One trailing dot is the fully-qualified form of the same name; the data path
+    // canonicalizes it away, so the record must too or `host.` would name nothing.
+    let trimmed = raw.trim();
+    let host = trimmed.strip_suffix('.').unwrap_or(trimmed).to_ascii_lowercase();
     let valid = !host.is_empty()
         && host.len() <= MAX_HOST_LEN
         && host
@@ -283,6 +286,8 @@ mod tests {
     #[test]
     fn host_names_with_ports_paths_or_whitespace_are_not_recorded() {
         assert_eq!(normalize_host(" API.Example.com "), Some("api.example.com".to_string()));
+        assert_eq!(normalize_host("api.example.com."), Some("api.example.com".to_string()));
+        assert_eq!(normalize_host("."), None);
         for bad in ["", "host:443", "a/b", "a b", "ex ample.com", &"a".repeat(254)] {
             assert_eq!(normalize_host(bad), None, "{bad:?}");
         }
