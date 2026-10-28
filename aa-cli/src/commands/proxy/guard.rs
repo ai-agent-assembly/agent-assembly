@@ -436,7 +436,15 @@ impl ProxyGuard {
     /// Whether `socket` answers a ping as the process we spawned.
     #[cfg(unix)]
     fn control_socket_answers(socket: &std::path::Path, pid: u32) -> bool {
-        super::revoke::ping_as(socket, Some(pid))
+        // The proxy binds the socket before it reports ready, so a healthy one answers the first
+        // time. The retries only absorb a heavily loaded host, so a slow answer is not mistaken
+        // for the absence of a revoke path (which would refuse a healthy launch).
+        (0..3).any(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            super::revoke::ping_as(socket, Some(pid))
+        })
     }
 
     #[cfg(not(unix))]
