@@ -140,6 +140,12 @@ impl std::error::Error for ProxyGuardError {}
 /// PATH, and no timeout, unlike `spawn()` itself, which review found had *no*
 /// coverage proving any of this wiring actually happens (a deleted line here
 /// would pass every existing test silently).
+///
+/// Test-only: the real spawn decides the control-socket path itself
+/// ([`ProxyGuard::spawn_with_binary_in`]) and calls
+/// [`build_command_with_control`]; this derives the in-launch-directory path the
+/// tests expect for a short launch directory.
+#[cfg(test)]
 fn build_command(binary: &std::path::Path, opts: &ProxyGuardOptions) -> std::process::Command {
     #[cfg(unix)]
     let control = opts.ready_file.parent().and_then(super::ctl_path::primary_socket);
