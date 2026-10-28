@@ -31,6 +31,8 @@ pub mod network_enforce;
 pub mod pipeline_log;
 pub mod probe_adjudication;
 pub mod proxy;
+#[cfg(unix)]
+pub mod revocations;
 pub mod ssrf;
 pub mod tls;
 pub mod transmission_evidence;
