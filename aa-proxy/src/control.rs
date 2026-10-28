@@ -170,6 +170,10 @@ pub fn bind_hardened(path: &Path) -> std::io::Result<UnixListener> {
             format!("control socket path longer than {MAX_SOCKET_PATH_BYTES} bytes"),
         ));
     }
+    // The socket's own 0600 mode is not enough if another user can write its
+    // directory: they could remove it and bind their own in its place.
+    revocations::verify_private_parent(path)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string()))?;
     // A stale socket from a previous run would make bind fail.
     if path.exists() {
         std::fs::remove_file(path)?;
@@ -529,6 +533,17 @@ mod tests {
         std::fs::write(&record, "api.anthropic.com\n").unwrap();
         std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o666)).unwrap();
         assert!(apply_persisted(&store(), &record).is_err());
+    }
+
+    #[test]
+    fn a_socket_in_a_world_writable_directory_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("ctl.sock");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let err = bind_hardened(&socket).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(!socket.exists(), "a refused bind must not leave a socket behind");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]

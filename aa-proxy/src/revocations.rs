@@ -45,6 +45,15 @@ pub enum RevocationFileError {
         /// The file's permission bits.
         mode: u32,
     },
+    /// The directory holding the file is writable by group or others, or belongs
+    /// to another user, so whoever can write there can replace or remove the
+    /// record, and an absent record would read as "nothing revoked".
+    InsecureDir {
+        /// The directory's permission bits.
+        mode: u32,
+        /// Whether the directory is owned by the proxy's own user.
+        owned: bool,
+    },
 }
 
 impl fmt::Display for RevocationFileError {
@@ -55,6 +64,10 @@ impl fmt::Display for RevocationFileError {
             Self::Insecure { mode } => write!(
                 f,
                 "revocation file mode {mode:o} lets group or others write it; refusing to trust it"
+            ),
+            Self::InsecureDir { mode, owned } => write!(
+                f,
+                "revocation file directory (mode {mode:o}, owned by this user: {owned}) is not private; refusing to trust it"
             ),
         }
     }
@@ -83,6 +96,37 @@ pub fn normalize_host(raw: &str) -> Option<String> {
     valid.then_some(host)
 }
 
+/// Refuse a record whose directory anyone but the proxy's own user can change.
+///
+/// The record's own mode is not enough: a directory another user can write lets
+/// them delete the file, and a missing record reads as an empty set, which is
+/// exactly "nothing was revoked". A directory that does not exist yet is not an
+/// error here (there is nothing to trust, and nothing for anyone to have planted).
+///
+/// # Errors
+///
+/// [`RevocationFileError::InsecureDir`] when the directory is not owned by the
+/// current user or is writable by group or others.
+pub fn verify_private_parent(path: &Path) -> Result<(), RevocationFileError> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let metadata = match std::fs::metadata(parent) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mode = metadata.permissions().mode() & 0o777;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let owned = metadata.uid() == unsafe { libc::geteuid() };
+    if !owned || mode & 0o022 != 0 {
+        return Err(RevocationFileError::InsecureDir { mode, owned });
+    }
+    Ok(())
+}
+
 /// Read the revoked hosts from `path`.
 ///
 /// A missing file is an empty set. Blank lines are ignored.
@@ -90,8 +134,10 @@ pub fn normalize_host(raw: &str) -> Option<String> {
 /// # Errors
 ///
 /// [`RevocationFileError`] when the file exists but is unreadable, group/other
-/// writable, or has an invalid line.
+/// writable, or has an invalid line, or when its directory is not private
+/// (see [`verify_private_parent`]).
 pub fn load(path: &Path) -> Result<BTreeSet<String>, RevocationFileError> {
+    verify_private_parent(path)?;
     let metadata = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
@@ -199,6 +245,30 @@ mod tests {
         assert_eq!(load(&path).unwrap().len(), 1);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
         assert!(matches!(load(&path), Err(RevocationFileError::Insecure { .. })));
+    }
+
+    #[test]
+    fn a_record_in_a_group_or_world_writable_directory_is_refused_even_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file_in(&dir);
+        // Positive control: the same absent record in a private directory is an empty set.
+        assert!(load(&path).unwrap().is_empty());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        // An absent record in a directory anyone can write would read as "nothing
+        // revoked", which an attacker could arrange by deleting the file.
+        assert!(matches!(
+            load(&path),
+            Err(RevocationFileError::InsecureDir { owned: true, .. })
+        ));
+        assert!(record(&path, "api.anthropic.com").is_err());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    #[test]
+    fn a_missing_directory_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-yet").join("revoked-credentials");
+        assert!(load(&path).unwrap().is_empty());
     }
 
     #[test]

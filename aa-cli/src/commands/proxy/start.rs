@@ -202,10 +202,16 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     let binary = canonical_binary(binary);
 
     // AAASM-6262: the control socket and revocation record live beside the state
-    // file, and the proxy cannot bind there until the directory exists.
+    // file, and the proxy cannot bind there until the directory exists. Create
+    // it owner-only and treat failure as fatal: the proxy refuses a record whose
+    // directory it cannot trust, so carrying on would only fail later and less
+    // clearly.
     #[cfg(unix)]
     if let Some(dir) = super::revoke::control_socket_path().parent() {
-        let _ = std::fs::create_dir_all(dir);
+        if let Err(e) = aa_core::private_fs::create_private_dir_all(dir) {
+            eprintln!("error: cannot create the proxy state directory {}: {e}", dir.display());
+            return ExitCode::FAILURE;
+        }
     }
 
     let mut cmd = build_start_command(&binary, &args);
