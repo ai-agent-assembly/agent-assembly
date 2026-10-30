@@ -1146,6 +1146,9 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    # AAASM-6410: green runs take 33-54 minutes; without a ceiling a wedged run
+    # sits until the hosted runner is lost and the log with it.
+    timeout-minutes: 75
     needs: [changes, dashboard-assets]
     if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
@@ -1241,6 +1244,16 @@ jobs:
         # and doesn't add instrumented coverage. Running it under --all-features would
         # add 8+ minutes of Docker build time with zero coverage benefit.
         run: |
+          # AAASM-6410: a once-a-minute resource sample streamed into this step's
+          # own log. A runner lost to CPU/memory starvation loses its log, but the
+          # lines already streamed survive, so the last sample names the culprit.
+          (while sleep 60; do
+            echo "::group::resource sample $(date -u +%T)"
+            uptime; free -m
+            ps -eo pid,ppid,pcpu,pmem,rss,etime,args --sort=-rss | head -12 | cut -c1-200
+            echo "::endgroup::"
+          done) &
+          trap 'kill $! 2>/dev/null || true' EXIT
           # sustained_load_p99_under_5ms, all_layers_run_independently, and
           # auth_rate_limit_resets_after_window are timing-sensitive tests that
           # fail under llvm-cov instrumentation overhead — skipped in coverage
@@ -1254,11 +1267,11 @@ jobs:
           # (`--all-features` activates them but `--exclude aa-ebpf` means the
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
-          cargo llvm-cov nextest --no-report --all-features --workspace \
+          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
-          cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
+          cargo llvm-cov nextest --profile coverage --no-report -p aa-devtool-claude-code --no-tests=pass
           cargo llvm-cov --no-run --lcov --output-path lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
