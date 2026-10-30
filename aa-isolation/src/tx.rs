@@ -326,8 +326,10 @@ pub enum TransactionStatus {
     },
     /// The apply journal was found partially applied when a run examined the
     /// transaction, e.g. the process died mid-apply. Never produced by a
-    /// clean run; intended to be discovered and to require explicit operator
-    /// action, never auto-resolved. Not yet produced by any code path, and the
+    /// clean run; requires explicit operator action, never auto-resolved. Set
+    /// when an apply fails in-process ([`CommitRefusal::ApplyInterrupted`]). A
+    /// crash leaves the journal on disk instead, which makes a later
+    /// `WorkspaceTransaction::open` over the same base refuse. The
     /// `aasm workspace tx show/discard` recovery commands do not exist
     /// (AAASM-6305).
     InterruptedApply,
