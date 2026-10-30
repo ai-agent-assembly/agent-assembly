@@ -1236,6 +1236,8 @@ jobs:
           rm -rf target/debug
 
       - name: Generate coverage report
+        # AAASM-6410: green runs take 30-42 minutes in this step.
+        timeout-minutes: 55
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
@@ -1244,14 +1246,17 @@ jobs:
         # and doesn't add instrumented coverage. Running it under --all-features would
         # add 8+ minutes of Docker build time with zero coverage benefit.
         run: |
-          # AAASM-6410: a once-a-minute resource sample streamed into this step's
-          # own log. A runner lost to CPU/memory starvation loses its log, but the
-          # lines already streamed survive, so the last sample names the culprit.
+          # AAASM-6410: a once-a-minute resource sample, written to a file the
+          # `if: always()` step below prints and uploads. The step's own timeout
+          # (not the job's) ends a wedged run so that step still gets to run; a
+          # job-level cancel lost the whole log of the in-progress step.
+          mkdir -p "$RUNNER_TEMP/coverage-diag"
           (while sleep 60; do
-            echo "::group::resource sample $(date -u +%T)"
-            uptime; free -m
-            ps -eo pid,ppid,pcpu,pmem,rss,etime,args --sort=-rss | head -12 | cut -c1-200
-            echo "::endgroup::"
+            {
+              echo "=== sample $(date -u +%T)"
+              uptime; free -m
+              ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,args --sort=-pcpu | head -15 | cut -c1-220
+            } >> "$RUNNER_TEMP/coverage-diag/samples.log" 2>&1
           done) &
           trap 'kill $! 2>/dev/null || true' EXIT
           # sustained_load_p99_under_5ms, all_layers_run_independently, and
@@ -1273,6 +1278,23 @@ jobs:
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
           cargo llvm-cov nextest --profile coverage --no-report -p aa-devtool-claude-code --no-tests=pass
           cargo llvm-cov --no-run --lcov --output-path lcov.info
+      - name: Coverage diagnostics (AAASM-6410)
+        if: always()
+        run: |
+          echo "--- last samples"
+          tail -n 120 "$RUNNER_TEMP/coverage-diag/samples.log" 2>/dev/null || echo "no samples"
+          echo "--- processes now"
+          ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,args --forest | cut -c1-220 | head -60
+          echo "--- kernel"
+          sudo dmesg 2>/dev/null | tail -30 || true
+      - name: Upload coverage diagnostics (AAASM-6410)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-diagnostics
+          path: ${{ runner.temp }}/coverage-diag/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
