@@ -341,3 +341,55 @@ fn a_leftover_journal_blocks_other_ids_over_the_same_base_but_not_other_bases() 
     WorkspaceTransaction::open(TransactionId::new("fresh-session-2"), &state_root, &other_base, vec![])
         .expect("a journal scoped to another base must not block this one");
 }
+
+/// AAASM-6305: a failure *during* apply (not a crash) must not be reported as
+/// "nothing changed". It returns ApplyInterrupted, sets the status, keeps the
+/// BASE-scoped journal, and blocks the next transaction over that base.
+#[test]
+fn a_failed_apply_reports_apply_interrupted_and_blocks_the_next_open() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(base_root.join("d")).unwrap();
+    write(&base_root.join("a.txt"), "original");
+
+    let id = TransactionId::new("failed-apply-test");
+    let mut tx = WorkspaceTransaction::open(id.clone(), &state_root, &base_root, vec![]).unwrap();
+    write(&tx.staged_dir().join("d").join("new.txt"), "staged");
+    tx.close();
+
+    // Make the apply step fail: a read-only directory the change set writes into.
+    let locked = base_root.join("d");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    if fs::write(locked.join("probe"), b"x").is_ok() {
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        eprintln!("skipping: process can write into a 0500 directory (running as root?)");
+        return;
+    }
+
+    let refusal = tx
+        .commit(&[], false)
+        .expect_err("apply into a read-only directory must fail");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let journal_path = state_root.join(id.as_str()).join("journal");
+    match &refusal {
+        aa_isolation::CommitRefusal::ApplyInterrupted { journal, .. } => {
+            assert_eq!(journal, &journal_path.display().to_string());
+        }
+        other => panic!("a failed apply must be ApplyInterrupted, got {other:?}"),
+    }
+    let journal_body = fs::read_to_string(&journal_path).expect("the journal must be retained");
+    assert!(
+        journal_body.starts_with(&format!("BASE {}\n", base_root.canonicalize().unwrap().display())),
+        "the journal must be scoped to the base: {journal_body:?}"
+    );
+
+    let next = WorkspaceTransaction::open(TransactionId::new("after-failure"), &state_root, &base_root, vec![]);
+    assert!(
+        matches!(next, Err(aa_workspace_tx::TransactionError::InterruptedApply { .. })),
+        "the next transaction over the same base must refuse"
+    );
+}
