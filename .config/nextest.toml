@@ -15,6 +15,18 @@
 [profile.default]
 retries = 2
 
+# AAASM-6410: the profile the `Coverage` job runs under. Diagnostics, not the
+# fix. `Coverage` has twice lost its hosted runner ("lost communication with the
+# server") inside `Generate coverage report` with no test named, because nothing
+# bounds a single test there. A per-test slow-timeout turns a wedged test into a
+# named nextest FAILED instead. `period = "300s"` x `terminate-after = 4` = a
+# 20 minute kill: the whole suite finishes in 33-54 minutes in green runs, so no
+# real test comes near it even with llvm-cov's 2-5x overhead. Inherits `retries`
+# from `[profile.default]`.
+[profile.coverage.slow-timeout]
+period = "300s"
+terminate-after = 4
+
 # AAASM-5465: the profile the Claude Code conformance lanes run under.
 # AAASM-5977 additionally moved `integration-tests.yml`'s own `Run integration
 # tests` step onto this profile, for the same reason: AC5 needs the executed
