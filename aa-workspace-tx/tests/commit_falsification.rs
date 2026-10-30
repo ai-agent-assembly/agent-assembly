@@ -307,3 +307,37 @@ fn commit_before_close_is_refused() {
         "the refusal must name the lifecycle violation: {refusal:?}"
     );
 }
+
+/// AAASM-6305: the real CLI path opens each launch under a fresh session id,
+/// so the leftover journal lives in a *different* transaction's directory.
+/// It must still block a new transaction over the same base — and only that
+/// base.
+#[test]
+fn a_leftover_journal_blocks_other_ids_over_the_same_base_but_not_other_bases() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let other_base = fixture.path().join("other-base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    fs::create_dir_all(&other_base).unwrap();
+    write(&base_root.join("a.txt"), "original");
+    write(&other_base.join("b.txt"), "other");
+
+    let crashed = TransactionId::new("crashed-session");
+    drop(WorkspaceTransaction::open(crashed.clone(), &state_root, &base_root, vec![]).unwrap());
+    let journal = format!("BASE {}\nMOD a.txt\n", base_root.canonicalize().unwrap().display());
+    fs::write(state_root.join(crashed.as_str()).join("journal"), journal).unwrap();
+
+    let same_base = WorkspaceTransaction::open(TransactionId::new("fresh-session"), &state_root, &base_root, vec![]);
+    assert!(
+        matches!(
+            same_base,
+            Err(aa_workspace_tx::TransactionError::InterruptedApply { .. })
+        ),
+        "a different id over the same base must refuse"
+    );
+
+    // Control: the same state root, a base the journal does not name.
+    WorkspaceTransaction::open(TransactionId::new("fresh-session-2"), &state_root, &other_base, vec![])
+        .expect("a journal scoped to another base must not block this one");
+}
