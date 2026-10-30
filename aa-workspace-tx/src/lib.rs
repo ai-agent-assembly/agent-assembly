@@ -43,9 +43,12 @@
 //!   ([`CommitRefusal::ProtectedPathNotApproved`]).
 //! - Apply is two-phase: a journal describing every planned operation is
 //!   written and `fsync`'d *before* any base path is touched, so a crash
-//!   mid-apply is discoverable (`TransactionStatus::InterruptedApply`) rather
-//!   than silently half-done. Nothing in this crate ever auto-applies a
-//!   journal on a later run — that is a deliberate scope boundary, not a gap.
+//!   mid-apply leaves the journal on disk. Nothing in this crate or in `aasm`
+//!   reads it back yet: re-opening the transaction re-materializes the staged
+//!   copy without checking for a journal, and `TransactionStatus::InterruptedApply`
+//!   is never produced (AAASM-6305). Never auto-applying a journal on a later
+//!   run is a deliberate scope boundary; the missing detection and operator
+//!   recovery surface is a known gap.
 
 pub mod commit;
 pub mod manifest;
