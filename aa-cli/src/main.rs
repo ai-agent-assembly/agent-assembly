@@ -21,6 +21,22 @@ fn main() -> ExitCode {
 
     let cli = Cli::parse();
 
+    // AAASM-6395: take the operator's provider keys out of this process's
+    // environment (`ps -Eww`, `/proc/<pid>/environ`) before anything mutates the
+    // environment. Only the commands that start a proxy need them; other commands
+    // do not scrub, so an exported variable stays visible to them.
+    let starts_proxy = matches!(cli.command, commands::Commands::Proxy(_));
+    // `aasm run` is held back from the published crate (the `Run` variant is inside
+    // the `devtool` strip region of `commands/mod.rs`), so naming it here has to go
+    // with that region or the published `aasm` does not compile (E0599). The published
+    // crate still scrubs for `aasm proxy ...`, the only proxy starter it ships.
+    // strip-for-publish:begin devtool
+    let starts_proxy = starts_proxy || matches!(cli.command, commands::Commands::Run(_));
+    // strip-for-publish:end devtool
+    if starts_proxy {
+        commands::proxy::provider_keys::capture_and_scrub();
+    }
+
     let cfg = match config::load() {
         Ok(c) => c,
         Err(e) => {

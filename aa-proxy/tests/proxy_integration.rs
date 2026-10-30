@@ -638,6 +638,179 @@ mod attacker {
     }
 
     #[tokio::test]
+    async fn revoked_credential_refuses_the_request_instead_of_passing_the_agents_header_through() {
+        // AAASM-6262 (J84 AC3). A revoked host must be REFUSED. The agent's own
+        // header carries a bogus key here on purpose: an implementation that
+        // merely stops injecting (a remove instead of a tombstone) would forward
+        // this request unchanged, the stub upstream would see it, and the test
+        // would go red. The positive control is the injecting test above, which
+        // runs the same request shape against an unrevoked store.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        assert_eq!(
+            creds.revoke(ALLOWED_HOST),
+            aa_proxy::credentials::RevokeOutcome::Revoked
+        );
+        let (proxy, _h) = start_proxy_with_creds(config, ca, creds).await;
+
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\n\
+             Authorization: Bearer agent-bogus\r\nContent-Length: 2\r\n\r\nhi"
+        );
+        let response = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("403"),
+            "a revoked credential must be refused with 403, got: {response_str}"
+        );
+        assert!(
+            response_str.contains("credential_revoked"),
+            "the refusal must be distinguishable from an upstream 401: {response_str}"
+        );
+        assert!(
+            !response_str.contains(REAL_KEY),
+            "the revoked key must never reach the agent: {response_str}"
+        );
+        // Give any (erroneous) dial a moment, then assert the upstream saw nothing.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "upstream must never be dialed for a revoked credential"
+        );
+    }
+
+    /// Like [`start_proxy_with_creds`], but also hands back the live store so a
+    /// test can attach the control socket to the same server.
+    async fn start_proxy_with_shared_store(
+        config: ProxyConfig,
+        ca: CaStore,
+        creds: CredentialStore,
+    ) -> (SocketAddr, Arc<CredentialStore>) {
+        let listener = TcpListener::bind(config.bind_addr).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let cfg = ProxyConfig {
+            bind_addr: addr,
+            ..config
+        };
+        let (tx, _rx) = broadcast::channel::<PipelineEvent>(16);
+        let server = aa_proxy::proxy::ProxyServer::new(cfg, ca, tx).with_credentials(creds);
+        let store = server.credentials();
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (addr, store)
+    }
+
+    /// One request over a real control socket, as the CLI sends it.
+    #[cfg(unix)]
+    async fn control_revoke(socket: &std::path::Path, host: &str) -> aa_proxy::control::Response {
+        use tokio::io::AsyncReadExt;
+        let mut stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+        let line = format!("{{\"op\":\"revoke_credential\",\"host\":\"{host}\"}}\n");
+        stream.write_all(line.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        stream.read_to_string(&mut out).await.unwrap();
+        serde_json::from_str(out.trim()).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn revoking_a_running_proxy_over_the_control_socket_refuses_the_next_request_and_survives_a_restart() {
+        // AAASM-6262 (J84 AC3), end to end through the real control socket and the
+        // real data path. Synthetic secret only; the leak scan at the end plants
+        // the secret once first so an empty scan cannot pass for a clean one.
+        install_crypto();
+        let dir = tempfile::TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let (upstream, log) = start_tls_upstream("{\"ok\":true}").await;
+        let config = proxy_config(dir.path(), upstream, vec![ALLOWED_HOST.to_string()]);
+        let creds = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        let (proxy, store) = start_proxy_with_shared_store(config, ca, creds).await;
+
+        let state = tempfile::TempDir::new().unwrap();
+        let socket = state.path().join("ctl.sock");
+        let record = state.path().join("revoked-credentials");
+        let listener = aa_proxy::control::bind_hardened(&socket).unwrap();
+        tokio::spawn(aa_proxy::control::serve(listener, store, Some(record.clone())));
+
+        let req = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: {ALLOWED_HOST}\r\n\
+             Authorization: Bearer agent-bogus\r\nContent-Length: 2\r\n\r\nhi"
+        );
+
+        // Before the revoke: the credential is injected (positive control).
+        let before = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+        assert_eq!(
+            log.lock().unwrap().authorization.as_deref(),
+            Some(&format!("Bearer {REAL_KEY}")[..]),
+            "the credential must inject before it is revoked"
+        );
+        assert!(String::from_utf8_lossy(&before).contains("200"));
+        *log.lock().unwrap() = UpstreamLog::default();
+
+        // Revoke the RUNNING proxy through the real socket.
+        let reply = control_revoke(&socket, ALLOWED_HOST).await;
+        assert_eq!(reply.outcome, aa_proxy::control::Outcome::Revoked);
+        assert_eq!(reply.persisted, Some(true));
+
+        // After the revoke: refused, and the upstream is never reached.
+        let after = mitm_roundtrip(proxy, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+        let after_str = String::from_utf8_lossy(&after).into_owned();
+        assert!(
+            after_str.contains("403") && after_str.contains("credential_revoked"),
+            "{after_str}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !log.lock().unwrap().saw_request,
+            "the upstream must not see a request after the credential was revoked"
+        );
+
+        // Restart: a brand-new proxy, with the credential configured again exactly as
+        // AA_PROXY_PROVIDER_KEYS would, applies the durable record before serving.
+        let dir2 = tempfile::TempDir::new().unwrap();
+        let ca2 = CaStore::load_or_create(dir2.path()).await.unwrap();
+        let (upstream2, log2) = start_tls_upstream("{\"ok\":true}").await;
+        let config2 = proxy_config(dir2.path(), upstream2, vec![ALLOWED_HOST.to_string()]);
+        let creds2 = CredentialStore::from_pairs([(ALLOWED_HOST.to_string(), REAL_KEY.as_bytes().to_vec())]);
+        assert_eq!(aa_proxy::control::apply_persisted(&creds2, &record).unwrap(), 1);
+        let (proxy2, _store2) = start_proxy_with_shared_store(config2, ca2, creds2).await;
+        let restarted = mitm_roundtrip(proxy2, ALLOWED_HOST, ALLOWED_HOST, req.as_bytes()).await;
+        let restarted_str = String::from_utf8_lossy(&restarted).into_owned();
+        assert!(
+            restarted_str.contains("403") && restarted_str.contains("credential_revoked"),
+            "a restart must not bring a revoked credential back: {restarted_str}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!log2.lock().unwrap().saw_request);
+
+        // Leak scan over everything an observer can see. The planted control proves
+        // the scan can find the value at all.
+        let leaks = |haystack: &str| haystack.contains(REAL_KEY);
+        assert!(
+            leaks(&format!("planted {REAL_KEY}")),
+            "positive control: the scan must be able to fail"
+        );
+        let recorded = std::fs::read_to_string(&record).unwrap();
+        for (name, text) in [
+            ("response before", String::from_utf8_lossy(&before).into_owned()),
+            ("response after", after_str),
+            ("response after restart", restarted_str),
+            ("control reply", serde_json::to_string(&reply).unwrap()),
+            ("revocation record", recorded),
+        ] {
+            assert!(!leaks(&text), "the synthetic credential leaked into: {name}");
+        }
+    }
+
+    #[tokio::test]
     async fn forged_in_tunnel_host_is_rejected_and_evil_host_never_dialed() {
         // AC2: CONNECT an allowlisted host, then forge `Host: evil.attacker.com`
         // inside the tunnel. The proxy must reject with 403 and never dial the

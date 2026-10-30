@@ -22,6 +22,8 @@
 
 pub mod audit_jsonl;
 pub mod config;
+#[cfg(unix)]
+pub mod control;
 pub mod credentials;
 pub mod error;
 pub mod hardening;
@@ -31,6 +33,8 @@ pub mod network_enforce;
 pub mod pipeline_log;
 pub mod probe_adjudication;
 pub mod proxy;
+#[cfg(unix)]
+pub mod revocations;
 pub mod ssrf;
 pub mod tls;
 pub mod transmission_evidence;
@@ -56,6 +60,12 @@ pub async fn run(
     // plaintext provider keys, and so same-uid processes cannot ptrace it.
     // Best-effort: a failure is logged, not fatal.
     let _ = hardening::harden_process();
+
+    // AAASM-6395: provider keys delivered on stdin are read here, before anything
+    // else can fail, and a bad payload refuses the start. The legacy environment
+    // path is left to the server constructor.
+    let startup_credentials =
+        credentials::CredentialStore::load_startup().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
 
     // AAASM-3131: shout if upstream TLS verification is disabled. This is a
     // debug-only test affordance (the env var is ignored in release builds);
@@ -135,7 +145,17 @@ pub async fn run(
         }
     }
 
-    let server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    let mut server = proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    if let Some(store) = startup_credentials {
+        let expected = store.len();
+        server = server.with_credentials(store);
+        // `with_credentials` only logs when the server is already shared; a proxy
+        // that kept the env-built (empty) store would forward the agent's own
+        // credential header, so verify the swap instead of trusting it.
+        if server.credentials().len() != expected {
+            anyhow::bail!("refusing to start: the delivered provider credentials were not installed");
+        }
+    }
     server.run().await?;
     Ok(())
 }

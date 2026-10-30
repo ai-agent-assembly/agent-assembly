@@ -201,6 +201,52 @@ pub fn dispatch(args: StartArgs) -> ExitCode {
     };
     let binary = canonical_binary(binary);
 
+    // AAASM-6262: a second proxy on the same state directory would unlink the
+    // first one's control socket and rewrite its revocation record, leaving the
+    // first unrevokable. Refuse while a recorded proxy is still the live process
+    // it names (alive AND the same incarnation, so a recycled PID does not block).
+    #[cfg(unix)]
+    if let Some(state) = super::pid::read_state() {
+        if super::trust::verify_identity(&state).is_ok() {
+            eprintln!(
+                "error: an aa-proxy is already running (PID {}, listening on {}); run `aasm proxy stop` first",
+                state.pid, state.listen_addr
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    // AAASM-6262: the control socket and revocation record live beside the state
+    // file, and the proxy cannot bind there until the directory exists. Create
+    // it owner-only and treat failure as fatal. If the directory exists but the
+    // proxy would refuse it (not owned by this user, or writable by group or
+    // others) or the socket path is too long for a Unix socket address, the proxy
+    // is started WITHOUT the control surface and this says so: revocation is then
+    // unavailable, which is a loss of capability and not a loss of enforcement.
+    #[cfg(unix)]
+    {
+        if let Some(dir) = super::revoke::control_socket_path().parent() {
+            if let Err(e) = aa_core::private_fs::create_private_dir_all(dir) {
+                eprintln!("error: cannot create the proxy state directory {}: {e}", dir.display());
+                return ExitCode::FAILURE;
+            }
+        }
+        match control_surface_policy(control_surface_unusable_reason(), super::provider_keys::delivering()) {
+            ControlSurface::Usable => {}
+            ControlSurface::WarnAndContinue(message) => eprintln!("{message}"),
+            ControlSurface::Refuse(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    // AAASM-6395: a payload the proxy would refuse is refused here, before spawn.
+    if let Err(reason) = super::provider_keys::preflight(&binary) {
+        eprintln!("error: {reason}");
+        return ExitCode::FAILURE;
+    }
+
     let mut cmd = build_start_command(&binary, &args);
 
     if args.no_detach {
@@ -231,18 +277,101 @@ fn build_start_command(binary: &Path, args: &StartArgs) -> std::process::Command
     for (key, value) in proxy_child_env(&args.listen, args.gateway.as_deref()) {
         cmd.env(key, value);
     }
+    // AAASM-6262: give the standalone proxy a revoke-only control socket and a
+    // durable revocation record beside its state file, so
+    // `aasm proxy revoke-credential` can revoke a brokered credential in the
+    // running proxy and a restart cannot bring it back. Both paths carry no
+    // secret.
+    #[cfg(unix)]
+    {
+        if control_surface_unusable_reason().is_none() {
+            cmd.env("AA_PROXY_CONTROL_SOCKET", super::revoke::control_socket_path());
+            cmd.env("AA_PROXY_REVOCATIONS_FILE", super::revoke::revocations_path());
+        } else {
+            // Set explicitly, never inherited: an ambient value must not decide
+            // whether this proxy opens a control socket.
+            cmd.env_remove("AA_PROXY_CONTROL_SOCKET");
+            cmd.env_remove("AA_PROXY_REVOCATIONS_FILE");
+        }
+    }
     if let Some(ref ca_dir) = args.ca_dir {
         cmd.env("AA_CA_DIR", ca_dir);
     }
     for name in crate::commands::run_env_sanitize::PROXY_EXCLUSION_AND_ROUTING_VARS {
         cmd.env_remove(name);
     }
+    // AAASM-6395: provider keys travel on stdin, never in the proxy's environment.
+    super::provider_keys::configure(&mut cmd);
     cmd
+}
+
+/// What standalone start does about an unusable control surface.
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+enum ControlSurface {
+    Usable,
+    /// No credential is brokered, so nothing needs revoking: start, and say so.
+    WarnAndContinue(String),
+    /// A credential would be brokered with no way to revoke it: do not start.
+    Refuse(String),
+}
+
+/// The decision, separated from the spawn so it is testable. A proxy that brokers
+/// a credential must be revocable while it runs (AAASM-6262, AC3), so an unusable
+/// control surface refuses instead of warning; one that brokers nothing keeps the
+/// warning it always had.
+#[cfg(unix)]
+fn control_surface_policy(unusable_reason: Option<String>, brokered: bool) -> ControlSurface {
+    match unusable_reason {
+        None => ControlSurface::Usable,
+        Some(reason) if brokered => ControlSurface::Refuse(format!(
+            "error: refusing to start aa-proxy: it would broker a provider credential but its revocation control \
+             socket is unavailable ({reason}). Shorten AASM_STATE_DIR or fix the directory, and retry."
+        )),
+        Some(reason) => ControlSurface::WarnAndContinue(format!(
+            "warning: starting aa-proxy without credential revocation ({reason}); \
+             `aasm proxy revoke-credential` will not work for this proxy"
+        )),
+    }
+}
+
+/// Why the standalone proxy cannot be given a control socket and revocation
+/// record, or `None` when it can.
+///
+/// The proxy itself refuses a record or socket whose directory it cannot trust,
+/// and refuses a socket path longer than a Unix socket address allows. Checking
+/// here first turns what would be a proxy that fails to start into a proxy that
+/// starts without the control surface, with the reason stated.
+#[cfg(unix)]
+fn control_surface_unusable_reason() -> Option<String> {
+    let socket = super::revoke::control_socket_path();
+    if socket.as_os_str().len() > aa_proxy::control::MAX_SOCKET_PATH_BYTES {
+        return Some(format!(
+            "the control socket path is longer than {} bytes",
+            aa_proxy::control::MAX_SOCKET_PATH_BYTES
+        ));
+    }
+    aa_proxy::revocations::verify_private_parent(&socket)
+        .err()
+        .map(|e| e.to_string())
 }
 
 /// Foreground start: inherit stdio and block until the process exits.
 fn run_foreground(cmd: &mut std::process::Command) -> ExitCode {
-    match cmd.status() {
+    // `status()` would hide the child's stdin, which is where the provider keys go.
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to run aa-proxy: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = super::provider_keys::deliver(&mut child) {
+        eprintln!("error: could not deliver the provider keys to aa-proxy: {e}");
+        pid::terminate_child(&mut child);
+        return ExitCode::FAILURE;
+    }
+    match child.wait() {
         Ok(s) if s.success() => ExitCode::SUCCESS,
         Ok(_) => ExitCode::FAILURE,
         Err(e) => {
@@ -308,9 +437,12 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
         Err(code) => return code,
     };
 
-    cmd.stdout(Stdio::from(log_out))
-        .stderr(Stdio::from(log_err))
-        .stdin(Stdio::null());
+    cmd.stdout(Stdio::from(log_out)).stderr(Stdio::from(log_err));
+    // The provider-key pipe, when there is one, was set by `provider_keys::configure`
+    // and must not be replaced by the null device.
+    if !super::provider_keys::delivering() {
+        cmd.stdin(Stdio::null());
+    }
 
     // Create a new process group so the child isn't killed by the parent's SIGHUP.
     #[cfg(unix)]
@@ -326,6 +458,12 @@ fn run_background(mut cmd: std::process::Command, args: StartArgs, binary: &std:
             return ExitCode::FAILURE;
         }
     };
+
+    if let Err(e) = super::provider_keys::deliver(&mut child) {
+        eprintln!("error: could not deliver the provider keys to aa-proxy: {e}");
+        pid::terminate_child(&mut child);
+        return ExitCode::FAILURE;
+    }
 
     let child_pid = child.id();
     record_proxy_state(child_pid, binary, &args.listen);
@@ -793,5 +931,21 @@ mod tests {
             Some(v) => std::env::set_var("AA_DATA_DIR", v),
             None => std::env::remove_var("AA_DATA_DIR"),
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_unusable_control_surface_refuses_a_brokered_start_and_only_warns_otherwise() {
+        let why = Some("the control socket path is longer than 100 bytes".to_string());
+        assert_eq!(control_surface_policy(None, true), ControlSurface::Usable);
+        assert_eq!(control_surface_policy(None, false), ControlSurface::Usable);
+        assert!(matches!(
+            control_surface_policy(why.clone(), true),
+            ControlSurface::Refuse(m) if m.contains("refusing to start") && m.contains("revocation")
+        ));
+        // The non-brokered default is exactly what it was: a warning, and the start proceeds.
+        assert!(matches!(
+            control_surface_policy(why, false),
+            ControlSurface::WarnAndContinue(m) if m.starts_with("warning: starting aa-proxy without credential revocation")
+        ));
     }
 }

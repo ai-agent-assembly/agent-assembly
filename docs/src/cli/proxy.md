@@ -19,6 +19,7 @@ aasm proxy <SUBCOMMAND> [OPTIONS]
 | [`install-ca`](#aasm-proxy-install-ca) | Install the proxy CA into the OS trust store. |
 | [`uninstall-ca`](#aasm-proxy-uninstall-ca) | Remove the proxy CA from the OS trust store. |
 | [`logs`](#aasm-proxy-logs) | Tail the proxy log file. |
+| [`revoke-credential`](#aasm-proxy-revoke-credential) | Revoke a brokered provider credential in the running proxy (Unix). |
 
 ---
 
@@ -162,3 +163,36 @@ Tail the proxy log file, with optional level/time filtering.
 ```bash
 aasm proxy logs --follow --level warn --since 10m
 ```
+
+---
+
+## aasm proxy revoke-credential
+
+Revoke the provider credential the running proxy injects for a host. Every later request to that host is refused with `403` and a `credential_revoked` body instead of being forwarded, so the agent's own headers are never passed through in its place. The request that is already in flight when you revoke completes.
+
+| Flag | Type | Default | Description |
+|---|---|---|---|
+| `--host <HOST>` | string | required | The host whose credential to revoke, for example `api.anthropic.com`. |
+| `--socket <PATH>` | path | the proxy's control socket | Control socket of the running proxy. |
+| `--agent <ID>` | string | — | Revoke in the proxy `aasm run` started for this registered agent id, instead of the standalone proxy. Revokes in every launch of that agent whose proxy still answers (not only the newest), and fails if any of them cannot be reached. Cannot be combined with `--socket`. |
+
+```bash
+aasm proxy revoke-credential --host api.anthropic.com
+```
+
+`aasm proxy start` gives the proxy a control socket and a durable revocation record beside its state file (`AA_PROXY_CONTROL_SOCKET`, `AA_PROXY_REVOCATIONS_FILE`). A revocation is written to that record, so restarting the proxy re-applies it before the proxy accepts a connection. A record that cannot be read, is writable by group or others, or has an invalid line stops the proxy from starting, because not knowing what was revoked must not read as nothing being revoked.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Revoked (or already revoked) and written to the durable record. |
+| `1` | Nothing was revoked: no credential is configured for the host, the request was refused, or the proxy could not be reached. |
+| `3` | Revoked in the running proxy but **not** written to a durable record, so a restart can bring the credential back. |
+
+What this does and does not do:
+
+- It can only remove access. There is no command to install, rotate or read a credential, and nothing the command prints is derived from a secret.
+- A host with no configured credential is reported and left alone, so a mistyped host does not start refusing traffic.
+- The control socket is owner-only and refuses any peer that is not the proxy's own user, but it does not authenticate the operator: a process running as the same user can connect. Because the protocol can only remove access, a connecting process can only deny service. A second `aasm proxy start` is refused while a recorded proxy is still running, and `aa-proxy` will not replace a control socket that something still answers on. If the state directory is not private to this user, or the socket path would be too long for a Unix socket address, the control surface is unavailable: `aasm proxy start` refuses to start a proxy that would broker a provider credential (`AA_PROXY_PROVIDER_KEYS` set), because a credential that cannot be revoked while the proxy runs must not be started silently, and otherwise starts the proxy without it and says so.
+- A per-launch proxy started by `aasm run` has a control socket inside its own private launch directory, reached with `--agent`. That proxy lives for one launch and is never restarted, so it keeps no durable record: revoking there exits `3` (revoked in the running proxy, memory only), which is accurate and expected. A later `aasm run` starts from whatever credentials it is given, so stop provisioning a credential to stop it reaching future launches. `--agent` finds sockets by directory name under the launch state directory, trusting only directories this user owns and nobody else can write, and revokes in every live one. That is not a defence against a process running as the same user: it can unlink the real `ctl.sock` and bind its own, which leaves the real proxy unreachable while the impostor answers "revoked". `--agent` and `--socket` do not verify who answers, because no launch record the agent cannot forge exists without a confined launch; under isolation `none`, revoking a per-launch proxy is best-effort against a hostile same-user agent. The default standalone form does verify: it requires the answering process to be the proxy recorded in the state file, and refuses without sending anything otherwise. Even that is bounded by the existing proxy trust model, which a same-user process that can forge the state file can still defeat. When the launch directory's socket path is too long for a Unix socket address (about 100 bytes), a launch that brokers a provider credential uses a short socket under `/tmp/aa-ctl-<uid>/` instead, named from the launch directory so `--agent` finds it again. That directory is created owner-only and checked on every use (a real directory, not a symlink, owned by this user, no group or other access); one that fails the check is refused, never adopted. A launch that brokers a credential is refused unless a working revoke path exists: after the proxy reports ready it must answer a ping as the very process `aasm` started, otherwise it is stopped and the launch fails. A launch that brokers no credential keeps the old behaviour (a control socket when the launch directory path fits, none otherwise, and no extra directory is created). If `aasm` is killed hard, a leftover fallback socket file can remain; discovery ignores it unless its launch directory exists.
+- `aasm run` and `aasm proxy ...` take the operator's provider keys from `AA_PROXY_PROVIDER_KEYS`, overwrite the exec-time copy in their own process, remove the variable from the governed tool's and the proxy's environment, and hand the keys to `aa-proxy` once over its standard input. This keeps the keys out of `ps -Eww` and `/proc/<pid>/environ`, which any process of the same user can read. It does not stop a same-user process that attacks actively (a debugger where permitted, killing or replacing the proxy), it does not scrub other `aasm` commands, and an `aa-proxy` started directly still reads the environment variable (with a warning). A separate user or a sandbox backend is the real boundary.
+

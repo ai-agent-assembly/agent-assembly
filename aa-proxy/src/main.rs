@@ -48,13 +48,27 @@ use clap::Parser;
     long_version = aa_runtime::build_identity::LONG_VERSION,
     verbatim_doc_comment
 )]
-struct Cli {}
+struct Cli {
+    /// Print the delivery capabilities this build supports, one per line, and exit.
+    ///
+    /// `aasm` asks before it hands a proxy the operator's provider keys on stdin
+    /// instead of in the environment (AAASM-6395). A proxy that predates that
+    /// delivery rejects the unknown flag, which `aasm` reads as "not capable" and
+    /// refuses the launch, because such a proxy would ignore the stdin payload and
+    /// start with no credentials.
+    #[arg(long, hide = true)]
+    capabilities: bool,
+}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Parse CLI args. With no flags defined this still wires up `--help` and
     // `--version`, making the binary's existence and version discoverable.
-    let _cli = Cli::parse();
+    let cli = Cli::parse();
+    if cli.capabilities {
+        println!("{}", aa_proxy::credentials::PROVIDER_KEYS_STDIN_CAPABILITY);
+        return Ok(());
+    }
 
     // rustls 0.23+ requires an explicit crypto provider at startup.
     // The `ring` feature is enabled in Cargo.toml; install it before any TLS operation.
