@@ -34,6 +34,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   error) and tells you the base may be partially modified. **Not recovery:** there is no
   rollback and no `aasm workspace tx` command yet; inspect the journal, verify or restore
   the directory, then delete the named state directory to continue.
+  The check only looks in the current state root (`AASM_STATE_DIR`), and also refuses while
+  another process is mid-commit over the same directory.
 
 ### Changed
 

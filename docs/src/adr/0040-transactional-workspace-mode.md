@@ -93,7 +93,11 @@ same base while such a journal exists, so a later run can neither stage from nor
 over the unknown state. This is fail-closed, not recovery: there is no rollback, nothing
 can tell which paths had landed, and no `aasm workspace tx show/discard/gc` command
 exists. The operator inspects the journal, verifies or restores the base, and removes the
-journal's state directory by hand. Three properties are load-bearing and stated here plainly:
+journal's state directory by hand. The guard's reach is bounded: it scans only the
+current state root, so pointing `AASM_STATE_DIR` elsewhere does not see a journal left
+in another root; it matches the base by canonical path string, not by file identity;
+and it cannot tell a crashed journal from one belonging to a commit still running in
+another process, so an open during that apply window also refuses. Three properties are load-bearing and stated here plainly:
 
 - Nothing in `aa-workspace-tx` ever auto-applies a journal on a later run. An
   interrupted apply requires explicit operator inspection; this is a deliberate scope
