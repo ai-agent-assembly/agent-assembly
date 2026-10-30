@@ -225,26 +225,16 @@ fn base_drift_inside_the_change_set_refuses_drift_outside_it_does_not() {
     );
 }
 
-/// AAASM-6291 ST-4 crash-interruption test. Simulates the exact on-disk
-/// artifact a crash mid-apply would leave (a durable `journal` file next to
-/// a staged copy that was never applied — `commit.rs`'s `write_journal` call
-/// happens before `apply`) by hand-writing the journal directly, so the
-/// "crash point" is constructed deterministically rather than racing a real
-/// `SIGKILL` against a real `fsync`.
+/// AAASM-6305: a leftover apply journal means a crashed, failed or concurrent
+/// apply over a possibly half-written base. Reopening the same transaction id
+/// must refuse instead of re-measuring the base and re-materializing a fresh
+/// staged copy over the in-flight one.
 ///
-/// This is a characterization test, not a confirmation of the crate's own
-/// doc comment: `aa-workspace-tx/src/lib.rs:44-48` and
-/// `aa_isolation::TransactionStatus::InterruptedApply`'s doc comment both
-/// describe a leftover journal as "discoverable" on a later run, but no code
-/// path anywhere in this crate (or `aa-cli`) ever inspects one — `open()`
-/// always re-measures the base and re-materializes a fresh staged copy, with
-/// no knowledge a journal exists. This test pins that real, current
-/// behavior: reopening the same transaction id reports `Open`, never
-/// `InterruptedApply`. See the AAASM-6291 PR description for the full
-/// finding and `reopen_after_a_crash_mid_apply_should_report_interrupted_apply`
-/// below for the target contract.
+/// The "crash point" is constructed deterministically by hand-writing the
+/// journal `commit::write_journal` leaves right before `apply` runs, rather
+/// than racing a real `SIGKILL` against a real `fsync`.
 #[test]
-fn reopen_after_a_crash_mid_apply_does_not_detect_interrupted_apply_or_touch_base() {
+fn reopen_after_a_crash_mid_apply_refuses_and_touches_nothing() {
     let fixture = tempfile::tempdir().unwrap();
     let base_root = fixture.path().join("base");
     let state_root = fixture.path().join("state");
@@ -256,100 +246,46 @@ fn reopen_after_a_crash_mid_apply_does_not_detect_interrupted_apply_or_touch_bas
     let id = TransactionId::new("crash-reopen-test");
     let tx = WorkspaceTransaction::open(id.clone(), &state_root, &base_root, vec![]).unwrap();
 
-    // Positive control: a real staged change exists, proving this
-    // transaction actually had something to apply at the moment it
-    // "crashed" — otherwise an untouched reopen would trivially report no
-    // journal for an uninteresting reason.
+    // Positive control: a real staged change exists, so the transaction had
+    // something to apply when it "crashed".
     write(&tx.staged_dir().join("a.txt"), "staged but never applied");
     let staged_manifest = aa_workspace_tx::manifest::measure(tx.staged_dir(), &[]).unwrap();
-    let staged_digest = aa_workspace_tx::manifest::aggregate_digest(&staged_manifest);
     assert_ne!(
-        before, staged_digest,
-        "the staged layer must actually differ from base for this crash scenario to mean anything"
+        before,
+        aa_workspace_tx::manifest::aggregate_digest(&staged_manifest),
+        "the staged layer must differ from base for this crash scenario to mean anything"
     );
 
-    // Hand-write the exact artifact `commit::write_journal` leaves on disk
-    // immediately before `apply` runs (never call `commit()` itself — doing
-    // so would just succeed and remove the journal again, which is not the
-    // crash point this test needs).
     let tx_state_dir = state_root.join(id.as_str());
     let journal_path = tx_state_dir.join("journal");
     fs::write(&journal_path, b"MOD a.txt\n").unwrap();
-
-    // Drop the handle without ever calling commit()/discard() — exactly what
-    // a crashed process leaves behind: a stable staged copy, a journal on
-    // disk, and a released flock (so the "next run" below can reopen).
     drop(tx);
-    assert!(
-        journal_path.exists(),
-        "the journal must still be on disk, simulating a crash mid-apply"
-    );
 
-    // Reopen the same transaction id — the only entry point this crate
-    // offers for examining prior state. There is no separate
-    // `WorkspaceTransaction::resume`/`discover` API, and
-    // `TransactionId`'s own doc comment (`aa-isolation/src/tx.rs`) names
-    // `aasm workspace tx show/discard/gc` as the intended recovery surface,
-    // which does not exist in `aa-cli::commands::Commands` today.
-    let reopened = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).expect("reopen succeeds");
+    let refused = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]);
+    match refused {
+        Err(aa_workspace_tx::TransactionError::InterruptedApply { journal }) => {
+            assert_eq!(journal, journal_path, "the error must name the leftover journal");
+        }
+        other => panic!(
+            "reopen over a leftover journal must refuse, got {:?}",
+            other.map(|_| ())
+        ),
+    }
 
-    // THE FINDING: reopening reports Open, not InterruptedApply, even though
-    // the journal is sitting right there in the transaction's own state
-    // directory.
+    // Refusing must destroy nothing: the journal and the in-flight staged
+    // edit survive, and the stale journal is never auto-applied to the base.
+    assert!(journal_path.exists(), "the journal is evidence and must not be removed");
     assert_eq!(
-        *reopened.status(),
-        aa_isolation::TransactionStatus::Open,
-        "reopening after a leftover journal currently reports Open, not InterruptedApply — this pins the \
-         real gap rather than asserting a status this crate never actually produces"
+        fs::read_to_string(tx_state_dir.join("staged").join("a.txt")).unwrap(),
+        "staged but never applied",
+        "refusing must not re-materialize over the in-flight staged edit"
     );
-
-    // The one invariant that DOES hold regardless of the gap above: nothing
-    // about reopening ever auto-applies the stale journal to the base.
-    let after = base_digest(&base_root);
     assert_eq!(
-        before, after,
-        "a leftover journal must never be auto-applied on reopen, gap or no gap"
+        before,
+        base_digest(&base_root),
+        "a leftover journal must never be auto-applied"
     );
     assert_eq!(fs::read_to_string(base_root.join("a.txt")).unwrap(), "original");
-
-    // Second, related consequence of the same gap, documented rather than
-    // asserted-away: open() silently re-materializes the staged workspace
-    // from the current base, clobbering the "staged but never applied"
-    // edit that was in flight when the journal was written.
-    assert_eq!(
-        fs::read_to_string(reopened.staged_dir().join("a.txt")).unwrap(),
-        "original",
-        "reopen silently discards the staged edit that was in flight when the journal was written — a second \
-         consequence of the same missing-recovery gap"
-    );
-}
-
-/// The target contract `reopen_after_a_crash_mid_apply_does_not_detect_interrupted_apply_or_touch_base`
-/// pins the absence of: `TransactionStatus::InterruptedApply` is only ever
-/// discovered, never produced by a clean run (`aa-isolation/src/tx.rs:326-330`).
-/// Left `#[ignore]`d rather than implemented — AAASM-6291 is QA/verification
-/// scope, not feature implementation. Run with `--ignored` once a
-/// journal-recovery path lands in `WorkspaceTransaction::open` (or a
-/// dedicated resume/discover entry point).
-#[test]
-#[ignore = "documents the open AAASM-6291 ST-4 finding: aa-workspace-tx has no journal-recovery path yet \
-            (see TransactionStatus::InterruptedApply's doc comment and lib.rs:44-48); not yet filed/fixed"]
-fn reopen_after_a_crash_mid_apply_should_report_interrupted_apply() {
-    let fixture = tempfile::tempdir().unwrap();
-    let base_root = fixture.path().join("base");
-    let state_root = fixture.path().join("state");
-    fs::create_dir_all(&base_root).unwrap();
-    write(&base_root.join("a.txt"), "original");
-
-    let id = TransactionId::new("crash-reopen-target-test");
-    let tx = WorkspaceTransaction::open(id.clone(), &state_root, &base_root, vec![]).unwrap();
-    write(&tx.staged_dir().join("a.txt"), "staged but never applied");
-    let tx_state_dir = state_root.join(id.as_str());
-    fs::write(tx_state_dir.join("journal"), b"MOD a.txt\n").unwrap();
-    drop(tx);
-
-    let reopened = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).expect("reopen succeeds");
-    assert_eq!(*reopened.status(), aa_isolation::TransactionStatus::InterruptedApply);
 }
 
 #[test]
