@@ -84,11 +84,16 @@ nothing applied:
 ## Decision 4: crash/cancel disposition — documented, not merely mechanized
 
 The journal from step 5 above is the crash-safety half of "two-phase": it is durable on
-disk before the base tree is touched at all, so a process that dies mid-apply leaves a
-`TransactionStatus::InterruptedApply` on disk, never a silently half-done base
-tree. (As of AAASM-6291 nothing in `aasm` yet reads that status back or reports
-it to the operator, and re-opening the transaction re-materializes the staged copy
-without checking for a journal; "discoverable" means present on disk, not surfaced.) Three properties are load-bearing and stated here plainly:
+disk before the base tree is touched at all, and it is removed only after the apply
+finishes. A process that dies mid-apply, or an apply that fails part-way
+(`CommitRefusal::ApplyInterrupted`, status `InterruptedApply`), therefore leaves the
+journal behind and the base possibly half-written. AAASM-6305: `WorkspaceTransaction::open`
+now refuses (`TransactionError::InterruptedApply`) to start another transaction over the
+same base while such a journal exists, so a later run can neither stage from nor commit
+over the unknown state. This is fail-closed, not recovery: there is no rollback, nothing
+can tell which paths had landed, and no `aasm workspace tx show/discard/gc` command
+exists. The operator inspects the journal, verifies or restores the base, and removes the
+journal's state directory by hand. Three properties are load-bearing and stated here plainly:
 
 - Nothing in `aa-workspace-tx` ever auto-applies a journal on a later run. An
   interrupted apply requires explicit operator inspection; this is a deliberate scope
