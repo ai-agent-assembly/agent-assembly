@@ -406,6 +406,17 @@ pub enum CommitRefusal {
         /// Why the lock or ownership check failed, in words.
         detail: String,
     },
+    /// Applying the change set to the base failed after the apply journal
+    /// was written: the base may be PARTIALLY modified. Unlike every other
+    /// refusal, the base is not guaranteed untouched. The journal is kept so
+    /// the operator can see which paths were planned, and later transactions
+    /// over the same base refuse to open until it is resolved.
+    ApplyInterrupted {
+        /// Path of the retained apply journal.
+        journal: String,
+        /// The I/O failure that stopped the apply, in words.
+        detail: String,
+    },
 }
 
 impl CommitRefusal {
@@ -421,6 +432,7 @@ impl CommitRefusal {
             Self::HardlinkToBase { .. } => "hardlink_to_base",
             Self::NotClosed { .. } => "not_closed",
             Self::LockUnavailable { .. } => "lock_unavailable",
+            Self::ApplyInterrupted { .. } => "apply_interrupted",
         }
     }
 }
@@ -554,6 +566,14 @@ mod tests {
         assert_eq!(
             CommitRefusal::LockUnavailable { detail: "x".into() }.kind_str(),
             "lock_unavailable"
+        );
+        assert_eq!(
+            CommitRefusal::ApplyInterrupted {
+                journal: "j".into(),
+                detail: "x".into()
+            }
+            .kind_str(),
+            "apply_interrupted"
         );
     }
 
