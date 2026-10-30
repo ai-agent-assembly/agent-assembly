@@ -24,8 +24,9 @@ use serde::{Deserialize, Serialize};
 /// Opaque identifier for one workspace transaction.
 ///
 /// Carries no structure a caller should parse: it is a stable handle for
-/// `aasm workspace tx show/discard/gc`, not a timestamp or a path fragment,
-/// even though a real mechanism will likely derive it from both.
+/// the intended `aasm workspace tx show/discard/gc` commands (not yet
+/// implemented, AAASM-6305), not a timestamp or a path fragment, even though a
+/// real mechanism will likely derive it from both.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TransactionId(String);
@@ -325,8 +326,10 @@ pub enum TransactionStatus {
     },
     /// The apply journal was found partially applied when a run examined the
     /// transaction, e.g. the process died mid-apply. Never produced by a
-    /// clean run; only ever discovered. Requires explicit operator action
-    /// (`aasm workspace tx show/discard`), never auto-resolved.
+    /// clean run; intended to be discovered and to require explicit operator
+    /// action, never auto-resolved. Not yet produced by any code path, and the
+    /// `aasm workspace tx show/discard` recovery commands do not exist
+    /// (AAASM-6305).
     InterruptedApply,
 }
 
