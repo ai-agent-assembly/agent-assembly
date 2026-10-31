@@ -1150,6 +1150,11 @@ jobs:
     # sits until the hosted runner is lost and the log with it. Above the sum of the
     # per-step ceilings so a step's own timeout fires first and its log survives.
     timeout-minutes: 120
+    # AAASM-6410 EXPERIMENT ONLY: lets the sampler overwrite one PR comment with
+    # runner telemetry that survives a lost runner. Not for merge.
+    permissions:
+      contents: read
+      pull-requests: write
     needs: [changes, dashboard-assets]
     if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
@@ -1237,17 +1242,38 @@ jobs:
           rm -rf target/debug
 
       - name: Start resource sampler (AAASM-6410)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
         # One sampler for the whole job, detached so it outlives this step. Written
         # to a file the `if: always()` step below prints and uploads.
         run: |
           mkdir -p "$RUNNER_TEMP/coverage-diag"
           cat > "$RUNNER_TEMP/coverage-diag/sample.sh" <<'EOS'
-          while sleep 60; do
-            {
-              echo "=== sample $(date -u +%T)"
-              uptime; free -m
-              ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,args --sort=-pcpu | head -15 | cut -c1-220
-            } >> "$1/samples.log" 2>&1
+          d="$1"
+          ws="${GITHUB_WORKSPACE:-.}"
+          snap() {
+            echo "**AAASM-6410 runner telemetry** (experiment; overwritten every sample)"
+            echo '```'
+            date -u +%FT%TZ; uptime; free -m; df -h / "$ws" 2>/dev/null
+            echo "profraw files: $(find "$ws/target/llvm-cov-target" -name '*.profraw' 2>/dev/null | wc -l); target size: $(du -sh "$ws/target" 2>/dev/null | cut -f1)"
+            echo "processes: $(ps -e | wc -l)"
+            ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,comm --sort=-pcpu | head -15
+            echo '```'
+          }
+          id=""
+          while true; do
+            snap > "$d/snap.txt" 2>&1
+            { echo "=== sample"; cat "$d/snap.txt"; } >> "$d/samples.log"
+            if [ -n "$PR" ]; then
+              if [ -z "$id" ]; then
+                id=$(gh api "repos/$REPO/issues/$PR/comments" -F body=@"$d/snap.txt" --jq .id 2>/dev/null)
+              else
+                gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$d/snap.txt" >/dev/null 2>&1
+              fi
+            fi
+            sleep 60
           done
           EOS
           nohup setsid bash "$RUNNER_TEMP/coverage-diag/sample.sh" "$RUNNER_TEMP/coverage-diag" >/dev/null 2>&1 &
@@ -1300,11 +1326,8 @@ jobs:
         timeout-minutes: 40
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
-        # AAASM-6410 experiment: the single variable against the sibling branch.
-        # These binaries spawn real proxies/gateways; at the green baseline several
-        # already took 180-425 s under the default 4-wide concurrency.
         run: |
-          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace --test-threads 2 \
+          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
