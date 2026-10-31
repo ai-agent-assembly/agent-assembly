@@ -256,21 +256,33 @@ pub(crate) fn settle(guard: &mut WorkspaceTxGuard, exit_code: Option<i32>, plan:
                     approval_presented,
                 )
             }
-            Err(refusal) => WorkspaceOutcome {
-                id,
-                base_digest_hex: String::new(),
-                result_digest_hex: None,
-                added: 0,
-                modified: 0,
-                deleted: 0,
-                sorted_changes: Vec::new(),
-                committed: false,
-                refusal_kind: Some(refusal.kind_str()),
-                surface_entry_count,
-                surface_excluded_count,
-                protected_selector_count,
-                approval_presented,
-            },
+            Err(refusal) => {
+                // The one refusal after which the base is NOT guaranteed
+                // untouched: say so where the operator will see it, with the
+                // journal to inspect (the stderr block only carries the token).
+                if let aa_isolation::CommitRefusal::ApplyInterrupted { journal, detail } = &refusal {
+                    eprintln!(
+                        "workspace_tx: applying the change set failed part-way ({detail}); the base may be \
+                         partially modified. Journal: {journal}. Verify or restore the base, then remove the \
+                         journal's directory; further --workspace-tx runs over this base refuse until then."
+                    );
+                }
+                WorkspaceOutcome {
+                    id,
+                    base_digest_hex: String::new(),
+                    result_digest_hex: None,
+                    added: 0,
+                    modified: 0,
+                    deleted: 0,
+                    sorted_changes: Vec::new(),
+                    committed: false,
+                    refusal_kind: Some(refusal.kind_str()),
+                    surface_entry_count,
+                    surface_excluded_count,
+                    protected_selector_count,
+                    approval_presented,
+                }
+            }
         }
     } else {
         let _ = tx.discard();
