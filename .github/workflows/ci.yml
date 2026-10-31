@@ -1278,6 +1278,13 @@ jobs:
       - name: Generate coverage report
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+          # AAASM-6410 candidate remedy: every run that reaches this step loses its
+          # hosted runner ("lost communication ... starves it for CPU/Memory") with
+          # no OOM, disk or kernel warning in the last reading. Three build jobs,
+          # three test threads and the lowest CPU/IO priority leave one core and the
+          # scheduler's attention to the runner agent so its heartbeat is not starved.
+          CARGO_BUILD_JOBS: "3"
+          NEXTEST_TEST_THREADS: "3"
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-devtool-claude-code is run separately (step 2) without docker-integration:
         # the docker-integration feature builds aa-proxy from scratch inside Docker
@@ -1297,7 +1304,7 @@ jobs:
           # (`--all-features` activates them but `--exclude aa-ebpf` means the
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
-          cargo llvm-cov nextest --no-report --all-features --workspace \
+          nice -n 19 ionice -c3 cargo llvm-cov nextest --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
