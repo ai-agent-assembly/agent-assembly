@@ -365,8 +365,9 @@ fn a_failed_apply_reports_apply_interrupted_and_blocks_the_next_open() {
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
     if fs::write(locked.join("probe"), b"x").is_ok() {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        eprintln!("skipping: process can write into a 0500 directory (running as root?)");
-        return;
+        // Fail rather than skip: returning here would report PASS on a root
+        // runner without ever exercising ApplyInterrupted.
+        panic!("cannot induce an apply failure: this process writes into a 0500 directory (running as root?)");
     }
 
     let refusal = tx
