@@ -13,17 +13,17 @@ publish = false
 
 [dependencies]
 # The backend-neutral contract this crate implements.
-aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7" }
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.8" }
 # AAASM-5837: the wire contract shared with guest-init, on the other side of
 # the vsock connection this crate's `vmm` module drives.
-aa-isolation-vm-proto = { path = "../aa-isolation-vm-proto", version = "0.0.1-rc.7" }
+aa-isolation-vm-proto = { path = "../aa-isolation-vm-proto", version = "0.0.1-rc.8" }
 # `permitted_scope`: derives this launch's grant set from the plan itself
 # rather than re-deriving (or, worse, widening) it — see `spawn`'s use.
-aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.7" }
+aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.8" }
 # AAASM-5814, and only for `tests/adversarial/`: the backend-neutral harness
 # in `aa-integration-tests/tests/adversarial/mod.rs` names `ClaimTerm` from
 # here. Mirrors the identical entry in `aa-isolation-native/Cargo.toml`.
-aa-core = { path = "../aa-core", version = "0.0.1-rc.7" }
+aa-core = { path = "../aa-core", version = "0.0.1-rc.8" }
 # AAASM-5870: `vmm::boot`'s cross-process `flock` serializes concurrent
 # `VZVirtualMachine.start()` calls against the confirmed
 # Virtualization.framework race documented there. Already a workspace
@@ -40,7 +40,7 @@ aa-isolation-macos-vm = { path = "." }
 # Mirrors the identical entry in `aa-isolation-native/Cargo.toml` — see that
 # entry's comment for why it has to be a `dev-dependencies` line distinct
 # from the plain `aa-isolation` edge above.
-aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7", features = ["mock-backend"] }
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.8", features = ["mock-backend"] }
 
 [features]
 default = []

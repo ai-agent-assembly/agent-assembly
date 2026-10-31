@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.0.1-rc.8] — TBD (pre-release)
+
+> Merged since `0.0.1-rc.7`. The entries below are the ones recorded under *Unreleased*
+> while rc.8 was assembled; the user-facing summary of the whole window (Agent Execution
+> Runtime 2.0 foundation, first-run fixes, security fixes, known limitations) is
+> [`docs/release/v0.0.1-rc.8.md`](docs/release/v0.0.1-rc.8.md). Internal-only tooling and
+> dependency bumps are not itemized, per this file's existing convention.
+> <!-- TODO(AAASM-6408): replace the TBD date with the tag date when the tag is cut. -->
+
 ### Security
 
 - **Governed runtime denies `LLM_CALL` / `TOOL_RESULT` policy queries (AAASM-6259)** — in

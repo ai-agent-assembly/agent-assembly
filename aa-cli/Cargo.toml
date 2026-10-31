@@ -29,8 +29,8 @@ name = "aasm"
 path = "src/main.rs"
 
 [dependencies]
-aa-core              = { path = "../aa-core", version = "0.0.1-rc.7" }
-aa-security          = { path = "../aa-security", version = "0.0.1-rc.7", features = ["serde"] }
+aa-core              = { path = "../aa-core", version = "0.0.1-rc.8" }
+aa-security          = { path = "../aa-security", version = "0.0.1-rc.8", features = ["serde"] }
 # strip-for-publish:begin devtool
 # AAASM-2340: this dep wires `aasm run` + `aasm tools` to the `aa-devtool*`
 # adapter crates. The dev-tool subsystem isn't ready to ship in this alpha,
@@ -43,11 +43,11 @@ aa-security          = { path = "../aa-security", version = "0.0.1-rc.7", featur
 # `aa_devtool::registry`, not linked directly, so `aasm run` and
 # `aasm tools` cannot resolve different adapters for the same tool. Adding
 # a tool therefore needs no change to this manifest.
-aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.7" }
+aa-devtool           = { path = "../aa-devtool", version = "0.0.1-rc.8" }
 # AAASM-5350: the endpoint managed-settings file is Claude Code's canonical
 # artifact, and its path plus validator live with that adapter. `aasm run` reads
 # it to decide whether --no-proxy is permitted.
-aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-rc.7" }
+aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-rc.8" }
 # AAASM-5705: the backend-neutral execution-isolation contract (ADR 0035,
 # AAASM-5704). `aasm run`'s planner resolves each launch into an `ExecutionSpec`
 # so a later ticket under Epic AAASM-5702 can negotiate it against a real
@@ -57,7 +57,7 @@ aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-
 # its only consumer is `run.rs`, which the `devtool` region already strips. Its
 # crate docs call for exactly this fencing — without it, `cargo publish` for
 # aa-cli fails on a dependency that is not on crates.io.
-aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.7" }
+aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.8" }
 # AAASM-5711: a concrete Linux process-isolation backend `aasm run --isolation`
 # can select. Backends are named here rather than discovered at run time because
 # Rust has no plugin loader — but nothing downstream of selection knows the name:
@@ -66,36 +66,36 @@ aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.7" }
 #
 # Same region, same reason: this crate is `publish = false` and its only consumer
 # is `run.rs`, which the `devtool` region already strips.
-aa-isolation-sandlock = { path = "../aa-isolation-sandlock", version = "0.0.1-rc.7" }
+aa-isolation-sandlock = { path = "../aa-isolation-sandlock", version = "0.0.1-rc.8" }
 # AAASM-5802: the second backend, selectable by id alongside the first. Which of
 # the two a deployment uses *by default* is deliberately NOT decided here — ADR
 # 0035's AAASM-5801 amendment reserves that for AAASM-5805, once both have
 # comparable measured evidence — so the default id is unchanged and this one is
 # reached by naming it.
-aa-isolation-native  = { path = "../aa-isolation-native", version = "0.0.1-rc.7" }
+aa-isolation-native  = { path = "../aa-isolation-native", version = "0.0.1-rc.8" }
 # AAASM-5813: the third backend, selectable by id alongside the first two, and
 # reachable through `--isolation auto` (see `run.rs::auto_select`'s CANDIDATES
 # list). It reports `Unavailable` on essentially every host (the host↔guest
 # launch protocol artifacts and entitled binary are large, gitignored
 # build outputs — see the crate's own docs), with real measured capability
 # rows on a host that has them.
-aa-isolation-macos-vm = { path = "../aa-isolation-macos-vm", version = "0.0.1-rc.7" }
+aa-isolation-macos-vm = { path = "../aa-isolation-macos-vm", version = "0.0.1-rc.8" }
 # AAASM-6162: the materialized-workspace-transaction mechanism
 # `run_workspace_tx.rs` (`--workspace-tx`) binds to. Same region, same
 # reason: `publish = false` and its only consumer is the `aasm run`
 # surface the `devtool` region already strips.
-aa-workspace-tx      = { path = "../aa-workspace-tx", version = "0.0.1-rc.7" }
+aa-workspace-tx      = { path = "../aa-workspace-tx", version = "0.0.1-rc.8" }
 # strip-for-publish:end devtool
-aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.7" }
-aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.7" }
+aa-gateway           = { path = "../aa-gateway", version = "0.0.1-rc.8" }
+aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.8" }
 # AAASM-5280: `aasm integrations` is a Developer Integration API client. The
 # reference client, the socket convention and the local enrolment file all live
 # in aa-runtime, and reimplementing any of them here would be the second
 # implementation ADR 0030 §7.1 exists to prevent. aa-proto supplies the wire
 # view types the CLI projects into its own report models.
-aa-proto             = { path = "../aa-proto", version = "0.0.1-rc.7" }
-aa-runtime           = { path = "../aa-runtime", version = "0.0.1-rc.7" }
-aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.7" }
+aa-proto             = { path = "../aa-proto", version = "0.0.1-rc.8" }
+aa-runtime           = { path = "../aa-runtime", version = "0.0.1-rc.8" }
+aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.8" }
 # strip-for-publish:begin sdkclient
 # AAASM-5323: `aasm run` registers through the gateway's gRPC
 # `AgentLifecycleService`, building the request with the same `aa-sdk-client`
@@ -108,7 +108,7 @@ aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.7" }
 # SDK shims as a git-SHA pin, not via crates.io), so this region is stripped by
 # `.ci/strip-for-publish.sh` along with `run.rs` and `run_registration.rs`, its
 # only consumers.
-aa-sdk-client        = { path = "../aa-sdk-client", version = "0.0.1-rc.7" }
+aa-sdk-client        = { path = "../aa-sdk-client", version = "0.0.1-rc.8" }
 # AAASM-5349: `aasm run` reports its governed launch to the gateway's
 # `AuditService` over the same gRPC transport, authenticated with the credential
 # token registration returned. In this region because `run_audit.rs` is stripped
@@ -116,10 +116,10 @@ aa-sdk-client        = { path = "../aa-sdk-client", version = "0.0.1-rc.7" }
 # consumer would enlarge the published crate for nothing.
 tonic                = { workspace = true }
 # strip-for-publish:end sdkclient
-aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-rc.7" }
-aa-storage           = { path = "../aa-storage", version = "0.0.1-rc.7" }
-aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-rc.7" }
-aa-storage-redis     = { path = "../aa-storage-redis", version = "0.0.1-rc.7" }
+aa-sandbox           = { path = "../aa-sandbox", version = "0.0.1-rc.8" }
+aa-storage           = { path = "../aa-storage", version = "0.0.1-rc.8" }
+aa-storage-memory    = { path = "../aa-storage-memory", version = "0.0.1-rc.8" }
+aa-storage-redis     = { path = "../aa-storage-redis", version = "0.0.1-rc.8" }
 anyhow         = { workspace = true }
 async-trait    = { workspace = true }
 axum           = { workspace = true }

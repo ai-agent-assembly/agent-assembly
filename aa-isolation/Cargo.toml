@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 # Only for the `ClaimTerm` evidence vocabulary (`aa_core::attestation`).
-aa-core = { path = "../aa-core", version = "0.0.1-rc.7" }
+aa-core = { path = "../aa-core", version = "0.0.1-rc.8" }
 # AAASM-5707, and only for `src/lowering.rs`: the canonical cross-layer policy
 # AST that lowering reads. Two dependencies remain the whole list, and neither
 # is a platform, an async runtime or a serialization format — the three things
@@ -32,7 +32,7 @@ aa-core = { path = "../aa-core", version = "0.0.1-rc.7" }
 # `aa-security -> aa-isolation`, is a cycle: `aa-core` already depends on
 # `aa-security`. This edge is the only one that is both acyclic and
 # packaging-safe.
-aa-security = { path = "../aa-security", version = "0.0.1-rc.7" }
+aa-security = { path = "../aa-security", version = "0.0.1-rc.8" }
 serde = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
