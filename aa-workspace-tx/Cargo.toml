@@ -16,7 +16,7 @@ publish = false
 # BaseManifest, ChangeSet, CommitRefusal, ...). This crate supplies the
 # mechanism; aa-isolation stays pure data + negotiation, per its own
 # "no mechanism vocabulary" invariant.
-aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7" }
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.8" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }

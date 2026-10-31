@@ -20,7 +20,7 @@ serde_json = { workspace = true }
 # ordering) a second time — see this crate's `src/lib.rs` for why duplicating
 # that grammar would be exactly the two-sided-contract-drift bug AAASM-5837
 # exists to close.
-aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.7" }
+aa-isolation-native = { path = "../aa-isolation-native", version = "0.0.1-rc.8" }
 
 [features]
 default = []

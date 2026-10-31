@@ -19,10 +19,10 @@ publish = false
 [dependencies]
 # The backend-neutral contract this crate implements. `aa-isolation` is
 # `publish = false` too, so this edge is packaging-safe in the same direction.
-aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7" }
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.8" }
 # Only for the `ClaimTerm` evidence vocabulary, which `aa-isolation` re-uses
 # verbatim and this crate must name when it records a decision.
-aa-core = { path = "../aa-core", version = "0.0.1-rc.7" }
+aa-core = { path = "../aa-core", version = "0.0.1-rc.8" }
 
 # AAASM-5709, and only for `src/inherit.rs`: `fcntl(F_GETFD/F_SETFD)`, to stop an
 # inherited descriptor crossing `exec` into the confined program. The standard
@@ -63,7 +63,7 @@ aa-isolation-sandlock = { path = "." }
 # and pass in CI, then fail to compile under `cargo nextest run -p <that-crate>`.
 # Reach for the mock from this crate's tests, or add the feature to the manifest
 # of the crate that wants it.
-aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.7", features = ["mock-backend"] }
+aa-isolation = { path = "../aa-isolation", version = "0.0.1-rc.8", features = ["mock-backend"] }
 
 # AAASM-5709, and only for the descriptor scenario in
 # `tests/linux_confinement.rs`: `dup`, to obtain a descriptor that is inheritable
