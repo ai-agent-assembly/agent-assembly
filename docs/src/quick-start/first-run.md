@@ -2,7 +2,8 @@
 
 This walkthrough takes you from a freshly installed `aasm` to a running
 governance gateway that is ready for an agent to connect. Every command and its
-output below was captured from a real `v0.0.1-beta.4` build.
+output below was captured from a real `v0.0.1-beta.4` build; only the version
+strings shown are updated to the current release, without re-capturing.
 
 ## The flow
 
