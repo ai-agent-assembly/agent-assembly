@@ -294,7 +294,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "in this file invokes directly.",
     ("docs/src/quick-start/installation.md", "Pin a version or change the install directory",
      "# Install a specific release tag (default: latest)\n"
-     "AASM_VERSION=v0.0.1-rc.7 curl -sSf https://agent-assembly.com/install.sh | sh\n"
+     "AASM_VERSION=v0.0.1-rc.8 curl -sSf https://agent-assembly.com/install.sh | sh\n"
      "\n"
      "# Install to a custom directory\n"
      "AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh"):
@@ -309,7 +309,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "requires a tagged release and Homebrew, neither guaranteed in the "
         "docs-governance runner.",
     ("docs/src/quick-start/installation.md", "Pre-built binaries",
-     'VERSION=v0.0.1-rc.7\n'
+     'VERSION=v0.0.1-rc.8\n'
      'ASSET=aasm-aarch64-apple-darwin.tar.gz   # adjust for your platform\n'
      'BASE="https://github.com/ai-agent-assembly/agent-assembly/releases/download/${VERSION}"\n\n'
      'curl -sSfL "${BASE}/${ASSET}"        -o "${ASSET}"\n'
@@ -360,7 +360,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "repo's own security rules; needs a published release.",
     ("README.md", "Install the CLI",
      "# Pin a specific version\n"
-     "AASM_VERSION=v0.0.1-rc.7 curl -sSf https://agent-assembly.com/install.sh | sh\n\n"
+     "AASM_VERSION=v0.0.1-rc.8 curl -sSf https://agent-assembly.com/install.sh | sh\n\n"
      "# Custom install directory\n"
      "AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh | sh"):
         "same curl | sh network-install pattern, pinned to a release tag.",
