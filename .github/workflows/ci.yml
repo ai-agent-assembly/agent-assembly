@@ -1147,8 +1147,9 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     # AAASM-6410: green runs take 33-54 minutes; without a ceiling a wedged run
-    # sits until the hosted runner is lost and the log with it.
-    timeout-minutes: 75
+    # sits until the hosted runner is lost and the log with it. Above the sum of the
+    # per-step ceilings so a step's own timeout fires first and its log survives.
+    timeout-minutes: 120
     needs: [changes, dashboard-assets]
     if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
@@ -1235,30 +1236,49 @@ jobs:
           mv target/debug/aasm "$RUNNER_TEMP/aasm-bin/aasm"
           rm -rf target/debug
 
-      - name: Generate coverage report
-        # AAASM-6410: green runs take 30-42 minutes in this step.
-        timeout-minutes: 55
-        env:
-          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
-        # aa-ebpf requires nightly and has no testable userspace logic — excluded.
-        # aa-devtool-claude-code is run separately (step 2) without docker-integration:
-        # the docker-integration feature builds aa-proxy from scratch inside Docker
-        # and doesn't add instrumented coverage. Running it under --all-features would
-        # add 8+ minutes of Docker build time with zero coverage benefit.
+      - name: Start resource sampler (AAASM-6410)
+        # One sampler for the whole job, detached so it outlives this step. Written
+        # to a file the `if: always()` step below prints and uploads.
         run: |
-          # AAASM-6410: a once-a-minute resource sample, written to a file the
-          # `if: always()` step below prints and uploads. The step's own timeout
-          # (not the job's) ends a wedged run so that step still gets to run; a
-          # job-level cancel lost the whole log of the in-progress step.
           mkdir -p "$RUNNER_TEMP/coverage-diag"
-          (while sleep 60; do
+          cat > "$RUNNER_TEMP/coverage-diag/sample.sh" <<'EOS'
+          while sleep 60; do
             {
               echo "=== sample $(date -u +%T)"
               uptime; free -m
               ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,args --sort=-pcpu | head -15 | cut -c1-220
-            } >> "$RUNNER_TEMP/coverage-diag/samples.log" 2>&1
-          done) &
-          trap 'kill $! 2>/dev/null || true' EXIT
+            } >> "$1/samples.log" 2>&1
+          done
+          EOS
+          nohup setsid bash "$RUNNER_TEMP/coverage-diag/sample.sh" "$RUNNER_TEMP/coverage-diag" >/dev/null 2>&1 &
+      # AAASM-6410: the single llvm-cov step is split so the jobs API keeps a
+      # start/end time per step even when a wedged run loses its log. The step
+      # that has a start time and no end time is where the run stalls. The
+      # steps are diagnostics for `Coverage` runs that never finished (main
+      # 44297bc, db5c904; #2774; #2775): a green baseline (ae1686611) built in
+      # 14m46s and ran 9315 tests in 1192s, with the process-spawning
+      # aa-integration-tests binaries already taking 180-425s apiece.
+      - name: Coverage build probe (AAASM-6410)
+        # Whether `--no-run` builds under `cargo llvm-cov nextest` is unverified;
+        # a probe that only reports instead of building costs seconds, and one
+        # that builds shows the build time on its own.
+        continue-on-error: true
+        timeout-minutes: 35
+        env:
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+        run: |
+          cargo llvm-cov nextest --profile coverage --no-report --no-run --all-features --workspace \
+            --exclude aa-ebpf --exclude aa-devtool-claude-code
+      - name: Coverage tests (all but aa-integration-tests)
+        timeout-minutes: 35
+        env:
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+        # aa-ebpf requires nightly and has no testable userspace logic — excluded.
+        # aa-devtool-claude-code is run separately (below) without docker-integration:
+        # the docker-integration feature builds aa-proxy from scratch inside Docker
+        # and doesn't add instrumented coverage. Running it under --all-features would
+        # add 8+ minutes of Docker build time with zero coverage benefit.
+        run: |
           # sustained_load_p99_under_5ms, all_layers_run_independently, and
           # auth_rate_limit_resets_after_window are timing-sensitive tests that
           # fail under llvm-cov instrumentation overhead — skipped in coverage
@@ -1275,9 +1295,24 @@ jobs:
           cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
-            -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
-          cargo llvm-cov nextest --profile coverage --no-report -p aa-devtool-claude-code --no-tests=pass
-          cargo llvm-cov --no-run --lcov --output-path lcov.info
+            -E 'not package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
+      - name: Coverage tests (aa-integration-tests)
+        timeout-minutes: 40
+        env:
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+        run: |
+          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
+            --exclude aa-ebpf --exclude aa-devtool-claude-code \
+            --no-tests=pass \
+            -E 'package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
+      - name: Coverage tests (aa-devtool-claude-code)
+        timeout-minutes: 15
+        env:
+          AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+        run: cargo llvm-cov nextest --profile coverage --no-report -p aa-devtool-claude-code --no-tests=pass
+      - name: Generate coverage report
+        timeout-minutes: 15
+        run: cargo llvm-cov --no-run --lcov --output-path lcov.info
       - name: Coverage diagnostics (AAASM-6410)
         if: always()
         run: |
