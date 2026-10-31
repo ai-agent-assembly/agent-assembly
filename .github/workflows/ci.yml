@@ -1300,8 +1300,11 @@ jobs:
         timeout-minutes: 40
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
+        # AAASM-6410 experiment: the single variable against the sibling branch.
+        # These binaries spawn real proxies/gateways; at the green baseline several
+        # already took 180-425 s under the default 4-wide concurrency.
         run: |
-          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
+          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace --test-threads 2 \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
