@@ -137,7 +137,7 @@ $ aasm start
   PID:     74601
 
   Log:     /Users/you/.aasm/aa-api-server.log
-  Server:  aa-api-server 0.0.1-rc.7 from /Users/you/.cargo/bin/aa-api-server
+  Server:  aa-api-server 0.0.1-rc.8 from /Users/you/.cargo/bin/aa-api-server
 
 $ aasm status
 Agent Assembly Status
