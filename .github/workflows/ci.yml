@@ -1318,7 +1318,17 @@ jobs:
           # (`--all-features` activates them but `--exclude aa-ebpf` means the
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
-          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
+          cargo llvm-cov clean --workspace
+          # AAASM-6410: cargo-llvm-cov names profiles <crate>-%p-%16m.profraw, so every
+          # spawned instrumented process leaves its own file (about 3 MB each; the
+          # process-spawning aa-integration-tests make thousands). Dropping %p leaves
+          # the 16-slot %m pool, whose files processes merge into at exit. This is
+          # the documented show-env flow; LLVM_PROFILE_FILE set from outside is
+          # ignored by `cargo llvm-cov nextest`, so the tests run via nextest directly.
+          # shellcheck source=/dev/null
+          source <(cargo llvm-cov show-env --export-prefix)
+          export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE/-%p-/-}"
+          cargo nextest run --profile coverage --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'not package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
@@ -1327,7 +1337,16 @@ jobs:
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
         run: |
-          cargo llvm-cov nextest --profile coverage --no-report --all-features --workspace \
+          # AAASM-6410: cargo-llvm-cov names profiles <crate>-%p-%16m.profraw, so every
+          # spawned instrumented process leaves its own file (about 3 MB each; the
+          # process-spawning aa-integration-tests make thousands). Dropping %p leaves
+          # the 16-slot %m pool, whose files processes merge into at exit. This is
+          # the documented show-env flow; LLVM_PROFILE_FILE set from outside is
+          # ignored by `cargo llvm-cov nextest`, so the tests run via nextest directly.
+          # shellcheck source=/dev/null
+          source <(cargo llvm-cov show-env --export-prefix)
+          export LLVM_PROFILE_FILE="${LLVM_PROFILE_FILE/-%p-/-}"
+          cargo nextest run --profile coverage --all-features --workspace \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'package(aa-integration-tests) and not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
