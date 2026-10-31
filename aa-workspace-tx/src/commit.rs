@@ -3,8 +3,11 @@
 //!
 //! Order matters and is deliberate: drift is checked before protected paths,
 //! and both are checked before anything in the change set is touched, so a
-//! caller can never observe a partially-applied commit — [`commit`] either
-//! returns `Ok` with everything applied, or `Err` with the base untouched.
+//! caller can never observe a partially-applied commit from a refusal —
+//! every refusal above returns `Err` with the base untouched. The one
+//! exception is a failure *during* apply, after the journal is written:
+//! that returns [`CommitRefusal::ApplyInterrupted`], and the base may be
+//! partially modified.
 
 use std::fs;
 use std::io;
@@ -14,7 +17,7 @@ use aa_isolation::{ChangeEntry, ChangeSet, CommitOutcome, CommitRefusal, EntryKi
 
 use crate::manifest::{self, absolute};
 use crate::materialize;
-use crate::state::StateDir;
+use crate::state::{self, StateDir};
 
 /// Run the full fail-closed commit sequence. See module docs for the order
 /// and this file's section comments for what each stage refuses.
@@ -83,10 +86,15 @@ pub fn commit(
     }
 
     // --- Every refusal check passed. Two-phase apply. ---
-    let journal_path = state.root().join("journal");
-    write_journal(&journal_path, &change_set).map_err(io_refusal)?;
+    let journal_path = state.root().join(state::JOURNAL_FILE);
+    write_journal(&journal_path, base_root, &change_set).map_err(io_refusal)?;
 
-    apply(base_root, state.staged_dir(), &staged, &change_set).map_err(io_refusal)?;
+    // From here the base may change. A failure leaves the journal in place on
+    // purpose: it is what makes the next transaction over this base refuse.
+    apply(base_root, state.staged_dir(), &staged, &change_set).map_err(|e| CommitRefusal::ApplyInterrupted {
+        journal: journal_path.display().to_string(),
+        detail: e.to_string(),
+    })?;
 
     fsync_dir(base_root).map_err(io_refusal)?;
     let _ = fs::remove_file(&journal_path);
@@ -149,8 +157,11 @@ fn is_normal_relative(path: &str) -> bool {
 
 /// Write a durable, `fsync`'d record of exactly what this commit is about to
 /// apply, before applying any of it — the crash-safety half of "two-phase".
-fn write_journal(path: &Path, change_set: &ChangeSet) -> io::Result<()> {
-    let mut body = String::new();
+///
+/// The first line names the base directory so a later transaction over a
+/// different base is not blocked by this journal.
+fn write_journal(path: &Path, base_root: &Path, change_set: &ChangeSet) -> io::Result<()> {
+    let mut body = format!("{}{}\n", state::JOURNAL_BASE_PREFIX, state::base_key(base_root));
     for entry in change_set.entries() {
         let verb = match entry {
             ChangeEntry::Added { .. } => "ADD",

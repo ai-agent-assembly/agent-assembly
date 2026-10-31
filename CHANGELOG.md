@@ -33,6 +33,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   deployment must keep its data elsewhere (`AA_GATEWAY_DB_PATH`, `AA_AUDIT_DIR`, the configured
   storage path).
 
+### Fixed
+
+- **`--workspace-tx` no longer stages over a half-applied base (AAASM-6305)** — an apply
+  that crashed or failed part-way left its journal behind, and the next
+  `aasm run --workspace-tx` over the same directory silently re-staged from the
+  possibly half-written base. It now refuses to start, naming the journal. A failed apply
+  is reported as `workspace_tx.refusal=apply_interrupted` (it used to read as a lock
+  error) and tells you the base may be partially modified. **Not recovery:** there is no
+  rollback and no `aasm workspace tx` command yet; inspect the journal, verify or restore
+  the directory, then delete the named state directory to continue.
+  The check only looks in the current state root (`AASM_STATE_DIR`), and also refuses while
+  another process is mid-commit over the same directory.
+
 ### Changed
 
 - **`aasm start` first-run fixes (AAASM-6389)** — the daemon (`aa-api-server`) no longer

@@ -133,6 +133,62 @@ impl StateDir {
     }
 }
 
+/// File name of the apply journal inside a transaction's state directory.
+pub const JOURNAL_FILE: &str = "journal";
+
+/// First-line prefix that scopes a journal to one base directory.
+pub const JOURNAL_BASE_PREFIX: &str = "BASE ";
+
+/// The string a journal uses to name `base_root`: the canonical path when it
+/// resolves, else the path as given, so two spellings of one directory agree.
+pub fn base_key(base_root: &Path) -> String {
+    base_root
+        .canonicalize()
+        .unwrap_or_else(|_| base_root.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Find an apply journal under `state_root` that has not been resolved and
+/// could describe a partially applied commit over `base_root`.
+///
+/// A journal exists only between "about to apply" and "applied cleanly", so
+/// one found here means an apply crashed, failed part-way, or is running in
+/// another process right now. All three refuse a new transaction: the base
+/// may be half-written and nothing in this crate can tell which paths landed.
+/// A journal without a `BASE` line (written before the line existed, or
+/// unreadable) is treated as covering every base — ambiguity refuses.
+pub fn find_unresolved_journal(state_root: &Path, base_root: &Path) -> io::Result<Option<PathBuf>> {
+    let entries = match fs::read_dir(state_root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let key = base_key(base_root);
+    for entry in entries {
+        let dir = entry?.path();
+        if !fs::symlink_metadata(&dir)?.is_dir() {
+            continue;
+        }
+        let journal = dir.join(JOURNAL_FILE);
+        if fs::symlink_metadata(&journal).is_err() {
+            continue;
+        }
+        let scoped_elsewhere = fs::read_to_string(&journal)
+            .ok()
+            .and_then(|body| {
+                body.lines()
+                    .next()
+                    .and_then(|first| first.strip_prefix(JOURNAL_BASE_PREFIX).map(str::to_owned))
+            })
+            .is_some_and(|journal_base| journal_base != key);
+        if !scoped_elsewhere {
+            return Ok(Some(journal));
+        }
+    }
+    Ok(None)
+}
+
 fn ensure_root(state_root: &Path) -> Result<(), StateError> {
     if !state_root.exists() {
         fs::create_dir_all(state_root).map_err(|source| StateError::RootUnavailable {

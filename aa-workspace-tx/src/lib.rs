@@ -42,13 +42,14 @@
 //!   protected selector without an approval token
 //!   ([`CommitRefusal::ProtectedPathNotApproved`]).
 //! - Apply is two-phase: a journal describing every planned operation is
-//!   written and `fsync`'d *before* any base path is touched, so a crash
-//!   mid-apply leaves the journal on disk. Nothing in this crate or in `aasm`
-//!   reads it back yet: re-opening the transaction re-materializes the staged
-//!   copy without checking for a journal, and `TransactionStatus::InterruptedApply`
-//!   is never produced (AAASM-6305). Never auto-applying a journal on a later
-//!   run is a deliberate scope boundary; the missing detection and operator
-//!   recovery surface is a known gap.
+//!   written and `fsync`'d *before* any base path is touched. The journal is
+//!   removed only after the apply finishes. A crash or failure mid-apply
+//!   therefore leaves it behind, and [`WorkspaceTransaction::open`] refuses
+//!   (`TransactionError::InterruptedApply`) to start another transaction over
+//!   the same base until an operator resolves it. There is no automatic
+//!   rollback and no `aasm workspace tx` recovery command: this crate never
+//!   auto-applies a journal, and cannot tell which paths had landed
+//!   (AAASM-6305).
 
 pub mod commit;
 pub mod manifest;
@@ -92,6 +93,19 @@ pub enum TransactionError {
     /// Measuring a manifest over the declared surface failed.
     #[error("manifest measurement failed: {0}")]
     Manifest(#[source] io::Error),
+    /// A previous commit over this base wrote its apply journal and never
+    /// finished: the base may be partially modified. Opening another
+    /// transaction would stage from, and later commit over, that unknown
+    /// state, so it is refused until an operator resolves it.
+    #[error(
+        "an earlier commit over this base did not finish applying (journal {journal}); the base may be \
+         partially modified. Inspect the journal, verify or restore the base, then remove the journal's \
+         directory to continue"
+    )]
+    InterruptedApply {
+        /// The leftover apply journal.
+        journal: PathBuf,
+    },
 }
 
 impl WorkspaceTransaction {
@@ -109,6 +123,12 @@ impl WorkspaceTransaction {
         base_root: &Path,
         exclusions: Vec<String>,
     ) -> Result<Self, TransactionError> {
+        // Before creating any state: a new open must not stage from a base an
+        // unfinished apply may have half-written, and must not clobber the
+        // evidence in the interrupted transaction's own directory.
+        if let Some(journal) = state::find_unresolved_journal(state_root, base_root).map_err(StateError::Io)? {
+            return Err(TransactionError::InterruptedApply { journal });
+        }
         let state = StateDir::create(state_root, &id)?;
         let base_manifest = manifest::measure(base_root, &exclusions).map_err(TransactionError::Manifest)?;
         materialize::copy_surface(base_root, state.staged_dir(), &base_manifest)
@@ -191,8 +211,12 @@ impl WorkspaceTransaction {
                 Ok(outcome)
             }
             Err(refusal) => {
-                self.status = TransactionStatus::ConflictRefused {
-                    refusal: refusal.clone(),
+                self.status = if matches!(refusal, CommitRefusal::ApplyInterrupted { .. }) {
+                    TransactionStatus::InterruptedApply
+                } else {
+                    TransactionStatus::ConflictRefused {
+                        refusal: refusal.clone(),
+                    }
                 };
                 Err(refusal)
             }
