@@ -85,7 +85,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 | v0.0.1-rc.5 | v0.0.1-rc.5 (PyPI `0.0.1rc5`) ✓ | v0.0.1-rc.5 ✓ | v0.0.1-rc.5 ✓ | protocol/v1 |
 | v0.0.1-rc.6 | v0.0.1-rc.6 (PyPI `0.0.1rc6`) ✓ | v0.0.1-rc.6 ✓ | v0.0.1-rc.6 ✓ | protocol/v1 |
 | v0.0.1-rc.7 | v0.0.1-rc.7 (PyPI `0.0.1rc7`) ✓ | v0.0.1-rc.7 ✓ | v0.0.1-rc.7 ✓ | protocol/v1 |
-| v0.0.1-rc.8 | v0.0.1-rc.8 (PyPI `0.0.1rc8`) ✓ <!-- TODO(AAASM-6408): SDK rc.8 not yet cut; confirm --> | v0.0.1-rc.8 ✓ <!-- TODO(AAASM-6408) --> | v0.0.1-rc.8 ✓ <!-- TODO(AAASM-6408) --> | protocol/v1 |
+| v0.0.1-rc.8 | v0.0.1-rc.8 (PyPI `0.0.1rc8`), cut pending | v0.0.1-rc.8, cut pending | v0.0.1-rc.8, cut pending | protocol/v1 |
 
 **Legend:**
 - ✓ Compatible — fully supported
@@ -108,7 +108,7 @@ This document tracks which versions of `aa-runtime` are compatible with each SDK
 
 > **Note (v0.0.1-rc.7):** seventh release candidate (patch on the `rc` channel) — the largest cut since rc.6, spanning four programmes. A new backend-neutral execution-isolation layer for `aasm run` (Linux `sandlock`, AASM-native seccomp, and an Experimental macOS VM backend with operator-supplied, unshipped guest kernel/rootfs and no CI lane (this clause corrected in place 2026-10-11, AAASM-6301; it originally read "and macOS VM backends, each reached only when measured-supported"); each reached only when measured-supported); trusted upstream proxy chaining (Core ADR 036) with per-launch dedicated proxy instances and provider-aware credential injection; sensitive-data analytics/drill-down plus audit `decision_id` correlation; and a batch of gateway/proxy/CLI security fixes (non-loopback bind refusals on `aa-runtime`/`aa-cli`/`aa-api`/`aa-gateway`, audit backpressure-vs-tamper distinction, credential-exposure fixes in isolation confinement argv and CA cert persistence). Full detail in `CHANGELOG.md`'s `[Unreleased]` section (now folded into this tag). No wire-protocol change. `aa-runtime` v0.0.1-rc.7 pairs with python-sdk `0.0.1rc7`, node-sdk `v0.0.1-rc.7`, and go-sdk `v0.0.1-rc.7`, all `protocol/v1`-compatible. SDK `rc.7` cuts follow this tag's `release.yml` fan-out (per the `aa-ffi-pin` SDK-coordination SOP).
 
-> **Note (v0.0.1-rc.8):** eighth release candidate (patch on the `rc` channel) — `protocol/v1` is unchanged (`proto/` has no diff since `v0.0.1-rc.7`). SDK `rc.8` cuts follow this tag's `release.yml` fan-out; the SDK cells above are placeholders until those cuts exist. See [`docs/release/v0.0.1-rc.8.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/release/v0.0.1-rc.8.md). <!-- TODO(AAASM-6408): confirm SDK versions -->
+> **Note (v0.0.1-rc.8):** eighth release candidate (patch on the `rc` channel) — `protocol/v1` is unchanged (`proto/` has no diff since `v0.0.1-rc.7`). SDK `rc.8` cuts follow this tag's `release.yml` fan-out; the SDK cells above are intended versions and are marked "cut pending" until those cuts exist and are verified. See [`docs/release/v0.0.1-rc.8.md`](https://github.com/ai-agent-assembly/agent-assembly/blob/main/docs/release/v0.0.1-rc.8.md).
 
 ---
 
