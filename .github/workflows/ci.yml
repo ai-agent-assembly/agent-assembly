@@ -225,7 +225,7 @@ on:
       # entry below. Editing a gate must re-run it.
       - "scripts/check_version_availability.py"
   pull_request:
-    branches: [main]
+    branches: [main, 'v0.0.1/AAASM-6410/exp/**']
     # AAASM-5675: deliberately NOT path-filtered, unlike `push` above.
     #
     # `main` carried no required status checks at all, so a pull request could
@@ -1146,6 +1146,10 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    # AAASM-6410 EXPERIMENT ONLY: sampler overwrites one PR comment with runner telemetry.
+    permissions:
+      contents: read
+      pull-requests: write
     needs: [changes, dashboard-assets]
     if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
@@ -1232,6 +1236,45 @@ jobs:
           mv target/debug/aasm "$RUNNER_TEMP/aasm-bin/aasm"
           rm -rf target/debug
 
+      - name: Start resource sampler (AAASM-6410)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        # One sampler for the whole job, detached so it outlives this step. Written
+        # to a file the `if: always()` step below prints and uploads.
+        run: |
+          mkdir -p "$RUNNER_TEMP/coverage-diag"
+          cat > "$RUNNER_TEMP/coverage-diag/sample.sh" <<'EOS'
+          d="$1"
+          ws="${GITHUB_WORKSPACE:-.}"
+          snap() {
+            echo "**AAASM-6410 runner telemetry** (experiment; overwritten every sample)"
+            echo '```'
+            date -u +%FT%TZ; uptime; free -m; df -h / "$ws" 2>/dev/null; df -i / | tail -1
+            echo "oom/kernel: $(sudo dmesg 2>/dev/null | /usr/bin/grep -iE 'oom|killed process|out of memory|no space|i/o error|blocked for more' | tail -3 | tr '\n' '|')"
+            echo "top rss:"; ps -eo pid,rss,etime,comm --sort=-rss | head -6
+            echo "loadavg: $(cut -d' ' -f1-4 /proc/loadavg)  running-procs"
+            echo "profraw files: $(find "$ws/target/llvm-cov-target" -name '*.profraw' 2>/dev/null | wc -l)"
+            echo "processes: $(ps -e | wc -l)"
+            ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,comm --sort=-pcpu | head -15
+            echo '```'
+          }
+          id=""
+          while true; do
+            snap > "$d/snap.txt" 2>&1
+            { echo "=== sample"; cat "$d/snap.txt"; } >> "$d/samples.log"
+            if [ -n "$PR" ]; then
+              if [ -z "$id" ]; then
+                id=$(gh api "repos/$REPO/issues/$PR/comments" -F body=@"$d/snap.txt" --jq .id 2>/dev/null)
+              else
+                gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$d/snap.txt" >/dev/null 2>&1
+              fi
+            fi
+            sleep 10
+          done
+          EOS
+          nohup setsid bash "$RUNNER_TEMP/coverage-diag/sample.sh" "$RUNNER_TEMP/coverage-diag" >/dev/null 2>&1 &
       - name: Generate coverage report
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
