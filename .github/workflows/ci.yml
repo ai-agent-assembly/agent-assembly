@@ -1256,8 +1256,11 @@ jobs:
           snap() {
             echo "**AAASM-6410 runner telemetry** (experiment; overwritten every sample)"
             echo '```'
-            date -u +%FT%TZ; uptime; free -m; df -h / "$ws" 2>/dev/null
-            echo "profraw files: $(find "$ws/target/llvm-cov-target" -name '*.profraw' 2>/dev/null | wc -l); target size: $(du -sh "$ws/target" 2>/dev/null | cut -f1)"
+            date -u +%FT%TZ; uptime; free -m; df -h / "$ws" 2>/dev/null; df -i / | tail -1
+            echo "oom/kernel: $(sudo dmesg 2>/dev/null | /usr/bin/grep -iE 'oom|killed process|out of memory|no space|i/o error|blocked for more' | tail -3 | tr '\n' '|')"
+            echo "top rss:"; ps -eo pid,rss,etime,comm --sort=-rss | head -6
+            echo "loadavg: $(cut -d' ' -f1-4 /proc/loadavg)  running-procs"
+            echo "profraw files: $(find "$ws/target/llvm-cov-target" -name '*.profraw' 2>/dev/null | wc -l)"
             echo "processes: $(ps -e | wc -l)"
             ps -eo pid,ppid,pcpu,pmem,rss,etime,stat,comm --sort=-pcpu | head -15
             echo '```'
@@ -1273,7 +1276,7 @@ jobs:
                 gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$d/snap.txt" >/dev/null 2>&1
               fi
             fi
-            sleep 60
+            sleep 10
           done
           EOS
           nohup setsid bash "$RUNNER_TEMP/coverage-diag/sample.sh" "$RUNNER_TEMP/coverage-diag" >/dev/null 2>&1 &
