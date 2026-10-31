@@ -66,6 +66,15 @@ class MergeLcovTest(unittest.TestCase):
         self.assertIn("DA:2,4\n", merged)  # 0 + 4
         self.assertIn("DA:6,1\n", merged)  # only in B
 
+    def test_the_same_line_hit_in_both_shards_adds_not_maxes(self):
+        # Guards the core invariant: 2 + 3 must be 5 (a max or an overwrite gives 3),
+        # for lines and for function hits.
+        left = "SF:src/d.rs\nFN:1,f\nFNDA:2,f\nDA:7,2\nend_of_record\n"
+        right = "SF:src/d.rs\nFN:1,f\nFNDA:3,f\nDA:7,3\nend_of_record\n"
+        merged = self._merge(left, right)
+        self.assertIn("DA:7,5\n", merged)
+        self.assertIn("FNDA:5,f\n", merged)
+
     def test_totals_are_recomputed_not_copied(self):
         merged = self._merge(SHARD_A, SHARD_B)
         a_record = merged.split("end_of_record")[0]
