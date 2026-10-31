@@ -1150,6 +1150,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+    # AAASM-6410 EXPERIMENT: four hash shards on four runners, to see which shards
+    # lose the runner and whether a quarter of the workload survives.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     needs: [changes, dashboard-assets]
     if: github.actor != 'dependabot[bot]' && needs.changes.outputs.rust == 'true' && (github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.integration_tests == 'true') || contains(github.event.pull_request.labels.*.name, 'run-coverage'))
     env:
@@ -1241,6 +1247,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
+          PART: ${{ matrix.shard }}
         # One sampler for the whole job, detached so it outlives this step. Written
         # to a file the `if: always()` step below prints and uploads.
         run: |
@@ -1249,7 +1256,7 @@ jobs:
           d="$1"
           ws="${GITHUB_WORKSPACE:-.}"
           snap() {
-            echo "**AAASM-6410 runner telemetry** (experiment; overwritten every sample)"
+            echo "**AAASM-6410 runner telemetry** (experiment; overwritten every sample) part $PART"
             echo '```'
             date -u +%FT%TZ; uptime; free -m; df -h / "$ws" 2>/dev/null; df -i / | tail -1
             echo "oom/kernel: $(sudo dmesg 2>/dev/null | /usr/bin/grep -iE 'oom|killed process|out of memory|no space|i/o error|blocked for more' | tail -3 | tr '\n' '|')"
@@ -1278,13 +1285,6 @@ jobs:
       - name: Generate coverage report
         env:
           AASM_BIN_PATH: ${{ runner.temp }}/aasm-bin/aasm
-          # AAASM-6410 candidate remedy: every run that reaches this step loses its
-          # hosted runner ("lost communication ... starves it for CPU/Memory") with
-          # no OOM, disk or kernel warning in the last reading. Three build jobs,
-          # three test threads and the lowest CPU/IO priority leave one core and the
-          # scheduler's attention to the runner agent so its heartbeat is not starved.
-          CARGO_BUILD_JOBS: "3"
-          NEXTEST_TEST_THREADS: "3"
         # aa-ebpf requires nightly and has no testable userspace logic — excluded.
         # aa-devtool-claude-code is run separately (step 2) without docker-integration:
         # the docker-integration feature builds aa-proxy from scratch inside Docker
@@ -1304,7 +1304,7 @@ jobs:
           # (`--all-features` activates them but `--exclude aa-ebpf` means the
           # BPF object never gets built, so `Ebpf::load` trips on empty bytes).
           # The dedicated `e2e-ebpf-linux` job is authoritative for these.
-          nice -n 19 ionice -c3 cargo llvm-cov nextest --no-report --all-features --workspace \
+          cargo llvm-cov nextest --no-report --all-features --workspace --partition hash:${{ matrix.shard }}/4 \
             --exclude aa-ebpf --exclude aa-devtool-claude-code \
             --no-tests=pass \
             -E 'not test(sustained_load_p99_under_5ms) and not test(all_layers_run_independently) and not test(auth_rate_limit_resets_after_window) and not test(ebpf_) and not test(handle_shutdown_)'
