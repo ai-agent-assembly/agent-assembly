@@ -41,6 +41,9 @@ are then not executed.
 
 Candidate (fidelity `real_local_process`):
 
+- Both journeys first run `<journey>.source_matches_candidate_sha`: the checkout's HEAD must be
+  `--candidate-sha` and the installer, policy and harness files must equal their blobs in that
+  commit (dirty, foreign or out-of-checkout files FAIL), so `candidate_sha` is not just a label.
 - J04: `j04.sha256sums_match_artifacts`, `j04.installer_default_installs_all_binaries`
   (installed bytes equal the tarball members), `j04.installer_version_pin_env`,
   `j04.installer_latest_resolution` (unpinned, via `/releases/latest` and the
@@ -59,7 +62,9 @@ Candidate (fidelity `real_local_process`):
 
 PENDING (publication; never executed here): `j04.published_install_sh_default`,
 `j04.published_release_checksums_and_signature`, `j04.published_homebrew_tap_install`,
-`j04.published_homebrew_runtime`, `j04.published_crates_io_aa_cli`,
+`j04.published_homebrew_runtime`, `j04.published_latest_resolves_to_candidate`
+(GitHub API: newest release is the candidate and an unpinned install resolves to it; rc tags are
+prereleases and may be absent from `/releases/latest`), `j04.published_crates_io_aa_cli`,
 `j17.published_installer_profile_full_gateway`, `j17.published_homebrew_gateway`,
 `j17.published_container_image_manifest`.
 
@@ -67,7 +72,7 @@ Each pending `command` is one self-contained `sh -c` script with the tag and the
 candidate digests substituted, runnable verbatim. It downloads what it checks,
 verifies in the right directory, and compares published bytes with the candidate's
 digests (tarballs and installed members). Install-style checks use their own temp
-dir and `HOME`. The Homebrew checks install into the real Homebrew prefix
+dir and `HOME`. The Homebrew checks `brew upgrade || brew install` in the real Homebrew prefix
 (`side_effects` says so); a stale install cannot false-PASS because version and
 candidate digest are asserted. Test-only environment overrides:
 `B1_RELEASE_BASE`, `B1_INSTALL_SH_URL`, `B1_POLICY_URL`.
@@ -102,7 +107,8 @@ builder. A fragment from a run that is not exit 0 must not be committed.
 python3 -I scripts/tests/test_b1_candidate_harness.py
 ```
 
-About 3.5 minutes (31 tests; the gateway-never-listens cases wait on timeouts). It
+About 4 minutes (37 tests, against a throwaway fixture git repo so results do not depend on the real checkout; the gateway-never-listens cases wait on timeouts). The fragment-validation test FAILs if `publication_obligations.py` cannot be loaded unless
+`B1_ALLOW_SKIP_FRAGMENT_TEST=1`. It
 asserts PASS on good fixtures with every expected id; FAIL on the old-script control,
 a tampered SHA256SUMS, a tampered tarball, an installer patched to skip checksum
 verification, a gateway that never listens, one that ignores a missing policy, a
