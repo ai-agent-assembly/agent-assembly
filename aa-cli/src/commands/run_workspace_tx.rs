@@ -89,6 +89,14 @@ pub(crate) fn resolve(args: &RunArgs) -> Option<Result<WorkspaceTxPlan, String>>
         return Some(Err(reason));
     }
 
+    if let Some(reason) = args
+        .workspace_tx_protect
+        .iter()
+        .find_map(|s| protect_selector_refusal(s))
+    {
+        return Some(Err(reason));
+    }
+
     let exclusions = args
         .workspace_tx_exclude
         .iter()
@@ -101,6 +109,28 @@ pub(crate) fn resolve(args: &RunArgs) -> Option<Result<WorkspaceTxPlan, String>>
         protected: args.workspace_tx_protect.clone(),
         approved: args.workspace_tx_approve,
     }))
+}
+
+/// Refuse a `--workspace-tx-protect` selector the commit gate could never match.
+///
+/// The gate compares a selector to changed paths by exact string or as a
+/// `selector/` prefix, so `./x`, `x/`, an absolute path, `.`/`..` or an empty
+/// selector silently protects nothing and the approval gate never fires.
+/// Refusing at plan time keeps "protected" from quietly meaning "unprotected".
+fn protect_selector_refusal(selector: &str) -> Option<String> {
+    let path = Path::new(selector);
+    let normal = !selector.is_empty()
+        && !selector.ends_with('/')
+        && !path.is_absolute()
+        && path.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    if normal {
+        return None;
+    }
+    Some(format!(
+        "--workspace-tx-protect refuses selector {selector:?}: it must be a non-empty path relative to the base \
+         directory, written without `./`, `..`, a leading or trailing `/` (for example `src/secrets`). A selector \
+         of any other shape would never match a changed path, so the protection would silently not apply."
+    ))
 }
 
 /// Refuse when the transaction state root and the base directory nest
@@ -431,6 +461,16 @@ mod tests {
     #[test]
     fn the_exact_filesystem_root_refuses() {
         assert!(exact_root_or_home_refusal(Path::new("/")).is_some());
+    }
+
+    #[test]
+    fn protect_selectors_the_gate_could_never_match_refuse_and_plain_ones_do_not() {
+        for bad in ["", ".", "./x", "x/", "/etc/x", "../x", "a/../b"] {
+            assert!(protect_selector_refusal(bad).is_some(), "{bad:?} must refuse");
+        }
+        for good in ["x", "src/secrets", "a/b/c.txt"] {
+            assert!(protect_selector_refusal(good).is_none(), "{good:?} must be accepted");
+        }
     }
 
     #[test]
