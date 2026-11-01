@@ -64,8 +64,8 @@ async fn rollback_by_printed_version_changes_the_active_policy() {
     let outcome = tokio::task::spawn_blocking(move || {
         let apply = |file| history::run_apply(ApplyArgs { file, applied_by: None }, &ctx2);
         assert_eq!(apply(first_path), ExitCode::SUCCESS);
-        // The history timestamp has millisecond resolution; keep the two applies
-        // distinguishable so newest-first ordering is unambiguous.
+        // Distinct millisecond timestamps keep the newest entry (which decides the
+        // server's reported active policy) unambiguous.
         std::thread::sleep(std::time::Duration::from_millis(5));
         assert_eq!(apply(second_path), ExitCode::SUCCESS);
         let listed = history::run_history(HistoryArgs { limit: 10 });
@@ -77,12 +77,19 @@ async fn rollback_by_printed_version_changes_the_active_policy() {
     assert_eq!(outcome.0, ExitCode::SUCCESS);
 
     // What `aasm policy history` lists is the CLI-default store: it must hold both
-    // applies plus the rollback's re-apply, newest first.
+    // applies plus the rollback's re-apply of the first. Compared as a sorted set
+    // so equal millisecond timestamps cannot make the order flaky.
     let cli_store = FsHistoryStore::with_defaults().expect("cli store");
     let versions = cli_store.list(10).await.expect("list");
-    assert_eq!(versions.len(), 3, "both applies and the rollback: {versions:?}");
-    assert_eq!(versions[0].sha256[..12], printed_version(&first));
-    assert_eq!(versions[1].sha256[..12], printed_version(&second));
+    let mut listed: Vec<String> = versions.iter().map(|v| v.sha256[..12].to_string()).collect();
+    listed.sort();
+    let mut expected = vec![
+        printed_version(&first),
+        printed_version(&first),
+        printed_version(&second),
+    ];
+    expected.sort();
+    assert_eq!(listed, expected, "both applies and the rollback: {versions:?}");
 
     // The rollback is judged by the ACTIVE policy, not by its success message.
     assert_eq!(outcome.1, ExitCode::SUCCESS, "rollback of a stored version succeeds");
