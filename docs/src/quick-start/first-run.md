@@ -36,7 +36,7 @@ allows and audits everything, which is the easiest starting point.
 
 The gRPC gateway is a separate binary, `aa-gateway`, which `cargo build -p aa-cli` does
 **not** produce. Steps 1 and 2 (and everything that connects over gRPC) need it, so on a
-source build build it first (skip this if you installed a release, which ships it):
+source build build it first (skip this if you installed a release with `install.sh`, which installs it next to `aasm`):
 
 ```sh
 cargo build -p aa-gateway
@@ -120,8 +120,8 @@ Error: no Agent Assembly API answered at http://localhost:7391. Start it with: a
 The `unreachable` health reflects the split described above: the gRPC gateway is
 up, but nothing is serving the HTTP API yet. Start the local API server and ask
 again — no flags needed, because `aasm status` reads the address `aasm start`
-recorded. On a source build, `aasm start` needs `aa-api-server`, which `cargo build -p aa-cli`
-does not produce:
+recorded. The installer's default set includes `aa-api-server`; on a source build, `aasm start`
+needs it, and `cargo build -p aa-cli` does not produce it:
 
 ```sh
 cargo build -p aa-api --bin aa-api-server
