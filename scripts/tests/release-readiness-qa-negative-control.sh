@@ -26,7 +26,33 @@ FAILED=0
 OUT_FILE="$(mktemp)"
 EXIT_FILE="$(mktemp)"
 
-cleanup() { rm -f "$QA_SIGNOFF" "$SEC_SIGNOFF" "$OUT_FILE" "$EXIT_FILE"; }
+# Hermetic: release-readiness.sh talks to the network in three places (`git
+# fetch`, `gh secret list` / `gh pr list`, and the registry probe in
+# check_version_availability.py). None of it is under test here — the
+# assertions are on the QA/security/evidence check lines — so shim each for the
+# whole run: `git fetch` and `gh` do nothing, and the live registry probe
+# reports success (its --selftest still runs for real, it is offline).
+OFFLINE_DIR="$(mktemp -d)"
+REAL_GIT="$(command -v git)"
+REAL_PYTHON="$(command -v python3)"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$OFFLINE_DIR/gh"
+cat > "$OFFLINE_DIR/git" <<SHIMEOF
+#!/usr/bin/env bash
+[ "\${1:-}" = "fetch" ] && exit 0
+exec "$REAL_GIT" "\$@"
+SHIMEOF
+cat > "$OFFLINE_DIR/python3" <<SHIMEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *--selftest*) ;;
+  *check_version_availability.py*) exit 0 ;;
+esac
+exec "$REAL_PYTHON" "\$@"
+SHIMEOF
+chmod +x "$OFFLINE_DIR/gh" "$OFFLINE_DIR/git" "$OFFLINE_DIR/python3"
+export PATH="$OFFLINE_DIR:$PATH"
+
+cleanup() { rm -rf "$OFFLINE_DIR"; rm -f "$QA_SIGNOFF" "$SEC_SIGNOFF" "$OUT_FILE" "$EXIT_FILE"; }
 trap cleanup EXIT
 
 assert_line() {
