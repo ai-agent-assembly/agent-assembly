@@ -79,6 +79,66 @@ else
   FAILED=1
 fi
 
+echo "== State (e) (AAASM-6419): QA Verdict: CANDIDATE_VERIFIED with a pending row — distinct line, never PASS =="
+cp docs/release/qa-signoff/fixtures/pass.md "$SEC_SIGNOFF"
+cp docs/release/qa-signoff/fixtures/candidate-verified.md "$QA_SIGNOFF"
+run_readiness
+assert_line "$OUT_FILE" '✓ QA sign-off Verdict: CANDIDATE_VERIFIED — 1 obligations pending \(not PASS\)' "check 12 reports CANDIDATE_VERIFIED with the pending count"
+if grep -qE '✓ QA sign-off present and Verdict: PASS' "$OUT_FILE"; then
+  printf '  ✗ %s\n' "CANDIDATE_VERIFIED was reported as PASS"; FAILED=1
+else
+  printf '  ✓ %s\n' "CANDIDATE_VERIFIED is never reported as 'Verdict: PASS'"
+fi
+assert_line "$OUT_FILE" 'release-readiness: CANDIDATE_VERIFIED — 1 obligations pending \(not PASS\)' "final summary names the pending state"
+if grep -q 'safe to tag' "$OUT_FILE"; then
+  printf '  ✗ %s\n' "readiness claimed 'safe to tag' with obligations pending"; FAILED=1
+else
+  printf '  ✓ %s\n' "readiness never says 'safe to tag' while obligations are pending"
+fi
+if [ "$(cat "$EXIT_FILE")" -ne 0 ]; then
+  printf '  ✓ %s\n' "overall exit is non-zero with obligations pending"
+else
+  printf '  ✗ %s\n' "overall exit was 0 with obligations pending"; FAILED=1
+fi
+
+echo "== State (f) (AAASM-6419): CANDIDATE_VERIFIED with nothing pending is refused =="
+cp docs/release/qa-signoff/fixtures/candidate-verified-no-pending.md "$QA_SIGNOFF"
+run_readiness
+assert_line "$OUT_FILE" '✗ QA sign-off says CANDIDATE_VERIFIED but no journey row is PUBLICATION_PENDING' "check 12 refuses CANDIDATE_VERIFIED with no pending row"
+
+echo "== State (g) (AAASM-6419): security sign-off CANDIDATE_VERIFIED is never accepted =="
+cp docs/release/qa-signoff/fixtures/pass.md "$QA_SIGNOFF"
+cp docs/release/qa-signoff/fixtures/candidate-verified.md "$SEC_SIGNOFF"
+run_readiness
+assert_line "$OUT_FILE" '✗ Security-review sign-off verdict is not PASS' "check 11 stays exact-PASS for security"
+
+echo "== State (h) (AAASM-6419): evidence checker exits 3 (CANDIDATE_VERIFIED) — check 14 must FAIL, not pass =="
+# A python3 shim that answers ONLY the evidence-checker invocation with the
+# documented exit-3 contract and delegates everything else, so check 14's
+# exit-3 branch is exercised without constructing a whole release history.
+SHIM_DIR="$(mktemp -d)"
+REAL_PY="$(command -v python3)"
+cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *check-release-evidence.py*)
+    echo "CANDIDATE_VERIFIED — evidence is valid but 1 journey(s) are PUBLICATION_PENDING: ['J01']. This is NOT a pass (exit 3)."
+    exit 3 ;;
+esac
+exec "$REAL_PY" "\$@"
+SHIMEOF
+chmod +x "$SHIM_DIR/python3"
+cp docs/release/qa-signoff/fixtures/pass.md "$SEC_SIGNOFF"
+cp docs/release/qa-signoff/fixtures/candidate-verified.md "$QA_SIGNOFF"
+PATH="$SHIM_DIR:$PATH" bash scripts/release-readiness.sh "$TESTVERSION" > "$OUT_FILE" 2>&1
+rm -rf "$SHIM_DIR"
+assert_line "$OUT_FILE" '✗ Release-assurance evidence is CANDIDATE_VERIFIED, not PASS' "check 14 fails on checker exit 3 and names the pending state"
+if grep -qE '✓ Release-assurance evidence binds HEAD' "$OUT_FILE"; then
+  printf '  ✗ %s\n' "check 14 passed on a CANDIDATE_VERIFIED evidence record"; FAILED=1
+else
+  printf '  ✓ %s\n' "check 14 never passes on CANDIDATE_VERIFIED"
+fi
+
 echo
 if [ "$FAILED" -ne 0 ]; then
   echo "release-readiness-qa-negative-control: FAILED"
