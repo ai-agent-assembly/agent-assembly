@@ -414,7 +414,7 @@ def build_evidence(
                 )
             # candidate_sha is stamped here, not stored in the obligation
             # file: a file committed in the candidate commit cannot contain
-            # that commit's own hash (same quine ADR 0037 avoids).
+            # that commit's own hash (same quine Core ADR 0037 avoids).
             journey["obligation"] = {**obligation, "candidate_sha": candidate_sha}
             journey["obligation_problems"] = publication_obligations.validate_obligation(
                 jid, obligation, entry, registry_digest.per_journey_digest(entry),
