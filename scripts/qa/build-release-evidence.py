@@ -264,6 +264,13 @@ def _map_journey_status(jid: str, raw_cell: str) -> str:
     upper = text.upper()
     for pattern, status in _STATUS_TOKEN_RULES:
         if re.search(pattern, upper):
+            if status == "PUBLICATION_PENDING":
+                conflict = publication_obligations.pending_cell_conflict(raw_cell)
+                if conflict:
+                    raise ValueError(
+                        f"{jid}: Result cell says PUBLICATION_PENDING but also {conflict!r} — "
+                        f"ambiguous, refusing to guess — raw cell: {raw_cell!r}"
+                    )
             return status
     raise ValueError(
         f"{jid}: could not classify sign-off Result cell into the status "

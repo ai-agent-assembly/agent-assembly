@@ -160,6 +160,11 @@ fi
 QA_SIGNOFF="docs/release/qa-signoff/v${VERSION}.md"
 if [ ! -f "$QA_SIGNOFF" ]; then
   fail "QA sign-off missing ($QA_SIGNOFF)" "run /release-qa-gate $VERSION and commit the sign-off"
+elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$QA_SIGNOFF" \
+  && grep -qE '^\|[[:space:]]*J[0-9]+[A-Za-z]?[[:space:]]*\|.*PUBLICATION_PENDING' "$QA_SIGNOFF"; then
+  # AAASM-6419: a journey row that still says PUBLICATION_PENDING is owed work;
+  # the sign-off cannot call itself PASS over it (the checker would also BLOCK).
+  fail "QA sign-off says Verdict: PASS but a journey row is PUBLICATION_PENDING ($QA_SIGNOFF)" "a candidate with owed publication checks is CANDIDATE_VERIFIED, never PASS"
 elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$QA_SIGNOFF"; then
   pass "QA sign-off present and Verdict: PASS ($QA_SIGNOFF)"
 elif grep -qE '^Verdict:[[:space:]]*CANDIDATE_VERIFIED[[:space:]]*$' "$QA_SIGNOFF"; then

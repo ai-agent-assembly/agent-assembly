@@ -23,6 +23,7 @@ refusing.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 PENDING_STATUS = "PUBLICATION_PENDING"
@@ -33,6 +34,38 @@ CANDIDATE_STATUS_OK = "PASS"
 CANDIDATE_FIDELITIES = {
     "mock", "controlled_fake", "real_local_process", "container",
 }
+
+
+_PENDING_TOKEN_RE = re.compile(r"\bPUBLICATION_PENDING\b")
+
+
+def final_call(raw_cell: str) -> str:
+    """Upper-cased text of a sign-off Result cell's final call: after the last
+    arrow, markdown emphasis stripped. Mirrors what the emitter classifies, so
+    the emitter and the checker agree on which text decides a row."""
+    text = raw_cell or ""
+    for arrow in ("→", "->"):
+        if arrow in text:
+            text = text.rsplit(arrow, 1)[1]
+    return text.replace("~~", "").replace("**", "").replace("*", "").upper()
+
+
+def cell_claims_pending(raw_cell: str) -> bool:
+    return bool(_PENDING_TOKEN_RE.search(final_call(raw_cell)))
+
+
+# A pending cell whose prose ALSO names any other state is ambiguous, and the
+# token rules would let PUBLICATION_PENDING win over a non-FAIL/BLOCKED word
+# (`\bFAILS?\b` does not match FAILED/FAILURE, `\bBLOCKED\b` not BLOCKING).
+# An ambiguous pending cell is refused rather than guessed at.
+_CONFLICTING_STATE_RE = re.compile(
+    r"\bFAIL\w*|\bBLOCK\w*|\bUNTESTED\w*|\bPARTIAL\w*|\bSKIPPED\b|\bXFAIL\b|\bSTALE\b|\bNOT_RUN\b"
+)
+
+
+def pending_cell_conflict(raw_cell: str) -> str | None:
+    m = _CONFLICTING_STATE_RE.search(final_call(raw_cell))
+    return m.group(0) if m else None
 
 
 def obligation_path(version: str) -> str:

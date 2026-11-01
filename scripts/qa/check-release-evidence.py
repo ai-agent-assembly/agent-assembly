@@ -1104,6 +1104,19 @@ def rule_r2_r3(
             )
             continue
 
+        # A row whose recorded Result cell claims PUBLICATION_PENDING must carry
+        # that status. Otherwise a record forged at first commit (R1b only
+        # protects what happens AFTER the first add) could re-label a pending
+        # row PASS while the table, which R8 compares cell-for-cell, still says
+        # pending. Checked before the PASS shortcut below.
+        if ev.get("status") != publication_obligations.PENDING_STATUS and \
+                publication_obligations.cell_claims_pending(ev.get("evidence_ref") or ""):
+            blocks.append(
+                f"R3: journey {jid}'s Result cell says PUBLICATION_PENDING but its recorded "
+                f"status is {ev.get('status')!r} — a pending row cannot be recorded as anything else"
+            )
+            continue
+
         if drift:
             expected_digest = registry_digest.per_journey_digest(entry_t)
             if ev.get("digest") != expected_digest:
