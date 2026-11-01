@@ -36,6 +36,7 @@ CANDIDATE_FIDELITIES = {
 }
 
 
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PENDING_TOKEN_RE = re.compile(r"\bPUBLICATION_PENDING\b")
 
 
@@ -172,12 +173,22 @@ def validate_obligation(
                 p.append(f"journey {jid} candidate check {c.get('id')!r} has no evidence_ref")
             if _nonempty_str(c.get("negative_control")):
                 saw_negative_control = True
+            # Every candidate check here claims PASS before publication, so it
+            # must name the exact artifacts it verified: an obligation with no
+            # digests would admit a CANDIDATE_VERIFIED record that is bound to
+            # nothing. Format only: no candidate build-digest manifest exists
+            # to cross-check against (documented gap, Core ADR 0042).
             digests = c.get("artifact_digests")
-            if digests is not None and not (
+            if not (
                 isinstance(digests, dict)
-                and all(_nonempty_str(k) and _nonempty_str(v) for k, v in digests.items())
+                and digests
+                and all(_nonempty_str(k) and isinstance(v, str) and DIGEST_RE.match(v)
+                        for k, v in digests.items())
             ):
-                p.append(f"journey {jid} candidate check {c.get('id')!r} has malformed artifact_digests")
+                p.append(
+                    f"journey {jid} candidate check {c.get('id')!r} must carry a non-empty "
+                    "artifact_digests map of name -> sha256:<64 hex>"
+                )
         if len(set(cand_ids)) != len(cand_ids):
             p.append(f"journey {jid} obligation has duplicate candidate check ids")
         if set(cand_ids) & set(pending_ids):

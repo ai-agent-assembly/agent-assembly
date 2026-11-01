@@ -176,7 +176,7 @@ check "J97 status" "$(jq -r '.journeys[] | select(.id=="J97") | .status' "$PEND_
 check "J98 status" "$(jq -r '.journeys[] | select(.id=="J98") | .status' "$PEND_TMP/ev.json")" "PASS"
 check "verdict (never PASS while a row is pending)" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "CANDIDATE_VERIFIED"
 check "obligation stamped with the candidate sha" "$(jq -r '.journeys[] | select(.id=="J97") | .obligation.candidate_sha' "$PEND_TMP/ev.json")" "$SYNTH_SHA"
-check "candidate artifact digests copied into artifacts" "$(jq -r '.artifacts.J97["wheel-build"]["agent_assembly-0.0.0.tar.gz"]' "$PEND_TMP/ev.json")" "sha256:00"
+check "candidate artifact digests copied into artifacts" "$(jq -r '.artifacts.J97["wheel-build"]["agent_assembly-0.0.0.tar.gz"]' "$PEND_TMP/ev.json")" "sha256:f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"
 
 echo "== N1: PUBLICATION_PENDING cell with no obligation entry -> emitter error naming the journey =="
 make_obligations 'doc["journeys"] = []'
@@ -228,6 +228,16 @@ echo "== N7 (emitter side): pending + waiver on one row -> BLOCK, never PASS =="
 make_obligations
 emit_pending "$PEND_TMP/signoff-waived.md" "$PEND_TMP/obligations.json" >/dev/null
 check "N7 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+
+echo "== N8 (emitter side): candidate check without well-formed artifact_digests -> BLOCK =="
+for n8_mut in \
+  'doc["journeys"][0]["candidate_checks"][0].pop("artifact_digests")' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {}' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"a.tar.gz": "sha256:00"}'; do
+  make_obligations "$n8_mut"
+  emit_pending "$FIX/qa-signoff-pending.md" "$PEND_TMP/obligations.json" >/dev/null
+  check "N8 verdict ($n8_mut)" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+done
 
 if [ "$FAILED" -eq 0 ]; then
   echo "build-release-evidence fixtures check: PASS"

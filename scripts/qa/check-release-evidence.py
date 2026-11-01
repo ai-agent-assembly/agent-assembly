@@ -1036,6 +1036,13 @@ def rule_r2_r3(
     required_t_by_id = {e["id"]: e for e in required_t}
     evidence_journeys_by_id = {j["id"]: j for j in evidence["journeys"]}
     evidence_ids = set(evidence_journeys_by_id)
+    # Last-wins dict construction would let a later duplicate row silently
+    # replace an earlier one (e.g. a pending row overwritten by a PASS row).
+    seen_ids: set[str] = set()
+    for j in evidence["journeys"]:
+        if j["id"] in seen_ids:
+            blocks.append(f"R3: journey {j['id']} appears more than once in the evidence")
+        seen_ids.add(j["id"])
 
     # AAASM-6419: the obligation file, from git at the tag target (never the
     # working tree — an untracked file must not be able to authorize), and
@@ -1128,6 +1135,17 @@ def rule_r2_r3(
 
         status = ev.get("status")
         if status == "PASS":
+            # A journey that declares publication_checks owes checks that only a
+            # published artifact can satisfy, so a bare PASS is never admissible
+            # for it. Its legal pre-publication state is PUBLICATION_PENDING
+            # with an obligation; a post-publication PASS needs a future
+            # evidence attempt (Core ADR 0042), not this one.
+            if entry_t.get("publication_checks"):
+                blocks.append(
+                    f"R3: journey {jid} declares publication_checks but is recorded PASS — "
+                    "a bare PASS cannot stand in for checks that need a published artifact; "
+                    "record it PUBLICATION_PENDING with an obligation"
+                )
             continue
 
         if status == publication_obligations.PENDING_STATUS:

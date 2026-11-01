@@ -1192,7 +1192,7 @@ doc = {"journeys": [{
     "registry_digest": digest["J01"],
     "candidate_checks": [{"id": "wheel-build", "status": "PASS", "fidelity": "real_local_process",
                           "evidence_ref": "fixture://wheel-build", "negative_control": None,
-                          "artifact_digests": {"pkg-0.0.0.tar.gz": "sha256:00"}}],
+                          "artifact_digests": {"pkg-0.0.0.tar.gz": "sha256:f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"}}],
     "pending_checks": [{"id": "pypi-install", "channel": "pypi",
                         "why_publication_only": "needs the file on PyPI",
                         "command": "pip install pkg==0.0.0", "expected": "installs"}],
@@ -1365,6 +1365,91 @@ patch_evidence "$PDIR" 'doc["journeys"][0]["status"] = "PASS"; doc["journeys"][0
 commit_all "$PDIR" "forged evidence at first add" >/dev/null
 assert_exit "N16 cell says pending, status PASS" 1 "$PDIR" "$PA"
 assert_output_contains "N16 names the cell/status contradiction" "Result cell says PUBLICATION_PENDING but its recorded status is 'PASS'"
+
+echo "== N17: candidate check without a well-formed artifact_digests -> BLOCK =="
+n17_i=0
+for n17_mut in \
+  'doc["journeys"][0]["candidate_checks"][0].pop("artifact_digests")' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {}' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "sha256:00"}' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "md5:d41d8cd98f00b204e9800998ecf8427e"}'; do
+  n17_i=$((n17_i + 1))
+  pending_case "n17-$n17_i" "$CATALOG_PEND" "$n17_mut"
+  patch_evidence "$PDIR" 'doc["verdict"] = "CANDIDATE_VERIFIED"'
+  commit_all "$PDIR" "record forged evidence" >/dev/null
+  assert_exit "N17.$n17_i digests missing/empty/malformed" 1 "$PDIR" "$PA"
+  assert_output_contains "N17.$n17_i names artifact_digests" "must carry a non-empty artifact_digests map"
+  if [ "$n17_i" -eq 1 ]; then N17_DIR="$PDIR"; N17_SHA="$PA"; fi
+done
+
+echo "== N18: a bare PASS on a journey that declares publication_checks -> R3 BLOCK =="
+N18_DIR=$(new_repo n18)
+write_common_files "$N18_DIR"
+write_catalog "$N18_DIR" "$CATALOG_PEND"
+write_signoffs "$N18_DIR" "# QA sign-off fixture
+
+## Selected journeys
+
+| Journey ID | Priority | Result | Evidence |
+|---|---|---|---|
+| J01 | P0 | **PASS** | fixture |
+| J02 | P1 | **PASS** | fixture |
+
+## Waivers
+
+none
+
+## Verdict
+
+Verdict: PASS" "$SECURITY_SIGNOFF_PASS"
+N18_SHA=$(commit_all "$N18_DIR" "baseline")
+gen_evidence "$N18_DIR" "$N18_SHA"
+commit_all "$N18_DIR" "record evidence" >/dev/null
+assert_exit "N18 bare PASS over publication_checks" 1 "$N18_DIR" "$N18_SHA"
+assert_output_contains "N18 names the rule" "declares publication_checks but is recorded PASS"
+
+echo "== N19: duplicate journey id in the evidence (last-wins would let a later row replace an earlier one) -> R3 BLOCK =="
+pending_case n19
+patch_evidence "$PDIR" 'import copy; doc["journeys"].append(copy.deepcopy(doc["journeys"][1]))'
+commit_all "$PDIR" "record forged evidence" >/dev/null
+assert_exit "N19 duplicate journey id" 1 "$PDIR" "$PA"
+assert_output_contains "N19 names the duplicate" "journey J02 appears more than once in the evidence"
+N19_DIR="$PDIR"; N19_SHA="$PA"
+
+# $1 label, $2 file under scripts/qa, $3 needle (must occur once), $4 replacement,
+# $5 case dir, $6 tag target. The mutated checker must stop exiting 1, proving
+# the case guards exactly that line.
+mutation_proof() {
+  local label="$1" file="$2" needle="$3" repl="$4" dir="$5" sha="$6" mut="$WORKDIR/mutated-$1" rc
+  mkdir -p "$mut"
+  cp "$REAL_REPO_ROOT"/scripts/qa/*.py "$mut/"
+  python3 - "$mut/$file" "$needle" "$repl" <<'PYEOF4'
+import sys
+p, needle, repl = sys.argv[1:4]
+s = open(p).read()
+assert s.count(needle) == 1, "mutation needle not found exactly once - proof is stale"
+open(p, "w").write(s.replace(needle, repl))
+PYEOF4
+  set +e
+  python3 "$mut/check-release-evidence.py" --repo-root "$dir" --version "$VERSION" --tag-target "$sha" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne 1 ]; then
+    echo "  ✓ mutation proof ($label): with the guard removed the checker exits $rc instead of 1"
+  else
+    echo "  ✗ mutation proof ($label): removing the guard left the outcome unchanged — the case does not guard it"
+    FAILED=1
+  fi
+}
+mutation_proof "n17-digests" publication_obligations.py \
+  'if not (
+                isinstance(digests, dict)' \
+  'if False and (
+                isinstance(digests, dict)' "$N17_DIR" "$N17_SHA"
+mutation_proof "n18-bare-pass" check-release-evidence.py \
+  'if entry_t.get("publication_checks"):' 'if False:' "$N18_DIR" "$N18_SHA"
+mutation_proof "n19-duplicate" check-release-evidence.py \
+  'if j["id"] in seen_ids:' 'if False:' "$N19_DIR" "$N19_SHA"
 
 echo "== Mutation proof: delete the fidelity predicate -> N3 must turn RED =="
 MUT_QA="$WORKDIR/mutated-qa"

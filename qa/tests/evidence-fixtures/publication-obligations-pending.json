@@ -6,7 +6,7 @@
       "candidate_checks": [
         {"id": "wheel-build", "status": "PASS", "fidelity": "real_local_process",
          "evidence_ref": "synthetic://wheel-build", "negative_control": null,
-         "artifact_digests": {"agent_assembly-0.0.0.tar.gz": "sha256:00"}}
+         "artifact_digests": {"agent_assembly-0.0.0.tar.gz": "sha256:f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d"}}
       ],
       "pending_checks": [
         {"id": "pypi-install", "channel": "pypi",
