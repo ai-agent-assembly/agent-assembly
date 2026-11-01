@@ -166,7 +166,7 @@ aa-runtime     = { path = "../aa-runtime", features = ["test-fixtures"] }
 # non-default `mock-backend` feature so a release build cannot select it.
 # Cargo unions this feature into test builds only; it never reaches the
 # `aasm` binary itself.
-aa-isolation   = { path = "../aa-isolation", features = ["mock-backend"] }
+aa-isolation   = { path = "../aa-isolation", features = ["mock-backend", "serde"] }
 assert_cmd     = { workspace = true }
 tokio-util     = { workspace = true, features = ["rt"] }
 wiremock       = "0.6"
