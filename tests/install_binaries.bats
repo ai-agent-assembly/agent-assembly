@@ -108,7 +108,7 @@ install() { run sh "$INSTALL_CLI" --version "$VER" --install-dir "$DEST" "$@"; }
   sums
   install
   [ "$status" -eq 0 ]
-  [[ "$output" == *"component 'api' is not published"* ]]
+  [[ "$output" == *"not listed in SHA256SUMS"* ]]
   [ -x "$DEST/aa-gateway" ]
   [ ! -e "$DEST/aa-api-server" ]
   ! grep -q 'component=api' "$AASM_STATE_DIR/install-manifest"

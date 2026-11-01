@@ -321,6 +321,11 @@ latest_release() {
 
 # ── per-component install ─────────────────────────────────────────────────────
 
+sums_has_entry() {
+  # True when <sums_file> lists <filename> (same match rule as sha256_verify).
+  [ -n "$(awk -v t="$2" '$2==t || $2=="*"t {print $1; exit}' "$1")" ]
+}
+
 check_artifact_available() {
   # HEAD-check that <url> exists so a multi-component install fails up front
   # rather than half-way through (no partial, silent success — ADR-014).
@@ -342,9 +347,16 @@ fetch_component() {
     || err "download failed for component '${comp}': ${url}"
   sha256_verify "${tmp}/${artifact}" "$sums"
   for bin in $(component_binaries "$comp"); do
-    tar -C "$stage" -xzf "${tmp}/${artifact}" "$bin" 2>/dev/null \
-      && [ -f "${stage}/${bin}" ] \
-      || err "${artifact} does not contain the expected binary '${bin}' — refusing to install."
+    if ! _tar_out="$(tar -C "$stage" -xzf "${tmp}/${artifact}" "$bin" 2>&1)"; then
+      case "$_tar_out" in
+        *[Nn]ot\ found*|*[Nn]ot\ in\ archive*)
+          err "${artifact} does not contain the expected binary '${bin}' — refusing to install." ;;
+        *) err "failed to extract '${bin}' from ${artifact} (corrupt archive?): ${_tar_out}" ;;
+      esac
+    fi
+    # A symlink member would be copied from its target, not from the tarball.
+    { [ -f "${stage}/${bin}" ] && [ ! -L "${stage}/${bin}" ]; } \
+      || err "${artifact}: '${bin}' is not a regular file — refusing to install."
   done
 }
 
@@ -627,11 +639,14 @@ main() {
   _avail=""
   for comp in $COMPONENTS; do
     artifact="$(component_artifact "$comp" "$VERSION")"
-    if check_artifact_available "https://github.com/${REPO}/releases/download/${VERSION}/${artifact}"; then
-      _avail="${_avail} $comp"
-    elif is_optional_component "$comp"; then
-      warn "component '${comp}' is not published for ${VERSION} (${artifact} not found) — skipping it."
+    # An optional component is skipped ONLY when the verified SHA256SUMS has no
+    # entry for it (an older release). If the release lists it, an unreachable
+    # asset is fatal: a network error or forged 404 must not downgrade the install.
+    if is_optional_component "$comp" && ! sums_has_entry "${TMP}/SHA256SUMS" "$artifact"; then
+      warn "component '${comp}' is not listed in SHA256SUMS for ${VERSION} (no ${artifact}) — skipping it."
       warn "'aasm start --mode local' needs aa-api-server; use a newer release or build it from source."
+    elif check_artifact_available "https://github.com/${REPO}/releases/download/${VERSION}/${artifact}"; then
+      _avail="${_avail} $comp"
     else
       err "component '${comp}' is not published for ${VERSION} (${artifact} not found)."
     fi
