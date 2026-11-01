@@ -18,6 +18,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 
+- **`--workspace-tx` commit can no longer write outside its base through a symlink (AAASM-6412)** — if the base held a directory symlink `d -> /elsewhere`, a confined run could replace `d` with a real directory in the staged copy and the commit would create, write or delete files under `/elsewhere` with your privileges. A commit is now refused (`boundary_escape`, base untouched) when any changed path sits behind a symlinked directory in the base. `--workspace-tx-protect` also refuses selectors that could never match a changed path (`./x`, `x/`, absolute, `..`, empty) instead of silently not protecting. Found by the independent rc.8 security review.
 - **Governed runtime denies `LLM_CALL` / `TOOL_RESULT` policy queries (AAASM-6259)** — in
   lease-governed mode (`AA_LEASE_POLICY` set) the runtime used to admit these two action
   types without a lease, so a client that relabelled a tool call and omitted its tool context
