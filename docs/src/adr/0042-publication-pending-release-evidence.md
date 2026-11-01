@@ -60,6 +60,11 @@ SHA-specific release approval.
 5. **A pending row cannot also be waived.** The emitter resolves pending plus an
    exception to `BLOCK`, and the checker rejects a hand-edited record that has
    both.
+6. **A pending Result cell is never ambiguous.** The emitter refuses a cell that
+   says `PUBLICATION_PENDING` and also names another state (`FAILED`, `BLOCKING`,
+   `UNTESTED`, `PARTIAL`, ...). The checker blocks a row whose Result cell claims
+   `PUBLICATION_PENDING` but whose status is anything else, and readiness check 12
+   refuses `Verdict: PASS` over a pending row.
 
 ## Consequences
 
