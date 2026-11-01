@@ -210,6 +210,12 @@ on:
       - "scripts/qa/registry_digest.py"
       - "scripts/qa/build-release-evidence.py"
       - "scripts/qa/check-release-evidence.py"
+      # AAASM-6419: shared obligation validator, the readiness script and the
+      # two self-tests wired below.
+      - "scripts/qa/publication_obligations.py"
+      - "scripts/release-readiness.sh"
+      - "scripts/tests/build-release-evidence-fixtures-check.sh"
+      - "scripts/tests/release-readiness-qa-negative-control.sh"
       - "scripts/tests/release-evidence-negative-control.sh"
       - "qa/tests/evidence-fixtures/**"
       # AAASM-5960: the CI-waiting freshness invariant as an executable. Same
@@ -609,6 +615,10 @@ jobs:
               - 'scripts/qa/registry_digest.py'
               - 'scripts/qa/build-release-evidence.py'
               - 'scripts/qa/check-release-evidence.py'
+              - 'scripts/qa/publication_obligations.py'
+              - 'scripts/release-readiness.sh'
+              - 'scripts/tests/build-release-evidence-fixtures-check.sh'
+              - 'scripts/tests/release-readiness-qa-negative-control.sh'
               - 'scripts/tests/release-evidence-negative-control.sh'
               - 'qa/tests/evidence-fixtures/**'
               # AAASM-5960: the CI-waiting freshness invariant. Shares this
@@ -1607,6 +1617,15 @@ jobs:
       # produces one.
       - name: Self-test the release-evidence checker (negative control)
         run: bash scripts/tests/release-evidence-negative-control.sh
+
+      # AAASM-6419: the emitter-side fixtures and the readiness-script
+      # negative control for PUBLICATION_PENDING / CANDIDATE_VERIFIED. Both
+      # are offline (synthetic sha / temp repos, no network).
+      - name: Self-test the release-evidence emitter fixtures
+        run: bash scripts/tests/build-release-evidence-fixtures-check.sh
+
+      - name: Self-test release-readiness QA verdict handling (negative control)
+        run: bash scripts/tests/release-readiness-qa-negative-control.sh
 
       # AAASM-6232: same convention again, for
       # scripts/check_version_availability.py — the pre-publish gate that
