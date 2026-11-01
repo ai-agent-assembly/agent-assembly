@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from urllib.parse import urlparse
 from pathlib import Path
 from unittest import mock
 
@@ -198,7 +199,7 @@ class ReleaseAssetTests(unittest.TestCase):
         reg = self.registry()
         rc, rep, _ = self.go(reg)
         self.assertEqual((rep["results"][0]["status"], rc), ("PASS", 0), rep)
-        self.assertTrue(any("objects.githubusercontent.com" in u for u, _ in reg.calls), "SHA256SUMS content was not fetched")
+        self.assertTrue(any(urlparse(u).hostname == "objects.githubusercontent.com" for u, _ in reg.calls), "SHA256SUMS content was not fetched")
 
     def test_missing_api_tarball_fails(self):
         # aa-api-server ships only in aasm-api-*, so a release without it cannot run J59
@@ -245,7 +246,7 @@ class ReleaseAssetTests(unittest.TestCase):
         reg = self.registry()
         self.go(reg)
         for url, headers in reg.calls:
-            if "/releases/assets/" in url or "objects.githubusercontent.com" in url:
+            if "/releases/assets/" in url or urlparse(url).hostname == "objects.githubusercontent.com":
                 self.assertNotIn("Authorization", headers)
 
 
