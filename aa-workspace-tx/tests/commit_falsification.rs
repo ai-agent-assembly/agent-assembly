@@ -515,7 +515,7 @@ fn case_only_rename_is_refused_before_the_journal_and_nothing_is_applied() {
         .commit(&[], false)
         .expect_err("a change set that differs only by case between an add and a delete must refuse");
     assert!(
-        matches!(&refusal, aa_isolation::CommitRefusal::BoundaryEscape { path } if path.eq_ignore_ascii_case("a.txt")),
+        matches!(&refusal, aa_isolation::CommitRefusal::BoundaryEscape { path } if path.contains("collision") && path.to_lowercase().starts_with("a.txt")),
         "the refusal must name the colliding path: {refusal:?}"
     );
     assert!(
