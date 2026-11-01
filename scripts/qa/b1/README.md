@@ -43,7 +43,9 @@ Candidate (fidelity `real_local_process`):
 
 - Both journeys first run `<journey>.source_matches_candidate_sha`: the checkout's HEAD must be
   `--candidate-sha` and the installer, policy and harness files must equal their blobs in that
-  commit (dirty, foreign or out-of-checkout files FAIL), so `candidate_sha` is not just a label.
+  commit (dirty, foreign or out-of-checkout files FAIL). So the installer, policy and harness
+  scripts are tied to `candidate_sha` byte-for-byte; the artifacts in the mirror are bound only
+  by their own checksums (SHA256SUMS and the candidate digests), not by the sha.
 - J04: `j04.sha256sums_match_artifacts`, `j04.installer_default_installs_all_binaries`
   (installed bytes equal the tarball members), `j04.installer_version_pin_env`,
   `j04.installer_latest_resolution` (unpinned, via `/releases/latest` and the
@@ -75,7 +77,7 @@ digests (tarballs and installed members). Install-style checks use their own tem
 dir and `HOME`. The Homebrew checks `brew upgrade || brew install` in the real Homebrew prefix
 (`side_effects` says so); a stale install cannot false-PASS because version and
 candidate digest are asserted. Test-only environment overrides:
-`B1_RELEASE_BASE`, `B1_INSTALL_SH_URL`, `B1_POLICY_URL`.
+`B1_RELEASE_BASE`, `B1_API_BASE`, `B1_INSTALL_SH_URL`, `B1_POLICY_URL`.
 
 Not covered (also in the JSON `not_covered`): J04 `cargo install aa-cli` docs decision;
 J17 docs-not-only-`cargo run`; J17 policy-format-unambiguous; J17 `aasm status` /
