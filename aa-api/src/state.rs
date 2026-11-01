@@ -256,6 +256,25 @@ pub enum LocalStateError {
          be written to."
     )]
     NoDurablePolicyHistoryDir,
+    /// The newest policy history entry could not be restored at start-up
+    /// (AAASM-6430). Start-up is refused rather than falling back to the broader
+    /// bootstrap policy.
+    #[error(
+        "cannot restore the policy recorded as active in the policy history at {dir}: {reason}. \
+         Offending entry: {entry}. To start, move aside (do not delete) only that entry's \
+         `.meta.json` and `.yaml` files, or apply a valid policy; the server then restores the \
+         previous entry. The server never starts with the bootstrap policy over a non-empty history.",
+        dir = dir.display(),
+        entry = entry.as_ref().map_or_else(|| "unknown".to_string(), |p| p.display().to_string())
+    )]
+    PolicyHistoryRestore {
+        /// The policy history directory.
+        dir: std::path::PathBuf,
+        /// The newest `.meta.json` entry in `dir`, which is the one restored.
+        entry: Option<std::path::PathBuf>,
+        /// Why restoring it failed.
+        reason: String,
+    },
 }
 
 /// Resolved authentication posture for the local single-process entrypoint
@@ -338,6 +357,17 @@ pub struct LocalDurablePaths {
     /// `aasm policy history|get|diff|rollback` read from
     /// ([`resolve_policy_history_dir`]), so the two see one store (AAASM-6430).
     pub policy_history_dir: std::path::PathBuf,
+}
+
+/// The newest `.meta.json` entry in `dir` (filenames start with the timestamp),
+/// for naming the offending file in an error. `None` if the directory cannot be
+/// read or holds none.
+fn newest_meta_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".meta.json"))
+        .max_by(|a, b| a.file_name().cmp(&b.file_name()))
 }
 
 /// Resolve the policy history directory exactly as the CLI does:
@@ -691,37 +721,52 @@ impl AppState {
     /// History now survives restarts (AAASM-6430), so without this a restarted
     /// server would report the newest history entry as the active policy
     /// (`GET /api/v1/policies/active`, `aasm policy history`) while the engine ran
-    /// the bootstrap policy. Fails closed: if the newest entry cannot be read or
-    /// no longer validates, start-up is refused rather than falling back to the
-    /// broader bootstrap policy. Skipped when `$AA_POLICY` names an
-    /// operator-configured source, which stays the start-up policy.
-    async fn reinstall_latest_applied_policy(state: &Self) -> Result<(), LocalStateError> {
-        if !matches!(resolve_policy_source(|k| std::env::var(k).ok()), PolicySource::Unset) {
-            return Ok(());
-        }
-        let history_err = |e: String| {
-            LocalStateError::PolicyLoad(format!(
-                "cannot restore the policy recorded as active in the policy history: {e}; \
-                 fix or move the policy-history directory to start with the bootstrap policy"
-            ))
+    /// the bootstrap policy. Fails closed with
+    /// [`LocalStateError::PolicyHistoryRestore`]: if the newest entry cannot be
+    /// read, no longer validates, or declares a scope other than global (the HTTP
+    /// apply route refuses those, and this path must not grant broader authority
+    /// than it), start-up is refused rather than falling back to the broader
+    /// bootstrap policy. With `$AA_POLICY` set, that operator-configured source
+    /// stays the start-up policy and history is not reinstalled (logged).
+    async fn reinstall_latest_applied_policy(
+        state: &Self,
+        history_dir: &std::path::Path,
+    ) -> Result<(), LocalStateError> {
+        let fail = |reason: String| LocalStateError::PolicyHistoryRestore {
+            dir: history_dir.to_path_buf(),
+            entry: newest_meta_file(history_dir),
+            reason,
         };
-        let newest = state
-            .policy_history
-            .list(1)
-            .await
-            .map_err(|e| history_err(e.to_string()))?;
+        let newest = state.policy_history.list(1).await.map_err(|e| fail(e.to_string()))?;
         let Some(meta) = newest.first() else {
             return Ok(());
         };
+        if !matches!(resolve_policy_source(|k| std::env::var(k).ok()), PolicySource::Unset) {
+            tracing::warn!(
+                history_dir = %history_dir.display(),
+                "$AA_POLICY is set, so the policy history is not reinstalled: the enforced policy is the \
+                 operator-configured one and `GET /api/v1/policies/active` / `aasm policy history` may report \
+                 a different version"
+            );
+            return Ok(());
+        }
         let snapshot = state
             .policy_history
             .get(&meta.sha256)
             .await
-            .map_err(|e| history_err(e.to_string()))?;
+            .map_err(|e| fail(e.to_string()))?;
+        let validated = aa_gateway::policy::PolicyValidator::from_yaml(&snapshot.yaml_content)
+            .map_err(|e| fail(format!("{e:?}")))?;
+        if validated.document.scope != aa_gateway::policy::scope::PolicyScope::Global {
+            return Err(fail(format!(
+                "it declares scope '{}', but only global policies may be applied through the local API",
+                validated.document.scope
+            )));
+        }
         state
             .policy_engine
             .install_yaml(&snapshot.yaml_content)
-            .map_err(|e| history_err(format!("{e:?}")))?;
+            .map_err(|e| fail(format!("{e:?}")))?;
         tracing::info!(version = %&meta.sha256[..12], "re-installed the latest applied policy from history");
         Ok(())
     }
@@ -802,8 +847,8 @@ impl AppState {
             );
         }
 
-        let mut state = Self::local_in_memory_with_registry(registry, Some(policy_history_dir))?;
-        Self::reinstall_latest_applied_policy(&state).await?;
+        let mut state = Self::local_in_memory_with_registry(registry, Some(policy_history_dir.clone()))?;
+        Self::reinstall_latest_applied_policy(&state, &policy_history_dir).await?;
 
         // AAASM-5657: back the approval queue with the same durable file so
         // a hold this process creates (or settles) is visible to
