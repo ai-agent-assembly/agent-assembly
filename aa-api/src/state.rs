@@ -686,6 +686,46 @@ impl AppState {
         Self::local_hardened_at(auth, LocalDurablePaths::hermetic_temp()).await
     }
 
+    /// Make the engine enforce the policy durable history reports as active.
+    ///
+    /// History now survives restarts (AAASM-6430), so without this a restarted
+    /// server would report the newest history entry as the active policy
+    /// (`GET /api/v1/policies/active`, `aasm policy history`) while the engine ran
+    /// the bootstrap policy. Fails closed: if the newest entry cannot be read or
+    /// no longer validates, start-up is refused rather than falling back to the
+    /// broader bootstrap policy. Skipped when `$AA_POLICY` names an
+    /// operator-configured source, which stays the start-up policy.
+    async fn reinstall_latest_applied_policy(state: &Self) -> Result<(), LocalStateError> {
+        if !matches!(resolve_policy_source(|k| std::env::var(k).ok()), PolicySource::Unset) {
+            return Ok(());
+        }
+        let history_err = |e: String| {
+            LocalStateError::PolicyLoad(format!(
+                "cannot restore the policy recorded as active in the policy history: {e}; \
+                 fix or move the policy-history directory to start with the bootstrap policy"
+            ))
+        };
+        let newest = state
+            .policy_history
+            .list(1)
+            .await
+            .map_err(|e| history_err(e.to_string()))?;
+        let Some(meta) = newest.first() else {
+            return Ok(());
+        };
+        let snapshot = state
+            .policy_history
+            .get(&meta.sha256)
+            .await
+            .map_err(|e| history_err(e.to_string()))?;
+        state
+            .policy_engine
+            .install_yaml(&snapshot.yaml_content)
+            .map_err(|e| history_err(format!("{e:?}")))?;
+        tracing::info!(version = %&meta.sha256[..12], "re-installed the latest applied policy from history");
+        Ok(())
+    }
+
     /// Same as [`local_hardened`](Self::local_hardened) but backs the agent
     /// registry, and the audit + retention backend, with the durable paths in
     /// `paths` (AAASM-4447 / AAASM-4459, durability-hardened HORO-1375 §5).
@@ -706,6 +746,10 @@ impl AppState {
                 path: policy_history_dir.clone(),
                 source,
             })?;
+        // Also tighten a directory that already existed (an earlier build or the
+        // CLI may have made it 0755); only removes group/other bits.
+        let tighten_dir = policy_history_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || aa_core::private_fs::tighten_dir_if_owned(&tighten_dir)).await;
 
         // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
         // Built *before* the base wiring (AAASM-5102): `local_in_memory` attaches
@@ -759,6 +803,7 @@ impl AppState {
         }
 
         let mut state = Self::local_in_memory_with_registry(registry, Some(policy_history_dir))?;
+        Self::reinstall_latest_applied_policy(&state).await?;
 
         // AAASM-5657: back the approval queue with the same durable file so
         // a hold this process creates (or settles) is visible to

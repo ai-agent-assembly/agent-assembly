@@ -55,6 +55,13 @@ async fn server_history_is_at_the_cli_location_and_survives_restart() {
         .expect("second boot");
     let versions = state2.policy_history.list(10).await.expect("list");
     assert_eq!(versions.len(), 1, "history must survive a restart: {versions:?}");
+    // The engine must enforce what history reports as active, not the bootstrap
+    // policy a fresh process starts with (and no duplicate version is added).
+    assert_eq!(
+        state2.policy_engine.active_policy_info().name.as_deref(),
+        Some("durable-history"),
+        "a restarted server must enforce the newest applied policy"
+    );
 
     #[cfg(unix)]
     {
