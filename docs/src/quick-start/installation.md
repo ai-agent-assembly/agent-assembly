@@ -21,7 +21,8 @@ then how to verify it works. Pick **one** method:
 The one-line installer downloads the matching pre-built tarball plus its
 `SHA256SUMS` file from the GitHub Release, verifies the checksum, and installs
 the `aasm` binary together with the `aa-gateway` daemon it launches and the `aa-api-server`
-that `aasm start --mode local` needs:
+that `aasm start --mode local` needs (the API server is skipped, with a warning, only when you
+pin an older release that publishes no API tarball):
 
 ```sh
 curl -sSf https://agent-assembly.com/install.sh | sh
