@@ -1,0 +1,24 @@
+catalog_version: '1'
+journeys:
+- id: J-T16
+  jira: AAASM-0016
+  name: Fixture — valid automated release-blocking entry
+  priority: P1
+  persona_track: Fixture
+  surfaces: [scripts/qa]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: fixture only
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: 'scripts/qa/validate-golden-journeys.py::def validate'
+  execution_lanes: [pr]
+  fidelity: published_artifact
+  publication_checks:
+  - id: pypi-install
+    channel: pypi
+    summary: pip install of the published sdist resolves the candidate
