@@ -305,7 +305,7 @@ def run_harness(argv: list[str]) -> int:
         c.check_artifact_binding(
             ctx, "j53-artifacts-bound-to-candidate", {"aa-gateway": gateway},
             {"aa-gateway/Dockerfile": DOCKERFILE_REL, "docker.yml": WORKFLOW_REL, "policy-sample": POLICY_REL},
-            repo, c.load_expected(a.expected_digests), f"{TEST}::test_tampered_binary_fails")
+            repo, a.expected, f"{TEST}::test_tampered_binary_fails")
         home = ctx.tmp / "home"
         home.mkdir()
         env = c.clean_env(home)
@@ -318,6 +318,7 @@ def run_harness(argv: list[str]) -> int:
         report["observations"] = [
             "Dockerfile base images (rust:alpine, gcr.io/distroless/static:nonroot) are floating tags, not digest-pinned; "
             "reported as a finding, not a check, because pinning is not a stated J53 acceptance criterion.",
+            "j53-published-image-runs-healthy is an operator step with no recording mechanism yet (tracked follow-up); post-publish-verify.py reports it INCONCLUSIVE, never PASS.",
             "docker.yml states cosign image signing is not committed scope (AAASM-5887), so no signature check is owed.",
         ]
         return c.finish(ctx, report, a.out, a.obligation_fragment)

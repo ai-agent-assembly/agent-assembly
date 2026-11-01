@@ -16,6 +16,7 @@ Invariants this module enforces for every harness built on it:
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -88,15 +90,22 @@ class Context:
         self.checks: list[Check] = []
         self.tmp = Path(tempfile.mkdtemp(prefix=f"b1-{journey.lower()}-")).resolve()
         self._children: list[subprocess.Popen[bytes]] = []
+        # pid files written by a daemonizing candidate (e.g. `aasm start`) inside our
+        # isolated HOME; the daemon is not our child, so cleanup finds it through these.
+        self.owned_pidfiles: list[Path] = []
+        self._cleaned = False
+        atexit.register(self.cleanup)
 
     def cleanup(self) -> None:
+        """Idempotent; runs from `finally`, from atexit, and after SIGTERM/SIGHUP
+        (see `main_guard`), so an interrupted run leaves no process or temp dir."""
+        if self._cleaned:
+            return
+        self._cleaned = True
         for p in self._children:
-            if p.poll() is None:
-                p.terminate()
-                try:
-                    p.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    p.kill()
+            terminate_group(p, timeout=5.0)
+        for pf in self.owned_pidfiles:
+            kill_owned_daemon(pf, self.tmp)
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def register(self, name: str, path: Path) -> str:
@@ -106,6 +115,8 @@ class Context:
 
     def add(self, check_id: str, status: str, fidelity: str, detail: str,
             artifacts: list[str] | None = None, negative_control: str | None = None) -> Check:
+        if status == NOT_COVERED:
+            fidelity = "none"  # nothing was executed, so no fidelity is claimed
         c = Check(check_id, status, fidelity, detail, list(artifacts or []), negative_control)
         self.checks.append(c)
         return c
@@ -173,6 +184,31 @@ def terminate_group(p: subprocess.Popen[bytes], timeout: float = 10.0) -> int | 
         return None
 
 
+def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
+    """Kill the daemon recorded in `pidfile`, but only if its command line names a path
+    under `owner` (our own mktemp dir). Ownership is proven per PID; a recycled or
+    foreign PID is left alone. Never pattern-kills."""
+    try:
+        pid = int(pidfile.read_text().strip())
+        cmd = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                             text=True, timeout=10, check=False).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return
+    if str(owner) not in cmd:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return
+        for _ in range(30):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+
+
 def verdict_of(checks: list[Check]) -> str:
     if any(c.status == FAIL for c in checks):
         return "BLOCK"
@@ -192,6 +228,10 @@ def build_report(ctx: Context, script: str, pending: list[PendingCheck],
         "candidate_sha": ctx.candidate_sha,
         "expected_version": ctx.expected_version,
         "verdict": verdict,
+        "negative_control_note": (
+            "negative_control on a check is a POINTER to the self-test that proves the check can fail. "
+            "No control runs inside this run; inverting a check against bad input is test-level, in scripts/tests/."
+        ),
         "verdict_note": (
             "CANDIDATE_VERIFIED is not PASS: every pending check below is still owed "
             "(Core ADR 0042). Only a published-artifact run can discharge them."
@@ -241,6 +281,8 @@ def obligation_fragment(report: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def finish(ctx: Context, report: dict[str, Any], out: str | None, fragment_out: str | None) -> int:
+    if fragment_out:
+        Path(fragment_out).unlink(missing_ok=True)  # never leave a stale fragment from an earlier run
     text = json.dumps(report, indent=2, sort_keys=False)
     if out:
         Path(out).write_text(text + "\n")
@@ -302,21 +344,40 @@ def parse_common_args(argv: list[str], extra: Callable[[Any], None]) -> Any:
     ap.add_argument("--obligation-fragment", help="write the obligation journey entry here (only when CANDIDATE_VERIFIED)")
     extra(ap)
     args = ap.parse_args(argv)
+    if args.obligation_fragment:
+        Path(args.obligation_fragment).unlink(missing_ok=True)  # a stale fragment must not survive a failed run
     if not SHA40.fullmatch(args.candidate_sha):
         ap.error("--candidate-sha must be 40 lowercase hex characters")
+    try:
+        args.expected = load_expected(args.expected_digests)
+    except ValueError as e:
+        ap.error(f"--expected-digests: {e}")
     return args
 
 
 def load_expected(path: str | None) -> dict[str, str] | None:
+    """Raises ValueError (never a traceback) for unreadable, malformed or mis-shaped input."""
     if not path:
         return None
-    data = json.loads(Path(path).read_text())
-    if not isinstance(data, dict):
-        raise SystemExit("--expected-digests must be a JSON object")
-    return {str(k): str(v) for k, v in data.items()}
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as e:
+        raise ValueError(f"cannot read JSON from {path}: {e}") from e
+    if not isinstance(data, dict) or not data:
+        raise ValueError("must be a non-empty JSON object of name -> sha256:<64 hex>")
+    bad = [k for k, v in data.items() if not (isinstance(v, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", v))]
+    if bad:
+        raise ValueError(f"values for {sorted(map(str, bad))} are not sha256:<64 hex>")
+    return {str(k): v for k, v in data.items()}
 
 
 def main_guard(fn: Callable[[list[str]], int]) -> None:
+    # Turn SIGTERM/SIGHUP/SIGINT into SystemExit so every `finally` runs. Without this a
+    # signal kills Python outright and leaks the candidate's processes and the temp dir.
+    def _raise(signum: int, _frame: Any) -> None:
+        raise SystemExit(128 + signum)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, _raise)
     try:
         rc = fn(sys.argv[1:])
     except KeyboardInterrupt:

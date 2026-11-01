@@ -130,6 +130,10 @@ class Stack:
         self.env = c.clean_env(self.home, {"PATH": f"{self.bindir}:/usr/bin:/bin", "AASM_API_KEY": TEST_KEY})
         self.port = c.free_port()
         self.started = False
+        # Registered immediately: if the harness is signalled mid-run (even inside `aasm start`),
+        # Context.cleanup finds and kills the daemonized server through this file.
+        self.pidfile = self.home / ".aasm" / "gateway.pid"
+        ctx.owned_pidfiles.append(self.pidfile)
 
     def cli(self, *args: str, timeout: int = 30, env: dict[str, str] | None = None) -> tuple[int, str]:
         return c.run([str(self.aasm), *args], env or self.env, self.ctx.tmp, timeout)
@@ -143,14 +147,7 @@ class Stack:
         if self.started:
             self.cli("stop", timeout=30)
             self.started = False
-        pidfile = self.home / ".aasm" / "gateway.pid"
-        if pidfile.exists():  # recorded by our own isolated HOME, so ownership is proven by path
-            try:
-                import os
-                import signal
-                os.kill(int(pidfile.read_text().strip()), signal.SIGKILL)
-            except (OSError, ValueError):
-                pass
+        c.kill_owned_daemon(self.pidfile, self.ctx.tmp)
 
     def http(self, path: str, key: str | None = None) -> tuple[int, str, str]:
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}")
@@ -351,7 +348,7 @@ def run_harness(argv: list[str]) -> int:
                 return c.EXIT_USAGE
             ctx.register(name, p)
         c.check_artifact_binding(ctx, "j59-artifacts-bound-to-candidate", {"aasm": aasm, "aa-api-server": api},
-                                 SOURCES, repo, c.load_expected(a.expected_digests), f"{TEST}::test_tampered_binary_fails")
+                                 SOURCES, repo, a.expected, f"{TEST}::test_tampered_binary_fails")
         stack = Stack(ctx, aasm, api)
         run_steps(ctx, stack, repo)
         not_covered(ctx)
@@ -359,6 +356,7 @@ def run_harness(argv: list[str]) -> int:
         report["observations"] = [
             "Steps 5 and 9 are engine decisions over replayed synthetic events (aasm policy simulate), not governed live agent actions.",
             "Candidate binaries are identified by version and by sha256 against the expected-digests record; aasm exposes no build-sha, so there is no build-sha check for J59.",
+            "j59-published-binaries-golden-path is an operator step with no recording mechanism yet (tracked follow-up); post-publish-verify.py reports it INCONCLUSIVE, never PASS.",
             "J59 can only reach CANDIDATE_VERIFIED once the NOT_COVERED rows are executed or the release owner records them as accepted gaps; the obligation schema has no field for them.",
         ]
         return c.finish(ctx, report, a.out, a.obligation_fragment)
