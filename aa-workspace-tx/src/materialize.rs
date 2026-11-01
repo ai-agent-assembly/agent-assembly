@@ -63,16 +63,53 @@ pub fn copy_surface(base_root: &Path, staged_root: &Path, manifest: &BaseManifes
 /// partially-written `dest`.
 pub fn copy_file_never_hardlink(src: &Path, dest: &Path) -> io::Result<()> {
     let bytes = fs::read(src)?;
-    write_via_temp(dest, &bytes)
+    let mode = fs::symlink_metadata(src)?.mode() & 0o777;
+    write_via_temp_with_mode(dest, &bytes, mode)
 }
 
 /// Write `bytes` to `dest` via temp-file-plus-rename.
 pub fn write_via_temp(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_via_temp_inner(dest, bytes, None)
+}
+
+/// Like [`write_via_temp`], but the file ends up with exactly `mode & 0o777`.
+/// An explicit chmod (not `OpenOptions::mode`) so the process umask can neither
+/// widen nor narrow it; applied to the temp file before the rename, so `dest`
+/// is never visible with the wrong mode.
+pub fn write_via_temp_with_mode(dest: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    write_via_temp_inner(dest, bytes, Some(mode & 0o777))
+}
+
+/// Mode the temp file is created with: only the owner read/write bits the final
+/// mode also has (0600 when the caller gave no mode), so it is never wider than
+/// the final mode; the umask can only narrow it further.
+fn temp_create_mode(final_mode: Option<u32>) -> u32 {
+    final_mode.map_or(0o600, |m| m & 0o600)
+}
+
+fn write_via_temp_inner(dest: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let parent = dest
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent directory"))?;
     let tmp = parent.join(format!(".awtx-tmp-{}-{}", std::process::id(), tmp_suffix()));
-    fs::write(&tmp, bytes)?;
+    // The temp file is created already restricted (final mode, or 0600 when none is
+    // requested) and only then chmod'ed to the exact final mode, so secret content is
+    // never readable under a wider mode than it ends with.
+    let create_mode = temp_create_mode(mode);
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(create_mode)
+            .open(&tmp)?;
+        file.write_all(bytes)?;
+    }
+    if let Some(mode) = mode {
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
+    }
     fs::rename(&tmp, dest)?;
     Ok(())
 }
@@ -114,6 +151,26 @@ pub fn shares_inode(staged: &Path, base: &Path) -> io::Result<bool> {
 mod tests {
     use super::*;
     use crate::manifest::measure;
+
+    #[test]
+    fn temp_is_never_created_wider_than_its_final_mode() {
+        for final_mode in [0o000, 0o400, 0o600, 0o640, 0o644, 0o700, 0o755, 0o777] {
+            let created = temp_create_mode(Some(final_mode));
+            assert_eq!(created & !final_mode, 0, "{created:o} wider than {final_mode:o}");
+        }
+        assert_eq!(temp_create_mode(None), 0o600);
+    }
+
+    #[test]
+    fn a_written_file_ends_with_exactly_the_requested_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        for mode in [0o600, 0o644, 0o755, 0o666] {
+            let dest = dir.path().join(format!("f{mode:o}"));
+            write_via_temp_with_mode(&dest, b"x", mode).unwrap();
+            assert_eq!(std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777, mode);
+        }
+    }
 
     #[test]
     fn copied_files_are_distinct_inodes_from_base() {

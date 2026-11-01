@@ -21,6 +21,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 libc = { workspace = true }
+# Already in the workspace lockfile (via url/idna); needed for NFC/NFD-aware path folding (AAASM-6418).
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
