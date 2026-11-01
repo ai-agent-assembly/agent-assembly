@@ -975,6 +975,11 @@ impl ProxyServer {
     ///   rather than a second full scan on the hot path.
     fn observe_forwarding(&self, verdict: &InterceptVerdict) -> ForwardObservation {
         let reinspection = match verdict.decision {
+            // Since AAASM-4595 `intercept_request` refuses a `redact_only` body that
+            // re-scans dirty, so `Some(false)` is no longer reachable from the data
+            // path. Kept as defense in depth: if that refusal is ever removed, the
+            // evidence still says what the forwarded bytes carry rather than
+            // reporting protection.
             VerdictDecision::ForwardRedacted => verdict
                 .redacted_body
                 .as_deref()
