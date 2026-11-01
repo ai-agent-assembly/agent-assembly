@@ -527,6 +527,45 @@ def aasm_gateway_lifecycle(aasm: Path, policy: Path, home: Path, timeout: float 
 
 # ---------------------------------------------------------------- checks
 
+def _git(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["/usr/bin/git", "-C", str(REPO_ROOT), *args], capture_output=True, timeout=60,
+                          stdin=subprocess.DEVNULL)
+
+
+def source_matches_candidate_sha(ctx: Ctx) -> None:
+    """Tie the harness, installer and policy it hashes to candidate_sha: the
+    checkout HEAD must be that commit and each file must equal its blob there
+    (a dirty or foreign file is a FAIL). Otherwise candidate_sha is only a label."""
+    prob: list[str] = []
+    full = ""
+    r = _git("rev-parse", "--verify", f"{ctx.a.candidate_sha}^{{commit}}")
+    if r.returncode != 0:
+        prob.append("candidate_sha is not a commit in this checkout")
+    else:
+        full = r.stdout.decode().strip()
+        head = _git("rev-parse", "HEAD").stdout.decode().strip()
+        if head != full:
+            prob.append(f"checkout HEAD {head} != candidate commit {full}")
+    root = REPO_ROOT.resolve()
+    tied = {"installer": ctx.installer, "policy": Path(ctx.a.policy).resolve(), "harness": Path(__file__).resolve()}
+    for label, path in tied.items():
+        try:
+            rel = path.relative_to(root).as_posix()
+        except ValueError:
+            prob.append(f"{label} {path} is outside the repo checkout, so it cannot be tied to the candidate")
+            continue
+        if not full:
+            continue
+        blob = _git("show", f"{full}:{rel}")
+        if blob.returncode != 0:
+            prob.append(f"{label} {rel} does not exist in the candidate commit")
+        elif blob.stdout != path.read_bytes():
+            prob.append(f"{label} {rel} differs from the candidate commit (dirty or foreign file)")
+    ctx.record(f"{ctx.a.journey}.source_matches_candidate_sha", not prob,
+               "; ".join(prob) or f"checkout HEAD is {full}; installer, policy and harness equal their candidate blobs",
+               [], extra={"policy:" + Path(ctx.a.policy).name: digest(Path(ctx.a.policy))})
+
+
 def native_version_output(binary: Path, home: Path, want: str) -> tuple[bool, str]:
     try:
         e = subprocess.run([str(binary), "--version"], capture_output=True, text=True, timeout=60,
@@ -729,7 +768,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
           "output; notify the release owner within the deadline; fix forward with a new candidate and re-run "
           "this harness plus this pending check. No yank/delete of published assets without owner approval.")
     iso = "isolated: everything lives in one mktemp dir removed on exit; only reads the public internet"
-    brew_iso = ("NOT ISOLATED: installs into the REAL Homebrew prefix (brew install is the documented user action); "
+    brew_iso = ("NOT ISOLATED: installs or UPGRADES in the REAL Homebrew prefix (`brew upgrade || brew install`); "
                 "a stale older install cannot false-PASS because the version and candidate digest are asserted")
 
     sums_loop = "".join(
@@ -763,7 +802,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j04.published_homebrew_tap_install", "homebrew-tap",
              "The formula is committed to ai-agent-assembly/homebrew-tap by release.yml after publication.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm 2>/dev/null || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  'need_ver "$("$P/aasm" --version)"\n[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  + eq("aasm", "$P/aasm") + eq("aa-gateway", "$P/aa-gateway")),
              "aasm --version contains the tag's version; aa-gateway installed (the AAASM-4448/4449 suspect); bytes equal the candidate members",
@@ -771,10 +810,27 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j04.published_homebrew_runtime", "homebrew-tap",
              "Needs the tap formula for aasm-runtime.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew install ai-agent-assembly/tap/aasm-runtime\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm-runtime 2>/dev/null || brew install ai-agent-assembly/tap/aasm-runtime\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-runtime" ] || { echo "aa-runtime not installed" >&2; exit 1; }\n'
                  + eq("aa-runtime", "$P/aa-runtime")),
              "aa-runtime installed and byte-equal to the candidate runtime tarball member", brew_iso),
+            ("j04.published_latest_resolves_to_candidate", "github-api",
+             "Unpinned `curl | sh` resolves the latest release through the GitHub API; the candidate-time check only "
+             "exercises a stand-in reply. rc tags are prereleases and may not appear in /releases/latest.",
+             _sh(tag, 'API="${B1_API_BASE:-https://api.github.com/repos/ai-agent-assembly/agent-assembly}"\n'
+                 'H1="Accept: application/vnd.github+json"\n'
+                 'curl -fsS -H "$H1" -A aa-b1-release-qa "$API/releases?per_page=1" -o "$D/list.json"\n'
+                 'top="$(python3 -I -c \'import json,sys; print(json.load(open(sys.argv[1]))[0]["tag_name"])\' "$D/list.json")"\n'
+                 '[ "$top" = "$TAG" ] || { echo "newest release is $top, not $TAG" >&2; exit 1; }\n'
+                 'code="$(curl -sS -H "$H1" -A aa-b1-release-qa -o "$D/latest.json" -w "%{http_code}" "$API/releases/latest" || true)"\n'
+                 'case "$code" in\n'
+                 '  404) echo "/releases/latest is 404 (no stable release): the installer falls back to per_page=1 = $TAG" ;;\n'
+                 '  200) lt="$(python3 -I -c \'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])\' "$D/latest.json")"\n'
+                 '       [ "$lt" = "$TAG" ] || { echo "unpinned install would resolve to $lt, not the candidate $TAG" >&2; exit 1; } ;;\n'
+                 '  *) echo "unexpected HTTP $code from /releases/latest" >&2; exit 1 ;;\n'
+                 'esac\n'),
+             "exit 0: newest release is the candidate tag and an unpinned install would resolve to it (via /releases/latest when it exists, else the per_page=1 fallback)",
+             "read-only GitHub API probe; unauthenticated requests are rate limited"),
             ("j04.published_crates_io_aa_cli", "crates.io",
              "crates.io state exists only after publication.",
              _sh(tag, 'curl -fsS -A "aa-b1-release-qa" https://crates.io/api/v1/crates/aa-cli -o "$D/c.json"\n'
@@ -802,7 +858,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j17.published_homebrew_gateway", "homebrew-tap",
              "Formula lives in the tap after publication.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm 2>/dev/null || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  'need_ver "$("$P/aa-gateway" --version)"\n' + eq("aa-gateway", "$P/aa-gateway")),
              "aa-gateway installed by the formula, reports the tag's version and equals the candidate member (AAASM-4448/4449 suspect)",
@@ -886,6 +942,7 @@ def main(argv: list[str]) -> int:
         signal.signal(s, _on_signal)
     ctx = Ctx(a)
     try:
+        source_matches_candidate_sha(ctx)
         (j04_checks if a.journey == "j04" else j17_checks)(ctx)
         result, code = build_result(ctx, a)
     finally:

@@ -38,6 +38,37 @@ sys.modules["candidate_harness"] = H
 _spec.loader.exec_module(H)
 
 PY = sys.executable
+_DEFAULT = object()
+FIXTURE: dict = {}
+
+
+def _git(root: Path, *args: str) -> str:
+    p = subprocess.run(["/usr/bin/git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false",
+                        "-C", str(root), *args], capture_output=True, text=True, check=True)
+    return p.stdout.strip()
+
+
+def setUpModule() -> None:
+    """A throwaway git repo holding the files the harness ties to candidate_sha,
+    so the tests do not depend on the real checkout's HEAD or cleanliness."""
+    root = Path(tempfile.mkdtemp(prefix="b1-fixture-repo-"))
+    for rel in ("scripts/install-cli.sh", "scripts/qa/b1/candidate_harness.py",
+                "scripts/qa/b1/fixtures/install-cli.pre-aaasm-6414.sh", "policy-examples/low-risk.yaml"):
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / rel, root / rel)
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "candidate")
+    first = _git(root, "rev-parse", "HEAD")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "later")
+    FIXTURE.update(root=root, harness=root / "scripts/qa/b1/candidate_harness.py", sha=_git(root, "rev-parse", "HEAD"),
+                   first=first)
+
+
+def tearDownModule() -> None:
+    shutil.rmtree(FIXTURE["root"], ignore_errors=True)
+
+
 FAKE_PLAIN = "#!/bin/sh\necho fake\n"
 
 
@@ -132,8 +163,9 @@ def build_mirror(d: Path, plat: "H.Platform", cli_members=None, api_members=None
     write_sums(d)
 
 
-def run(journey: str, mirror: Path, *extra: str, sha: str | None = SHA) -> tuple[int, dict]:
-    cmd = [sys.executable, "-I", str(HARNESS), journey, "--mirror-dir", str(mirror), "--version", VER]
+def run(journey: str, mirror: Path, *extra: str, sha=_DEFAULT, harness: Path | None = None) -> tuple[int, dict]:
+    sha = FIXTURE["sha"] if sha is _DEFAULT else sha
+    cmd = [sys.executable, "-I", str(harness or FIXTURE["harness"]), journey, "--mirror-dir", str(mirror), "--version", VER]
     if sha:
         cmd += ["--candidate-sha", sha]
     p = subprocess.run(cmd + list(extra), capture_output=True, text=True, timeout=900)
@@ -152,6 +184,7 @@ def status(out: dict, cid: str) -> str:
 
 
 J04_IDS = {
+    "j04.source_matches_candidate_sha",
     "j04.sha256sums_match_artifacts", "j04.installer_default_installs_all_binaries", "j04.installer_version_pin_env",
     "j04.installer_latest_resolution", "j04.installer_refuses_tampered_tarball", "j04.installer_uninstall_removes_binaries",
     "j04.installer_components_cli_runtime", "j04.installer_profile_local_installs_runtime", "j04.installer_profile_full",
@@ -159,6 +192,7 @@ J04_IDS = {
     "j04.negative_control_old_installer_fails",
 }
 J17_IDS = {
+    "j17.source_matches_candidate_sha",
     "j17.installer_places_gateway_beside_aasm", "j17.installed_gateway_version_output", "j17.gateway_serves_sample_policy",
     "j17.aasm_gateway_start_status_stop", "j17.negative_control_old_installer_has_no_gateway",
 }
@@ -179,7 +213,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual({c["id"] for c in out["candidate_checks"]}, J04_IDS)
         self.assertTrue(all(c["status"] == "PASS" for c in out["candidate_checks"]))
         self.assertEqual(out["not_run"], [])
-        self.assertEqual(out["candidate_sha"], SHA)
+        self.assertEqual(out["candidate_sha"], FIXTURE["sha"])
         self.assertEqual(out["overall"], "CANDIDATE_PASS_PUBLICATION_PENDING")
 
     def test_j17_good_candidate_passes_with_all_expected_checks(self) -> None:
@@ -241,6 +275,44 @@ class HarnessTests(unittest.TestCase):
         rc, out = run("j04", self.mirror, "--installer", str(patched))
         self.assertEqual(rc, 1)
         self.assertEqual(status(out, "j04.installer_refuses_tampered_tarball"), "FAIL")
+
+    # ---- source tied to candidate_sha
+    def test_source_matches_candidate_sha_passes_on_matching_checkout(self) -> None:
+        for j in ("j04", "j17"):
+            _, out = run(j, self.mirror)
+            self.assertEqual(status(out, f"{j}.source_matches_candidate_sha"), "PASS")
+
+    def test_checkout_at_another_commit_fails(self) -> None:
+        rc, out = run("j04", self.mirror, sha=FIXTURE["first"])  # HEAD is one commit later
+        self.assertEqual(rc, 1)
+        c = next(c for c in out["candidate_checks"] if c["id"] == "j04.source_matches_candidate_sha")
+        self.assertEqual(c["status"], "FAIL")
+        self.assertIn("HEAD", c["detail"])
+
+    def test_unknown_candidate_sha_fails(self) -> None:
+        rc, out = run("j17", self.mirror, sha="b" * 40)
+        self.assertEqual(rc, 1)
+        self.assertEqual(status(out, "j17.source_matches_candidate_sha"), "FAIL")
+
+    def test_dirty_installer_or_policy_fails(self) -> None:
+        for rel, label in (("scripts/install-cli.sh", "installer"), ("policy-examples/low-risk.yaml", "policy")):
+            clone = self.tmp / ("clone-" + label)
+            shutil.copytree(FIXTURE["root"], clone)
+            with open(clone / rel, "ab") as f:
+                f.write(b"\n# dirty\n")
+            rc, out = run("j04", self.mirror, sha=FIXTURE["sha"], harness=clone / "scripts/qa/b1/candidate_harness.py")
+            self.assertEqual(rc, 1, label)
+            c = next(c for c in out["candidate_checks"] if c["id"] == "j04.source_matches_candidate_sha")
+            self.assertEqual(c["status"], "FAIL", label)
+            self.assertIn(label, c["detail"])
+            self.assertIn("differs", c["detail"])
+
+    def test_installer_outside_the_checkout_cannot_be_tied(self) -> None:
+        rc, out = run("j04", self.mirror, "--installer", str(INSTALLER))
+        self.assertEqual(rc, 1)
+        c = next(c for c in out["candidate_checks"] if c["id"] == "j04.source_matches_candidate_sha")
+        self.assertEqual(c["status"], "FAIL")
+        self.assertIn("outside", c["detail"])
 
     # ---- tamper / defect candidates
     def test_tampered_sha256sums_fails(self) -> None:
@@ -351,7 +423,7 @@ class HarnessTests(unittest.TestCase):
             for k, v in c["artifact_digests"].items():
                 self.assertRegex(v, r"^sha256:[0-9a-f]{64}$", k)
             self.assertEqual(c["fidelity"], "real_local_process")
-            self.assertEqual(c["candidate_sha"], SHA)
+            self.assertEqual(c["candidate_sha"], FIXTURE["sha"])
         first = next(c for c in out["candidate_checks"] if c["id"] == "j17.installer_places_gateway_beside_aasm")
         self.assertEqual(first["artifact_digests"][self.plat.cli_tarball()], want)
         gw = next(c for c in out["candidate_checks"] if c["id"] == "j17.gateway_serves_sample_policy")
@@ -386,7 +458,9 @@ class HarnessTests(unittest.TestCase):
                                capture_output=True, text=True)
             text = p.stdout if p.returncode == 0 else None
         if not text:
-            self.skipTest("publication_obligations.py not available")
+            if os.environ.get("B1_ALLOW_SKIP_FRAGMENT_TEST") == "1":
+                self.skipTest("publication_obligations.py not available (B1_ALLOW_SKIP_FRAGMENT_TEST=1)")
+            self.fail("publication_obligations.py not loadable; set B1_ALLOW_SKIP_FRAGMENT_TEST=1 to skip knowingly")
         spec = importlib.util.spec_from_file_location("publication_obligations", self.tmp / "po.py")
         (self.tmp / "po.py").write_text(text)
         po = importlib.util.module_from_spec(spec)
@@ -421,6 +495,15 @@ class HarnessTests(unittest.TestCase):
                         "gh release delete", "sudo", "brew uninstall"):
                 self.assertNotIn(bad, p["command"])
         return out["pending_checks"]
+
+    def test_latest_pending_check_and_brew_upgrade_semantics(self) -> None:
+        by = {p["id"]: p for p in self._pending("j04")}
+        self.assertIn("j04.published_latest_resolves_to_candidate", by)
+        self.assertIn("releases/latest", by["j04.published_latest_resolves_to_candidate"]["command"])
+        self.assertIn("per_page=1", by["j04.published_latest_resolves_to_candidate"]["command"])
+        for cid in ("j04.published_homebrew_tap_install", "j04.published_homebrew_runtime"):
+            self.assertIn("brew upgrade", by[cid]["command"])
+            self.assertIn("UPGRADES", by[cid]["side_effects"])
 
     def test_pending_commands_are_syntactically_valid_single_sh_c(self) -> None:
         for j in ("j04", "j17"):
@@ -511,8 +594,8 @@ class HarnessTests(unittest.TestCase):
     def test_killing_the_harness_mid_gateway_start_leaves_no_orphan_or_tempdir(self) -> None:
         build_mirror(self.mirror, self.plat, gateway=fake_gateway("hang"))
         before = set(glob.glob(os.path.join(tempfile.gettempdir(), "b1-harness-*")))
-        proc = subprocess.Popen([sys.executable, "-I", str(HARNESS), "j17", "--mirror-dir", str(self.mirror),
-                                 "--version", VER, "--candidate-sha", SHA],
+        proc = subprocess.Popen([sys.executable, "-I", str(FIXTURE["harness"]), "j17", "--mirror-dir", str(self.mirror),
+                                 "--version", VER, "--candidate-sha", FIXTURE["sha"]],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         pid_file = None
         deadline = time.monotonic() + 90
