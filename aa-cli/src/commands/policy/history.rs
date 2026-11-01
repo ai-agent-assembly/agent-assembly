@@ -158,26 +158,61 @@ pub fn run_history(args: HistoryArgs) -> ExitCode {
 }
 
 /// Execute the `aasm policy rollback` command.
-pub fn run_rollback(args: RollbackArgs) -> ExitCode {
+///
+/// Rollback re-applies the stored YAML of `version` through the running API
+/// server — the same `POST /api/v1/policies` as `aasm policy apply` — because
+/// the server owns the active policy. Writing a snapshot to the local history
+/// store alone changes nothing that is enforced, and since the server reports the
+/// newest history entry as the active policy's YAML it would also make
+/// `GET /api/v1/policies/active` disagree with what is enforced (AAASM-6430).
+///
+/// "Rolled back successfully." is therefore printed only after the server
+/// confirms the version is active. If the version is unknown, or the server
+/// cannot be reached or refuses it, nothing is written and the exit code is
+/// non-zero.
+pub fn run_rollback(args: RollbackArgs, ctx: &ResolvedContext) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
         let store = match default_store() {
             Ok(store) => store,
             Err(code) => return code,
         };
-        match store.rollback(&args.version).await {
-            Ok(meta) => {
+        let snapshot = match store.get(&args.version).await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                eprintln!("error: {}", e);
+                return ExitCode::FAILURE;
+            }
+        };
+        let target_sha = snapshot.meta.sha256.clone();
+        let body = CreatePolicyRequest {
+            policy_yaml: snapshot.yaml_content,
+        };
+        match crate::client::post_json::<_, PolicyApplyResponse>(ctx, "/api/v1/policies", &body).await {
+            Ok(resp) if resp.active && target_sha.starts_with(&resp.name) => {
                 println!("Rolled back successfully.");
-                println!("  New version:    {}", &meta.sha256[..12]);
-                println!("  Timestamp:      {}", meta.timestamp);
-                println!(
-                    "  Rolled back to: {}",
-                    meta.rollback_target.as_deref().unwrap_or("unknown")
-                );
+                println!("  New version:    {}", sanitize_terminal(&resp.name));
+                println!("  Timestamp:      {}", sanitize_terminal(&resp.version));
+                println!("  Rolled back to: {}", &target_sha[..target_sha.len().min(12)]);
                 ExitCode::SUCCESS
+            }
+            Ok(resp) => {
+                eprintln!(
+                    "error: the server did not confirm version {} as the active policy \
+                     (it reported version {}, active={}); the active policy is not confirmed to have changed",
+                    &target_sha[..target_sha.len().min(12)],
+                    sanitize_terminal(&resp.name),
+                    resp.active
+                );
+                ExitCode::FAILURE
             }
             Err(e) => {
                 eprintln!("error: {}", e);
+                eprintln!(
+                    "error: could not apply version {} to the running server; the active policy \
+                     is not confirmed to have changed and no history entry was written",
+                    &target_sha[..target_sha.len().min(12)]
+                );
                 ExitCode::FAILURE
             }
         }
