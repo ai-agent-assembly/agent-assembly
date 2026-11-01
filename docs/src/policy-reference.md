@@ -511,16 +511,20 @@ spawned ignored the policy, so a policy saying `alert_only` ran the proxy as
 `redact_only` (scrubbed or denied compressed bodies). It now follows the policy:
 the proxy forwards the original body unchanged, which is the documented meaning
 of `alert_only`. An `alert_only` policy does not override an independent deny: a
-body the proxy cannot inspect, a gateway `Deny`, and a gateway `Redact` the proxy
-cannot apply are still refused.
+body the proxy cannot inspect (`br`, `zstd`, layered or malformed encodings), a
+gateway `Deny`, and a gateway `Redact` the proxy cannot apply are still refused.
+A `gzip`/`deflate` body whose decoded content carries a finding is inspectable, so
+under `alert_only` it is forwarded as the **original compressed bytes**.
 
-**SDK versions the "denied, not forwarded" behaviour needs.** Python SDK: the fix
-(`d91840d`, PR #359) is on `main` but in no tag; the latest tag `v0.0.1-rc.7`
-predates it, so use a release after `v0.0.1-rc.7`. Node SDK: the fix (`0627b0441`,
-PR #522) is on `main` but in no tag; `v0.0.1-rc.6` is the latest tag and does not
-contain it, so use a release after `v0.0.1-rc.6`. Go SDK: `v0.0.1-rc.6` or later
-(`2638a5b`). Older SDKs map a runtime `Redact` verdict onto a plain allow and run
-the tool with the original arguments.
+**SDK versions the "denied, not forwarded" behaviour needs.** None yet: in all
+three SDKs the fix is on `main` and in no released tag (checked with
+`git merge-base --is-ancestor` against the latest tag and `git tag --contains`).
+Python SDK: `d91840d` (PR #359); the latest tag is `v0.0.1-rc.7`, and the stray
+`v0.0.2` and `v0.0.2a1` tags predate the fix too, so a release after `v0.0.1-rc.7`
+is required. Node SDK: `0627b0441` (PR #522); a release after `v0.0.1-rc.6` is
+required. Go SDK: `2638a5b`, on `main` and a bot branch only; a release after
+`v0.0.1-rc.6` is required. Until then a released SDK maps a runtime `Redact`
+verdict onto a plain allow and runs the tool with the original arguments.
 
 #### MCP responses through `aa-proxy`
 
