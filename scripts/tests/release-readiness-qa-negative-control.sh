@@ -112,6 +112,12 @@ cp docs/release/qa-signoff/fixtures/candidate-verified.md "$SEC_SIGNOFF"
 run_readiness
 assert_line "$OUT_FILE" '✗ Security-review sign-off verdict is not PASS' "check 11 stays exact-PASS for security"
 
+echo "== State (i) (AAASM-6419): Verdict: PASS over a PUBLICATION_PENDING row is refused =="
+cp docs/release/qa-signoff/fixtures/pass.md "$SEC_SIGNOFF"
+{ sed 's/^Verdict: CANDIDATE_VERIFIED$/Verdict: PASS/' docs/release/qa-signoff/fixtures/candidate-verified.md; } > "$QA_SIGNOFF"
+run_readiness
+assert_line "$OUT_FILE" '✗ QA sign-off says Verdict: PASS but a journey row is PUBLICATION_PENDING' "check 12 refuses PASS over a pending row"
+
 echo "== State (h) (AAASM-6419): evidence checker exits 3 (CANDIDATE_VERIFIED) — check 14 must FAIL, not pass =="
 # A python3 shim that answers ONLY the evidence-checker invocation with the
 # documented exit-3 contract and delegates everything else, so check 14's

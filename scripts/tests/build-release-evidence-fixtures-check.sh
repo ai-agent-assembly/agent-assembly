@@ -195,6 +195,23 @@ emit_pending "$PEND_TMP/signoff-fail.md" "$PEND_TMP/obligations.json" >/dev/null
 check "N2 J97 with FAIL prose" "$(jq -r '.journeys[] | select(.id=="J97") | .status' "$PEND_TMP/ev.json")" "FAIL"
 check "N2 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
 
+echo "== N2b: PUBLICATION_PENDING cell that also says FAILED/BLOCKING (not matched by the FAIL/BLOCKED rules) -> emitter refuses =="
+for word in "FAILED" "BLOCKING" "FAILURE" "UNTESTED"; do
+  python3 - "$FIX/qa-signoff-pending.md" "$PEND_TMP/signoff-ambiguous.md" "$word" <<'PYEOF'
+import sys
+s = open(sys.argv[1]).read().replace("pypi-install owed after publication", "pypi-install " + sys.argv[3])
+open(sys.argv[2], "w").write(s)
+PYEOF
+  make_obligations
+  if emit_pending "$PEND_TMP/signoff-ambiguous.md" "$PEND_TMP/obligations.json" >/dev/null && true; then
+    echo "  ✗ N2b emitter accepted a pending cell that also says $word"; FAILED=1
+  elif grep -q "J97" "$PEND_TMP/err.txt" && grep -q "ambiguous" "$PEND_TMP/err.txt"; then
+    echo "  ✓ N2b emitter refused an ambiguous pending cell ($word)"
+  else
+    echo "  ✗ N2b emitter failed for the wrong reason ($word): $(cat "$PEND_TMP/err.txt")"; FAILED=1
+  fi
+done
+
 echo "== N3 (emitter side): pending claimed on a mock-fidelity journey -> BLOCK =="
 sed 's/| J98 | P1 | \*\*PASS\*\*/| J98 | P1 | **PUBLICATION_PENDING**/' "$FIX/qa-signoff-pending.md" > "$PEND_TMP/signoff-j98.md"
 make_obligations 'import copy; e = copy.deepcopy(doc["journeys"][0]); e["journey"] = "J98"; e["registry_digest"] = digests["J98"]; doc["journeys"].append(e)'

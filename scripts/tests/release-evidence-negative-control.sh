@@ -1359,6 +1359,13 @@ write_obligations "$PDIR" 'doc["journeys"][0]["pending_checks"][0]["command"] = 
 assert_exit "N15 working-tree obligation edit ignored; committed state still admitted" 3 "$PDIR" "$PA"
 git -C "$PDIR" checkout -q -- .
 
+echo "== N16: pending Result cell recorded as PASS in a record forged at first commit -> BLOCK =="
+pending_case n16
+patch_evidence "$PDIR" 'doc["journeys"][0]["status"] = "PASS"; doc["journeys"][0].pop("obligation", None); doc["artifacts"] = {}; doc["verdict"] = "PASS"; doc["signoffs"]["qa"]["verdict"] = "PASS"'
+commit_all "$PDIR" "forged evidence at first add" >/dev/null
+assert_exit "N16 cell says pending, status PASS" 1 "$PDIR" "$PA"
+assert_output_contains "N16 names the cell/status contradiction" "Result cell says PUBLICATION_PENDING but its recorded status is 'PASS'"
+
 echo "== Mutation proof: delete the fidelity predicate -> N3 must turn RED =="
 MUT_QA="$WORKDIR/mutated-qa"
 mkdir -p "$MUT_QA"
@@ -1381,13 +1388,12 @@ MUT_EXIT=$?
 set -e
 rm -f "$N3_DIR/docs/release/qa-signoff/mutated.json"
 git -C "$N3_DIR" checkout -q -- . 2>/dev/null || true
-if [ "$MUT_VERDICT" = "CANDIDATE_VERIFIED" ]; then
-  echo "  ✓ mutation proof: with the fidelity predicate deleted the emitter admits the wrong-fidelity row (N3 would be RED)"
+if [ "$MUT_VERDICT" = "CANDIDATE_VERIFIED" ] && [ "$MUT_EXIT" -ne 1 ]; then
+  echo "  ✓ mutation proof: with the fidelity predicate deleted the emitter admits the wrong-fidelity row and the checker exits $MUT_EXIT instead of 1 (N3 would be RED)"
 else
-  echo "  ✗ mutation proof: deleting the fidelity predicate did not change N3's emitter outcome (verdict=$MUT_VERDICT) — N3 does not guard it"
+  echo "  ✗ mutation proof: deleting the fidelity predicate left N3's outcome unchanged (emitter verdict=$MUT_VERDICT, checker exit=$MUT_EXIT) — N3 does not guard it"
   FAILED=1
 fi
-echo "    (checker exit under mutation, informational: $MUT_EXIT)"
 
 # ---------------------------------------------------------------------------
 
