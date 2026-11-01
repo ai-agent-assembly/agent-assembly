@@ -132,3 +132,58 @@ install() { run sh "$INSTALL_CLI" --version "$VER" --install-dir "$DEST" "$@"; }
   [[ "$output" == *"does not contain the expected binary 'aa-gateway'"* ]]
   [ ! -e "$DEST/aasm" ]
 }
+
+@test "api listed in SHA256SUMS but unreachable is fatal, not a silent skip" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  rm "$MIRROR/$API_TGZ"   # SHA256SUMS still lists it: 404 / outage / forged 404
+  install
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"component 'api' is not published"* ]]
+  [ ! -e "$DEST/aasm" ]
+  [ ! -e "$DEST/aa-gateway" ]
+  [ ! -e "$DEST/aa-api-server" ]
+}
+
+@test "api absent from both the mirror and SHA256SUMS only warns" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  sums
+  ! grep -q 'aasm-api-' "$MIRROR/SHA256SUMS"
+  install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not listed in SHA256SUMS"* ]]
+  [ -x "$DEST/aa-gateway" ]
+}
+
+@test "a symlink member in the cli tarball is refused" {
+  s="$TMP/sym"; mkdir -p "$s"
+  fake_bin aasm "$s"; ln -s /bin/sh "$s/aa-gateway"
+  tar -czf "$MIRROR/$CLI_TGZ" -C "$s" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  install
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a regular file"* ]]
+  [ ! -e "$DEST/aasm" ]
+}
+
+@test "a corrupt tarball with a valid checksum reports an extraction failure" {
+  printf 'not a gzip' > "$MIRROR/$CLI_TGZ"
+  pack "$API_TGZ" aa-api-server
+  sums
+  install
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to extract"* ]]
+  [[ "$output" != *"does not contain"* ]]
+}
+
+@test "--profile local installs cli, api and runtime end to end" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  pack "aasm-runtime-${VER}-${OSS}-${AR}.tar.gz" aa-runtime
+  sums
+  install --profile local
+  [ "$status" -eq 0 ]
+  for b in aasm aa-gateway aa-api-server aa-runtime; do [ -x "$DEST/$b" ]; done
+}
