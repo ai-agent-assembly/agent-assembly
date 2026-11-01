@@ -227,8 +227,10 @@ record schema](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/doc
 `v<version>.attempt-<N>.evidence.json` (AAASM-6001, Core ADR 0037: a prior
 `BLOCK` attempt's evidence is never overwritten; see
 [`/release-evidence-finalize`](https://github.com/ai-agent-assembly/agent-assembly/blob/HEAD/.claude/skills/release-evidence-finalize/SKILL.md)) —
-records each required journey's result in one fixed 8-token vocabulary:
-`PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE`. It
+records each required journey's result in one fixed 9-token vocabulary:
+`PASS | FAIL | BLOCKED | SKIPPED | XFAIL | NOT_RUN | UNTESTED | STALE | PUBLICATION_PENDING`
+(the ninth, `PUBLICATION_PENDING`, is admissible only under the
+[publication-pending rules](#publication-pending-candidate_verified) below). It
 exists because this repo already has two other, narrower result
 vocabularies — one from the AAASM-5828 QA-worker result schema, one from the
 sign-off's own lane-results table — and neither maps 1:1 onto the other or
@@ -298,6 +300,37 @@ untracked is not the same as accepted.
 A waiver is a human decision, not something the QA gate infers. Absent an
 explicit waiver, unresolved Medium-on-P0 or any unexplained
 `UNTESTED_OR_BLOCKED` mandatory coverage forces BLOCK.
+
+### Publication-pending (`CANDIDATE_VERIFIED`)
+
+(AAASM-6419, Core ADR 0042.) A `fidelity: published_artifact` journey can owe
+checks that need a published artifact. Such a journey is **not** waived and is
+**not** PASS. It is recorded `PUBLICATION_PENDING` only when all of these hold,
+each re-verified independently by `check-release-evidence.py` (never taken from
+the emitter):
+
+- the registry declares `publication_checks` on it (valid only for
+  `published_artifact` fidelity) and the committed
+  `docs/release/qa-signoff/v<version>.publication-obligations.json` has an entry
+  whose `pending_checks` ids equal them;
+- every `candidate_checks` entry is `PASS` at a pre-publication fidelity, with an
+  evidence reference (and a recorded negative control when the registry declares one);
+- every pending check has a channel, a why-publication-only reason, a command and an
+  expected result, and the entry has `depends_on` and a `failure_response`
+  (actions, who is notified, a deadline);
+- the obligation is byte-identical at the candidate commit and the evidence's
+  embedded copy matches it;
+- the row carries no waiver.
+
+The QA verdict is then `Verdict: CANDIDATE_VERIFIED` (computed from the journeys:
+`PASS` only if nothing is pending). **`CANDIDATE_VERIFIED` is not PASS and does
+not authorize tagging or publishing**: the checker exits 3, so the release
+workflow's evidence gate and the tag guard keep refusing, and
+`release-readiness.sh` reports `CANDIDATE_VERIFIED — N obligations pending
+(not PASS)` and does not report the release as ready. The security sign-off has
+no such state. Turning a pending check into a result is a new evidence attempt
+after publication (evidence is append-only); acting on a `CANDIDATE_VERIFIED`
+record is an explicit, SHA-specific owner decision.
 
 ## Escalation hatch
 
