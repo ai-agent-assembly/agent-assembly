@@ -5342,7 +5342,7 @@ mod plan {
                 let captured = Arc::new(Mutex::new(Captured::default()));
                 (
                     Self {
-                        inner: MockBackend::preventing(&CapabilityDomain::ALL),
+                        inner: MockBackend::preventing(CapabilityDomain::ALL),
                         captured: Arc::clone(&captured),
                     },
                     captured,
@@ -5411,13 +5411,13 @@ mod plan {
         const ROOT: &str = "root-6269-proof";
         const LEASE_TTL: u64 = 1234;
 
-        fn run_args() -> RunArgs {
+        fn run_args(root_agent: Option<&str>) -> RunArgs {
             RunArgs {
                 tool: "claude".to_string(),
                 tool_args: vec![],
                 agent_id: Some(AGENT.to_string()),
                 team_id: Some(TEAM.to_string()),
-                root_agent: Some(ROOT.to_string()),
+                root_agent: root_agent.map(str::to_string),
                 governance_level: None,
                 no_proxy: false,
                 policy: None,
@@ -5468,7 +5468,7 @@ mod plan {
 
         /// Run the real launch path into a recording backend and return what
         /// the backend received.
-        fn launch(mut plan: IsolationPlan, network: NetworkPlan) -> Captured {
+        fn launch(mut plan: IsolationPlan, network: NetworkPlan, root_agent: Option<&str>) -> Captured {
             let _env = crate::test_support::env_guard();
             let state = tempfile::tempdir().unwrap();
             // The receipt `run_confined` writes goes under this, never the
@@ -5478,7 +5478,7 @@ mod plan {
             let (recording, captured) = RecordingIsolation::new();
             plan.backend = Some(SelectedBackend::Recording(recording));
 
-            let args = run_args();
+            let args = run_args(root_agent);
             let identity = IdentityPlan::of(&args);
             let handle = identity.preview_handle();
             let (spec, report, boundary) = plan.resolve_boundary(
@@ -5521,13 +5521,20 @@ mod plan {
             std::mem::take(&mut *guard)
         }
 
-        fn requested_identity() -> aa_isolation::IdentityRef {
-            aa_isolation::IdentityRef::root(AGENT)
-                .with_team(TEAM)
-                .with_ancestor(ROOT)
+        /// Lineage is exercised only where a parent authority is not needed:
+        /// an authority-less spec that claims an ancestor is refused by the
+        /// launch (`--root-agent` is refused at plan time, AAASM-6273), so the
+        /// lease scenario carries no ancestor.
+        fn requested_identity(root_agent: Option<&str>) -> aa_isolation::IdentityRef {
+            let identity = aa_isolation::IdentityRef::root(AGENT).with_team(TEAM);
+            match root_agent {
+                Some(root) => identity.with_ancestor(root),
+                None => identity,
+            }
         }
 
         fn requested(
+            root_agent: Option<&str>,
             requirements: Vec<ControlRequirement>,
             leases: Vec<(CapabilityDomain, RequirementScope, u64)>,
         ) -> Requested {
@@ -5537,7 +5544,7 @@ mod plan {
                     .map(str::to_string)
                     .to_vec(),
                 working_dir: std::path::PathBuf::from("/work/aa-6269-proof"),
-                identity: requested_identity(),
+                identity: requested_identity(root_agent),
                 requirements,
                 credentials: non_default_credentials(),
                 leases,
@@ -5675,7 +5682,7 @@ mod plan {
         /// CLI-provenance list `base_spec`'s `with_requirement` loop attaches.
         #[test]
         fn the_backend_receives_the_requested_spec_including_resource_ceilings() {
-            let mut args = run_args();
+            let mut args = run_args(Some(ROOT));
             args.max_memory_bytes = Some(512 * 1024 * 1024);
             args.max_pids = Some(64);
             args.max_open_files = Some(256);
@@ -5690,8 +5697,8 @@ mod plan {
                 resource_requirements: ceilings.clone(),
                 ..Default::default()
             };
-            let captured = launch(plan, network());
-            assert_backend_received(&captured, &requested(ceilings, vec![]));
+            let captured = launch(plan, network(), Some(ROOT));
+            assert_backend_received(&captured, &requested(Some(ROOT), ceilings, vec![]));
         }
 
         /// Scenario 2: authored leases and a policy-lowered requirement they
@@ -5737,10 +5744,11 @@ mod plan {
                 },
                 ..Default::default()
             };
-            let captured = launch(plan, network());
+            let captured = launch(plan, network(), None);
             assert_backend_received(
                 &captured,
                 &requested(
+                    None,
                     wanted_requirements,
                     vec![
                         (CapabilityDomain::NetworkEgress, selectors.clone(), LEASE_TTL),
