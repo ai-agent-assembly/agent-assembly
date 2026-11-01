@@ -498,6 +498,14 @@ Not implemented, and not claimed: scrubbing a tool's arguments or an MCP payload
 gateway-decided paths. Where the table says "denied", the policy author gets a
 deny, not a scrubbed forward.
 
+**A body containing a JWT is refused under `redact_only`.** A request body containing
+a JWT is refused (403, not forwarded) under `redact_only`: the scrubber redacts the
+signature only, and the surviving header and payload re-scan as a credential. AWS
+keys and generic high-entropy tokens are scrubbed and forwarded. `alert_only` forwards
+the original body, and `block` refuses. This over-blocks JWT-bearing requests by
+default; whole-token JWT redaction in the shared scanner is the proper fix, is NOT in
+this change, and is tracked separately.
+
 **What the proxy scans.** Only the request **body**. The URL path and query and the
 headers are forwarded verbatim (the audit record scrubs the request target, but only
 for what it persists). The scanner reads the body as UTF-8 text (invalid bytes become
