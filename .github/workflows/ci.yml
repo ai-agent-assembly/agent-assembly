@@ -2297,6 +2297,12 @@ jobs:
         # as env vars on GitHub runners — they default to ~/.rustup/~/.cargo, which
         # expands to /root/... under sudo. Capture them from the runner's $HOME first,
         # then pass explicit paths so root reuses the already-installed toolchain.
+        # AAASM-6417: invoke the *pinned* toolchain (same date as the install step
+        # above), not bare `+nightly`. `+nightly` is a different toolchain name that
+        # rustup auto-installs at whatever nightly is current, so the AAASM-5311 pin
+        # never applied to these steps and a 2026-10-31 nightly failed to compile
+        # sqlx-core (E0391) with no repository change. Keep the date in sync with
+        # the `toolchain:` input above and bump both in one PR.
         run: |
           RUNNER_RUSTUP="${HOME}/.rustup"
           RUNNER_CARGO="${HOME}/.cargo"
@@ -2304,7 +2310,7 @@ jobs:
             "PATH=$PATH" \
             "RUSTUP_HOME=${RUNNER_RUSTUP}" \
             "CARGO_HOME=${RUNNER_CARGO}" \
-            cargo +nightly test -p aa-ebpf --features integration-test --test load_hello -- --nocapture
+            cargo +nightly-2026-07-30 test -p aa-ebpf --features integration-test --test load_hello -- --nocapture
       - name: Integration test — multi-layer runtime (proxy + eBPF)
         # Exercises both proxy and eBPF layers on a shared broadcast channel.
         # The test uses the integration-test feature gate and requires root
@@ -2419,7 +2425,7 @@ jobs:
             "PATH=$PATH" \
             "RUSTUP_HOME=${RUNNER_RUSTUP}" \
             "CARGO_HOME=${RUNNER_CARGO}" \
-            cargo +nightly test \
+            cargo +nightly-2026-07-30 test \
               -p aa-integration-tests \
               --features integration-test \
               --test e2e_ebpf \
@@ -2428,7 +2434,7 @@ jobs:
         # F116 ST-J — same root-required, single-threaded execution profile
         # as ST-H. The tests share the file-IO PID_FILTER BPF map and rely
         # on per-test PID registration not racing with other suites, so they
-        # run in their own `cargo +nightly test` invocation (separate test
+        # run in their own `cargo +nightly-2026-07-30 test` invocation (separate test
         # binary) with `--test-threads=1`. Kept as a distinct step so a ST-J
         # failure does not mask a ST-H failure (or vice versa) in CI output.
         run: |
@@ -2438,7 +2444,7 @@ jobs:
             "PATH=$PATH" \
             "RUSTUP_HOME=${RUNNER_RUSTUP}" \
             "CARGO_HOME=${RUNNER_CARGO}" \
-            cargo +nightly test \
+            cargo +nightly-2026-07-30 test \
               -p aa-integration-tests \
               --features integration-test \
               --test e2e_file_monitoring \
@@ -2468,7 +2474,7 @@ jobs:
             "PATH=$PATH" \
             "RUSTUP_HOME=${RUNNER_RUSTUP}" \
             "CARGO_HOME=${RUNNER_CARGO}" \
-            cargo +nightly test \
+            cargo +nightly-2026-07-30 test \
               -p aa-integration-tests \
               --features integration-test \
               --test e2e_three_layers_together \
