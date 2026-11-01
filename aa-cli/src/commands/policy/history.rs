@@ -157,6 +157,38 @@ pub fn run_history(args: HistoryArgs) -> ExitCode {
     })
 }
 
+/// Shortest accepted version prefix for `rollback`; shorter ones are too likely
+/// to be ambiguous (and an empty one would match the newest entry).
+const MIN_VERSION_PREFIX: usize = 6;
+
+/// Resolve `prefix` to exactly one stored version's full SHA-256.
+async fn resolve_unique_version(store: &FsHistoryStore, prefix: &str) -> Result<String, String> {
+    if prefix.len() < MIN_VERSION_PREFIX || !prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "version must be a hex prefix of at least {MIN_VERSION_PREFIX} characters, got {:?}",
+            sanitize_terminal(prefix)
+        ));
+    }
+    let prefix = prefix.to_ascii_lowercase();
+    let versions = store.list(usize::MAX).await.map_err(|e| e.to_string())?;
+    let mut matches: Vec<&str> = versions
+        .iter()
+        .map(|m| m.sha256.as_str())
+        .filter(|sha| sha.starts_with(&prefix))
+        .collect();
+    matches.sort_unstable();
+    matches.dedup();
+    match matches.as_slice() {
+        [one] => Ok((*one).to_string()),
+        [] => Err(format!("version not found: {}", sanitize_terminal(&prefix))),
+        _ => Err(format!(
+            "version prefix {} is ambiguous ({} versions match); give more characters",
+            sanitize_terminal(&prefix),
+            matches.len()
+        )),
+    }
+}
+
 /// Execute the `aasm policy rollback` command.
 ///
 /// Rollback re-applies the stored YAML of `version` through the running API
@@ -166,10 +198,12 @@ pub fn run_history(args: HistoryArgs) -> ExitCode {
 /// newest history entry as the active policy's YAML it would also make
 /// `GET /api/v1/policies/active` disagree with what is enforced (AAASM-6430).
 ///
-/// "Rolled back successfully." is therefore printed only after the server
-/// confirms the version is active. If the version is unknown, or the server
-/// cannot be reached or refuses it, nothing is written and the exit code is
-/// non-zero.
+/// "Rolled back successfully." is therefore printed only when the server's reply
+/// to that apply says the same version is active; the reply is the proof, there
+/// is no separate read-back. `version` must be an unambiguous hex prefix of at
+/// least [`MIN_VERSION_PREFIX`] characters, because this is a real mutation. If
+/// the version is unknown or ambiguous, or the server cannot be reached or
+/// refuses it, nothing is written and the exit code is non-zero.
 pub fn run_rollback(args: RollbackArgs, ctx: &ResolvedContext) -> ExitCode {
     let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
     rt.block_on(async {
@@ -177,7 +211,14 @@ pub fn run_rollback(args: RollbackArgs, ctx: &ResolvedContext) -> ExitCode {
             Ok(store) => store,
             Err(code) => return code,
         };
-        let snapshot = match store.get(&args.version).await {
+        let full_sha = match resolve_unique_version(&store, &args.version).await {
+            Ok(sha) => sha,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let snapshot = match store.get(&full_sha).await {
             Ok(snapshot) => snapshot,
             Err(e) => {
                 eprintln!("error: {}", e);
@@ -189,7 +230,7 @@ pub fn run_rollback(args: RollbackArgs, ctx: &ResolvedContext) -> ExitCode {
             policy_yaml: snapshot.yaml_content,
         };
         match crate::client::post_json::<_, PolicyApplyResponse>(ctx, "/api/v1/policies", &body).await {
-            Ok(resp) if resp.active && target_sha.starts_with(&resp.name) => {
+            Ok(resp) if resp.active && !resp.name.is_empty() && target_sha.starts_with(&resp.name) => {
                 println!("Rolled back successfully.");
                 println!("  New version:    {}", sanitize_terminal(&resp.name));
                 println!("  Timestamp:      {}", sanitize_terminal(&resp.version));
@@ -279,6 +320,54 @@ fn colorize_diff_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn store_with_shas(dir: &std::path::Path, shas: &[&str]) -> FsHistoryStore {
+        for (i, sha) in shas.iter().enumerate() {
+            let meta = aa_gateway::policy::history::PolicyVersionMeta {
+                timestamp: format!("2026-01-01T00:00:0{i}.000Z"),
+                sha256: (*sha).to_string(),
+                applied_by: None,
+                source_path: None,
+                first_event_covered: None,
+                is_rollback: false,
+                rollback_target: None,
+            };
+            let name = format!("2026-01-01T00000{i}000Z-{}.meta.json", &sha[..12]);
+            std::fs::write(dir.join(name), serde_json::to_string(&meta).unwrap()).unwrap();
+        }
+        FsHistoryStore::new(HistoryConfig {
+            history_dir: dir.to_path_buf(),
+            max_versions: 50,
+        })
+    }
+
+    #[tokio::test]
+    async fn rollback_version_must_be_a_long_enough_hex_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_with_shas(tmp.path(), &["abcdef123456aaaa"]);
+        for bad in ["", "abc", "zzzzzzzz", "abcde"] {
+            assert!(
+                resolve_unique_version(&store, bad).await.is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        assert_eq!(
+            resolve_unique_version(&store, "abcdef").await.unwrap(),
+            "abcdef123456aaaa"
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_ambiguous_prefix_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = store_with_shas(tmp.path(), &["abcdef111111aaaa", "abcdef222222bbbb"]);
+        let err = resolve_unique_version(&store, "abcdef").await.unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert_eq!(
+            resolve_unique_version(&store, "abcdef1").await.unwrap(),
+            "abcdef111111aaaa"
+        );
+    }
 
     #[test]
     fn colorize_removal_header() {
