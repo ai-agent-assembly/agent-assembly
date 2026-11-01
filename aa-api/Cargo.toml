@@ -93,6 +93,8 @@ hmac = { workspace = true }
 httpmock = "0.8"
 rstest = { workspace = true }
 serde_json = { workspace = true }
+# AAASM-6416: a second connection to local.db lets a test make the durable delete fail.
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "sqlite"] }
 sha2 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 aa-sdk-client = { path = "../aa-sdk-client" }

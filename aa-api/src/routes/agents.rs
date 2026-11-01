@@ -696,7 +696,8 @@ pub async fn get_agent(
     responses(
         (status = 204, description = "Agent deregistered"),
         (status = 400, description = "Invalid agent ID format"),
-        (status = 404, description = "Agent not found")
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Durable record could not be deleted; the agent stays registered and the call can be retried")
     ),
     tag = "agents"
 )]
@@ -712,8 +713,19 @@ pub async fn delete_agent(
 
     state
         .agent_registry
-        .deregister(&agent_id, OrphanMode::Suspend)
-        .map_err(|_| ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")))?;
+        .deregister_persisted(&agent_id, OrphanMode::Suspend)
+        .await
+        .map_err(|e| match e {
+            // AAASM-6416: the durable delete runs first and a failure leaves the
+            // agent registered, so the caller can simply retry the kill.
+            aa_gateway::registry::RegistryError::Storage(err) => {
+                tracing::error!(%err, agent_id = %id, "durable agent delete failed");
+                ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!(
+                    "Agent {id} was not deregistered: its durable record could not be deleted; retry the request"
+                ))
+            }
+            _ => ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")),
+        })?;
 
     Ok(StatusCode::NO_CONTENT)
 }

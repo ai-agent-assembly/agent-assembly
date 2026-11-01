@@ -12,7 +12,7 @@ use super::store::AgentRegistry;
 #[derive(Debug, thiserror::Error)]
 pub enum TokenError {
     /// The agent ID is not present in the registry.
-    #[error("agent not found: {0:?}")]
+    #[error("agent not found: {}", hex::encode(.0))]
     AgentNotFound([u8; 16]),
     /// The provided token does not match the stored credential.
     #[error("invalid credential token")]
