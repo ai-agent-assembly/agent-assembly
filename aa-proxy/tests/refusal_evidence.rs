@@ -2792,19 +2792,19 @@ async fn send_credential_body(action: CredentialAction, request: &[u8]) -> (Stri
 }
 
 /// Built-in LLM host: routed to the LLM-pattern handler, not the non-LLM MitM one.
-const LLM_HOST: &str = "api.anthropic.com";
+const ANTHROPIC_LLM_HOST: &str = "api.anthropic.com";
 
 fn llm_request_with_secret() -> Vec<u8> {
     let body = format!(
         r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET} thanks"}}]}}"#
     );
-    post(LLM_HOST, "/v1/messages", &body).into_bytes()
+    post(ANTHROPIC_LLM_HOST, "/v1/messages", &body).into_bytes()
 }
 
 #[tokio::test]
 async fn llm_host_block_refuses_and_nothing_reaches_upstream() {
     let (response, seen, record) =
-        send_credential_body_to(LLM_HOST, CredentialAction::Block, &llm_request_with_secret()).await;
+        send_credential_body_to(ANTHROPIC_LLM_HOST, CredentialAction::Block, &llm_request_with_secret()).await;
     assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
     assert!(seen.is_empty(), "saw {:?}", String::from_utf8_lossy(&seen));
     assert!(
@@ -2815,8 +2815,12 @@ async fn llm_host_block_refuses_and_nothing_reaches_upstream() {
 
 #[tokio::test]
 async fn llm_host_redact_only_forwards_a_scrubbed_body_never_the_original() {
-    let (_, seen, record) =
-        send_credential_body_to(LLM_HOST, CredentialAction::RedactOnly, &llm_request_with_secret()).await;
+    let (_, seen, record) = send_credential_body_to(
+        ANTHROPIC_LLM_HOST,
+        CredentialAction::RedactOnly,
+        &llm_request_with_secret(),
+    )
+    .await;
     assert!(!seen.is_empty(), "redact_only forwards the scrubbed request");
     assert!(!contains(&seen, BUILTIN_SECRET), "the original secret reached upstream");
     assert!(contains(&seen, "[REDACTED"), "saw {:?}", String::from_utf8_lossy(&seen));
@@ -2828,7 +2832,12 @@ async fn llm_host_redact_only_forwards_a_scrubbed_body_never_the_original() {
 
 #[tokio::test]
 async fn llm_host_alert_only_forwards_the_original_body() {
-    let (_, seen, _) = send_credential_body_to(LLM_HOST, CredentialAction::AlertOnly, &llm_request_with_secret()).await;
+    let (_, seen, _) = send_credential_body_to(
+        ANTHROPIC_LLM_HOST,
+        CredentialAction::AlertOnly,
+        &llm_request_with_secret(),
+    )
+    .await;
     assert!(
         contains(&seen, BUILTIN_SECRET),
         "alert_only forwards the original body, saw {:?}",
@@ -2842,12 +2851,12 @@ async fn llm_host_redact_only_denies_a_compressed_secret_instead_of_forwarding_i
         r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET}"}}]}}"#
     );
     let mut req = format!(
-        "POST /v1/messages HTTP/1.1\r\nHost: {LLM_HOST}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        "POST /v1/messages HTTP/1.1\r\nHost: {ANTHROPIC_LLM_HOST}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
         gzip_bytes(body.as_bytes()).len()
     )
     .into_bytes();
     req.extend_from_slice(&gzip_bytes(body.as_bytes()));
-    let (response, seen, _) = send_credential_body_to(LLM_HOST, CredentialAction::RedactOnly, &req).await;
+    let (response, seen, _) = send_credential_body_to(ANTHROPIC_LLM_HOST, CredentialAction::RedactOnly, &req).await;
     assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
     assert!(seen.is_empty(), "saw {} bytes", seen.len());
 }
