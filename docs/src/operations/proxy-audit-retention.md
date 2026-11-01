@@ -37,12 +37,16 @@ situation this whole surface exists to prevent.
 
 ## What is retained
 
-One JSON object per line, per intercepted request:
+One JSON object per line, per intercepted request. Since AAASM-6261 that
+includes the requests the proxy let through unchanged, as `allowed` records, so
+the file shows whose traffic was admitted as well as what was refused; they share
+the size-bounded ring below, so a busy agent rotates older segments out sooner.
 
 | Field | Content |
 |---|---|
-| `ts_ms`, `agent_id`, `host`, `method`, `path` | When, which agent, and what it addressed. The path is redacted before it is written. |
-| `decision` | `forwarded`, `forwarded_redacted`, `blocked`, or `answered_locally`. |
+| `ts_ms`, `agent_id`, `host`, `method`, `path` | When, which agent, and what it addressed. The path is redacted before it is written. `agent_id` is the `AA_AGENT_ID` the proxy was started with: attribution, not authentication. |
+| `agent_unattributed` | Present and `true` only on an `allowed` record from a proxy started without an `AA_AGENT_ID` (a standalone or shared sidecar). Omitted otherwise. |
+| `decision` | `forwarded`, `forwarded_redacted`, `blocked`, `answered_locally`, or `allowed`. `allowed` is a request the proxy admitted and relayed with nothing to report; it is written just before the dial, so it records the proxy's decision, not that the upstream answered. It is separate from `forwarded`, which counts requests where a credential was detected and the request was forwarded anyway. |
 | `refusal_rule` | Which control refused it, when a rule did. |
 | `execution` | What was observed about whether the payload left the process. |
 | `probe_correlation` | Set when the request was a protection probe's own synthetic traffic. |

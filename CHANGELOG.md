@@ -16,6 +16,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > dependency bumps are not itemized, per this file's existing convention.
 > <!-- TODO(AAASM-6408): replace the TBD date with the tag date when the tag is cut. -->
 
+### Fixed
+
+- **Allowed proxy traffic is now attributed to its launch in the proxy audit file (AAASM-6261)** — a connection the proxy admitted and relayed with nothing to report used to write no audit record, so the file named an agent only for what the proxy refused or changed. Every admitted request now writes an `allowed` record (new, additive `decision` value) carrying the launch's `AA_AGENT_ID`, or `agent_unattributed: true` when the proxy was started without one; the CONNECT allow event on the runtime pipeline carries the id as well. `forwarded` still means "a credential was detected and the request was forwarded anyway", so existing counts of every other decision are unchanged. The id is attribution as the launcher asserted it, not an authenticated identity, and the gateway-bound identity (`aa-proxy`) is untouched. The file is a bounded local ring, so these records can rotate older segments out sooner; a pinned older `aa-proxy` reading a newer file must tolerate the new value.
+
 ### Security
 
 - **`--workspace-tx` commit can no longer write outside its base through a symlink (AAASM-6412)** — if the base held a directory symlink `d -> /elsewhere`, a confined run could replace `d` with a real directory in the staged copy and the commit would create, write or delete files under `/elsewhere` with your privileges. A commit is now refused (`boundary_escape`, base untouched) when any changed path sits behind a symlinked directory in the base. `--workspace-tx-protect` also refuses selectors that could never match a changed path (`./x`, `x/`, absolute, `..`, empty) instead of silently not protecting. Found by the independent rc.8 security review.
