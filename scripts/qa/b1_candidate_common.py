@@ -184,17 +184,42 @@ def terminate_group(p: subprocess.Popen[bytes], timeout: float = 10.0) -> int | 
         return None
 
 
+def _run_text(argv: list[str]) -> str:
+    return subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False).stdout
+
+
+def _under(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def pid_owned_by(pid: int, owner: Path) -> bool:
+    """Per-PID ownership proof. True when the process's argv names `owner` in either spelling
+    (raw or realpath, so a /var vs /private/var symlink cannot hide it), or when its cwd or an
+    open file resolves under realpath(owner) (covers a bare-name launch whose argv has no path).
+    Probes this one PID only; never matches by name or pattern."""
+    raw, real = str(owner), os.path.realpath(owner)
+    try:
+        cmd = _run_text(["/bin/ps", "-p", str(pid), "-o", "command="])
+        if raw in cmd or real in cmd:
+            return True
+        lsof = _run_text(["lsof", "-p", str(pid), "-Fn"])
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for line in lsof.splitlines():
+        if line.startswith("n") and _under(os.path.realpath(line[1:]), real):
+            return True
+    return False
+
+
 def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
-    """Kill the daemon recorded in `pidfile`, but only if its command line names a path
-    under `owner` (our own mktemp dir). Ownership is proven per PID; a recycled or
-    foreign PID is left alone. Never pattern-kills."""
+    """Kill the daemon recorded in `pidfile`, but only if `pid_owned_by` proves it belongs to
+    `owner` (our own mktemp dir). A recycled or foreign PID is left alone. Never pattern-kills;
+    SIGKILL is sent only after ownership is proven."""
     try:
         pid = int(pidfile.read_text().strip())
-        cmd = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "command="], capture_output=True,
-                             text=True, timeout=10, check=False).stdout
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError):
         return
-    if str(owner) not in cmd:
+    if not pid_owned_by(pid, owner):
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
