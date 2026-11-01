@@ -875,6 +875,11 @@ mod plan {
         /// Virtualization.framework guest (AAASM-5813). `Unavailable` on
         /// every host today — see the crate's own docs for why.
         MacosVm(aa_isolation_macos_vm::MacosVmBackend),
+        /// A recording stand-in that lets a test observe exactly what a
+        /// launch hands a backend (AAASM-6269). Test-only: a release build has
+        /// no variant a selection could ever name.
+        #[cfg(test)]
+        Recording(confined_launch_value_proof::RecordingIsolation),
     }
 
     impl SelectedBackend {
@@ -884,6 +889,8 @@ mod plan {
                 Self::Sandlock(backend) => backend.identity(),
                 Self::Native(backend) => backend.identity(),
                 Self::MacosVm(backend) => backend.identity(),
+                #[cfg(test)]
+                Self::Recording(backend) => backend.identity(),
             }
         }
 
@@ -893,6 +900,8 @@ mod plan {
                 Self::Sandlock(backend) => backend.capabilities(),
                 Self::Native(backend) => backend.capabilities(),
                 Self::MacosVm(backend) => backend.capabilities(),
+                #[cfg(test)]
+                Self::Recording(backend) => backend.capabilities(),
             }
         }
 
@@ -920,6 +929,8 @@ mod plan {
                 Self::Sandlock(backend) => aa_isolation_sandlock::capability::narrow_for(&backend.capabilities(), spec),
                 Self::Native(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
                 Self::MacosVm(backend) => aa_isolation_native::capability::narrow_for(&backend.capabilities(), spec),
+                #[cfg(test)]
+                Self::Recording(backend) => backend.capabilities(),
             }
         }
 
@@ -929,6 +940,8 @@ mod plan {
                 Self::Sandlock(backend) => backend.set_child_environment(env),
                 Self::Native(backend) => backend.set_child_environment(env),
                 Self::MacosVm(backend) => backend.set_child_environment(env),
+                #[cfg(test)]
+                Self::Recording(backend) => backend.record_child_environment(env),
             }
         }
 
@@ -940,6 +953,8 @@ mod plan {
                 Self::Sandlock(backend) => backend.plan(spec),
                 Self::Native(backend) => backend.plan(spec),
                 Self::MacosVm(backend) => backend.plan(spec),
+                #[cfg(test)]
+                Self::Recording(backend) => backend.plan(spec),
             }
         }
 
@@ -953,6 +968,8 @@ mod plan {
                 Self::Sandlock(backend) => std::sync::Arc::new(backend),
                 Self::Native(backend) => std::sync::Arc::new(backend),
                 Self::MacosVm(backend) => std::sync::Arc::new(backend),
+                #[cfg(test)]
+                Self::Recording(backend) => std::sync::Arc::new(backend),
             }
         }
     }
@@ -5252,6 +5269,492 @@ mod plan {
                 detail.contains("does not cover the requested scope"),
                 "an unprefixed selector must refuse as scope-insufficient, proving the \
                  permit_only_selector prefix is load-bearing: {detail}"
+            );
+        }
+    }
+
+    /// AAASM-6269 AC1 — what a confined launch's backend ACTUALLY receives,
+    /// compared against what the operator requested, field for field.
+    ///
+    /// The earlier evidence for this journey stopped at `base_spec`'s return
+    /// value and never reached a backend: a field dropped *after* `base_spec`
+    /// (the lease fold, the lowering, `run_confined`'s hand-off to
+    /// `prepare`/`spawn`) would have passed it. This drives the real launch
+    /// plan — `resolve_boundary` (`base_spec`, lease issuance, policy
+    /// lowering, the gates), then `run_confined` (`prepare`, `spawn`) — into a
+    /// [`RecordingIsolation`] that keeps the [`ExecutionSpec`] it was handed.
+    ///
+    /// # What this does NOT prove
+    ///
+    /// * **AAASM-6269 AC3 is not satisfied by this module.** AAASM-6038's fix
+    ///   was a refactor: before it, `working_dir` was already copied
+    ///   unconditionally (commit `0cd44922f` records this), so no value-level
+    ///   test can fail against the pre-fix code. The only thing that would have
+    ///   failed is a *structural* guard, which is what the canary below and
+    ///   `aa_isolation`'s `field_sync_tests` are. The AC's premise is for the
+    ///   owner to rescope.
+    /// * The **environment channel** is recorded at the hand-off
+    ///   (`set_child_environment`) only. That the native/sandlock backend then
+    ///   applies the map to the real child `Command` is that crate's concern
+    ///   and is not exercised here.
+    /// * Real backends. A recording backend proves what the launch path hands
+    ///   over, not what a mechanism does with it.
+    ///
+    /// # Product constraint that shapes the scenarios
+    ///
+    /// A `--max-*` ceiling lowers to a `Limits`-scoped requirement that no
+    /// authored lease can cover, and `resolve_authority` refuses the
+    /// combination. So no single admitted request can carry both
+    /// resource-ceiling requirements and leases. Two scenarios are used; every
+    /// `ExecutionSpec` field is non-default in at least one, and each scenario
+    /// compares all seven.
+    #[cfg(test)]
+    pub(super) mod confined_launch_value_proof {
+        use super::*;
+        use aa_isolation::mock::MockBackend;
+        use aa_isolation::{
+            BackendCapabilities, BackendIdentity, EnforcementEvidence, EnforcementPlan, ExecutionHandle,
+            ExitDisposition, IsolationBackend, PlanRefusal, PreparedExecution, SpawnError, TerminationRequest,
+        };
+        use std::sync::{Arc, Mutex};
+
+        /// Everything the launch path handed to the backend.
+        #[derive(Default)]
+        pub(in super::super) struct Captured {
+            planned: Vec<ExecutionSpec>,
+            prepared: Vec<ExecutionSpec>,
+            spawned: Vec<ExecutionSpec>,
+            child_env: Option<std::collections::BTreeMap<String, String>>,
+        }
+
+        /// A backend that enforces nothing and remembers what it was given.
+        ///
+        /// Delegates every decision to [`MockBackend`] (which enforces every
+        /// domain on paper and starts no process) so negotiation behaves as it
+        /// would for a capable backend; the only addition is the recording.
+        pub(in super::super) struct RecordingIsolation {
+            inner: MockBackend,
+            captured: Arc<Mutex<Captured>>,
+        }
+
+        impl RecordingIsolation {
+            fn new() -> (Self, Arc<Mutex<Captured>>) {
+                let captured = Arc::new(Mutex::new(Captured::default()));
+                (
+                    Self {
+                        inner: MockBackend::preventing(CapabilityDomain::ALL),
+                        captured: Arc::clone(&captured),
+                    },
+                    captured,
+                )
+            }
+
+            pub(in super::super) fn record_child_environment(
+                &mut self,
+                env: std::collections::BTreeMap<String, String>,
+            ) {
+                self.captured.lock().unwrap().child_env = Some(env);
+            }
+        }
+
+        impl IsolationBackend for RecordingIsolation {
+            fn identity(&self) -> BackendIdentity {
+                self.inner.identity()
+            }
+            fn capabilities(&self) -> BackendCapabilities {
+                self.inner.capabilities()
+            }
+            fn plan(&self, spec: &ExecutionSpec) -> Result<EnforcementPlan, PlanRefusal> {
+                self.captured.lock().unwrap().planned.push(spec.clone());
+                self.inner.plan(spec)
+            }
+            fn prepare(&self, plan: EnforcementPlan) -> Result<PreparedExecution, SpawnError> {
+                self.captured.lock().unwrap().prepared.push(plan.spec().clone());
+                self.inner.prepare(plan)
+            }
+            fn spawn(&self, prepared: PreparedExecution) -> Result<ExecutionHandle, SpawnError> {
+                self.captured
+                    .lock()
+                    .unwrap()
+                    .spawned
+                    .push(prepared.plan().spec().clone());
+                self.inner.spawn(prepared)
+            }
+            fn wait_for_exit(&self, handle: &ExecutionHandle) -> Result<ExitDisposition, SpawnError> {
+                self.inner.wait_for_exit(handle)
+            }
+            fn terminate(&self, handle: &ExecutionHandle, request: TerminationRequest) -> Result<(), SpawnError> {
+                self.inner.terminate(handle, request)
+            }
+            fn evidence(&self, handle: &ExecutionHandle) -> EnforcementEvidence {
+                self.inner.evidence(handle)
+            }
+        }
+
+        /// The request, every `ExecutionSpec` field named. The struct literal
+        /// and the destructure in [`assert_received_matches`] list every
+        /// field with no `..`, so a field added here without being compared
+        /// is a compile error in this test.
+        struct Requested {
+            program: String,
+            args: Vec<String>,
+            working_dir: std::path::PathBuf,
+            identity: aa_isolation::IdentityRef,
+            requirements: Vec<ControlRequirement>,
+            credentials: CredentialPosture,
+            /// `(domain, scope, ttl_seconds)` per authored lease.
+            leases: Vec<(CapabilityDomain, RequirementScope, u64)>,
+        }
+
+        const AGENT: &str = "agent-6269-proof";
+        const TEAM: &str = "team-6269-proof";
+        const ROOT: &str = "root-6269-proof";
+        const LEASE_TTL: u64 = 1234;
+
+        fn run_args(root_agent: Option<&str>) -> RunArgs {
+            RunArgs {
+                tool: "claude".to_string(),
+                tool_args: vec![],
+                agent_id: Some(AGENT.to_string()),
+                team_id: Some(TEAM.to_string()),
+                root_agent: root_agent.map(str::to_string),
+                governance_level: None,
+                no_proxy: false,
+                policy: None,
+                workdir: None,
+                workspace_tx: false,
+                workspace_tx_exclude: vec![],
+                workspace_tx_protect: vec![],
+                workspace_tx_approve: false,
+                dry_run: false,
+                enforcement_mode: None,
+                observe: false,
+                isolation: super::super::IsolationIntent::Process,
+                isolation_backend: None,
+                max_memory_bytes: None,
+                max_pids: None,
+                max_open_files: None,
+                max_file_size_bytes: None,
+                max_wall_clock_seconds: None,
+                max_cpu_seconds: None,
+            }
+        }
+
+        fn non_default_credentials() -> CredentialPosture {
+            CredentialPosture {
+                removed: vec!["OPENAI_API_KEY".to_string()],
+                delegated: vec!["AWS_PROFILE".to_string()],
+                ambient_unremoved: vec!["SSH_AUTH_SOCK".to_string()],
+            }
+        }
+
+        fn child_environment() -> std::collections::BTreeMap<String, String> {
+            [
+                ("AA_AGENT_ID", AGENT),
+                ("HTTPS_PROXY", "http://127.0.0.1:9"),
+                ("NODE_EXTRA_CA_CERTS", "/state/ca.pem"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+        }
+
+        fn command() -> std::process::Command {
+            let mut cmd = std::process::Command::new("/opt/aa-6269/prog");
+            cmd.args(["--flag", "value with spaces", "ünïcode", ""]);
+            cmd.current_dir("/work/aa-6269-proof");
+            cmd
+        }
+
+        /// Run the real launch path into a recording backend and return what
+        /// the backend received.
+        fn launch(mut plan: IsolationPlan, network: NetworkPlan, root_agent: Option<&str>) -> Captured {
+            let _env = crate::test_support::env_guard();
+            let state = tempfile::tempdir().unwrap();
+            // The receipt `run_confined` writes goes under this, never the
+            // operator's real state directory.
+            std::env::set_var("AASM_STATE_DIR", state.path());
+
+            let (recording, captured) = RecordingIsolation::new();
+            plan.backend = Some(SelectedBackend::Recording(recording));
+
+            let args = run_args(root_agent);
+            let identity = IdentityPlan::of(&args);
+            let handle = identity.preview_handle();
+            let (spec, report, boundary) = plan.resolve_boundary(
+                &identity,
+                &handle,
+                &command(),
+                &child_environment(),
+                non_default_credentials(),
+                &network,
+            );
+            assert!(spec.is_some(), "the launch must be describable");
+            let enforcement = match boundary {
+                Boundary::Negotiated(enforcement) => enforcement,
+                Boundary::Refused(why) => panic!("the launch must negotiate against the recording backend: {why}"),
+                Boundary::Absent => panic!("the launch must negotiate against the recording backend, got no boundary"),
+            };
+            let backend = plan.take_backend().expect("the recording backend was selected");
+            let receipt_inputs = super::super::ReceiptInputs {
+                session: aa_isolation::SessionRef::new(handle.session_id.clone(), handle.trace_id.clone()),
+                policy: run_policy::classify(
+                    std::path::Path::new("/aa-6269-proof.yaml"),
+                    "tools:\n  bash:\n    allow: true\n",
+                ),
+            };
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(super::super::run_confined(
+                backend.into_arc(),
+                *enforcement,
+                report,
+                receipt_inputs,
+                None,
+            ));
+            std::env::remove_var("AASM_STATE_DIR");
+            outcome.expect("the recording backend 'runs' to a clean disposition");
+
+            let mut guard = captured.lock().unwrap();
+            std::mem::take(&mut *guard)
+        }
+
+        /// Lineage is exercised only where a parent authority is not needed:
+        /// an authority-less spec that claims an ancestor is refused by the
+        /// launch (`--root-agent` is refused at plan time, AAASM-6273), so the
+        /// lease scenario carries no ancestor.
+        fn requested_identity(root_agent: Option<&str>) -> aa_isolation::IdentityRef {
+            let identity = aa_isolation::IdentityRef::root(AGENT).with_team(TEAM);
+            match root_agent {
+                Some(root) => identity.with_ancestor(root),
+                None => identity,
+            }
+        }
+
+        fn requested(
+            root_agent: Option<&str>,
+            requirements: Vec<ControlRequirement>,
+            leases: Vec<(CapabilityDomain, RequirementScope, u64)>,
+        ) -> Requested {
+            Requested {
+                program: "/opt/aa-6269/prog".to_string(),
+                args: ["--flag", "value with spaces", "ünïcode", ""]
+                    .map(str::to_string)
+                    .to_vec(),
+                working_dir: std::path::PathBuf::from("/work/aa-6269-proof"),
+                identity: requested_identity(root_agent),
+                requirements,
+                credentials: non_default_credentials(),
+                leases,
+            }
+        }
+
+        /// Compare one received spec to the request, every field.
+        fn assert_received_matches(received: &ExecutionSpec, want: &Requested) {
+            // Canary: `ExecutionSpec`'s fields are private to `aa_isolation`,
+            // so this crate cannot destructure it. Its serialized key set is
+            // the next-best structural handle: a field added to the type
+            // changes this set and fails here, pointing the author at
+            // `base_spec`. (`aa_isolation`'s own `field_sync_tests` is the
+            // compile-time guard; this is the one that sits on the launch
+            // side.)
+            let value = serde_json::to_value(received).expect("ExecutionSpec serializes");
+            let keys: std::collections::BTreeSet<&str> = value
+                .as_object()
+                .expect("a struct serializes as an object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    "program",
+                    "args",
+                    "working_dir",
+                    "identity",
+                    "requirements",
+                    "credentials",
+                    "leases"
+                ]
+                .into_iter()
+                .collect(),
+                "ExecutionSpec's field set changed: decide how `IsolationPlan::base_spec` sources the new field \
+                 and extend `Requested` and this comparison"
+            );
+
+            struct Observed<'a> {
+                program: &'a str,
+                args: &'a [String],
+                working_dir: Option<&'a std::path::Path>,
+                identity: &'a aa_isolation::IdentityRef,
+                requirements: &'a [ControlRequirement],
+                credentials: &'a CredentialPosture,
+                leases: &'a [aa_isolation::CapabilityLease],
+            }
+            let Observed {
+                program,
+                args,
+                working_dir,
+                identity,
+                requirements,
+                credentials,
+                leases,
+            } = Observed {
+                program: received.program(),
+                args: received.args(),
+                working_dir: received.working_dir(),
+                identity: received.identity(),
+                requirements: received.requirements(),
+                credentials: received.credentials(),
+                leases: received.leases(),
+            };
+            let Requested {
+                program: want_program,
+                args: want_args,
+                working_dir: want_working_dir,
+                identity: want_identity,
+                requirements: want_requirements,
+                credentials: want_credentials,
+                leases: want_leases,
+            } = want;
+
+            assert_eq!(program, want_program, "program");
+            assert_eq!(args, want_args.as_slice(), "args");
+            assert_eq!(working_dir, Some(want_working_dir.as_path()), "working_dir");
+            assert_eq!(identity, want_identity, "identity");
+            assert_eq!(requirements, want_requirements.as_slice(), "requirements");
+            assert_eq!(credentials, want_credentials, "credentials");
+            // Lease ids and timestamps are minted at launch; everything the
+            // operator authored must survive: domain, scope, lifetime, and
+            // that each is bound to this launch's identity.
+            assert_eq!(leases.len(), want_leases.len(), "lease count");
+            for (lease, (domain, scope, ttl)) in leases.iter().zip(want_leases) {
+                assert_eq!(lease.domain(), *domain, "lease domain");
+                assert_eq!(lease.scope(), scope, "lease scope");
+                assert_eq!(lease.subject(), want_identity, "lease subject");
+                assert_eq!(
+                    lease.expires_at().duration_since(lease.issued_at()).unwrap().as_secs(),
+                    *ttl,
+                    "lease ttl"
+                );
+            }
+        }
+
+        fn assert_backend_received(captured: &Captured, want: &Requested) {
+            for (stage, specs) in [
+                ("plan", &captured.planned),
+                ("prepare", &captured.prepared),
+                ("spawn", &captured.spawned),
+            ] {
+                assert_eq!(
+                    specs.len(),
+                    1,
+                    "the backend must be handed exactly one spec at `{stage}`"
+                );
+                assert_received_matches(&specs[0], want);
+            }
+            // Environment channel: recorded at the hand-off only (see the
+            // module documentation for the residual).
+            assert_eq!(
+                captured.child_env.as_ref(),
+                Some(&child_environment()),
+                "child environment"
+            );
+        }
+
+        fn network() -> NetworkPlan {
+            NetworkPlan {
+                endpoint: Some("127.0.0.1:9".to_string()),
+                no_proxy: false,
+            }
+        }
+
+        fn empty_lowering() -> aa_isolation::PolicyLowering {
+            aa_isolation::lower_policy(
+                &aa_security::policy::PolicyDocument::default(),
+                &aa_isolation::LoweringOptions::strict(),
+            )
+        }
+
+        /// Scenario 1: every `--max-*` ceiling set, so `requirements` is the
+        /// CLI-provenance list `base_spec`'s `with_requirement` loop attaches.
+        #[test]
+        fn the_backend_receives_the_requested_spec_including_resource_ceilings() {
+            let mut args = run_args(Some(ROOT));
+            args.max_memory_bytes = Some(512 * 1024 * 1024);
+            args.max_pids = Some(64);
+            args.max_open_files = Some(256);
+            args.max_file_size_bytes = Some(10 * 1024 * 1024);
+            args.max_wall_clock_seconds = Some(3600);
+            args.max_cpu_seconds = Some(600);
+            let ceilings = super::super::resource_requirements(&args);
+            assert_eq!(ceilings.len(), 6, "every ceiling flag lowers to its own requirement");
+
+            let plan = IsolationPlan {
+                lowering: Some(empty_lowering()),
+                resource_requirements: ceilings.clone(),
+                ..Default::default()
+            };
+            let captured = launch(plan, network(), Some(ROOT));
+            assert_backend_received(&captured, &requested(Some(ROOT), ceilings, vec![]));
+        }
+
+        /// Scenario 2: authored leases and a policy-lowered requirement they
+        /// cover, so `leases` and the lowering's requirements reach the
+        /// backend too.
+        #[test]
+        fn the_backend_receives_the_requested_spec_including_leases_and_policy_requirements() {
+            let policy = aa_security::policy::PolicyDocument {
+                network: Some(aa_security::policy::NetworkPolicy {
+                    allowlist: vec!["api.example.com".to_string()],
+                }),
+                ..Default::default()
+            };
+            let lowering = aa_isolation::lower_policy(&policy, &aa_isolation::LoweringOptions::strict());
+            let selectors = RequirementScope::Selectors(vec![aa_isolation::permit_only_selector("api.example.com")]);
+            let grant = |domain| AuthoredLease {
+                domain,
+                scope: selectors.clone(),
+                max_count: None,
+                ttl_seconds: Some(LEASE_TTL),
+                delegable: false,
+                issuer: None,
+                policy_rule: None,
+                approval_ref: None,
+                reason: "AAASM-6269 value proof".to_string(),
+            };
+            let wanted_requirements = lowering
+                .apply_to(ExecutionSpec::new("x", aa_isolation::IdentityRef::root("x")))
+                .expect("the allowlist lowers to requirements")
+                .requirements()
+                .to_vec();
+            assert!(!wanted_requirements.is_empty());
+
+            let plan = IsolationPlan {
+                lowering: Some(lowering),
+                authority: ResolvedAuthority {
+                    lease_grants: vec![
+                        grant(CapabilityDomain::NetworkEgress),
+                        grant(CapabilityDomain::NameResolution),
+                    ],
+                    egress: aa_isolation::EgressContract::broker_required(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let captured = launch(plan, network(), None);
+            assert_backend_received(
+                &captured,
+                &requested(
+                    None,
+                    wanted_requirements,
+                    vec![
+                        (CapabilityDomain::NetworkEgress, selectors.clone(), LEASE_TTL),
+                        (CapabilityDomain::NameResolution, selectors, LEASE_TTL),
+                    ],
+                ),
             );
         }
     }
