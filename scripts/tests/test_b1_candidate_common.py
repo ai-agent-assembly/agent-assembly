@@ -6,6 +6,7 @@ Real child processes are used; the negative control is a foreign process that mu
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -64,53 +65,76 @@ class KillOwnedDaemonTests(unittest.TestCase):
     def _assert_killed(self, p: subprocess.Popen) -> None:
         self.assertIsNotNone(p.wait(timeout=10))
 
-    def test_symlinked_owner_with_realpath_argv_is_killed(self) -> None:
-        p = self._spawn(_SLEEP + [str(self.real)], self.foreign)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.link)
+    def _own_binary(self, owner: Path) -> Path:
+        """A real compiled binary copied into <owner>/bin, as the harness does for the daemons."""
+        cc = shutil.which("cc")
+        if cc is None:
+            self.skipTest("no C compiler to build a real binary")
+        src = self.foreign / "nap.c"
+        src.write_text("#include <unistd.h>\nint main(void){sleep(60);return 0;}\n")
+        built = self.foreign / "nap"
+        subprocess.run([cc, "-o", str(built), str(src)], check=True, capture_output=True)
+        (owner / "bin").mkdir(exist_ok=True)
+        dest = owner / "bin" / "aasm"
+        shutil.copy2(built, dest)
+        return dest
+
+    def test_binary_executed_from_owner_bin_is_killed(self) -> None:
+        exe = self._own_binary(self.real)
+        p = self._spawn([str(exe)], self.foreign)
+        c.kill_owned_daemon(self._pidfile(p.pid), self.link)  # symlinked owner spelling
         self._assert_killed(p)
 
-    def test_bare_name_launch_with_cwd_under_owner_is_killed(self) -> None:
-        p = self._spawn(["sleep", "60"], self.real)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.link)
+    def test_bare_name_path_launch_of_owner_binary_is_killed(self) -> None:
+        exe = self._own_binary(self.real)
+        env = {**os.environ, "PATH": f"{exe.parent}:{os.environ['PATH']}"}
+        p = subprocess.Popen(["aasm"], cwd=self.foreign, env=env, start_new_session=True)
+        self.procs.append(p)
+        time.sleep(0.3)
+        c.kill_owned_daemon(self._pidfile(p.pid), self.real)
         self._assert_killed(p)
 
-    def test_foreign_pid_is_not_killed(self) -> None:
-        p = self._spawn(["sleep", "60"], self.foreign)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.link)
+    def _assert_survives(self, p: subprocess.Popen, owner: Path) -> None:
+        c.kill_owned_daemon(self._pidfile(p.pid), owner)
         time.sleep(0.5)
         self.assertIsNone(p.poll())
         self.assertTrue(_alive(p.pid))
 
-    def test_sibling_dir_sharing_name_prefix_is_not_owned(self) -> None:
+    def test_foreign_pid_is_not_killed(self) -> None:
+        self._assert_survives(self._spawn(_SLEEP, self.foreign), self.link)
+
+    def test_owner_dir_as_argv_is_not_proof(self) -> None:
+        self._assert_survives(self._spawn(_SLEEP + [str(self.real)], self.foreign), self.link)
+        self._assert_survives(self._spawn(_SLEEP + [f"--home={self.real}"], self.foreign), self.real)
+
+    def test_cwd_under_owner_is_not_proof(self) -> None:
+        self._assert_survives(self._spawn(_SLEEP, self.real), self.link)
+
+    def test_open_file_under_owner_is_not_proof(self) -> None:
+        f = open(self.real / "daemon.log", "w")
+        self.addCleanup(f.close)
+        p = subprocess.Popen(_SLEEP, cwd=self.foreign, stdout=f, start_new_session=True)
+        self.procs.append(p)
+        time.sleep(0.3)
+        self._assert_survives(p, self.real)
+
+    def test_prefix_sibling_binary_is_not_owned(self) -> None:
         owner = self.real.parent / "ab"
         sibling = self.real.parent / "abc"
         owner.mkdir()
         sibling.mkdir()
-        p = self._spawn(_SLEEP + [str(sibling / "x")], sibling)
-        c.kill_owned_daemon(self._pidfile(p.pid), owner)
-        time.sleep(0.5)
-        self.assertIsNone(p.poll())
+        exe = self._own_binary(sibling)
+        self._assert_survives(self._spawn([str(exe)], sibling), owner)
 
-    def test_file_mentioned_under_owner_does_not_prove_ownership(self) -> None:
-        p = self._spawn(_SLEEP + [str(self.real / "x.log")], self.foreign)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.real)
-        time.sleep(0.5)
-        self.assertIsNone(p.poll())
+    def test_txt_parser_takes_only_absolute_txt_entries(self) -> None:
+        out = ("p9\nfcwd\ntDIR\nn/under/cwd\nftxt\ntREG\nn/usr/lib/dyld\nftxt\ntREG\nn/bin/x\n"
+               "f3\ntREG\nn/not/txt\nftxt\ntunknown\nn*:8080\nf4\ntIPv4\nn->0xdead\n")
+        self.assertEqual(c._txt_images(out), ["/usr/lib/dyld", "/bin/x"])
 
-    def test_flag_equals_owner_path_is_owned(self) -> None:
-        p = self._spawn(_SLEEP + [f"--home={self.real}"], self.foreign)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.link)
-        self._assert_killed(p)
-
-    def test_non_path_lsof_names_are_ignored(self) -> None:
-        # A socket-style name must never be resolved against the harness cwd.
-        cwd = os.getcwd()
-        os.chdir(self.real)
-        self.addCleanup(os.chdir, cwd)
-        p = self._spawn(_SLEEP, self.foreign)
-        fake = "p1\nn*:8080\nn->0xdeadbeef\nnpipe\n"
-        with mock.patch.object(c, "_run_text", side_effect=["sleep\n", fake]):
-            self.assertFalse(c.pid_owned_by(p.pid, self.real))
+    def test_lsof_dyld_plus_binary_lists_accept_binary_under_owner(self) -> None:
+        fake = f"p2\nftxt\nn/usr/lib/dyld\nftxt\nn{self.real}/bin/aasm\n"
+        with mock.patch.object(c, "_run_text", return_value=fake):  # lsof layer mocked
+            self.assertTrue(c.pid_owned_by(2**22, self.link))
 
     def test_ownership_is_reproven_before_sigkill(self) -> None:
         p = self._spawn(_SLEEP, self.real)
@@ -130,12 +154,6 @@ class KillOwnedDaemonTests(unittest.TestCase):
 
     def test_relative_owner_fails_closed(self) -> None:
         self.assertFalse(c.pid_owned_by(os.getpid(), Path("relative")))
-
-    def test_pidfile_naming_owned_dir_alone_proves_nothing(self) -> None:
-        p = self._spawn(_SLEEP + [str(self.foreign)], self.foreign)
-        c.kill_owned_daemon(self._pidfile(p.pid), self.real)
-        time.sleep(0.5)
-        self.assertIsNone(p.poll())
 
 
 if __name__ == "__main__":
