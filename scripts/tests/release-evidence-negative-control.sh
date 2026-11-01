@@ -1111,6 +1111,284 @@ fi
 rm -f "${T7_FIXTURES[@]}"
 T7_FIXTURES=()
 
+# ===========================================================================
+# AAASM-6419: PUBLICATION_PENDING / CANDIDATE_VERIFIED
+#
+# Safety invariant under test: pending is NEVER PASS. A fully valid pending-
+# only record exits 3 (not 0), so every consumer that gates on exit 0
+# (release.yml's release-evidence-gate, release-tag-guard.sh) keeps refusing.
+# ===========================================================================
+
+CATALOG_PEND='catalog_version: "1"
+journeys:
+- id: J01
+  jira: AAASM-0000
+  name: Published-artifact fixture journey
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "src/lib.rs::test_thing"
+  execution_lanes: [pr]
+  fidelity: published_artifact
+  publication_checks:
+  - id: pypi-install
+    channel: pypi
+    summary: pip install of the published sdist resolves the candidate
+- id: J02
+  jira: AAASM-0001
+  name: Plain journey
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "src/lib.rs::test_thing"
+  execution_lanes: [pr]
+  fidelity: mock'
+
+qa_pending_signoff() {  # $1 verdict word, $2 extra sections
+  printf '%s\n' "# QA sign-off fixture
+
+## Selected journeys
+
+| Journey ID | Priority | Result | Evidence |
+|---|---|---|---|
+| J01 | P0 | **PUBLICATION_PENDING** (candidate checks PASS; pypi-install owed) | fixture |
+| J02 | P1 | **PASS** | fixture |
+${2:-}
+## Verdict
+
+Verdict: $1"
+}
+
+# $1 dir, $2 python mutation over `doc` (the obligation file object)
+write_obligations() {
+  local dir="$1" mutation="${2:-pass}"
+  python3 - "$REAL_REPO_ROOT/scripts/qa" "$dir" "$VERSION" "$mutation" <<'PYEOF2'
+import json, os, sys, yaml
+sys.path.insert(0, sys.argv[1])
+import registry_digest as rd
+dir_, version, mutation = sys.argv[2], sys.argv[3], sys.argv[4]
+entries = yaml.safe_load(open(f"{dir_}/qa/golden-journeys.yaml"))["journeys"]
+digest = {e["id"]: rd.per_journey_digest(e) for e in entries}
+doc = {"journeys": [{
+    "journey": "J01",
+    "registry_digest": digest["J01"],
+    "candidate_checks": [{"id": "wheel-build", "status": "PASS", "fidelity": "real_local_process",
+                          "evidence_ref": "fixture://wheel-build", "negative_control": None,
+                          "artifact_digests": {"pkg-0.0.0.tar.gz": "sha256:00"}}],
+    "pending_checks": [{"id": "pypi-install", "channel": "pypi",
+                        "why_publication_only": "needs the file on PyPI",
+                        "command": "pip install pkg==0.0.0", "expected": "installs"}],
+    "depends_on": [{"repo": "agent-assembly", "event": "release.yml publish"}],
+    "failure_response": {"proposed_actions": ["yank"], "notify": ["release-owner"], "deadline_hours": 24},
+}]}
+exec(mutation)
+os.makedirs(f"{dir_}/docs/release/qa-signoff", exist_ok=True)
+with open(f"{dir_}/docs/release/qa-signoff/v{version}.publication-obligations.json", "w") as f:
+    json.dump(doc, f, indent=2)
+PYEOF2
+}
+
+# $1 name, $2 catalog (default CATALOG_PEND), $3 obligation mutation,
+# $4 qa verdict word (default CANDIDATE_VERIFIED), $5 extra qa sections.
+# Leaves $PDIR / $PA set: baseline commit holds catalog, sign-offs and the
+# obligation file TOGETHER (the realistic order: the obligation must already
+# exist at the candidate, because docs/release/qa-signoff/** is R1-EXECUTABLE
+# afterwards), evidence is generated from it but NOT yet committed.
+pending_case() {
+  PDIR=$(new_repo "$1")
+  write_common_files "$PDIR"
+  write_catalog "$PDIR" "${2:-$CATALOG_PEND}"
+  write_signoffs "$PDIR" "$(qa_pending_signoff "${4:-CANDIDATE_VERIFIED}" "${5:-}")" "$SECURITY_SIGNOFF_PASS"
+  write_obligations "$PDIR" "${3:-pass}"
+  PA=$(commit_all "$PDIR" "baseline")
+  gen_evidence "$PDIR" "$PA"
+}
+
+echo "== P1 (positive): valid pending-only record -> CANDIDATE_VERIFIED, exit 3 (never 0) =="
+pending_case p1
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "P1 valid pending -> exit 3" 3 "$PDIR" "$PA"
+assert_output_contains "P1 prints CANDIDATE_VERIFIED" "CANDIDATE_VERIFIED"
+assert_output_contains "P1 says it is not a pass" "NOT a pass"
+assert_output_contains "P1 R3 line" "R3 publication-pending: journey J01 admitted"
+case "$(jq -r '.verdict' "$PDIR/docs/release/qa-signoff/v$VERSION.evidence.json")" in
+  CANDIDATE_VERIFIED) echo "  ✓ P1 emitter verdict is CANDIDATE_VERIFIED, not PASS" ;;
+  *) echo "  ✗ P1 emitter verdict is not CANDIDATE_VERIFIED"; FAILED=1 ;;
+esac
+
+echo "== N3: pending on a journey whose fidelity != published_artifact -> BLOCK =="
+n3_catalog="${CATALOG_PEND/fidelity: published_artifact/fidelity: real_local_process}"
+pending_case n3 "$n3_catalog"
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N3 wrong fidelity" 1 "$PDIR" "$PA"
+assert_output_contains "N3 names the fidelity predicate" "only 'published_artifact' journeys can owe a publication check"
+N3_DIR="$PDIR"; N3_SHA="$PA"
+
+echo "== N4: a candidate check that is UNTESTED/FAIL -> BLOCK (checker side: forged verdict) =="
+pending_case n4 "$CATALOG_PEND" 'doc["journeys"][0]["candidate_checks"][0]["status"] = "UNTESTED"'
+patch_evidence "$PDIR" 'doc["verdict"] = "CANDIDATE_VERIFIED"'
+commit_all "$PDIR" "record forged evidence" >/dev/null
+assert_exit "N4 candidate check not PASS" 1 "$PDIR" "$PA"
+assert_output_contains "N4 names the candidate check" "candidate check 'wheel-build' status is 'UNTESTED'"
+
+echo "== N5: obligation candidate_sha != evidence candidate_sha -> BLOCK =="
+pending_case n5
+patch_evidence "$PDIR" 'doc["journeys"][0]["obligation"]["candidate_sha"] = "deadbeef"'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N5 candidate_sha mismatch" 1 "$PDIR" "$PA"
+assert_output_contains "N5 names candidate_sha" "obligation candidate_sha"
+
+echo "== N6: registry publication_checks edited after the evidence -> R2 BLOCK =="
+pending_case n6
+commit_all "$PDIR" "record evidence" >/dev/null
+write_catalog "$PDIR" "${CATALOG_PEND/resolves the candidate/resolves some other thing}"
+B6=$(commit_all "$PDIR" "edit publication_checks after evidence")
+assert_exit "N6 publication_checks drift" 1 "$PDIR" "$B6"
+assert_output_contains "N6 R2 per-journey digest" "registry definition changed since evidence was generated"
+
+echo "== N7: pending + waiver on one row -> BLOCK (forged CANDIDATE_VERIFIED verdict) =="
+pending_case n7 "$CATALOG_PEND" pass CANDIDATE_VERIFIED "
+## Waivers
+
+- **Waived by:** Fixture Owner, 2026-01-01
+- **Condition waived:** J01 \`UNTESTED_OR_BLOCKED\` (ref: \`FIX-1\`) — fixture
+- **Justification:** fixture
+"
+patch_evidence "$PDIR" 'doc["verdict"] = "CANDIDATE_VERIFIED"'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N7 pending + waiver" 1 "$PDIR" "$PA"
+assert_output_contains "N7 names the coexistence" "cannot coexist on one row"
+
+echo "== N8a: evidence says PASS but the QA sign-off line says CANDIDATE_VERIFIED -> R7 BLOCK =="
+pending_case n8a
+patch_evidence "$PDIR" 'doc["verdict"] = "PASS"'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N8a evidence PASS vs sign-off CANDIDATE_VERIFIED" 1 "$PDIR" "$PA"
+assert_output_contains "N8a R7" "R7:"
+
+echo "== N8b: evidence says CANDIDATE_VERIFIED but the QA sign-off line says PASS -> R7 BLOCK =="
+pending_case n8b "$CATALOG_PEND" pass PASS
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N8b evidence CANDIDATE_VERIFIED vs sign-off PASS" 1 "$PDIR" "$PA"
+assert_output_contains "N8b R7" "R7:"
+
+echo "== N9: post-commit edit of the evidence pending -> PASS -> R1b BLOCK =="
+pending_case n9
+commit_all "$PDIR" "record evidence" >/dev/null
+patch_evidence "$PDIR" 'doc["journeys"][0]["status"] = "PASS"; doc["verdict"] = "PASS"; doc["signoffs"]["qa"]["verdict"] = "PASS"'
+B9=$(commit_all "$PDIR" "forge pending -> PASS")
+assert_exit "N9 evidence edited after first add" 1 "$PDIR" "$B9"
+assert_output_contains "N9 R1b" "R1b:"
+
+echo "== N9b: obligation file edited after the candidate -> R1 EXECUTABLE BLOCK =="
+pending_case n9b
+commit_all "$PDIR" "record evidence" >/dev/null
+write_obligations "$PDIR" 'doc["journeys"][0]["failure_response"]["deadline_hours"] = 9999'
+B9B=$(commit_all "$PDIR" "weaken obligation after candidate")
+assert_exit "N9b obligation edited after candidate" 1 "$PDIR" "$B9B"
+assert_output_contains "N9b R1" "R1: candidate..tag_target range contains at least one EXECUTABLE"
+
+echo "== N10: CANDIDATE_VERIFIED with zero pending rows -> BLOCK =="
+pending_case n10 "$CATALOG_PEND"
+patch_evidence "$PDIR" 'doc["journeys"][0]["status"] = "PASS"; doc["journeys"][0].pop("obligation", None); doc["artifacts"] = {}'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N10 CANDIDATE_VERIFIED, no pending rows" 1 "$PDIR" "$PA"
+assert_output_contains "N10 recomputed verdict" "differs from the verdict recomputed from its journeys"
+
+echo "== N11: obligation file not in git at the tag target (untracked/working-tree only) -> BLOCK =="
+pending_case n11
+git -C "$PDIR" rm -q "docs/release/qa-signoff/v$VERSION.publication-obligations.json"
+commit_all "$PDIR" "delete the obligation file (evidence committed alongside)" >/dev/null
+assert_exit "N11 obligation absent from git" 1 "$PDIR" "HEAD"
+assert_output_contains "N11 missing" "does not exist at tag_target"
+
+echo "== N12: security sign-off must never carry CANDIDATE_VERIFIED =="
+pending_case n12
+write_signoffs "$PDIR" "$(qa_pending_signoff CANDIDATE_VERIFIED)" "# Security sign-off fixture
+
+## Verdict
+
+Verdict: CANDIDATE_VERIFIED"
+A12=$(commit_all "$PDIR" "security sign-off with pending verdict")
+rm -f "$PDIR/docs/release/qa-signoff/v$VERSION.evidence.json"
+gen_evidence "$PDIR" "$A12"
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N12 security CANDIDATE_VERIFIED" 1 "$PDIR" "$A12"
+assert_output_contains "N12 names QA-only verdict" "QA-only verdict"
+
+echo "== N13: forged evidence artifacts digest / missing failure_response -> BLOCK =="
+pending_case n13a
+patch_evidence "$PDIR" 'doc["artifacts"]["J01"]["wheel-build"]["pkg-0.0.0.tar.gz"] = "sha256:ff"'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N13a forged artifacts" 1 "$PDIR" "$PA"
+assert_output_contains "N13a" "evidence \`artifacts\` do not match"
+pending_case n13b "$CATALOG_PEND" 'doc["journeys"][0].pop("failure_response")'
+patch_evidence "$PDIR" 'doc["verdict"] = "CANDIDATE_VERIFIED"'
+commit_all "$PDIR" "record forged evidence" >/dev/null
+assert_exit "N13b no failure_response" 1 "$PDIR" "$PA"
+assert_output_contains "N13b" "has no failure_response"
+
+echo "== N14: orphan obligation entry for a journey that is not pending -> BLOCK =="
+pending_case n14 "$CATALOG_PEND" 'import copy; e = copy.deepcopy(doc["journeys"][0]); e["journey"] = "J02"; e["registry_digest"] = digest["J02"]; doc["journeys"].append(e)'
+commit_all "$PDIR" "record evidence" >/dev/null
+assert_exit "N14 orphan obligation" 1 "$PDIR" "$PA"
+assert_output_contains "N14" "not PUBLICATION_PENDING in the evidence"
+
+echo "== N15: untracked obligation edits cannot rescue a pending row (working tree is never read) =="
+pending_case n15
+commit_all "$PDIR" "record evidence" >/dev/null
+write_obligations "$PDIR" 'doc["journeys"][0]["pending_checks"][0]["command"] = "echo ok"'
+assert_exit "N15 working-tree obligation edit ignored; committed state still admitted" 3 "$PDIR" "$PA"
+git -C "$PDIR" checkout -q -- .
+
+echo "== Mutation proof: delete the fidelity predicate -> N3 must turn RED =="
+MUT_QA="$WORKDIR/mutated-qa"
+mkdir -p "$MUT_QA"
+cp "$REAL_REPO_ROOT"/scripts/qa/*.py "$MUT_QA/"
+python3 - "$MUT_QA/publication_obligations.py" <<'PYEOF3'
+import sys
+p = sys.argv[1]
+s = open(p).read()
+needle = 'if catalog_entry.get("fidelity") != PENDING_FIDELITY:'
+assert s.count(needle) == 1, "fidelity predicate not found - mutation proof is stale"
+open(p, "w").write(s.replace(needle, "if False:"))
+PYEOF3
+set +e
+python3 "$MUT_QA/build-release-evidence.py" --repo-root "$N3_DIR" --version "$VERSION" \
+  --candidate-sha "$N3_SHA" --out "$N3_DIR/docs/release/qa-signoff/mutated.json" >/dev/null 2>&1
+MUT_VERDICT="$(jq -r '.verdict' "$N3_DIR/docs/release/qa-signoff/mutated.json" 2>/dev/null)"
+cp "$N3_DIR/docs/release/qa-signoff/mutated.json" "$N3_DIR/docs/release/qa-signoff/v$VERSION.evidence.json"
+python3 "$MUT_QA/check-release-evidence.py" --repo-root "$N3_DIR" --version "$VERSION" --tag-target "$N3_SHA" >/dev/null 2>&1
+MUT_EXIT=$?
+set -e
+rm -f "$N3_DIR/docs/release/qa-signoff/mutated.json"
+git -C "$N3_DIR" checkout -q -- . 2>/dev/null || true
+if [ "$MUT_VERDICT" = "CANDIDATE_VERIFIED" ]; then
+  echo "  ✓ mutation proof: with the fidelity predicate deleted the emitter admits the wrong-fidelity row (N3 would be RED)"
+else
+  echo "  ✗ mutation proof: deleting the fidelity predicate did not change N3's emitter outcome (verdict=$MUT_VERDICT) — N3 does not guard it"
+  FAILED=1
+fi
+echo "    (checker exit under mutation, informational: $MUT_EXIT)"
+
 # ---------------------------------------------------------------------------
 
 echo
