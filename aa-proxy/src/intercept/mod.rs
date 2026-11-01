@@ -180,7 +180,8 @@ impl Interceptor {
     /// * Findings + [`CredentialAction::Block`] → [`VerdictDecision::Block`].
     /// * Findings + [`CredentialAction::RedactOnly`] →
     ///   [`VerdictDecision::ForwardRedacted`] with the redacted bytes
-    ///   populated.
+    ///   populated, or [`VerdictDecision::Block`] when the redacted text still
+    ///   re-scans as carrying a finding.
     /// * Findings + [`CredentialAction::AlertOnly`] →
     ///   [`VerdictDecision::AlertAndForward`].
     ///
@@ -255,6 +256,19 @@ impl Interceptor {
             }
             CredentialAction::RedactOnly => {
                 let redacted = scan.redact(&text);
+                // `redact_only` forwards only a body that was successfully
+                // scrubbed. The scrubbed text is scanned again, and a body
+                // that still carries a finding (a JWT whose header and payload
+                // survive the scrub, say) is refused: forwarding it would be
+                // falling back to a partly raw payload, which this mode never
+                // does (AAASM-4595).
+                if !scanner.scan(&redacted).is_clean() {
+                    return InterceptVerdict {
+                        decision: VerdictDecision::Block,
+                        findings: scan.findings,
+                        redacted_body: None,
+                    };
+                }
                 InterceptVerdict {
                     decision: VerdictDecision::ForwardRedacted,
                     findings: scan.findings,
@@ -1104,6 +1118,79 @@ mod tests {
         let (tx, _rx) = broadcast::channel(4);
         assert!(Interceptor::new(tx.clone()).inspects());
         assert!(!Interceptor::with_scanner(tx, None).inspects());
+    }
+
+    /// A JWT's header and payload survive the scrub (only its signature clears
+    /// the entropy gate), so key + JWT re-scans dirty after redaction.
+    const KEY_AND_JWT: &[u8] = b"key AKIAIOSFODNN7EXAMPLE and jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+    #[test]
+    fn redact_only_refuses_a_body_that_still_rescans_dirty_after_the_scrub() {
+        let interceptor = make_interceptor();
+        let verdict = interceptor.intercept_request(KEY_AND_JWT, None, CredentialAction::RedactOnly);
+        assert_eq!(verdict.decision, VerdictDecision::Block);
+        assert!(
+            verdict.redacted_body.is_none(),
+            "a refused body must not carry scrubbed bytes"
+        );
+        assert!(!verdict.findings.is_empty());
+    }
+
+    /// Controls for the test above: the same body is forwarded raw under
+    /// `alert_only` (by design), and a body whose scrub is clean still forwards
+    /// scrubbed, so the refusal is caused by the dirty re-scan alone.
+    #[test]
+    fn the_dirty_rescan_refusal_is_specific_to_redact_only_and_to_a_dirty_scrub() {
+        let interceptor = make_interceptor();
+        let alert = interceptor.intercept_request(KEY_AND_JWT, None, CredentialAction::AlertOnly);
+        assert_eq!(alert.decision, VerdictDecision::AlertAndForward);
+        let clean = interceptor.intercept_request(CRED_BODY, None, CredentialAction::RedactOnly);
+        assert_eq!(clean.decision, VerdictDecision::ForwardRedacted);
+    }
+
+    /// Measured (AAASM-4595): the scrubber redacts only a JWT's signature, so the
+    /// header and payload survive and re-scan dirty. Under `redact_only` ANY body
+    /// carrying a JWT is therefore refused, where before it was scrubbed and
+    /// forwarded with those two segments intact. Pinned as the actual behaviour,
+    /// not as an endorsement of it: whole-token JWT redaction belongs in the shared
+    /// scanner and is tracked separately.
+    const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+    #[test]
+    fn redact_only_refuses_every_body_carrying_a_jwt() {
+        let interceptor = make_interceptor();
+        for body in [
+            format!("decode {JWT} please"),
+            format!(r#"{{"messages":[{{"content":"decode {JWT}"}}]}}"#),
+            format!("Authorization: Bearer {JWT}"),
+        ] {
+            let v = interceptor.intercept_request(body.as_bytes(), None, CredentialAction::RedactOnly);
+            assert_eq!(v.decision, VerdictDecision::Block, "{body}");
+            assert!(v.redacted_body.is_none());
+            assert!(!v.findings.is_empty());
+            // alert_only is the opt-out: it forwards the original.
+            let a = interceptor.intercept_request(body.as_bytes(), None, CredentialAction::AlertOnly);
+            assert_eq!(a.decision, VerdictDecision::AlertAndForward, "{body}");
+        }
+    }
+
+    /// Controls for the test above: an AWS key and a generic high-entropy token
+    /// scrub clean under `redact_only` and are forwarded scrubbed.
+    #[test]
+    fn redact_only_still_scrubs_and_forwards_an_aws_key_and_a_generic_token() {
+        let interceptor = make_interceptor();
+        for (body, marker) in [
+            ("key AKIAIOSFODNN7EXAMPLE", "[REDACTED:AwsAccessKey]"),
+            (
+                "token 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+                "[REDACTED:GenericHighEntropy]",
+            ),
+        ] {
+            let v = interceptor.intercept_request(body.as_bytes(), None, CredentialAction::RedactOnly);
+            assert_eq!(v.decision, VerdictDecision::ForwardRedacted, "{body}");
+            let sent = String::from_utf8_lossy(&v.redacted_body.expect("scrubbed body")).into_owned();
+            assert!(sent.contains(marker), "{sent}");
+        }
     }
 
     #[test]

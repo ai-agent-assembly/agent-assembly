@@ -50,8 +50,8 @@ pub mod validator;
 pub use canonical::CanonicalLeaseGrant;
 pub use context::{ContextError, PolicyContext};
 pub use document::{
-    ActiveHours, BudgetPolicy, CredentialBrokeragePosture, DataPolicy, EgressPosture, LeaseDomain, LeaseGrant,
-    LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolCapability, ToolPolicy,
+    ActiveHours, BudgetPolicy, CredentialAction, CredentialBrokeragePosture, DataPolicy, EgressPosture, LeaseDomain,
+    LeaseGrant, LeaseScope, NetworkPolicy, PolicyDocument, SchedulePolicy, ToolCapability, ToolPolicy,
 };
 pub use error::{PolicyParseError, ValidationError, ValidationWarning};
 pub use expr::{evaluate_clause, ClauseKind, ResolutionFailure};

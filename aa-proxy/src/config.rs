@@ -12,10 +12,13 @@ use crate::error::ProxyError;
 ///
 /// Mirrors the variants of `aa_gateway::policy::document::CredentialAction`
 /// but lives in the proxy crate so the data path can enforce locally without
-/// depending on the gateway. It is NOT driven by the gateway policy: the proxy
-/// reads it from its own environment (`AA_PROXY_CREDENTIAL_ACTION`), and its
-/// scanner holds built-in patterns only, so a gateway policy's custom
-/// patterns or locale packs are not applied by the proxy.
+/// depending on the gateway. The proxy never reads a policy: it reads this from
+/// its own environment (`AA_PROXY_CREDENTIAL_ACTION`). `aasm run` sets that
+/// variable from the launch's resolved policy (`data.credential_action`,
+/// AAASM-4595); a standalone `aasm proxy start` does not, so it follows
+/// whatever its own environment says, defaulting to `redact_only`. The scanner
+/// holds built-in patterns only, so a gateway policy's custom patterns or
+/// locale packs are not applied by the proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CredentialAction {
     /// Refuse the request: the proxy returns 403 to the client and **never**
@@ -28,6 +31,20 @@ pub enum CredentialAction {
     /// Forward the unmodified body and raise a critical alert as a
     /// side-effect. Documented as a deliberate downgrade for audit-only modes.
     AlertOnly,
+}
+
+impl CredentialAction {
+    /// The `AA_PROXY_CREDENTIAL_ACTION` value that selects this action.
+    ///
+    /// The inverse of the env parser: a launcher that spawns the proxy writes
+    /// this, and `from_env` must read the same action back.
+    pub const fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::RedactOnly => "redact_only",
+            Self::AlertOnly => "alert_only",
+        }
+    }
 }
 
 /// Runtime configuration for the proxy sidecar.
@@ -1270,6 +1287,20 @@ mod tests {
 
         let cfg = ProxyConfig::from_env().unwrap();
         assert_eq!(cfg.credential_action, CredentialAction::AlertOnly);
+    }
+
+    /// A launcher writes `as_env_value()` and the proxy parses it: the pair
+    /// must round-trip for every action, or a spawned proxy runs a different
+    /// action than the one it was launched with.
+    #[test]
+    fn as_env_value_round_trips_through_the_env_parser() {
+        for action in [
+            CredentialAction::Block,
+            CredentialAction::RedactOnly,
+            CredentialAction::AlertOnly,
+        ] {
+            assert_eq!(parse_credential_action(action.as_env_value()).unwrap(), action);
+        }
     }
 
     #[test]
