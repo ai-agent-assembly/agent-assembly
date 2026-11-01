@@ -1,0 +1,20 @@
+{
+  "journeys": [
+    {
+      "journey": "J97",
+      "registry_digest": "__DIGEST__",
+      "candidate_checks": [
+        {"id": "wheel-build", "status": "PASS", "fidelity": "real_local_process",
+         "evidence_ref": "synthetic://wheel-build", "negative_control": null,
+         "artifact_digests": {"agent_assembly-0.0.0.tar.gz": "sha256:00"}}
+      ],
+      "pending_checks": [
+        {"id": "pypi-install", "channel": "pypi",
+         "why_publication_only": "needs the file to exist on PyPI",
+         "command": "pip install agent-assembly==0.0.0", "expected": "installs and imports"}
+      ],
+      "depends_on": [{"repo": "agent-assembly", "event": "release.yml publish"}],
+      "failure_response": {"proposed_actions": ["yank the release"], "notify": ["release-owner"], "deadline_hours": 24}
+    }
+  ]
+}

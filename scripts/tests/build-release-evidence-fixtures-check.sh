@@ -135,6 +135,83 @@ python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-header-reorder
 check "J96 (Result found by header despite reordered columns)" "$(jq -r '.journeys[0].status' "$TMP_REORDER")" "BLOCKED"
 rm -f "$TMP_REORDER"
 
+# ---------------------------------------------------------------------------
+# AAASM-6419: PUBLICATION_PENDING / CANDIDATE_VERIFIED emitter behaviour.
+# ---------------------------------------------------------------------------
+PEND_TMP="$(mktemp -d)"
+trap 'cleanup; rm -rf "$PEND_TMP"' EXIT
+
+# $1 = python expression body mutating `doc` (the obligations object);
+# writes $PEND_TMP/obligations.json with J97's real registry digest filled in.
+make_obligations() {
+  python3 - "$FIX" "$PEND_TMP/obligations.json" "${1:-pass}" <<'PYEOF'
+import json, sys, yaml
+sys.path.insert(0, "scripts/qa")
+import registry_digest as rd
+fix, out, mutation = sys.argv[1], sys.argv[2], sys.argv[3]
+doc = json.load(open(f"{fix}/publication-obligations-pending.json"))
+entries = yaml.safe_load(open(f"{fix}/catalog-pending.yaml"))["journeys"]
+digests = {e["id"]: rd.per_journey_digest(e) for e in entries}
+for j in doc["journeys"]:
+    j["registry_digest"] = digests[j["journey"]]
+exec(mutation)
+json.dump(doc, open(out, "w"))
+PYEOF
+}
+
+# $1 qa-signoff path, $2 obligations path -> evidence json path ($PEND_TMP/ev.json)
+emit_pending() {
+  rm -f "$PEND_TMP/ev.json"
+  python3 scripts/qa/build-release-evidence.py --version 0.0.0-test-pending \
+    --repo-root . --candidate-sha "$SYNTH_SHA" \
+    --catalog "$FIX/catalog-pending.yaml" \
+    --qa-signoff "$1" --security-signoff "$FIX/security-signoff-minimal.md" \
+    --obligations "$2" --out "$PEND_TMP/ev.json" 2>"$PEND_TMP/err.txt"
+}
+
+echo "== AAASM-6419 pending fixture: valid obligation -> PUBLICATION_PENDING row, CANDIDATE_VERIFIED verdict =="
+make_obligations
+emit_pending "$FIX/qa-signoff-pending.md" "$PEND_TMP/obligations.json" >/dev/null
+check "J97 status" "$(jq -r '.journeys[] | select(.id=="J97") | .status' "$PEND_TMP/ev.json")" "PUBLICATION_PENDING"
+check "J98 status" "$(jq -r '.journeys[] | select(.id=="J98") | .status' "$PEND_TMP/ev.json")" "PASS"
+check "verdict (never PASS while a row is pending)" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "CANDIDATE_VERIFIED"
+check "obligation stamped with the candidate sha" "$(jq -r '.journeys[] | select(.id=="J97") | .obligation.candidate_sha' "$PEND_TMP/ev.json")" "$SYNTH_SHA"
+check "candidate artifact digests copied into artifacts" "$(jq -r '.artifacts.J97["wheel-build"]["agent_assembly-0.0.0.tar.gz"]' "$PEND_TMP/ev.json")" "sha256:00"
+
+echo "== N1: PUBLICATION_PENDING cell with no obligation entry -> emitter error naming the journey =="
+make_obligations 'doc["journeys"] = []'
+if emit_pending "$FIX/qa-signoff-pending.md" "$PEND_TMP/obligations.json" >/dev/null && true; then
+  echo "  ✗ N1 emitter exited 0 for a pending token with no obligation"; FAILED=1
+elif grep -q "J97" "$PEND_TMP/err.txt"; then
+  echo "  ✓ N1 emitter refused and named J97"
+else
+  echo "  ✗ N1 emitter failed without naming J97: $(cat "$PEND_TMP/err.txt")"; FAILED=1
+fi
+
+echo "== N2: '... PASS' pending cell maps to pending, '... FAIL' maps to FAIL (token order) =="
+sed 's/pypi-install owed after publication/pypi-install FAIL owed/' "$FIX/qa-signoff-pending.md" > "$PEND_TMP/signoff-fail.md"
+make_obligations
+emit_pending "$PEND_TMP/signoff-fail.md" "$PEND_TMP/obligations.json" >/dev/null
+check "N2 J97 with FAIL prose" "$(jq -r '.journeys[] | select(.id=="J97") | .status' "$PEND_TMP/ev.json")" "FAIL"
+check "N2 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+
+echo "== N3 (emitter side): pending claimed on a mock-fidelity journey -> BLOCK =="
+sed 's/| J98 | P1 | \*\*PASS\*\*/| J98 | P1 | **PUBLICATION_PENDING**/' "$FIX/qa-signoff-pending.md" > "$PEND_TMP/signoff-j98.md"
+make_obligations 'import copy; e = copy.deepcopy(doc["journeys"][0]); e["journey"] = "J98"; e["registry_digest"] = digests["J98"]; doc["journeys"].append(e)'
+emit_pending "$PEND_TMP/signoff-j98.md" "$PEND_TMP/obligations.json" >/dev/null
+check "N3 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+
+echo "== N4 (emitter side): a candidate check that is not PASS -> BLOCK =="
+make_obligations 'doc["journeys"][0]["candidate_checks"][0]["status"] = "UNTESTED"'
+emit_pending "$FIX/qa-signoff-pending.md" "$PEND_TMP/obligations.json" >/dev/null
+check "N4 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+
+echo "== N7 (emitter side): pending + waiver on one row -> BLOCK, never PASS =="
+{ cat "$FIX/qa-signoff-pending.md"; printf '\n## Waivers\n\n- **Waived by:** Fixture Owner, 2026-01-01\n- **Condition waived:** J97 `UNTESTED_OR_BLOCKED` (ref: `FIX-1`) — fixture\n- **Justification:** fixture\n'; } > "$PEND_TMP/signoff-waived.md"
+make_obligations
+emit_pending "$PEND_TMP/signoff-waived.md" "$PEND_TMP/obligations.json" >/dev/null
+check "N7 verdict" "$(jq -r '.verdict' "$PEND_TMP/ev.json")" "BLOCK"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "build-release-evidence fixtures check: PASS"
 else
