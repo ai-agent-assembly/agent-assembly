@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa"))
 import b1_candidate_common as c  # noqa: E402
@@ -64,7 +65,7 @@ class KillOwnedDaemonTests(unittest.TestCase):
         self.assertIsNotNone(p.wait(timeout=10))
 
     def test_symlinked_owner_with_realpath_argv_is_killed(self) -> None:
-        p = self._spawn(_SLEEP + [str(self.real / "marker")], self.foreign)
+        p = self._spawn(_SLEEP + [str(self.real)], self.foreign)
         c.kill_owned_daemon(self._pidfile(p.pid), self.link)
         self._assert_killed(p)
 
@@ -79,6 +80,51 @@ class KillOwnedDaemonTests(unittest.TestCase):
         time.sleep(0.5)
         self.assertIsNone(p.poll())
         self.assertTrue(_alive(p.pid))
+
+    def test_sibling_dir_sharing_name_prefix_is_not_owned(self) -> None:
+        owner = self.real.parent / "ab"
+        sibling = self.real.parent / "abc"
+        owner.mkdir()
+        sibling.mkdir()
+        p = self._spawn(_SLEEP + [str(sibling / "x")], sibling)
+        c.kill_owned_daemon(self._pidfile(p.pid), owner)
+        time.sleep(0.5)
+        self.assertIsNone(p.poll())
+
+    def test_file_mentioned_under_owner_does_not_prove_ownership(self) -> None:
+        p = self._spawn(_SLEEP + [str(self.real / "x.log")], self.foreign)
+        c.kill_owned_daemon(self._pidfile(p.pid), self.real)
+        time.sleep(0.5)
+        self.assertIsNone(p.poll())
+
+    def test_flag_equals_owner_path_is_owned(self) -> None:
+        p = self._spawn(_SLEEP + [f"--home={self.real}"], self.foreign)
+        c.kill_owned_daemon(self._pidfile(p.pid), self.link)
+        self._assert_killed(p)
+
+    def test_non_path_lsof_names_are_ignored(self) -> None:
+        # A socket-style name must never be resolved against the harness cwd.
+        cwd = os.getcwd()
+        os.chdir(self.real)
+        self.addCleanup(os.chdir, cwd)
+        p = self._spawn(_SLEEP, self.foreign)
+        fake = "p1\nn*:8080\nn->0xdeadbeef\nnpipe\n"
+        with mock.patch.object(c, "_run_text", side_effect=["sleep\n", fake]):
+            self.assertFalse(c.pid_owned_by(p.pid, self.real))
+
+    def test_ownership_is_reproven_before_sigkill(self) -> None:
+        p = self._spawn(_SLEEP, self.real)
+        proofs = iter([True, False])
+        sent: list[int] = []
+        with mock.patch.object(c, "pid_owned_by", side_effect=lambda *_: next(proofs)), \
+                mock.patch.object(c.os, "kill", side_effect=lambda pid, sig: sent.append(sig)), \
+                mock.patch.object(c.time, "sleep"):
+            c.kill_owned_daemon(self._pidfile(p.pid), self.real)
+        self.assertEqual(sent[0], signal.SIGTERM)
+        self.assertNotIn(signal.SIGKILL, sent)
+
+    def test_relative_owner_fails_closed(self) -> None:
+        self.assertFalse(c.pid_owned_by(os.getpid(), Path("relative")))
 
     def test_pidfile_naming_owned_dir_alone_proves_nothing(self) -> None:
         p = self._spawn(_SLEEP + [str(self.foreign)], self.foreign)
