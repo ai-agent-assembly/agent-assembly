@@ -5,10 +5,10 @@
 
 INSTALL_CLI="$BATS_TEST_DIRNAME/../scripts/install-cli.sh"
 
-@test "parse_args: default selection is CLI only" {
+@test "parse_args: default selection is cli + api" {
   AASM_LIB=1 . "$INSTALL_CLI"
   parse_args
-  [ "$COMPONENTS" = "cli" ]
+  [ "$COMPONENTS" = "cli api" ]
 }
 
 @test "parse_args: --component cli keeps CLI only" {
@@ -23,16 +23,16 @@ INSTALL_CLI="$BATS_TEST_DIRNAME/../scripts/install-cli.sh"
   [ "$COMPONENTS" = "cli runtime" ]
 }
 
-@test "parse_args: --profile local maps to cli + runtime" {
+@test "parse_args: --profile local maps to cli + api + runtime" {
   AASM_LIB=1 . "$INSTALL_CLI"
   parse_args --profile local
-  [ "$COMPONENTS" = "cli runtime" ]
+  [ "$COMPONENTS" = "cli api runtime" ]
 }
 
-@test "parse_args: --profile full maps to cli + runtime + proxy" {
+@test "parse_args: --profile full maps to cli + api + runtime + proxy" {
   AASM_LIB=1 . "$INSTALL_CLI"
   parse_args --profile full
-  [ "$COMPONENTS" = "cli runtime proxy" ]
+  [ "$COMPONENTS" = "cli api runtime proxy" ]
 }
 
 @test "parse_args: repeated components are de-duplicated, order preserved" {
@@ -52,7 +52,7 @@ INSTALL_CLI="$BATS_TEST_DIRNAME/../scripts/install-cli.sh"
   run parse_args --component bogus
   [ "$status" -ne 0 ]
   [[ "$output" == *"unknown component: 'bogus'"* ]]
-  [[ "$output" == *"cli runtime proxy ebpf"* ]]
+  [[ "$output" == *"cli api runtime proxy ebpf"* ]]
 }
 
 @test "parse_args: unknown profile fails with actionable error" {
@@ -73,6 +73,7 @@ INSTALL_CLI="$BATS_TEST_DIRNAME/../scripts/install-cli.sh"
 @test "component_binary: maps components to their binary names" {
   AASM_LIB=1 . "$INSTALL_CLI"
   [ "$(component_binary cli)" = "aasm" ]
+  [ "$(component_binary api)" = "aa-api-server" ]
   [ "$(component_binary runtime)" = "aa-runtime" ]
   [ "$(component_binary proxy)" = "aa-proxy" ]
   [ "$(component_binary ebpf)" = "aa-ebpf" ]

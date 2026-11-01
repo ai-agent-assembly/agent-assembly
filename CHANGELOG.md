@@ -36,6 +36,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`install.sh` now installs `aa-gateway` and `aa-api-server` (AAASM-6414)** — the `cli`
+  component extracted only `aasm` from a tarball that also carries `aa-gateway`, so
+  `aasm gateway start` failed with "aa-gateway binary not found" after an install, and there
+  was no `api` component for the `aa-api-server` that `aasm start --mode local` launches. `cli`
+  now installs both `aasm` and `aa-gateway`; a new `api` component (in the default set and the
+  `local`/`full` profiles) installs `aa-api-server`; the install manifest and `--uninstall`
+  cover every binary; and all tarballs are verified before any is copied. An implicit `api` is
+  skipped with a warning for older releases that publish no api tarball; `--component api` or
+  a checksum mismatch fails. The `SHA256SUMS` download error no longer prints a literal `\n`.
 - **`--workspace-tx` no longer stages over a half-applied base (AAASM-6305)** — an apply
   that crashed or failed part-way left its journal behind, and the next
   `aasm run --workspace-tx` over the same directory silently re-staged from the
