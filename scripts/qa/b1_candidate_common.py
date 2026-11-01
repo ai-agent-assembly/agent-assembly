@@ -213,9 +213,9 @@ def _txt_images(lsof_f: str) -> list[str]:
 
 
 def pid_owned_by(pid: int, owner: Path) -> bool:
-    """Per-PID ownership proof, fail-closed. True only when this PID runs an executable image
-    (lsof `txt` entry) whose realpath lies under realpath(owner) by path component. The harness
-    copies the daemons into `<owner>/bin`, so only our own daemon, including a bare-name PATH
+    """Per-PID ownership proof, fail-closed. True only when this PID maps a `txt` image (lsof
+    `txt` entry: the executable or a mapped image, not strictly the main executable) whose realpath lies under
+    realpath(owner) by path component. The harness copies the daemons into `<owner>/bin`, so only our own daemon, including a bare-name PATH
     launch, executes from there. argv, cwd, open files and sockets are deliberately NOT evidence:
     a foreign process (`tail <owner>/x`, a shell cd'd into owner, mdworker, a connected client)
     can show any of them. Never matches by name or pattern.
