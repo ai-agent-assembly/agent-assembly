@@ -136,3 +136,9 @@ Report the verdict printed by the emitter (`wrote <path> (verdict: <V>)`).
   and after; each prior path's history should gain zero new commits.
 - `scripts/qa/check-release-evidence.py --version <X> --tag-target HEAD`
   (no `--evidence` override) resolves to the file this run just wrote.
+- If the committed `v<X>.publication-obligations.json` exists (AAASM-6419, Core
+  ADR 0042), it was committed **before** this run (it must already exist at
+  `candidate_sha`; it cannot be added afterwards) and the evidence verdict is
+  `PASS` or `CANDIDATE_VERIFIED`. The checker exits 3 for `CANDIDATE_VERIFIED`;
+  report that as "candidate verified, N publication checks pending — not PASS",
+  never as green.
