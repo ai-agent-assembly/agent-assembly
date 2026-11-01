@@ -81,6 +81,7 @@ if a[:1] == ["stop"]:
     except (OSError, ValueError): pass
     sys.exit(0)
 if a[:1] == ["status"]:
+    if MODE == "slow_status" and "--api-url" not in a: time.sleep(60)
     if "--api-url" in a: print("error: cannot connect to the gateway (connection refused)"); sys.exit(1)
     print("Health:    ok"); sys.exit(0)
 if a[:2] == ["topology", "overview"] or a[:2] == ["policy", "list"] or a[:1] in (["audit"], ["logs"]):
@@ -158,16 +159,23 @@ class Fixture:
         self.tmpdir = self.dir / "tmp"
         self.tmpdir.mkdir()
 
-    def run(self, digests=True, fragment=False):
-        out, frag = self.dir / "report.json", self.dir / "fragment.json"
+    def argv(self, digests=True, fragment=False):
         argv = [sys.executable, "-I", str(HARNESS), "--candidate-sha", self.sha, "--expected-version", "0.0.1-rc.8",
-                "--repo", str(self.repo), "--aasm-bin", str(self.aasm), "--api-server-bin", str(self.api), "--out", str(out)]
+                "--repo", str(self.repo), "--aasm-bin", str(self.aasm), "--api-server-bin", str(self.api),
+                "--out", str(self.dir / "report.json")]
         if digests:
             argv += ["--expected-digests", str(self.digests)]
         if fragment:
-            argv += ["--obligation-fragment", str(frag)]
-        p = subprocess.run(argv, env={"PATH": "/usr/bin:/bin", "TMPDIR": str(self.tmpdir)}, capture_output=True, text=True, timeout=180)
-        return p.returncode, (json.loads(out.read_text()) if out.exists() else None), (frag.exists())
+            argv += ["--obligation-fragment", str(self.dir / "fragment.json")]
+        return argv
+
+    def env(self):
+        return {"PATH": "/usr/bin:/bin", "TMPDIR": str(self.tmpdir)}
+
+    def run(self, digests=True, fragment=False):
+        p = subprocess.run(self.argv(digests, fragment), env=self.env(), capture_output=True, text=True, timeout=180)
+        out = self.dir / "report.json"
+        return p.returncode, (json.loads(out.read_text()) if out.exists() else None), (self.dir / "fragment.json").exists()
 
 
 def st(rep, cid):
@@ -220,7 +228,52 @@ class J59HarnessTests(unittest.TestCase):
         fx.run()
         self.assertEqual(list(fx.tmpdir.iterdir()), [])
         ps = subprocess.run(["/bin/ps", "-axo", "command"], capture_output=True, text=True).stdout
-        self.assertNotIn("__serve", ps)
+        self.assertEqual([l for l in ps.splitlines() if str(fx.tmpdir.resolve()) in l], [])
+
+    def test_not_covered_rows_claim_no_fidelity(self):
+        fx = Fixture(self)
+        _, rep, _ = fx.run()
+        rows = [c for c in rep["candidate_checks"] if c["status"] == "NOT_COVERED"]
+        self.assertEqual(len(rows), 5)
+        self.assertEqual({c["fidelity"] for c in rows}, {"none"})
+
+    def test_stale_fragment_is_removed(self):
+        fx = Fixture(self)
+        (fx.dir / "fragment.json").write_text('{"journeys": [{"stale": true}]}')
+        _, _, frag = fx.run(fragment=True)
+        self.assertFalse(frag)
+
+    def test_malformed_expected_digests_is_a_clean_usage_error(self):
+        fx = Fixture(self)
+        for text in ("{not json", "[]", json.dumps({"aasm": "nope"})):
+            fx.digests.write_text(text)
+            p = subprocess.run(fx.argv(), env=fx.env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, text)
+            self.assertNotIn("Traceback", p.stderr)
+
+    def test_sigterm_mid_run_leaves_no_daemon_and_no_temp_dir(self):
+        import signal
+        import time
+        fx = Fixture(self, mode="slow_status")
+        proc = subprocess.Popen(fx.argv(), env=fx.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+
+        def mine():
+            ps = subprocess.run(["/bin/ps", "-axo", "command"], capture_output=True, text=True).stdout
+            # the harness copies the stub into its own mktemp dir under TMPDIR (the resolved path)
+            return [l for l in ps.splitlines() if str(fx.tmpdir.resolve()) in l]
+
+        def server_up():
+            return any("__serve" in l for l in mine())
+
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not (server_up() and any(" status" in l for l in mine())):
+            time.sleep(0.2)
+        self.assertTrue(server_up(), "the daemonized stub server never started, so the test proves nothing")
+        proc.send_signal(signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=90), 128 + signal.SIGTERM)
+        self.assertEqual(mine(), [], "orphaned daemon or child left behind")
+        self.assertEqual(list(fx.tmpdir.iterdir()), [], "temp dir leaked")
 
     # --- negative controls ---
 

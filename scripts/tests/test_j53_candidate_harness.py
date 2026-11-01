@@ -96,9 +96,8 @@ class Fixture:
         self.tmpdir = self.dir / "tmp"
         self.tmpdir.mkdir()
 
-    def run(self, expected_version="0.0.1-rc.8", digests=True, docs=True, fragment=False):
+    def argv(self, expected_version="0.0.1-rc.8", digests=True, docs=True, fragment=False):
         out = self.dir / "report.json"
-        frag = self.dir / "fragment.json"
         argv = [sys.executable, "-I", str(HARNESS), "--candidate-sha", self.sha,
                 "--expected-version", expected_version, "--repo", str(self.repo),
                 "--gateway-bin", str(self.bin), "--out", str(out)]
@@ -107,9 +106,15 @@ class Fixture:
         if docs:
             argv += ["--docs-dir", str(self.docs)]
         if fragment:
-            argv += ["--obligation-fragment", str(frag)]
-        env = {"PATH": "/usr/bin:/bin", "TMPDIR": str(self.tmpdir)}
-        p = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+            argv += ["--obligation-fragment", str(self.dir / "fragment.json")]
+        return argv
+
+    def env(self):
+        return {"PATH": "/usr/bin:/bin", "TMPDIR": str(self.tmpdir)}
+
+    def run(self, **kw):
+        p = subprocess.run(self.argv(**kw), env=self.env(), capture_output=True, text=True, timeout=120)
+        out, frag = self.dir / "report.json", self.dir / "fragment.json"
         report = json.loads(out.read_text()) if out.exists() else None
         return p.returncode, report, (json.loads(frag.read_text()) if frag.exists() else None)
 
@@ -197,6 +202,48 @@ class J53HarnessTests(unittest.TestCase):
         self.assertNotIn(str(fx.bin), left)
 
     # --- negative controls: every one drives the real harness over known-bad input ---
+
+    def test_not_covered_rows_claim_no_fidelity(self):
+        fx = Fixture(self)
+        _, rep, _ = fx.run(docs=False)
+        row = next(c for c in rep["candidate_checks"] if c["status"] == "NOT_COVERED")
+        self.assertEqual(row["fidelity"], "none")
+        self.assertIn("POINTER", rep["negative_control_note"])
+
+    def test_stale_fragment_is_removed_when_the_run_is_not_verified(self):
+        fx = Fixture(self)
+        (fx.dir / "fragment.json").write_text('{"journeys": [{"stale": true}]}')
+        rc, rep, frag = fx.run(digests=False, fragment=True)
+        self.assertEqual(rep["verdict"], "CANDIDATE_INCOMPLETE")
+        self.assertIsNone(frag, "a stale fragment must not survive an unverified run")
+
+    def test_malformed_expected_digests_is_a_clean_usage_error(self):
+        fx = Fixture(self)
+        for text in ("{not json", "[]", json.dumps({"aa-gateway": "deadbeef"})):
+            fx.digests.write_text(text)
+            p = subprocess.run(fx.argv(), env=fx.env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, text)
+            self.assertNotIn("Traceback", p.stderr)
+
+    def test_sigterm_mid_run_leaves_no_orphan_and_no_temp_dir(self):
+        import signal
+        import time
+        fx = Fixture(self, mode="never_listen")
+        proc = subprocess.Popen(fx.argv(), env=fx.env(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: proc.poll() is None and proc.kill())
+
+        def stub_running():
+            ps = subprocess.run(["/bin/ps", "-axo", "command"], capture_output=True, text=True).stdout
+            return any(str(fx.bin.resolve()) in l and "--listen" in l for l in ps.splitlines())
+
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not stub_running():
+            time.sleep(0.2)
+        self.assertTrue(stub_running(), "the stub gateway never started, so the test proves nothing")
+        proc.send_signal(signal.SIGTERM)
+        self.assertEqual(proc.wait(timeout=60), 128 + signal.SIGTERM)
+        self.assertFalse(stub_running(), "orphaned gateway left behind")
+        self.assertEqual(list(fx.tmpdir.iterdir()), [], "temp dir leaked")
 
     def test_tampered_binary_fails(self):
         fx = Fixture(self)
