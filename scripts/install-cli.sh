@@ -1,7 +1,7 @@
 #!/bin/sh
 # One-line installer for Agent Assembly components (ADR-014).
 #
-# Default (CLI only):
+# Default (cli + api: aasm, aa-gateway, aa-api-server):
 #   curl -sSf https://agent-assembly.com/install.sh | sh
 #
 # Select components / profiles — pass options to the SHELL, not to curl:
@@ -46,10 +46,10 @@ Install the Agent Assembly components.
 USAGE:
   install.sh [OPTIONS]
 
-By default this installs the CLI only. To pass options through a piped install,
+By default this installs the cli and api components. To pass options through a piped install,
 send them to the SHELL, not to curl:
 
-  curl -fsSL https://agent-assembly.com/install.sh | sh                         # CLI only
+  curl -fsSL https://agent-assembly.com/install.sh | sh                         # cli + api
   curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --components cli,runtime
   curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --profile full
 
@@ -68,15 +68,18 @@ OPTIONS:
   -h, --help                 Show this help and exit.
 
 COMPONENTS:
-  cli       the `aasm` command (default)
+  cli       the `aasm` command plus the `aa-gateway` daemon it launches (default)
+  api       the local API server (aa-api-server) that `aasm start --mode local`
+            launches (default; skipped with a warning if a release predates it
+            and you did not name it explicitly)
   runtime   the local runtime daemon (aa-runtime)
   proxy     the proxy enforcement layer
   ebpf      the eBPF component (supported Linux platforms only)
 
 PROFILES:
-  cli       cli
-  local     cli,runtime
-  full      cli,runtime,proxy   (ebpf only where explicitly supported)
+  cli       cli                 (aasm + aa-gateway, no API server)
+  local     cli,api,runtime
+  full      cli,api,runtime,proxy   (ebpf only where explicitly supported)
 
 Note: installing `runtime` does NOT start it. Start it yourself afterwards.
 
@@ -152,7 +155,11 @@ detect_arch_short() {
 
 # Space-separated list of installable components. `cli` is the default and is the
 # only component installed when no --component/--components/--profile is given.
-VALID_COMPONENTS="cli runtime proxy ebpf"
+VALID_COMPONENTS="cli api runtime proxy ebpf"
+
+# Components installed when no --component/--components/--profile is given. `api`
+# is included because `aasm start --mode local` execs aa-api-server (AAASM-6414).
+DEFAULT_COMPONENTS="cli api"
 
 is_valid_component() {
   case " ${VALID_COMPONENTS} " in
@@ -165,20 +172,31 @@ resolve_profile() {
   # Expand a profile name to its space-separated component list.
   case "$1" in
     cli)   echo "cli" ;;
-    local) echo "cli runtime" ;;
-    full)  echo "cli runtime proxy" ;;   # ebpf added only where explicitly supported
+    local) echo "cli api runtime" ;;
+    full)  echo "cli api runtime proxy" ;;   # ebpf added only where explicitly supported
     *)     err "unknown profile: $1 (valid: cli, local, full)" ;;
   esac
 }
 
 component_binary() {
-  # The binary name a component ships inside its tarball.
+  # The primary binary name a component ships inside its tarball.
   case "$1" in
     cli)     echo "aasm" ;;
+    api)     echo "aa-api-server" ;;
     runtime) echo "aa-runtime" ;;
     proxy)   echo "aa-proxy" ;;
     ebpf)    echo "aa-ebpf" ;;
     *)       err "unknown component: $1 (valid: ${VALID_COMPONENTS})" ;;
+  esac
+}
+
+component_binaries() {
+  # Every binary a component's tarball carries, space-separated. The cli tarball
+  # packs aa-gateway next to aasm (release.yml) because `aasm gateway start`
+  # looks for it beside the aasm executable (AAASM-6414).
+  case "$1" in
+    cli) echo "aasm aa-gateway" ;;
+    *)   component_binary "$1" ;;
   esac
 }
 
@@ -192,7 +210,7 @@ component_artifact() {
     cli)
       echo "aasm-$(detect_arch)-$(detect_os).tar.gz"
       ;;
-    runtime|proxy|ebpf)
+    api|runtime|proxy|ebpf)
       echo "aasm-${component}-${version}-$(detect_os_short)-$(detect_arch_short).tar.gz"
       ;;
     *)
@@ -309,26 +327,40 @@ check_artifact_available() {
   curl -fsIL -o /dev/null "$1" 2>/dev/null
 }
 
-install_component() {
-  # Download, checksum-verify, extract, and install one component's binary.
-  # Args: <component> <version> <tmp-dir> <sums-file> <install-dir>
-  comp="$1" cver="$2" tmp="$3" sums="$4" dir="$5"
+fetch_component() {
+  # Download, checksum-verify and extract one component's binaries into
+  # <tmp>/<component>/. Installs nothing: main() stages every component before
+  # copying any, so a bad artifact leaves the install dir untouched.
+  # Args: <component> <version> <tmp-dir> <sums-file>
+  comp="$1" cver="$2" tmp="$3" sums="$4"
   artifact="$(component_artifact "$comp" "$cver")"
-  bin="$(component_binary "$comp")"
   url="https://github.com/${REPO}/releases/download/${cver}/${artifact}"
+  stage="${tmp}/${comp}"
 
+  mkdir -p "$stage"
   curl -sSfL "$url" -o "${tmp}/${artifact}" \
     || err "download failed for component '${comp}': ${url}"
   sha256_verify "${tmp}/${artifact}" "$sums"
-  tar -C "$tmp" -xzf "${tmp}/${artifact}" "$bin" \
-    || err "failed to extract ${bin} from ${artifact}"
+  for bin in $(component_binaries "$comp"); do
+    tar -C "$stage" -xzf "${tmp}/${artifact}" "$bin" 2>/dev/null \
+      && [ -f "${stage}/${bin}" ] \
+      || err "${artifact} does not contain the expected binary '${bin}' — refusing to install."
+  done
+}
+
+install_component() {
+  # Copy one staged component's binaries into the install directory.
+  # Args: <component> <tmp-dir> <install-dir>
+  comp="$1" tmp="$2" dir="$3"
   mkdir -p "$dir"
-  install -m755 "${tmp}/${bin}" "${dir}/${bin}"
-  say "Installed: ${dir}/${bin}"
+  for bin in $(component_binaries "$comp"); do
+    install -m755 "${tmp}/${comp}/${bin}" "${dir}/${bin}"
+    say "Installed: ${dir}/${bin}"
+  done
 
   # Component-specific next steps. Runtime is never auto-started (ADR-014).
   case "$comp" in
-    runtime) say "  Runtime installed but NOT started. Start it with:  ${bin} --help" ;;
+    runtime) say "  Runtime installed but NOT started. Start it with:  $(component_binary "$comp") --help" ;;
   esac
 }
 
@@ -374,7 +406,7 @@ write_manifest() {
     echo "updated=$(now_utc)"
     for _c in $_all_comps; do
       echo "component=${_c}"
-      echo "binary=$(component_binary "$_c")"
+      for _b in $(component_binaries "$_c"); do echo "binary=${_b}"; done
     done
     echo "config_location=$(aa_config_dir)"
     echo "state_location=$(aa_state_dir)"
@@ -444,9 +476,7 @@ do_uninstall() {
 
   say "Uninstalling [${_scope}] from ${_root}$( [ "${DRY_RUN:-0}" = 1 ] && printf ' (dry-run)' )..."
   for _c in $_scope; do
-    remove_path "${_root}/$(component_binary "$_c")"
-    # aa-gateway ships inside the cli component tarball; remove it with cli.
-    [ "$_c" = "cli" ] && remove_path "${_root}/aa-gateway"
+    for _b in $(component_binaries "$_c"); do remove_path "${_root}/${_b}"; done
   done
 
   if [ "${PURGE:-0}" = "1" ]; then
@@ -489,16 +519,29 @@ do_uninstall() {
 
 # ── argument parsing ──────────────────────────────────────────────────────────
 
-COMPONENTS=""   # space-separated selection; empty means the default (cli)
+COMPONENTS=""   # space-separated selection; empty means DEFAULT_COMPONENTS
+EXPLICIT_COMPONENTS=""   # components named via --component/--components (never optional)
 UNINSTALL=0 PURGE=0 DRY_RUN=0 ASSUME_YES=0
 
 add_components() {
   # Append the components in $1 (comma- or space-separated) to COMPONENTS,
-  # validating each against VALID_COMPONENTS.
+  # validating each against VALID_COMPONENTS. A second arg of "explicit" records
+  # them as user-named (profile/default expansions are not explicit).
   for _c in $(echo "$1" | tr ',' ' '); do
     is_valid_component "$_c" || err "unknown component: '$_c' (valid: ${VALID_COMPONENTS})"
     COMPONENTS="${COMPONENTS} $_c"
+    if [ "${2:-}" = "explicit" ]; then EXPLICIT_COMPONENTS="${EXPLICIT_COMPONENTS} $_c"; fi
   done
+}
+
+is_optional_component() {
+  # `api` is optional ONLY when it came from the default set or a profile: releases
+  # cut before AAASM-4449 publish no api tarball, and pinning one of those must
+  # still install. An explicit `--component api` is never optional.
+  case "$1" in
+    api) case " ${EXPLICIT_COMPONENTS} " in *" api "*) return 1 ;; *) return 0 ;; esac ;;
+    *)   return 1 ;;
+  esac
 }
 
 dedupe_words() {
@@ -513,10 +556,10 @@ dedupe_words() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --component)     [ $# -ge 2 ] || err "--component needs a value"; add_components "$2"; shift 2 ;;
-      --component=*)   add_components "${1#*=}"; shift ;;
-      --components)    [ $# -ge 2 ] || err "--components needs a value"; add_components "$2"; shift 2 ;;
-      --components=*)  add_components "${1#*=}"; shift ;;
+      --component)     [ $# -ge 2 ] || err "--component needs a value"; add_components "$2" explicit; shift 2 ;;
+      --component=*)   add_components "${1#*=}" explicit; shift ;;
+      --components)    [ $# -ge 2 ] || err "--components needs a value"; add_components "$2" explicit; shift 2 ;;
+      --components=*)  add_components "${1#*=}" explicit; shift ;;
       --profile)       [ $# -ge 2 ] || err "--profile needs a value"; _p="$(resolve_profile "$2")" || exit $?; add_components "$_p"; shift 2 ;;
       --profile=*)     _p="$(resolve_profile "${1#*=}")" || exit $?; add_components "$_p"; shift ;;
       --version)       [ $# -ge 2 ] || err "--version needs a value"; VERSION="$2"; shift 2 ;;
@@ -532,9 +575,9 @@ parse_args() {
       *)               err "unknown option: $1 (try --help)" ;;
     esac
   done
-  # Install: default to CLI-only when nothing is selected. Uninstall: an empty
+  # Install: default to DEFAULT_COMPONENTS when nothing is selected. Uninstall: an empty
   # selection means "all recorded components", so don't inject the cli default.
-  if [ "$UNINSTALL" != "1" ] && [ -z "$COMPONENTS" ]; then COMPONENTS="cli"; fi
+  if [ "$UNINSTALL" != "1" ] && [ -z "$COMPONENTS" ]; then COMPONENTS="$DEFAULT_COMPONENTS"; fi
   COMPONENTS="$(dedupe_words "$COMPONENTS")"
 }
 
@@ -574,21 +617,35 @@ main() {
   SIG_URL="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.cosign.bundle"
 
   curl -sSfL "$SUMS_URL" -o "${TMP}/SHA256SUMS" \
-    || err "SHA256SUMS download failed: ${SUMS_URL}\n  Refusing to install without checksum verification."
+    || err "SHA256SUMS download failed: ${SUMS_URL}
+  Refusing to install without checksum verification."
   # Best-effort fetch of the cosign bundle (releases before AAASM-2700 lack one).
   curl -sSfL "$SIG_URL" -o "${TMP}/SHA256SUMS.cosign.bundle" 2>/dev/null || true
   verify_signature "${TMP}/SHA256SUMS" "${TMP}/SHA256SUMS.cosign.bundle"
 
   # Preflight: every requested artifact must exist before we install anything.
+  _avail=""
   for comp in $COMPONENTS; do
     artifact="$(component_artifact "$comp" "$VERSION")"
-    check_artifact_available "https://github.com/${REPO}/releases/download/${VERSION}/${artifact}" \
-      || err "component '${comp}' is not published for ${VERSION} (${artifact} not found)."
+    if check_artifact_available "https://github.com/${REPO}/releases/download/${VERSION}/${artifact}"; then
+      _avail="${_avail} $comp"
+    elif is_optional_component "$comp"; then
+      warn "component '${comp}' is not published for ${VERSION} (${artifact} not found) — skipping it."
+      warn "'aasm start --mode local' needs aa-api-server; use a newer release or build it from source."
+    else
+      err "component '${comp}' is not published for ${VERSION} (${artifact} not found)."
+    fi
   done
+  COMPONENTS="$(dedupe_words "$_avail")"
 
   say "Installing [${COMPONENTS}] ${VERSION} ($(detect_arch)-$(detect_os)) into ${INSTALL_DIR} ..."
+  # Stage (download + verify + extract) every component first so a bad artifact
+  # aborts before anything is copied — no partial install.
   for comp in $COMPONENTS; do
-    install_component "$comp" "$VERSION" "$TMP" "${TMP}/SHA256SUMS" "$INSTALL_DIR"
+    fetch_component "$comp" "$VERSION" "$TMP" "${TMP}/SHA256SUMS"
+  done
+  for comp in $COMPONENTS; do
+    install_component "$comp" "$TMP" "$INSTALL_DIR"
   done
 
   # Record the install so `aasm uninstall` never guesses which files are ours,
