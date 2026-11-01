@@ -3023,3 +3023,23 @@ async fn alert_only_still_forwards_the_key_and_jwt_body_raw() {
     .await;
     assert!(contains(&seen, BUILTIN_SECRET) && contains(&seen, JWT_FIXTURE));
 }
+
+/// Measured behaviour, pinned (AAASM-4595): a body carrying only a JWT is refused
+/// under `redact_only`, because the scrubber redacts the signature alone and the
+/// surviving header and payload re-scan dirty. Nothing reaches upstream.
+#[tokio::test]
+async fn redact_only_refuses_a_jwt_only_body_and_nothing_reaches_upstream() {
+    let body = format!(r#"{{"note":"decode {JWT_FIXTURE} please"}}"#);
+    assert_dirty_scrub_refused(MITM_HOST, post(MITM_HOST, "/note", &body).into_bytes()).await;
+}
+
+/// Control: the same host and action scrub-and-forward an AWS key only.
+#[tokio::test]
+async fn redact_only_still_forwards_an_aws_key_only_body_scrubbed() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::RedactOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(contains(&seen, "[REDACTED") && !contains(&seen, BUILTIN_SECRET));
+}
