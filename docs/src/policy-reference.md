@@ -475,7 +475,52 @@ Sensitive-data / credential handling. Backed by `DataPolicy`.
 | `redact_only` | **(default)** Forward a redacted form of the payload upstream. Preserves historical behaviour. |
 | `alert_only` | Forward the unmodified payload and raise an alert. A deliberate downgrade for low-risk, audit-only modes. |
 
-Any other value is a validation error.
+`alert_and_redact` is also accepted: it alerts and forwards a redacted payload
+(the gateway applies it as `redact_only` plus the alert). Any other value is a
+validation error, and a policy that fails validation refuses the launch rather
+than defaulting.
+
+#### What "redact" means, and who can do it
+
+`redact_only` means **scrub where the enforcing layer can, otherwise deny**. It
+never means "forward the original payload when scrubbing is not possible". What
+each layer actually does today (AAASM-4595):
+
+| Enforcing layer | What it scrubs | When it cannot scrub |
+|---|---|---|
+| `aa-proxy` started by `aasm run` (LLM requests, requests to other decrypted hosts, plain HTTP) | Substitutes `[REDACTED:<kind>]` for matches of the proxy's **built-in credential patterns** in the request body. Not general payload redaction: a policy's custom `sensitive_patterns` and `locale_packs` are not known to the proxy. | A compressed or undecodable body is **denied** (HTTP 403, nothing dialled upstream). |
+| `aa-proxy`, when the gateway answers `Redact` for an MCP request, an MCP response or a network egress check | Nothing: the proxy does not replay the gateway's redaction instructions. | **Denied** (JSON-RPC error / `502` / `403`), whatever the proxy's own `credential_action` is, including `alert_only`. |
+| Python SDK, Node SDK, Go SDK (in-process, under `enforce`) | Nothing: no SDK receives redacted arguments from the runtime. | The tool call is **denied** before it runs. |
+| `aa-gateway` | Returns the redacted text and `RedactInstructions` to a caller that can apply them. | Not applicable (it is the decider, not the enforcer). |
+
+Not implemented, and not claimed: scrubbing a tool's arguments or an MCP payload
+**and forwarding the scrubbed result** through an SDK or through the proxy's
+gateway-decided paths. Where the table says "denied", the policy author gets a
+deny, not a scrubbed forward.
+
+**How the mode reaches the proxy.** `aasm run` exports the resolved policy's
+`data.credential_action` to the dedicated proxy it spawns as
+`AA_PROXY_CREDENTIAL_ACTION` (`alert_and_redact` becomes `redact_only`, the part
+that protects the secret). A policy that states none runs `redact_only`, as
+before. An ambient `AA_PROXY_CREDENTIAL_ACTION` no longer decides an `aasm run`
+launch. A standalone `aasm proxy start` still reads the variable from its own
+environment and knows nothing of a policy.
+
+**Behaviour change for `alert_only`.** Before AAASM-4595 the proxy `aasm run`
+spawned ignored the policy, so a policy saying `alert_only` ran the proxy as
+`redact_only` (scrubbed or denied compressed bodies). It now follows the policy:
+the proxy forwards the original body unchanged, which is the documented meaning
+of `alert_only`. An `alert_only` policy does not override an independent deny: a
+body the proxy cannot inspect, a gateway `Deny`, and a gateway `Redact` the proxy
+cannot apply are still refused.
+
+**SDK versions the "denied, not forwarded" behaviour needs.** Python SDK: the fix
+(`d91840d`, PR #359) is on `main` but in no tag; the latest tag `v0.0.1-rc.7`
+predates it, so use a release after `v0.0.1-rc.7`. Node SDK: the fix (`0627b0441`,
+PR #522) is on `main` but in no tag; `v0.0.1-rc.6` is the latest tag and does not
+contain it, so use a release after `v0.0.1-rc.6`. Go SDK: `v0.0.1-rc.6` or later
+(`2638a5b`). Older SDKs map a runtime `Redact` verdict onto a plain allow and run
+the tool with the original arguments.
 
 #### MCP responses through `aa-proxy`
 

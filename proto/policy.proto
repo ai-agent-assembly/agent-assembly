@@ -201,7 +201,11 @@ message RedactInstructions {
 
 // RedactRule specifies one field redaction to apply.
 message RedactRule {
-  // JSONPath of the field to redact (e.g. "$.args.api_key").
+  // What was detected, as a name and not as a path into the payload. The
+  // gateway fills it with "$." followed by the finding's kind or category
+  // (e.g. "$.AwsAccessKey"); it does not locate the field, so a consumer cannot
+  // use it to redact a specific argument. Consumers that cannot scrub the
+  // payload by finding must deny rather than forward the original.
   string field_path  = 1;
   // Replacement string (e.g. "[REDACTED]", "[PII]").
   string replacement = 2;
