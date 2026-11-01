@@ -78,12 +78,15 @@ reply to that apply says the same version is active. If the version is not in
 the local history or is ambiguous, or the server cannot be reached or refuses
 the policy, it exits non-zero and writes nothing.
 
-History is stored in `${AA_DATA_DIR:-~/.aa}/policy-history` (directory `0700`,
-files `0600`). `apply` through a local server and `history`, `get`, `diff` and
+History is stored in `${AA_DATA_DIR:-~/.aa}/policy-history` (directory `0700`;
+new files `0600`, older files keep their mode until rewritten). `apply` through a local server and `history`, `get`, `diff` and
 `rollback` share it only on the same host with the same `AA_DATA_DIR`/`HOME`; a
 remote server reached with `--api-url`, or a daemon started with a different
 environment, has its own store. A restarted local server re-installs the newest
-entry as its active policy.
+entry as its active policy, and refuses to start if it cannot (the error names
+the directory and file; move aside only that entry's `.meta.json` and `.yaml`
+to recover). With `$AA_POLICY` set, that policy stays active and history is
+not reinstalled, so the active-policy view may differ.
 
 ```bash
 aasm policy rollback 9f2c1a
