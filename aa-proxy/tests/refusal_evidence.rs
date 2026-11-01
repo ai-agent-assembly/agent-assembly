@@ -2743,3 +2743,133 @@ async fn a_declared_exotic_charset_is_denied_for_any_media_type() {
         }
     }
 }
+
+// ── credential_action: what actually leaves the proxy, per mode (AAASM-4595) ──
+//
+// `aasm run` now hands a policy's `data.credential_action` to the proxy it
+// spawns, so each mode the proxy accepts has to be measured at the receiving end:
+// a recording upstream sees the bytes that were really sent. A non-MCP body on a
+// MitM'd host reaches the credential scanner without a gateway verdict in front of
+// it, so the action alone decides.
+
+/// Send `body` (a synthetic credential inside) through a proxy running `action`,
+/// and return (client response, bytes that reached upstream, the audit record
+/// serialised as JSON).
+async fn send_credential_body(action: CredentialAction, request: &[u8]) -> (String, Vec<u8>, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            upstream_override: Some(upstream),
+            credential_action: Some(action),
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, MITM_HOST).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, MITM_HOST, request).await;
+    let record = serde_json::to_string(&next_entry(&mut audit).await).unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    let seen = received.lock().unwrap().clone();
+    (response, seen, record)
+}
+
+fn note_with_secret() -> String {
+    format!(r#"{{"note":"deploy key {BUILTIN_SECRET} please keep"}}"#)
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    String::from_utf8_lossy(haystack).contains(needle)
+}
+
+#[tokio::test]
+async fn credential_action_block_refuses_and_nothing_reaches_upstream() {
+    let (response, seen, record) = send_credential_body(
+        CredentialAction::Block,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(
+        seen.is_empty(),
+        "block must not dial upstream, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+#[tokio::test]
+async fn credential_action_redact_only_forwards_a_scrubbed_body_never_the_original() {
+    let (_, seen, record) = send_credential_body(
+        CredentialAction::RedactOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(!seen.is_empty(), "redact_only forwards the scrubbed request");
+    assert!(
+        !contains(&seen, BUILTIN_SECRET),
+        "the original secret reached upstream: {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        contains(&seen, "[REDACTED"),
+        "upstream must see the scrub marker, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+/// The contract of `alert_only`, stated as a measurement: the original body is
+/// forwarded unchanged. The paired control that makes the two tests above mean
+/// something - the same request is forwarded raw when the action says so.
+#[tokio::test]
+async fn credential_action_alert_only_forwards_the_original_body() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(
+        contains(&seen, BUILTIN_SECRET),
+        "alert_only forwards the original body, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// `redact_only` cannot re-encode a scrubbed body to the declared encoding, so it
+/// denies. It must not fall back to forwarding the original compressed bytes.
+#[tokio::test]
+async fn credential_action_redact_only_denies_a_compressed_secret_instead_of_forwarding_it() {
+    let (response, seen, record) = send_credential_body(
+        CredentialAction::RedactOnly,
+        &post_encoded(MITM_HOST, "gzip", &gzip_bytes(note_with_secret().as_bytes())),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "nothing may reach upstream, saw {} bytes", seen.len());
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+/// `alert_only` is permissive about findings, not about a body the proxy cannot
+/// inspect: that refusal is independent of the action.
+#[tokio::test]
+async fn credential_action_alert_only_does_not_override_an_uninspectable_body_denial() {
+    let (response, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        &post_encoded(MITM_HOST, "br", note_with_secret().as_bytes()),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "nothing may reach upstream, saw {} bytes", seen.len());
+}
