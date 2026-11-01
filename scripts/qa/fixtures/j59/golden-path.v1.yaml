@@ -1,0 +1,19 @@
+# J59 canonical `golden-path` policy (AAASM-4979): ALLOW read_file, DENY delete_file,
+# APPROVAL send_email. `capabilities: [none]` keeps `aasm policy validate` free of the
+# lease-policy warning for tools that need no authority.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: golden-path
+  version: "1.0.0"
+spec:
+  tools:
+    read_file:
+      allow: true
+      capabilities: [none]
+    delete_file:
+      allow: false
+    send_email:
+      allow: true
+      capabilities: [none]
+      requires_approval_if: "true"
