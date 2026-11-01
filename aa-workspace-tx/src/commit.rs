@@ -72,6 +72,19 @@ pub fn commit(
         }
     }
 
+    // --- 3b. No destination may sit behind a symlinked base directory. ---
+    // `is_normal_relative` is lexical only: a symlink such as `d -> /outside`
+    // in the base would otherwise let `create_dir_all`/write/remove follow it
+    // out of the base once the agent replaced `d` with a real directory in
+    // the staged copy. Refused here, before the journal or any mutation.
+    for path in &change_paths {
+        if ancestor_is_symlink(base_root, path).map_err(io_refusal)? {
+            return Err(CommitRefusal::BoundaryEscape {
+                path: (*path).to_string(),
+            });
+        }
+    }
+
     // --- 4. Copy-never-hardlink invariant, re-verified at commit time. ---
     for entry in change_set.entries() {
         if matches!(entry, ChangeEntry::Added { .. } | ChangeEntry::Modified { .. }) {
@@ -153,6 +166,27 @@ fn is_normal_relative(path: &str) -> bool {
         return false;
     }
     p.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+}
+
+/// Whether any proper ancestor of `path` (below `base_root`) is currently a
+/// symlink in the base. A component that does not exist ends the walk: nothing
+/// deeper can be a link, and `create_dir_all` will create real directories.
+/// The final component is deliberately not inspected — replacing or deleting a
+/// symlink entry itself never follows it.
+fn ancestor_is_symlink(base_root: &Path, path: &str) -> io::Result<bool> {
+    let mut components: Vec<_> = Path::new(path).components().collect();
+    components.pop();
+    let mut current = base_root.to_path_buf();
+    for component in components {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(false)
 }
 
 /// Write a durable, `fsync`'d record of exactly what this commit is about to
