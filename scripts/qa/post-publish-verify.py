@@ -42,6 +42,10 @@ from typing import Any, Callable
 
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 ALLOWED_HOSTS = {"ghcr.io", "api.github.com"}
+# Hosts a GitHub release-asset download legitimately redirects to. Only `Probe.download`
+# may follow a redirect, and only to these; no probe ever forwards Authorization on one.
+DOWNLOAD_HOSTS = {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+MAX_REDIRECTS = 3
 TAG_RE = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?")
 GHCR_NAMESPACE = "ai-agent-assembly"
 GH_REPO = "ai-agent-assembly/agent-assembly"
@@ -51,10 +55,19 @@ INDEX_ACCEPT = ", ".join([
     "application/vnd.oci.image.manifest.v1+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 ])
+# Names produced by release.yml (`tar -czf` in the package step): the legacy per-target CLI
+# tarball and the component-aware cli/api tarballs. runtime and proxy tarballs are conditional
+# in release.yml, so they are required only when SHA256SUMS names them.
 RELEASE_TARBALLS = [
     "aasm-x86_64-unknown-linux-gnu.tar.gz", "aasm-aarch64-unknown-linux-gnu.tar.gz",
     "aasm-aarch64-apple-darwin.tar.gz", "aasm-x86_64-apple-darwin.tar.gz",
-]  # names from release.yml `tar -czf "aasm-${TARGET}.tar.gz"`
+]
+OSARCHES = ["linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"]
+
+
+def required_assets(tag: str) -> list[str]:
+    comp = [f"aasm-{c}-{tag}-{oa}.tar.gz" for c in ("cli", "api") for oa in OSARCHES]
+    return ["SHA256SUMS", *RELEASE_TARBALLS, *comp]
 
 
 class FetchError(Exception):
@@ -71,11 +84,24 @@ class Response:
 Fetcher = Callable[[str, dict[str, str], float], Response]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib's default handler follows a 3xx and copies Authorization to the new host.
+    Returning None here makes the 3xx surface as an HTTPError, i.e. a Response the caller
+    decides about after re-vetting the Location host."""
+
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+# No env proxies either: a probe talks to the vetted host directly.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
 def urllib_fetcher(url: str, headers: dict[str, str], timeout: float) -> Response:
-    """The only network code in this file: a GET, nothing else."""
+    """The only network code in this file: one GET, never following a redirect."""
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 - scheme and host vetted by Probe
+        with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 - scheme and host vetted by Probe
             return Response(r.status, {k.lower(): v for k, v in r.headers.items()}, r.read(32 << 20))
     except urllib.error.HTTPError as e:
         return Response(e.code, {k.lower(): v for k, v in e.headers.items()}, e.read(1 << 20))
@@ -95,6 +121,23 @@ class Probe:
         if u.scheme != "https" or u.hostname not in ALLOWED_HOSTS:
             raise FetchError(f"refused non-allowlisted url {u.scheme}://{u.hostname}")
         return self._fetch(url, dict(headers or {}), self.timeout)
+
+    def download(self, url: str, headers: dict[str, str] | None = None) -> Response:
+        """GET that follows at most MAX_REDIRECTS redirects, re-vetting every hop against
+        ALLOWED_HOSTS plus DOWNLOAD_HOSTS. Authorization is never forwarded on any hop."""
+        hdrs = {k: v for k, v in (headers or {}).items() if k.lower() != "authorization"}
+        for _ in range(MAX_REDIRECTS + 1):
+            u = urllib.parse.urlsplit(url)
+            if u.scheme != "https" or u.hostname not in ALLOWED_HOSTS | DOWNLOAD_HOSTS:
+                raise FetchError(f"refused redirect to non-allowlisted host {u.hostname}")
+            r = self._fetch(url, dict(hdrs), self.timeout)
+            if r.status not in (301, 302, 303, 307, 308):
+                return r
+            loc = r.headers.get("location")
+            if not loc:
+                raise FetchError(f"redirect {r.status} without Location")
+            url = urllib.parse.urljoin(url, loc)
+        raise FetchError("too many redirects")
 
     def ghcr_token(self, repo: str) -> str:
         if repo not in self._tokens:
@@ -128,6 +171,9 @@ def _http_gate(r: Response, what: str) -> Result | None:
         return None
     if r.status == 404:
         return FAIL, f"{what} not found (404)"
+    if 300 <= r.status < 400:
+        host = urllib.parse.urlsplit(r.headers.get("location", "")).hostname
+        return INCONCLUSIVE, f"{what} answered a redirect ({r.status}) to host {host!r}; not followed, cannot tell"
     return INCONCLUSIVE, f"{what} answered {r.status}; cannot tell"
 
 
@@ -215,6 +261,9 @@ def run_image_bundle(p: Probe, image: str, tag: str) -> Result:
     return PASS, f"{image}:{tag} resolves, is digest-immutable and multi-arch"
 
 
+SUMS_LINE = re.compile(r"([0-9a-f]{64})\s+\*?(\S+)")
+
+
 def run_release_assets(p: Probe, tag: str) -> Result:
     r = p.get(f"https://api.github.com/repos/{GH_REPO}/releases/tags/{urllib.parse.quote(tag)}",
               {"Accept": "application/vnd.github+json"})
@@ -229,12 +278,41 @@ def run_release_assets(p: Probe, tag: str) -> Result:
     problems = []
     if rel.get("draft"):
         problems.append("release is still a draft")
-    problems += [f"asset {n} missing" for n in ["SHA256SUMS", *RELEASE_TARBALLS] if n not in assets]
-    problems += [f"asset {n} state={a.get('state')!r} size={a.get('size')!r}"
-                 for n, a in assets.items() if a.get("state") != "uploaded" or not a.get("size")]
+    if "SHA256SUMS" not in assets:
+        return FAIL, "; ".join(problems + ["asset SHA256SUMS missing"])
+    sums_url = assets["SHA256SUMS"].get("url")
+    if not isinstance(sums_url, str):
+        return INCONCLUSIVE, "SHA256SUMS asset has no API url"
+    dl = p.download(sums_url, {"Accept": "application/octet-stream"})
+    gate = _http_gate(dl, "SHA256SUMS download")
+    if gate:
+        return gate
+    named: dict[str, str] = {}
+    for line in dl.body.decode("utf-8", "replace").splitlines():
+        if not line.strip():
+            continue
+        m = SUMS_LINE.fullmatch(line.strip())
+        if not m:
+            problems.append(f"malformed SHA256SUMS line {line.strip()[:60]!r}")
+        else:
+            named[m.group(2)] = m.group(1)
+    if not named:
+        problems.append("SHA256SUMS names no files")
+    for name in required_assets(tag):
+        if name != "SHA256SUMS" and name not in named:
+            problems.append(f"SHA256SUMS does not name required {name}")
+    for name in sorted(named):
+        if name not in assets:
+            problems.append(f"SHA256SUMS names {name} but it is not a release asset")
+    for name in sorted(set(named) | {n for n in required_assets(tag)}):
+        a = assets.get(name)
+        if a is not None and (a.get("state") != "uploaded" or not a.get("size")):
+            problems.append(f"asset {name} state={a.get('state')!r} size={a.get('size')!r}")
     if problems:
         return FAIL, "; ".join(problems)
-    return PASS, f"release {tag} lists SHA256SUMS and {len(RELEASE_TARBALLS)} platform tarballs, all uploaded (listing only: tarball contents are not downloaded here)"
+    return PASS, (f"SHA256SUMS names {len(named)} files, every one is an uploaded release asset, and the "
+                  f"required legacy, cli and api tarballs for {len(OSARCHES)} platforms are all named "
+                  "(tarball contents are not downloaded or hashed here)")
 
 
 def manual(why: str) -> Callable[[Probe, str], Result]:
