@@ -1620,11 +1620,13 @@ jobs:
 
       # AAASM-6419: the emitter-side fixtures and the readiness-script
       # negative control for PUBLICATION_PENDING / CANDIDATE_VERIFIED. Both
-      # are offline (synthetic sha / temp repos, no network).
+      # run without network: the fixtures check uses a synthetic sha, and the
+      # readiness harness shims `git fetch`, `gh` and the live registry probe.
       - name: Self-test the release-evidence emitter fixtures
         run: bash scripts/tests/build-release-evidence-fixtures-check.sh
 
       - name: Self-test release-readiness QA verdict handling (negative control)
+        timeout-minutes: 10
         run: bash scripts/tests/release-readiness-qa-negative-control.sh
 
       # AAASM-6232: same convention again, for
