@@ -802,7 +802,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j04.published_homebrew_tap_install", "homebrew-tap",
              "The formula is committed to ai-agent-assembly/homebrew-tap by release.yml after publication.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew upgrade ai-agent-assembly/tap/aasm 2>/dev/null || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  'need_ver "$("$P/aasm" --version)"\n[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  + eq("aasm", "$P/aasm") + eq("aa-gateway", "$P/aa-gateway")),
              "aasm --version contains the tag's version; aa-gateway installed (the AAASM-4448/4449 suspect); bytes equal the candidate members",
@@ -810,7 +810,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j04.published_homebrew_runtime", "homebrew-tap",
              "Needs the tap formula for aasm-runtime.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew upgrade ai-agent-assembly/tap/aasm-runtime 2>/dev/null || brew install ai-agent-assembly/tap/aasm-runtime\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm-runtime || brew install ai-agent-assembly/tap/aasm-runtime\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-runtime" ] || { echo "aa-runtime not installed" >&2; exit 1; }\n'
                  + eq("aa-runtime", "$P/aa-runtime")),
              "aa-runtime installed and byte-equal to the candidate runtime tarball member", brew_iso),
@@ -858,7 +858,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
             ("j17.published_homebrew_gateway", "homebrew-tap",
              "Formula lives in the tap after publication.",
              _sh(tag, 'command -v brew >/dev/null 2>&1 || { echo "brew not found" >&2; exit 1; }\n'
-                 'brew upgrade ai-agent-assembly/tap/aasm 2>/dev/null || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
+                 'brew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  'need_ver "$("$P/aa-gateway" --version)"\n' + eq("aa-gateway", "$P/aa-gateway")),
              "aa-gateway installed by the formula, reports the tag's version and equals the candidate member (AAASM-4448/4449 suspect)",
