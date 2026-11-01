@@ -52,7 +52,7 @@ flow (ADR 0035 §1):
 |---|---|---|---|
 | `--agent-id <ID>` | string | _(derived)_ | Override the agent identity for this session. |
 | `--team-id <ID>` | string | _(none)_ | Team identifier for this session. |
-| `--root-agent <ID>` | string | _(none)_ | Root agent identifier for lineage tracking. |
+| `--root-agent <ID>` | string | _(none)_ | Root agent identifier for lineage tracking. Claiming a parent this way is refused (`AncestryUnresolved`): rc.8 has no cross-process parent-authority handoff (AAASM-6273), so a launch that needs attenuated child authority does not run. |
 | `--governance-level <LEVEL>` | enum | _(policy default)_ | Override the governance level for this session. |
 | `--no-proxy` | flag | off | Launch **without** routing the tool through the governed proxy — an explicit opt-out of transport mediation. Without it, `aasm run` refuses to launch unless it can establish a trusted local proxy endpoint; it never launches unproxied by accident. Refused outright on a host where another party has already required managed operation of the named tool. |
 | `--policy <PATH>` | path | _(resolved from `$AA_POLICY` / default locations)_ | Policy YAML file this session runs under. A launch refuses when no effective policy resolves — an unconfigured policy is never an implicit allow-all. |
