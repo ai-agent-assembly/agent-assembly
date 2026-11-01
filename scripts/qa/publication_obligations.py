@@ -36,7 +36,7 @@ CANDIDATE_FIDELITIES = {
 }
 
 
-DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 _PENDING_TOKEN_RE = re.compile(r"\bPUBLICATION_PENDING\b")
 
 
@@ -182,7 +182,7 @@ def validate_obligation(
             if not (
                 isinstance(digests, dict)
                 and digests
-                and all(_nonempty_str(k) and isinstance(v, str) and DIGEST_RE.match(v)
+                and all(_nonempty_str(k) and isinstance(v, str) and DIGEST_RE.fullmatch(v)
                         for k, v in digests.items())
             ):
                 p.append(

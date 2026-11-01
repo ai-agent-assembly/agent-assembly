@@ -1372,7 +1372,8 @@ for n17_mut in \
   'doc["journeys"][0]["candidate_checks"][0].pop("artifact_digests")' \
   'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {}' \
   'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "sha256:00"}' \
-  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "md5:d41d8cd98f00b204e9800998ecf8427e"}'; do
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "md5:d41d8cd98f00b204e9800998ecf8427e"}' \
+  'doc["journeys"][0]["candidate_checks"][0]["artifact_digests"] = {"pkg-0.0.0.tar.gz": "sha256:" + "0" * 64 + chr(10)}'; do
   n17_i=$((n17_i + 1))
   pending_case "n17-$n17_i" "$CATALOG_PEND" "$n17_mut"
   patch_evidence "$PDIR" 'doc["verdict"] = "CANDIDATE_VERIFIED"'
@@ -1380,6 +1381,7 @@ for n17_mut in \
   assert_exit "N17.$n17_i digests missing/empty/malformed" 1 "$PDIR" "$PA"
   assert_output_contains "N17.$n17_i names artifact_digests" "must carry a non-empty artifact_digests map"
   if [ "$n17_i" -eq 1 ]; then N17_DIR="$PDIR"; N17_SHA="$PA"; fi
+  if [ "$n17_i" -eq 5 ]; then N17_NL_DIR="$PDIR"; N17_NL_SHA="$PA"; fi
 done
 
 echo "== N18: a bare PASS on a journey that declares publication_checks -> R3 BLOCK =="
@@ -1446,6 +1448,8 @@ mutation_proof "n17-digests" publication_obligations.py \
                 isinstance(digests, dict)' \
   'if False and (
                 isinstance(digests, dict)' "$N17_DIR" "$N17_SHA"
+mutation_proof "n17-trailing-newline" publication_obligations.py \
+  'DIGEST_RE.fullmatch(v)' 'DIGEST_RE.match(v)' "$N17_NL_DIR" "$N17_NL_SHA"
 mutation_proof "n18-bare-pass" check-release-evidence.py \
   'if entry_t.get("publication_checks"):' 'if False:' "$N18_DIR" "$N18_SHA"
 mutation_proof "n19-duplicate" check-release-evidence.py \
