@@ -123,6 +123,11 @@ class KillOwnedDaemonTests(unittest.TestCase):
         self.assertEqual(sent[0], signal.SIGTERM)
         self.assertNotIn(signal.SIGKILL, sent)
 
+    def test_pid_one_self_and_parent_are_never_owned(self) -> None:
+        # the harness itself has its cwd/fds under tmp dirs, so only the explicit guard stops these
+        for pid in (-1, 0, 1, os.getpid(), os.getppid()):
+            self.assertFalse(c.pid_owned_by(pid, Path(os.getcwd())), pid)
+
     def test_relative_owner_fails_closed(self) -> None:
         self.assertFalse(c.pid_owned_by(os.getpid(), Path("relative")))
 
