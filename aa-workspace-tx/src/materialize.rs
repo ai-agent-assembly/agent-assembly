@@ -63,16 +63,33 @@ pub fn copy_surface(base_root: &Path, staged_root: &Path, manifest: &BaseManifes
 /// partially-written `dest`.
 pub fn copy_file_never_hardlink(src: &Path, dest: &Path) -> io::Result<()> {
     let bytes = fs::read(src)?;
-    write_via_temp(dest, &bytes)
+    let mode = fs::symlink_metadata(src)?.mode() & 0o777;
+    write_via_temp_with_mode(dest, &bytes, mode)
 }
 
 /// Write `bytes` to `dest` via temp-file-plus-rename.
 pub fn write_via_temp(dest: &Path, bytes: &[u8]) -> io::Result<()> {
+    write_via_temp_inner(dest, bytes, None)
+}
+
+/// Like [`write_via_temp`], but the file ends up with exactly `mode & 0o777`.
+/// An explicit chmod (not `OpenOptions::mode`) so the process umask can neither
+/// widen nor narrow it; applied to the temp file before the rename, so `dest`
+/// is never visible with the wrong mode.
+pub fn write_via_temp_with_mode(dest: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    write_via_temp_inner(dest, bytes, Some(mode & 0o777))
+}
+
+fn write_via_temp_inner(dest: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let parent = dest
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent directory"))?;
     let tmp = parent.join(format!(".awtx-tmp-{}-{}", std::process::id(), tmp_suffix()));
     fs::write(&tmp, bytes)?;
+    if let Some(mode) = mode {
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
+    }
     fs::rename(&tmp, dest)?;
     Ok(())
 }

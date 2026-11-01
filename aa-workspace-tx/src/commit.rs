@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use aa_isolation::{ChangeEntry, ChangeSet, CommitOutcome, CommitRefusal, EntryKind, TransactionId};
@@ -51,9 +52,14 @@ pub fn commit(
     let hit_selectors: Vec<String> = protected
         .iter()
         .filter(|selector| {
-            change_paths
-                .iter()
-                .any(|p| *p == selector.as_str() || p.starts_with(&format!("{selector}/")))
+            // Folded comparison: on a case-insensitive base `.ENV` IS `.env`, and the
+            // selector may name a path that does not exist yet. Over-matching on a
+            // case-sensitive filesystem costs an extra approval, never a missed one.
+            let selector = fold(selector);
+            change_paths.iter().any(|p| {
+                let p = fold(p);
+                p == selector || p.starts_with(&format!("{selector}/"))
+            })
         })
         .cloned()
         .collect();
@@ -83,6 +89,15 @@ pub fn commit(
                 path: (*path).to_string(),
             });
         }
+    }
+
+    // --- 3c. No Added/Modified path may collide with a Deleted path under case folding. ---
+    // A case-only rename (`a.txt` -> `A.txt`) diffs as `Added A.txt` + `Deleted a.txt`. On a
+    // case-insensitive base the write replaces the entry `a.txt` names and the deletion phase
+    // then removes the file just written. Refused on every filesystem so the decision does not
+    // depend on probing the host; `BoundaryEscape` is reused to keep `CommitRefusal` unchanged.
+    if let Some(path) = case_fold_collision(&change_set) {
+        return Err(CommitRefusal::BoundaryEscape { path });
     }
 
     // --- 4. Copy-never-hardlink invariant, re-verified at commit time. ---
@@ -117,6 +132,36 @@ pub fn commit(
     let result_digest = manifest::aggregate_digest(&after);
 
     Ok(CommitOutcome::new(id.clone(), base_digest, result_digest, change_set))
+}
+
+/// Case folding used for protected-path matching and rename-collision detection.
+/// Unicode normalization (NFC/NFD) is deliberately not folded: that needs a
+/// normalization table, and is documented as a residual in the release notes.
+fn fold(s: &str) -> String {
+    s.to_lowercase()
+}
+
+/// A written (Added/Modified) path that equals a Deleted path once case-folded
+/// but is spelled differently, if any.
+fn case_fold_collision(change_set: &ChangeSet) -> Option<String> {
+    let deleted: Vec<(&str, String)> = change_set
+        .entries()
+        .iter()
+        .filter_map(|e| match e {
+            ChangeEntry::Deleted { path } => Some((path.as_str(), fold(path))),
+            _ => None,
+        })
+        .collect();
+    change_set.entries().iter().find_map(|e| match e {
+        ChangeEntry::Added { path } | ChangeEntry::Modified { path } => {
+            let folded = fold(path);
+            deleted
+                .iter()
+                .any(|(d, df)| *df == folded && *d != path.as_str())
+                .then(|| path.clone())
+        }
+        _ => None,
+    })
 }
 
 fn io_refusal(e: io::Error) -> CommitRefusal {
@@ -260,8 +305,15 @@ fn apply(
                         if let Some(parent) = dest.parent() {
                             fs::create_dir_all(parent)?;
                         }
-                        let content = fs::read(absolute(staged_root, path))?;
-                        materialize::write_via_temp(&dest, &content)?;
+                        let src = absolute(staged_root, path);
+                        let content = fs::read(&src)?;
+                        // Modified keeps the base file's current mode (an agent chmod is not a
+                        // change); Added takes the staged file's bits minus setuid/setgid/sticky.
+                        let mode = match fs::symlink_metadata(&dest) {
+                            Ok(m) if m.file_type().is_file() => m.mode() & 0o777,
+                            _ => fs::symlink_metadata(&src)?.mode() & 0o777,
+                        };
+                        materialize::write_via_temp_with_mode(&dest, &content, mode)?;
                     }
                     EntryKind::Symlink => {
                         if let Some(parent) = dest.parent() {
