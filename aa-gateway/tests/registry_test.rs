@@ -594,3 +594,13 @@ fn register_duplicate_error_names_the_agent_by_its_hex_id() {
     assert!(msg.contains(&hex::encode(key(0xE7))), "expected hex id in: {msg}");
     assert!(!msg.contains('['), "id must not render as a byte list: {msg}");
 }
+
+#[test]
+fn token_error_names_the_agent_by_its_hex_id() {
+    // AAASM-6416: same hex rendering as the registry errors.
+    let reg = AgentRegistry::new();
+    let msg = aa_gateway::registry::token::validate_token(&reg, &key(0xE7), "t")
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains(&hex::encode(key(0xE7))), "expected hex id in: {msg}");
+}
