@@ -184,44 +184,62 @@ def terminate_group(p: subprocess.Popen[bytes], timeout: float = 10.0) -> int | 
         return None
 
 
+LSOF = "/usr/sbin/lsof"
+
+
 def _run_text(argv: list[str]) -> str:
     return subprocess.run(argv, capture_output=True, text=True, timeout=10, check=False).stdout
 
 
 def _under(path: str, root: str) -> bool:
-    return path == root or path.startswith(root.rstrip("/") + "/")
+    """Path-component aware: `<root>/x` is under root, `<root>c/x` is not."""
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _argv_names_owner(cmd: str, forms: set[str]) -> bool:
+    """True if some argv token (or the value of a `--flag=<path>` token) IS the owner dir.
+    A file merely mentioned under the owner (`tail -f <owner>/x.log`) proves nothing; neither
+    does a sibling sharing a name prefix."""
+    for tok in cmd.split():
+        for cand in (tok, tok.split("=", 1)[1] if "=" in tok else ""):
+            if cand and cand.rstrip(os.sep) in forms:
+                return True
+    return False
 
 
 def pid_owned_by(pid: int, owner: Path) -> bool:
-    """Per-PID ownership proof. True when the process's argv names `owner` in either spelling
-    (raw or realpath, so a /var vs /private/var symlink cannot hide it), or when its cwd or an
-    open file resolves under realpath(owner) (covers a bare-name launch whose argv has no path).
-    Probes this one PID only; never matches by name or pattern."""
-    raw, real = str(owner), os.path.realpath(owner)
+    """Per-PID ownership proof, fail-closed. True when an argv token is exactly the owner dir
+    (raw or realpath, so a /var vs /private/var symlink cannot hide it), or when the process's
+    cwd or an open file (lsof names starting with `/`) lies under realpath(owner), which covers
+    a bare-name launch. Probes this one PID only; never matches by name or pattern."""
+    if not owner.is_absolute() or not os.path.exists(LSOF):
+        return False
+    real = os.path.realpath(owner)
     try:
         cmd = _run_text(["/bin/ps", "-p", str(pid), "-o", "command="])
-        if raw in cmd or real in cmd:
+        if _argv_names_owner(cmd, {str(owner).rstrip(os.sep), real}):
             return True
-        lsof = _run_text(["lsof", "-p", str(pid), "-Fn"])
+        lsof = _run_text([LSOF, "-p", str(pid), "-Fn"])
     except (OSError, subprocess.SubprocessError):
         return False
-    for line in lsof.splitlines():
-        if line.startswith("n") and _under(os.path.realpath(line[1:]), real):
-            return True
-    return False
+    return any(
+        line.startswith("n/") and _under(os.path.realpath(line[1:]), real)
+        for line in lsof.splitlines()
+    )
 
 
 def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
     """Kill the daemon recorded in `pidfile`, but only if `pid_owned_by` proves it belongs to
-    `owner` (our own mktemp dir). A recycled or foreign PID is left alone. Never pattern-kills;
-    SIGKILL is sent only after ownership is proven."""
+    `owner` (our own mktemp dir). A recycled or foreign PID is left alone. Never pattern-kills.
+    Ownership is re-proven right before SIGKILL, since the PID may be recycled during the
+    SIGTERM wait."""
     try:
         pid = int(pidfile.read_text().strip())
     except (OSError, ValueError):
         return
-    if not pid_owned_by(pid, owner):
-        return
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not pid_owned_by(pid, owner):
+            return
         try:
             os.kill(pid, sig)
         except ProcessLookupError:
