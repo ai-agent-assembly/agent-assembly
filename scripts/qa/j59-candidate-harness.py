@@ -72,8 +72,10 @@ PENDING = [
         "step 1 installs the recommended distribution from published release tarballs (and the Homebrew tap and "
         "install.sh that resolve them, whose evidence J04 owns); the assets exist only after release.yml publishes",
         _img("j59-install-release-assets"),
-        "the GitHub Release for <tag> lists SHA256SUMS and a tarball for each documented platform, and every "
-        "tarball named in SHA256SUMS exists as a release asset",
+        "the release is not a draft; SHA256SUMS parses; every file it names is an uploaded release asset; and the "
+        "legacy aasm-<target>, aasm-cli-<tag>-<os-arch> and aasm-api-<tag>-<os-arch> tarballs (aa-api-server ships only "
+        "in aasm-api-*) exist for linux and darwin on amd64 and arm64 and are named in SHA256SUMS. Tarball contents "
+        "are not downloaded or hashed",
     ),
     c.PendingCheck(
         "j59-ghcr-gateway-image", "ghcr",

