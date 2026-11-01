@@ -60,9 +60,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Known limitations
 
 - **No cross-process attenuation in rc.8 (J82 deferred, AAASM-6273).** Founder-approved
-  release-scope deferral; not a pass and not an implementation. A launch that needs
-  attenuated child authority is refused (`AncestryUnresolved`), never run with broader
-  authority. Core ADR 0038's B3 evidence gate is unchanged.
+  release-scope deferral; not a pass and not an implementation. Precisely: a launch that
+  DECLARES a parent (`--root-agent`) is refused (`AncestryUnresolved`); a launch that omits it
+  runs as a root with only what its own policy and leases grant, with no comparison against
+  the process that launched it, and nothing detects a child launched that way (AAASM-6273). Core ADR 0038's B3 evidence gate is unchanged.
 
 ### Changed
 

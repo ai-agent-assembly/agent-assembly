@@ -2246,7 +2246,7 @@ journeys:
     scope: rc.8 release-blocking set only
     decision: Founder-approved release-scope deferral, not a PASS and not a claim of implementation.
     state: unimplemented
-    reason: Cross-process monotonic attenuation is not provided. No production path builds `Ancestry::Parent` from another process, and a launch that claims a parent (`--root-agent`) is refused with `AncestryUnresolved` rather than run with broader authority. Core ADR 0038 section 30 B3 (the Linux kernel evidence gate) has not been produced.
+    reason: Cross-process monotonic attenuation is not provided. No production path builds `Ancestry::Parent` from another process, a launch that DECLARES a parent (`--root-agent`) is refused with `AncestryUnresolved`; a launch that omits it runs as a root with only what its own policy and leases grant, with no comparison against the process that launched it, and nothing detects a child launched that way (AAASM-6273). Core ADR 0038 section 30 B3 (the Linux kernel evidence gate) has not been produced.
     owner: AAASM-6273
     prerequisites: Core ADR 0038 B3 kernel evidence gate and the section 29 tests, preserved unchanged; docs/src/adr/0038-capability-leases-and-explicit-authority-contract.md
     refusal_test: aa-isolation/src/authority.rs::attenuation_tests::an_unresolved_parent_claim_is_refused_and_never_runs_with_unattenuated_authority
