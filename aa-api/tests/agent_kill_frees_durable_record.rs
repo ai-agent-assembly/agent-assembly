@@ -110,16 +110,19 @@ async fn a_failed_durable_delete_is_a_500_and_the_kill_can_be_retried() {
     let delete = |app: axum::Router| {
         let uri = uri.clone();
         async move {
-            app.oneshot(
-                Request::builder()
-                    .method("DELETE")
-                    .uri(uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-            .status()
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("DELETE")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            (status, String::from_utf8_lossy(&body).into_owned())
         }
     };
 
@@ -142,7 +145,17 @@ async fn a_failed_durable_delete_is_a_500_and_the_kill_can_be_retried() {
     .expect("install trigger");
 
     let app = aa_api::server::build_app(state.clone());
-    assert_eq!(delete(app.clone()).await, StatusCode::INTERNAL_SERVER_ERROR);
+    let (status, body) = delete(app.clone()).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        body.contains("not deregistered"),
+        "body must say the agent was not deregistered: {body}"
+    );
+    assert!(body.contains("retry"), "body must tell the caller to retry: {body}");
+    assert!(
+        !body.contains("was deregistered"),
+        "body must not claim the agent was deregistered: {body}"
+    );
     assert!(
         state.agent_registry.get(&id).is_some(),
         "the agent must stay registered so the kill can be retried"
@@ -152,6 +165,6 @@ async fn a_failed_durable_delete_is_a_500_and_the_kill_can_be_retried() {
         .execute(&side)
         .await
         .expect("drop trigger");
-    assert_eq!(delete(app).await, StatusCode::NO_CONTENT);
+    assert_eq!(delete(app).await.0, StatusCode::NO_CONTENT);
     assert!(state.agent_registry.get(&id).is_none());
 }

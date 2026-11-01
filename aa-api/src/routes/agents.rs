@@ -721,7 +721,7 @@ pub async fn delete_agent(
             aa_gateway::registry::RegistryError::Storage(err) => {
                 tracing::error!(%err, agent_id = %id, "durable agent delete failed");
                 ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!(
-                    "Agent {id} was deregistered but its durable record could not be deleted"
+                    "Agent {id} was not deregistered: its durable record could not be deleted; retry the request"
                 ))
             }
             _ => ProblemDetail::from_status(StatusCode::NOT_FOUND).with_detail(format!("Agent not found: {id}")),
