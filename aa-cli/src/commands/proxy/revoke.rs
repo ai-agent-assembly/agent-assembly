@@ -128,8 +128,8 @@ fn pid_check_passes(expected: Option<u32>, actual: Option<u32>) -> bool {
     }
 }
 
-/// Whether a proxy answers a ping on `socket`, and, when `expected_pid` is given
-/// and the kernel reports the peer's pid, that it is that process.
+/// Whether a proxy answers a ping on `socket`, and, when `expected_pid` is given,
+/// that the kernel reports the peer's pid and it is that process.
 ///
 /// A per-launch proxy is a child `aasm` spawned, so its pid is known: requiring it
 /// stops another process that took over the path from being mistaken for the
