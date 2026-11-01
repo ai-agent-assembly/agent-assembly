@@ -394,3 +394,79 @@ fn a_failed_apply_reports_apply_interrupted_and_blocks_the_next_open() {
         "the next transaction over the same base must refuse"
     );
 }
+
+/// AAASM-6412: a base directory symlink `d -> <outside>` must not let a
+/// commit write, create or delete outside the base. The confined run
+/// replaces the link with a real directory in the staged copy; without the
+/// ancestor check `Modified d` + `Added d/f` pass every lexical check and
+/// `d/f` lands under `<outside>`.
+#[cfg(unix)]
+#[test]
+fn a_base_symlink_replaced_by_a_directory_cannot_redirect_the_commit_outside_the_base() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let outside = fixture.path().join("outside");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    write(&base_root.join("untouched.txt"), "control");
+    symlink(&outside, base_root.join("d")).unwrap();
+
+    let id = TransactionId::new("symlink-ancestor-test");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+
+    // Positive control: the staged copy really holds the link we replace, so
+    // the scenario below is the one that was exploitable, not a lookalike.
+    assert!(
+        fs::symlink_metadata(tx.staged_dir().join("d"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the staged copy must start with the base's symlink"
+    );
+    fs::remove_file(tx.staged_dir().join("d")).unwrap();
+    write(&tx.staged_dir().join("d").join("f"), "escaped");
+
+    tx.close();
+    let refusal = tx
+        .commit(&[], false)
+        .expect_err("a destination behind a symlinked base directory must refuse");
+    assert!(
+        matches!(&refusal, aa_isolation::CommitRefusal::BoundaryEscape { path } if path == "d/f"),
+        "the refusal must be the boundary check on the nested path: {refusal:?}"
+    );
+    assert!(
+        !outside.join("f").exists(),
+        "nothing may be written through the base symlink"
+    );
+    assert!(
+        fs::symlink_metadata(base_root.join("d"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the base symlink must be left exactly as it was"
+    );
+    assert_eq!(fs::read_to_string(base_root.join("untouched.txt")).unwrap(), "control");
+}
+
+/// Negative control for the test above: the same nested write with a real
+/// directory in the base applies normally, so the refusal is caused by the
+/// symlink and not by nesting.
+#[test]
+fn the_same_nested_change_without_a_base_symlink_applies() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(base_root.join("d")).unwrap();
+    write(&base_root.join("untouched.txt"), "control");
+
+    let id = TransactionId::new("symlink-ancestor-control");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    write(&tx.staged_dir().join("d").join("f"), "applied");
+
+    tx.close();
+    tx.commit(&[], false).expect("a plain nested add must apply");
+    assert_eq!(fs::read_to_string(base_root.join("d").join("f")).unwrap(), "applied");
+}
