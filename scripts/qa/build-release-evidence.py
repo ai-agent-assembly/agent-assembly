@@ -45,6 +45,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import publication_obligations  # noqa: E402
 import registry_digest  # noqa: E402  (sys.path must be set first)
 
 # The scripts whose behavior this evidence record's truth actually depends
@@ -57,6 +58,7 @@ import registry_digest  # noqa: E402  (sys.path must be set first)
 # distinguishable, not collapsed into one generic staleness flag.
 HARNESS_SCRIPTS = [
     "scripts/qa/registry_digest.py",
+    "scripts/qa/publication_obligations.py",
     "scripts/qa/build-release-evidence.py",
     "scripts/qa/validate-golden-journeys.py",
 ]
@@ -83,6 +85,12 @@ _STATUS_TOKEN_RULES: list[tuple[str, str]] = [
     (r"\bPARTIAL\b", "UNTESTED"),
     (r"\bFAILS?\b", "FAIL"),
     (r"\bBLOCKED\b", "BLOCKED"),
+    # AAASM-6419: after FAIL/BLOCKED (a pending row's prose that also says
+    # FAIL or BLOCKED is still a failure) and BEFORE PASS (a pending row's
+    # prose routinely says "candidate checks PASS"; PASS-first would turn the
+    # owed publication check into a passed one). A token here only PROMOTES a
+    # row if a matching, valid obligation exists — see build_evidence.
+    (r"\bPUBLICATION_PENDING\b", "PUBLICATION_PENDING"),
     (r"\bPASS\b", "PASS"),
     (r"\bSKIPPED\b", "SKIPPED"),
     (r"\bXFAIL\b|\bKNOWN[- ]FAIL\b", "XFAIL"),
@@ -92,6 +100,7 @@ _STATUS_TOKEN_RULES: list[tuple[str, str]] = [
 
 VALID_STATUSES = {
     "PASS", "FAIL", "BLOCKED", "SKIPPED", "XFAIL", "NOT_RUN", "UNTESTED", "STALE",
+    "PUBLICATION_PENDING",
 }
 
 
@@ -255,6 +264,13 @@ def _map_journey_status(jid: str, raw_cell: str) -> str:
     upper = text.upper()
     for pattern, status in _STATUS_TOKEN_RULES:
         if re.search(pattern, upper):
+            if status == "PUBLICATION_PENDING":
+                conflict = publication_obligations.pending_cell_conflict(raw_cell)
+                if conflict:
+                    raise ValueError(
+                        f"{jid}: Result cell says PUBLICATION_PENDING but also {conflict!r} — "
+                        f"ambiguous, refusing to guess — raw cell: {raw_cell!r}"
+                    )
             return status
     raise ValueError(
         f"{jid}: could not classify sign-off Result cell into the status "
@@ -317,6 +333,7 @@ def build_evidence(
     catalog_path: str,
     qa_signoff_path: str,
     security_signoff_path: str,
+    obligations_path: str | None = None,
 ) -> dict[str, Any]:
     entries = _load_catalog(catalog_path)
     catalog_doc = yaml.safe_load(open(catalog_path))
@@ -341,7 +358,21 @@ def build_evidence(
     table = _extract_selected_journeys_table(qa_signoff_text)
     waivers = _extract_waiver_exceptions(qa_signoff_text)
 
+    if candidate_sha is None:
+        candidate_sha = _run_git(repo_root, "rev-parse", "HEAD")
+
+    obligations: dict[str, dict[str, Any]] = {}
+    obligations_file = obligations_path or os.path.join(
+        repo_root, publication_obligations.obligation_path(version)
+    )
+    if os.path.isfile(obligations_file):
+        with open(obligations_file) as f:
+            obligations, obl_problems = publication_obligations.index_obligations(json.load(f))
+        if obl_problems:
+            raise ValueError(f"{obligations_file}: " + "; ".join(obl_problems))
+
     journeys = []
+    artifacts_by_journey: dict[str, dict[str, dict[str, str]]] = {}
     for entry in required:
         jid = entry["id"]
         row = table.get(jid)
@@ -371,10 +402,25 @@ def build_evidence(
         exception = waivers.get(jid)
         if exception is not None:
             journey["exception"] = exception
+        if status == "PUBLICATION_PENDING":
+            obligation = obligations.get(jid)
+            if obligation is None:
+                # A pending token is a claim; only a committed obligation
+                # makes it a recorded, bounded one. Without it the row must
+                # not be silently demoted to UNTESTED either: fail loudly.
+                raise ValueError(
+                    f"{jid}: Result cell says PUBLICATION_PENDING but "
+                    f"{publication_obligations.obligation_path(version)} has no entry for it"
+                )
+            # candidate_sha is stamped here, not stored in the obligation
+            # file: a file committed in the candidate commit cannot contain
+            # that commit's own hash (same quine Core ADR 0037 avoids).
+            journey["obligation"] = {**obligation, "candidate_sha": candidate_sha}
+            journey["obligation_problems"] = publication_obligations.validate_obligation(
+                jid, obligation, entry, registry_digest.per_journey_digest(entry),
+            )
+            artifacts_by_journey[jid] = publication_obligations.candidate_artifact_digests(obligation)
         journeys.append(journey)
-
-    if candidate_sha is None:
-        candidate_sha = _run_git(repo_root, "rev-parse", "HEAD")
 
     harness = {}
     for path in HARNESS_SCRIPTS:
@@ -404,6 +450,12 @@ def build_evidence(
     def _resolved(j: dict[str, Any]) -> bool:
         if j["status"] == "PASS":
             return True
+        if j["status"] == "PUBLICATION_PENDING":
+            # Pending is a separate, narrower state than waived: it needs a
+            # valid obligation and must NOT also carry an exception (a
+            # waiver on a pending row would otherwise fall through the
+            # generic branch below and make the whole verdict PASS).
+            return not j.get("exception") and not j.get("obligation_problems")
         exception = j.get("exception")
         return (
             j["status"] != "FAIL"
@@ -411,7 +463,20 @@ def build_evidence(
             and exception.get("kind") in ("waiver", "registry_gap")
         )
 
-    all_pass = bool(journeys) and all(_resolved(j) for j in journeys)
+    all_resolved = bool(journeys) and all(_resolved(j) for j in journeys)
+    any_pending = any(j["status"] == "PUBLICATION_PENDING" for j in journeys)
+    # pending is never PASS: only a record with zero pending rows can say PASS.
+    if not all_resolved:
+        verdict = "BLOCK"
+    elif any_pending:
+        verdict = "CANDIDATE_VERIFIED"
+    else:
+        verdict = "PASS"
+    for j in journeys:
+        problems = j.get("obligation_problems")
+        if problems:
+            print(f"warning: {j['id']} obligation inadmissible: " + "; ".join(problems), file=sys.stderr)
+        j.pop("obligation_problems", None)
 
     return {
         "evidence_version": "1",
@@ -434,9 +499,9 @@ def build_evidence(
             "qa": _signoff_entry(qa_signoff_path),
             "security": _signoff_entry(security_signoff_path),
         },
-        "artifacts": {},
+        "artifacts": artifacts_by_journey,
         "published": None,
-        "verdict": "PASS" if all_pass else "BLOCK",
+        "verdict": verdict,
     }
 
 
@@ -452,6 +517,11 @@ def main() -> int:
                          help="default: <repo-root>/docs/release/qa-signoff/v<version>.md")
     parser.add_argument("--security-signoff", default=None,
                          help="default: <repo-root>/docs/release/security-signoff/v<version>.md")
+    parser.add_argument("--obligations", default=None,
+                         help="default: <repo-root>/docs/release/qa-signoff/"
+                              "v<version>.publication-obligations.json (AAASM-6419). Override "
+                              "exists for tests/fixtures; the checker always reads the "
+                              "committed default path from git, never this override.")
     parser.add_argument("--out", default=None,
                          help="default: next unused evidence-attempt path for <version> "
                               "(AAASM-6001) — the legacy v<version>.evidence.json if none "
@@ -478,6 +548,7 @@ def main() -> int:
             catalog_path=catalog_path,
             qa_signoff_path=qa_signoff_path,
             security_signoff_path=security_signoff_path,
+            obligations_path=args.obligations,
         )
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)

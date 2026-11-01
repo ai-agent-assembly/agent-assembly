@@ -225,6 +225,7 @@
   - [0039 - Personal-Observe Deployment Profile](adr/0039-personal-observe-profile.md)
   - [0040 - Transactional Workspace Mode](adr/0040-transactional-workspace-mode.md)
   - [0041 - Resource Ceiling Enforcement](adr/0041-resource-ceiling-enforcement.md)
+  - [0042 - Publication-Pending Release Evidence](adr/0042-publication-pending-release-evidence.md)
 
 # Research
 

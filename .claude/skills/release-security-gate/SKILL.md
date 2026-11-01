@@ -131,7 +131,9 @@ and MUST contain, at minimum:
 - The **findings table** (severity · finding · status).
 - The completed **trust-boundary review checklist** (minor+).
 - A single **`Verdict: PASS`** or **`Verdict: BLOCK`** line — the exact token
-  `Verdict: PASS` is what `release-readiness.sh` greps for.
+  `Verdict: PASS` is what `release-readiness.sh` greps for. The security gate has
+  no pending state: `CANDIDATE_VERIFIED` (a QA-only verdict, Core ADR 0042) in a
+  security sign-off is a checker BLOCK.
 
 Commit it (`📝 (release): Security sign-off for v<version>`) so the release has an
 auditable, blocking record.

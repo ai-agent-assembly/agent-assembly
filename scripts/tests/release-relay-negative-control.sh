@@ -147,6 +147,7 @@ setup_fixture_repo() {
     # real guard end-to-end needs it present, not just Case 4/5.
     cp "$REPO_ROOT/scripts/qa/check-release-evidence.py" scripts/qa/
     cp "$REPO_ROOT/scripts/qa/registry_digest.py" scripts/qa/
+    cp "$REPO_ROOT/scripts/qa/publication_obligations.py" scripts/qa/
     cp "$REPO_ROOT/scripts/qa/render-signoff-journeys.py" scripts/qa/
     cp "$REPO_ROOT/scripts/qa/build-release-evidence.py" scripts/qa/
     # Stub readiness — this harness's job is release-tag-guard.sh's OWN
@@ -1168,6 +1169,7 @@ git init -q "$FIX8B/repo"
   cp "$REPO_ROOT/scripts/release-tag-guard.sh" scripts/release-tag-guard.sh
   cp "$REPO_ROOT/scripts/qa/check-release-evidence.py" scripts/qa/
   cp "$REPO_ROOT/scripts/qa/registry_digest.py" scripts/qa/
+  cp "$REPO_ROOT/scripts/qa/publication_obligations.py" scripts/qa/
   cp "$REPO_ROOT/scripts/qa/render-signoff-journeys.py" scripts/qa/
   cat > scripts/release-readiness.sh <<'STUB'
 #!/usr/bin/env bash
