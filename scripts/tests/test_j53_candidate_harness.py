@@ -149,10 +149,31 @@ class J53HarnessTests(unittest.TestCase):
             problems = [p for p in problems if "registry_digest" not in p]
             self.assertEqual(problems, [])
 
+    def test_fragment_has_the_obligation_shape_without_needing_the_validator(self):
+        # Mirrors the admissibility rules of scripts/qa/publication_obligations.py (PR #2798)
+        # so the shape is enforced even before that module is on main.
+        import re
+        fx = Fixture(self)
+        _, _, frag = fx.run(fragment=True)
+        e = frag["journeys"][0]
+        self.assertEqual(set(e), {"journey", "candidate_checks", "pending_checks", "depends_on", "failure_response"})
+        for chk in e["candidate_checks"]:
+            self.assertEqual(chk["status"], "PASS")
+            self.assertIn(chk["fidelity"], {"mock", "controlled_fake", "real_local_process", "container"})
+            self.assertTrue(chk["evidence_ref"])
+            self.assertTrue(chk["artifact_digests"], chk["id"])
+            for name, d in chk["artifact_digests"].items():
+                self.assertRegex(d, r"sha256:[0-9a-f]{64}")
+        for pc in e["pending_checks"]:
+            for f in ("id", "channel", "why_publication_only", "command", "expected"):
+                self.assertTrue(pc[f].strip(), f)
+        self.assertTrue(all({"repo", "event"} <= set(d) for d in e["depends_on"]))
+        self.assertEqual(set(e["failure_response"]), {"proposed_actions", "notify", "deadline_hours"})
+
     def test_artifacts_carry_sha256_of_every_consumed_file(self):
         fx = Fixture(self)
         _, rep, _ = fx.run()
-        self.assertEqual(set(rep["artifacts"]), {"aa-gateway", "aa-gateway/Dockerfile", "docker.yml", "policy-sample"})
+        self.assertEqual(set(rep["artifacts"]), {"aa-gateway", "aa-gateway/Dockerfile", "docker.yml", "policy-sample", "docs-tree"})
         self.assertEqual(rep["artifacts"]["aa-gateway"], _sha(fx.bin))
 
     def test_publication_dependent_checks_are_never_pass(self):
