@@ -356,6 +356,13 @@ impl CaStore {
         // difference the proxy cannot rely on.
         leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature, KeyUsagePurpose::KeyEncipherment];
         leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        // AAASM-6413: strict X.509 verifiers (Python 3.13+ enables VERIFY_X509_STRICT by
+        // default) reject a non-self-signed leaf that has no Authority Key Identifier
+        // ("Missing Authority Key Identifier"), so a governed Python agent could not
+        // complete TLS through this proxy. rcgen leaves the extension off by default; the
+        // value comes from the issuing CA's own key identifier, so a CA already on disk
+        // keeps working.
+        leaf_params.use_authority_key_identifier_extension = true;
         let now = OffsetDateTime::now_utc();
         leaf_params.not_before = now;
         leaf_params.not_after = now
@@ -623,6 +630,36 @@ mod tests {
             eku.value.server_auth,
             "leaf must be marked valid for TLS server authentication"
         );
+    }
+
+    #[tokio::test]
+    async fn sign_cert_carries_an_authority_key_identifier_matching_the_ca() {
+        // AAASM-6413: Python 3.13+ strict verification rejects a leaf without an AKI.
+        // Asserting the extension exists is not enough: it must name *this* CA's key.
+        let dir = TempDir::new().unwrap();
+        let ca = CaStore::load_or_create(dir.path()).await.unwrap();
+        let ck = ca.sign_cert("api.anthropic.com").unwrap();
+        let (_, leaf) = x509_parser::parse_x509_certificate(&ck.cert_der).expect("leaf DER must parse as X.509");
+        let (_, ca_pem) = x509_parser::pem::parse_x509_pem(ca.ca_cert_pem.as_bytes()).expect("CA PEM must parse");
+        let ca_cert = ca_pem.parse_x509().expect("CA must parse as X.509");
+
+        let ca_ski = ca_cert
+            .iter_extensions()
+            .find_map(|e| match e.parsed_extension() {
+                x509_parser::extensions::ParsedExtension::SubjectKeyIdentifier(k) => Some(k.0.to_vec()),
+                _ => None,
+            })
+            .expect("the CA must carry a Subject Key Identifier");
+        let leaf_aki = leaf
+            .iter_extensions()
+            .find_map(|e| match e.parsed_extension() {
+                x509_parser::extensions::ParsedExtension::AuthorityKeyIdentifier(a) => {
+                    a.key_identifier.as_ref().map(|k| k.0.to_vec())
+                }
+                _ => None,
+            })
+            .expect("leaf must carry an Authority Key Identifier");
+        assert_eq!(leaf_aki, ca_ski, "the leaf's AKI must be the issuing CA's SKI");
     }
 
     #[tokio::test]
