@@ -96,3 +96,62 @@ async fn kill_removes_the_durable_row_so_the_id_can_register_again_after_restart
         .register(agent(id))
         .expect("the freed id must be registrable again");
 }
+
+#[tokio::test]
+async fn a_failed_durable_delete_is_a_500_and_the_kill_can_be_retried() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let paths = LocalDurablePaths {
+        registry_db: tmp.path().join("local.db"),
+        audit_jsonl_dir: tmp.path().join("audit-jsonl"),
+        audit_db: tmp.path().join("audit.db"),
+    };
+    let id = [0xD4u8; 16];
+    let uri = format!("/api/v1/agents/{}", hex::encode(id));
+    let delete = |app: axum::Router| {
+        let uri = uri.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    let state = boot(&paths).await;
+    state
+        .agent_registry
+        .register_persisted(agent(id))
+        .await
+        .expect("register");
+
+    // A second connection makes every DELETE on the registry table fail.
+    let side = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rw", paths.registry_db.display()))
+        .await
+        .expect("side connection");
+    sqlx::query(
+        "CREATE TRIGGER block_delete BEFORE DELETE ON agent_registry BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+    )
+    .execute(&side)
+    .await
+    .expect("install trigger");
+
+    let app = aa_api::server::build_app(state.clone());
+    assert_eq!(delete(app.clone()).await, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        state.agent_registry.get(&id).is_some(),
+        "the agent must stay registered so the kill can be retried"
+    );
+
+    sqlx::query("DROP TRIGGER block_delete")
+        .execute(&side)
+        .await
+        .expect("drop trigger");
+    assert_eq!(delete(app).await, StatusCode::NO_CONTENT);
+    assert!(state.agent_registry.get(&id).is_none());
+}

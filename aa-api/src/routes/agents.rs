@@ -696,7 +696,8 @@ pub async fn get_agent(
     responses(
         (status = 204, description = "Agent deregistered"),
         (status = 400, description = "Invalid agent ID format"),
-        (status = 404, description = "Agent not found")
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Durable record could not be deleted; the agent stays registered and the call can be retried")
     ),
     tag = "agents"
 )]
@@ -715,9 +716,8 @@ pub async fn delete_agent(
         .deregister_persisted(&agent_id, OrphanMode::Suspend)
         .await
         .map_err(|e| match e {
-            // AAASM-6416: the in-memory removal already happened when the durable
-            // delete fails, so surface it rather than report a phantom 404 — the
-            // row would otherwise keep the id occupied across the next restart.
+            // AAASM-6416: the durable delete runs first and a failure leaves the
+            // agent registered, so the caller can simply retry the kill.
             aa_gateway::registry::RegistryError::Storage(err) => {
                 tracing::error!(%err, agent_id = %id, "durable agent delete failed");
                 ProblemDetail::from_status(StatusCode::INTERNAL_SERVER_ERROR).with_detail(format!(
