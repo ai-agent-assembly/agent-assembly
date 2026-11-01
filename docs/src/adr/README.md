@@ -50,4 +50,5 @@ An ADR records **only** durable product or system decisions — product and busi
 | [0038](0038-capability-leases-and-explicit-authority-contract.md) | Capability Leases & the Explicit-Authority Contract | Proposed |
 | [0039](0039-personal-observe-profile.md) | Personal-Observe Deployment Profile | Accepted |
 | [0040](0040-transactional-workspace-mode.md) | Transactional Workspace Mode | Proposed |
+| [0041](0041-resource-ceiling-enforcement.md) | Resource Ceiling Enforcement | Accepted |
 | [0042](0042-publication-pending-release-evidence.md) | Publication-Pending Release Evidence (`CANDIDATE_VERIFIED`) | Accepted |

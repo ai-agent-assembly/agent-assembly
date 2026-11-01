@@ -65,6 +65,22 @@ SHA-specific release approval.
    `UNTESTED`, `PARTIAL`, ...). The checker blocks a row whose Result cell claims
    `PUBLICATION_PENDING` but whose status is anything else, and readiness check 12
    refuses `Verdict: PASS` over a pending row.
+7. **Candidate checks are bound to named artifacts.** Every `candidate_checks`
+   entry must carry a non-empty `artifact_digests` map of name to
+   `sha256:<64 hex>`; a missing, empty or malformed map makes the obligation
+   inadmissible. The digests reach the evidence record's `artifacts` field and
+   the checker requires them to equal the committed obligation file's. Known
+   gap: no candidate build-digest manifest exists today, so the checker
+   validates format, presence and the `candidate_sha` binding but cannot
+   cross-check the digests against an independently produced build record.
+   Closing that needs a candidate build manifest and is follow-up work.
+8. **A journey that declares `publication_checks` can never be a bare `PASS`.**
+   R3 refuses a `PASS` row for it; before publication its only legal state is
+   `PUBLICATION_PENDING` with an obligation. A post-publication `PASS` requires
+   a future evidence attempt (see Consequences); this ADR defines no
+   post-publication evidence shape.
+9. **Duplicate journey ids in the evidence are a `BLOCK`**, so a later row can
+   never silently replace an earlier one.
 
 ## Consequences
 
