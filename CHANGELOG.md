@@ -36,6 +36,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`aasm policy history` / `get` / `diff` / `rollback` now see what `aasm policy apply` saved, and `rollback` changes the active policy (AAASM-6430)** — the API server kept `apply` history in a per-process temp directory while those commands read `${AA_DATA_DIR:-~/.aa}/policy-history`, so after two applies `history` printed "No policy versions found." and `rollback <version printed by apply>` failed with "version not found"; history was also lost on every server restart. The server now keeps it at `${AA_DATA_DIR:-~/.aa}/policy-history` (created owner-only, `0700`). `aasm policy rollback` re-applies the stored version through the running server (`POST /api/v1/policies`) and prints "Rolled back successfully." only once the server confirms that version is active; if the version is unknown, or the server is unreachable or refuses it, it exits non-zero and writes nothing. The rollback appears in history as a new entry applied by `api` (it is no longer marked as a rollback). Not verified: a restart of the real `aasm start` daemon on release binaries.
+
 - **`aa-proxy` leaf certificates now carry an Authority Key Identifier (AAASM-6413)** — strict X.509 verifiers (Python 3.13+ enables strict verification by default) rejected the proxy's chain with `Missing Authority Key Identifier`, so a governed Python agent on such a version could not complete TLS through the proxy (it failed closed). Existing CAs on disk keep working.
 - **`install.sh` now installs `aa-gateway` and `aa-api-server` (AAASM-6414)** — the `cli`
   component extracted only `aasm` from a tarball that also carries `aa-gateway`, so

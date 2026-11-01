@@ -66,6 +66,16 @@ aasm policy history -n 5
 
 Roll back to a previous policy version, making it active again.
 
+The stored version is re-applied through the running API server (the same
+`POST /api/v1/policies` as `aasm policy apply`), so the server's active policy
+changes and the rollback is added to its history as a new version. The command
+prints `Rolled back successfully.` only once the server confirms the version is
+active. If the version is not in the local history, or the server cannot be
+reached or refuses the policy, it exits non-zero and writes nothing.
+
+History is stored in `${AA_DATA_DIR:-~/.aa}/policy-history`; `apply` (via the
+server) and `history`, `get`, `diff` and `rollback` all use that directory.
+
 | Name | Type | Description |
 |---|---|---|
 | `<VERSION>` | string (arg) | Version identifier (SHA-256 prefix) to roll back to. |
