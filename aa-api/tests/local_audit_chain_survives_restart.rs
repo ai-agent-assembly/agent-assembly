@@ -114,6 +114,7 @@ async fn audit_chain_resumes_hash_and_seq_across_a_simulated_restart() {
         registry_db: tmp.path().join("local.db"),
         audit_jsonl_dir: tmp.path().join("audit-jsonl"),
         audit_db: tmp.path().join("audit.db"),
+        policy_history_dir: tmp.path().join("policy-history"),
     };
 
     // No path under `std::env::temp_dir()` is used when these fixed,
