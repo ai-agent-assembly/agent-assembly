@@ -35,6 +35,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`aa-proxy` leaf certificates now carry an Authority Key Identifier (AAASM-6413)** — strict X.509 verifiers (Python 3.13+ enables strict verification by default) rejected the proxy's chain with `Missing Authority Key Identifier`, so a governed Python agent on such a version could not complete TLS through the proxy (it failed closed). Existing CAs on disk keep working.
 - **`--workspace-tx` no longer stages over a half-applied base (AAASM-6305)** — an apply
   that crashed or failed part-way left its journal behind, and the next
   `aasm run --workspace-tx` over the same directory silently re-staged from the
