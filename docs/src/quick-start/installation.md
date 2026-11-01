@@ -20,7 +20,8 @@ then how to verify it works. Pick **one** method:
 
 The one-line installer downloads the matching pre-built tarball plus its
 `SHA256SUMS` file from the GitHub Release, verifies the checksum, and installs
-the `aasm` binary:
+the `aasm` binary together with the `aa-gateway` daemon it launches and the `aa-api-server`
+that `aasm start --mode local` needs:
 
 ```sh
 curl -sSf https://agent-assembly.com/install.sh | sh
