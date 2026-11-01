@@ -48,6 +48,7 @@ async fn grpc_registered_agent_is_visible_via_rest() {
         registry_db: tmp.path().join("local.db"),
         audit_jsonl_dir: tmp.path().join("audit-jsonl"),
         audit_db: tmp.path().join("audit.db"),
+        policy_history_dir: tmp.path().join("policy-history"),
     };
 
     // Auth off so the bypass caller is admin and can list team-less agents

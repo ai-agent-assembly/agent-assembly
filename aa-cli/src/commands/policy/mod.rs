@@ -49,7 +49,7 @@ pub fn dispatch(args: PolicyArgs, ctx: &ResolvedContext, output: OutputFormat) -
     match args.command {
         PolicyCommands::Apply(apply_args) => history::run_apply(apply_args, ctx),
         PolicyCommands::History(history_args) => history::run_history(history_args),
-        PolicyCommands::Rollback(rollback_args) => history::run_rollback(rollback_args),
+        PolicyCommands::Rollback(rollback_args) => history::run_rollback(rollback_args, ctx),
         PolicyCommands::Diff(diff_args) => history::run_diff(diff_args),
         PolicyCommands::Simulate(sim_args) => simulate::run(sim_args),
         PolicyCommands::Validate(val_args) => validate::run(val_args),
