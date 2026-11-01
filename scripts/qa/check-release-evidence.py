@@ -12,7 +12,15 @@ not re-run any journey itself, it only checks whether the *existing* record
 can still be trusted for the commit actually being tagged.
 
 Exit 0 ("OK") means every rule below is satisfied. Exit 1 ("BLOCK") means at
-least one rule failed; every BLOCK reason is printed with the rule that
+least one rule failed. Exit 3 ("CANDIDATE_VERIFIED", AAASM-6419) means every
+rule is satisfied AND at least one journey is PUBLICATION_PENDING: the
+candidate is verified as far as it can be before publication, but a check that
+needs a published artifact is still owed. That is deliberately NOT exit 0 —
+every consumer that gates on exit 0 (release.yml's release-evidence-gate,
+release-tag-guard.sh) keeps refusing, so pending can never authorize a tag or a
+publish. Exit-code-3 handling is the only place the distinct state surfaces;
+nothing converts it to OK.
+Exit 1 reasons: every BLOCK reason is printed with the rule that
 raised it and the specific journey/path/file it concerns, so a human (or a
 follow-up agent) can act on the output without re-deriving the investigation.
 
@@ -87,6 +95,7 @@ from typing import Any
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import publication_obligations  # noqa: E402
 import registry_digest  # noqa: E402  (sys.path must be set first)
 
 
@@ -959,9 +968,60 @@ def _resolve_waiver_ref(qa_signoff_text: str, ref: str, journey_id: str) -> bool
     return False
 
 
+def _check_pending_row(
+    jid: str, ev: dict[str, Any], entry_t: dict[str, Any], candidate_sha: str,
+    file_entries: dict[str, dict[str, Any]], evidence_artifacts: dict[str, Any],
+) -> list[str]:
+    """Every reason journey `jid`'s PUBLICATION_PENDING row is inadmissible
+    (AAASM-6419). Everything is taken from the registry entry at the tag
+    target and the obligation file read from git, never from the evidence
+    record's own claims: the record is only compared TO them."""
+    blocks: list[str] = []
+    if ev.get("exception"):
+        blocks.append(
+            f"R3: journey {jid} is PUBLICATION_PENDING and also carries an exception — "
+            "a waiver excuses a check, a pending state records that it is still owed; "
+            "the two cannot coexist on one row"
+        )
+    file_entry = file_entries.get(jid)
+    if file_entry is None:
+        blocks.append(
+            f"R3: journey {jid} is PUBLICATION_PENDING but the committed obligation file has "
+            "no entry for it"
+        )
+        return blocks
+    problems = publication_obligations.validate_obligation(
+        jid, file_entry, entry_t, registry_digest.per_journey_digest(entry_t),
+    )
+    blocks += [f"R3 publication-pending: {m}" for m in problems]
+
+    embedded = ev.get("obligation")
+    if not isinstance(embedded, dict):
+        blocks.append(f"R3 publication-pending: journey {jid}'s evidence row carries no obligation")
+    else:
+        if embedded.get("candidate_sha") != candidate_sha:
+            blocks.append(
+                f"R3 publication-pending: journey {jid} obligation candidate_sha "
+                f"{embedded.get('candidate_sha')!r} != evidence candidate_sha {candidate_sha!r}"
+            )
+        stripped = {k: v for k, v in embedded.items() if k != "candidate_sha"}
+        if stripped != file_entry:
+            blocks.append(
+                f"R3 publication-pending: journey {jid}'s embedded obligation differs from the "
+                "committed obligation file"
+            )
+    expected_artifacts = publication_obligations.candidate_artifact_digests(file_entry)
+    if evidence_artifacts != expected_artifacts:
+        blocks.append(
+            f"R3 publication-pending: journey {jid} evidence `artifacts` do not match the "
+            "candidate artifact digests in the obligation file"
+        )
+    return blocks
+
+
 def rule_r2_r3(
     git: GitRepo, evidence: dict[str, Any], tag_target: str, catalog_relpath: str,
-    qa_signoff_text: str,
+    qa_signoff_text: str, version: str,
 ) -> list[str]:
     blocks: list[str] = []
     tag_target_sha = git.rev_parse(tag_target)
@@ -976,6 +1036,41 @@ def rule_r2_r3(
     required_t_by_id = {e["id"]: e for e in required_t}
     evidence_journeys_by_id = {j["id"]: j for j in evidence["journeys"]}
     evidence_ids = set(evidence_journeys_by_id)
+
+    # AAASM-6419: the obligation file, from git at the tag target (never the
+    # working tree — an untracked file must not be able to authorize), and
+    # required to be byte-identical at the candidate commit. Anything under
+    # docs/release/qa-signoff/ is EXECUTABLE for R1, so a later edit blocks
+    # there too; this is the explicit, rule-local statement of the same fact.
+    obl_path = publication_obligations.obligation_path(version)
+    obl_text_t = git.show_file(tag_target_sha, obl_path)
+    obl_text_c = git.show_file(candidate_sha, obl_path)
+    file_entries: dict[str, dict[str, Any]] = {}
+    pending_in_evidence = sorted(
+        jid for jid in required_t_ids
+        if evidence_journeys_by_id.get(jid, {}).get("status") == publication_obligations.PENDING_STATUS
+    )
+    if obl_text_t is not None:
+        try:
+            file_entries, idx_problems = publication_obligations.index_obligations(json.loads(obl_text_t))
+        except json.JSONDecodeError as e:
+            idx_problems = [f"obligation file is not valid JSON: {e}"]
+        blocks += [f"R3 publication-pending: {m}" for m in idx_problems]
+        if obl_text_c != obl_text_t:
+            blocks.append(
+                f"R3 publication-pending: {obl_path} at tag_target differs from (or is absent "
+                "at) the candidate commit — the obligation must be final at the candidate"
+            )
+        for orphan in sorted(set(file_entries) - set(pending_in_evidence)):
+            blocks.append(
+                f"R3 publication-pending: obligation entry for {orphan} but that journey is not "
+                "PUBLICATION_PENDING in the evidence"
+            )
+    elif pending_in_evidence:
+        blocks.append(
+            f"R3 publication-pending: journeys {pending_in_evidence} are PUBLICATION_PENDING but "
+            f"{obl_path} does not exist at tag_target"
+        )
 
     drift = digest_t != evidence_digest
     print(f"R2 catalog drift: requirements_digest at tag_target "
@@ -1020,6 +1115,21 @@ def rule_r2_r3(
 
         status = ev.get("status")
         if status == "PASS":
+            continue
+
+        if status == publication_obligations.PENDING_STATUS:
+            # Must stay BEFORE the generic exception branch below: that
+            # branch admits any non-PASS status with a resolving waiver, which
+            # would let a waiver turn a pending row into an admitted one.
+            pending_blocks = _check_pending_row(
+                jid, ev, entry_t, candidate_sha, file_entries,
+                (evidence.get("artifacts") or {}).get(jid, {}),
+            )
+            blocks += pending_blocks
+            if not pending_blocks:
+                print(f"R3 publication-pending: journey {jid} admitted as PUBLICATION_PENDING "
+                      f"({len(file_entries[jid]['pending_checks'])} publication check(s) still owed; "
+                      "this is NOT a pass)")
             continue
 
         exception = ev.get("exception")
@@ -1151,12 +1261,29 @@ def _extract_verdict_line(md_text: str) -> str | None:
 
 def rule_r7_signoff_consistency(
     evidence: dict[str, Any], qa_signoff_text: str, security_signoff_text: str,
-    qa_signoff_path: str, security_signoff_path: str,
+    qa_signoff_path: str, security_signoff_path: str, expected_verdict: str,
 ) -> list[str]:
+    """`expected_verdict` is recomputed by the caller from the journeys' own
+    admissibility (R2/R3 outcome + pending rows), never read from a field.
+    The evidence field and the QA sign-off line must both equal it."""
     blocks: list[str] = []
 
-    if evidence.get("verdict") != "PASS":
-        blocks.append(f"R7: evidence verdict is {evidence.get('verdict')!r}, not PASS")
+    evidence_verdict = evidence.get("verdict")
+    if evidence_verdict not in ("PASS", "CANDIDATE_VERIFIED"):
+        blocks.append(
+            f"R7: evidence verdict is {evidence_verdict!r}, not PASS or CANDIDATE_VERIFIED"
+        )
+    if evidence_verdict != expected_verdict:
+        blocks.append(
+            f"R7: evidence verdict {evidence_verdict!r} differs from the verdict recomputed "
+            f"from its journeys ({expected_verdict!r})"
+        )
+    recorded_for_compare = evidence.get("signoffs", {}).get("qa", {}).get("verdict")
+    if recorded_for_compare != evidence_verdict:
+        blocks.append(
+            f"R7: evidence verdict {evidence_verdict!r} differs from the QA sign-off verdict "
+            f"recorded in the evidence ({recorded_for_compare!r})"
+        )
 
     real_qa_verdict = _extract_verdict_line(qa_signoff_text)
     recorded_qa_verdict = evidence.get("signoffs", {}).get("qa", {}).get("verdict")
@@ -1168,6 +1295,11 @@ def rule_r7_signoff_consistency(
 
     real_security_verdict = _extract_verdict_line(security_signoff_text)
     recorded_security_verdict = evidence.get("signoffs", {}).get("security", {}).get("verdict")
+    if "CANDIDATE_VERIFIED" in (real_security_verdict, recorded_security_verdict):
+        blocks.append(
+            "R7: CANDIDATE_VERIFIED is a QA-only verdict; the security sign-off has no "
+            "pending state and must be PASS"
+        )
     if real_security_verdict != recorded_security_verdict:
         blocks.append(
             "R7: evidence's recorded security sign-off verdict "
@@ -1670,7 +1802,7 @@ def main() -> int:
               f"tag_target {args.tag_target}")
 
     r2_r3_blocks = (
-        rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text)
+        rule_r2_r3(git, evidence, args.tag_target, catalog_relpath, qa_signoff_text, args.version)
         if candidate_is_ancestor
         else []
     )
@@ -1685,8 +1817,17 @@ def main() -> int:
     r6_blocks = rule_r6_temporal(git, evidence) if candidate_is_ancestor else []
     all_blocks += r6_blocks
 
+    required_ids = {e["id"] for e in required_t_for_r1}
+    pending_ids = sorted(
+        j["id"] for j in evidence["journeys"]
+        if j.get("status") == publication_obligations.PENDING_STATUS and j["id"] in required_ids
+    )
+    expected_verdict = (
+        "BLOCK" if r2_r3_blocks else ("CANDIDATE_VERIFIED" if pending_ids else "PASS")
+    )
     r7_blocks = rule_r7_signoff_consistency(
         evidence, qa_signoff_text, security_signoff_text, qa_signoff_path, security_signoff_path,
+        expected_verdict,
     )
     all_blocks += r7_blocks
 
@@ -1723,6 +1864,15 @@ def main() -> int:
         for b in all_blocks:
             print(f"  - {b}")
         return 1
+
+    if pending_ids:
+        print(
+            f"CANDIDATE_VERIFIED — evidence for v{args.version} is valid for {args.tag_target} "
+            f"(reuse_class: {reuse_class}) but {len(pending_ids)} journey(s) are "
+            f"PUBLICATION_PENDING: {pending_ids}. This is NOT a pass and does NOT authorize "
+            "tagging or publishing (exit 3)."
+        )
+        return 3
 
     print(f"OK — evidence for v{args.version} authorizes tagging {args.tag_target} "
           f"(reuse_class: {reuse_class})")
