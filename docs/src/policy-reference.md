@@ -488,7 +488,7 @@ each layer actually does today (AAASM-4595):
 
 | Enforcing layer | What it scrubs | When it cannot scrub |
 |---|---|---|
-| `aa-proxy` started by `aasm run` (LLM requests, requests to other decrypted hosts, plain HTTP) | Substitutes `[REDACTED:<kind>]` for matches of the proxy's **built-in credential patterns** in the request body. Not general payload redaction: a policy's custom `sensitive_patterns` and `locale_packs` are not known to the proxy. | A compressed or undecodable body is **denied** (HTTP 403, nothing dialled upstream). |
+| `aa-proxy` started by `aasm run` (LLM requests, requests to other decrypted hosts, plain HTTP) | Substitutes `[REDACTED:<kind>]` for matches of the proxy's **built-in credential patterns** in the request body. Not general payload redaction: a policy's custom `sensitive_patterns` and `locale_packs` are not known to the proxy. | A compressed `redact_only` body, an undecodable body, and a body whose scrubbed text **still re-scans as carrying a credential** (for example an API key plus a JWT, whose header and payload survive the scrub) are **denied** (HTTP 403, nothing dialled upstream). |
 | `aa-proxy`, when the gateway answers `Redact` for an MCP request, an MCP response or a network egress check | Nothing: the proxy does not replay the gateway's redaction instructions. | **Denied** (JSON-RPC error / `502` / `403`), whatever the proxy's own `credential_action` is, including `alert_only`. |
 | Python SDK, Node SDK, Go SDK (in-process, under `enforce`) | Nothing: no SDK receives redacted arguments from the runtime. | The tool call is **denied** before it runs. |
 | `aa-gateway` | Returns the redacted text and `RedactInstructions` to a caller that can apply them. | Not applicable (it is the decider, not the enforcer). |
@@ -497,6 +497,12 @@ Not implemented, and not claimed: scrubbing a tool's arguments or an MCP payload
 **and forwarding the scrubbed result** through an SDK or through the proxy's
 gateway-decided paths. Where the table says "denied", the policy author gets a
 deny, not a scrubbed forward.
+
+**What the proxy scans.** Only the request **body**. The URL path and query and the
+headers are forwarded verbatim (the audit record scrubs the request target, but only
+for what it persists). The scanner reads the body as UTF-8 text (invalid bytes become
+replacement characters), so a secret that a JSON string escape splits, or that is not
+valid text, is not matched. A denied body is never scrubbed-and-forwarded anywhere.
 
 **How the mode reaches the proxy.** `aasm run` exports the resolved policy's
 `data.credential_action` to the dedicated proxy it spawns as
