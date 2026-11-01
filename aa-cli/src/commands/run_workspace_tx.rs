@@ -119,17 +119,29 @@ pub(crate) fn resolve(args: &RunArgs) -> Option<Result<WorkspaceTxPlan, String>>
 /// Refusing at plan time keeps "protected" from quietly meaning "unprotected".
 fn protect_selector_refusal(selector: &str) -> Option<String> {
     let path = Path::new(selector);
+    // The gate compares strings, so the selector must also equal its own normalized form
+    // (`a//b` normalizes to `a/b` but would never match) and must not carry characters a
+    // literal comparison cannot honour: globs, backslashes, surrounding whitespace.
+    let normalized = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
     let normal = !selector.is_empty()
         && !selector.ends_with('/')
         && !path.is_absolute()
-        && path.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+        && path.components().all(|c| matches!(c, std::path::Component::Normal(_)))
+        && normalized == selector
+        && !selector.contains(['*', '?', '[', '\\'])
+        && selector.trim() == selector;
     if normal {
         return None;
     }
     Some(format!(
         "--workspace-tx-protect refuses selector {selector:?}: it must be a non-empty path relative to the base \
-         directory, written without `./`, `..`, a leading or trailing `/` (for example `src/secrets`). A selector \
-         of any other shape would never match a changed path, so the protection would silently not apply."
+         directory, written without `./`, `..`, doubled or leading or trailing `/`, globs, backslashes or surrounding whitespace \
+         (for example `src/secrets`). Selectors are matched literally and case-sensitively; a selector of any \
+         other shape would never match a changed path, so the protection would silently not apply."
     ))
 }
 
@@ -465,7 +477,10 @@ mod tests {
 
     #[test]
     fn protect_selectors_the_gate_could_never_match_refuse_and_plain_ones_do_not() {
-        for bad in ["", ".", "./x", "x/", "/etc/x", "../x", "a/../b"] {
+        for bad in [
+            "", ".", "./x", "x/", "/etc/x", "../x", "a/../b", "a//b", "a/./b", "*.env", "a?b", "a[b]", "a\\b", " x",
+            "x ",
+        ] {
             assert!(protect_selector_refusal(bad).is_some(), "{bad:?} must refuse");
         }
         for good in ["x", "src/secrets", "a/b/c.txt"] {
