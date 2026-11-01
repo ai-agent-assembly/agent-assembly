@@ -147,10 +147,37 @@ class KillOwnedDaemonTests(unittest.TestCase):
         self.assertEqual(sent[0], signal.SIGTERM)
         self.assertNotIn(signal.SIGKILL, sent)
 
-    def test_pid_one_self_and_parent_are_never_owned(self) -> None:
-        # the harness itself has its cwd/fds under tmp dirs, so only the explicit guard stops these
-        for pid in (-1, 0, 1, os.getpid(), os.getppid()):
-            self.assertFalse(c.pid_owned_by(pid, Path(os.getcwd())), pid)
+    @staticmethod
+    def _image_dir(pid: int) -> Path:
+        """Directory holding a txt image `pid` really maps (its interpreter), so that without
+        the pid guard the image rule alone WOULD accept that pid."""
+        out = subprocess.run([c.LSOF, "-p", str(pid), "-Fftn"], capture_output=True, text=True,
+                             timeout=10, check=False).stdout
+        imgs = [os.path.realpath(i) for i in c._txt_images(out)]
+        exe = os.path.realpath(sys.executable)
+        return Path(next((i for i in imgs if i == exe), imgs[0])).parent
+
+    def test_self_is_never_owned_even_when_it_maps_an_image_under_owner(self) -> None:
+        owner = self._image_dir(os.getpid())
+        self.assertTrue(c._txt_images(subprocess.run(
+            [c.LSOF, "-p", str(os.getpid()), "-Fftn"], capture_output=True, text=True).stdout))
+        self.assertFalse(c.pid_owned_by(os.getpid(), owner))
+
+    def test_parent_is_never_owned_even_when_it_maps_an_image_under_owner(self) -> None:
+        owner = self._image_dir(os.getpid())  # the child's parent is this very interpreter
+        code = (
+            "import os, sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(c.__file__).parent)!r})\n"
+            "import b1_candidate_common as c\n"
+            f"print(c.pid_owned_by(os.getppid(), Path({str(owner)!r})))\n"
+        )
+        out = subprocess.run([sys.executable, "-I", "-c", code], capture_output=True, text=True,
+                             timeout=60, check=True).stdout.strip()
+        self.assertEqual(out, "False")
+
+    def test_pid_zero_one_and_negative_are_never_owned(self) -> None:
+        for pid in (-1, 0, 1):
+            self.assertFalse(c.pid_owned_by(pid, Path("/")), pid)
 
     def test_relative_owner_fails_closed(self) -> None:
         self.assertFalse(c.pid_owned_by(os.getpid(), Path("relative")))
