@@ -1465,8 +1465,9 @@ mod tests {
         /// its own, unattenuated authority. Both spec shapes are covered
         /// because `Ancestry::UnresolvedParent` must refuse unconditionally,
         /// not only for lease-aware specs. The controls prove the gate does
-        /// not simply refuse everything: a genuine root, and a child under a
-        /// resolved parent, are admitted.
+        /// not simply refuse everything: this test asserts only the genuine-root
+        /// admit control. The resolved-parent admit case is covered by
+        /// `a_narrower_child_is_derived_and_passes_the_gate` above.
         #[test]
         fn an_unresolved_parent_claim_is_refused_and_never_runs_with_unattenuated_authority() {
             let unresolved = Ancestry::UnresolvedParent {
