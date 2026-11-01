@@ -66,19 +66,24 @@ aasm policy history -n 5
 
 Roll back to a previous policy version, making it active again.
 
-The stored version is re-applied through the running API server (the same
-`POST /api/v1/policies` as `aasm policy apply`), so the server's active policy
-changes and the rollback is added to its history as a new version. The command
-prints `Rolled back successfully.` only once the server confirms the version is
-active. If the version is not in the local history, or the server cannot be
-reached or refuses the policy, it exits non-zero and writes nothing.
-
-History is stored in `${AA_DATA_DIR:-~/.aa}/policy-history`; `apply` (via the
-server) and `history`, `get`, `diff` and `rollback` all use that directory.
-
 | Name | Type | Description |
 |---|---|---|
-| `<VERSION>` | string (arg) | Version identifier (SHA-256 prefix) to roll back to. |
+| `<VERSION>` | string (arg) | Version identifier (SHA-256 hex prefix, at least 6 characters, unambiguous) to roll back to. |
+
+The stored version is re-applied through the running API server (the same
+`POST /api/v1/policies` as `aasm policy apply`), so the server's active policy
+changes and the rollback is added to its history as a new version applied by
+`api`. The command prints `Rolled back successfully.` only when the server's
+reply to that apply says the same version is active. If the version is not in
+the local history or is ambiguous, or the server cannot be reached or refuses
+the policy, it exits non-zero and writes nothing.
+
+History is stored in `${AA_DATA_DIR:-~/.aa}/policy-history` (directory `0700`,
+files `0600`). `apply` through a local server and `history`, `get`, `diff` and
+`rollback` share it only on the same host with the same `AA_DATA_DIR`/`HOME`; a
+remote server reached with `--api-url`, or a daemon started with a different
+environment, has its own store. A restarted local server re-installs the newest
+entry as its active policy.
 
 ```bash
 aasm policy rollback 9f2c1a
