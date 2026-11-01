@@ -7439,17 +7439,13 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             Some(_) => aa_proxy::config::SystemTrustInstall::Never,
             None => aa_proxy::config::SystemTrustInstall::Auto,
         };
-        let opts = ProxyGuardOptions {
-            ready_file: state.ready_file,
+        let opts = governed_proxy_options(
+            state,
             ca_dir,
-            agent_id: Some(handle.agent_id.clone()),
-            gateway_endpoint: Some(run_registration::gateway_endpoint()),
-            audit_jsonl_path: Some(state.audit_jsonl_path),
+            &handle.agent_id,
             system_trust_install,
-            credential_action: crate::commands::proxy::guard::credential_action_for_policy(
-                resolved.policy().resolution().credential_action(),
-            ),
-        };
+            resolved.policy().resolution(),
+        );
         Some(
             ProxyGuard::spawn(opts)
                 .map_err(|e| anyhow::anyhow!("refusing to launch ungoverned: dedicated proxy failed to start: {e}"))?,
@@ -7694,6 +7690,30 @@ pub fn dispatch(args: RunArgs, _ctx: &ResolvedContext, _output: OutputFormat) ->
             eprintln!("error: {e}");
             std::process::exit(1)
         }
+    }
+}
+
+/// What a launch's dedicated proxy is spawned with.
+///
+/// The one place the launch's resolved policy becomes proxy configuration
+/// (AAASM-4595): a separate function so a test can assert the policy's
+/// `credential_action` reaches the options a real launch spawns with, instead of
+/// only asserting the pieces on either side of it.
+fn governed_proxy_options(
+    state: crate::commands::proxy::launch_state::PerLaunchState,
+    ca_dir: PathBuf,
+    agent_id: &str,
+    system_trust_install: aa_proxy::config::SystemTrustInstall,
+    resolution: &run_policy::PolicyResolution,
+) -> ProxyGuardOptions {
+    ProxyGuardOptions {
+        ready_file: state.ready_file,
+        ca_dir,
+        agent_id: Some(agent_id.to_owned()),
+        gateway_endpoint: Some(run_registration::gateway_endpoint()),
+        audit_jsonl_path: Some(state.audit_jsonl_path),
+        system_trust_install,
+        credential_action: crate::commands::proxy::guard::credential_action_for_policy(resolution.credential_action()),
     }
 }
 
@@ -8218,6 +8238,40 @@ mod tests {
             credentials,
             "no isolation backend is selected",
         )
+    }
+
+    /// AAASM-4595: a launch's proxy is spawned with the policy's
+    /// `credential_action`. Replacing the policy-derived value in
+    /// `governed_proxy_options` with the default fails every non-default case.
+    #[test]
+    fn a_launchs_proxy_options_carry_the_resolved_policys_credential_action() {
+        use aa_proxy::config::CredentialAction as X;
+        let dir = tempfile::tempdir().unwrap();
+        for (data, expected) in [
+            ("data:\n  credential_action: block\n", X::Block),
+            ("data:\n  credential_action: alert_only\n", X::AlertOnly),
+            ("data:\n  credential_action: redact_only\n", X::RedactOnly),
+            ("", X::RedactOnly),
+        ] {
+            let resolution = run_policy::classify(
+                std::path::Path::new("policy.yaml"),
+                &format!("tools:\n  bash:\n    allow: false\n{data}"),
+            );
+            assert!(matches!(resolution, run_policy::PolicyResolution::Enforced { .. }));
+            let state = crate::commands::proxy::launch_state::PerLaunchState {
+                dir: dir.path().to_path_buf(),
+                ready_file: dir.path().join("ready"),
+                audit_jsonl_path: dir.path().join("audit.jsonl"),
+            };
+            let opts = governed_proxy_options(
+                state,
+                dir.path().join("ca"),
+                "agent-1",
+                aa_proxy::config::SystemTrustInstall::Never,
+                &resolution,
+            );
+            assert_eq!(opts.credential_action, expected, "policy data: {data:?}");
+        }
     }
 
     /// A resolved-and-enforced policy, for tests whose subject is not the
