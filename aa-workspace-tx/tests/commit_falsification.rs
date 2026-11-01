@@ -470,3 +470,251 @@ fn the_same_nested_change_without_a_base_symlink_applies() {
     tx.commit(&[], false).expect("a plain nested add must apply");
     assert_eq!(fs::read_to_string(base_root.join("d").join("f")).unwrap(), "applied");
 }
+
+fn journal_exists_under(root: &Path) -> bool {
+    fs::read_dir(root).unwrap().flatten().any(|e| {
+        let p = e.path();
+        (p.is_file() && e.file_name() == "journal") || (p.is_dir() && journal_exists_under(&p))
+    })
+}
+
+/// AAASM-6418 (F13): a case-only rename (`a.txt` -> `A.txt`) diffs as
+/// `Added A.txt` + `Deleted a.txt`. On a case-insensitive base the apply
+/// writes `A.txt` over the very entry `a.txt` names and the deletion phase
+/// then removes it, silently losing the file. The fold check refuses it
+/// before the journal is written, on any filesystem, so this test is
+/// hermetic: the change set is built by hand rather than by relying on the
+/// host's case sensitivity.
+#[test]
+fn case_only_rename_is_refused_before_the_journal_and_nothing_is_applied() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("a.txt"), "precious");
+    write(&base_root.join("untouched.txt"), "control");
+    let before = base_digest(&base_root);
+
+    let id = TransactionId::new("case-rename-test");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    fs::remove_file(tx.staged_dir().join("a.txt")).unwrap();
+    write(&tx.staged_dir().join("A.txt"), "precious");
+    // Positive control: the staged tree really holds both spellings' effect.
+    let names: Vec<String> = fs::read_dir(tx.staged_dir())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.contains(&"A.txt".to_string()),
+        "staged rename must exist: {names:?}"
+    );
+
+    tx.close();
+    let refusal = tx
+        .commit(&[], false)
+        .expect_err("a change set that differs only by case between an add and a delete must refuse");
+    assert!(
+        matches!(&refusal, aa_isolation::CommitRefusal::BoundaryEscape { path } if path.contains("collision") && path.to_lowercase().starts_with("a.txt")),
+        "the refusal must name the colliding path: {refusal:?}"
+    );
+    assert!(
+        !journal_exists_under(&state_root),
+        "no journal may be written for a refusal"
+    );
+    assert_eq!(fs::read_to_string(base_root.join("a.txt")).unwrap(), "precious");
+    assert_eq!(base_digest(&base_root), before, "the base must be untouched");
+}
+
+/// Negative control: a rename to a different name (not a case fold) applies,
+/// so the refusal above is caused by the fold and not by renames in general.
+#[test]
+fn a_rename_to_a_different_name_still_applies() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("a.txt"), "moved");
+
+    let id = TransactionId::new("rename-control");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    fs::remove_file(tx.staged_dir().join("a.txt")).unwrap();
+    write(&tx.staged_dir().join("b.txt"), "moved");
+    tx.close();
+    tx.commit(&[], false).expect("a plain rename must apply");
+    assert!(!base_root.join("a.txt").exists());
+    assert_eq!(fs::read_to_string(base_root.join("b.txt")).unwrap(), "moved");
+}
+
+/// True when `dir`'s filesystem folds case (macOS APFS default).
+fn fs_is_case_insensitive(dir: &Path) -> bool {
+    let probe = dir.join("CaseProbe.tmp");
+    fs::write(&probe, b"x").unwrap();
+    let folded = dir.join("caseprobe.tmp").exists();
+    fs::remove_file(&probe).unwrap();
+    folded
+}
+
+/// AAASM-6418 (F13), host-gated: the real rename on a case-insensitive
+/// filesystem, exactly as `git mv a.txt A.txt` would leave the staged copy.
+#[test]
+fn real_case_insensitive_fs_case_only_rename_does_not_lose_the_file() {
+    let fixture = tempfile::tempdir().unwrap();
+    if !fs_is_case_insensitive(fixture.path()) {
+        eprintln!("SKIP: temp dir is on a case-sensitive filesystem; the hermetic fold test covers the logic");
+        return;
+    }
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("a.txt"), "precious");
+
+    let id = TransactionId::new("real-case-rename");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    fs::rename(tx.staged_dir().join("a.txt"), tx.staged_dir().join("A.txt")).unwrap();
+    tx.close();
+    let result = tx.commit(&[], false);
+    assert!(result.is_err(), "case-only rename must be refused, got {result:?}");
+    assert_eq!(
+        fs::read_to_string(base_root.join("a.txt")).expect("the base file must still exist"),
+        "precious"
+    );
+}
+
+/// AAASM-6418 (F12): the protected gate folds case, so a case variant of a
+/// selector is never an unprotected path (over-protect, never under-protect).
+#[test]
+fn protected_gate_fires_on_case_variant_of_selector() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("keep.txt"), "x");
+
+    let id = TransactionId::new("protect-case");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    write(&tx.staged_dir().join(".ENV"), "SECRET=1");
+    write(&tx.staged_dir().join("Secrets").join("k"), "k");
+    tx.close();
+    let refusal = tx
+        .commit(&[".env".to_string(), "secrets/k".to_string()], false)
+        .expect_err("a case variant of a protected selector must hit the gate");
+    assert!(
+        matches!(&refusal, aa_isolation::CommitRefusal::ProtectedPathNotApproved { selectors }
+            if selectors == &[".env".to_string(), "secrets/k".to_string()]),
+        "{refusal:?}"
+    );
+    assert!(!base_root.join(".ENV").exists());
+}
+
+/// Negative control: a selector that is only a string-prefix of a name (not a
+/// path-component prefix, not a case variant) does not fire.
+#[test]
+fn protected_gate_does_not_fire_on_an_unrelated_name() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("keep.txt"), "x");
+
+    let id = TransactionId::new("protect-case-control");
+    let mut tx = WorkspaceTransaction::open(id, &state_root, &base_root, vec![]).unwrap();
+    write(&tx.staged_dir().join(".envx"), "not protected");
+    tx.close();
+    tx.commit(&[".env".to_string()], false)
+        .expect(".envx is not .env nor under it");
+    assert!(base_root.join(".envx").exists());
+}
+
+#[cfg(unix)]
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).unwrap().permissions().mode() & 0o7777
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// AAASM-6418 (F6): committing a modified file must not change its mode.
+/// Run through the whole open/modify/commit cycle so copy-in is covered too.
+#[cfg(unix)]
+fn commit_modified_with_mode(mode: u32, id: &str) -> u32 {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("f"), "before");
+    set_mode(&base_root.join("f"), mode);
+
+    let mut tx = WorkspaceTransaction::open(TransactionId::new(id), &state_root, &base_root, vec![]).unwrap();
+    // The confined process rewrites content in place (keeps whatever mode the staged copy has).
+    fs::write(tx.staged_dir().join("f"), "after").unwrap();
+    tx.close();
+    tx.commit(&[], false).expect("commit");
+    assert_eq!(fs::read_to_string(base_root.join("f")).unwrap(), "after");
+    mode_of(&base_root.join("f"))
+}
+
+#[cfg(unix)]
+#[test]
+fn modified_0600_file_keeps_0600() {
+    assert_eq!(commit_modified_with_mode(0o600, "mode-600"), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn modified_0755_script_keeps_exec_bit() {
+    assert_eq!(commit_modified_with_mode(0o755, "mode-755"), 0o755);
+}
+
+/// Control: the common default also survives, so the two tests above fail on
+/// the old umask-derived behaviour for the mode they change, not for all modes.
+#[cfg(unix)]
+#[test]
+fn modified_0644_file_keeps_0644() {
+    assert_eq!(commit_modified_with_mode(0o644, "mode-644"), 0o644);
+}
+
+/// An added file takes the staged file's permission bits (executable bit
+/// kept) but never setuid/setgid/sticky.
+#[cfg(unix)]
+#[test]
+fn added_file_keeps_exec_bit_and_never_gets_setuid_bits() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("keep"), "x");
+
+    let mut tx = WorkspaceTransaction::open(TransactionId::new("mode-added"), &state_root, &base_root, vec![]).unwrap();
+    write(&tx.staged_dir().join("run.sh"), "#!/bin/sh\n");
+    set_mode(&tx.staged_dir().join("run.sh"), 0o4755);
+    write(&tx.staged_dir().join("secret"), "s");
+    set_mode(&tx.staged_dir().join("secret"), 0o600);
+    tx.close();
+    tx.commit(&[], false).expect("commit");
+    assert_eq!(mode_of(&base_root.join("run.sh")), 0o755);
+    assert_eq!(mode_of(&base_root.join("secret")), 0o600);
+}
+
+/// Copy-in preserves the base mode, so a workspace script stays runnable in
+/// the staged tree.
+#[cfg(unix)]
+#[test]
+fn copy_in_preserves_the_base_file_mode() {
+    let fixture = tempfile::tempdir().unwrap();
+    let base_root = fixture.path().join("base");
+    let state_root = fixture.path().join("state");
+    fs::create_dir_all(&base_root).unwrap();
+    write(&base_root.join("tool.sh"), "#!/bin/sh\n");
+    set_mode(&base_root.join("tool.sh"), 0o755);
+    write(&base_root.join("key"), "k");
+    set_mode(&base_root.join("key"), 0o600);
+
+    let tx = WorkspaceTransaction::open(TransactionId::new("mode-copy-in"), &state_root, &base_root, vec![]).unwrap();
+    assert_eq!(mode_of(&tx.staged_dir().join("tool.sh")), 0o755);
+    assert_eq!(mode_of(&tx.staged_dir().join("key")), 0o600);
+}
