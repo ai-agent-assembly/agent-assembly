@@ -2971,3 +2971,55 @@ async fn credential_action_alert_only_does_not_override_an_uninspectable_body_de
     assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
     assert!(seen.is_empty(), "nothing may reach upstream, saw {} bytes", seen.len());
 }
+
+// ── redact_only refuses a scrub that is not clean (AAASM-4595) ──
+
+/// API key plus a JWT: the scrub removes the key and the JWT signature, but the
+/// JWT header and payload survive, so the scrubbed body still re-scans dirty.
+const JWT_FIXTURE: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+fn key_and_jwt_body() -> String {
+    format!(r#"{{"note":"key {BUILTIN_SECRET} and jwt {JWT_FIXTURE}"}}"#)
+}
+
+async fn assert_dirty_scrub_refused(host: &str, request: Vec<u8>) {
+    let (response, seen, record) = send_credential_body_to(host, CredentialAction::RedactOnly, &request).await;
+    assert!(response.starts_with("HTTP/1.1 403"), "{host}: got {response:?}");
+    assert!(
+        seen.is_empty(),
+        "{host}: nothing may reach upstream, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    for raw in [BUILTIN_SECRET, JWT_FIXTURE] {
+        assert!(!record.contains(raw), "{host}: raw value in the audit record: {record}");
+    }
+}
+
+#[tokio::test]
+async fn redact_only_refuses_a_dirty_scrub_on_a_non_llm_mitm_host() {
+    assert_dirty_scrub_refused(MITM_HOST, post(MITM_HOST, "/note", &key_and_jwt_body()).into_bytes()).await;
+}
+
+#[tokio::test]
+async fn redact_only_refuses_a_dirty_scrub_on_an_llm_host() {
+    let body = format!(
+        r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET} jwt {JWT_FIXTURE}"}}]}}"#
+    );
+    assert_dirty_scrub_refused(
+        ANTHROPIC_LLM_HOST,
+        post(ANTHROPIC_LLM_HOST, "/v1/messages", &body).into_bytes(),
+    )
+    .await;
+}
+
+/// Control: `alert_only` forwards the same body raw, by design, so the refusal
+/// above is caused by `redact_only` and the dirty re-scan.
+#[tokio::test]
+async fn alert_only_still_forwards_the_key_and_jwt_body_raw() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        post(MITM_HOST, "/note", &key_and_jwt_body()).as_bytes(),
+    )
+    .await;
+    assert!(contains(&seen, BUILTIN_SECRET) && contains(&seen, JWT_FIXTURE));
+}

@@ -4594,10 +4594,15 @@ mod tests {
         let (tx, _rx) = broadcast::channel(4);
         let interceptor = Interceptor::new(tx);
         let body = unscrubbable_body();
-        let verdict = interceptor.intercept_request(body.as_bytes(), None, crate::config::CredentialAction::RedactOnly);
-        let redacted = verdict
-            .redacted_body
-            .expect("the fixture must carry a credential the scanner redacts");
+        // The scrub itself, taken from the scanner: `intercept_request` no longer
+        // returns scrubbed bytes for this body, because it refuses it.
+        let scanner = aa_security::CredentialScanner::new();
+        let scan = scanner.scan(&body);
+        assert!(
+            !scan.is_clean(),
+            "the fixture must carry a credential the scanner redacts"
+        );
+        let redacted = scan.redact(&body).into_bytes();
         let on_wire = String::from_utf8_lossy(&redacted).into_owned();
         assert!(
             !on_wire.contains(EVIDENCE_TEST_SECRET),
@@ -4795,45 +4800,41 @@ mod tests {
         );
     }
 
-    /// The other half of the same rule: the evidence is about the **bytes**. A
-    /// redaction whose output still re-inspects as carrying a value is recorded
-    /// as exactly that, not smoothed into `forwarded_clean` because the
-    /// decision was "redact".
+    /// The other half of the same rule, under the AAASM-4595 contract: a
+    /// `redact_only` redaction whose bytes still re-inspect dirty is not
+    /// forwarded at all. Before, it was forwarded and merely recorded as
+    /// `forwarded_carrying_sensitive_value`; that is a fallback to a partly raw
+    /// payload, which `redact_only` must never do. The upstream must never be
+    /// dialled, the client gets 403, and the record is a pre-transmission refusal.
     #[tokio::test]
-    async fn a_redaction_whose_bytes_still_reinspect_dirty_says_so() {
-        use tokio::io::AsyncReadExt as _;
+    async fn a_redaction_whose_bytes_still_reinspect_dirty_is_refused_not_forwarded() {
         assert_fixture_reinspects_dirty();
         let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let upstream_addr = upstream.local_addr().unwrap();
-        let upstream_task = tokio::spawn(async move {
-            let (mut sock, _) = upstream.accept().await.unwrap();
-            let mut chunk = [0u8; 4096];
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await;
-            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
-            let _ = sock.shutdown().await;
+        let dialled = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_millis(400), upstream.accept())
+                .await
+                .is_ok()
         });
 
         let (server, mut audit_rx) =
             server_with_audit(crate::config::CredentialAction::RedactOnly, Some(upstream_addr)).await;
-        drive_plain_http(
+        let response = drive_plain_http(
             &server,
             &credential_post_with("http://example.com/v1/ingest", "example.com", &unscrubbable_body()),
         )
         .await;
-        let _ = upstream_task.await;
-
-        // A redaction *forwards* the scrubbed bytes, so this is a forwarding
-        // case and the count belongs here too. Reading the first entry would
-        // leave a false `NotForwarded` on this path invisible to it — and
-        // "the count is covered by four siblings on the same path" is exactly
-        // the reasoning that has already failed on this PR.
-        let entry = take_single_forwarding_record(&mut audit_rx).await;
-        assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
-        assert_eq!(
-            entry.execution.transmission.as_str(),
-            "forwarded_carrying_sensitive_value"
+        assert!(response.contains("403"), "must be refused, got: {response:?}");
+        assert!(
+            !dialled.await.unwrap(),
+            "a refused body must never reach an upstream dial"
         );
-        assert!(!entry.execution.establishes_non_transmission());
+
+        let entry = audit_rx.try_recv().expect("the refusal persisted a decision record");
+        assert_eq!(entry.decision, ProxyAuditDecision::Blocked);
+        assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
+        assert_eq!(entry.execution.transmission.as_str(), "not_forwarded");
+        assert!(entry.execution.establishes_non_transmission());
     }
 
     /// The ordering claim, tested where it can actually fail: the upstream is a
@@ -4849,7 +4850,13 @@ mod tests {
 
         let (server, mut audit_rx) =
             server_with_audit(crate::config::CredentialAction::RedactOnly, Some(dead_addr)).await;
-        drive_plain_http(&server, &credential_post("http://example.com/v1/ingest", "example.com")).await;
+        // A cleanly scrubbable body: a dirty scrub is now refused before any dial,
+        // which would leave nothing to record about a failed one.
+        drive_plain_http(
+            &server,
+            &credential_post_with("http://example.com/v1/ingest", "example.com", &scrubbable_body()),
+        )
+        .await;
 
         let entry = audit_rx
             .try_recv()
@@ -4992,45 +4999,33 @@ mod tests {
         );
     }
 
-    /// The record must not carry bytes the proxy has just reported as still
-    /// carrying a sensitive value. In that branch the proxy's own re-inspection
-    /// says the scrubber did not hold, so persisting its output would rest the
-    /// "no raw value on disk" guarantee on the thing it just distrusted.
+    /// A refused dirty scrub persists no body bytes and no raw value: not the
+    /// API key, not the JWT residue the scrub leaves behind.
     #[tokio::test]
-    async fn a_body_that_reinspects_dirty_is_not_persisted() {
-        use tokio::io::AsyncReadExt as _;
+    async fn a_refused_dirty_scrub_persists_no_body_bytes_and_no_raw_value() {
         assert_fixture_reinspects_dirty();
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
-        let upstream_addr = upstream.local_addr().unwrap();
-        let upstream_task = tokio::spawn(async move {
-            let (mut sock, _) = upstream.accept().await.unwrap();
-            let mut chunk = [0u8; 4096];
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(500), sock.read(&mut chunk)).await;
-            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
-            let _ = sock.shutdown().await;
-        });
-
-        let (server, mut audit_rx) =
-            server_with_audit(crate::config::CredentialAction::RedactOnly, Some(upstream_addr)).await;
-        drive_plain_http(
+        let (server, mut audit_rx) = server_with_audit(crate::config::CredentialAction::RedactOnly, None).await;
+        let response = drive_plain_http(
             &server,
             &credential_post_with("http://example.com/v1/ingest", "example.com", &unscrubbable_body()),
         )
         .await;
-        let _ = upstream_task.await;
+        assert!(response.contains("403"), "got: {response:?}");
 
-        let entry = take_single_forwarding_record(&mut audit_rx).await;
-        // Non-vacuity: this is the dirty branch, and the record has content.
-        assert_eq!(
-            entry.execution.transmission.as_str(),
-            "forwarded_carrying_sensitive_value"
-        );
-        assert!(!entry.credential_findings.is_empty());
+        let entry = audit_rx.try_recv().expect("the refusal persisted a decision record");
+        assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
         assert!(
             entry.redacted_body.is_none(),
-            "bytes the proxy reported as still carrying a value must not be persisted, got {:?}",
+            "a refused body must not be persisted, got {:?}",
             entry.redacted_body
         );
+        let serialized = serde_json::to_string(&entry).unwrap();
+        for raw in [EVIDENCE_TEST_SECRET, EVIDENCE_TEST_JWT_RESIDUE, EVIDENCE_TEST_JWT] {
+            assert!(
+                !serialized.contains(raw),
+                "raw value {raw:?} in the persisted record: {serialized}"
+            );
+        }
     }
 
     /// The control for the previous test: it must be possible for a body to be
