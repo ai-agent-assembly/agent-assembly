@@ -366,6 +366,37 @@ def validate(path: str, check_p0_bounds: bool = True, check_ci_wiring: bool = Tr
                             f"required coverage with no execution path"
                         )
 
+        # AAASM-6419: `publication_checks` declare what can only be verified
+        # against a published artifact; they are what lets the release gate
+        # record a journey as PUBLICATION_PENDING instead of needing a blanket
+        # waiver. Allowed only on a published_artifact journey — declaring
+        # them anywhere else would let a journey that CAN be verified
+        # pre-publication park itself as "pending".
+        if "publication_checks" in entry:
+            pcs = entry["publication_checks"]
+            if entry.get("fidelity") != "published_artifact":
+                problems.append(
+                    f"{jid}: 'publication_checks' is only allowed when fidelity is "
+                    f"'published_artifact' (got {entry.get('fidelity')!r})"
+                )
+            if not isinstance(pcs, list) or not pcs:
+                problems.append(f"{jid}: 'publication_checks' must be a non-empty list when present")
+            else:
+                seen_pc: set[str] = set()
+                for pc in pcs:
+                    if not isinstance(pc, dict) or not all(
+                        isinstance(pc.get(k), str) and pc.get(k).strip()
+                        for k in ("id", "channel", "summary")
+                    ):
+                        problems.append(
+                            f"{jid}: every publication_checks item needs non-empty string "
+                            f"'id', 'channel' and 'summary' (got {pc!r})"
+                        )
+                        continue
+                    if pc["id"] in seen_pc:
+                        problems.append(f"{jid}: duplicate publication_checks id {pc['id']!r}")
+                    seen_pc.add(pc["id"])
+
     for jid, count in seen_ids.items():
         if count > 1:
             problems.append(f"duplicate journey id: {jid} appears {count} times")
