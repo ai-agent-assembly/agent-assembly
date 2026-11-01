@@ -27,6 +27,7 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import socket
 import struct
@@ -214,7 +215,7 @@ def check_publish_workflow(ctx: c.Context, text: str) -> None:
             problems.append("publish-gateway does not build aa-gateway/Dockerfile")
     ctx.add("j53-publish-workflow-contract", c.FAIL if problems else c.PASS, "mock",
             "; ".join(problems) or "publish-gateway: tag-only, multi-arch, sbom, tag = ref_name, builds aa-gateway/Dockerfile",
-            [WORKFLOW_REL], f"{TEST}::test_workflow_without_sbom_fails")
+            ["docker.yml"], f"{TEST}::test_workflow_without_sbom_fails")
 
 
 def check_binary_identity(ctx: c.Context, gateway: Path, env: dict[str, str]) -> None:
@@ -267,7 +268,11 @@ def check_docs(ctx: c.Context, docs_dir: Path | None) -> None:
                 "no --docs-dir given; the container operation docs live in the public docs repo, not in this "
                 "checkout (only ADR 0010 here mentions the image)", [])
         return
-    blob = "\n".join(p.read_text(errors="replace") for p in docs_dir.rglob("*.md") if p.is_file())
+    files = sorted(p for p in docs_dir.rglob("*.md") if p.is_file())
+    blob = "\n".join(p.read_text(errors="replace") for p in files)
+    # One digest for the whole docs tree consumed: sha256 over `<relpath> <sha256>` lines.
+    tree = "".join(f"{p.relative_to(docs_dir)} {c.sha256_file(p)}\n" for p in files)
+    ctx.artifacts["docs-tree"] = "sha256:" + hashlib.sha256(tree.encode()).hexdigest()
     needles = {
         "pull by tag": r"docker pull ghcr\.io/ai-agent-assembly/aa-gateway:\S+",
         "pull by digest": r"ghcr\.io/ai-agent-assembly/aa-gateway@sha256:",
@@ -279,7 +284,7 @@ def check_docs(ctx: c.Context, docs_dir: Path | None) -> None:
     missing = [k for k, rx in needles.items() if not re.search(rx, blob)]
     ctx.add("j53-docs-container-operation", c.FAIL if missing else c.PASS, "mock",
             ("docs do not show: " + ", ".join(missing)) if missing else "tag pull, digest pull, policy mount, AA_* env, health and compose are documented",
-            [], f"{TEST}::test_docs_missing_digest_pull_fails")
+            ["docs-tree"], f"{TEST}::test_docs_missing_digest_pull_fails")
 
 
 def run_harness(argv: list[str]) -> int:
