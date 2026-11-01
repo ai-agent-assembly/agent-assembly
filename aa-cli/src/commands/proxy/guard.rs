@@ -79,6 +79,34 @@ pub struct ProxyGuardOptions {
     /// ([`aa_core::DevToolAdapter::process_scoped_ca_trust_var`]); `Auto`
     /// (the default, unchanged historical behaviour) otherwise.
     pub system_trust_install: aa_proxy::config::SystemTrustInstall,
+    /// What the spawned proxy does with a request body carrying a credential
+    /// its scanner recognises (AAASM-4595). Always exported as
+    /// `AA_PROXY_CREDENTIAL_ACTION`, never left to the ambient environment: an
+    /// ambient `alert_only` must not be able to downgrade a governed launch,
+    /// for the reason given for `system_trust_install`. The caller derives it
+    /// from the launch's resolved policy ([`credential_action_for_policy`]);
+    /// [`Default`] (`redact_only`) is what a policy that states none resolves to.
+    pub credential_action: aa_proxy::config::CredentialAction,
+}
+
+/// The proxy action that carries out a policy's `data.credential_action`.
+///
+/// Exhaustive on purpose: a mode added to the policy schema fails to compile
+/// here until someone decides what the proxy does with it, instead of falling
+/// through to a default.
+///
+/// `alert_and_redact` maps to `redact_only`: the proxy scrubs the body it
+/// forwards, which is the part that protects the secret. The alert half is
+/// the audit entry the proxy already writes for a redacted forward, not a
+/// separate alert channel.
+pub fn credential_action_for_policy(action: aa_policy::CredentialAction) -> aa_proxy::config::CredentialAction {
+    match action {
+        aa_policy::CredentialAction::Block => aa_proxy::config::CredentialAction::Block,
+        aa_policy::CredentialAction::RedactOnly | aa_policy::CredentialAction::AlertAndRedact => {
+            aa_proxy::config::CredentialAction::RedactOnly
+        }
+        aa_policy::CredentialAction::AlertOnly => aa_proxy::config::CredentialAction::AlertOnly,
+    }
 }
 
 /// Why [`ProxyGuard::spawn`] failed. Every variant is a *managed launch must
@@ -182,6 +210,9 @@ fn build_command_with_control(
             aa_proxy::config::SystemTrustInstall::Never => "never",
         },
     );
+    // AAASM-4595: always set, like the setting above. Until now nothing here
+    // set it, so a policy's `data.credential_action` never reached the proxy.
+    cmd.env("AA_PROXY_CREDENTIAL_ACTION", opts.credential_action.as_env_value());
     if let Some(agent_id) = &opts.agent_id {
         cmd.env("AA_AGENT_ID", agent_id);
     }
@@ -656,6 +687,7 @@ mod tests {
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Never,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         }
     }
 
@@ -945,6 +977,7 @@ while True:
             gateway_endpoint: Some("http://127.0.0.1:50051".to_string()),
             audit_jsonl_path: Some(PathBuf::from("/tmp/audit.jsonl")),
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -996,6 +1029,88 @@ while True:
         );
     }
 
+    fn credential_action_env(cmd: &std::process::Command) -> Option<Option<std::ffi::OsString>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new("AA_PROXY_CREDENTIAL_ACTION"))
+            .map(|(_, v)| v.map(std::ffi::OsStr::to_os_string))
+    }
+
+    /// AAASM-4595: every mode the proxy supports reaches the spawned process's
+    /// environment as the exact value its own parser reads back.
+    #[test]
+    fn build_command_exports_each_credential_action_for_the_proxy() {
+        let bin = std::path::Path::new("/usr/bin/aa-proxy");
+        for (action, expected) in [
+            (aa_proxy::config::CredentialAction::Block, "block"),
+            (aa_proxy::config::CredentialAction::RedactOnly, "redact_only"),
+            (aa_proxy::config::CredentialAction::AlertOnly, "alert_only"),
+        ] {
+            let mut opts = options_with_ready_file(std::path::Path::new("/tmp/runs/a-1/ready"));
+            opts.credential_action = action;
+            assert_eq!(
+                credential_action_env(&build_command(bin, &opts)),
+                Some(Some(std::ffi::OsString::from(expected))),
+                "{action:?}"
+            );
+        }
+    }
+
+    /// The variable is always set, never omitted, so an ambient
+    /// `AA_PROXY_CREDENTIAL_ACTION` cannot choose the launch's action.
+    #[test]
+    fn build_command_sets_the_default_credential_action_explicitly() {
+        let opts = options_with_ready_file(std::path::Path::new("/tmp/runs/a-1/ready"));
+        assert_eq!(
+            credential_action_env(&build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts)),
+            Some(Some(std::ffi::OsString::from("redact_only")))
+        );
+    }
+
+    /// The mapping is total over the policy's modes, and the one policy mode the
+    /// proxy has no counterpart for (`alert_and_redact`) keeps the redaction
+    /// rather than dropping to the raw-forwarding `alert_only`.
+    #[test]
+    fn policy_credential_actions_map_onto_proxy_actions() {
+        use aa_policy::CredentialAction as P;
+        use aa_proxy::config::CredentialAction as X;
+        assert_eq!(credential_action_for_policy(P::Block), X::Block);
+        assert_eq!(credential_action_for_policy(P::RedactOnly), X::RedactOnly);
+        assert_eq!(credential_action_for_policy(P::AlertOnly), X::AlertOnly);
+        assert_eq!(credential_action_for_policy(P::AlertAndRedact), X::RedactOnly);
+    }
+
+    /// Policy text to spawned-proxy environment, the whole chain `aasm run` uses
+    /// short of the spawn itself: a policy's `data.credential_action` is what
+    /// the proxy would be told.
+    #[test]
+    fn a_policys_credential_action_reaches_the_spawned_proxys_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = std::path::Path::new("/usr/bin/aa-proxy");
+        for (data, expected) in [
+            ("data:\n  credential_action: block\n", "block"),
+            ("data:\n  credential_action: alert_only\n", "alert_only"),
+            ("data:\n  credential_action: redact_only\n", "redact_only"),
+            ("data:\n  credential_action: alert_and_redact\n", "redact_only"),
+            // A policy that states no mode keeps today's behaviour.
+            ("", "redact_only"),
+        ] {
+            let path = dir.path().join("policy.yaml");
+            std::fs::write(&path, format!("tools:\n  bash:\n    allow: false\n{data}")).unwrap();
+            let resolution = aa_policy::resolve::load(&path);
+            assert!(matches!(
+                resolution,
+                aa_policy::resolve::PolicyResolution::Enforced { .. }
+            ));
+            let mut opts = options_with_ready_file(std::path::Path::new("/tmp/runs/a-1/ready"));
+            opts.credential_action = credential_action_for_policy(resolution.credential_action());
+            assert_eq!(
+                credential_action_env(&build_command(bin, &opts)),
+                Some(Some(std::ffi::OsString::from(expected))),
+                "policy data: {data:?}"
+            );
+        }
+    }
+
     /// AAASM-5978: the `Never` half of `system_trust_install` — a managed
     /// launch whose adapter reports process-scoped CA trust must still see
     /// the variable set (never omitted), just with the other value, so a
@@ -1009,6 +1124,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Never,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1034,6 +1150,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1072,6 +1189,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1102,6 +1220,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1152,6 +1271,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1210,6 +1330,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1260,6 +1381,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1310,6 +1432,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
 
         // Exercise the same spawn + wait_for_ready_file sequence spawn()
@@ -1396,6 +1519,7 @@ while True:
             gateway_endpoint: None,
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
+            credential_action: aa_proxy::config::CredentialAction::default(),
         };
         let guard = ProxyGuard::spawn_with_binary(&stub, opts).expect("stub must report ready");
 

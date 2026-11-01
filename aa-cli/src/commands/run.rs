@@ -7446,6 +7446,9 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             gateway_endpoint: Some(run_registration::gateway_endpoint()),
             audit_jsonl_path: Some(state.audit_jsonl_path),
             system_trust_install,
+            credential_action: crate::commands::proxy::guard::credential_action_for_policy(
+                resolved.policy().resolution().credential_action(),
+            ),
         };
         Some(
             ProxyGuard::spawn(opts)
