@@ -96,6 +96,9 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio-tungstenite = { workspace = true }
 aa-sdk-client = { path = "../aa-sdk-client" }
+# AAASM-6430: the policy-history round-trip test drives the real `aasm policy
+# apply|rollback` functions against a real in-process API server.
+aa-cli = { path = "../aa-cli" }
 tower = { workspace = true }
 
 [lints]
