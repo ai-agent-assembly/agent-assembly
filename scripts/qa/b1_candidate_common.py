@@ -212,6 +212,10 @@ def pid_owned_by(pid: int, owner: Path) -> bool:
     (raw or realpath, so a /var vs /private/var symlink cannot hide it), or when the process's
     cwd or an open file (lsof names starting with `/`) lies under realpath(owner), which covers
     a bare-name launch. Probes this one PID only; never matches by name or pattern."""
+    # pid <= 1 covers kill(0)/kill(-1)/launchd; self and parent can hold fds under the owner
+    # dir (cwd, socket clients), so a pidfile naming them must never pass the proof.
+    if pid <= 1 or pid in (os.getpid(), os.getppid()):
+        return False
     if not owner.is_absolute() or not os.path.exists(LSOF):
         return False
     real = os.path.realpath(owner)
