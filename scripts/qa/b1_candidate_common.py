@@ -196,22 +196,31 @@ def _under(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def _argv_names_owner(cmd: str, forms: set[str]) -> bool:
-    """True if some argv token (or the value of a `--flag=<path>` token) IS the owner dir.
-    A file merely mentioned under the owner (`tail -f <owner>/x.log`) proves nothing; neither
-    does a sibling sharing a name prefix."""
-    for tok in cmd.split():
-        for cand in (tok, tok.split("=", 1)[1] if "=" in tok else ""):
-            if cand and cand.rstrip(os.sep) in forms:
-                return True
-    return False
+def _txt_images(lsof_f: str) -> list[str]:
+    """Absolute names of the `txt` (executable / mapped image) entries in `lsof -Fftn` output.
+    Records are `f<fd>` then `t<type>` then `n<name>`; only entries whose fd field is `txt`
+    count, and non-`/` names (sockets, pipes, `*:port`) are dropped. On macOS the list may
+    hold dyld besides the binary, so callers must accept any one image under the owner."""
+    fd, out = "", []
+    for line in lsof_f.splitlines():
+        if line.startswith("f"):
+            fd = line[1:]
+        elif line.startswith("p"):
+            fd = ""
+        elif line.startswith("n") and fd == "txt" and line.startswith("n/"):
+            out.append(line[1:])
+    return out
 
 
 def pid_owned_by(pid: int, owner: Path) -> bool:
-    """Per-PID ownership proof, fail-closed. True when an argv token is exactly the owner dir
-    (raw or realpath, so a /var vs /private/var symlink cannot hide it), or when the process's
-    cwd or an open file (lsof names starting with `/`) lies under realpath(owner), which covers
-    a bare-name launch. Probes this one PID only; never matches by name or pattern."""
+    """Per-PID ownership proof, fail-closed. True only when this PID runs an executable image
+    (lsof `txt` entry) whose realpath lies under realpath(owner) by path component. The harness
+    copies the daemons into `<owner>/bin`, so only our own daemon, including a bare-name PATH
+    launch, executes from there. argv, cwd, open files and sockets are deliberately NOT evidence:
+    a foreign process (`tail <owner>/x`, a shell cd'd into owner, mdworker, a connected client)
+    can show any of them. Never matches by name or pattern.
+    Residual risk: the proof and the later os.kill are not atomic, so a PID recycled in that
+    window could be hit; kill_owned_daemon re-proves before every signal to keep it minimal."""
     # pid <= 1 covers kill(0)/kill(-1)/launchd; self and parent can hold fds under the owner
     # dir (cwd, socket clients), so a pidfile naming them must never pass the proof.
     if pid <= 1 or pid in (os.getpid(), os.getppid()):
@@ -220,21 +229,16 @@ def pid_owned_by(pid: int, owner: Path) -> bool:
         return False
     real = os.path.realpath(owner)
     try:
-        cmd = _run_text(["/bin/ps", "-p", str(pid), "-o", "command="])
-        if _argv_names_owner(cmd, {str(owner).rstrip(os.sep), real}):
-            return True
-        lsof = _run_text([LSOF, "-p", str(pid), "-Fn"])
+        lsof = _run_text([LSOF, "-p", str(pid), "-Fftn"])
     except (OSError, subprocess.SubprocessError):
         return False
-    return any(
-        line.startswith("n/") and _under(os.path.realpath(line[1:]), real)
-        for line in lsof.splitlines()
-    )
+    return any(_under(os.path.realpath(img), real) for img in _txt_images(lsof))
 
 
 def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
     """Kill the daemon recorded in `pidfile`, but only if `pid_owned_by` proves it belongs to
-    `owner` (our own mktemp dir). A recycled or foreign PID is left alone. Never pattern-kills.
+    `owner` (our own mktemp dir) by executing a binary from it. A recycled or foreign PID is left
+    alone. Never pattern-kills.
     Ownership is re-proven right before SIGKILL, since the PID may be recycled during the
     SIGTERM wait."""
     try:
