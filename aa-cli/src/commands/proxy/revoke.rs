@@ -118,20 +118,29 @@ pub fn ping(socket: &Path) -> bool {
     ping_as(socket, None)
 }
 
+/// Whether the peer identity satisfies the expected pid: no expectation always
+/// passes; an expectation needs a reported, equal pid.
+fn pid_check_passes(expected: Option<u32>, actual: Option<u32>) -> bool {
+    match (expected, actual) {
+        (None, _) => true,
+        (Some(e), Some(a)) => e == a,
+        (Some(_), None) => false,
+    }
+}
+
 /// Whether a proxy answers a ping on `socket`, and, when `expected_pid` is given
 /// and the kernel reports the peer's pid, that it is that process.
 ///
 /// A per-launch proxy is a child `aasm` spawned, so its pid is known: requiring it
 /// stops another process that took over the path from being mistaken for the
-/// proxy. Where the platform reports no peer pid the answer alone decides.
+/// proxy. When a pid is expected but the kernel cannot report the peer's, the
+/// answer is refused (fail closed): an unverifiable peer is not the proxy.
 pub fn ping_as(socket: &Path, expected_pid: Option<u32>) -> bool {
     let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
         return false;
     };
-    if let (Some(expected), Some(actual)) = (expected_pid, peer_pid(&stream)) {
-        if expected != actual {
-            return false;
-        }
+    if !pid_check_passes(expected_pid, peer_pid(&stream)) {
+        return false;
     }
     if stream.set_read_timeout(Some(IO_TIMEOUT)).is_err() || stream.set_write_timeout(Some(IO_TIMEOUT)).is_err() {
         return false;
@@ -612,6 +621,15 @@ mod tests {
             }
         });
         listener
+    }
+
+    #[test]
+    fn peer_pid_unavailable_with_expected_pid_fails_closed() {
+        assert!(!pid_check_passes(Some(42), None), "unverifiable peer must not pass");
+        assert!(!pid_check_passes(Some(42), Some(43)));
+        assert!(pid_check_passes(Some(42), Some(42)));
+        assert!(pid_check_passes(None, None), "no expectation, nothing to verify");
+        assert!(pid_check_passes(None, Some(7)));
     }
 
     #[test]
