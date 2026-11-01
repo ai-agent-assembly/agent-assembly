@@ -36,6 +36,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`aa-proxy` leaf certificates now carry an Authority Key Identifier (AAASM-6413)** — strict X.509 verifiers (Python 3.13+ enables strict verification by default) rejected the proxy's chain with `Missing Authority Key Identifier`, so a governed Python agent on such a version could not complete TLS through the proxy (it failed closed). Existing CAs on disk keep working.
 - **`install.sh` now installs `aa-gateway` and `aa-api-server` (AAASM-6414)** — the `cli`
   component extracted only `aasm` from a tarball that also carries `aa-gateway`, so
   `aasm gateway start` failed with "aa-gateway binary not found" after an install, and there
