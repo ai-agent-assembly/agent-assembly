@@ -60,17 +60,30 @@ record is `BLOCK` for them. A waiver is not the substitute. The same applies to
 J59 while its harness reports any step NOT_COVERED, because that harness withholds
 its fragment in that case.
 
-## Sequencing constraint to resolve before the freeze
+## Two commits: code freeze F and candidate commit C
 
 The checker reads the obligation file at the candidate commit and at the tag target
 and blocks unless the two are byte-identical ("the obligation must be final at the
-candidate"). The file therefore has to be committed at or before the commit used as
-`candidate_sha`. The harnesses, however, record digests of the candidate artifacts
-and, for J04/J17, require the checkout HEAD to equal `--candidate-sha`, so their
-output exists only after that commit. This note does not choose a resolution (for
-example, a docs-only commit adding the file that is then named as the candidate,
-with the harnesses' own source files unchanged). That choice changes what
-"candidate" means for the evidence and needs an owner decision before the freeze.
+candidate"), so the file has to be committed at or before the commit named as
+`candidate_sha` in the evidence. The harnesses need a checkout whose HEAD is the commit
+they are told about (J04/J17 compare the installer, policy and harness files byte for
+byte against `--candidate-sha`) and they only produce a fragment after they run.
+
+This is resolved by using two commits, as Core ADR 0037 already does for sign-offs:
+
+- **F, the code freeze.** The artifacts are built from F and the harnesses run with
+  `--candidate-sha F`. Their fragments record the artifact digests of that build.
+- **C, the candidate commit.** A docs-only commit on top of F that adds the final
+  sign-off and `v0.0.1-rc.8.publication-obligations.json`. The evidence names C as
+  `candidate_sha` (the commit that contains the final sign-off).
+
+This works because an obligation entry in the file carries no `candidate_sha`
+(`check-release-evidence.py` compares the embedded obligation to the file entry with
+that key removed) and `build-release-evidence.py` stamps C onto the embedded copy.
+The file is therefore not self-referential. The cost is that C must change nothing the
+harnesses tied to F (the installer, the policy and the harness sources), which the
+harness check on F already proves for the files it reads. This reading follows the
+checker and builder code; it has not been exercised end to end on a real candidate.
 
 ## After publication
 
