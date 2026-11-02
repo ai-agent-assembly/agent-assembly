@@ -98,6 +98,9 @@ assert_exit "17-publication-checks-wrong-fidelity.yaml" 1
 echo "== Case 18 (AAASM-6419): malformed publication_checks (duplicate id, missing channel, non-mapping) =="
 assert_exit "18-publication-checks-malformed.yaml" 1
 
+echo "== Case 19 (AAASM-6419): duplicate publication_checks id and nothing else wrong =="
+assert_exit "19-publication-checks-duplicate-id.yaml" 1
+
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "validate-golden-journeys-negative-control: FAILED — the validator is not load-bearing for one or more cases"
@@ -105,4 +108,4 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 echo ""
-echo "validate-golden-journeys-negative-control: all 19 assertions passed"
+echo "validate-golden-journeys-negative-control: all 20 assertions passed"
