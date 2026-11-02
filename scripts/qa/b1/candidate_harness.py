@@ -495,7 +495,6 @@ def aasm_gateway_lifecycle(aasm: Path, policy: Path, home: Path, timeout: float 
             return 124
 
     pre = sh("gateway", "status") != 0
-    ok, detail = False, ""
     try:
         rc = sh("gateway", "start", "--policy", str(policy), "--listen", f"127.0.0.1:{port}")
         if rc != 0:
