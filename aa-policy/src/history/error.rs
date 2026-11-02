@@ -25,6 +25,20 @@ pub enum PolicyHistoryError {
     /// directory starts afresh instead of continuing — is a weaker artifact than
     /// one that refuses to open.
     UnresolvableHistoryDir,
+    /// A snapshot's YAML does not hash to the SHA-256 its metadata records, so
+    /// it was changed after it was saved (AAASM-6432). The history directory is
+    /// what a restarted server installs its policy from, so such an entry is
+    /// refused rather than used.
+    IntegrityMismatch {
+        /// The history directory holding the entry.
+        dir: std::path::PathBuf,
+        /// The entry's `.meta.json` file.
+        entry: std::path::PathBuf,
+        /// SHA-256 recorded in the metadata.
+        expected: String,
+        /// SHA-256 of the YAML as found on disk.
+        actual: String,
+    },
 }
 
 impl fmt::Display for PolicyHistoryError {
@@ -35,6 +49,19 @@ impl fmt::Display for PolicyHistoryError {
             Self::SerdeYaml(e) => write!(f, "policy YAML error: {e}"),
             Self::VersionNotFound(id) => write!(f, "version not found: {id}"),
             Self::CorruptedMetadata(msg) => write!(f, "corrupted metadata: {msg}"),
+            Self::IntegrityMismatch {
+                dir,
+                entry,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "integrity check failed for policy history entry {} in {}: its YAML hashes to {actual} but \
+                 its metadata records {expected}, so it was modified after it was saved. Move aside that \
+                 entry's `.meta.json` and `.yaml` files, or restore them from a backup, to use the history again",
+                entry.display(),
+                dir.display()
+            ),
             Self::UnresolvableHistoryDir => write!(
                 f,
                 "no policy history directory is known on this host; set AA_DATA_DIR to the \
@@ -50,7 +77,10 @@ impl std::error::Error for PolicyHistoryError {
             Self::Io(e) => Some(e),
             Self::SerdeJson(e) => Some(e),
             Self::SerdeYaml(e) => Some(e),
-            Self::VersionNotFound(_) | Self::CorruptedMetadata(_) | Self::UnresolvableHistoryDir => None,
+            Self::VersionNotFound(_)
+            | Self::CorruptedMetadata(_)
+            | Self::UnresolvableHistoryDir
+            | Self::IntegrityMismatch { .. } => None,
         }
     }
 }

@@ -187,6 +187,18 @@ impl PolicyHistoryStore for FsHistoryStore {
         }
 
         let yaml_content = std::fs::read_to_string(&yaml_path)?;
+        // `save` and `rollback` record the SHA-256 of exactly these bytes, so a
+        // mismatch means the entry was edited afterwards. Callers (notably the
+        // server's start-up policy restore) must not use such an entry.
+        let actual = Self::sha256_hex(&yaml_content);
+        if actual != meta.sha256 {
+            return Err(PolicyHistoryError::IntegrityMismatch {
+                dir: self.config.history_dir.clone(),
+                entry: meta_path,
+                expected: meta.sha256,
+                actual,
+            });
+        }
         Ok(PolicySnapshot { meta, yaml_content })
     }
 
@@ -288,6 +300,31 @@ mod tests {
         for entry in std::fs::read_dir(&dir).unwrap() {
             assert_eq!(mode(&entry.unwrap().path()), 0o600);
         }
+    }
+
+    /// AAASM-6432: an entry whose YAML was changed after it was saved is refused
+    /// by `get`, naming the directory and the entry file.
+    #[tokio::test]
+    async fn get_refuses_an_entry_whose_yaml_was_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = FsHistoryStore::new(test_config(tmp.path()));
+        let meta = store.save(POLICY_A, None).await.unwrap();
+        assert_eq!(store.get(&meta.sha256).await.unwrap().yaml_content, POLICY_A);
+
+        let yaml = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+            .unwrap();
+        std::fs::write(&yaml, POLICY_B).unwrap();
+
+        let err = store.get(&meta.sha256).await.unwrap_err();
+        assert!(matches!(err, PolicyHistoryError::IntegrityMismatch { .. }), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains(&tmp.path().display().to_string()), "{msg}");
+        assert!(msg.contains(".meta.json"), "{msg}");
+        // Rollback reads through `get`, so it refuses the same entry.
+        assert!(store.rollback(&meta.sha256).await.is_err());
     }
 
     #[test]
