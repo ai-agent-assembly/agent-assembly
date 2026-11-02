@@ -89,6 +89,15 @@ assert_exit "14-missing-negative-control.yaml" 1
 echo "== Case 15 (AAASM-5877): security-lane release-blocking journey WITH a negative_control =="
 assert_exit "15-security-lane-with-negative-control.yaml" 0
 
+echo "== Case 16 (AAASM-6419): publication_checks on a published_artifact journey =="
+assert_exit "16-publication-checks-valid.yaml" 0
+
+echo "== Case 17 (AAASM-6419): publication_checks on a journey that is NOT published_artifact =="
+assert_exit "17-publication-checks-wrong-fidelity.yaml" 1
+
+echo "== Case 18 (AAASM-6419): malformed publication_checks (duplicate id, missing channel, non-mapping) =="
+assert_exit "18-publication-checks-malformed.yaml" 1
+
 if [ "$FAILED" -ne 0 ]; then
   echo ""
   echo "validate-golden-journeys-negative-control: FAILED — the validator is not load-bearing for one or more cases"
@@ -96,4 +105,4 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 echo ""
-echo "validate-golden-journeys-negative-control: all 16 assertions passed"
+echo "validate-golden-journeys-negative-control: all 19 assertions passed"

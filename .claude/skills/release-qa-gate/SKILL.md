@@ -124,7 +124,14 @@ full adversarial pass + docs/examples/design audit.
    scripts/skills) are fixed directly instead of filed — see the protocol's
    stated exception.
 8. **Sign-off** — write `docs/release/qa-signoff/v<version>.md` from the
-   template, with an exact `Verdict: PASS` or `Verdict: BLOCK` line.
+   template, with an exact `Verdict: PASS` or `Verdict: BLOCK` line. A third
+   value, `Verdict: CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042), is allowed
+   only when a `fidelity: published_artifact` journey has checks that genuinely
+   need a published artifact: record it `PUBLICATION_PENDING` with a committed
+   `v<version>.publication-obligations.json` entry (candidate checks PASS,
+   pending checks with commands, failure response). It is **not** a pass and does
+   not satisfy the pre-conditions of `/release-tag-cut`; never write it to avoid
+   a BLOCK, and never use a waiver for a check that is merely still owed.
 
 ## BLOCK rule (mandatory coverage cannot be silently skipped)
 

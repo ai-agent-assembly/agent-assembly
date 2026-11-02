@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Release gate: `PUBLICATION_PENDING` / `CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042)** — a
+  `published_artifact` journey can now be recorded as verified-on-the-candidate with its
+  publication-dependent checks still owed, instead of needing a blanket waiver. Pending is never
+  PASS: the verdict is `CANDIDATE_VERIFIED`, the evidence checker exits 3 for it, and
+  `release.yml`'s evidence gate, `release-tag-guard.sh` and `release-readiness.sh` all keep
+  refusing it. No catalog entry declares `publication_checks` yet; that is a follow-up.
+
 ## [0.0.1-rc.8] — TBD (pre-release)
 
 > Merged since `0.0.1-rc.7`. The entries below are the ones recorded under *Unreleased*
