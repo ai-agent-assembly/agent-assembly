@@ -2743,3 +2743,303 @@ async fn a_declared_exotic_charset_is_denied_for_any_media_type() {
         }
     }
 }
+
+// ── credential_action: what actually leaves the proxy, per mode (AAASM-4595) ──
+//
+// `aasm run` now hands a policy's `data.credential_action` to the proxy it
+// spawns, so each mode the proxy accepts has to be measured at the receiving end:
+// a recording upstream sees the bytes that were really sent. A non-MCP body on a
+// MitM'd host reaches the credential scanner without a gateway verdict in front of
+// it, so the action alone decides.
+
+/// Send `request` (a synthetic credential inside) through a proxy running
+/// `action` to `host`, and return (client response, bytes that reached upstream,
+/// the audit record serialised as JSON).
+///
+/// No fixed sleeps: a refusal is answered before any dial, so once the client has
+/// its 403 nothing more can arrive; a forward is awaited until the recording
+/// upstream has bytes.
+async fn send_credential_body_to(host: &str, action: CredentialAction, request: &[u8]) -> (String, Vec<u8>, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let (upstream, received) = recording_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy(
+        Fixture {
+            mitm_hosts: vec![MITM_HOST.to_string()],
+            upstream_override: Some(upstream),
+            credential_action: Some(action),
+            ..Fixture::default()
+        },
+        dir.path(),
+    )
+    .await;
+    let tunnel = open_tunnel(proxy, host).await.expect("the CONNECT is allowed");
+    let response = mitm_send_bytes(tunnel, host, request).await;
+    let record = serde_json::to_string(&next_entry(&mut audit).await).unwrap();
+    if !response.starts_with("HTTP/1.1 403") {
+        for _ in 0..60 {
+            if !received.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+    let seen = received.lock().unwrap().clone();
+    (response, seen, record)
+}
+
+async fn send_credential_body(action: CredentialAction, request: &[u8]) -> (String, Vec<u8>, String) {
+    send_credential_body_to(MITM_HOST, action, request).await
+}
+
+/// Built-in LLM host: routed to the LLM-pattern handler, not the non-LLM MitM one.
+const ANTHROPIC_LLM_HOST: &str = "api.anthropic.com";
+
+fn llm_request_with_secret() -> Vec<u8> {
+    let body = format!(
+        r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET} thanks"}}]}}"#
+    );
+    post(ANTHROPIC_LLM_HOST, "/v1/messages", &body).into_bytes()
+}
+
+#[tokio::test]
+async fn llm_host_block_refuses_and_nothing_reaches_upstream() {
+    let (response, seen, record) =
+        send_credential_body_to(ANTHROPIC_LLM_HOST, CredentialAction::Block, &llm_request_with_secret()).await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {:?}", String::from_utf8_lossy(&seen));
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+#[tokio::test]
+async fn llm_host_redact_only_forwards_a_scrubbed_body_never_the_original() {
+    let (_, seen, record) = send_credential_body_to(
+        ANTHROPIC_LLM_HOST,
+        CredentialAction::RedactOnly,
+        &llm_request_with_secret(),
+    )
+    .await;
+    assert!(!seen.is_empty(), "redact_only forwards the scrubbed request");
+    assert!(!contains(&seen, BUILTIN_SECRET), "the original secret reached upstream");
+    assert!(contains(&seen, "[REDACTED"), "saw {:?}", String::from_utf8_lossy(&seen));
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+#[tokio::test]
+async fn llm_host_alert_only_forwards_the_original_body() {
+    let (_, seen, _) = send_credential_body_to(
+        ANTHROPIC_LLM_HOST,
+        CredentialAction::AlertOnly,
+        &llm_request_with_secret(),
+    )
+    .await;
+    assert!(
+        contains(&seen, BUILTIN_SECRET),
+        "alert_only forwards the original body, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+#[tokio::test]
+async fn llm_host_redact_only_denies_a_compressed_secret_instead_of_forwarding_it() {
+    let body = format!(
+        r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET}"}}]}}"#
+    );
+    let mut req = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: {ANTHROPIC_LLM_HOST}\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+        gzip_bytes(body.as_bytes()).len()
+    )
+    .into_bytes();
+    req.extend_from_slice(&gzip_bytes(body.as_bytes()));
+    let (response, seen, _) = send_credential_body_to(ANTHROPIC_LLM_HOST, CredentialAction::RedactOnly, &req).await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "saw {} bytes", seen.len());
+}
+
+/// Documented limit, measured: under `alert_only` a gzip body is inspectable, so a
+/// finding inside it forwards the ORIGINAL compressed bytes (the secret is not
+/// visible in them as text). Only an undecodable encoding is denied.
+#[tokio::test]
+async fn credential_action_alert_only_forwards_the_original_compressed_bytes_when_the_finding_is_inside() {
+    let gz = gzip_bytes(note_with_secret().as_bytes());
+    let (_, seen, _) = send_credential_body(CredentialAction::AlertOnly, &post_encoded(MITM_HOST, "gzip", &gz)).await;
+    assert!(
+        seen.windows(gz.len()).any(|w| w == gz.as_slice()),
+        "the original compressed body must reach upstream byte for byte"
+    );
+}
+
+fn note_with_secret() -> String {
+    format!(r#"{{"note":"deploy key {BUILTIN_SECRET} please keep"}}"#)
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    String::from_utf8_lossy(haystack).contains(needle)
+}
+
+#[tokio::test]
+async fn credential_action_block_refuses_and_nothing_reaches_upstream() {
+    let (response, seen, record) = send_credential_body(
+        CredentialAction::Block,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(
+        seen.is_empty(),
+        "block must not dial upstream, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+#[tokio::test]
+async fn credential_action_redact_only_forwards_a_scrubbed_body_never_the_original() {
+    let (_, seen, record) = send_credential_body(
+        CredentialAction::RedactOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(!seen.is_empty(), "redact_only forwards the scrubbed request");
+    assert!(
+        !contains(&seen, BUILTIN_SECRET),
+        "the original secret reached upstream: {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        contains(&seen, "[REDACTED"),
+        "upstream must see the scrub marker, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+/// The contract of `alert_only`, stated as a measurement: the original body is
+/// forwarded unchanged. The paired control that makes the two tests above mean
+/// something - the same request is forwarded raw when the action says so.
+#[tokio::test]
+async fn credential_action_alert_only_forwards_the_original_body() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(
+        contains(&seen, BUILTIN_SECRET),
+        "alert_only forwards the original body, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+/// `redact_only` cannot re-encode a scrubbed body to the declared encoding, so it
+/// denies. It must not fall back to forwarding the original compressed bytes.
+#[tokio::test]
+async fn credential_action_redact_only_denies_a_compressed_secret_instead_of_forwarding_it() {
+    let (response, seen, record) = send_credential_body(
+        CredentialAction::RedactOnly,
+        &post_encoded(MITM_HOST, "gzip", &gzip_bytes(note_with_secret().as_bytes())),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "nothing may reach upstream, saw {} bytes", seen.len());
+    assert!(
+        !record.contains(BUILTIN_SECRET),
+        "audit record leaks the secret: {record}"
+    );
+}
+
+/// `alert_only` is permissive about findings, not about a body the proxy cannot
+/// inspect: that refusal is independent of the action.
+#[tokio::test]
+async fn credential_action_alert_only_does_not_override_an_uninspectable_body_denial() {
+    let (response, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        &post_encoded(MITM_HOST, "br", note_with_secret().as_bytes()),
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 403"), "got: {response:?}");
+    assert!(seen.is_empty(), "nothing may reach upstream, saw {} bytes", seen.len());
+}
+
+// ── redact_only refuses a scrub that is not clean (AAASM-4595) ──
+
+/// API key plus a JWT: the scrub removes the key and the JWT signature, but the
+/// JWT header and payload survive, so the scrubbed body still re-scans dirty.
+const JWT_FIXTURE: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+fn key_and_jwt_body() -> String {
+    format!(r#"{{"note":"key {BUILTIN_SECRET} and jwt {JWT_FIXTURE}"}}"#)
+}
+
+async fn assert_dirty_scrub_refused(host: &str, request: Vec<u8>) {
+    let (response, seen, record) = send_credential_body_to(host, CredentialAction::RedactOnly, &request).await;
+    assert!(response.starts_with("HTTP/1.1 403"), "{host}: got {response:?}");
+    assert!(
+        seen.is_empty(),
+        "{host}: nothing may reach upstream, saw {:?}",
+        String::from_utf8_lossy(&seen)
+    );
+    for raw in [BUILTIN_SECRET, JWT_FIXTURE] {
+        assert!(!record.contains(raw), "{host}: raw value in the audit record: {record}");
+    }
+}
+
+#[tokio::test]
+async fn redact_only_refuses_a_dirty_scrub_on_a_non_llm_mitm_host() {
+    assert_dirty_scrub_refused(MITM_HOST, post(MITM_HOST, "/note", &key_and_jwt_body()).into_bytes()).await;
+}
+
+#[tokio::test]
+async fn redact_only_refuses_a_dirty_scrub_on_an_llm_host() {
+    let body = format!(
+        r#"{{"model":"claude","max_tokens":8,"messages":[{{"role":"user","content":"key {BUILTIN_SECRET} jwt {JWT_FIXTURE}"}}]}}"#
+    );
+    assert_dirty_scrub_refused(
+        ANTHROPIC_LLM_HOST,
+        post(ANTHROPIC_LLM_HOST, "/v1/messages", &body).into_bytes(),
+    )
+    .await;
+}
+
+/// Control: `alert_only` forwards the same body raw, by design, so the refusal
+/// above is caused by `redact_only` and the dirty re-scan.
+#[tokio::test]
+async fn alert_only_still_forwards_the_key_and_jwt_body_raw() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::AlertOnly,
+        post(MITM_HOST, "/note", &key_and_jwt_body()).as_bytes(),
+    )
+    .await;
+    assert!(contains(&seen, BUILTIN_SECRET) && contains(&seen, JWT_FIXTURE));
+}
+
+/// Measured behaviour, pinned (AAASM-4595): a body carrying only a JWT is refused
+/// under `redact_only`, because the scrubber redacts the signature alone and the
+/// surviving header and payload re-scan dirty. Nothing reaches upstream.
+#[tokio::test]
+async fn redact_only_refuses_a_jwt_only_body_and_nothing_reaches_upstream() {
+    let body = format!(r#"{{"note":"decode {JWT_FIXTURE} please"}}"#);
+    assert_dirty_scrub_refused(MITM_HOST, post(MITM_HOST, "/note", &body).into_bytes()).await;
+}
+
+/// Control: the same host and action scrub-and-forward an AWS key only.
+#[tokio::test]
+async fn redact_only_still_forwards_an_aws_key_only_body_scrubbed() {
+    let (_, seen, _) = send_credential_body(
+        CredentialAction::RedactOnly,
+        post(MITM_HOST, "/note", &note_with_secret()).as_bytes(),
+    )
+    .await;
+    assert!(contains(&seen, "[REDACTED") && !contains(&seen, BUILTIN_SECRET));
+}

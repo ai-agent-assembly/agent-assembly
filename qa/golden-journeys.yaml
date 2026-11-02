@@ -573,6 +573,72 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::custom_sensitive_pattern_is_redacted_or_denied_per_mode
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::gateway_redact_with_a_policy_only_value_is_denied_and_never_forwarded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::gateway_redact_with_a_builtin_only_secret_is_denied
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::gateway_redact_with_a_mixed_body_is_denied_not_partially_redacted
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::gateway_redact_is_denied_under_credential_action_block
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::gateway_redact_is_denied_under_credential_action_alert_only
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::the_same_policy_only_body_under_gateway_allow_is_forwarded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::credential_action_block_refuses_and_nothing_reaches_upstream
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::credential_action_redact_only_forwards_a_scrubbed_body_never_the_original
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::credential_action_alert_only_forwards_the_original_body
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::credential_action_redact_only_denies_a_compressed_secret_instead_of_forwarding_it
+  - repo: agent-assembly
+    kind: test
+    selector: aa-proxy/tests/refusal_evidence.rs::credential_action_alert_only_does_not_override_an_uninspectable_body_denial
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::operator_pattern_under_redact_only_is_withheld
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::operator_pattern_under_block_is_withheld
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::builtin_secret_is_redacted_by_proxy_then_forwarded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::mixed_builtin_and_operator_values_are_withheld
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::gzip_response_with_operator_value_is_withheld
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::gzip_clean_response_is_forwarded
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::response_rpc_failure_is_withheld_with_fail_open_false
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::response_rpc_failure_is_withheld_with_fail_open_true
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::same_clean_response_is_forwarded_when_gateway_stays_up_with_fail_open_true
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::alert_only_forwards_operator_pattern_value_by_design
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_mcp_response_enforcement.rs::alert_only_records_a_secret_alert_for_the_response_detection
   execution_lanes:
   - pr
   - main
