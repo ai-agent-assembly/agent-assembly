@@ -88,6 +88,11 @@ the directory and file; move aside only that entry's `.meta.json` and `.yaml`
 to recover). With `$AA_POLICY` set, that policy stays active and history is
 not reinstalled, so the active-policy view may differ.
 
+Every read of a history entry (`get`, `diff`, `rollback` and the start-up restore) verifies that
+its YAML still hashes to the SHA-256 recorded in its metadata and refuses a modified entry with an
+integrity error naming the directory and file. Entries written by earlier release candidates hash
+the same way. This detects a changed YAML only; it does not stop someone who rewrites both files.
+
 ```bash
 aasm policy rollback 9f2c1a
 ```
