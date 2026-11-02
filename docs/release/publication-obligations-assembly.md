@@ -26,6 +26,8 @@ registry; they live only in the obligation file.
 | J53, J59 | `scripts/qa/j53-candidate-harness.py`, `j59-candidate-harness.py` (PR #2803) | exists |
 | J08, J56 | provisional ids, no harness emits them | none (blocked on D5 / python-sdk #387 and the SDK pin) |
 
+CI runs the harness self-tests in the `B1 candidate harness self-tests` job (`.github/workflows/ci.yml`, step per suite); it runs the harnesses' own test suites, not the harnesses against a candidate.
+
 ## Procedure, after the final candidate freeze
 
 1. Fix the candidate commit and build the candidate artifacts. Record the SHA and
