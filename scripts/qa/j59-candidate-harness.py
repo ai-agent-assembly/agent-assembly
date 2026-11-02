@@ -59,8 +59,6 @@ SOURCES = {
 # A syntactically valid key for a throwaway loopback server; not a credential.
 TEST_KEY = "aa_0123456789abcdef0123456789abcdef"
 
-_GH = "gh-release-tag"
-
 
 def _img(name: str) -> str:
     return (f"python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only {name}")
