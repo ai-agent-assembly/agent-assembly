@@ -127,6 +127,12 @@ release. State who waived it, when, and why. "none" if no waiver was needed.>
 
 ## Verdict
 
-<!-- The token `Verdict: PASS` is what release-readiness.sh greps for. -->
+<!-- The token `Verdict: PASS` is what release-readiness.sh greps for.
+     `Verdict: CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042) is the ONLY other
+     accepted value besides BLOCK, and only when at least one Selected-journeys row
+     is `PUBLICATION_PENDING` with a matching entry in
+     v<version>.publication-obligations.json. It is NOT a pass: it does not
+     authorize tagging or publishing, and the checker recomputes it from the
+     journeys, so it cannot be written by hand to mean PASS. -->
 
 Verdict: PASS

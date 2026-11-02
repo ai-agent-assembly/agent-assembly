@@ -581,3 +581,26 @@ fn active_sessions_are_bounded_by_max_active_sessions() {
         "the oldest session was evicted"
     );
 }
+
+#[test]
+fn register_duplicate_error_names_the_agent_by_its_hex_id() {
+    // AAASM-6416: the id must match what `aasm agent list` prints, not a raw
+    // `[u8; 16]` debug dump.
+    let reg = AgentRegistry::new();
+    reg.register(make_record(key(0xE7))).unwrap();
+
+    let msg = reg.register(make_record(key(0xE7))).unwrap_err().to_string();
+
+    assert!(msg.contains(&hex::encode(key(0xE7))), "expected hex id in: {msg}");
+    assert!(!msg.contains('['), "id must not render as a byte list: {msg}");
+}
+
+#[test]
+fn token_error_names_the_agent_by_its_hex_id() {
+    // AAASM-6416: same hex rendering as the registry errors.
+    let reg = AgentRegistry::new();
+    let msg = aa_gateway::registry::token::validate_token(&reg, &key(0xE7), "t")
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains(&hex::encode(key(0xE7))), "expected hex id in: {msg}");
+}

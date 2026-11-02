@@ -517,13 +517,11 @@ impl AgentRegistry {
 
     /// Deregister an agent **and** delete the durable storage row.
     ///
-    /// Async wrapper around [`deregister`](Self::deregister) that, on a
-    /// successful in-memory removal, also calls
-    /// [`StorageBackend::delete_agent`](crate::storage::StorageBackend::delete_agent).
-    /// A storage [`NotFound`](crate::storage::StorageError::NotFound) result
-    /// is treated as success — the in-memory removal already happened and
-    /// best-effort cleanup is enough; any other backend error surfaces as
-    /// [`RegistryError::Storage`].
+    /// Deletes the durable row first, then removes the in-memory record, so a
+    /// storage failure leaves the agent registered and the call retryable. A
+    /// storage [`NotFound`](crate::storage::StorageError::NotFound) result is
+    /// treated as success (the row is already gone); any other backend error
+    /// surfaces as [`RegistryError::Storage`] with the in-memory record intact.
     ///
     /// When no storage handle is attached, behaves identically to
     /// [`deregister`](Self::deregister).
@@ -534,24 +532,31 @@ impl AgentRegistry {
         agent_id: &[u8; 16],
         mode: OrphanMode,
     ) -> Result<(AgentRecord, Vec<OrphanEffect>), RegistryError> {
-        let (record, effects) = self.deregister(agent_id, mode)?;
-        if let Some(storage) = self.storage.as_ref() {
-            let id = aa_core::identity::AgentId::from_bytes(*agent_id);
-            // The record just came out of the in-memory registry, so its
-            // org_id (if any) is already known — scope the durable delete to
-            // it rather than reaching for the entire_deployment() escape
-            // hatch (AAASM-5648).
-            #[allow(clippy::disallowed_methods)]
-            let scope = match record.org_id.as_deref() {
-                Some(org_id) => crate::storage::AgentScope::org(org_id),
-                None => crate::storage::AgentScope::entire_deployment(),
-            };
-            match storage.delete_agent(&scope, &id).await {
-                Ok(()) | Err(crate::storage::StorageError::NotFound(_)) => {}
-                Err(err) => return Err(RegistryError::Storage(err)),
-            }
+        let Some(storage) = self.storage.as_ref() else {
+            return self.deregister(agent_id, mode);
+        };
+        // AAASM-6416: delete the durable row BEFORE the in-memory record. A failed
+        // delete then leaves the agent registered and the call retryable; the old
+        // order dropped the record first, so a retry saw `NotFound` while the row
+        // kept the id occupied until the next restart. Deleting first also closes
+        // the re-register race: while the in-memory entry exists a concurrent
+        // `register_persisted` for the id is refused, so it cannot write a row that
+        // this delete then removes.
+        let record = self.get(agent_id).ok_or(RegistryError::NotFound(*agent_id))?;
+        let id = aa_core::identity::AgentId::from_bytes(*agent_id);
+        // The record is in the in-memory registry, so its org_id (if any) is
+        // already known — scope the durable delete to it rather than reaching for
+        // the entire_deployment() escape hatch (AAASM-5648).
+        #[allow(clippy::disallowed_methods)]
+        let scope = match record.org_id.as_deref() {
+            Some(org_id) => crate::storage::AgentScope::org(org_id),
+            None => crate::storage::AgentScope::entire_deployment(),
+        };
+        match storage.delete_agent(&scope, &id).await {
+            Ok(()) | Err(crate::storage::StorageError::NotFound(_)) => {}
+            Err(err) => return Err(RegistryError::Storage(err)),
         }
-        Ok((record, effects))
+        self.deregister(agent_id, mode)
     }
 
     /// Recursively apply `mode` to `child_key` and all its descendants.
