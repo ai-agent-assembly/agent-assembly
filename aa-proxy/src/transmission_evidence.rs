@@ -138,6 +138,10 @@ impl DecisionRecord {
         let (credential_findings, findings_omitted) = bound_persisted_findings(&self.findings);
         let entry = ProxyAuditEntry {
             ts_ms,
+            // An allowed record with no agent id says so explicitly; for every
+            // other decision `agent_id: None` keeps its existing meaning and
+            // the line is byte-identical to what it was before AAASM-6261.
+            agent_unattributed: self.decision == ProxyAuditDecision::Allowed && self.agent_id.is_none(),
             agent_id: self.agent_id,
             host: self.host,
             method: self.method,

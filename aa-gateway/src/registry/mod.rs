@@ -19,10 +19,13 @@ pub use store::{ActiveSession, AgentGraph, AgentRecord, AgentRegistry, RecentEve
 #[derive(Debug, thiserror::Error)]
 pub enum RegistryError {
     /// Attempted to register an agent whose ID is already present.
-    #[error("agent already registered: {0:?}")]
+    ///
+    /// The id renders as the 32-hex form `aasm agent list` prints, not as a raw
+    /// byte list, so it can be matched against that output (AAASM-6416).
+    #[error("agent already registered: {}", hex::encode(.0))]
     AlreadyRegistered([u8; 16]),
     /// Referenced an agent ID that does not exist in the registry.
-    #[error("agent not found: {0:?}")]
+    #[error("agent not found: {}", hex::encode(.0))]
     NotFound([u8; 16]),
     /// A lineage validation check failed during registration.
     #[error("lineage validation failed: {0}")]
