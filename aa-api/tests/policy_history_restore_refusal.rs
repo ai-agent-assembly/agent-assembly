@@ -104,3 +104,28 @@ async fn aa_policy_stays_the_startup_policy_and_history_is_not_reinstalled() {
         "the operator-configured policy must remain the enforced one"
     );
 }
+
+#[tokio::test]
+async fn an_entry_whose_yaml_was_modified_is_refused_at_boot() {
+    let _g = ENV_LOCK.lock().await;
+    let f = fixture();
+    f.store.save(&policy("saved", ""), None).await.expect("seed");
+    // Replace the saved YAML with a different, still valid, global policy: only
+    // the hash recorded in the metadata can tell.
+    let yaml = std::fs::read_dir(&f.paths.policy_history_dir)
+        .expect("history dir")
+        .map(|e| e.expect("entry").path())
+        .find(|p| p.extension().is_some_and(|e| e == "yaml"))
+        .expect("saved yaml");
+    std::fs::write(&yaml, policy("tampered", "")).expect("tamper");
+
+    let err = AppState::local_hardened_at(LocalAuth::Off, f.paths.clone())
+        .await
+        .err()
+        .expect("a modified entry must refuse start-up");
+    let msg = err.to_string();
+    assert!(matches!(err, LocalStateError::PolicyHistoryRestore { .. }), "{msg}");
+    assert!(msg.contains("integrity check failed"), "{msg}");
+    assert!(msg.contains(&f.paths.policy_history_dir.display().to_string()), "{msg}");
+    assert!(msg.contains(".meta.json"), "{msg}");
+}
