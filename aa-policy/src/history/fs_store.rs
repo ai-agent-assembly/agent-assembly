@@ -187,6 +187,18 @@ impl PolicyHistoryStore for FsHistoryStore {
         }
 
         let yaml_content = std::fs::read_to_string(&yaml_path)?;
+        // `save` and `rollback` record the SHA-256 of exactly these bytes, so a
+        // mismatch means the entry was edited afterwards. Callers (notably the
+        // server's start-up policy restore) must not use such an entry.
+        let actual = Self::sha256_hex(&yaml_content);
+        if actual != meta.sha256 {
+            return Err(PolicyHistoryError::IntegrityMismatch {
+                dir: self.config.history_dir.clone(),
+                entry: meta_path,
+                expected: meta.sha256,
+                actual,
+            });
+        }
         Ok(PolicySnapshot { meta, yaml_content })
     }
 
