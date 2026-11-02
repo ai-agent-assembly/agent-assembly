@@ -108,8 +108,8 @@ FAILURE_RESPONSE = {
     "proposed_actions": [
         "Treat the failed published-artifact check as a release defect: do not announce the release.",
         "Open a Bug sub-ticket under the journey's Jira Story with the command output attached.",
-        "If an artifact is wrong, cut a new candidate and re-run the candidate harness before re-publishing; "
-        "never edit or yank a published asset in place without owner approval.",
+        ("If an artifact is wrong, cut a new candidate and re-run the candidate harness before re-publishing; "
+         "never edit or yank a published asset in place without owner approval."),
     ],
     "notify": ["release-owner", "qa-orchestrator"],
     "deadline_hours": 24,

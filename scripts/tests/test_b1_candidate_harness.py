@@ -381,7 +381,6 @@ class HarnessTests(unittest.TestCase):
 
     def _foreign(self) -> "H.Platform":
         spec = "linux/x86_64" if self.plat.host != ("linux", "x86_64") else "darwin/aarch64"
-        o, a = spec.split("/")
         return H.Platform(spec)
 
     def test_foreign_platform_is_incomplete_for_j04_and_j17(self) -> None:
