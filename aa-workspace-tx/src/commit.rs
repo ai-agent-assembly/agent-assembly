@@ -11,6 +11,7 @@
 
 use std::fs;
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use aa_isolation::{ChangeEntry, ChangeSet, CommitOutcome, CommitRefusal, EntryKind, TransactionId};
@@ -51,9 +52,14 @@ pub fn commit(
     let hit_selectors: Vec<String> = protected
         .iter()
         .filter(|selector| {
-            change_paths
-                .iter()
-                .any(|p| *p == selector.as_str() || p.starts_with(&format!("{selector}/")))
+            // Folded comparison: on a case-insensitive base `.ENV` IS `.env`, and the
+            // selector may name a path that does not exist yet. Over-matching on a
+            // case-sensitive filesystem costs an extra approval, never a missed one.
+            let selector = fold(selector);
+            change_paths.iter().any(|p| {
+                let p = fold(p);
+                p == selector || p.starts_with(&format!("{selector}/"))
+            })
         })
         .cloned()
         .collect();
@@ -83,6 +89,17 @@ pub fn commit(
                 path: (*path).to_string(),
             });
         }
+    }
+
+    // --- 3c. No two touched paths, and no added path and existing base entry, may
+    // collide under case/normalization folding. ---
+    // A case-only rename (`a.txt` -> `A.txt`) diffs as `Added A.txt` + `Deleted a.txt`. On a
+    // case-insensitive base the write replaces the entry `a.txt` names and the deletion phase
+    // then removes the file just written. Refused on every filesystem so the decision does not
+    // depend on probing the host. `BoundaryEscape` is reused to keep `CommitRefusal` unchanged;
+    // the path text says what the refusal really is.
+    if let Some(detail) = fold_collision(base_root, &change_set).map_err(io_refusal)? {
+        return Err(CommitRefusal::BoundaryEscape { path: detail });
     }
 
     // --- 4. Copy-never-hardlink invariant, re-verified at commit time. ---
@@ -117,6 +134,92 @@ pub fn commit(
     let result_digest = manifest::aggregate_digest(&after);
 
     Ok(CommitOutcome::new(id.clone(), base_digest, result_digest, change_set))
+}
+
+/// Case + normalization folding used for protected-path matching and collision
+/// detection: NFD, per-character lowercase with `ς` -> `σ` and `ß` -> `ss`, then NFC,
+/// so NFC/NFD spellings of one name and final-sigma variants fold equal. Per-character
+/// (not `str::to_lowercase`) because the latter is context-sensitive for sigma.
+/// This is an approximation of full Unicode case folding; it over-matches, never
+/// under-matches, the common fold pairs filesystems apply.
+fn fold(s: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let mut out = String::with_capacity(s.len());
+    for c in s.nfd() {
+        match c {
+            'ς' => out.push('σ'),
+            'ß' | 'ẞ' => out.push_str("ss"),
+            _ => out.extend(c.to_lowercase()),
+        }
+    }
+    out.nfc().collect()
+}
+
+/// Detect a path-fold collision the apply step could not survive on a folding
+/// filesystem. Returns a description naming the offending path, or `None`.
+///
+/// 1. Any two touched paths (Added/Modified/Deleted) that share a component-wise
+///    folded prefix but spell it differently: `Added A.txt` + `Deleted a.txt`,
+///    `Added a`+`Added A`, `Deleted foo` + `Added FOO/x`.
+/// 2. An Added path that, component by component, matches an existing base entry
+///    only through folding (that entry is not in the change set, or it would have
+///    been caught above).
+fn fold_collision(base_root: &Path, change_set: &ChangeSet) -> io::Result<Option<String>> {
+    use std::collections::HashMap;
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for entry in change_set.entries() {
+        let mut folded = String::new();
+        let mut exact = String::new();
+        for comp in entry.path().split('/') {
+            if !folded.is_empty() {
+                folded.push('/');
+                exact.push('/');
+            }
+            folded.push_str(&fold(comp));
+            exact.push_str(comp);
+            match seen.get(&folded) {
+                Some(prev) if *prev != exact => {
+                    return Ok(Some(format!(
+                        "{} (case/normalization collision with {prev}; not a boundary escape)",
+                        entry.path()
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(folded.clone(), exact.clone());
+                }
+            }
+        }
+    }
+    for entry in change_set.entries() {
+        if !matches!(entry, ChangeEntry::Added { .. }) {
+            continue;
+        }
+        let mut current = base_root.to_path_buf();
+        for comp in entry.path().split('/') {
+            let names: Vec<String> = match fs::read_dir(&current) {
+                Ok(rd) => rd
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect(),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                Err(e) => return Err(e),
+            };
+            if names.iter().any(|n| n == comp) {
+                current.push(comp);
+                continue;
+            }
+            let folded = fold(comp);
+            if let Some(other) = names.iter().find(|n| fold(n) == folded) {
+                return Ok(Some(format!(
+                    "{} (case/normalization collision with existing base entry {other}; not a boundary escape)",
+                    entry.path()
+                )));
+            }
+            break;
+        }
+    }
+    Ok(None)
 }
 
 fn io_refusal(e: io::Error) -> CommitRefusal {
@@ -260,8 +363,15 @@ fn apply(
                         if let Some(parent) = dest.parent() {
                             fs::create_dir_all(parent)?;
                         }
-                        let content = fs::read(absolute(staged_root, path))?;
-                        materialize::write_via_temp(&dest, &content)?;
+                        let src = absolute(staged_root, path);
+                        let content = fs::read(&src)?;
+                        // Modified keeps the base file's current mode (an agent chmod is not a
+                        // change); Added takes the staged file's bits minus setuid/setgid/sticky.
+                        let mode = match fs::symlink_metadata(&dest) {
+                            Ok(m) if m.file_type().is_file() => m.mode() & 0o777,
+                            _ => fs::symlink_metadata(&src)?.mode() & 0o777,
+                        };
+                        materialize::write_via_temp_with_mode(&dest, &content, mode)?;
                     }
                     EntryKind::Symlink => {
                         if let Some(parent) = dest.parent() {
@@ -315,4 +425,116 @@ fn apply(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn added(p: &str) -> ChangeEntry {
+        ChangeEntry::Added { path: p.into() }
+    }
+    fn modified(p: &str) -> ChangeEntry {
+        ChangeEntry::Modified { path: p.into() }
+    }
+    fn deleted(p: &str) -> ChangeEntry {
+        ChangeEntry::Deleted { path: p.into() }
+    }
+
+    /// Hermetic: the change set is built by hand, so no filesystem folding is involved.
+    fn collides(base_files: &[&str], entries: Vec<ChangeEntry>) -> bool {
+        let base = tempfile::tempdir().unwrap();
+        for f in base_files {
+            let p = base.path().join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, f).unwrap();
+        }
+        fold_collision(base.path(), &ChangeSet::new(entries)).unwrap().is_some()
+    }
+
+    #[test]
+    fn added_plus_deleted_case_pair_collides() {
+        assert!(collides(&["a.txt"], vec![added("A.txt"), deleted("a.txt")]));
+    }
+
+    #[test]
+    fn added_plus_added_case_pair_collides() {
+        assert!(collides(&[], vec![added("x"), added("X")]));
+    }
+
+    #[test]
+    fn modified_plus_added_case_pair_collides() {
+        assert!(collides(&["a.txt"], vec![modified("a.txt"), added("A.TXT")]));
+    }
+
+    #[test]
+    fn modified_plus_deleted_case_pair_collides() {
+        assert!(collides(
+            &["a.txt", "B.txt"],
+            vec![modified("a.txt"), deleted("B.txt"), added("b.txt")]
+        ));
+        assert!(collides(&["a.txt", "B.txt"], vec![modified("B.txt"), deleted("b.txt")]));
+    }
+
+    #[test]
+    fn deleted_dir_plus_added_file_under_case_variant_dir_collides() {
+        assert!(collides(
+            &["foo/old.txt"],
+            vec![deleted("foo/old.txt"), deleted("foo"), added("FOO"), added("FOO/x")]
+        ));
+        assert!(collides(&["foo/old.txt"], vec![deleted("foo"), added("FOO/x")]));
+    }
+
+    #[test]
+    fn added_path_fold_colliding_with_an_unchanged_base_entry_collides() {
+        assert!(collides(&["a.txt"], vec![added("A.txt")]));
+        assert!(collides(&["Dir/k"], vec![added("dir/new")]));
+    }
+
+    #[test]
+    fn nfc_nfd_spellings_collide() {
+        let nfc = "caf\u{e9}.txt";
+        let nfd = "cafe\u{301}.txt";
+        assert_ne!(nfc, nfd);
+        assert!(collides(&[], vec![added(nfd), deleted(nfc)]));
+        assert!(collides(&[nfc], vec![added(nfd)]));
+    }
+
+    #[test]
+    fn final_sigma_and_sharp_s_spellings_collide() {
+        // `str::to_lowercase` maps a word-final capital sigma to `ς` but a lone one to `σ`.
+        assert_eq!(
+            fold("\u{39f}\u{394}\u{39f}\u{3a3}"),
+            fold("\u{3bf}\u{3b4}\u{3bf}\u{3c3}")
+        );
+        assert_eq!(
+            fold("\u{3bf}\u{3b4}\u{3bf}\u{3c2}"),
+            fold("\u{3bf}\u{3b4}\u{3bf}\u{3c3}")
+        );
+        assert!(collides(&[], vec![added("\u{3bf}\u{3c2}"), deleted("\u{3bf}\u{3c3}")]));
+        assert_eq!(fold("Stra\u{df}e"), fold("STRASSE"));
+    }
+
+    /// Controls: identical spellings, unrelated names and nested distinct names never collide.
+    #[test]
+    fn unrelated_and_identical_paths_do_not_collide() {
+        assert!(!collides(&["a.txt"], vec![modified("a.txt")]));
+        assert!(!collides(&["a.txt"], vec![deleted("a.txt"), added("b.txt")]));
+        assert!(!collides(&["d/x"], vec![modified("d/x"), added("d/y")]));
+        assert!(!collides(&["d/x"], vec![deleted("d/x"), added("d/x2")]));
+    }
+
+    /// Control on a case-sensitive base: unchanged coexisting `A` and `a` plus an unrelated add.
+    #[test]
+    fn unchanged_coexisting_case_variants_are_unaffected() {
+        let probe = tempfile::tempdir().unwrap();
+        fs::write(probe.path().join("P"), b"x").unwrap();
+        if probe.path().join("p").exists() {
+            eprintln!("SKIP: case-insensitive filesystem cannot hold both A and a");
+            return;
+        }
+        assert!(!collides(&["A", "a"], vec![added("b")]));
+        assert!(!collides(&["A", "a"], vec![modified("A")]));
+        assert!(!collides(&["A/x", "a/y"], vec![added("A/z")]));
+    }
 }

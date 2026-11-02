@@ -41,6 +41,10 @@ const LLM_HOST: &str = "api.openai.com";
 /// `handle_non_llm_mitm`.
 const MITM_HOST: &str = "hooks.example.com";
 
+/// The registered identity a per-launch proxy is started with
+/// (`AA_AGENT_ID`).
+const LAUNCH_AGENT: &str = "agent-6261-launch";
+
 /// The test client trusts whatever cert the proxy's MitM presents; cert
 /// validity is covered elsewhere and is not what these tests are about.
 #[derive(Debug)]
@@ -183,6 +187,18 @@ async fn start_proxy(
     mitm_hosts: Vec<String>,
     ca_dir: &std::path::Path,
 ) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
+    start_proxy_as(action, upstream_override, mitm_hosts, ca_dir, None).await
+}
+
+/// [`start_proxy`] for a proxy started with `AA_AGENT_ID=agent_id`, as
+/// `aasm run`'s per-launch proxy is (AAASM-5863).
+async fn start_proxy_as(
+    action: CredentialAction,
+    upstream_override: Option<SocketAddr>,
+    mitm_hosts: Vec<String>,
+    ca_dir: &std::path::Path,
+    agent_id: Option<&str>,
+) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
     install_crypto();
     let ca = CaStore::load_or_create(ca_dir).await.unwrap();
 
@@ -206,7 +222,7 @@ async fn start_proxy(
         network_fail_open: false,
         // The mock/dead upstreams are on loopback, which the SSRF guard would
         // (correctly) refuse in production.
-        agent_id: None,
+        agent_id: agent_id.map(str::to_owned),
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
@@ -637,11 +653,12 @@ async fn a_probe_refused_by_the_plain_http_handler_is_marked_synthetic() {
 
 /// Under the default `llm_only: true` this path carries every non-LLM
 /// connection, and it was the route S6 found ungated. It inspects nothing, so
-/// the honest outcome is that it writes **no** decision event — inventing one
-/// would change what the audit trail counts. Pinned here because nothing
-/// persisted means no other test can catch a regression in it.
+/// the honest outcome is that it records no *findings* and claims nothing about
+/// the bytes: one `Allowed` record that attributes the connection to its launch
+/// (AAASM-6261) and whose evidence says the payload was forwarded and never
+/// inspected. Pinned here because nothing else would catch a regression in it.
 #[tokio::test]
-async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
+async fn the_transparent_tunnel_relays_and_records_one_allowed_uninspected_connection() {
     // A plain TCP echo-ish upstream: the tunnel is a raw byte relay, so no TLS.
     let upstream = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let upstream_addr = upstream.local_addr().unwrap();
@@ -659,7 +676,14 @@ async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
     let dir = tempfile::tempdir().unwrap();
     // `llm_only: true` with no `mitm_hosts` entry ⇒ a non-LLM CONNECT is
     // transparently tunnelled rather than MitM'd.
-    let (proxy, mut audit) = start_proxy(CredentialAction::Block, Some(upstream_addr), Vec::new(), dir.path()).await;
+    let (proxy, mut audit) = start_proxy_as(
+        CredentialAction::Block,
+        Some(upstream_addr),
+        Vec::new(),
+        dir.path(),
+        Some(LAUNCH_AGENT),
+    )
+    .await;
 
     let mut stream = TcpStream::connect(proxy).await.unwrap();
     stream
@@ -684,10 +708,17 @@ async fn the_transparent_tunnel_relays_and_records_no_decision_event() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read_to_end(&mut out)).await;
     assert_eq!(&out, b"pong", "the tunnel must relay the upstream response");
 
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(
-        audit.try_recv().is_err(),
-        "the transparent tunnel took no decision, so it must invent no decision event"
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Allowed);
+    assert_eq!(entry.host, "plain.example.com");
+    assert_eq!(entry.method, "CONNECT");
+    assert_eq!(entry.agent_id.as_deref(), Some(LAUNCH_AGENT));
+    assert!(!entry.agent_unattributed);
+    assert!(entry.credential_findings.is_empty());
+    // Never reads as clean: nothing looked at these bytes.
+    assert_eq!(
+        entry.execution.transmission,
+        aa_core::types::sensitive_data::TransmissionEvidence::ForwardedNotInspected
     );
 }
 
@@ -741,4 +772,131 @@ async fn a_successful_non_llm_mitm_forward_writes_exactly_one_record() {
     assert_eq!(entry.decision, ProxyAuditDecision::Forwarded);
     assert!(!entry.credential_findings.is_empty(), "otherwise this asserts nothing");
     assert_eq!(entry.execution.mode, aa_core::policy::EnforcementMode::Observe);
+}
+
+// ── AAASM-6261: allowed traffic is attributed to its launch ─────────────────
+
+/// A clean request through the LLM MitM handler, on a proxy started for a
+/// launch: one `Allowed` record carrying that launch's id.
+///
+/// Fails on the code before AAASM-6261, where a clean `Forward` wrote no record
+/// at all — `assert_one_forwarding_record` times out waiting for one.
+#[tokio::test]
+async fn a_clean_llm_mitm_forward_is_recorded_as_allowed_and_attributed_to_the_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy_as(
+        CredentialAction::RedactOnly,
+        Some(upstream),
+        Vec::new(),
+        dir.path(),
+        Some(LAUNCH_AGENT),
+    )
+    .await;
+
+    let response = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, "hello, nothing sensitive")).await;
+    assert!(
+        response.contains("200 OK"),
+        "the request must have reached a live upstream, got: {response:?}"
+    );
+
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Allowed);
+    assert_eq!(entry.agent_id.as_deref(), Some(LAUNCH_AGENT));
+    assert!(!entry.agent_unattributed);
+    assert_eq!(entry.host, LLM_HOST);
+    assert!(entry.credential_findings.is_empty());
+    assert!(entry.refusal_rule.is_none());
+    assert_eq!(
+        entry.execution.transmission,
+        aa_core::types::sensitive_data::TransmissionEvidence::ForwardedClean
+    );
+}
+
+/// The same on the non-LLM MitM handler.
+#[tokio::test]
+async fn a_clean_non_llm_mitm_forward_is_recorded_as_allowed_and_attributed_to_the_launch() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy_as(
+        CredentialAction::AlertOnly,
+        Some(upstream),
+        vec![MITM_HOST.to_string()],
+        dir.path(),
+        Some(LAUNCH_AGENT),
+    )
+    .await;
+
+    let response = mitm_roundtrip(proxy, MITM_HOST, &post(MITM_HOST, "hello, nothing sensitive")).await;
+    assert!(response.contains("200 OK"), "got: {response:?}");
+
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Allowed);
+    assert_eq!(entry.agent_id.as_deref(), Some(LAUNCH_AGENT));
+    assert!(!entry.agent_unattributed);
+}
+
+/// A standalone proxy (no `AA_AGENT_ID`) cannot attribute, and says so
+/// explicitly instead of leaving a bare `null` that an older record would also
+/// show.
+#[tokio::test]
+async fn a_standalone_proxys_allowed_record_is_explicitly_unattributed() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy(CredentialAction::RedactOnly, Some(upstream), Vec::new(), dir.path()).await;
+
+    let response = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, "hello, nothing sensitive")).await;
+    assert!(response.contains("200 OK"), "got: {response:?}");
+
+    let entry = assert_one_forwarding_record(&mut audit).await;
+    assert_eq!(entry.decision, ProxyAuditDecision::Allowed);
+    assert_eq!(entry.agent_id, None);
+    assert!(
+        entry.agent_unattributed,
+        "no id to attribute to must be stated, not implied"
+    );
+    let line = serde_json::to_string(&entry).unwrap();
+    assert!(line.contains("\"agent_unattributed\":true"), "serialized: {line}");
+}
+
+/// The counts that existed before AAASM-6261 are unchanged: of one clean and
+/// one credential-bearing request, only the second is a `Forwarded`
+/// (detected-but-forwarded) record, and the first is only ever `Allowed`.
+#[tokio::test]
+async fn clean_traffic_never_inflates_the_detected_but_forwarded_count() {
+    let dir = tempfile::tempdir().unwrap();
+    let upstream = live_tls_upstream().await;
+    let (proxy, mut audit) = start_proxy_as(
+        CredentialAction::AlertOnly,
+        Some(upstream),
+        Vec::new(),
+        dir.path(),
+        Some(LAUNCH_AGENT),
+    )
+    .await;
+
+    let clean = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, "hello, nothing sensitive")).await;
+    let dirty = mitm_roundtrip(proxy, LLM_HOST, &post(LLM_HOST, &scrubbable_body())).await;
+    assert!(
+        clean.contains("200 OK") && dirty.contains("200 OK"),
+        "{clean:?} {dirty:?}"
+    );
+
+    let first = next_entry(&mut audit).await;
+    let second = next_entry(&mut audit).await;
+    let mut decisions = [first.decision, second.decision];
+    decisions.sort_by_key(|d| format!("{d:?}"));
+    assert_eq!(
+        decisions,
+        [ProxyAuditDecision::Allowed, ProxyAuditDecision::Forwarded],
+        "one clean request is `Allowed`, one credential-bearing request is `Forwarded`"
+    );
+    let forwarded = [&first, &second]
+        .into_iter()
+        .filter(|e| e.decision == ProxyAuditDecision::Forwarded)
+        .count();
+    assert_eq!(
+        forwarded, 1,
+        "the clean request must not be counted as detected-but-forwarded"
+    );
 }
