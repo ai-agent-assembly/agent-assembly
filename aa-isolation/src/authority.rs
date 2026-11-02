@@ -1459,6 +1459,41 @@ mod tests {
             );
         }
 
+        /// AAASM-6273 / rc.8 J82 deferral: a launch that claims a parent but has
+        /// no trusted way to resolve that parent's authority (every
+        /// cross-process launch today) must be refused, never admitted with
+        /// its own, unattenuated authority. Both spec shapes are covered
+        /// because `Ancestry::UnresolvedParent` must refuse unconditionally,
+        /// not only for lease-aware specs. The controls prove the gate does
+        /// not simply refuse everything: this test asserts only the genuine-root
+        /// admit control. The resolved-parent admit case is covered by
+        /// `a_narrower_child_is_derived_and_passes_the_gate` above.
+        #[test]
+        fn an_unresolved_parent_claim_is_refused_and_never_runs_with_unattenuated_authority() {
+            let unresolved = Ancestry::UnresolvedParent {
+                claimed_ancestor: "parent-agent".to_string(),
+                detail: "no trusted cross-process parent authority".to_string(),
+            };
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]);
+            let requirement = ControlRequirement::observe(CapabilityDomain::FilesystemRead).with_scope(scope.clone());
+
+            let lease_unaware = ExecutionSpec::new("echo", child_identity()).with_requirement(requirement.clone());
+            let lease_aware = ExecutionSpec::new("echo", child_identity())
+                .with_requirement(requirement.clone())
+                .with_lease(parent_fs_lease(scope.clone()));
+            for (label, spec) in [("lease-unaware", &lease_unaware), ("lease-aware", &lease_aware)] {
+                let result = authority_gate(spec, &unresolved, t(1_500));
+                assert!(
+                    matches!(&result, Err(AuthorityRefusal::AncestryUnresolved { claimed_ancestor, .. }) if claimed_ancestor == "parent-agent"),
+                    "{label} spec under an unresolved parent must be refused as AncestryUnresolved: {result:?}"
+                );
+            }
+
+            // Control: a genuine root (no claimed parent) is admitted.
+            let root = ExecutionSpec::new("echo", IdentityRef::root("root-agent")).with_requirement(requirement);
+            assert!(authority_gate(&root, &Ancestry::Root, t(1_500)).is_ok());
+        }
+
         /// §4.3: a child requesting a path outside its parent's grant is
         /// refused, even though the lease is otherwise well-formed.
         #[test]

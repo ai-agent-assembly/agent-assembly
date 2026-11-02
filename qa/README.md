@@ -61,6 +61,7 @@ executable claim→evidence registry rather than forking a second catalog.
 | `platforms` | Required OS/runner scope, when relevant. |
 | `negative_control` | Reference to the mutation/fault-injection evidence proving this journey's test is load-bearing. |
 | `gap_owner` | An `AAASM-*` ticket owning an incomplete/missing entry. Required when `release_blocking: true` and `lifecycle_state` is `partial`/`gap`/`unsupported`/`stale`. |
+| `deferral` | Free-form block (not validated) recording a founder-approved release-scope deferral of a journey that is `release_blocking: false` but stays `partial`/`gap` with a `gap_owner`: `scope`, `decision`, `state`, `reason`, `owner`, `prerequisites`. A deferral is not a PASS and does not retire the row; it moves the catalog requirements digest because the row leaves the release-required set. |
 | `retirement` | `{reason, ref}` — used only for `lifecycle_state: retired`. The row is never deleted (AC3: stable IDs survive); a retired entry is excluded from active selection instead. |
 
 ### How the registry stays current

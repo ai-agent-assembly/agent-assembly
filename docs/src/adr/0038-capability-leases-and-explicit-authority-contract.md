@@ -1373,6 +1373,11 @@ reading source, by unit tests, or by an unsupported configuration.
 - **J82 (monotonic capability attenuation across sub-agent trees, AAASM-6161 /
   AAASM-6260) stays `partial` for the cross-process case (AAASM-6273)** until the gate and the §29 tests pass and are independently verified. No production path builds `Ancestry::Parent` from another process; the
   multi-process case remains refused, not accepted.
+- **rc.8 release scope:** J82 is deferred from the rc.8 release-blocking set by founder
+  decision (release scope only; not a PASS, not an implementation claim). AAASM-6273 still
+  owns the work and the B3 gate above is unchanged. rc.8 makes no cross-process attenuation
+  guarantee; a claimed parent that cannot be resolved is refused by `authority_gate`
+  (`Ancestry::UnresolvedParent`).
 - **Verified on the available host (2026-10-22):** the only Linux kernel reachable
   from the development host is Docker Desktop's VM, `6.10.14-linuxkit` (aarch64). Its
   `/proc/config.gz` reports `# CONFIG_SECURITY_LANDLOCK is not set` and
