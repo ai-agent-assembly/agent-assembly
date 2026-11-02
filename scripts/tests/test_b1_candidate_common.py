@@ -13,11 +13,18 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from unittest import TestCase, main, mock
+from unittest import TestCase, main, mock, skipUnless
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa"))
 import b1_candidate_common as c  # noqa: E402
 
+
+# pid_owned_by fails closed (returns False) when this lsof is absent, e.g. on the
+# ubuntu CI runner where lsof lives in /usr/bin. The tests below that need a real
+# positive ownership proof, or a real lsof listing to be meaningful, cannot run
+# there; every negative control that does not depend on lsof still runs.
+_NEEDS_LSOF = skipUnless(
+    os.path.exists(c.LSOF), f"{c.LSOF} is absent: the real ownership proof fails closed here")
 
 _SLEEP = [sys.executable, "-c", "import time; time.sleep(60)"]
 
@@ -78,12 +85,14 @@ class KillOwnedDaemonTests(TestCase):
         shutil.copy2(built, dest)
         return dest
 
+    @_NEEDS_LSOF
     def test_binary_executed_from_owner_bin_is_killed(self) -> None:
         exe = self._own_binary(self.real)
         p = self._spawn([str(exe)], self.foreign)
         c.kill_owned_daemon(self._pidfile(p.pid), self.link)  # symlinked owner spelling
         self._assert_killed(p)
 
+    @_NEEDS_LSOF
     def test_bare_name_path_launch_of_owner_binary_is_killed(self) -> None:
         exe = self._own_binary(self.real)
         env = {**os.environ, "PATH": f"{exe.parent}:{os.environ['PATH']}"}
@@ -132,7 +141,10 @@ class KillOwnedDaemonTests(TestCase):
 
     def test_lsof_dyld_plus_binary_lists_accept_binary_under_owner(self) -> None:
         fake = f"p2\nftxt\nn/usr/lib/dyld\nftxt\nn{self.real}/bin/aasm\n"
-        with mock.patch.object(c, "_run_text", return_value=fake):  # lsof layer mocked
+        # lsof layer mocked; LSOF repointed at an existing path so the existence guard
+        # does not short-circuit before the mocked listing is parsed.
+        with mock.patch.object(c, "_run_text", return_value=fake), \
+                mock.patch.object(c, "LSOF", sys.executable):
             self.assertTrue(c.pid_owned_by(2**22, self.link))
 
     def test_ownership_is_reproven_before_sigkill(self) -> None:
@@ -156,12 +168,14 @@ class KillOwnedDaemonTests(TestCase):
         exe = os.path.realpath(sys.executable)
         return Path(next((i for i in imgs if i == exe), imgs[0])).parent
 
+    @_NEEDS_LSOF
     def test_self_is_never_owned_even_when_it_maps_an_image_under_owner(self) -> None:
         owner = self._image_dir(os.getpid())
         self.assertTrue(c._txt_images(subprocess.run(
             [c.LSOF, "-p", str(os.getpid()), "-Fftn"], capture_output=True, text=True).stdout))
         self.assertFalse(c.pid_owned_by(os.getpid(), owner))
 
+    @_NEEDS_LSOF
     def test_parent_is_never_owned_even_when_it_maps_an_image_under_owner(self) -> None:
         owner = self._image_dir(os.getpid())  # the child's parent is this very interpreter
         code = (

@@ -161,6 +161,26 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-6419: B1 candidate-harness self-tests (job `b1-harness-selftests`).
+      # Paired with the `b1_harness` router filter below (ADR 0028). A path already
+      # listed elsewhere in this block is not repeated.
+      - "scripts/qa/b1/**"
+      - "scripts/qa/b1_candidate_common.py"
+      - "scripts/qa/j53-candidate-harness.py"
+      - "scripts/qa/j59-candidate-harness.py"
+      - "scripts/qa/post-publish-verify.py"
+      - "scripts/qa/fixtures/j59/**"
+      - "policy-examples/low-risk.yaml"
+      - "policy-examples/balanced.yaml"
+      - "aa-gateway/Dockerfile"
+      - "scripts/tests/test_b1_candidate_harness.py"
+      - "scripts/tests/test_b1_candidate_common.py"
+      - "scripts/tests/test_post_publish_verify.py"
+      - "scripts/tests/test_j53_candidate_harness.py"
+      - "scripts/tests/test_j59_candidate_harness.py"
+      # AAASM-6419: registry-level publication_checks controls. Paired with the
+      # `qa_registry` router filter below (ADR 0028).
+      - "scripts/tests/test_publication_registry.py"
       # AAASM-5884: community-health file completeness (J33). Paired with the
       # `community_health` router filter below — a router filter without a
       # matching `on.*.paths` entry is a dead trigger (ADR 0028).
@@ -321,6 +341,7 @@ jobs:
       docs_governance_gate: ${{ steps.filter.outputs.docs_governance_gate }}
       qa_registry: ${{ steps.filter.outputs.qa_registry }}
       community_health: ${{ steps.filter.outputs.community_health }}
+      b1_harness: ${{ steps.filter.outputs.b1_harness }}
       # AAASM-5375: mirror, glob for glob, actionlint.yml's own internal
       # `changes` router — same reasoning as the satellites above.
       workflow_syntax_gate: ${{ steps.filter.outputs.workflow_syntax_gate }}
@@ -590,6 +611,7 @@ jobs:
               - 'qa/tests/fixtures/**'
               - 'scripts/qa/validate-golden-journeys.py'
               - 'scripts/qa/validate-golden-journeys-negative-control.sh'
+              - 'scripts/tests/test_publication_registry.py'
               # AAASM-5893: resource-lock slot mechanism. Every path here has
               # a matching `on.push.paths` entry above (live trigger, ADR
               # 0028) — shares this router flag with the golden-journeys
@@ -631,6 +653,27 @@ jobs:
               # release-evidence checker above, it is release-assurance
               # machinery whose self-test belongs in the same job.
               - 'scripts/check_version_availability.py'
+              - '.github/workflows/ci.yml'
+            # AAASM-6419: B1 candidate-harness self-tests. Its own flag: the
+            # suites take minutes, so they must not ride on every registry edit.
+            b1_harness:
+              - 'scripts/qa/b1/**'
+              - 'scripts/qa/b1_candidate_common.py'
+              - 'scripts/qa/j53-candidate-harness.py'
+              - 'scripts/qa/j59-candidate-harness.py'
+              - 'scripts/qa/post-publish-verify.py'
+              - 'scripts/qa/fixtures/j59/**'
+              - 'scripts/qa/publication_obligations.py'
+              - 'scripts/install-cli.sh'
+              - 'policy-examples/low-risk.yaml'
+              - 'policy-examples/balanced.yaml'
+              - 'aa-gateway/Dockerfile'
+              - '.github/workflows/docker.yml'
+              - 'scripts/tests/test_b1_candidate_harness.py'
+              - 'scripts/tests/test_b1_candidate_common.py'
+              - 'scripts/tests/test_post_publish_verify.py'
+              - 'scripts/tests/test_j53_candidate_harness.py'
+              - 'scripts/tests/test_j59_candidate_harness.py'
               - '.github/workflows/ci.yml'
             # AAASM-5884: community-health file completeness (J33). A
             # dedicated flag rather than folding into `qa_registry` above —
@@ -1607,6 +1650,11 @@ jobs:
       - name: Validate the real registry
         run: python3 scripts/qa/validate-golden-journeys.py qa/golden-journeys.yaml
 
+      # AAASM-6419: the real registry declares exactly the B1 publication
+      # checks, and the obligation validator refuses duplicate ids.
+      - name: Publication-check registry controls
+        run: python3 -I scripts/tests/test_publication_registry.py
+
       # AAASM-5878/5899: same "negative control first" convention as above,
       # for scripts/qa/check-release-evidence.py. There is deliberately no
       # "run the checker against the real repo" step here yet — no
@@ -1647,6 +1695,44 @@ jobs:
       # release-readiness time, on the sanctioned tag path.
       - name: Self-test the version-availability gate (negative control)
         run: python3 scripts/check_version_availability.py --selftest
+
+  b1-harness-selftests:
+    needs: [changes]
+    # AAASM-6419: self-tests of the B1 candidate harnesses (J04/J17, J53, J59) and
+    # of post-publish-verify.py. Its own job rather than a step of
+    # `registry-health-gate`: the J04/J17 suite alone runs about two minutes on
+    # Linux, and a separate job keeps the registry check fast and runs in
+    # parallel. Every suite is hermetic: loopback listeners, fixture git repos and
+    # stand-in mirrors, no real network.
+    if: needs.changes.outputs.b1_harness == 'true'
+    name: B1 candidate harness self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+
+      # b1_candidate_common.pid_owned_by fails closed without /usr/sbin/lsof, which
+      # the ubuntu runner does not have (lsof is in /usr/bin). On this runner the
+      # real-process "is killed" tests and the lsof-dependent controls in this
+      # suite skip with an explicit reason; the other negative controls still run.
+      - name: Self-test the candidate harness common module
+        run: python3 -I scripts/tests/test_b1_candidate_common.py
+
+      - name: Self-test post-publish-verify
+        run: python3 -I scripts/tests/test_post_publish_verify.py
+
+      - name: Self-test the J53 candidate harness
+        run: python3 -I scripts/tests/test_j53_candidate_harness.py
+
+      - name: Self-test the J59 candidate harness
+        run: python3 -I scripts/tests/test_j59_candidate_harness.py
+
+      - name: Self-test the J04/J17 candidate harness
+        run: python3 -I scripts/tests/test_b1_candidate_harness.py
 
   community-health-gate:
     needs: [changes]
@@ -4626,6 +4712,9 @@ jobs:
       # entry cannot validate with absent/unresolvable/malformed evidence),
       # not a metric — an advisory version would be exactly the "false PASS"
       # this Epic exists to prevent.
+      # AAASM-6419: blocks, like `registry-health-gate` — the B1 harnesses decide what
+      # a CANDIDATE_VERIFIED record may claim.
+      - b1-harness-selftests
       - registry-health-gate
       # AAASM-5884: blocks, like `registry-health-gate` above and for the
       # same reason — a community-health file that validates while empty,
