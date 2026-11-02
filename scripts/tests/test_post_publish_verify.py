@@ -19,9 +19,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, main, mock
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,7 +105,7 @@ def run_main(reg, ids, extra_command="x", tag=TAG, argv_extra=()):
 GHCR_IDS = ["j53-ghcr-tag-resolves", "j53-ghcr-digest-immutable", "j53-ghcr-multiarch", "j53-ghcr-sbom-attestation"]
 
 
-class GhcrTests(unittest.TestCase):
+class GhcrTests(TestCase):
     def test_good_publication_passes_everything_and_exits_zero(self):
         reg = good_ghcr(FakeRegistry(), "aa-gateway", index_doc())
         rc, rep, raw = run_main(reg, GHCR_IDS)
@@ -174,7 +173,7 @@ class GhcrTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
-class ReleaseAssetTests(unittest.TestCase):
+class ReleaseAssetTests(TestCase):
     SUMS_URL = "https://api.github.com/repos/ai-agent-assembly/agent-assembly/releases/assets/1"
     CDN = "https://objects.githubusercontent.com/sums"
 
@@ -250,7 +249,7 @@ class ReleaseAssetTests(unittest.TestCase):
                 self.assertNotIn("Authorization", headers)
 
 
-class RealFetcherRedirectTests(unittest.TestCase):
+class RealFetcherRedirectTests(TestCase):
     """The real urllib fetcher against loopback servers: a 302 must not be followed and
     Authorization must not reach the redirect target."""
 
@@ -305,7 +304,7 @@ class RealFetcherRedirectTests(unittest.TestCase):
         self.assertEqual(target_seen[0].get("authorization"), "Bearer TOK")
 
 
-class SafetyTests(unittest.TestCase):
+class SafetyTests(TestCase):
     def test_unknown_check_id_is_inconclusive_and_exit_nonzero(self):
         rc, rep, _ = run_main(FakeRegistry(), ["j04-pypi-install"])
         self.assertEqual(rep["results"][0]["status"], "INCONCLUSIVE")
@@ -376,4 +375,4 @@ class SafetyTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    main(verbosity=2)
