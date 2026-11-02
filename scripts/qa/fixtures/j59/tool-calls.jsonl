@@ -1,0 +1,3 @@
+{"event_type": "ToolCallIntercepted", "agent_id": "j59-agent", "payload": "{\"ToolCall\": {\"name\": \"read_file\", \"args\": \"{}\"}}"}
+{"event_type": "ToolCallIntercepted", "agent_id": "j59-agent", "payload": "{\"ToolCall\": {\"name\": \"delete_file\", \"args\": \"{}\"}}"}
+{"event_type": "ToolCallIntercepted", "agent_id": "j59-agent", "payload": "{\"ToolCall\": {\"name\": \"send_email\", \"args\": \"{}\"}}"}
