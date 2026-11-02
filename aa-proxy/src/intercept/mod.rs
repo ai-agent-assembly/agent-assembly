@@ -168,6 +168,10 @@ fn response_forms(bytes: &[u8]) -> Option<ResponseForms> {
 pub struct Interceptor {
     event_tx: broadcast::Sender<PipelineEvent>,
     scanner: Option<CredentialScanner>,
+    /// The launch this proxy serves (`AA_AGENT_ID`), stamped on the CONNECT
+    /// allow/deny events. `None` for a standalone proxy, whose events stay
+    /// unattributed (empty `agent_id`) as before (AAASM-6261).
+    agent_id: Option<String>,
 }
 
 impl Interceptor {
@@ -319,7 +323,18 @@ impl Interceptor {
         Self {
             event_tx,
             scanner: Some(CredentialScanner::new()),
+            agent_id: None,
         }
+    }
+
+    /// Attribute this interceptor's CONNECT policy events to `agent_id`.
+    ///
+    /// Attribution as the launcher asserted it in the proxy's own environment,
+    /// not an authenticated identity, and it does not touch the proxy's
+    /// requests to the gateway.
+    pub fn with_agent_id(mut self, agent_id: Option<String>) -> Self {
+        self.agent_id = agent_id;
+        self
     }
 
     /// Create a new `Interceptor` with an explicit scanner configuration.
@@ -327,7 +342,11 @@ impl Interceptor {
     /// Pass `None` to disable credential scanning entirely, or `Some(scanner)`
     /// to use a custom-configured [`CredentialScanner`].
     pub fn with_scanner(event_tx: broadcast::Sender<PipelineEvent>, scanner: Option<CredentialScanner>) -> Self {
-        Self { event_tx, scanner }
+        Self {
+            event_tx,
+            scanner,
+            agent_id: None,
+        }
     }
 
     /// Emit an audit event recording the policy decision for a CONNECT tunnel.
@@ -371,7 +390,7 @@ impl Interceptor {
             inner: audit,
             received_at_ms: now_ms,
             source: EventSource::Proxy,
-            agent_id: String::new(),
+            agent_id: self.agent_id.clone().unwrap_or_default(),
             connection_id: 0,
             sequence_number: 0,
             // Proxy-sourced events carry no SDK identity claim.
@@ -1427,6 +1446,26 @@ mod tests {
             }
             other => panic!("expected Network detail, got {other:?}"),
         }
+    }
+
+    /// AAASM-6261: the CONNECT allow event names the launch it was admitted
+    /// for, and stays unattributed (empty) for a standalone proxy.
+    #[tokio::test]
+    async fn emit_policy_decision_allowed_event_carries_the_launch_agent_id() {
+        let (tx, mut rx) = broadcast::channel(8);
+        let attributed = Interceptor::new(tx.clone()).with_agent_id(Some("agent-6261".to_string()));
+        attributed.emit_policy_decision("api.openai.com", false).await;
+        let PipelineEvent::Audit(enriched) = rx.try_recv().unwrap() else {
+            panic!("expected an audit event");
+        };
+        assert_eq!(enriched.agent_id, "agent-6261");
+
+        let standalone = Interceptor::new(tx);
+        standalone.emit_policy_decision("api.openai.com", false).await;
+        let PipelineEvent::Audit(enriched) = rx.try_recv().unwrap() else {
+            panic!("expected an audit event");
+        };
+        assert_eq!(enriched.agent_id, "", "a proxy with no launch id stays unattributed");
     }
 
     #[tokio::test]

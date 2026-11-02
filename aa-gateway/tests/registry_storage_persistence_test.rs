@@ -145,3 +145,54 @@ async fn deregister_persisted_clears_storage_so_restart_skips_agent() {
     assert!(registry_2.get(&[4u8; 16]).is_some(), "keep-me must rehydrate");
     assert!(registry_2.get(&[5u8; 16]).is_none(), "drop-me must NOT rehydrate");
 }
+
+/// AAASM-6416: a failed durable delete must leave the agent registered (so the
+/// call is retryable) rather than dropping the in-memory record while the row
+/// keeps the id occupied until the next restart.
+#[tokio::test]
+async fn deregister_persisted_failure_leaves_the_agent_registered_and_retryable() {
+    let tmp = tempdir().expect("tempdir");
+    let db_path = tmp.path().join("registry-deregister-fails.db");
+    let storage: Arc<dyn StorageBackend> = open_sqlite_backend(&db_path).await.expect("open backend");
+    let registry = AgentRegistry::new().with_storage(storage);
+    registry
+        .register_persisted(record([7u8; 16], "sticky", None))
+        .await
+        .expect("register");
+
+    // A second connection installs a trigger that makes every DELETE fail.
+    let side = sqlx::SqlitePool::connect(&format!("sqlite://{}?mode=rw", db_path.display()))
+        .await
+        .expect("side connection");
+    sqlx::query(
+        "CREATE TRIGGER block_delete BEFORE DELETE ON agent_registry BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+    )
+    .execute(&side)
+    .await
+    .expect("install trigger");
+
+    let err = registry
+        .deregister_persisted(&[7u8; 16], OrphanMode::Suspend)
+        .await
+        .expect_err("durable delete is blocked");
+    assert!(matches!(err, aa_gateway::registry::RegistryError::Storage(_)), "{err}");
+    assert!(
+        registry.get(&[7u8; 16]).is_some(),
+        "a failed durable delete must not drop the in-memory record"
+    );
+
+    // Retry succeeds once the cause is gone, and the row is really gone.
+    sqlx::query("DROP TRIGGER block_delete")
+        .execute(&side)
+        .await
+        .expect("drop trigger");
+    registry
+        .deregister_persisted(&[7u8; 16], OrphanMode::Suspend)
+        .await
+        .expect("retry succeeds");
+    assert!(registry.get(&[7u8; 16]).is_none());
+
+    let storage_2: Arc<dyn StorageBackend> = open_sqlite_backend(&db_path).await.expect("reopen");
+    let registry_2 = AgentRegistry::new().with_storage(storage_2);
+    assert_eq!(registry_2.rehydrate_from_storage().await.expect("rehydrate"), 0);
+}

@@ -507,11 +507,12 @@ impl ProxyServer {
         audit_jsonl_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
     ) -> Arc<Self> {
         let certs = CertCache::new(config.cert_cache_capacity);
+        let interceptor = Interceptor::new(event_tx).with_agent_id(config.agent_id.clone());
         Arc::new(Self {
             config,
             ca,
             certs,
-            interceptor: Interceptor::new(event_tx),
+            interceptor,
             audit_jsonl_tx,
             gateway_client: OnceCell::new(),
             telemetry_client: OnceCell::new(),
@@ -842,9 +843,11 @@ impl ProxyServer {
     /// an `ExecutionEvidence` parameter, so it cannot record one observation
     /// and authorize another.
     ///
-    /// `decision` is `None` for a branch with no decision event to write: a
-    /// clean body decided nothing, and minting an event for it would change
-    /// what the audit trail counts.
+    /// `decision` is `None` only for a verdict that has no record to write
+    /// (today none of the forwarding branches). A clean forward is recorded as
+    /// [`ProxyAuditDecision::Allowed`] (AAASM-6261): a record of its own kind,
+    /// so it attributes the connection without being counted as a
+    /// detected-but-forwarded request.
     async fn record_forwarding(
         self: &Arc<Self>,
         observation: ForwardObservation,
@@ -945,15 +948,40 @@ impl ProxyServer {
     /// Which decision event, if any, a forwarding verdict writes.
     ///
     /// `ForwardRedacted` and `AlertAndForward` both found something and both
-    /// forwarded; a clean `Forward` decided nothing. Shared by all three
-    /// forwarding paths so plain-HTTP cannot drift from the MitM handlers
-    /// again — it previously omitted `alert_only` entirely, silently emptying
-    /// the detected-but-forwarded numerator for cleartext traffic.
+    /// forwarded; a clean `Forward` found nothing and is recorded as
+    /// [`ProxyAuditDecision::Allowed`] — a kind of its own so that clean
+    /// traffic is attributed to its launch without being added to the
+    /// detected-but-forwarded count `Forwarded` feeds (AAASM-6261). Shared by
+    /// all three forwarding paths so plain-HTTP cannot drift from the MitM
+    /// handlers again — it previously omitted `alert_only` entirely, silently
+    /// emptying the detected-but-forwarded numerator for cleartext traffic.
     fn forwarding_audit_decision(decision: VerdictDecision) -> Option<ProxyAuditDecision> {
         match decision {
             VerdictDecision::ForwardRedacted => Some(ProxyAuditDecision::ForwardedRedacted),
             VerdictDecision::AlertAndForward => Some(ProxyAuditDecision::Forwarded),
-            VerdictDecision::Forward | VerdictDecision::Block => None,
+            VerdictDecision::Forward => Some(ProxyAuditDecision::Allowed),
+            VerdictDecision::Block => None,
+        }
+    }
+
+    /// The record of a connection admitted without a credential verdict to
+    /// describe: the raw tunnel, which never inspects its bytes, and a
+    /// bodyless plain-HTTP request, which had none to inspect (AAASM-6261).
+    ///
+    /// Same shape as [`Self::emit_rule_refusal`]'s record for the same reason:
+    /// there is no [`InterceptVerdict`], so nothing to carry findings or a
+    /// body.
+    fn allowed_record(&self, id: RequestIdentity<'_>, probe_correlation: Option<String>) -> DecisionRecord {
+        DecisionRecord {
+            agent_id: self.config.agent_id.clone(),
+            host: id.host.to_owned(),
+            method: id.method.to_owned(),
+            path: self.interceptor.redact_target(id.target),
+            decision: ProxyAuditDecision::Allowed,
+            refusal_rule: None,
+            findings: Vec::new(),
+            redacted_body: None,
+            probe_correlation,
         }
     }
 
@@ -3048,15 +3076,24 @@ impl ProxyServer {
 
         // AAASM-5358: this path relays bytes it never inspected, so the honest
         // observation is "forwarded, and nothing looked at it" — never clean.
-        // There is no decision event to write (no verdict was taken), but the
-        // observation still has to exist, because it is what unlocks the dial.
+        // No verdict was taken, so there are no findings to record, but the
+        // connection itself is an allowed one and is attributed (AAASM-6261);
+        // the observation also has to exist because it is what unlocks the dial.
+        let allowed = self.allowed_record(
+            RequestIdentity {
+                host: &canonical_host(target),
+                method: "CONNECT",
+                target,
+            },
+            None,
+        );
         let authorized = transmission_evidence::forwarded(
             VerdictDecision::Forward,
             self.config.credential_action,
             // Not "the scanner is disabled" but "this route does not scan".
             None,
         )
-        .persist(self.audit_jsonl_tx.as_ref(), None);
+        .persist(self.audit_jsonl_tx.as_ref(), Some(allowed));
         let upstream = match self.config.upstream_override {
             Some(addr) => TcpStream::connect(addr).await?,
             None => self.connect_revalidated(target, authorized).await?,
@@ -3256,7 +3293,17 @@ impl ProxyServer {
                 .await
             }
             None => transmission_evidence::forwarded(VerdictDecision::Forward, self.config.credential_action, None)
-                .persist(self.audit_jsonl_tx.as_ref(), None),
+                .persist(
+                    self.audit_jsonl_tx.as_ref(),
+                    Some(self.allowed_record(
+                        RequestIdentity {
+                            host: deny_host,
+                            method,
+                            target,
+                        },
+                        Self::probe_correlation_plain(&headers),
+                    )),
+                ),
         };
 
         // Connect to upstream via plain TCP.
