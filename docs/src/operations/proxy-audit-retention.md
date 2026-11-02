@@ -37,12 +37,17 @@ situation this whole surface exists to prevent.
 
 ## What is retained
 
-One JSON object per line, per intercepted request:
+One JSON object per line, per intercepted request. Since AAASM-6261 that
+includes the requests the proxy let through unchanged, as `allowed` records, so
+the file shows whose traffic was admitted as well as what was refused. They share
+the size-bounded ring below with no priority over refusals, so a busy agent
+rotates older segments out sooner (see [Allowed records and ring turnover](#allowed-records-and-ring-turnover)).
 
 | Field | Content |
 |---|---|
-| `ts_ms`, `agent_id`, `host`, `method`, `path` | When, which agent, and what it addressed. The path is redacted before it is written. |
-| `decision` | `forwarded`, `forwarded_redacted`, `blocked`, or `answered_locally`. |
+| `ts_ms`, `agent_id`, `host`, `method`, `path` | When, which agent, and what it addressed. The path is redacted before it is written. `agent_id` is the `AA_AGENT_ID` the proxy was started with: attribution, not authentication. |
+| `agent_unattributed` | Present and `true` only on an `allowed` record from a proxy started without an `AA_AGENT_ID` (a standalone or shared sidecar). Omitted otherwise. |
+| `decision` | `forwarded`, `forwarded_redacted`, `blocked`, `answered_locally`, or `allowed`. `allowed` is a request the proxy admitted and relayed with nothing to report; it is written just before the dial, so it records the proxy's decision, not that the upstream answered. It is separate from `forwarded`, which counts requests where a credential was detected and the request was forwarded anyway. |
 | `refusal_rule` | Which control refused it, when a rule did. |
 | `execution` | What was observed about whether the payload left the process. |
 | `probe_correlation` | Set when the request was a protection probe's own synthetic traffic. |
@@ -105,6 +110,38 @@ the sink past its size bound.
 To actually retain ninety days you must size the ring for ninety days of your
 traffic, export the segments off the host, or both. `retention_shortfalls`
 staying at zero is the check that you have.
+
+### Allowed records and ring turnover
+
+`allowed` records (AAASM-6261) and refusals share one ring, and nothing in the
+ring gives a refusal priority over an allowed line. The ring is the live file
+plus three rotated segments of 32 MiB at the defaults, so it holds at most
+128 MiB. An `allowed` line is roughly 350-450 bytes (it carries no body and no
+findings), which is on the order of 300-380 thousand lines. At 10 allowed
+requests per second that turns over in about 9 hours; at 50 per second, about
+2 hours. `forwarded` and `forwarded_redacted` records can carry a body of up to
+8 KiB and evict faster. These are estimates from line size, not measurements.
+
+For a long run, set `AA_PROXY_AUDIT_EXPORT_DIR` so sealed segments leave the
+host, or watch `retention_shortfalls` in the completeness sidecar.
+
+The record is handed to a shared 1024-slot channel with `try_send`. During a
+sustained burst the channel can be full and an `allowed` record, or a refusal,
+can be dropped; every drop is counted in the completeness sidecar, so a count
+taken from this file remains a lower bound.
+
+### What an `allowed` record does and does not say
+
+An `allowed` record is written **before** the SSRF and DNS re-validation and
+before the dial (the AAASM-5358 persist-before-dial rule). It can therefore
+describe a connection that was later refused at re-validation, for example a
+DNS-rebinding refusal. It records the proxy's decision to forward, not that the
+upstream was reached.
+
+Readers: a typed reader pinned to an older `aa-proxy` fails to parse a
+`"decision":"allowed"` line and must tolerate the decode failure. The persisted
+`path` has no length cap, and only pattern-shaped secrets are redacted from it;
+the file is mode `0600`.
 
 ### Granularity of the age bound
 

@@ -13,6 +13,8 @@ any real readiness run.
 | `pass.md` | matches `Verdict: PASS` — readiness QA check would pass |
 | `block.md` | does not match PASS — readiness QA check would fail |
 | `malformed.md` | does not match PASS (ambiguous/free-text verdict) — readiness QA check would fail |
+| `candidate-verified.md` | `Verdict: CANDIDATE_VERIFIED` with a `PUBLICATION_PENDING` row (AAASM-6419) — check 12 reports it as a distinct "obligations pending (not PASS)" line; the run still fails overall |
+| `candidate-verified-no-pending.md` | `Verdict: CANDIDATE_VERIFIED` with no pending row — check 12 refuses it |
 
 AAASM-5823's negative-control tests point `release-readiness.sh` at a version
 whose sign-off path resolves to each of these in turn (via a temp copy to

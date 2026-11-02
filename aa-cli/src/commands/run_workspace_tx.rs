@@ -97,6 +97,14 @@ pub(crate) fn resolve(args: &RunArgs) -> Option<Result<WorkspaceTxPlan, String>>
         return Some(Err(reason));
     }
 
+    if let Some(reason) = args
+        .workspace_tx_protect
+        .iter()
+        .find_map(|s| selector_spelling_refusal(&base_root, s))
+    {
+        return Some(Err(reason));
+    }
+
     let exclusions = args
         .workspace_tx_exclude
         .iter()
@@ -140,9 +148,66 @@ fn protect_selector_refusal(selector: &str) -> Option<String> {
     Some(format!(
         "--workspace-tx-protect refuses selector {selector:?}: it must be a non-empty path relative to the base \
          directory, written without `./`, `..`, doubled or leading or trailing `/`, globs, backslashes or surrounding whitespace \
-         (for example `src/secrets`). Selectors are matched literally and case-sensitively; a selector of any \
-         other shape would never match a changed path, so the protection would silently not apply."
+         (for example `src/secrets`). Selectors are matched literally by path component (the commit gate also folds case, so a case \
+         variant of a protected name is protected too); a selector of any other shape would never match a changed path, so the protection would silently not apply."
     ))
+}
+
+/// Refuse a selector that reaches an existing base entry only through filesystem
+/// case (or normalization) folding, e.g. `secrets` on a case-insensitive volume
+/// where the directory is `Secrets`.
+///
+/// Compares the selector's exact spelling with the names `read_dir` returns,
+/// using `lstat` to find the entry the spelling resolved to, so no Unicode table
+/// is needed. A component that does not exist yet ends the walk and is accepted:
+/// the commit gate's case folding covers a protected path created later.
+/// Normalization variants (NFC/NFD) of such a not-yet-existing name remain a
+/// documented residual.
+fn selector_spelling_refusal(base_root: &Path, selector: &str) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut current = base_root.to_path_buf();
+    let mut matched = Vec::new();
+    for component in selector.split('/') {
+        let candidate = current.join(component);
+        let meta = match std::fs::symlink_metadata(&candidate) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                return Some(format!(
+                    "--workspace-tx-protect could not verify the spelling of selector {selector:?}: {e}"
+                ))
+            }
+        };
+        let names: Vec<(std::ffi::OsString, u64)> = match std::fs::read_dir(&current) {
+            Ok(rd) => rd
+                .flatten()
+                .filter_map(|e| e.metadata().ok().map(|m| (e.file_name(), m.ino())))
+                .collect(),
+            Err(e) => {
+                return Some(format!(
+                    "--workspace-tx-protect could not verify the spelling of selector {selector:?}: {e}"
+                ))
+            }
+        };
+        if names.iter().any(|(n, _)| n.to_string_lossy() == component) {
+            matched.push(component.to_string());
+            current = candidate;
+            continue;
+        }
+        let on_disk = names
+            .iter()
+            .find(|(_, ino)| *ino == meta.ino())
+            .map(|(n, _)| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "<another spelling>".to_string());
+        matched.push(on_disk);
+        return Some(format!(
+            "--workspace-tx-protect refuses selector {selector:?}: it resolves to an existing entry only through \
+             filesystem case or normalization folding. Write it exactly as it is on disk (`{}`) so the \
+             protection is stated, and reported, in the spelling the base actually has.",
+            matched.join("/")
+        ));
+    }
+    None
 }
 
 /// Refuse when the transaction state root and the base directory nest
@@ -486,6 +551,43 @@ mod tests {
         for good in ["x", "src/secrets", "a/b/c.txt"] {
             assert!(protect_selector_refusal(good).is_none(), "{good:?} must be accepted");
         }
+    }
+
+    fn fs_folds_case(dir: &Path) -> bool {
+        std::fs::write(dir.join("CaseProbe"), b"x").unwrap();
+        let folded = dir.join("caseprobe").exists();
+        std::fs::remove_file(dir.join("CaseProbe")).unwrap();
+        folded
+    }
+
+    #[test]
+    fn a_selector_spelled_exactly_or_naming_nothing_yet_is_accepted() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(base.path().join("Secrets")).unwrap();
+        std::fs::write(base.path().join("Secrets").join("k"), b"k").unwrap();
+        assert!(selector_spelling_refusal(base.path(), "Secrets").is_none());
+        assert!(selector_spelling_refusal(base.path(), "Secrets/k").is_none());
+        assert!(
+            selector_spelling_refusal(base.path(), ".env").is_none(),
+            "not created yet"
+        );
+        assert!(selector_spelling_refusal(base.path(), "Secrets/new").is_none());
+    }
+
+    /// Host-gated: only a case-folding filesystem can resolve a mis-cased spelling.
+    #[test]
+    fn a_selector_that_matches_only_through_case_folding_is_refused_with_the_on_disk_spelling() {
+        let base = tempfile::tempdir().unwrap();
+        if !fs_folds_case(base.path()) {
+            eprintln!("SKIP: case-sensitive filesystem; a mis-cased selector cannot resolve here");
+            return;
+        }
+        std::fs::create_dir_all(base.path().join("Secrets")).unwrap();
+        std::fs::write(base.path().join("Secrets").join("K"), b"k").unwrap();
+        let reason = selector_spelling_refusal(base.path(), "secrets").expect("must refuse");
+        assert!(reason.contains("`Secrets`"), "{reason}");
+        let reason = selector_spelling_refusal(base.path(), "Secrets/k").expect("must refuse");
+        assert!(reason.contains("`Secrets/K`"), "{reason}");
     }
 
     #[test]

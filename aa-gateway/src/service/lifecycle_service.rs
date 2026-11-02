@@ -640,7 +640,11 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             .registry
             .deregister_persisted(&agent_key, OrphanMode::Suspend)
             .await
-            .map_err(|e| Status::not_found(e.to_string()))?;
+            .map_err(|e| match e {
+                // AAASM-6416: a failed durable delete is retryable, not "not found".
+                RegistryError::Storage(_) => Status::internal(e.to_string()),
+                _ => Status::not_found(e.to_string()),
+            })?;
 
         for effect in &effects {
             let envelope = agent_status_changed_to_envelope(effect, "parent agent deregistered");
