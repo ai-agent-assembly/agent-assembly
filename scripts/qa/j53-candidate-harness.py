@@ -316,8 +316,8 @@ def run_harness(argv: list[str]) -> int:
         check_docs(ctx, Path(a.docs_dir).resolve() if a.docs_dir else None)
         report = c.build_report(ctx, SCRIPT, PENDING, FAILURE_RESPONSE, DEPENDS_ON)
         report["observations"] = [
-            "Dockerfile base images (rust:alpine, gcr.io/distroless/static:nonroot) are floating tags, not digest-pinned; "
-            "reported as a finding, not a check, because pinning is not a stated J53 acceptance criterion.",
+            ("Dockerfile base images (rust:alpine, gcr.io/distroless/static:nonroot) are floating tags, not digest-pinned; "
+             "reported as a finding, not a check, because pinning is not a stated J53 acceptance criterion."),
             "j53-published-image-runs-healthy is an operator step with no recording mechanism yet (tracked follow-up); post-publish-verify.py reports it INCONCLUSIVE, never PASS.",
             "docker.yml states cosign image signing is not committed scope (AAASM-5887), so no signature check is owed.",
         ]
