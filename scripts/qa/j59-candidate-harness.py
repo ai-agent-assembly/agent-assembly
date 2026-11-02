@@ -105,8 +105,8 @@ FAILURE_RESPONSE = {
     "proposed_actions": [
         "do not announce the release as operator-ready; record J59 as failed post-publication",
         "file a Bug against AAASM-4979 naming the failing check id and the published asset digest",
-        "if a published binary or image is wrong, re-run the publish job on the same tag; if the defect is in the product, "
-        "decide yank or hold with the release owner before any announcement",
+        ("if a published binary or image is wrong, re-run the publish job on the same tag; if the defect is in the product, "
+         "decide yank or hold with the release owner before any announcement"),
     ],
     "notify": ["release-owner"],
     "deadline_hours": 24,
