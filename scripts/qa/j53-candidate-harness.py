@@ -81,8 +81,8 @@ PENDING = [
 FAILURE_RESPONSE = {
     "proposed_actions": [
         "do not announce the release; mark the GHCR aa-gateway tag as not verified",
-        "if the tag is missing or the digest or index is wrong, re-run docker.yml publish-gateway on the same tag "
-        "(the tag already exists, so this repairs the publication, it does not change the candidate)",
+        ("if the tag is missing or the digest or index is wrong, re-run docker.yml publish-gateway on the same tag "
+         "(the tag already exists, so this repairs the publication, it does not change the candidate)"),
         "if the pulled image does not run healthy, file a Bug against AAASM-4751 and decide yank/hold with the release owner",
     ],
     "notify": ["release-owner"],
