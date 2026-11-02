@@ -192,6 +192,8 @@ def run_steps(ctx: c.Context, st: Stack, repo: Path) -> None:
     try:
         health = json.loads(body)
     except ValueError:
+        # Non-JSON health body: `health` stays {}, so the version comparison below reports a
+        # FAIL (None != expected). Swallowing here cannot turn a bad response into a PASS.
         pass
     if health.get("version") != ctx.expected_version:
         p.append(f"aa-api-server reports version {health.get('version')!r}, want {ctx.expected_version!r}")
