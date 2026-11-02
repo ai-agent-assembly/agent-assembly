@@ -155,6 +155,11 @@ pub enum PolicyResolution {
         /// later per-call decision can attribute itself to exactly the policy
         /// whose declarations it read.
         content_digest: String,
+        /// AAASM-4595 — `data.credential_action` of the validated document,
+        /// captured at the same point as `egress`/`credentials`. `aasm run`
+        /// hands it to the dedicated proxy it spawns, which otherwise knows
+        /// nothing of the policy; see `credential_action()`.
+        credential_action: crate::document::CredentialAction,
     },
     /// The operator explicitly selected an allow-all artifact.
     Permissive {
@@ -191,6 +196,11 @@ pub enum PolicyResolution {
         tool_capabilities: ToolCapabilityMap,
         /// AAASM-6259 — see [`Self::Enforced`]'s `content_digest` field.
         content_digest: String,
+        /// AAASM-4595 — `data.credential_action` of the validated document,
+        /// captured at the same point as `egress`/`credentials`. `aasm run`
+        /// hands it to the dedicated proxy it spawns, which otherwise knows
+        /// nothing of the policy; see `credential_action()`.
+        credential_action: crate::document::CredentialAction,
     },
     /// No effective policy resolved.
     Unconfigured(Unconfigured),
@@ -375,6 +385,18 @@ impl PolicyResolution {
         match self {
             Self::Enforced { credentials, .. } | Self::Permissive { credentials, .. } => *credentials,
             Self::Unconfigured(_) | Self::LoadFailed { .. } => crate::document::CredentialBrokeragePosture::NotRequired,
+        }
+    }
+
+    /// This resolution's `data.credential_action` (AAASM-4595).
+    ///
+    /// The default ([`crate::document::CredentialAction::RedactOnly`]) when the
+    /// policy states none, and for the two refusing states, which launch
+    /// nothing that could carry the answer to a proxy.
+    pub fn credential_action(&self) -> crate::document::CredentialAction {
+        match self {
+            Self::Enforced { credential_action, .. } | Self::Permissive { credential_action, .. } => *credential_action,
+            Self::Unconfigured(_) | Self::LoadFailed { .. } => crate::document::CredentialAction::default(),
         }
     }
 
@@ -607,6 +629,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
         .filter_map(|(name, t)| t.capabilities.clone().map(|c| (name.clone(), c)))
         .collect();
     let content_digest = validated.content_digest();
+    let credential_action = validated.data.as_ref().map(|d| d.credential_action).unwrap_or_default();
     if is_explicit_allow_all(&validated) {
         return PolicyResolution::Permissive {
             source: source.to_path_buf(),
@@ -617,6 +640,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
             leases,
             tool_capabilities,
             content_digest,
+            credential_action,
         };
     }
     PolicyResolution::Enforced {
@@ -628,6 +652,7 @@ pub fn classify(source: &Path, yaml: &str) -> PolicyResolution {
         leases,
         tool_capabilities,
         content_digest,
+        credential_action,
     }
 }
 
@@ -1385,6 +1410,61 @@ mod tests {
             resolution.content_digest(),
             "a different declaration must be a different policy id"
         );
+    }
+
+    /// AAASM-4595 — the proxy `aasm run` spawns learns `data.credential_action`
+    /// only through this accessor. Every authorable mode must survive
+    /// resolution, and a policy that states none must read as the default.
+    #[test]
+    fn credential_action_carries_every_authored_mode() {
+        use crate::document::CredentialAction as A;
+        let dir = tempfile::tempdir().unwrap();
+        for (word, expected) in [
+            ("block", A::Block),
+            ("redact_only", A::RedactOnly),
+            ("alert_only", A::AlertOnly),
+            ("alert_and_redact", A::AlertAndRedact),
+        ] {
+            let yaml = format!("tools:\n  bash:\n    allow: false\ndata:\n  credential_action: {word}\n");
+            let resolution = load(&write(&dir, &format!("{word}.yaml"), &yaml));
+            assert!(matches!(resolution, PolicyResolution::Enforced { .. }));
+            assert_eq!(resolution.credential_action(), expected, "mode {word}");
+        }
+    }
+
+    #[test]
+    fn credential_action_defaults_to_redact_only_when_the_policy_is_silent() {
+        use crate::document::CredentialAction as A;
+        let dir = tempfile::tempdir().unwrap();
+        let silent = load(&write(&dir, "silent.yaml", "tools:\n  bash:\n    allow: false\n"));
+        assert_eq!(silent.credential_action(), A::RedactOnly);
+        let no_mode = load(&write(
+            &dir,
+            "no_mode.yaml",
+            "tools:\n  bash:\n    allow: false\ndata:\n  sensitive_patterns: []\n",
+        ));
+        assert_eq!(no_mode.credential_action(), A::RedactOnly);
+        assert_eq!(
+            PolicyResolution::LoadFailed {
+                source: PathBuf::from("/p.yaml"),
+                detail: "bad".to_string(),
+            }
+            .credential_action(),
+            A::RedactOnly
+        );
+    }
+
+    /// An unrecognised mode must refuse the policy outright. It must never
+    /// reach a proxy as a silently-defaulted mode.
+    #[test]
+    fn an_unrecognised_credential_action_fails_the_load_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolution = load(&write(
+            &dir,
+            "bad.yaml",
+            "tools:\n  bash:\n    allow: false\ndata:\n  credential_action: scrub_maybe\n",
+        ));
+        assert!(matches!(resolution, PolicyResolution::LoadFailed { .. }));
     }
 
     /// The distinction the accessor exists to keep: a loaded policy that
