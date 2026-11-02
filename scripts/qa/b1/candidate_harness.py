@@ -149,6 +149,8 @@ def _kill_live() -> None:
         try:
             os.killpg(pg, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
+            # Group already exited (or is not ours to signal): nothing left to kill. The
+            # pgid is dropped from the live set below either way.
             pass
         _LIVE_PGIDS.discard(pg)
 
@@ -454,6 +456,7 @@ def serve_probe(cmd: list[str], env: dict[str, str], port: int, logfile: Path, t
                 os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
             except ProcessLookupError:
+                # The group exited between poll() and killpg: the intended end state.
                 pass
         _LIVE_PGIDS.discard(proc.pid)
         log.close()
@@ -520,6 +523,7 @@ def aasm_gateway_lifecycle(aasm: Path, policy: Path, home: Path, timeout: float 
                 try:
                     os.kill(int(m.group()), signal.SIGKILL)
                 except (ProcessLookupError, PermissionError):
+                    # Recorded gateway already gone (or not ours): the cleanup goal is met.
                     pass
     return ok, detail, pre
 
