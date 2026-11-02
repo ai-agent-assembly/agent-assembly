@@ -1,0 +1,3 @@
+apiVersion: agent-assembly/v1
+kind: Policy
+spec: [[[

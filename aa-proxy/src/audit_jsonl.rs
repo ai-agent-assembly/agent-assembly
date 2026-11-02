@@ -93,6 +93,31 @@ pub enum ProxyAuditDecision {
     /// under `redact_only` would otherwise manufacture a prevented
     /// transmission for traffic the policy would have forwarded.
     AnsweredLocally,
+    /// The proxy admitted this request and relayed it, and found nothing it
+    /// had a decision to record about (AAASM-6261).
+    ///
+    /// This is the record that attributes *allowed* traffic to the launch that
+    /// made it: before it existed a clean `Forward` wrote nothing, so an
+    /// operator reading this file could see what the proxy refused or changed
+    /// but never which agent's connections it let through. It is deliberately
+    /// **not** [`Self::Forwarded`], which counts traffic where the scanner
+    /// found something and the policy forwarded it anyway; folding clean
+    /// traffic into that variant would inflate the detected-but-forwarded
+    /// numerator ADR 0032 §8 reads, so existing counts of every other variant
+    /// are unchanged by this one.
+    ///
+    /// Carries no findings and no body. [`ProxyAuditEntry::execution`] still
+    /// says whether the bytes were re-inspected (`forwarded_clean`) or not
+    /// (`forwarded_not_inspected`, e.g. an uninspected raw tunnel), so an
+    /// allowed record never reads as stronger evidence than it is. Whose
+    /// connection it was is [`ProxyAuditEntry::agent_id`], or
+    /// [`ProxyAuditEntry::agent_unattributed`] when the proxy was started
+    /// without one.
+    ///
+    /// Volume: one line per forwarded request, written to the same
+    /// size-bounded ring as the refusals (see [`RotationPolicy`]), so a chatty
+    /// agent rotates older segments out sooner than refusals alone would.
+    Allowed,
 }
 
 /// Which **rule** refused a request, on a record whose decision is
@@ -152,7 +177,21 @@ pub struct ProxyAuditEntry {
     /// Wall-clock timestamp in milliseconds since the Unix epoch.
     pub ts_ms: i64,
     /// Agent identifier that owned the connection, when known.
+    ///
+    /// This is `AA_AGENT_ID` as the launcher put it in the proxy's own
+    /// environment: attribution, not authentication. Nothing here proves the
+    /// agent presented that identity to anything.
     pub agent_id: Option<String>,
+    /// `true` on an [`ProxyAuditDecision::Allowed`] record the proxy could not
+    /// attribute because it was started without an `AA_AGENT_ID` (a standalone
+    /// or shared sidecar). The explicit counterpart of a missing `agent_id`:
+    /// an absent id on an older record could mean "not recorded", this says
+    /// "there was nobody to attribute it to".
+    ///
+    /// Omitted from the serialized line when `false`, so no pre-existing record
+    /// changes shape, and defaulted on read, so older lines still parse.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent_unattributed: bool,
     /// Target host (no port) from the CONNECT line.
     pub host: String,
     /// HTTP method of the intercepted request inside the tunnel.
@@ -1603,6 +1642,7 @@ mod tests {
         let entry = ProxyAuditEntry {
             ts_ms: 1_700_000_000_000,
             agent_id: Some("agent-1".into()),
+            agent_unattributed: false,
             host: "api.openai.com".into(),
             method: "POST".into(),
             path: "/v1/chat/completions".into(),
@@ -1651,6 +1691,7 @@ mod tests {
         ProxyAuditEntry {
             ts_ms: 1_700_000_000_000,
             agent_id: None,
+            agent_unattributed: false,
             host: host.into(),
             method: "GET".into(),
             path: "/".into(),
@@ -1662,6 +1703,95 @@ mod tests {
             findings_omitted: 0,
             redacted_body: None,
         }
+    }
+
+    /// AAASM-6261: an `Allowed` record is spelled `allowed`, round-trips, and
+    /// carries the launch's id when it has one.
+    #[test]
+    fn an_allowed_record_round_trips_with_its_attribution() {
+        let mut entry = clean_entry("api.example.com", ProxyAuditDecision::Allowed);
+        entry.agent_id = Some("agent-6261".into());
+        let line = serde_json::to_string(&entry).unwrap();
+        assert!(line.contains(r#""decision":"allowed""#), "{line}");
+        assert!(
+            !line.contains("agent_unattributed"),
+            "an attributed record omits it: {line}"
+        );
+        let back: ProxyAuditEntry = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.decision, ProxyAuditDecision::Allowed);
+        assert_eq!(back.agent_id.as_deref(), Some("agent-6261"));
+        assert!(!back.agent_unattributed);
+    }
+
+    /// AAASM-6261: an allowed record with no id says so, and that marker
+    /// survives the round trip.
+    #[test]
+    fn an_unattributed_allowed_record_says_so_and_round_trips() {
+        let mut entry = clean_entry("api.example.com", ProxyAuditDecision::Allowed);
+        entry.agent_unattributed = true;
+        let line = serde_json::to_string(&entry).unwrap();
+        assert!(line.contains(r#""agent_unattributed":true"#), "{line}");
+        let back: ProxyAuditEntry = serde_json::from_str(&line).unwrap();
+        assert!(back.agent_unattributed);
+        assert_eq!(back.agent_id, None);
+    }
+
+    /// AAASM-6261 compatibility: the additive field changes no pre-existing
+    /// line. A record of any existing kind serializes without it (so its bytes
+    /// are what they were), and a line written before the field existed still
+    /// parses, with the field false.
+    #[test]
+    fn the_additive_field_leaves_every_existing_line_unchanged_and_parseable() {
+        for decision in [
+            ProxyAuditDecision::Forwarded,
+            ProxyAuditDecision::ForwardedRedacted,
+            ProxyAuditDecision::Blocked,
+            ProxyAuditDecision::AnsweredLocally,
+        ] {
+            let line = serde_json::to_string(&clean_entry("h.example", decision)).unwrap();
+            assert!(!line.contains("agent_unattributed"), "{decision:?}: {line}");
+        }
+
+        let mut value = serde_json::to_value(clean_entry("h.example", ProxyAuditDecision::Forwarded)).unwrap();
+        value.as_object_mut().unwrap().remove("agent_unattributed");
+        let legacy: ProxyAuditEntry = serde_json::from_value(value).expect("a pre-AAASM-6261 line parses");
+        assert!(!legacy.agent_unattributed);
+        assert_eq!(legacy.decision, ProxyAuditDecision::Forwarded);
+    }
+
+    /// AAASM-6261 reader contract, through the real sink: a file holding an
+    /// `Allowed` line among the pre-existing kinds is a sequence of lines every
+    /// one of which parses as a [`ProxyAuditEntry`], and tallying by decision
+    /// leaves the pre-existing counts exactly what they were.
+    #[tokio::test]
+    async fn an_allowed_line_among_existing_kinds_parses_and_leaves_their_counts_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("audit.jsonl");
+        let (tx, rx) = mpsc::channel(8);
+        let writer = JsonlWriter::new(&path, rx).await.unwrap();
+        let handle = tokio::spawn(writer.run());
+        for decision in [
+            ProxyAuditDecision::Forwarded,
+            ProxyAuditDecision::Allowed,
+            ProxyAuditDecision::Blocked,
+            ProxyAuditDecision::Allowed,
+            ProxyAuditDecision::ForwardedRedacted,
+        ] {
+            tx.send(clean_entry("h.example", decision)).await.unwrap();
+        }
+        drop(tx);
+        handle.await.unwrap();
+
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        let parsed: Vec<ProxyAuditEntry> = raw
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("every line parses"))
+            .collect();
+        let count = |d: ProxyAuditDecision| parsed.iter().filter(|e| e.decision == d).count();
+        assert_eq!(count(ProxyAuditDecision::Forwarded), 1);
+        assert_eq!(count(ProxyAuditDecision::ForwardedRedacted), 1);
+        assert_eq!(count(ProxyAuditDecision::Blocked), 1);
+        assert_eq!(count(ProxyAuditDecision::Allowed), 2);
     }
 
     #[tokio::test]
@@ -1783,6 +1913,7 @@ mod tests {
         let entry = ProxyAuditEntry {
             ts_ms: 42,
             agent_id: Some("agent-x".into()),
+            agent_unattributed: false,
             host: "api.example".into(),
             method: "POST".into(),
             path: "/v1/do".into(),
@@ -2166,6 +2297,7 @@ mod retention_tests {
         ProxyAuditEntry {
             ts_ms: now_ms(),
             agent_id: None,
+            agent_unattributed: false,
             host: host.into(),
             method: "POST".into(),
             path: "/v1/do".into(),

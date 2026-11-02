@@ -51,7 +51,7 @@ def per_journey_projection(entry: dict[str, Any]) -> dict[str, Any]:
     the digest because "a control" was still nominally present.
     """
     evidence = entry.get("evidence") or []
-    return {
+    projection: dict[str, Any] = {
         "id": entry["id"],
         "release_blocking": bool(entry.get("release_blocking", False)),
         "lifecycle_state": entry.get("lifecycle_state"),
@@ -65,6 +65,20 @@ def per_journey_projection(entry: dict[str, Any]) -> dict[str, Any]:
             for ev in evidence
         ),
     }
+    # AAASM-6419: the key is added ONLY when the entry declares publication
+    # checks. Emitting `"publication_checks": null` for every journey would
+    # change every existing per-journey digest and requirements_digest, and
+    # so invalidate every committed evidence record for no reason. Declared
+    # checks gate release eligibility (they decide what may be PENDING), so
+    # editing them after evidence was generated must drift R2.
+    publication_checks = entry.get("publication_checks")
+    if publication_checks:
+        projection["publication_checks"] = sorted(
+            f"{c.get('id', '')}|{c.get('channel', '')}|{c.get('summary', '')}"
+            for c in publication_checks
+            if isinstance(c, dict)
+        )
+    return projection
 
 
 def per_journey_digest(entry: dict[str, Any]) -> str:

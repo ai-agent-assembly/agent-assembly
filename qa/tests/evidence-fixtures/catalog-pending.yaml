@@ -1,0 +1,45 @@
+# Synthetic, test-only catalog fixture (AAASM-6419): one published_artifact
+# journey that declares publication_checks, one mock journey that must never
+# be allowed to park as pending.
+catalog_version: '1'
+journeys:
+- id: J97
+  jira: AAASM-0000
+  name: Synthetic published-artifact fixture
+  priority: P0
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-pending.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: published_artifact
+  publication_checks:
+  - id: pypi-install
+    channel: pypi
+    summary: pip install of the published sdist resolves the candidate
+- id: J98
+  jira: AAASM-0001
+  name: Synthetic mock-fidelity fixture
+  priority: P1
+  persona_track: Test
+  surfaces: [test-surface]
+  entry_point: cli
+  lanes: [functional]
+  browser_required: false
+  outcome: Fixture only — not a real acceptance contract.
+  release_blocking: true
+  lifecycle_state: automated
+  evidence:
+  - repo: agent-assembly
+    kind: test
+    selector: "qa/tests/evidence-fixtures/catalog-pending.yaml::fixture"
+  execution_lanes: [pr]
+  fidelity: mock

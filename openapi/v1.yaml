@@ -180,6 +180,8 @@ paths:
           description: Invalid agent ID format
         '404':
           description: Agent not found
+        '500':
+          description: Durable record could not be deleted; the agent stays registered and the call can be retried
   /api/v1/agents/{id}/budget:
     get:
       tags:
