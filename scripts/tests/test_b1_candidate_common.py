@@ -12,9 +12,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, main, mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "qa"))
 import b1_candidate_common as c  # noqa: E402
@@ -31,7 +30,7 @@ def _alive(pid: int) -> bool:
     return True
 
 
-class KillOwnedDaemonTests(unittest.TestCase):
+class KillOwnedDaemonTests(TestCase):
     def setUp(self) -> None:
         self._td = tempfile.TemporaryDirectory()
         self.addCleanup(self._td.cleanup)
@@ -184,4 +183,4 @@ class KillOwnedDaemonTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    main(verbosity=2)
