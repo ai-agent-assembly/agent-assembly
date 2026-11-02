@@ -17,6 +17,7 @@ if [ $# -ne 1 ]; then
 fi
 VERSION="$1"
 FAIL=0
+CANDIDATE_PENDING=0
 
 pass() { printf '✓ %s\n' "$1"; }
 fail() { printf '✗ %s: %s\n' "$1" "$2"; FAIL=$((FAIL + 1)); }
@@ -159,8 +160,28 @@ fi
 QA_SIGNOFF="docs/release/qa-signoff/v${VERSION}.md"
 if [ ! -f "$QA_SIGNOFF" ]; then
   fail "QA sign-off missing ($QA_SIGNOFF)" "run /release-qa-gate $VERSION and commit the sign-off"
+elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$QA_SIGNOFF" \
+  && grep -qE '^\|[[:space:]]*J[0-9]+[A-Za-z]?[[:space:]]*\|.*PUBLICATION_PENDING' "$QA_SIGNOFF"; then
+  # AAASM-6419: a journey row that still says PUBLICATION_PENDING is owed work;
+  # the sign-off cannot call itself PASS over it (the checker would also BLOCK).
+  fail "QA sign-off says Verdict: PASS but a journey row is PUBLICATION_PENDING ($QA_SIGNOFF)" "a candidate with owed publication checks is CANDIDATE_VERIFIED, never PASS"
 elif grep -qE '^Verdict:[[:space:]]*PASS[[:space:]]*$' "$QA_SIGNOFF"; then
   pass "QA sign-off present and Verdict: PASS ($QA_SIGNOFF)"
+elif grep -qE '^Verdict:[[:space:]]*CANDIDATE_VERIFIED[[:space:]]*$' "$QA_SIGNOFF"; then
+  # AAASM-6419: CANDIDATE_VERIFIED is a distinct, weaker state — the candidate
+  # is verified as far as it can be before publication and N checks that need
+  # a published artifact are still owed. It is accepted HERE only so that the
+  # state is reported honestly instead of as an opaque "not PASS"; it is never
+  # PASS. Check 14 (the evidence checker exits 3, not 0, for this state) and the
+  # final summary below both still refuse to call the release ready, and
+  # release.yml's gate / release-tag-guard.sh keep requiring exit 0.
+  QA_PENDING_COUNT="$(grep -cE '^\|[[:space:]]*J[0-9]+[A-Za-z]?[[:space:]]*\|.*PUBLICATION_PENDING' "$QA_SIGNOFF" || true)"
+  if [ "${QA_PENDING_COUNT:-0}" -gt 0 ]; then
+    CANDIDATE_PENDING="$QA_PENDING_COUNT"
+    pass "QA sign-off Verdict: CANDIDATE_VERIFIED — ${QA_PENDING_COUNT} obligations pending (not PASS) ($QA_SIGNOFF)"
+  else
+    fail "QA sign-off says CANDIDATE_VERIFIED but no journey row is PUBLICATION_PENDING ($QA_SIGNOFF)" "a candidate with nothing pending is PASS or BLOCK, never CANDIDATE_VERIFIED"
+  fi
 else
   fail "QA sign-off verdict is not PASS ($QA_SIGNOFF)" "resolve/waive blockers and re-run /release-qa-gate $VERSION"
 fi
@@ -213,6 +234,12 @@ if [ "$EVIDENCE_CHECK_STATUS" -eq 0 ]; then
   else
     pass "Release-assurance evidence binds HEAD (candidate/catalog/journeys fresh)"
   fi
+elif [ "$EVIDENCE_CHECK_STATUS" -eq 3 ]; then
+  # Exit 3 = every rule satisfied but journeys are PUBLICATION_PENDING. Not a
+  # pass: the pending ids are surfaced here, and the check fails so readiness
+  # can never say "safe to tag" for a candidate with owed publication checks.
+  PENDING_LINE="$(printf '%s\n' "$EVIDENCE_CHECK_OUT" | grep -E '^CANDIDATE_VERIFIED' | head -1)"
+  fail "Release-assurance evidence is CANDIDATE_VERIFIED, not PASS — publication-dependent checks are still pending for $VERSION" "${PENDING_LINE} Pending checks need a SHA-specific release approval and post-publication verification; see docs/src/qa/release-qa-policy.md"
 else
   fail "Release-assurance evidence missing/stale/inadmissible for $VERSION" "run /release-qa-gate $VERSION and re-check — see the printed classification table from 'python3 scripts/qa/check-release-evidence.py --version $VERSION --tag-target HEAD'"
 fi
@@ -249,6 +276,9 @@ fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then
+  if [ "$CANDIDATE_PENDING" -gt 0 ]; then
+    echo "release-readiness: CANDIDATE_VERIFIED — $CANDIDATE_PENDING obligations pending (not PASS)"
+  fi
   echo "release-readiness: $FAIL check(s) failed — DO NOT tag"
   exit 1
 fi

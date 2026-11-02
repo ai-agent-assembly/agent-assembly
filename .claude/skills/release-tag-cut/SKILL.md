@@ -146,7 +146,11 @@ remediate from inside this skill. Full detail in
    depth per [RUNBOOK section 1.6](../../../docs/release/RUNBOOK.md#16-qa-gate--release-qa-sign-off-blocks-the-tag-push-independently-of-15)).
    `scripts/release-readiness.sh` check 12 enforces this **independently of**
    check 5/11 above — a security PASS never substitutes for a missing/non-PASS
-   QA sign-off, in either direction.
+   QA sign-off, in either direction. `Verdict: CANDIDATE_VERIFIED` (AAASM-6419)
+   is **not** `Verdict: PASS`: the evidence checker exits 3 for it, so check 14,
+   `release-tag-guard.sh` and `release.yml`'s evidence gate all refuse. Stop and
+   report the pending obligations; a SHA-specific owner approval is a separate
+   decision this skill cannot grant.
 
 ## Executable plan
 

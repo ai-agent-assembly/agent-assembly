@@ -7,6 +7,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Release gate: `PUBLICATION_PENDING` / `CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042)** — a
+  `published_artifact` journey can now be recorded as verified-on-the-candidate with its
+  publication-dependent checks still owed, instead of needing a blanket waiver. Pending is never
+  PASS: the verdict is `CANDIDATE_VERIFIED`, the evidence checker exits 3 for it, and
+  `release.yml`'s evidence gate, `release-tag-guard.sh` and `release-readiness.sh` all keep
+  refusing it. No catalog entry declares `publication_checks` yet; that is a follow-up.
+
 ## [0.0.1-rc.8] — TBD (pre-release)
 
 > Merged since `0.0.1-rc.7`. The entries below are the ones recorded under *Unreleased*
@@ -15,6 +24,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 > [`docs/release/v0.0.1-rc.8.md`](docs/release/v0.0.1-rc.8.md). Internal-only tooling and
 > dependency bumps are not itemized, per this file's existing convention.
 > <!-- TODO(AAASM-6408): replace the TBD date with the tag date when the tag is cut. -->
+
+### Fixed
+
+- **Allowed proxy traffic is now attributed to its launch in the proxy audit file (AAASM-6261)** — a connection the proxy admitted and relayed with nothing to report used to write no audit record, so the file named an agent only for what the proxy refused or changed. Every admitted request now writes an `allowed` record (new, additive `decision` value) carrying the launch's `AA_AGENT_ID`, or `agent_unattributed: true` when the proxy was started without one; the CONNECT allow event on the runtime pipeline carries the id as well. `forwarded` still means "a credential was detected and the request was forwarded anyway", so existing counts of every other decision are unchanged. The id is attribution as the launcher asserted it, not an authenticated identity, and the gateway-bound identity (`aa-proxy`) is untouched. An `allowed` record is written before the SSRF/DNS re-validation and the dial, so it can describe a connection later refused at re-validation (it records the proxy's decision, not that the upstream was reached). The file is a bounded local ring with no priority for refusals, so these records can rotate older segments out sooner (set `AA_PROXY_AUDIT_EXPORT_DIR` or watch `retention_shortfalls` on long runs); a pinned older `aa-proxy` or typed reader fails to parse `"decision":"allowed"` lines and must tolerate that. Persisted paths are uncapped in length and only pattern-shaped secrets are redacted (file mode `0600`).
 
 ### Security
 
@@ -39,6 +52,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **A policy's `data.credential_action` now reaches the proxy `aasm run` spawns (AAASM-4595)** — the proxy read the mode only from its own environment and nothing set it, so every governed launch ran `redact_only` whatever the policy said. `aasm run` now passes the resolved policy's mode (`block`, `redact_only`, `alert_only`; `alert_and_redact` runs as `redact_only`). A policy that states none is unchanged. **Behaviour change:** a policy with `alert_only` previously ran the proxy as `redact_only` by accident; it now forwards the original body, as `alert_only` is documented to, and still does not override an independent deny. An ambient `AA_PROXY_CREDENTIAL_ACTION` no longer decides an `aasm run` launch. Under `redact_only` the proxy now also refuses (403, nothing forwarded) a body whose scrubbed text still re-scans as carrying a credential, **which includes any request body containing a JWT** (the scrubber redacts only the signature, so the header and payload survive; AWS keys and generic high-entropy tokens are still scrubbed and forwarded; `alert_only` is the opt-out; whole-token JWT redaction is tracked separately), instead of forwarding it and recording `forwarded_carrying_sensitive_value`. The proxy scrubs built-in credential patterns only, and only in the request body; scrub-and-forward of a gateway-decided `Redact` is not implemented and is denied. See the support matrix in `docs/src/policy-reference.md`. The `RedactRule.field_path` proto comment now describes what the gateway sends (`$.<kind>`), no wire change.
 - **`aa-proxy` leaf certificates now carry an Authority Key Identifier (AAASM-6413)** — strict X.509 verifiers (Python 3.13+ enables strict verification by default) rejected the proxy's chain with `Missing Authority Key Identifier`, so a governed Python agent on such a version could not complete TLS through the proxy (it failed closed). Existing CAs on disk keep working.
+- **`aasm agent kill` now releases the agent's durable record, and the "already registered" error names the agent by its hex id (AAASM-6416)** — `DELETE /api/v1/agents/:id` removed only the in-memory record, so the agent came back at the next boot (the registry is rehydrated from `local.db`) and its id stayed refused. It now deletes the durable row too, before dropping the in-memory record: if that delete fails the call returns 500 (now listed in the OpenAPI spec), the agent stays registered, and the kill can simply be retried. The gRPC `Deregister` reports the same failure as `internal` instead of `not_found`. The refusal itself is unchanged: a second `Register` for a live `agent_id` is still rejected. The error used to print the id as a raw byte list (`[231, 207, ...]`); it now prints the 32-hex id that `aasm agent list` shows. A running standalone `aa-gateway` keeps its own in-memory record until it restarts, so the id is freed there at the gateway's next restart (see the rc.8 release notes).
 - **`install.sh` now installs `aa-gateway` and `aa-api-server` (AAASM-6414)** — the `cli`
   component extracted only `aasm` from a tarball that also carries `aa-gateway`, so
   `aasm gateway start` failed with "aa-gateway binary not found" after an install, and there
@@ -58,6 +72,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the directory, then delete the named state directory to continue.
   The check only looks in the current state root (`AASM_STATE_DIR`), and also refuses while
   another process is mid-commit over the same directory.
+
+### Known limitations
+
+- **No cross-process attenuation in rc.8 (J82 deferred, AAASM-6273).** Founder-approved
+  release-scope deferral; not a pass and not an implementation. Precisely: a launch that
+  DECLARES a parent (`--root-agent`) is refused (`AncestryUnresolved`); a launch that omits it
+  runs as a root with only what its own policy and leases grant, with no comparison against
+  the process that launched it, and nothing detects a child launched that way (AAASM-6273). Core ADR 0038's B3 evidence gate is unchanged.
 
 ### Changed
 

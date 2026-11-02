@@ -202,6 +202,28 @@ mod stub_coding_agent {
         lines[lines.len().saturating_sub(n)..].join("\n")
     }
 
+    /// AAASM-6261: `entries` holds at least one `Allowed` record for the MCP
+    /// host the stub reached, and every `Allowed` record in it is attributed to
+    /// `agent` and to nobody else, never marked unattributed.
+    fn assert_allowed_attributed(entries: &[ProxyAuditEntry], agent: &str) {
+        let allowed: Vec<&ProxyAuditEntry> = entries
+            .iter()
+            .filter(|e| e.decision == ProxyAuditDecision::Allowed)
+            .collect();
+        assert!(
+            allowed.iter().any(|e| e.host == MCP_HOST),
+            "the proxy relayed a call to {MCP_HOST} but wrote no Allowed record for it; entries: {entries:#?}"
+        );
+        for e in &allowed {
+            assert_eq!(
+                e.agent_id.as_deref(),
+                Some(agent),
+                "an allowed record not attributed to {agent}: {e:#?}"
+            );
+            assert!(!e.agent_unattributed, "an allowed record marked unattributed: {e:#?}");
+        }
+    }
+
     fn read_audit(state: &Path) -> anyhow::Result<Vec<(PathBuf, Vec<ProxyAuditEntry>)>> {
         let runs = state.join("runs");
         let mut out = Vec::new();
@@ -824,6 +846,13 @@ mod stub_coding_agent {
         assert_eq!(blocked[0].decision, ProxyAuditDecision::Blocked);
         assert_eq!(blocked[0].agent_id.as_deref(), Some("aaasm6297-stub-a"));
 
+        // ── AAASM-6261: the ALLOWED call is attributed too ──
+        // The proxy relayed `allow_test` to the upstream (asserted above), so
+        // the audit file must say whose connection that was. Before AAASM-6261
+        // a clean forward wrote no record, and this file named the agent only
+        // for what the proxy refused.
+        assert_allowed_attributed(&audits[0].1, "aaasm6297-stub-a");
+
         // ── receipt truth: --isolation none => no confinement => NO receipt ──
         let receipts = host.state.join("execution-receipts");
         let n = std::fs::read_dir(&receipts).map(|r| r.count()).unwrap_or(0);
@@ -859,8 +888,9 @@ mod stub_coding_agent {
             sentinel_path(&host.sentinel_dir, DENY_TOOL).exists(),
             "with the policy flipped the call must reach the upstream"
         );
-        let blocked = read_audit(&host.state)?
-            .into_iter()
+        let audits = read_audit(&host.state)?;
+        let blocked = audits
+            .iter()
             .flat_map(|(_, e)| e)
             .filter(|e| e.refusal_rule == Some(RefusalRule::McpToolCall))
             .count();
@@ -868,6 +898,9 @@ mod stub_coding_agent {
             blocked, 0,
             "no McpToolCall refusal may be recorded when policy allows the call"
         );
+        // AAASM-6261: both calls were allowed through, so both are attributed.
+        assert_eq!(audits.len(), 1, "one launch => one per-launch audit.jsonl: {audits:?}");
+        assert_allowed_attributed(&audits[0].1, "aaasm6297-stub-ctl");
         Ok(())
     }
 
@@ -970,6 +1003,13 @@ mod stub_coding_agent {
             "B made no denied call, so no refusal may be attributed to it: {:?}",
             by_agent["B"]
         );
+        // AAASM-6261: B's file used to be empty, because B's only traffic was
+        // allowed and allowed traffic wrote nothing. It now holds B's allowed
+        // connection(s), attributed to B and never to A, which is what makes
+        // the two `all()` checks above bite instead of passing over an empty
+        // list.
+        assert_allowed_attributed(&by_agent["A"], "aaasm6297-stub-A");
+        assert_allowed_attributed(&by_agent["B"], "aaasm6297-stub-B");
         assert_eq!(
             host.upstream.tool_call_names(),
             [ALLOW_TOOL.to_string()].into_iter().collect(),

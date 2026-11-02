@@ -7638,6 +7638,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Durable record could not be deleted; the agent stays registered and the call can be retried */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     get_agent_budget: {
