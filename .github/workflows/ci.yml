@@ -161,6 +161,9 @@ on:
       - "qa/tests/fixtures/**"
       - "scripts/qa/validate-golden-journeys.py"
       - "scripts/qa/validate-golden-journeys-negative-control.sh"
+      # AAASM-6419: registry-level publication_checks controls. Paired with the
+      # `qa_registry` router filter below (ADR 0028).
+      - "scripts/tests/test_publication_registry.py"
       # AAASM-5884: community-health file completeness (J33). Paired with the
       # `community_health` router filter below — a router filter without a
       # matching `on.*.paths` entry is a dead trigger (ADR 0028).
@@ -590,6 +593,7 @@ jobs:
               - 'qa/tests/fixtures/**'
               - 'scripts/qa/validate-golden-journeys.py'
               - 'scripts/qa/validate-golden-journeys-negative-control.sh'
+              - 'scripts/tests/test_publication_registry.py'
               # AAASM-5893: resource-lock slot mechanism. Every path here has
               # a matching `on.push.paths` entry above (live trigger, ADR
               # 0028) — shares this router flag with the golden-journeys
@@ -1606,6 +1610,11 @@ jobs:
 
       - name: Validate the real registry
         run: python3 scripts/qa/validate-golden-journeys.py qa/golden-journeys.yaml
+
+      # AAASM-6419: the real registry declares exactly the B1 publication
+      # checks, and the obligation validator refuses duplicate ids.
+      - name: Publication-check registry controls
+        run: python3 -I scripts/tests/test_publication_registry.py
 
       # AAASM-5878/5899: same "negative control first" convention as above,
       # for scripts/qa/check-release-evidence.py. There is deliberately no
