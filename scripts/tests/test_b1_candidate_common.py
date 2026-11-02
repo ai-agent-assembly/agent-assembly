@@ -110,9 +110,9 @@ class KillOwnedDaemonTests(TestCase):
         self._assert_survives(self._spawn(_SLEEP, self.real), self.link)
 
     def test_open_file_under_owner_is_not_proof(self) -> None:
-        f = open(self.real / "daemon.log", "w")
-        self.addCleanup(f.close)
-        p = subprocess.Popen(_SLEEP, cwd=self.foreign, stdout=f, start_new_session=True)
+        # The child inherits its own descriptor; the parent's handle is closed right after spawn.
+        with open(self.real / "daemon.log", "w") as f:
+            p = subprocess.Popen(_SLEEP, cwd=self.foreign, stdout=f, start_new_session=True)
         self.procs.append(p)
         time.sleep(0.3)
         self._assert_survives(p, self.real)
