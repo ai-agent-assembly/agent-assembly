@@ -948,19 +948,43 @@ assert_output_contains "T6c names R10" "R10:"
 # other checks routinely fail in a dev sandbox for unrelated reasons).
 # ---------------------------------------------------------------------------
 echo "== T7: release-readiness.sh check 14 — positive control with fresh evidence =="
+# AAASM-6419: journeys that declare publication_checks can never be a bare PASS
+# (Core ADR 0042), so a PASS-only positive control cannot run against the real
+# catalog. T7/T7b therefore run in a local clone of this checkout (committed
+# state plus any uncommitted tracked edits) whose catalog has publication_checks
+# stripped; the publication-pending path has its own cases (P1..P*, N*) above.
+T7_REPO="$WORKDIR/t7-repo"
+git clone -q --local "$REAL_REPO_ROOT" "$T7_REPO"
+if ! git -C "$REAL_REPO_ROOT" diff --quiet HEAD; then
+  git -C "$REAL_REPO_ROOT" diff HEAD --binary | git -C "$T7_REPO" apply
+fi
+python3 - "$T7_REPO/qa/golden-journeys.yaml" <<'PYEOF'
+import sys
+import yaml
+
+path = sys.argv[1]
+with open(path) as f:
+    doc = yaml.safe_load(f)
+for entry in doc["journeys"]:
+    entry.pop("publication_checks", None)
+with open(path, "w") as f:
+    yaml.safe_dump(doc, f, sort_keys=False)
+PYEOF
+git -C "$T7_REPO" -c user.name=t7 -c user.email=t7@example.invalid commit -q -a -m "T7 fixture: strip publication_checks"
+
 T7_VERSION="0.0.0-aaasm5900-negctl"
-T7_QA_SIGNOFF="$REAL_REPO_ROOT/docs/release/qa-signoff/v$T7_VERSION.md"
-T7_SEC_SIGNOFF="$REAL_REPO_ROOT/docs/release/security-signoff/v$T7_VERSION.md"
-T7_EVIDENCE="$REAL_REPO_ROOT/docs/release/qa-signoff/v$T7_VERSION.evidence.json"
+T7_QA_SIGNOFF="$T7_REPO/docs/release/qa-signoff/v$T7_VERSION.md"
+T7_SEC_SIGNOFF="$T7_REPO/docs/release/security-signoff/v$T7_VERSION.md"
+T7_EVIDENCE="$T7_REPO/docs/release/qa-signoff/v$T7_VERSION.evidence.json"
 T7_OUT="$WORKDIR/t7-readiness-output.txt"
 T7_FIXTURES=("$T7_QA_SIGNOFF" "$T7_SEC_SIGNOFF" "$T7_EVIDENCE")
 
-T7_HEAD="$(git -C "$REAL_REPO_ROOT" rev-parse HEAD)"
+T7_HEAD="$(git -C "$T7_REPO" rev-parse HEAD)"
 
 # Every required (release_blocking, non-retired) journey in the REAL catalog
 # gets a PASS row — this is a fixture sign-off, not a real verification —
 # so R2/R3 have a fully-admissible required set to reconcile against.
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
+python3 - "$T7_REPO" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -1008,10 +1032,10 @@ with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
     f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
-python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \
+python3 "$T7_REPO/scripts/qa/build-release-evidence.py" --repo-root "$T7_REPO" --version "$T7_VERSION" \
   --candidate-sha "$T7_HEAD" >/dev/null
 
-( cd "$REAL_REPO_ROOT" && bash scripts/release-readiness.sh "$T7_VERSION" > "$T7_OUT" 2>&1 ) || true
+( cd "$T7_REPO" && bash scripts/release-readiness.sh "$T7_VERSION" > "$T7_OUT" 2>&1 ) || true
 
 if grep -qE '✓ Release-assurance evidence binds HEAD' "$T7_OUT"; then
   echo "  ✓ T7 check 14 passes with fresh, PASS-only evidence"
@@ -1047,7 +1071,7 @@ rm -f "${T7_FIXTURES[@]}"
 echo "== T7b: check 14 on a marker-less sign-off — R8 SKIPPED must be visible in the pass line =="
 T7_FIXTURES=("$T7_QA_SIGNOFF" "$T7_SEC_SIGNOFF" "$T7_EVIDENCE")
 
-python3 - "$REAL_REPO_ROOT" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
+python3 - "$T7_REPO" "$T7_VERSION" "$T7_HEAD" <<'PYEOF'
 import sys
 import yaml
 
@@ -1095,10 +1119,10 @@ with open(f"{repo_root}/docs/release/security-signoff/v{version}.md", "w") as f:
     f.write(f"## Verdict\n\nVerdict: PASS\n\n- **Candidate SHA:** {sys.argv[3]}\n")
 PYEOF
 
-python3 "$EMITTER" --repo-root "$REAL_REPO_ROOT" --version "$T7_VERSION" \
+python3 "$T7_REPO/scripts/qa/build-release-evidence.py" --repo-root "$T7_REPO" --version "$T7_VERSION" \
   --candidate-sha "$T7_HEAD" >/dev/null
 
-( cd "$REAL_REPO_ROOT" && bash scripts/release-readiness.sh "$T7_VERSION" > "$T7_OUT" 2>&1 ) || true
+( cd "$T7_REPO" && bash scripts/release-readiness.sh "$T7_VERSION" > "$T7_OUT" 2>&1 ) || true
 
 if grep -qE '✓ Release-assurance evidence binds HEAD .*R8 derived-table check SKIPPED' "$T7_OUT"; then
   echo "  ✓ T7b check 14 passes AND its pass line names R8 as SKIPPED (not silently 'checked and passed')"

@@ -43,6 +43,13 @@ policy: docs/src/qa/release-qa-policy.md
 # retirement ({reason, ref}, optional): used only for lifecycle_state:
 #   retired — the row stays (stable IDs are never deleted), but is excluded
 #   from active selection. `ref` may be a ticket or a policy document.
+# publication_checks (list of {id, channel, summary}, optional; AAASM-6419, Core ADR
+#   0042): the checks that need a published artifact. Allowed only when fidelity is
+#   published_artifact. A journey declaring them can never be a bare PASS; before
+#   publication its only legal state is PUBLICATION_PENDING backed by a committed
+#   obligation file, whose pending check ids must equal these ids. The command,
+#   expected result and failure_response live in that obligation file, not here;
+#   only id|channel|summary feed the registry digest.
 # See scripts/qa/validate-golden-journeys.py for the enforced rules and
 # docs/src/qa/release-qa-policy.md for how execution_lanes/fidelity feed
 # release-tier selection.
@@ -111,6 +118,25 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j04.published_install_sh_default
+    channel: github-release+agent-assembly.com
+    summary: live install.sh against the public GitHub Release installs aasm, aa-gateway and aa-api-server byte-equal to the candidate tarball members
+  - id: j04.published_release_checksums_and_signature
+    channel: github-release
+    summary: published tarball digests equal SHA256SUMS and the candidate digests, and the cosign bundle verifies for release.yml at the tag
+  - id: j04.published_homebrew_tap_install
+    channel: homebrew-tap
+    summary: brew install of the aasm formula from ai-agent-assembly/homebrew-tap yields the tag version plus aa-gateway, byte-equal to the candidate
+  - id: j04.published_homebrew_runtime
+    channel: homebrew-tap
+    summary: brew install of the aasm-runtime formula yields aa-runtime byte-equal to the candidate runtime member
+  - id: j04.published_latest_resolves_to_candidate
+    channel: github-api
+    summary: newest GitHub release is the candidate tag and an unpinned install resolves to it
+  - id: j04.published_crates_io_aa_cli
+    channel: crates.io
+    summary: crates.io max_version of aa-cli equals the candidate version, or its absence is the documented decision
 - id: J05
   jira: AAASM-4543
   name: Install the Python SDK and confirm the native core is present
@@ -195,6 +221,10 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j08-published-python-sdk-governed-agent
+    channel: pypi
+    summary: "PROVISIONAL (no harness emits this id yet; contract for D5 / python-sdk #387): the published Python SDK installs from PyPI and a real governed agent registers against the candidate gateway"
 - id: J09
   jira: AAASM-4533
   name: Govern your first agent with the Node SDK, end-to-end
@@ -334,6 +364,16 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j17.published_installer_profile_full_gateway
+    channel: github-release+agent-assembly.com
+    summary: live install.sh --profile full from public Release assets installs an aa-gateway that serves the sample policy
+  - id: j17.published_homebrew_gateway
+    channel: homebrew-tap
+    summary: the aasm formula in the tap installs an aa-gateway at the tag version, byte-equal to the candidate member
+  - id: j17.published_container_image_manifest
+    channel: ghcr.io
+    summary: the GHCR image manifest for the tag resolves for linux/amd64 and linux/arm64 (the candidate harness probes the aa-runtime image; whether a gateway image is also published is unresolved)
 - id: J18
   jira: AAASM-4529
   name: View agents and decisions in the dashboard / TUI
@@ -1107,6 +1147,22 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j53-ghcr-tag-resolves
+    channel: ghcr
+    summary: "aa-gateway:<tag> resolves anonymously in GHCR to a manifest whose body hashes to Docker-Content-Digest"
+  - id: j53-ghcr-digest-immutable
+    channel: ghcr
+    summary: fetching the manifest by the digest the tag resolved to returns byte-identical content
+  - id: j53-ghcr-multiarch
+    channel: ghcr
+    summary: the tag resolves to an index listing linux/amd64 and linux/arm64
+  - id: j53-ghcr-sbom-attestation
+    channel: ghcr
+    summary: the index carries an attestation manifest per platform image
+  - id: j53-published-image-runs-healthy
+    channel: ghcr
+    summary: the pulled image stays up, answers grpc.health.v1 SERVING and exits 0 on SIGTERM (operator step)
 - id: J54
   jira: AAASM-4752
   name: Docker & container usage documentation completeness
@@ -1161,6 +1217,10 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j56-published-python-sdk-canonical-11-step
+    channel: pypi
+    summary: "PROVISIONAL (no harness emits this id yet; contract for D5 / python-sdk #387 and the SDK pin): the canonical 11-step clean-environment run succeeds with the published Python SDK against the published gateway"
 - id: J57
   jira: AAASM-4977
   name: Clean-env -> governed Node.js agent (canonical 11-step) [Node.js Dev]
@@ -1217,6 +1277,19 @@ journeys:
   execution_lanes:
   - release
   fidelity: published_artifact
+  publication_checks:
+  - id: j59-install-release-assets
+    channel: github-release
+    summary: the release is not a draft and every asset named in SHA256SUMS, including the aasm-cli and aasm-api tarballs for linux and darwin on amd64 and arm64, is uploaded
+  - id: j59-ghcr-gateway-image
+    channel: ghcr
+    summary: "aa-gateway:<tag> resolves anonymously to a linux/amd64 and linux/arm64 index whose body hashes to its digest"
+  - id: j59-ghcr-runtime-image
+    channel: ghcr
+    summary: "aa-runtime:<tag> resolves anonymously to a linux/amd64 and linux/arm64 index whose body hashes to its digest"
+  - id: j59-published-binaries-golden-path
+    channel: github-release
+    summary: steps 2 to 11 re-run against the published binaries (operator step; release.yml rebuilds them so candidate binaries are not proven identical)
 - id: J60
   jira: AAASM-4980
   name: Continuous cross-persona governance loop [Dev->Operator Handoff]
