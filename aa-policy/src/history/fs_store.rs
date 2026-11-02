@@ -34,8 +34,14 @@ impl FsHistoryStore {
     }
 
     /// Ensure the history directory exists.
+    ///
+    /// Snapshots are policy documents, so the directory is owner-only (`0700`)
+    /// even when it already existed with a looser mode, and for a custom
+    /// `AA_DATA_DIR` too. The tightening is best effort and only ever removes
+    /// group/other bits (AAASM-6430).
     fn ensure_dir(&self) -> Result<(), PolicyHistoryError> {
-        std::fs::create_dir_all(&self.config.history_dir)?;
+        aa_core::private_fs::create_private_dir_all(&self.config.history_dir)?;
+        let _ = aa_core::private_fs::tighten_dir_if_owned(&self.config.history_dir);
         Ok(())
     }
 
@@ -71,9 +77,9 @@ impl FsHistoryStore {
         let yaml_path = self.yaml_path(&stem);
         let meta_path = self.meta_path(&stem);
 
-        std::fs::write(&yaml_path, yaml)?;
+        aa_core::private_fs::write_private_file(&yaml_path, yaml.as_bytes())?;
         let meta_json = serde_json::to_string_pretty(meta)?;
-        std::fs::write(&meta_path, meta_json)?;
+        aa_core::private_fs::write_private_file(&meta_path, meta_json.as_bytes())?;
 
         Ok(())
     }
@@ -262,6 +268,27 @@ mod tests {
 
     const POLICY_A: &str = "version: \"1\"\nnetwork:\n  allowlist:\n    - api.openai.com\n";
     const POLICY_B: &str = "version: \"2\"\nnetwork:\n  allowlist:\n    - api.openai.com\n    - slack.com\n";
+
+    /// AAASM-6430: snapshots are policy documents. A directory that already
+    /// existed with a looser mode is tightened, and files are written owner-only.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_makes_existing_directory_and_files_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("policy-history");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let store = FsHistoryStore::new(test_config(&dir));
+        store.save(POLICY_A, None).await.unwrap();
+
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            assert_eq!(mode(&entry.unwrap().path()), 0o600);
+        }
+    }
 
     #[test]
     fn sha256_hex_is_deterministic() {

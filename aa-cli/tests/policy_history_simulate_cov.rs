@@ -209,9 +209,17 @@ fn history_empty_store_succeeds() {
 fn rollback_nonexistent_version_returns_failure() {
     let _dd = DataDir::new();
     assert_eq!(
-        history::run_rollback(RollbackArgs {
-            version: "deadbeefdeadbeef".to_string(),
-        }),
+        history::run_rollback(
+            RollbackArgs {
+                version: "deadbeefdeadbeef".to_string(),
+            },
+            // Never contacted: the version is looked up locally first.
+            &aa_cli::config::ResolvedContext {
+                name: None,
+                api_url: "http://127.0.0.1:9".to_string(),
+                api_key: None,
+            },
+        ),
         ExitCode::FAILURE
     );
 }

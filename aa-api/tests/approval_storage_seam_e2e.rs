@@ -59,6 +59,7 @@ async fn the_rest_surface_sees_and_can_decide_a_row_it_never_saw_submitted() {
         registry_db: registry_db_path.clone(),
         audit_jsonl_dir: tmp.path().join("audit-jsonl"),
         audit_db: tmp.path().join("audit.db"),
+        policy_history_dir: tmp.path().join("policy-history"),
     };
     let state = AppState::local_hardened_at(LocalAuth::Off, paths)
         .await

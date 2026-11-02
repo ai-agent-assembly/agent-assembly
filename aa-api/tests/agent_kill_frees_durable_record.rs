@@ -62,6 +62,7 @@ async fn kill_removes_the_durable_row_so_the_id_can_register_again_after_restart
         registry_db: tmp.path().join("local.db"),
         audit_jsonl_dir: tmp.path().join("audit-jsonl"),
         audit_db: tmp.path().join("audit.db"),
+        policy_history_dir: tmp.path().join("policy-history"),
     };
     let id = [0xE7u8; 16];
 
@@ -104,6 +105,7 @@ async fn a_failed_durable_delete_is_a_500_and_the_kill_can_be_retried() {
         registry_db: tmp.path().join("local.db"),
         audit_jsonl_dir: tmp.path().join("audit-jsonl"),
         audit_db: tmp.path().join("audit.db"),
+        policy_history_dir: tmp.path().join("policy-history"),
     };
     let id = [0xD4u8; 16];
     let uri = format!("/api/v1/agents/{}", hex::encode(id));

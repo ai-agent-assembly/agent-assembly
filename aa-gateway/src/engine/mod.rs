@@ -1004,14 +1004,31 @@ impl PolicyEngine {
         applied_by: Option<&str>,
         history: &dyn crate::policy::history::PolicyHistoryStore,
     ) -> Result<crate::policy::history::PolicyVersionMeta, PolicyLoadError> {
-        // Validate the YAML
+        // Validate before persisting so an invalid policy never reaches history.
         let output = PolicyValidator::from_yaml(yaml).map_err(PolicyLoadError::Validation)?;
 
         // Save to history
         let meta = history.save(yaml, applied_by).await.map_err(PolicyLoadError::History)?;
 
-        // Hot-swap the live policy
-        self.policy.store(Arc::new(output.document));
+        self.swap_primary(output.document);
+        Ok(meta)
+    }
+
+    /// Validate `yaml` and make it the live policy WITHOUT writing history.
+    ///
+    /// For re-installing a version that is already the newest history entry at
+    /// start-up (AAASM-6430): history is durable, so a restarted server must
+    /// enforce the policy its history reports as active rather than its
+    /// bootstrap policy. Saving again would add a duplicate version.
+    pub fn install_yaml(&self, yaml: &str) -> Result<(), PolicyLoadError> {
+        let output = PolicyValidator::from_yaml(yaml).map_err(PolicyLoadError::Validation)?;
+        self.swap_primary(output.document);
+        Ok(())
+    }
+
+    /// Hot-swap the live primary policy and invalidate cached decisions.
+    fn swap_primary(&self, document: PolicyDocument) {
+        self.policy.store(Arc::new(document));
 
         // Invalidate cached decisions — stale entries with the old epoch will be ignored.
         let new_epoch = self.policy_epoch.fetch_add(1, Ordering::Relaxed) + 1;
@@ -1022,8 +1039,6 @@ impl PolicyEngine {
         if let Some(hub) = &self.invalidation_hub {
             hub.broadcast_policy_invalidated(String::new(), new_epoch);
         }
-
-        Ok(meta)
     }
 
     /// Evaluate a governance action through the 7-step pipeline.

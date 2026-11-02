@@ -246,6 +246,35 @@ pub enum LocalStateError {
          trail must be written to."
     )]
     NoDurableAuditDir,
+    /// [`LocalDurablePaths::resolve`] could not resolve the policy history
+    /// directory the CLI reads (AAASM-6430): neither `AA_DATA_DIR` nor a home
+    /// directory is known. Refusing is deliberate — falling back to a temp path
+    /// is the defect this variant exists to prevent.
+    #[error(
+        "no durable policy history directory is known on this host: neither AA_DATA_DIR nor a \
+         home directory could be resolved. Set AA_DATA_DIR to the directory policy history must \
+         be written to."
+    )]
+    NoDurablePolicyHistoryDir,
+    /// The newest policy history entry could not be restored at start-up
+    /// (AAASM-6430). Start-up is refused rather than falling back to the broader
+    /// bootstrap policy.
+    #[error(
+        "cannot restore the policy recorded as active in the policy history at {dir}: {reason}. \
+         Offending entry: {entry}. To start, move aside (do not delete) only that entry's \
+         `.meta.json` and `.yaml` files, or apply a valid policy; the server then restores the \
+         previous entry. The server never starts with the bootstrap policy over a non-empty history.",
+        dir = dir.display(),
+        entry = entry.as_ref().map_or_else(|| "unknown".to_string(), |p| p.display().to_string())
+    )]
+    PolicyHistoryRestore {
+        /// The policy history directory.
+        dir: std::path::PathBuf,
+        /// The newest `.meta.json` entry in `dir`, which is the one restored.
+        entry: Option<std::path::PathBuf>,
+        /// Why restoring it failed.
+        reason: String,
+    },
 }
 
 /// Resolved authentication posture for the local single-process entrypoint
@@ -323,6 +352,34 @@ pub struct LocalDurablePaths {
     /// from `registry_db` so this does not alter SQLite lock/contention
     /// behaviour for the registry.
     pub audit_db: std::path::PathBuf,
+    /// Durable directory the policy version history (`aasm policy apply`) is
+    /// written to. Production resolves it with the same rule the CLI's
+    /// `aasm policy history|get|diff|rollback` read from
+    /// ([`resolve_policy_history_dir`]), so the two see one store (AAASM-6430).
+    pub policy_history_dir: std::path::PathBuf,
+}
+
+/// The newest `.meta.json` entry in `dir` (filenames start with the timestamp),
+/// for naming the offending file in an error. `None` if the directory cannot be
+/// read or holds none.
+fn newest_meta_file(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.to_string_lossy().ends_with(".meta.json"))
+        .max_by(|a, b| a.file_name().cmp(&b.file_name()))
+}
+
+/// Resolve the policy history directory exactly as the CLI does:
+/// `$AA_DATA_DIR/policy-history`, else `~/.aa/policy-history`.
+///
+/// Delegates to `HistoryConfig::default_config` rather than re-deriving the rule,
+/// because the server and the CLI must agree on it for `aasm policy history` to
+/// see what `aasm policy apply` saved (AAASM-6430).
+pub fn resolve_policy_history_dir() -> Result<std::path::PathBuf, LocalStateError> {
+    aa_gateway::policy::history::HistoryConfig::default_config()
+        .map(|c| c.history_dir)
+        .map_err(|_| LocalStateError::NoDurablePolicyHistoryDir)
 }
 
 impl LocalDurablePaths {
@@ -354,6 +411,7 @@ impl LocalDurablePaths {
             registry_db: cfg.local.storage_path,
             audit_jsonl_dir,
             audit_db: cfg.local.audit_storage_path,
+            policy_history_dir: resolve_policy_history_dir()?,
         })
     }
 
@@ -371,6 +429,7 @@ impl LocalDurablePaths {
             registry_db: root.join("registry").join("local.db"),
             audit_jsonl_dir: root.join("audit-jsonl"),
             audit_db: root.join("audit").join("audit.db"),
+            policy_history_dir: root.join("policy-history"),
         }
     }
 }
@@ -405,7 +464,7 @@ impl AppState {
     /// with a daily budget limit) written to a per-process temp file because
     /// [`PolicyEngine::load_from_file`] is the only public loader.
     pub fn local_in_memory() -> Result<Self, LocalStateError> {
-        Self::local_in_memory_with_registry(Arc::new(AgentRegistry::new()))
+        Self::local_in_memory_with_registry(Arc::new(AgentRegistry::new()), None)
     }
 
     /// [`local_in_memory`](Self::local_in_memory) over a caller-supplied agent
@@ -417,7 +476,15 @@ impl AppState {
     /// in-memory one. Threading it in here is what lets both entrypoints share
     /// one registry instance; replacing `state.agent_registry` after the fact
     /// would leave the engine holding the discarded registry.
-    fn local_in_memory_with_registry(agent_registry: Arc<AgentRegistry>) -> Result<Self, LocalStateError> {
+    ///
+    /// `policy_history_dir` is where `aasm policy apply` history is kept. `None`
+    /// keeps the per-process temp directory — only the hermetic, test-facing
+    /// [`local_in_memory`](Self::local_in_memory) wants that; the shipped
+    /// entrypoint passes the durable directory the CLI reads (AAASM-6430).
+    fn local_in_memory_with_registry(
+        agent_registry: Arc<AgentRegistry>,
+        policy_history_dir: Option<std::path::PathBuf>,
+    ) -> Result<Self, LocalStateError> {
         use std::sync::atomic::AtomicUsize;
 
         // Unique temp paths per call so concurrent processes / tests do not
@@ -501,7 +568,8 @@ impl AppState {
             chrono_tz::UTC,
         ));
 
-        let history_dir = std::env::temp_dir().join(format!("aa-api-local-history-{pid}-{uniq}"));
+        let history_dir = policy_history_dir
+            .unwrap_or_else(|| std::env::temp_dir().join(format!("aa-api-local-history-{pid}-{uniq}")));
         let policy_history = Arc::new(aa_gateway::policy::history::FsHistoryStore::new(
             aa_gateway::policy::history::HistoryConfig {
                 history_dir,
@@ -648,6 +716,61 @@ impl AppState {
         Self::local_hardened_at(auth, LocalDurablePaths::hermetic_temp()).await
     }
 
+    /// Make the engine enforce the policy durable history reports as active.
+    ///
+    /// History now survives restarts (AAASM-6430), so without this a restarted
+    /// server would report the newest history entry as the active policy
+    /// (`GET /api/v1/policies/active`, `aasm policy history`) while the engine ran
+    /// the bootstrap policy. Fails closed with
+    /// [`LocalStateError::PolicyHistoryRestore`]: if the newest entry cannot be
+    /// read, no longer validates, or declares a scope other than global (the HTTP
+    /// apply route refuses those, and this path must not grant broader authority
+    /// than it), start-up is refused rather than falling back to the broader
+    /// bootstrap policy. With `$AA_POLICY` set, that operator-configured source
+    /// stays the start-up policy and history is not reinstalled (logged).
+    async fn reinstall_latest_applied_policy(
+        state: &Self,
+        history_dir: &std::path::Path,
+    ) -> Result<(), LocalStateError> {
+        let fail = |reason: String| LocalStateError::PolicyHistoryRestore {
+            dir: history_dir.to_path_buf(),
+            entry: newest_meta_file(history_dir),
+            reason,
+        };
+        let newest = state.policy_history.list(1).await.map_err(|e| fail(e.to_string()))?;
+        let Some(meta) = newest.first() else {
+            return Ok(());
+        };
+        if !matches!(resolve_policy_source(|k| std::env::var(k).ok()), PolicySource::Unset) {
+            tracing::warn!(
+                history_dir = %history_dir.display(),
+                "$AA_POLICY is set, so the policy history is not reinstalled: the enforced policy is the \
+                 operator-configured one and `GET /api/v1/policies/active` / `aasm policy history` may report \
+                 a different version"
+            );
+            return Ok(());
+        }
+        let snapshot = state
+            .policy_history
+            .get(&meta.sha256)
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        let validated = aa_gateway::policy::PolicyValidator::from_yaml(&snapshot.yaml_content)
+            .map_err(|e| fail(format!("{e:?}")))?;
+        if validated.document.scope != aa_gateway::policy::scope::PolicyScope::Global {
+            return Err(fail(format!(
+                "it declares scope '{}', but only global policies may be applied through the local API",
+                validated.document.scope
+            )));
+        }
+        state
+            .policy_engine
+            .install_yaml(&snapshot.yaml_content)
+            .map_err(|e| fail(format!("{e:?}")))?;
+        tracing::info!(version = %&meta.sha256[..12], "re-installed the latest applied policy from history");
+        Ok(())
+    }
+
     /// Same as [`local_hardened`](Self::local_hardened) but backs the agent
     /// registry, and the audit + retention backend, with the durable paths in
     /// `paths` (AAASM-4447 / AAASM-4459, durability-hardened HORO-1375 §5).
@@ -657,6 +780,21 @@ impl AppState {
     /// per-test paths ([`LocalDurablePaths::hermetic_temp`]).
     pub async fn local_hardened_at(auth: LocalAuth, paths: LocalDurablePaths) -> Result<Self, LocalStateError> {
         let registry_db_path = paths.registry_db;
+        let policy_history_dir = paths.policy_history_dir;
+
+        // AAASM-6430: owner-only, created before the first save so the store's
+        // own `create_dir_all` never makes it world-readable. Same primitive as
+        // the registry directory below (AAASM-6387).
+        aa_gateway::storage::private_fs::create_private_dir_all(&policy_history_dir)
+            .await
+            .map_err(|source| LocalStateError::PolicyWrite {
+                path: policy_history_dir.clone(),
+                source,
+            })?;
+        // Also tighten a directory that already existed (an earlier build or the
+        // CLI may have made it 0755); only removes group/other bits.
+        let tighten_dir = policy_history_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || aa_core::private_fs::tighten_dir_if_owned(&tighten_dir)).await;
 
         // --- Durable agent registry (AAASM-4447 / AAASM-4459). ---
         // Built *before* the base wiring (AAASM-5102): `local_in_memory` attaches
@@ -709,7 +847,8 @@ impl AppState {
             );
         }
 
-        let mut state = Self::local_in_memory_with_registry(registry)?;
+        let mut state = Self::local_in_memory_with_registry(registry, Some(policy_history_dir.clone()))?;
+        Self::reinstall_latest_applied_policy(&state, &policy_history_dir).await?;
 
         // AAASM-5657: back the approval queue with the same durable file so
         // a hold this process creates (or settles) is visible to
@@ -1192,6 +1331,7 @@ mod tests {
                 registry_db: root.path().join(".aasm/registry/local.db"),
                 audit_jsonl_dir: root.path().join(".aasm/audit-jsonl"),
                 audit_db: root.path().join(".aasm/audit/audit.db"),
+                policy_history_dir: root.path().join(".aa/policy-history"),
             };
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
