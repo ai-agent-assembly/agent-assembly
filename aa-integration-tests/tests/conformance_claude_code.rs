@@ -1945,6 +1945,41 @@ fn tail(output: &str) -> String {
     masked[masked.char_indices().find(|(i, _)| *i >= start).map_or(0, |(i, _)| i)..].to_string()
 }
 
+/// AAASM-6435 — a proxy that cannot bind the address it was given must fail to
+/// start. It must not be reported ready because a *different* proxy answers at
+/// that address: that proxy has its own certificate authority, so a client
+/// pointed at the second one would be served the first one's certificates and
+/// see `BadSignature`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_proxy_is_not_reported_ready_on_an_address_another_proxy_holds() -> anyhow::Result<()> {
+    spike_support::proxy_harness::install_crypto_provider();
+    // Never dialled: this test sends no traffic through either proxy.
+    let upstream = std::net::SocketAddr::from(([127, 0, 0, 1], 9));
+    let first_ca = tempfile::tempdir()?;
+    let second_ca = tempfile::tempdir()?;
+    let redact = aa_proxy::config::CredentialAction::RedactOnly;
+
+    let first = conformance_support::RestartableProxy::start(first_ca.path(), upstream, redact, None).await?;
+    assert_ne!(
+        first.addr.port(),
+        0,
+        "the first start must report the port the proxy really bound, not the 0 it was asked for"
+    );
+
+    let second =
+        conformance_support::RestartableProxy::start_at(first.addr, second_ca.path(), upstream, redact, None).await;
+    assert!(
+        second.is_err(),
+        "a second proxy was reported ready on {}, an address the first proxy already holds",
+        first.addr
+    );
+    assert!(
+        first.is_reachable().await,
+        "the failed second start must leave the first proxy serving"
+    );
+    Ok(())
+}
+
 /// A rustls client trusting exactly the certificate authority at `pem`.
 ///
 /// Deliberately built from the **installed** PEM rather than from the proxy's

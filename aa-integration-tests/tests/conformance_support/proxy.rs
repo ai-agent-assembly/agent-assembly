@@ -11,7 +11,20 @@
 //! receipt records and what the installed launch environment points at — coming
 //! back on a different port would be a reinstall, not a recovery.
 //!
-//! So this harness reserves the port up front and rebinds it on every start.
+//! So the first start lets the proxy pick its own port and report it, and every
+//! restart rebinds that same port.
+//!
+//! # Why the port is not picked here (AAASM-6435)
+//!
+//! Picking a free port, releasing it, and letting the proxy bind it later is a
+//! race: the conformance tests run as parallel processes, two of them can pick
+//! the same port, and the loser's bind fails inside a task nobody awaits. A
+//! "can I connect to it" readiness check then succeeds against the *other*
+//! test's proxy, whose certificate authority is a different one, and the client
+//! reports `BadSignature`. A successful connect proves something is listening,
+//! not that it is this proxy. Readiness is therefore taken from the proxy's own
+//! `ready_file` (AAASM-5859), which it writes only after its bind has succeeded
+//! and which names the process that wrote it.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -27,10 +40,13 @@ use tokio::sync::{broadcast, mpsc};
 
 /// A proxy whose lifetime the test controls.
 pub struct RestartableProxy {
-    /// The address every start binds. Stable across a stop/start cycle, which
-    /// is what makes "recovered" distinguishable from "reinstalled".
+    /// The address every start binds. Port 0 until the first start reports the
+    /// real one; stable across a stop/start cycle after that, which is what
+    /// makes "recovered" distinguishable from "reinstalled".
     pub addr: SocketAddr,
     ca_dir: PathBuf,
+    /// Where the proxy writes its bound address once it is listening.
+    ready_file: PathBuf,
     upstream: SocketAddr,
     action: CredentialAction,
     audit_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
@@ -54,10 +70,30 @@ impl RestartableProxy {
         action: CredentialAction,
         audit_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
     ) -> anyhow::Result<Self> {
-        let port = portpicker::pick_unused_port().ok_or_else(|| anyhow::anyhow!("no free TCP port"))?;
+        Self::start_at(
+            SocketAddr::from(([127, 0, 0, 1], 0)),
+            ca_dir,
+            upstream,
+            action,
+            audit_tx,
+        )
+        .await
+    }
+
+    /// Like [`start`](Self::start), but binding `addr`. Port 0 asks the proxy to
+    /// choose and report the real port; a concrete port is bound exactly, and
+    /// the start fails if something else already holds it.
+    pub async fn start_at(
+        addr: SocketAddr,
+        ca_dir: &Path,
+        upstream: SocketAddr,
+        action: CredentialAction,
+        audit_tx: Option<mpsc::Sender<ProxyAuditEntry>>,
+    ) -> anyhow::Result<Self> {
         let mut this = Self {
-            addr: SocketAddr::from(([127, 0, 0, 1], port)),
+            addr,
             ca_dir: ca_dir.to_path_buf(),
+            ready_file: ca_dir.join("proxy.ready"),
             upstream,
             action,
             audit_tx,
@@ -102,11 +138,27 @@ impl RestartableProxy {
         )
     }
 
+    /// The address the proxy reports it is listening on, but only when this very
+    /// process's proxy wrote it and it is the address asked for (any port when
+    /// port 0 was asked). A leftover file, or one written by another process,
+    /// is not readiness.
+    fn reported_addr(&self) -> Option<SocketAddr> {
+        let text = std::fs::read_to_string(&self.ready_file).ok()?;
+        let mut lines = text.lines();
+        let reported: SocketAddr = lines.next()?.parse().ok()?;
+        let pid: u32 = lines.next()?.parse().ok()?;
+        let asked_for_it = self.addr.port() == 0 || reported == self.addr;
+        (pid == std::process::id() && asked_for_it).then_some(reported)
+    }
+
     /// Bind and serve, retrying a few times so a lingering listener from the
     /// previous incarnation cannot turn a recovery into a flake.
     async fn spawn(&mut self) -> anyhow::Result<()> {
         let mut last = None;
         for attempt in 0..5 {
+            // A file left by the previous incarnation must not read as this
+            // one's readiness.
+            let _ = std::fs::remove_file(&self.ready_file);
             let ca = CaStore::load_or_create(&self.ca_dir)
                 .await
                 .map_err(|e| anyhow::anyhow!("certificate authority: {e}"))?;
@@ -125,7 +177,7 @@ impl RestartableProxy {
                 mcp_fail_open: false,
                 network_fail_open: false,
                 agent_id: None,
-                ready_file: None,
+                ready_file: Some(self.ready_file.clone()),
                 parent_pid: None,
                 allow_private_connect_targets: false,
                 trusted_config_path: None,
@@ -139,7 +191,13 @@ impl RestartableProxy {
 
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
             loop {
-                if TcpStream::connect(self.addr).await.is_ok() {
+                // `run` returning means the bind (or startup) failed: whatever
+                // answers on this address is not our proxy.
+                if handle.is_finished() {
+                    break;
+                }
+                if let Some(bound) = self.reported_addr() {
+                    self.addr = bound;
                     self._events = Some(events);
                     self.abort = Some(abort);
                     return Ok(());
