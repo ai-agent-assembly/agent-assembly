@@ -304,6 +304,35 @@ class RealFetcherRedirectTests(TestCase):
         self.assertEqual(target_seen[0].get("authorization"), "Bearer TOK")
 
 
+class PartialRunTests(TestCase):
+    def _run(self, only):
+        reg = good_ghcr(FakeRegistry(), "aa-gateway", index_doc())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc, rep, raw = run_main(reg, GHCR_IDS, argv_extra=[a for i in only for a in ("--only", i)])
+        return rc, rep, err.getvalue()
+
+    def test_only_subset_all_pass_is_partial_not_success(self):
+        rc, rep, err = self._run(["j53-ghcr-tag-resolves"])
+        self.assertEqual([r["status"] for r in rep["results"]], ["PASS"])
+        self.assertEqual(rc, 4)
+        self.assertEqual(rep["exit_code"], 4)
+        self.assertIn("PARTIAL: 1 of 4 pending checks run", err)
+        self.assertEqual(rep["partial"]["not_run"], GHCR_IDS[1:])
+
+    def test_only_naming_every_pending_check_is_a_full_run(self):
+        rc, rep, err = self._run(GHCR_IDS)
+        self.assertEqual(rc, 0)
+        self.assertIsNone(rep["partial"])
+        self.assertNotIn("PARTIAL", err)
+
+    def test_fail_and_inconclusive_keep_precedence_over_partial(self):
+        self.assertEqual(ppv.exit_code([{"status": "FAIL"}], 4), 1)
+        self.assertEqual(ppv.exit_code([{"status": "INCONCLUSIVE"}], 4), 3)
+        self.assertEqual(ppv.exit_code([{"status": "PASS"}] * 4, 4), 0)
+        self.assertEqual(ppv.exit_code([{"status": "PASS"}], 4), 4)
+
+
 class SafetyTests(TestCase):
     def test_unknown_check_id_is_inconclusive_and_exit_nonzero(self):
         rc, rep, _ = run_main(FakeRegistry(), ["j04-pypi-install"])
