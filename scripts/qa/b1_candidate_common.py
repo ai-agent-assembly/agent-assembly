@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -235,28 +236,52 @@ def pid_owned_by(pid: int, owner: Path) -> bool:
     return any(_under(os.path.realpath(img), real) for img in _txt_images(lsof))
 
 
+PIDFILE_MAX_BYTES = 4096
+
+
+def _read_pidfile_pid(pidfile: Path) -> int | None:
+    """First token of a pidfile that is a regular file (after following symlinks), read with a
+    hard size cap. The file is written by the candidate under test, so a FIFO (blocks the open)
+    or /dev/zero symlink (unbounded read) must not hang or exhaust the harness.
+    `aasm gateway start` writes "<pid>\\n<listen>\\n<started_at>\\n"."""
+    try:
+        if not stat.S_ISREG(os.stat(pidfile).st_mode):
+            return None
+        # O_NONBLOCK so a FIFO swapped in after the stat still cannot block the open.
+        fd = os.open(pidfile, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            data = os.read(fd, PIDFILE_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(data) > PIDFILE_MAX_BYTES:
+            return None
+        return int(data.decode("ascii").split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
 def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
     """Kill the daemon recorded in `pidfile`, but only if `pid_owned_by` proves it belongs to
     `owner` (our own mktemp dir) by executing a binary from it. A recycled or foreign PID is left
     alone. Never pattern-kills.
     Ownership is re-proven right before SIGKILL, since the PID may be recycled during the
     SIGTERM wait."""
-    try:
-        # `aasm gateway start` writes "<pid>\n<listen>\n<started_at>\n": the PID is the first token.
-        pid = int(pidfile.read_text().split()[0])
-    except (OSError, ValueError, IndexError):
+    pid = _read_pidfile_pid(pidfile)
+    if pid is None:
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         if not pid_owned_by(pid, owner):
             return
         try:
             os.kill(pid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
+            # Gone, or not ours to signal: either way there is nothing left for cleanup to do,
+            # and cleanup runs from atexit/finally where raising would mask the real outcome.
             return
         for _ in range(30):
             try:
                 os.kill(pid, 0)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 return
             time.sleep(0.1)
 

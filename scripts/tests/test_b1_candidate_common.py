@@ -93,7 +93,6 @@ class KillOwnedDaemonTests(TestCase):
         self._assert_killed(p)
 
     @_NEEDS_LSOF
-    @_NEEDS_LSOF
     def test_multiline_pidfile_as_written_by_aasm_gateway_start_is_honoured(self) -> None:
         exe = self._own_binary(self.real)
         p = self._spawn([str(exe)], self.foreign)
@@ -101,6 +100,48 @@ class KillOwnedDaemonTests(TestCase):
         pf.write_text(f"{p.pid}\n127.0.0.1:50051\n2026-11-03T00:00:00Z\n")
         c.kill_owned_daemon(pf, self.real)
         self._assert_killed(p)
+
+    def _run_in_child(self, pidfile: Path) -> subprocess.CompletedProcess:
+        """kill_owned_daemon in a child with a hard limit, so a regression that blocks on the
+        pidfile fails this test instead of hanging the suite."""
+        code = (
+            "import sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(c.__file__).parent)!r})\n"
+            "import b1_candidate_common as c\n"
+            "from unittest import mock\n"
+            "with mock.patch.object(c.os, 'kill') as k, mock.patch.object(c, 'pid_owned_by', return_value=True):\n"
+            f"    c.kill_owned_daemon(Path({str(pidfile)!r}), Path({str(self.real)!r}))\n"
+            "    sys.exit(3 if k.called else 0)\n"
+        )
+        return subprocess.run([sys.executable, "-I", "-c", code], timeout=30, capture_output=True)
+
+    def test_fifo_pidfile_neither_hangs_nor_signals(self) -> None:
+        fifo = self.real / "fifo.pid"
+        os.mkfifo(fifo)
+        self.assertEqual(self._run_in_child(fifo).returncode, 0)
+
+    def test_symlink_to_a_device_pidfile_is_not_read(self) -> None:
+        link = self.real / "zero.pid"
+        link.symlink_to("/dev/zero")
+        self.assertEqual(self._run_in_child(link).returncode, 0)
+
+    def test_oversize_pidfile_signals_nothing(self) -> None:
+        pf = self.real / "big.pid"
+        pf.write_text(f"{os.getpid() + 12345}\n" + "x" * (c.PIDFILE_MAX_BYTES + 10))
+        self.assertEqual(self._run_in_child(pf).returncode, 0)
+
+    def test_symlink_to_a_regular_pidfile_is_honoured(self) -> None:
+        self.assertEqual(c._read_pidfile_pid(self._pidfile(4242)), 4242)
+        link = self.real / "link.pid"
+        link.symlink_to(self.real / "daemon.pid")
+        self.assertEqual(c._read_pidfile_pid(link), 4242)
+
+    def test_kill_errors_do_not_escape_cleanup(self) -> None:
+        for exc in (ProcessLookupError, PermissionError):
+            with mock.patch.object(c, "pid_owned_by", return_value=True), \
+                    mock.patch.object(c.os, "kill", side_effect=exc), \
+                    mock.patch.object(c.time, "sleep"):
+                c.kill_owned_daemon(self._pidfile(4242), self.real)
 
     def test_garbage_or_empty_pidfile_signals_nothing(self) -> None:
         for body in ("", "\n", "not-a-pid\n127.0.0.1:1\n"):
