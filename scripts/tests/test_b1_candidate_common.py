@@ -93,6 +93,24 @@ class KillOwnedDaemonTests(TestCase):
         self._assert_killed(p)
 
     @_NEEDS_LSOF
+    @_NEEDS_LSOF
+    def test_multiline_pidfile_as_written_by_aasm_gateway_start_is_honoured(self) -> None:
+        exe = self._own_binary(self.real)
+        p = self._spawn([str(exe)], self.foreign)
+        pf = self.real / "daemon.pid"
+        pf.write_text(f"{p.pid}\n127.0.0.1:50051\n2026-11-03T00:00:00Z\n")
+        c.kill_owned_daemon(pf, self.real)
+        self._assert_killed(p)
+
+    def test_garbage_or_empty_pidfile_signals_nothing(self) -> None:
+        for body in ("", "\n", "not-a-pid\n127.0.0.1:1\n"):
+            pf = self.real / "daemon.pid"
+            pf.write_text(body)
+            with mock.patch.object(c.os, "kill") as kill:
+                c.kill_owned_daemon(pf, self.real)
+            kill.assert_not_called()
+
+    @_NEEDS_LSOF
     def test_bare_name_path_launch_of_owner_binary_is_killed(self) -> None:
         exe = self._own_binary(self.real)
         env = {**os.environ, "PATH": f"{exe.parent}:{os.environ['PATH']}"}

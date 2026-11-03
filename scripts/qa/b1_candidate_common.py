@@ -242,8 +242,9 @@ def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
     Ownership is re-proven right before SIGKILL, since the PID may be recycled during the
     SIGTERM wait."""
     try:
-        pid = int(pidfile.read_text().strip())
-    except (OSError, ValueError):
+        # `aasm gateway start` writes "<pid>\n<listen>\n<started_at>\n": the PID is the first token.
+        pid = int(pidfile.read_text().split()[0])
+    except (OSError, ValueError, IndexError):
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         if not pid_owned_by(pid, owner):
