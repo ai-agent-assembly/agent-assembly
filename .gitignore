@@ -63,4 +63,6 @@ verification-reports/__pycache__/
 /.conformance-outcomes/
 .qa/
 scripts/qa/__pycache__/
+__pycache__/
+*.pyc
 target-isolated/

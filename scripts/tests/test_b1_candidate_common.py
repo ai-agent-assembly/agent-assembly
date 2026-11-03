@@ -5,6 +5,8 @@ Real child processes are used; the negative control is a foreign process that mu
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import signal
@@ -93,6 +95,186 @@ class KillOwnedDaemonTests(TestCase):
         self._assert_killed(p)
 
     @_NEEDS_LSOF
+    def test_multiline_pidfile_as_written_by_aasm_gateway_start_is_honoured(self) -> None:
+        exe = self._own_binary(self.real)
+        p = self._spawn([str(exe)], self.foreign)
+        pf = self.real / "daemon.pid"
+        pf.write_text(f"{p.pid}\n127.0.0.1:50051\n2026-11-03T00:00:00Z\n")
+        c.kill_owned_daemon(pf, self.real)
+        self._assert_killed(p)
+
+    def _run_in_child(self, pidfile: Path) -> subprocess.CompletedProcess:
+        """kill_owned_daemon in a child with a hard limit, so a regression that blocks on the
+        pidfile fails this test instead of hanging the suite."""
+        code = (
+            "import sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(c.__file__).parent)!r})\n"
+            "import b1_candidate_common as c\n"
+            "from unittest import mock\n"
+            "with mock.patch.object(c.os, 'kill') as k, mock.patch.object(c, '_proven', return_value=True):\n"
+            f"    c.kill_owned_daemon(Path({str(pidfile)!r}), Path({str(self.real)!r}))\n"
+            "    sys.exit(3 if k.called else 0)\n"
+        )
+        return subprocess.run([sys.executable, "-I", "-c", code], timeout=30, capture_output=True)
+
+    def test_fifo_pidfile_neither_hangs_nor_signals(self) -> None:
+        fifo = self.real / "fifo.pid"
+        os.mkfifo(fifo)
+        self.assertEqual(self._run_in_child(fifo).returncode, 0)
+
+    def test_symlink_to_a_device_pidfile_is_not_read(self) -> None:
+        link = self.real / "zero.pid"
+        link.symlink_to("/dev/zero")
+        self.assertEqual(self._run_in_child(link).returncode, 0)
+
+    def test_oversize_pidfile_signals_nothing(self) -> None:
+        pf = self.real / "big.pid"
+        pf.write_text(f"{os.getpid() + 12345}\n" + "x" * (c.PIDFILE_MAX_BYTES + 10))
+        self.assertEqual(self._run_in_child(pf).returncode, 0)
+
+    def test_symlink_to_a_regular_pidfile_is_honoured(self) -> None:
+        self.assertEqual(c._read_pidfile_pid(self._pidfile(4242)), 4242)
+        link = self.real / "link.pid"
+        link.symlink_to(self.real / "daemon.pid")
+        self.assertEqual(c._read_pidfile_pid(link), 4242)
+
+    def test_kill_errors_do_not_escape_cleanup(self) -> None:
+        for exc in (ProcessLookupError, PermissionError):
+            with mock.patch.object(c, "_proven", return_value=True), \
+                    mock.patch.object(c.os, "kill", side_effect=exc), \
+                    mock.patch.object(c.time, "sleep"):
+                c.kill_owned_daemon(self._pidfile(4242), self.real)
+
+    # ---- F1: UNKNOWN (lsof slow/failed) is retried, FOREIGN never is, neither is signalled
+    def _kill_with_lsof(self, side_effect, pid: int = 4242):
+        err = io.StringIO()
+        with mock.patch.object(c, "_run_text", side_effect=side_effect) as lsof, \
+                mock.patch.object(c, "LSOF", sys.executable), \
+                mock.patch.object(c.os, "kill") as kill, \
+                mock.patch.object(c.time, "sleep"), \
+                contextlib.redirect_stderr(err):
+            c.kill_owned_daemon(self._pidfile(pid), self.real)
+        return lsof, kill, err.getvalue()
+
+    def test_unknown_proof_is_retried_and_then_the_owned_daemon_is_killed(self) -> None:
+        owned = f"p4242\nftxt\nn{self.real}/bin/aasm\n"
+        calls = []
+
+        def flaky(*_):
+            calls.append(1)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired("lsof", 10)
+            if len(calls) == 2:
+                raise OSError("fork failed")
+            return owned
+
+        lsof, kill, _ = self._kill_with_lsof(flaky)
+        self.assertGreaterEqual(lsof.call_count, 3)
+        self.assertEqual(kill.call_args_list[0].args, (4242, signal.SIGTERM))
+
+    def test_persistent_unknown_signals_nothing_and_reports_the_leak(self) -> None:
+        lsof, kill, err = self._kill_with_lsof(subprocess.TimeoutExpired("lsof", 10))
+        self.assertEqual(lsof.call_count, c.PROOF_ATTEMPTS)
+        kill.assert_not_called()
+        self.assertIn("not killed: ownership unproven", err)
+        self.assertIn("pid=4242", err)
+        self.assertIn(str(self.real), err)
+
+    def test_proven_foreign_is_not_retried_nor_signalled(self) -> None:
+        foreign = "p4242\nftxt\nn/usr/bin/other\n"
+        lsof, kill, err = self._kill_with_lsof(lambda *_: foreign)
+        self.assertEqual(lsof.call_count, 1)
+        kill.assert_not_called()
+        self.assertNotIn("not killed", err)
+
+    # ---- G2: lsof printing nothing: live pid => UNKNOWN, gone/zombie => FOREIGN
+    def _proven_with_empty_lsof(self, pid: int, ps_stat: str | None = None):
+        """Run c._proven with lsof mocked to print nothing. `ps_stat` mocks /bin/ps; None uses
+        the real ps (needed for a real zombie)."""
+        lsof_calls: list[list[str]] = []
+        real_run_text = c._run_text
+
+        def fake(argv):
+            if argv[0] == c.LSOF:
+                lsof_calls.append(argv)
+                return ""
+            return real_run_text(argv) if ps_stat is None else ps_stat
+
+        err = io.StringIO()
+        with mock.patch.object(c, "_run_text", side_effect=fake), \
+                mock.patch.object(c, "LSOF", sys.executable), \
+                mock.patch.object(c.time, "sleep"), \
+                contextlib.redirect_stderr(err):
+            proven = c._proven(pid, self.real)
+        return proven, len(lsof_calls), err.getvalue()
+
+    def test_empty_lsof_for_a_live_pid_is_unknown_retried_and_reported(self) -> None:
+        p = self._spawn(_SLEEP, self.foreign)
+        proven, calls, err = self._proven_with_empty_lsof(p.pid, ps_stat="S")
+        self.assertFalse(proven)
+        self.assertEqual(calls, c.PROOF_ATTEMPTS)
+        self.assertIn("not killed: ownership unproven (lsof printed nothing for a live pid)", err)
+        with mock.patch.object(c.os, "kill") as kill, contextlib.redirect_stderr(io.StringIO()), \
+                mock.patch.object(c.time, "sleep"), mock.patch.object(c, "_run_text", return_value="S"), \
+                mock.patch.object(c, "LSOF", sys.executable):
+            c.kill_owned_daemon(self._pidfile(p.pid), self.real)
+        self.assertNotIn((p.pid, signal.SIGTERM), [x.args for x in kill.call_args_list])
+        self.assertIsNone(p.poll())
+
+    def test_empty_lsof_for_a_gone_pid_is_foreign_without_retry_or_noise(self) -> None:
+        p = self._spawn([sys.executable, "-c", "pass"], self.foreign)
+        p.wait(timeout=10)  # reaped: the pid no longer exists
+        proven, calls, err = self._proven_with_empty_lsof(p.pid, ps_stat="")
+        self.assertFalse(proven)
+        self.assertEqual(calls, 1)
+        self.assertEqual(err, "")
+
+    def test_real_zombie_counts_as_gone(self) -> None:
+        p = subprocess.Popen([sys.executable, "-c", "pass"], cwd=self.foreign)
+        self.procs.append(p)
+        deadline = time.monotonic() + 30
+        while not c._is_zombie(p.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)  # exited but deliberately not waited on
+        self.assertTrue(c._is_zombie(p.pid), "precondition: child never became a zombie")
+        proven, calls, err = self._proven_with_empty_lsof(p.pid)
+        self.assertFalse(proven)
+        self.assertEqual(calls, 1)
+        self.assertNotIn("not killed", err)
+
+    def test_is_zombie_falls_through_to_false_when_ps_fails(self) -> None:
+        for exc in (OSError("no ps"), subprocess.TimeoutExpired("ps", 10)):
+            with mock.patch.object(c, "_run_text", side_effect=exc):
+                self.assertFalse(c._is_zombie(4242))
+        with mock.patch.object(c, "_run_text", return_value="S\n"):
+            self.assertFalse(c._is_zombie(4242))
+        with mock.patch.object(c, "_run_text", return_value="Z+\n"):
+            self.assertTrue(c._is_zombie(4242))
+
+    # ---- F3: the regular-file guard itself, not just "nothing was signalled"
+    def test_non_regular_pidfiles_are_refused_before_any_read(self) -> None:
+        fifo = self.real / "f.pid"
+        os.mkfifo(fifo)
+        directory = self.real / "d.pid"
+        directory.mkdir()
+        device = self.real / "z.pid"
+        device.symlink_to("/dev/zero")
+        for path in (fifo, directory, device):
+            with self.subTest(path=path.name), mock.patch.object(c.os, "read") as read:
+                self.assertIsNone(c._read_pidfile_pid(path))
+                read.assert_not_called()
+
+    def test_pidfile_open_failure_is_none(self) -> None:
+        self.assertIsNone(c._read_pidfile_pid(self.real / "absent.pid"))
+
+    def test_garbage_or_empty_pidfile_signals_nothing(self) -> None:
+        for body in ("", "\n", "not-a-pid\n127.0.0.1:1\n"):
+            pf = self.real / "daemon.pid"
+            pf.write_text(body)
+            with mock.patch.object(c.os, "kill") as kill:
+                c.kill_owned_daemon(pf, self.real)
+            kill.assert_not_called()
+
+    @_NEEDS_LSOF
     def test_bare_name_path_launch_of_owner_binary_is_killed(self) -> None:
         exe = self._own_binary(self.real)
         env = {**os.environ, "PATH": f"{exe.parent}:{os.environ['PATH']}"}
@@ -151,7 +333,7 @@ class KillOwnedDaemonTests(TestCase):
         p = self._spawn(_SLEEP, self.real)
         proofs = iter([True, False])
         sent: list[int] = []
-        with mock.patch.object(c, "pid_owned_by", side_effect=lambda *_: next(proofs)), \
+        with mock.patch.object(c, "_proven", side_effect=lambda *_: next(proofs)), \
                 mock.patch.object(c.os, "kill", side_effect=lambda pid, sig: sent.append(sig)), \
                 mock.patch.object(c.time, "sleep"):
             c.kill_owned_daemon(self._pidfile(p.pid), self.real)

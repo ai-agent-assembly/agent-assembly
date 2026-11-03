@@ -19,8 +19,16 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
   does not hash to its digest, a missing platform). A timeout, a 5xx, a rate limit or
   an auth refusal is INCONCLUSIVE: "could not tell" is not "wrong" and not "right".
-* Exit 0 only when at least one check ran and every check is PASS. 1 if any FAIL,
-  3 if some are INCONCLUSIVE and none FAIL, 2 for a usage or malformed-record error.
+* Exit 0 only when at least one check ran, every check is PASS, and every pending check in
+  the obligations file was run. 1 if any FAIL, 3 if some are INCONCLUSIVE and none FAIL,
+  4 if every selected check PASSED but `--only` left other pending checks NOT run (a
+  PARTIAL run: it proves nothing about the unrun checks, so it must not read as success),
+  2 for a usage or malformed-record error, including an `--only` id that names no pending
+  check in the obligations file (a typo must not read as a partial run).
+  Consequently a single-check `--only <id>` run exits 4 even when that check passes: its
+  PASS is in the JSON `results`, and only a full run with every check PASS exits 0. The
+  `PARTIAL: N of M pending checks run; not run: ...` line goes to stderr whenever at least
+  one result exists and some pending checks were not run (exit 1, 3 and 4 alike).
 
 Check-id convention (so other journeys can add runners): `<journey>-<channel>-<what>`,
 e.g. `j53-ghcr-multiarch`. A journey that owes a check names its id in its obligation
@@ -376,14 +384,19 @@ def verify(pending: list[dict[str, Any]], tag: str, fetch: Fetcher, timeout: flo
     return results
 
 
-def exit_code(results: list[dict[str, Any]]) -> int:
+PARTIAL_EXIT = 4
+
+
+def exit_code(results: list[dict[str, Any]], pending_total: int | None = None) -> int:
+    """`pending_total` is the number of pending checks in the obligations file; when given and
+    larger than the number run, an all-PASS result is a partial run (PARTIAL_EXIT), not 0."""
     if not results:
         return 2
     statuses = {r["status"] for r in results}
     if FAIL in statuses:
         return 1
     if statuses == {PASS}:
-        return 0
+        return PARTIAL_EXIT if pending_total is not None and len(results) < pending_total else 0
     return 3
 
 
@@ -391,7 +404,11 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
     ap = argparse.ArgumentParser(allow_abbrev=False, description=__doc__.split("\n")[0])
     ap.add_argument("--tag", required=True)
     ap.add_argument("--obligations", required=True)
-    ap.add_argument("--only", action="append", help="restrict to this pending-check id (repeatable)")
+    ap.add_argument("--only", action="append",
+                    help="restrict to this pending-check id (repeatable); if the selected checks pass but "
+                         "other pending checks were not run, the run is PARTIAL and exits 4, not 0 (so a "
+                         "single-check run exits 4 even when it passes; its PASS is in the JSON "
+                         "results). An id naming no pending check is an error (exit 2)")
     ap.add_argument("--timeout", type=float, default=20.0, help="seconds per probe request")
     args = ap.parse_args(argv)
     if not TAG_RE.fullmatch(args.tag):
@@ -403,11 +420,22 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
     except (OSError, ValueError) as e:
         print(f"cannot read obligations: {e}", file=sys.stderr)
         return 2
-    results = verify(pending, args.tag, fetch, args.timeout, set(args.only) if args.only else None)
-    code = exit_code(results)
+    only = set(args.only) if args.only else None
+    unknown = sorted(only - {pc["id"] for pc in pending}) if only else []
+    if unknown:
+        print(f"unknown --only check id(s) not in the obligations file: {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    results = verify(pending, args.tag, fetch, args.timeout, only)
+    code = exit_code(results, len(pending))
+    ran = {r["id"] for r in results}
+    not_run = [pc["id"] for pc in pending if pc["id"] not in ran]
+    if not_run and results:
+        print(f"PARTIAL: {len(results)} of {len(pending)} pending checks run; "
+              f"not run: {', '.join(not_run)}", file=sys.stderr)
     print(json.dumps({
         "schema": "post-publish-verify/1", "tag": args.tag,
         "obligations_sha256": _digest(raw), "exit_code": code,
+        "partial": {"run": len(results), "pending": len(pending), "not_run": not_run} if not_run else None,
         "summary": {s: sum(1 for r in results if r["status"] == s) for s in (PASS, FAIL, INCONCLUSIVE)},
         "results": results,
     }, indent=2))

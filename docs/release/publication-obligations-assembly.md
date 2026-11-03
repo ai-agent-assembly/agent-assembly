@@ -83,7 +83,7 @@ This works because an obligation entry in the file carries no `candidate_sha`
 (`check-release-evidence.py` compares the embedded obligation to the file entry with
 that key removed) and `build-release-evidence.py` stamps C onto the embedded copy.
 The file is therefore not self-referential. The cost is that C must change nothing the
-harnesses tied to F (the installer, the policy and the harness sources), which the
+harnesses tied to F (the installer, the policy, the harness sources and `scripts/qa/b1_candidate_common.py`), which the
 harness check on F already proves for the files it reads. This reading follows the
 checker and builder code; it has not been exercised end to end on a real candidate.
 
@@ -96,3 +96,15 @@ J53/J59 GHCR and release-asset ids (the J53 run-healthy and J59 published-binari
 checks are manual and report INCONCLUSIVE); the J04/J17 pending ids carry shell
 commands and, as of that PR, have no runner, so it reports them INCONCLUSIVE. Each pending
 check's `failure_response` in the obligation file says what to do when it fails.
+
+A post-publication PASS proves each pending check's own assertion and nothing more. This tool
+does not assert that the published bytes equal the candidate's locally built bytes; the
+published bytes were not compared to the candidate bytes.
+
+`--only` runs are partial. Whenever at least one result exists and some pending checks were not
+run, `post-publish-verify.py` prints `PARTIAL: N of M pending checks run; not run: ...` on
+stderr (also when the run exits 1 or 3). If the selected checks all PASS, the exit code is 4,
+not 0: a single-check `--only <id>` run, such as the per-check commands recorded in the
+candidate evidence, exits 4 even when that check passes. That check's PASS is in the JSON
+`results`; only a full run with every check PASS exits 0. An `--only` id that names no pending
+check in the obligations file is an error (exit 2).

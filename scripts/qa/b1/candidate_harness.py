@@ -49,6 +49,9 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import b1_candidate_common as common  # noqa: E402
+
 HARNESS_VERSION = 2
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_INSTALLER = REPO_ROOT / "scripts" / "install-cli.sh"
@@ -516,15 +519,10 @@ def aasm_gateway_lifecycle(aasm: Path, policy: Path, home: Path, timeout: float 
         detail = f"listener={'up' if up else 'down'} `aasm gateway status` exit {st}"
     finally:
         sh("gateway", "stop")
-        pidf = data / "gateway.pid"
-        if pidf.is_file():
-            m = re.search(r"\d+", pidf.read_text(errors="replace"))
-            if m:
-                try:
-                    os.kill(int(m.group()), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    # Recorded gateway already gone (or not ours): the cleanup goal is met.
-                    pass
+        # gateway.pid is written by the candidate under test, so its PID is untrusted input:
+        # signal it only if it provably executes a binary from the installed dir (the aasm
+        # parent, where the installer placed aa-gateway). Fails closed (no lsof => no kill).
+        common.kill_owned_daemon(data / "gateway.pid", aasm.parent)
     return ok, detail, pre
 
 
@@ -550,7 +548,8 @@ def source_matches_candidate_sha(ctx: Ctx) -> None:
         if head != full:
             prob.append(f"checkout HEAD {head} != candidate commit {full}")
     root = REPO_ROOT.resolve()
-    tied = {"installer": ctx.installer, "policy": Path(ctx.a.policy).resolve(), "harness": Path(__file__).resolve()}
+    tied = {"installer": ctx.installer, "policy": Path(ctx.a.policy).resolve(), "harness": Path(__file__).resolve(),
+            "common": Path(common.__file__).resolve()}  # executed by the harness (PID-ownership cleanup)
     for label, path in tied.items():
         try:
             rel = path.relative_to(root).as_posix()
@@ -565,7 +564,7 @@ def source_matches_candidate_sha(ctx: Ctx) -> None:
         elif blob.stdout != path.read_bytes():
             prob.append(f"{label} {rel} differs from the candidate commit (dirty or foreign file)")
     ctx.record(f"{ctx.a.journey}.source_matches_candidate_sha", not prob,
-               "; ".join(prob) or f"checkout HEAD is {full}; installer, policy and harness equal their candidate blobs",
+               "; ".join(prob) or f"checkout HEAD is {full}; installer, policy, harness and common module equal their candidate blobs",
                [], extra={"policy:" + Path(ctx.a.policy).name: digest(Path(ctx.a.policy))})
 
 
