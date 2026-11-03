@@ -23,6 +23,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "scripts/qa/b1/candidate_harness.py"
@@ -614,6 +615,89 @@ class HarnessTests(unittest.TestCase):
             os.kill(gw_pid, 0)
         self.assertEqual(before, set(glob.glob(os.path.join(tempfile.gettempdir(), "b1-harness-*"))))
         self.assertNotEqual(proc.returncode, 0)
+
+
+FAKE_AASM_RECORDING_PID = f"""#!{PY}
+import os, sys
+a = sys.argv[1:]
+if a[:2] == ["gateway", "start"]:
+    dd = os.environ["AA_DATA_DIR"]
+    os.makedirs(dd, exist_ok=True)
+    pid = open(os.path.join(os.path.dirname(os.path.realpath(__file__)), "pidvalue")).read()
+    open(os.path.join(dd, "gateway.pid"), "w").write(pid)
+    sys.exit(0)
+sys.exit(1)  # status: not running; stop: no-op, so only the harness cleanup path can signal
+"""
+
+
+class GatewayPidCleanupTests(unittest.TestCase):
+    """The lifecycle cleanup reads gateway.pid, a file the candidate under test writes. Its PID
+    is untrusted: only a process that executes a binary from the installed dir may be signalled."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="b1-pidguard-")))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.owner = self.tmp / "owner"
+        self.owner.mkdir()
+        self.foreign = self.tmp / "foreign"
+        self.foreign.mkdir()
+        self.procs: list[subprocess.Popen] = []
+        self.addCleanup(self._reap)
+        self.policy = self.tmp / "policy.yaml"
+        self.policy.write_text("x: 1\n")
+        self.aasm = self.owner / "aasm"
+        self.aasm.write_text(FAKE_AASM_RECORDING_PID)
+        self.aasm.chmod(0o755)
+
+    def _reap(self) -> None:
+        for p in self.procs:
+            if p.poll() is None:
+                p.kill()
+            p.wait(timeout=5)
+
+    def _lifecycle(self, pid: int) -> None:
+        (self.owner / "pidvalue").write_text(f"{pid} 127.0.0.1:1\n")
+        H.aasm_gateway_lifecycle(self.aasm, self.policy, self.tmp / "home", timeout=0.3)
+
+    def _spawn(self, argv: list[str], cwd: Path) -> subprocess.Popen:
+        p = subprocess.Popen(argv, cwd=cwd, start_new_session=True)
+        self.procs.append(p)
+        time.sleep(0.3)
+        return p
+
+    def test_foreign_pid_in_gateway_pid_is_not_signalled(self) -> None:
+        p = self._spawn([PY, "-c", "import time; time.sleep(60)"], self.foreign)
+        self._lifecycle(p.pid)
+        time.sleep(0.5)
+        self.assertIsNone(p.poll(), "a foreign process named in gateway.pid was killed")
+
+    def test_unsafe_pids_are_never_signalled(self) -> None:
+        for pid in (0, 1, -1, os.getpid()):
+            with self.subTest(pid=pid), mock.patch.object(os, "kill") as kill, \
+                    mock.patch.object(os, "killpg") as killpg:
+                self._lifecycle(pid)
+                kill.assert_not_called()
+                killpg.assert_not_called()
+
+    @unittest.skipUnless(os.path.exists(H.common.LSOF), "lsof absent: the ownership proof fails closed")
+    def test_daemon_executing_from_the_installed_dir_is_terminated(self) -> None:
+        cc = shutil.which("cc")
+        if cc is None:
+            self.skipTest("no C compiler to build a real binary")
+        src = self.foreign / "nap.c"
+        src.write_text("#include <unistd.h>\nint main(void){sleep(60);return 0;}\n")
+        built = self.foreign / "nap"
+        subprocess.run([cc, "-o", str(built), str(src)], check=True, capture_output=True)
+        shutil.copy2(built, self.owner / "aa-gateway")  # as the installer places the daemons
+        p = self._spawn([str(self.owner / "aa-gateway")], self.foreign)
+        # A just-copied binary can take a while to start executing (first-launch validation):
+        # wait until it maps its image so the test measures cleanup, not exec latency.
+        deadline = time.monotonic() + 120
+        while not H.common.pid_owned_by(p.pid, self.owner) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        self.assertTrue(H.common.pid_owned_by(p.pid, self.owner), "precondition: daemon never started")
+        self._lifecycle(p.pid)
+        self.assertIsNotNone(p.wait(timeout=10))
 
 
 if __name__ == "__main__":
