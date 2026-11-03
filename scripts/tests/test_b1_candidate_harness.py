@@ -21,9 +21,8 @@ import sys
 import tarfile
 import tempfile
 import time
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, main, mock, skipUnless
 
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS = ROOT / "scripts/qa/b1/candidate_harness.py"
@@ -199,7 +198,7 @@ J17_IDS = {
 }
 
 
-class HarnessTests(unittest.TestCase):
+class HarnessTests(TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="b1-selftest-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -630,7 +629,7 @@ sys.exit(1)  # status: not running; stop: no-op, so only the harness cleanup pat
 """
 
 
-class GatewayPidCleanupTests(unittest.TestCase):
+class GatewayPidCleanupTests(TestCase):
     """The lifecycle cleanup reads gateway.pid, a file the candidate under test writes. Its PID
     is untrusted: only a process that executes a binary from the installed dir may be signalled."""
 
@@ -684,7 +683,7 @@ class GatewayPidCleanupTests(unittest.TestCase):
                 kill.assert_not_called()
                 killpg.assert_not_called()
 
-    @unittest.skipUnless(os.path.exists(H.common.LSOF), "lsof absent: the ownership proof fails closed")
+    @skipUnless(os.path.exists(H.common.LSOF), "lsof absent: the ownership proof fails closed")
     def test_daemon_executing_from_the_installed_dir_is_terminated(self) -> None:
         cc = shutil.which("cc")
         if cc is None:
@@ -706,4 +705,4 @@ class GatewayPidCleanupTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    main(verbosity=2)

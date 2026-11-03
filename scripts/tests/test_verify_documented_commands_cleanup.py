@@ -13,9 +13,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, main, mock
 
 ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location("vdc", ROOT / "scripts/qa/verify-documented-commands.py")
@@ -24,7 +23,7 @@ sys.modules["vdc"] = V
 _spec.loader.exec_module(V)
 
 
-class StopStartedGatewayTests(unittest.TestCase):
+class StopStartedGatewayTests(TestCase):
     def setUp(self) -> None:
         self.tmp = Path(os.path.realpath(tempfile.mkdtemp(prefix="vdc-clean-")))
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -71,4 +70,4 @@ class StopStartedGatewayTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    main(verbosity=2)

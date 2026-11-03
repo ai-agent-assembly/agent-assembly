@@ -255,6 +255,9 @@ def _ownership(pid: int, owner: Path) -> tuple[str, str]:
         except ProcessLookupError:
             return FOREIGN, "process is gone"
         except PermissionError:
+            # Alive but owned by another user, which is why lsof printed nothing (no privilege
+            # to inspect it). Deliberately fall through to UNKNOWN: retried, reported and never
+            # signalled, and never assumed foreign or owned.
             pass
         return UNKNOWN, "lsof printed nothing for a live pid"
     return FOREIGN, "no txt image under owner"
