@@ -648,6 +648,11 @@ class GatewayPidCleanupTests(unittest.TestCase):
         self.aasm = self.owner / "aasm"
         self.aasm.write_text(FAKE_AASM_RECORDING_PID)
         self.aasm.chmod(0o755)
+        # The first exec of a freshly written script can stall for a long time under host
+        # load (observed: each lifecycle call hitting its 60 s limit). Pay that cost here, with
+        # a generous bound, so the tests measure the cleanup, not first-exec latency.
+        subprocess.run([str(self.aasm), "warmup"], capture_output=True, timeout=300,
+                       env={"PATH": "/usr/bin:/bin"})
 
     def _reap(self) -> None:
         for p in self.procs:
@@ -697,7 +702,7 @@ class GatewayPidCleanupTests(unittest.TestCase):
             time.sleep(0.5)
         self.assertTrue(H.common.pid_owned_by(p.pid, self.owner), "precondition: daemon never started")
         self._lifecycle(p.pid)
-        self.assertIsNotNone(p.wait(timeout=10))
+        self.assertIsNotNone(p.wait(timeout=30))
 
 
 if __name__ == "__main__":

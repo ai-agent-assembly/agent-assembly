@@ -213,6 +213,53 @@ def _txt_images(lsof_f: str) -> list[str]:
     return out
 
 
+OWNED, FOREIGN, UNKNOWN = "owned", "foreign", "unknown"
+PROOF_ATTEMPTS = 3
+PROOF_BACKOFF_S = 0.5
+
+
+def _is_zombie(pid: int) -> bool:
+    """An exited-but-unreaped child (e.g. a daemon we spawned) still answers kill(pid, 0)
+    while lsof lists nothing for it; that is "gone", not an unproven live process."""
+    try:
+        return _run_text(["/bin/ps", "-o", "stat=", "-p", str(pid)]).strip().startswith("Z")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _ownership(pid: int, owner: Path) -> tuple[str, str]:
+    """(OWNED | FOREIGN | UNKNOWN, reason). FOREIGN means lsof ran and showed the PID is not
+    ours (or the PID is refused outright); never retried, never signalled. UNKNOWN means the
+    proof could not be completed (lsof missing/timed out/failed, or empty output for a live
+    PID): not evidence either way, so never signalled, but worth retrying."""
+    # pid <= 1 covers kill(0)/kill(-1)/launchd; self and parent can hold fds under the owner
+    # dir (cwd, socket clients), so a pidfile naming them must never pass the proof.
+    if pid <= 1 or pid in (os.getpid(), os.getppid()):
+        return FOREIGN, "refused pid"
+    if not owner.is_absolute():
+        return FOREIGN, "owner dir is not absolute"
+    if not os.path.exists(LSOF):
+        return UNKNOWN, f"{LSOF} is absent"
+    real = os.path.realpath(owner)
+    try:
+        lsof = _run_text([LSOF, "-p", str(pid), "-Fftn"])
+    except (OSError, subprocess.SubprocessError) as e:
+        return UNKNOWN, f"lsof failed: {type(e).__name__}"
+    if any(_under(os.path.realpath(img), real) for img in _txt_images(lsof)):
+        return OWNED, "txt image under owner"
+    if not lsof.strip():
+        if _is_zombie(pid):
+            return FOREIGN, "process has exited (zombie)"
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return FOREIGN, "process is gone"
+        except PermissionError:
+            pass
+        return UNKNOWN, "lsof printed nothing for a live pid"
+    return FOREIGN, "no txt image under owner"
+
+
 def pid_owned_by(pid: int, owner: Path) -> bool:
     """Per-PID ownership proof, fail-closed. True only when this PID maps a `txt` image (lsof
     `txt` entry: the executable or a mapped image, not strictly the main executable) whose realpath lies under
@@ -222,18 +269,22 @@ def pid_owned_by(pid: int, owner: Path) -> bool:
     can show any of them. Never matches by name or pattern.
     Residual risk: the proof and the later os.kill are not atomic, so a PID recycled in that
     window could be hit; kill_owned_daemon re-proves before every signal to keep it minimal."""
-    # pid <= 1 covers kill(0)/kill(-1)/launchd; self and parent can hold fds under the owner
-    # dir (cwd, socket clients), so a pidfile naming them must never pass the proof.
-    if pid <= 1 or pid in (os.getpid(), os.getppid()):
-        return False
-    if not owner.is_absolute() or not os.path.exists(LSOF):
-        return False
-    real = os.path.realpath(owner)
-    try:
-        lsof = _run_text([LSOF, "-p", str(pid), "-Fftn"])
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return any(_under(os.path.realpath(img), real) for img in _txt_images(lsof))
+    return _ownership(pid, owner)[0] == OWNED
+
+
+def _proven(pid: int, owner: Path) -> bool:
+    """Ownership proof for cleanup: retry only UNKNOWN (a slow or failed lsof), never FOREIGN.
+    An unproven live PID is not signalled, and the leak is reported on stderr."""
+    state, why = UNKNOWN, ""
+    for attempt in range(PROOF_ATTEMPTS):
+        state, why = _ownership(pid, owner)
+        if state != UNKNOWN:
+            break
+        if attempt + 1 < PROOF_ATTEMPTS:
+            time.sleep(PROOF_BACKOFF_S)
+    if state == UNKNOWN:
+        print(f"not killed: ownership unproven ({why}) pid={pid} owner={owner}", file=sys.stderr)
+    return state == OWNED
 
 
 PIDFILE_MAX_BYTES = 4096
@@ -244,20 +295,23 @@ def _read_pidfile_pid(pidfile: Path) -> int | None:
     hard size cap. The file is written by the candidate under test, so a FIFO (blocks the open)
     or /dev/zero symlink (unbounded read) must not hang or exhaust the harness.
     `aasm gateway start` writes "<pid>\\n<listen>\\n<started_at>\\n"."""
+    fd = -1
     try:
-        if not stat.S_ISREG(os.stat(pidfile).st_mode):
-            return None
-        # O_NONBLOCK so a FIFO swapped in after the stat still cannot block the open.
+        # Follows a symlink to a regular file (documented behaviour); O_NONBLOCK so a FIFO
+        # cannot block the open. The type check is on the SAME fd, so there is no
+        # stat-then-open window for the path to be swapped.
         fd = os.open(pidfile, os.O_RDONLY | os.O_NONBLOCK)
-        try:
-            data = os.read(fd, PIDFILE_MAX_BYTES + 1)
-        finally:
-            os.close(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, PIDFILE_MAX_BYTES + 1)
         if len(data) > PIDFILE_MAX_BYTES:
             return None
         return int(data.decode("ascii").split()[0])
     except (OSError, ValueError, IndexError):
         return None
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
@@ -270,7 +324,7 @@ def kill_owned_daemon(pidfile: Path, owner: Path) -> None:
     if pid is None:
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        if not pid_owned_by(pid, owner):
+        if not _proven(pid, owner):
             return
         try:
             os.kill(pid, sig)
