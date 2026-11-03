@@ -91,6 +91,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import b1_candidate_common as _common  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -873,14 +876,11 @@ def _exec_start_then_status() -> None:
 
 def _stop_started_gateway(binary: str, env: dict[str, str], home: str) -> None:
     _run([binary, "stop"], cwd=REPO_ROOT, timeout=30, env=env)
-    # Belt and braces for a start that half-failed: only the PID this throwaway
-    # HOME recorded, never a pattern match.
-    pid_file = Path(home) / ".aasm" / "gateway.pid"
-    if pid_file.exists():
-        try:
-            os.kill(int(pid_file.read_text().strip()), 15)
-        except (ValueError, OSError):
-            pass
+    # Belt and braces for a start that half-failed. The PID file is written by the
+    # binary under test, so its PID is untrusted: kill_owned_daemon signals it only if
+    # that process executes an image from the debug dir `aasm start` launched the
+    # server from (per-PID proof, never a pattern match; pid<=1/self/parent refused).
+    _common.kill_owned_daemon(Path(home) / ".aasm" / "gateway.pid", _debug_dir())
 
 
 @_executor(
