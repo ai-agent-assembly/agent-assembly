@@ -42,9 +42,9 @@ are then not executed.
 Candidate (fidelity `real_local_process`):
 
 - Both journeys first run `<journey>.source_matches_candidate_sha`: the checkout's HEAD must be
-  `--candidate-sha` and the installer, policy and harness files must equal their blobs in that
-  commit (dirty, foreign or out-of-checkout files FAIL). So the installer, policy and harness
-  scripts are tied to `candidate_sha` byte-for-byte; the artifacts in the mirror are bound only
+  `--candidate-sha` and the installer, policy, harness and `scripts/qa/b1_candidate_common.py`
+  files must equal their blobs in that commit (dirty, foreign or out-of-checkout files FAIL).
+  So the installer, policy, harness and common-module scripts are tied to `candidate_sha` byte-for-byte; the artifacts in the mirror are bound only
   by their own checksums (SHA256SUMS and the candidate digests), not by the sha.
 - J04: `j04.sha256sums_match_artifacts`, `j04.installer_default_installs_all_binaries`
   (installed bytes equal the tarball members), `j04.installer_version_pin_env`,
