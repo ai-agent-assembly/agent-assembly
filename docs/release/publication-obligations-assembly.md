@@ -96,3 +96,10 @@ J53/J59 GHCR and release-asset ids (the J53 run-healthy and J59 published-binari
 checks are manual and report INCONCLUSIVE); the J04/J17 pending ids carry shell
 commands and, as of that PR, have no runner, so it reports them INCONCLUSIVE. Each pending
 check's `failure_response` in the obligation file says what to do when it fails.
+
+A post-publication PASS proves each pending check's own assertion and nothing more. It does
+not by itself prove that the published bytes equal the candidate's locally built bytes:
+CI-built release artifacts are expected to differ from the candidate's `artifact_digests`.
+A run restricted with `--only` is partial: when the selected checks pass but other pending
+checks were not run, `post-publish-verify.py` prints `PARTIAL: N of M pending checks run`
+on stderr and exits 4 rather than 0.
