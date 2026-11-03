@@ -326,6 +326,28 @@ class PartialRunTests(TestCase):
         self.assertIsNone(rep["partial"])
         self.assertNotIn("PARTIAL", err)
 
+    def test_unknown_only_id_is_an_error_naming_it(self):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc, rep, _ = run_main(FakeRegistry(), GHCR_IDS, argv_extra=["--only", "j53-ghcr-tag-resolvse"])
+        self.assertEqual(rc, 2)
+        self.assertIsNone(rep)
+        self.assertIn("j53-ghcr-tag-resolvse", err.getvalue())
+
+    def test_partial_line_is_printed_for_non_pass_partial_runs_too(self):
+        reg = FakeRegistry()  # unrouted registry: the selected check is INCONCLUSIVE
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc, _, _ = run_main(reg, GHCR_IDS, argv_extra=["--only", "j53-ghcr-tag-resolves"])
+        self.assertEqual(rc, 3)
+        self.assertIn("PARTIAL: 1 of 4 pending checks run", err.getvalue())
+
+    def test_help_says_single_check_run_exits_4(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            ppv.main(["--help"])
+        self.assertIn("exits 4 even when it passes", " ".join(out.getvalue().split()))
+
     def test_fail_and_inconclusive_keep_precedence_over_partial(self):
         self.assertEqual(ppv.exit_code([{"status": "FAIL"}], 4), 1)
         self.assertEqual(ppv.exit_code([{"status": "INCONCLUSIVE"}], 4), 3)
