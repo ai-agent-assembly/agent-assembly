@@ -53,7 +53,7 @@ def setUpModule() -> None:
     so the tests do not depend on the real checkout's HEAD or cleanliness."""
     root = Path(tempfile.mkdtemp(prefix="b1-fixture-repo-"))
     for rel in ("scripts/install-cli.sh", "scripts/qa/b1/candidate_harness.py",
-                "scripts/qa/b1/fixtures/install-cli.pre-aaasm-6414.sh", "policy-examples/low-risk.yaml"):
+                "scripts/qa/b1_candidate_common.py", "scripts/qa/b1/fixtures/install-cli.pre-aaasm-6414.sh", "policy-examples/low-risk.yaml"):
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / rel, root / rel)
     _git(root, "init", "-q")
