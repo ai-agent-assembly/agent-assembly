@@ -1873,12 +1873,7 @@ async fn the_real_binary_launched_through_the_installed_environment_is_protected
         // judged on traffic that never carried it (AAASM-6437). A body carrying
         // the secret also ends the wait, so a leak fails fast instead of
         // idling to the deadline.
-        .run_until(Duration::from_secs(45), || {
-            h.upstream.bodies().iter().any(|b| {
-                let body = String::from_utf8_lossy(b);
-                body.contains("[REDACTED:AnthropicKey]") || body.contains(SYNTHETIC_SECRET)
-            })
-        })
+        .run_until(Duration::from_secs(45), || carries_prompt_evidence(&h.upstream.bodies()))
         .await?;
     println!(
         "MEASURED real binary: exit={:?} stopped_by_harness={} elapsed={:?}",
@@ -1954,6 +1949,50 @@ fn tail(output: &str) -> String {
     let masked = output.replace(SYNTHETIC_SECRET, "[SYNTHETIC-SECRET]");
     let start = masked.len().saturating_sub(2048);
     masked[masked.char_indices().find(|(i, _)| *i >= start).map_or(0, |(i, _)| i)..].to_string()
+}
+
+/// Whether any recorded upstream body carries the evidence the real-binary lane
+/// asserts on: the redaction placeholder (the prompt crossed the scanned path) or
+/// the raw synthetic secret (a leak, which the later assertions turn into a
+/// failure). This is the lane's stop condition, so it must not be satisfiable by
+/// the binary's startup traffic alone (AAASM-6437).
+fn carries_prompt_evidence(bodies: &[Vec<u8>]) -> bool {
+    bodies.iter().any(|b| {
+        let body = String::from_utf8_lossy(b);
+        body.contains("[REDACTED:AnthropicKey]") || body.contains(SYNTHETIC_SECRET)
+    })
+}
+
+/// AAASM-6437 regression: the real binary's two startup requests (an SDK-eval
+/// POST and an MCP-registry GET, which has an empty body) satisfied the previous
+/// stop condition, `request_count() >= 2`, so the harness could kill the tool
+/// before the prompt request was sent. They must not satisfy this one.
+#[test]
+fn startup_only_traffic_is_not_prompt_evidence() {
+    let startup_only: Vec<Vec<u8>> = vec![br#"{"sdk":"eval","events":[]}"#.to_vec(), Vec::new()];
+
+    assert!(
+        startup_only.len() >= 2,
+        "precondition: this is exactly the traffic that satisfied the old `request_count() >= 2` stop"
+    );
+    assert!(
+        !carries_prompt_evidence(&startup_only),
+        "startup-only traffic must not end the wait before the prompt request arrives"
+    );
+
+    let mut with_prompt = startup_only.clone();
+    with_prompt.push(b"{\"messages\":[{\"content\":\"key=[REDACTED:AnthropicKey]\"}]}".to_vec());
+    assert!(
+        carries_prompt_evidence(&with_prompt),
+        "a body carrying the redaction placeholder is the prompt evidence"
+    );
+
+    let mut leaked = startup_only;
+    leaked.push(format!("{{\"messages\":[{{\"content\":\"key={SYNTHETIC_SECRET}\"}}]}}").into_bytes());
+    assert!(
+        carries_prompt_evidence(&leaked),
+        "a body carrying the raw secret must also end the wait so the leak fails fast"
+    );
 }
 
 /// AAASM-6435 — a proxy that cannot bind the address it was given must fail to
