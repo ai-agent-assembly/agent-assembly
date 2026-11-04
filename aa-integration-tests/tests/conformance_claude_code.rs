@@ -1868,8 +1868,8 @@ async fn the_real_binary_launched_through_the_installed_environment_is_protected
         // Bounded: with every host MitM'd onto one mock the binary never exits.
         // Stop on the evidence the assertions below read, never on a request
         // count: the binary opens with two startup requests (SDK eval, MCP
-        // registry) before the prompt request, so `request_count() >= 2` fires
-        // ahead of the prompt whenever the host is loaded and the run is then
+        // registry) before the prompt request, so `request_count() >= 2` can
+        // fire ahead of the prompt when the host is loaded, and the run is then
         // judged on traffic that never carried it (AAASM-6437). A body carrying
         // the secret also ends the wait, so a leak fails fast instead of
         // idling to the deadline.
