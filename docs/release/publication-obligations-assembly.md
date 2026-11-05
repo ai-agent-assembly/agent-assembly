@@ -93,8 +93,7 @@ To be tagged as `CANDIDATE_VERIFIED` (checker exit 4, `-rc.N` only), every pendi
 check also needs, beside `why_publication_only` (the reason it needs publication):
 
 - `automated_procedure`: the check's own id, which must be a non-manual key of
-  `RUNNERS` in `scripts/qa/post-publish-verify.py`; or
-  `{"manual": true, "justification": "<why it cannot be automated>"}`.
+  `RUNNERS` in `scripts/qa/post-publish-verify.py`. A manual marker is not accepted.
 - `failure_response`: `docs/release/rc-post-publication-failure-response.md#<anchor>`,
   where the anchor is a heading in that document.
 
