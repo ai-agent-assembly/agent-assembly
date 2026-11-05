@@ -147,12 +147,14 @@ fi
 # post-candidate tampered evidence file through undetected until here.
 # Exit 4 is the rc-only two-stage state (ADR 0042, AAASM-6424): technical
 # eligibility for an -rc.N tag, never authorization. Exit 3 and every other
-# non-zero code still refuse, so final tags keep the exit-0-only rule.
+# non-zero code still refuse, so final tags keep the exit-0-only rule. The
+# checker returns 4 only when a committed owner approval for this exact tag and
+# commit exists on the remote main (ref descending from HEAD).
 python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD \
-  --accept-rc-candidate-verified
+  --accept-rc-candidate-verified --approval-ref "${REMOTE_NAME}/main"
 EVIDENCE_RC=$?
 if [ "$EVIDENCE_RC" -eq 4 ]; then
-  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization to publish; post-publication verification stays owed"
+  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization on its own; an owner approval record for this exact tag and commit was verified on ${REMOTE_NAME}/main; post-publication verification stays owed"
 elif [ "$EVIDENCE_RC" -ne 0 ]; then
   fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi

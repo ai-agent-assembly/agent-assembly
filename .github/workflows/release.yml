@@ -452,6 +452,9 @@ jobs:
       - name: Check release-assurance evidence binds this tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # The rc approval record names the tagged commit, so it lands on main
+          # after it; read it from main's current tip.
+          git fetch --no-tags origin main
           # Exit 4 exists only for -rc.N tags with every owed check automated
           # (ADR 0042, AAASM-6424). Exit 3 (pending, not an rc) and every other
           # non-zero code still fail the gate, so final tags need exit 0.
@@ -459,10 +462,10 @@ jobs:
           python3 scripts/qa/check-release-evidence.py \
             --version "$VERSION" \
             --tag-target "${{ github.sha }}" \
-            --accept-rc-candidate-verified || rc=$?
+            --accept-rc-candidate-verified --approval-ref origin/main || rc=$?
           case "$rc" in
             0) ;;
-            4) echo "::notice::CANDIDATE_VERIFIED is technical eligibility for this rc, not authorization to publish; post-publication verification (scripts/qa/post-publish-verify.py) is still owed." ;;
+            4) echo "::notice::CANDIDATE_VERIFIED is technical eligibility, not authorization; the owner approval record for ${GITHUB_REF_NAME} at ${GITHUB_SHA} was verified. Post-publication verification (post-publish-verify.yml) is still owed." ;;
             *) exit "$rc" ;;
           esac
 

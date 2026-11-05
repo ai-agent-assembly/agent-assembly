@@ -220,9 +220,11 @@ fi
 # (a later commit, a catalog edit, or a tampered evidence file can each
 # invalidate it independently of the sign-off's own Verdict line). This
 # check is independent of checks 11/12 in both directions.
+APPROVAL_REF="remote/main"
+git rev-parse --verify -q remote/main >/dev/null || APPROVAL_REF="origin/main"
 # --accept-rc-candidate-verified only ever changes the outcome for -rc.N versions
 # (ADR 0042, AAASM-6424); for every other version the checker behaves as before.
-EVIDENCE_CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version "$VERSION" --tag-target HEAD --accept-rc-candidate-verified 2>&1)"
+EVIDENCE_CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version "$VERSION" --tag-target HEAD --accept-rc-candidate-verified --approval-ref "$APPROVAL_REF" 2>&1)"
 EVIDENCE_CHECK_STATUS=$?
 if [ "$EVIDENCE_CHECK_STATUS" -eq 0 ]; then
   # A green exit here does NOT by itself mean every rule the checker owns
