@@ -988,7 +988,8 @@ class GrpcHealthClientTests(TestCase):
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
         srv.listen(1)
-        seen = {}
+        seen = {"release": threading.Event()}
+        self.addCleanup(seen["release"].set)
 
         def frame(kind, flags, sid, payload):
             return len(payload).to_bytes(3, "big") + bytes([kind, flags]) + sid.to_bytes(4, "big") + payload
@@ -1003,7 +1004,7 @@ class GrpcHealthClientTests(TestCase):
                 buf += chunk
             seen["request"] = buf
             if stall:
-                time.sleep(3)
+                seen["release"].wait(30)  # parked until the test releases it; never a fixed sleep
                 c.close()
                 srv.close()
                 return
@@ -1014,11 +1015,22 @@ class GrpcHealthClientTests(TestCase):
             out += frame(1, 0x5, 1, trailers) if trailers is not None else frame(0, 0x1, 1, b"")
             c.sendall(out)
             if ping:
-                c.settimeout(2)
-                try:
-                    seen["after"] = c.recv(4096)
-                except OSError:
-                    seen["after"] = b""
+                # The client writes its SETTINGS ACK and PING ACK as separate sends, so one recv
+                # can return only the first. Read until the PING ACK is present, EOF, or a deadline.
+                ack = frame(6, 1, 0, b"12345678")
+                got, end = b"", time.monotonic() + 10
+                c.settimeout(1)
+                while ack not in got and time.monotonic() < end:
+                    try:
+                        chunk = c.recv(4096)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    got += chunk
+                seen["after"] = got
             c.close()
             srv.close()
         th = threading.Thread(target=run, daemon=True)
@@ -1038,6 +1050,24 @@ class GrpcHealthClientTests(TestCase):
         th.join(5)
         self.assertIn(b"\x00\x00\x08\x06\x01\x00\x00\x00\x0012345678", seen["after"])
 
+    def test_ping_ack_is_flushed_before_the_call_returns_when_reads_are_fragmented(self):
+        # Regression: the fake server must see the PING ACK even if SETTINGS ACK arrives alone
+        # first; split the client's sends into one byte reads on the server side.
+        port, th, seen = self.serve(b"\x00\x00\x00\x00\x02\x08\x01", ping=True)
+        orig = socket.socket.sendall
+        calls = []
+
+        def spaced(sock, data, *a):
+            calls.append(len(data))
+            r = orig(sock, data, *a)
+            time.sleep(0.05)  # widen the gap between the client's consecutive sends
+            return r
+        with mock.patch.object(socket.socket, "sendall", spaced):
+            self.assertEqual(ppv.grpc_health_check("127.0.0.1", port, 5), "SERVING")
+        th.join(10)
+        self.assertGreaterEqual(len(calls), 3)  # request, SETTINGS ACK, PING ACK are separate sends
+        self.assertIn(b"\x00\x00\x08\x06\x01\x00\x00\x00\x0012345678", seen["after"])
+
     def test_response_without_trailers_is_an_error(self):
         port, th, _ = self.serve(b"\x00\x00\x00\x00\x02\x08\x01", trailers=None)
         with self.assertRaises(ppv.FetchError):
@@ -1049,11 +1079,11 @@ class GrpcHealthClientTests(TestCase):
             ppv.grpc_health_check("127.0.0.1", port, 5)
 
     def test_overall_deadline_bounds_a_stalled_server(self):
-        port, th, _ = self.serve(b"", stall=True)
-        t0 = time.monotonic()
+        port, th, seen = self.serve(b"", stall=True)
         with self.assertRaises((ppv.FetchError, OSError)):
             ppv.grpc_health_check("127.0.0.1", port, 0.5)
-        self.assertLess(time.monotonic() - t0, 2.5)
+        # the server is still parked, so only the client's own deadline can have ended the call
+        self.assertFalse(seen["release"].is_set())
 
     def test_not_serving_status_is_reported(self):
         port, th, _ = self.serve(b"\x00\x00\x00\x00\x02\x08\x02")
