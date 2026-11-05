@@ -30,7 +30,7 @@ _spec = importlib.util.spec_from_file_location("j08_j56_harness", HARNESS)
 H = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(H)
 
-FIXTURES = ["golden-path.v1.yaml", "golden-path.v2-read-deny.yaml", "sdk_driver.py"]
+FIXTURES = ["golden-path.v1.yaml", "golden-path.v2-read-deny.yaml", "sdk_driver.py", "fw_control.py"]
 VERSION = "0.0.1-rc.8"
 README_CLAIM = "1. `init_assembly()` registers the agent with the gateway and auto-loads the LangChain adapter.\n"
 
@@ -116,6 +116,43 @@ class FakeBackend(H.Backend):
         if tool == "delete_file":
             s.unlink(missing_ok=True)
         return {"executed": True, "error": None, "typed": False}
+
+
+FW_STUB_OUT = "tests/test_smoke.py::test_a PASSED\ntests/test_smoke.py::test_b PASSED\n\n== 2 passed in 0.1s ==\n"
+
+
+
+
+def fw_install(self, fid, example):
+    return (1, "resolution failed: no wheel for foo\n" * 3) if self.mode == "fw_install_fail" else (0, "ok")
+
+
+def fw_test(self, fid, example):
+    if self.mode == "fw_skipped":
+        return 0, "tests/test_smoke.py::test_a SKIPPED\n\n== 1 skipped in 0.1s ==\n"
+    if self.mode == "fw_tests_fail":
+        return 1, "== 1 failed, 1 passed in 0.1s ==\n"
+    return 0, FW_STUB_OUT
+
+
+def fw_control(self, fid, example, sentinel_dir):
+    if self.mode == "fw_no_engine":
+        return {"error": "no-engine-with-check_tool_start"}
+    if self.mode != "fw_control_invalid":
+        (sentinel_dir / "ungoverned.sentinel").write_text("x")
+    if self.mode == "fw_deny_leaks":
+        (sentinel_dir / "denied.sentinel").write_text("x")
+    if self.mode != "fw_allow_blocked":
+        (sentinel_dir / "allowed.sentinel").write_text("x")
+    return {"engine": "LocalPolicyEngine", "deny_tool": "write_file", "allow_tool": "compute_sum"}
+
+
+def fw_run_snippet(self, fid, code):
+    return (1, "Traceback: boom") if self.mode == "readme_fails" else (0, "alice is in engineering\n")
+
+
+for _f in (fw_install, fw_test, fw_control, fw_run_snippet):
+    setattr(FakeBackend, _f.__name__, _f)
 
 
 class Fixture:
@@ -334,6 +371,169 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_unwired_control_still_blocked_fails(self):
         self.check("unwired_still_blocked", "j56-c-unwired-callbacks-control")
+
+
+REGION = "    # region: quickstart\n    with init_assembly(a) as ctx:\n        policy = LocalPolicyEngine()\n        # endregion\n"
+SLICE = "from agent_assembly import init_assembly\n\nwith init_assembly(a) as ctx:\n    policy = LocalPolicyEngine()\n"
+README_QS = "```python\nfrom langchain_community.llms import FakeListLLM\nfrom agent_assembly import init_assembly\n```\n"
+FW_IDS = ["alpha-tool-policy", "langchain-basic-agent"]
+
+
+def _commit_repo(repo: Path) -> str:
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fixture")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+class MatrixFixture(Fixture):
+    def __init__(self, tc, mode="good", slice_text=SLICE):
+        super().__init__(tc, journey="J08", mode=mode)
+        self.sdk = self.dir / "sdk"
+        (self.sdk / "quickstart_snippets").mkdir(parents=True)
+        (self.sdk / "quickstart_snippets/manifest.json").write_text(json.dumps(
+            {"frameworks": [{"framework_id": i, "source_example": f"python/{i}/src/main.py"} for i in FW_IDS]}))
+        for i in FW_IDS:
+            (self.sdk / f"quickstart_snippets/{i}.py").write_text(slice_text)
+        (self.sdk / "README.md").write_text(README_QS)
+        self.sdk_sha = _commit_repo(self.sdk)
+        self.ex = self.dir / "examples"
+        for i in FW_IDS:
+            (self.ex / f"python/{i}/src").mkdir(parents=True)
+            (self.ex / f"python/{i}/src/main.py").write_text(REGION)
+        self.ex_sha = _commit_repo(self.ex)
+
+    def argv(self, digests=True, sdk_sha=None, frameworks="all", ex_sha=None):
+        a = super().argv(digests, sdk_sha or self.sdk_sha)
+        return a + ["--frameworks", frameworks, "--sdk-dir", str(self.sdk), "--examples-dir", str(self.ex),
+                    "--examples-sha", ex_sha or self.ex_sha]
+
+    def run(self, digests=True, sdk_sha=None, frameworks="all", ex_sha=None):
+        def factory(ctx, bins, wheel, driver):
+            return FakeBackend(self.mode, ctx)
+        rc = H.run_harness(self.argv(digests, sdk_sha, frameworks, ex_sha), factory)
+        return rc, (json.loads(self.out.read_text()) if self.out.exists() else None)
+
+
+class FrameworkMatrixTests(unittest.TestCase):
+    def fw(self, mode="good", **kw):
+        fx = MatrixFixture(self, mode=mode, **kw)
+        _, rep = fx.run()
+        return rep
+
+    def test_good_matrix_has_one_install_and_one_allow_deny_check_per_framework_plus_readme(self):
+        rep = self.fw()
+        for i in FW_IDS:
+            self.assertEqual(st(rep, f"j08-c-fw-{i}-install"), "PASS")
+            self.assertEqual(st(rep, f"j08-c-fw-{i}-allow-deny"), "PASS", json.dumps(rep["candidate_checks"], indent=1))
+        self.assertEqual(st(rep, "j08-c-readme-fakellm-quickstart"), "PASS")
+        row = next(c for c in rep["candidate_checks"] if c["id"].endswith("alpha-tool-policy-allow-deny"))
+        self.assertIn("LocalPolicyEngine wiring, not gateway policy", row["detail"])
+
+    def test_frameworks_subset_runs_only_the_named_ones_without_readme(self):
+        fx = MatrixFixture(self)
+        _, rep = fx.run(frameworks="alpha-tool-policy")
+        ids = [c["id"] for c in rep["candidate_checks"]]
+        self.assertIn("j08-c-fw-alpha-tool-policy-install", ids)
+        self.assertNotIn("j08-c-fw-langchain-basic-agent-install", ids)
+        self.assertNotIn("j08-c-readme-fakellm-quickstart", ids)
+
+    def test_unknown_framework_id_is_a_usage_error(self):
+        fx = MatrixFixture(self)
+        self.assertEqual(fx.run(frameworks="nope")[0], 2)
+
+    def test_framework_install_failure_fails_with_log_tail_never_not_covered(self):
+        rep = self.fw("fw_install_fail")
+        row = next(c for c in rep["candidate_checks"] if c["id"] == "j08-c-fw-alpha-tool-policy-install")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("resolution failed", row["detail"])
+        self.assertEqual(rep["verdict"], "BLOCK")
+        self.assertEqual(st(rep, "j08-c-readme-fakellm-quickstart"), "FAIL")
+
+    def test_skipped_test_fails_never_passes(self):
+        self.assertEqual(st(self.fw("fw_skipped"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_failing_smoke_test_fails(self):
+        self.assertEqual(st(self.fw("fw_tests_fail"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_missing_verbatim_slice_fails(self):
+        rep = self.fw(slice_text="from agent_assembly import init_assembly\n# edited\n")
+        row = next(c for c in rep["candidate_checks"] if c["id"] == "j08-c-fw-alpha-tool-policy-allow-deny")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("verbatim", row["detail"])
+
+    def test_deny_leaves_side_effect_fails(self):
+        self.assertEqual(st(self.fw("fw_deny_leaks"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_control_without_the_ungoverned_side_effect_fails(self):
+        self.assertEqual(st(self.fw("fw_control_invalid"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_control_that_cannot_be_established_fails(self):
+        self.assertEqual(st(self.fw("fw_no_engine"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_allow_case_blocked_fails(self):
+        self.assertEqual(st(self.fw("fw_allow_blocked"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")
+
+    def test_readme_quickstart_failure_fails(self):
+        self.assertEqual(st(self.fw("readme_fails"), "j08-c-readme-fakellm-quickstart"), "FAIL")
+
+    def test_dirty_examples_checkout_is_rejected(self):
+        fx = MatrixFixture(self)
+        (fx.ex / f"python/{FW_IDS[0]}/src/main.py").write_text(REGION + "# local edit\n")
+        self.assertEqual(fx.run()[0], 2)
+
+    def test_examples_checkout_at_the_wrong_sha_is_rejected(self):
+        fx = MatrixFixture(self)
+        self.assertEqual(fx.run(ex_sha="a" * 40)[0], 2)
+
+    def test_dirty_sdk_checkout_is_rejected(self):
+        fx = MatrixFixture(self)
+        (fx.sdk / "README.md").write_text("changed\n")
+        self.assertEqual(fx.run()[0], 2)
+
+    def test_untracked_files_in_examples_do_not_reject(self):
+        fx = MatrixFixture(self)
+        (fx.ex / "python" / FW_IDS[0] / ".venv-qa").mkdir()
+        (fx.ex / "python" / FW_IDS[0] / ".venv-qa" / "x").write_text("x")
+        self.assertEqual(st(fx.run()[1], "j08-c-fw-alpha-tool-policy-install"), "PASS")
+
+
+class FwControlDriverTests(unittest.TestCase):
+    """The real driver, against stdlib-only fake `src.policy` modules (no SDK needed)."""
+
+    def drive(self, policy_py: str):
+        d = Path(tempfile.mkdtemp(prefix="fwctl-"))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        (d / "src").mkdir()
+        (d / "src/__init__.py").write_text("")
+        (d / "src/policy.py").write_text(policy_py)
+        (d / "s").mkdir()
+        p = subprocess.run([sys.executable, "-I", str(ROOT / "scripts/qa/fixtures/j56/fw_control.py"), "--example-dir", str(d),
+                            "--sentinel-dir", str(d / "s")], capture_output=True, text=True, timeout=60)
+        res = json.loads(next(l for l in p.stdout.splitlines() if l.startswith("RESULT "))[7:])
+        return res, {f.name for f in (d / "s").iterdir()}
+
+    def test_serialized_convention_engine(self):
+        res, files = self.drive("DENIED_TOOLS = frozenset({'write_file'})\nclass LocalPolicyEngine:\n"
+                                "    def check_tool_start(self, serialized, **kw):\n"
+                                "        return {'status': 'deny' if serialized['name'] in DENIED_TOOLS else 'allow'}\n")
+        self.assertEqual(files, {"ungoverned.sentinel", "allowed.sentinel"})
+        self.assertEqual((res["convention"], res["deny_tool"]), ("serialized", "write_file"))
+
+    def test_tool_name_convention_engine(self):
+        res, files = self.drive("DENIED_TOOLS = frozenset({'delete_files'})\nclass LocalPolicyEngine:\n"
+                                "    def check_tool_start(self, *, tool_name='', **kw):\n"
+                                "        return {'status': 'deny' if tool_name in DENIED_TOOLS else 'allow'}\n")
+        self.assertEqual(res["convention"], "tool_name")
+        self.assertNotIn("denied.sentinel", files)
+
+    def test_engine_that_allows_everything_is_not_a_control(self):
+        res, _ = self.drive("class LocalPolicyEngine:\n    def check_tool_start(self, **kw):\n        return {'status': 'allow'}\n")
+        self.assertEqual(res["error"], "no-denied-and-allowed-tool-found")
+
+    def test_missing_engine_is_reported(self):
+        res, _ = self.drive("X = 1\n")
+        self.assertEqual(res["error"], "no-engine-with-check_tool_start")
 
 
 if __name__ == "__main__":
