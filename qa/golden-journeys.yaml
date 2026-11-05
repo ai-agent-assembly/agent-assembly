@@ -2973,12 +2973,17 @@ journeys:
   # not a value-level test, is what would have failed pre-AAASM-6038) verified
   # by live mutation this pass -- see negative_control below. AC1 ("a confined
   # launch's effective spec matches the full requested execution spec
-  # field-for-field") is NOT covered by this evidence: both cited tests stop
-  # at spec construction (aa-cli's base_spec) and never exercise delivery into
-  # the actual confined process through aa-runtime/an isolation backend -- no
-  # test here touches aa-runtime, even though it is one of this journey's own
-  # `surfaces`. Left `partial`, not promoted to `automated`, for that reason;
-  # AAASM-6269 remains the gap owner for AC1.
+  # field-for-field") was NOT covered by the two base-spec tests alone: both stop
+  # at spec construction. PR #2796 added `confined_launch_value_proof`, which
+  # drives resolve_boundary and run_confined into a recording backend and
+  # compares all seven ExecutionSpec fields at plan, prepare and spawn, plus the
+  # child environment at the hand-off. That proves what the launch path hands
+  # to the backend. It does not prove a real backend or aa-runtime applies it
+  # to the confined process. Left `partial` for that reason; AAASM-6269 remains
+  # the gap owner for AC1. AC3 as worded (a test that fails before AAASM-6038
+  # and passes after) cannot be met by any runtime test: working_dir was
+  # already copied before that change (commit 0cd44922f), so only the
+  # structural field-sync guard protects it.
   lifecycle_state: partial
   gap_owner: AAASM-6269
   evidence:
@@ -2988,6 +2993,12 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-cli/src/commands/run.rs::the_execution_spec_carries_the_working_directory
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::confined_launch_value_proof::the_backend_receives_the_requested_spec_including_resource_ceilings
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::confined_launch_value_proof::the_backend_receives_the_requested_spec_including_leases_and_policy_requirements
   execution_lanes:
   - pr
   - main
