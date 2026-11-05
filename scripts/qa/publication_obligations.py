@@ -236,12 +236,15 @@ def candidate_artifact_digests(obligation: dict[str, Any]) -> dict[str, dict[str
 # --- rc two-stage acceptance (AAASM-6424, ADR 0042 update) -------------------
 # Scope is deliberately the `-rc.N` series only: final tags and every other
 # prerelease keep the exit-0-only gate.
-RC_VERSION_RE = re.compile(r"\d+\.\d+\.\d+-rc\.\d+")
+# ASCII digits only and no leading zeros: `\d` alone would accept other Unicode digits.
+_NUM = r"(?:0|[1-9][0-9]*)"
+RC_VERSION_RE = re.compile(rf"{_NUM}\.{_NUM}\.{_NUM}-rc\.{_NUM}", re.ASCII)
 FAILURE_RESPONSE_DOC = "docs/release/rc-post-publication-failure-response.md"
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
 APPROVAL_SCOPE = "rc-publish"
+APPROVAL_REF_RE = re.compile(r"refs/remotes/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 _SHA40_RE = re.compile(r"[0-9a-f]{40}")
 
 
@@ -303,23 +306,21 @@ def rc_pending_check_problems(
         if not isinstance(c, dict):
             continue
         cid = c.get("id")
+        # An rc may owe only automated checks: a manual marker is not accepted, even
+        # with a justification, so an owed check can never be left to a human to remember.
         proc = c.get("automated_procedure")
-        if isinstance(proc, str):
-            if proc != cid:
-                p.append(f"journey {jid} pending check {cid!r} automated_procedure {proc!r} must equal the check id")
-            elif proc not in automated_runner_ids:
-                p.append(
-                    f"journey {jid} pending check {cid!r} names no automated runner in "
-                    "post-publish-verify.py RUNNERS (a missing or manual runner only ever reports INCONCLUSIVE)"
-                )
-        elif isinstance(proc, dict):
-            if proc.get("manual") is not True or not _nonempty_str(proc.get("justification")):
-                p.append(
-                    f"journey {jid} pending check {cid!r} manual automated_procedure needs "
-                    "manual: true and a non-empty justification"
-                )
-        else:
-            p.append(f"journey {jid} pending check {cid!r} declares no automated_procedure")
+        if not isinstance(proc, str):
+            p.append(
+                f"journey {jid} pending check {cid!r} must declare automated_procedure as the id of an "
+                "automated runner; manual markers are not accepted for an rc"
+            )
+        elif proc != cid:
+            p.append(f"journey {jid} pending check {cid!r} automated_procedure {proc!r} must equal the check id")
+        elif proc not in automated_runner_ids:
+            p.append(
+                f"journey {jid} pending check {cid!r} names no automated runner in "
+                "post-publish-verify.py RUNNERS (a missing or manual runner only ever reports INCONCLUSIVE)"
+            )
 
         ref = c.get("failure_response")
         prefix = FAILURE_RESPONSE_DOC + "#"

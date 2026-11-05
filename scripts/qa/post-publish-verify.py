@@ -25,6 +25,9 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
   does not hash to its digest, a missing platform). A timeout, a 5xx, a rate limit or
   an auth refusal is INCONCLUSIVE: "could not tell" is not "wrong" and not "right".
+* The release-assets probe checks that the release is published, not a draft, and that
+  SHA256SUMS names every required tarball for every platform. It does not download or
+  hash the tarballs, so it proves presence, not contents.
 * Exit 0 only when at least one check ran, every check is PASS, and every pending check in
   the obligations file was run. 1 if any FAIL, 3 if some are INCONCLUSIVE and none FAIL,
   4 if every selected check PASSED but `--only` left other pending checks NOT run (a
@@ -1108,6 +1111,19 @@ def verify(pending: list[dict[str, Any]], tag: str, fetch: Fetcher, timeout: flo
 
 PARTIAL_EXIT = 4
 
+# Only "not there yet" is worth retrying while an asynchronous publish finishes. A body
+# that hashes wrong or a missing platform is definitive and must not be retried away.
+_NOT_YET_RE = re.compile(r"not found \(404\)|asset .* missing|still a draft")
+
+
+def retryable(results: list[dict[str, Any]]) -> bool:
+    """True when nothing definitive failed: every non-PASS is INCONCLUSIVE or a FAIL that
+    only says the artifact is not published yet. All-PASS is not retryable (nothing to retry)."""
+    bad = [r for r in results if r["status"] != PASS]
+    return bool(bad) and all(
+        r["status"] == INCONCLUSIVE or _NOT_YET_RE.search(r["detail"]) for r in bad
+    )
+
 
 def exit_code(results: list[dict[str, Any]], pending_total: int | None = None) -> int:
     """`pending_total` is the number of pending checks in the obligations file; when given and
@@ -1160,6 +1176,7 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher, tools: Tools | None =
         "obligations_sha256": _digest(raw), "exit_code": code,
         "partial": {"run": len(results), "pending": len(pending), "not_run": not_run} if not_run else None,
         "summary": {s: sum(1 for r in results if r["status"] == s) for s in (PASS, FAIL, INCONCLUSIVE)},
+        "retryable": retryable(results),
         "results": results,
     }, indent=2))
     return code

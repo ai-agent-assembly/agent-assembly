@@ -195,10 +195,13 @@ fi
 
 echo "== State (k) (AAASM-6424): release.yml gate accepts exit 0 and 4 only, and passes the rc flag =="
 GATE_STEP="$(awk '/release-evidence-gate:/{g=1} g && /check-release-evidence.py/{p=1} p{print} p && /esac/{exit}' .github/workflows/release.yml)"
-if printf '%s' "$GATE_STEP" | grep -q -- '--accept-rc-candidate-verified --approval-ref origin/main' \
-  && grep -q -- '--accept-rc-candidate-verified --approval-ref "${REMOTE_NAME}/main"' scripts/release-tag-guard.sh \
+if printf '%s' "$GATE_STEP" | grep -q -- '--accept-rc-candidate-verified --approval-ref refs/remotes/origin/main' \
+  && grep -q -- '--accept-rc-candidate-verified --approval-ref "refs/remotes/${REMOTE_NAME}/main"' scripts/release-tag-guard.sh \
   && grep -q -- 'tags:' .github/workflows/post-publish-verify.yml \
   && grep -q 'post-publish-verify.py --tag' .github/workflows/post-publish-verify.yml \
+  && grep -q 'schedule:' .github/workflows/post-publish-watchdog.yml \
+  && grep -q '^/docs/release/approvals/ ' .github/CODEOWNERS \
+  && grep -q '^/scripts/release-tag-guard.sh ' .github/CODEOWNERS \
   && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+0\) ;;' \
   && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+4\) echo' \
   && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+\*\) exit "\$rc" ;;' \

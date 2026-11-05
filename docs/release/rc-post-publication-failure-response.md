@@ -131,6 +131,16 @@ supersession; no agent or workflow performs a yank, unpublish or deletion on its
 
 ## What this procedure does not do
 
+- It does not authenticate the owner approval that allowed the rc. That record is
+  trusted as far as who can land a commit on `main` is trusted; CODEOWNERS routes the
+  review, and whether branch protection requires code-owner review without
+  self-approval is a GitHub setting this repository cannot configure or verify (owner
+  follow-up).
+- The release-assets check proves the assets are listed, not their contents.
+- Verification and its watchdog are best-effort automation: a scheduled workflow can be
+  disabled by GitHub after 60 days of inactivity, so the release owner still looks at
+  the result.
+
 - It does not authorize a tag or a publish; `CANDIDATE_VERIFIED` is technical
   eligibility only.
 - It does not change the final-release gate: a final tag still needs checker exit 0

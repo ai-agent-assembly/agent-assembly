@@ -9,6 +9,13 @@
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
+# rc two-stage (ADR 0042 update, AAASM-6424): for an -rc.N version, check 14 can
+# accept CANDIDATE_VERIFIED only with a committed owner approval for the exact
+# tagged commit, landed on main AFTER that commit (the record cannot be inside the
+# commit it names). It is read from refs/remotes/remote/main (or origin/main) as
+# last fetched; this script does not fetch it, so run the guard (which does) or
+# `git fetch remote main` first.
+
 set -uo pipefail
 
 if [ $# -ne 1 ]; then
@@ -220,8 +227,8 @@ fi
 # (a later commit, a catalog edit, or a tampered evidence file can each
 # invalidate it independently of the sign-off's own Verdict line). This
 # check is independent of checks 11/12 in both directions.
-APPROVAL_REF="remote/main"
-git rev-parse --verify -q remote/main >/dev/null || APPROVAL_REF="origin/main"
+APPROVAL_REF="refs/remotes/remote/main"
+git rev-parse --verify -q "$APPROVAL_REF" >/dev/null || APPROVAL_REF="refs/remotes/origin/main"
 # --accept-rc-candidate-verified only ever changes the outcome for -rc.N versions
 # (ADR 0042, AAASM-6424); for every other version the checker behaves as before.
 EVIDENCE_CHECK_OUT="$(python3 scripts/qa/check-release-evidence.py --version "$VERSION" --tag-target HEAD --accept-rc-candidate-verified --approval-ref "$APPROVAL_REF" 2>&1)"

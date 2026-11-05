@@ -1334,5 +1334,21 @@ class EveryPendingIdHasAnAutomatedRunnerTests(TestCase):
 
 
 
+class RetryableTests(TestCase):
+    def row(self, status, detail=""):
+        return {"status": status, "detail": detail}
+
+    def test_inconclusive_and_not_yet_present_retry(self):
+        self.assertTrue(ppv.retryable([self.row("INCONCLUSIVE", "x"), self.row("PASS")]))
+        self.assertTrue(ppv.retryable([self.row("FAIL", "ghcr.io/x:tag not found (404)")]))
+        self.assertTrue(ppv.retryable([self.row("FAIL", "asset SHA256SUMS missing")]))
+
+    def test_definitive_failure_never_retries(self):
+        self.assertFalse(ppv.retryable([self.row("FAIL", "body hashes to sha256:a but Docker-Content-Digest is 'b'")]))
+        self.assertFalse(ppv.retryable([self.row("INCONCLUSIVE", "x"),
+                                        self.row("FAIL", "platform linux/arm64 missing from the index")]))
+        self.assertFalse(ppv.retryable([self.row("PASS")]))
+
+
 if __name__ == "__main__":
     main(verbosity=2)

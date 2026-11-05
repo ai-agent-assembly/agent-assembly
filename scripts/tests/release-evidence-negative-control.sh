@@ -1520,6 +1520,7 @@ fi
 # (and beta/alpha) versions keep exit 3 even with the flag.
 # ===========================================================================
 
+RC_REF="refs/remotes/origin/main"
 RC_DOC_REL="docs/release/rc-post-publication-failure-response.md"
 RC_CHECK_ID="j53-ghcr-tag-resolves"
 RC_CATALOG="${CATALOG_PEND//pypi-install/$RC_CHECK_ID}"
@@ -1565,11 +1566,13 @@ json.dump(a, open(f"{d}/docs/release/approvals/v{v}.approval.json", "w"), indent
 PYEOF6
     commit_all "$PDIR" "owner approval" >/dev/null
   fi
+  # The authorization ref is a fully qualified remote-tracking ref, as in CI.
+  git -C "$PDIR" update-ref "$RC_REF" HEAD
 }
 
 ORIG_VERSION="$VERSION"
 VERSION="0.0.0-rc.1"
-CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC_REF")
 
 echo "== RC1 (positive): rc + valid pending-only record + flag -> exit 4, never 0 =="
 rc_case rc1
@@ -1581,7 +1584,7 @@ RC1_DIR="$PDIR"; RC1_SHA="$PT"
 echo "== RC2: same record, rc, WITHOUT the flag -> still exit 3 =="
 CHECKER_EXTRA=()
 assert_exit "RC2 no flag" 3 "$RC1_DIR" "$RC1_SHA"
-CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC_REF")
 
 echo "== RC3 (a): final / non-rc versions with a pending-only record -> still exit 3 even with the flag =="
 for v in 0.0.0 0.0.0-test 0.0.0-beta.1 0.0.0-rc.1-extra 0.0.0-rc.; do
@@ -1600,11 +1603,13 @@ rc_blocked() {
   assert_exit "RC $1" 1 "$PDIR" "$PT"
   assert_output_contains "RC $1 reason" "$3"
 }
-rc_blocked missing-automated-procedure 'doc["journeys"][0]["pending_checks"][0].pop("automated_procedure")' "declares no automated_procedure"
+rc_blocked missing-automated-procedure 'doc["journeys"][0]["pending_checks"][0].pop("automated_procedure")' "manual markers are not accepted"
 RC_NOPROC_DIR="$PDIR"; RC_NOPROC_SHA="$PT"
 rc_blocked procedure-not-the-check-id 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = "something-else"' "must equal the check id"
 rc_blocked manual-runner-stub 'doc["journeys"][0]["pending_checks"][0].update(id="j53-published-image-runs-healthy", automated_procedure="j53-published-image-runs-healthy")' "do not equal registry publication_checks ids"
-rc_blocked manual-without-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True}' "needs manual: true and a non-empty justification"
+rc_blocked manual-without-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True}' "manual markers are not accepted"
+rc_blocked manual-with-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True, "justification": "needs a container runtime the gate host lacks"}' "manual markers are not accepted"
+RC_MANUAL_DIR="$PDIR"; RC_MANUAL_SHA="$PT"
 rc_blocked missing-failure-response 'doc["journeys"][0]["pending_checks"][0].pop("failure_response")' "failure_response must be"
 RC_NOFR_DIR="$PDIR"; RC_NOFR_SHA="$PT"
 rc_blocked failure-response-wrong-anchor 'doc["journeys"][0]["pending_checks"][0]["failure_response"] = "'"$RC_DOC_REL"'#no-such-heading"' "is not a heading in"
@@ -1657,10 +1662,8 @@ assert_exit "RC waived sibling journey" 1 "$PDIR" "$PT"
 assert_output_contains "RC waiver reason" "a waiver is not a pass"
 RC_WAIVER_SHA="$PT"
 
-echo "== RC: explicit manual marker with a justification is accepted =="
-rc_case rc-manual-justified 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True, "justification": "needs a container runtime the gate host lacks"}'
-rc_commit
-assert_exit "RC justified manual marker" 4 "$PDIR" "$PT"
+echo "== RC: a manual marker is refused even with a justification (founder: every owed check is automated) =="
+assert_exit "RC justified manual marker refused" 1 "$RC_MANUAL_DIR" "$RC_MANUAL_SHA"
 
 echo "== RC approval: CANDIDATE_VERIFIED is not authorization (AAASM-6424) =="
 rc_case rc-ap-none
@@ -1671,9 +1674,44 @@ RC_APNONE_DIR="$PDIR"; RC_APNONE_SHA="$PT"
 CHECKER_EXTRA=(--accept-rc-candidate-verified)
 assert_exit "RC approval ref not supplied -> blocked" 1 "$RC1_DIR" "$RC1_SHA"
 assert_output_contains "RC no ref reason" "no --approval-ref given"
-CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC1_SHA")
+# A side commit off the candidate that DOES carry the approval record but is not a
+# descendant of the tag target, so only the ancestry rule can refuse it.
+RC_APPROVAL_REL="docs/release/approvals/v$VERSION.approval.json"
+RC_SIDE_TREE=$(
+  export GIT_INDEX_FILE="$WORKDIR/side-index"
+  git -C "$RC1_DIR" read-tree "$RC1_SHA^"
+  git -C "$RC1_DIR" update-index --add --cacheinfo "100644,$(git -C "$RC1_DIR" rev-parse "$RC_REF:$RC_APPROVAL_REL"),$RC_APPROVAL_REL"
+  git -C "$RC1_DIR" write-tree
+)
+git -C "$RC1_DIR" update-ref refs/remotes/origin/stale "$(git -C "$RC1_DIR" commit-tree "$RC_SIDE_TREE" -p "$RC1_SHA^" -m side)"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref refs/remotes/origin/stale)
 assert_exit "RC approval ref that does not descend from the tag target -> blocked" 1 "$RC1_DIR" "$RC1_SHA"
-CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
+assert_output_contains "RC non-descendant reason" "does not descend from the tag target"
+RC_STALE_DIR="$RC1_DIR"; RC_STALE_SHA="$RC1_SHA"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC_REF")
+
+echo "== RC approval ref: only a fully qualified refs/remotes/ ref is an authorization source =="
+# Colliding names pointing at a ref WITH a valid approval, so a resolver that accepts a
+# short or non-remote name would return exit 4.
+git -C "$RC1_DIR" branch origin/main "$(git -C "$RC1_DIR" rev-parse "$RC_REF")"
+git -C "$RC1_DIR" tag rc-lookalike "$(git -C "$RC1_DIR" rev-parse "$RC_REF")"
+git -C "$RC1_DIR" branch rcmain "$(git -C "$RC1_DIR" rev-parse "$RC_REF")"
+for bad in origin/main refs/heads/rcmain refs/tags/rc-lookalike HEAD refs/remotes/origin/../../heads/rcmain "refs/remotes/origin/main x" -refs/remotes/origin/main; do
+  CHECKER_EXTRA=("--accept-rc-candidate-verified" "--approval-ref=$bad")
+  assert_exit "RC approval ref '$bad' refused" 1 "$RC1_DIR" "$RC1_SHA"
+  assert_output_contains "RC approval ref '$bad' reason" "fully qualified refs/remotes/"
+done
+RC_SHORT_DIR="$RC1_DIR"; RC_SHORT_SHA="$RC1_SHA"
+# A branch and a tag spelled like the qualified ref cannot shadow the real one: the
+# real remote-tracking ref has no approval here, so the lookalikes (which do) must lose.
+git -C "$RC1_DIR" update-ref refs/remotes/origin/noapproval "$RC1_SHA"
+git -C "$RC1_DIR" branch refs/remotes/origin/noapproval "$(git -C "$RC1_DIR" rev-parse "$RC_REF")"
+git -C "$RC1_DIR" tag refs/remotes/origin/noapproval "$(git -C "$RC1_DIR" rev-parse "$RC_REF")"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref refs/remotes/origin/noapproval)
+assert_exit "RC lookalike branch/tag cannot override the qualified ref" 1 "$RC1_DIR" "$RC1_SHA"
+assert_output_contains "RC lookalike reason" "is not authorization"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC_REF")
+assert_exit "RC real qualified ref still accepted next to colliding names" 4 "$RC1_DIR" "$RC1_SHA"
 rc_ap_blocked() {  # $1 label, $2 approval mutation, $3 needle
   rc_case "rc-ap-$1"
   rc_commit "$2"
@@ -1683,10 +1721,13 @@ rc_ap_blocked() {  # $1 label, $2 approval mutation, $3 needle
 rc_ap_blocked wrong-commit 'a["commit_sha"] = "1" * 40' "approval commit_sha"
 RC_APCOMMIT_DIR="$PDIR"; RC_APCOMMIT_SHA="$PT"
 rc_ap_blocked wrong-tag 'a["tag"] = "v0.0.0-rc.2"' "approval tag"
+RC_APTAG_DIR="$PDIR"; RC_APTAG_SHA="$PT"
 rc_ap_blocked wrong-candidate 'a["candidate_sha"] = "2" * 40' "approval candidate_sha"
+RC_APCAND_DIR="$PDIR"; RC_APCAND_SHA="$PT"
 rc_ap_blocked wrong-evidence-digest 'a["evidence_sha256"] = "3" * 64' "approval evidence_sha256"
 RC_APDIG_DIR="$PDIR"; RC_APDIG_SHA="$PT"
 rc_ap_blocked wrong-scope 'a["scope"] = "final-publish"' "approval scope"
+RC_APSCOPE_DIR="$PDIR"; RC_APSCOPE_SHA="$PT"
 rc_ap_blocked no-approver 'a.pop("approved_by")' "approved_by is missing"
 
 # $1 label, $2 file under scripts/qa, $3 needle (must occur once), $4 replacement,
@@ -1705,7 +1746,7 @@ open(p, "w").write(s.replace(needle, repl))
 PYEOF5
   set +e
   python3 "$mut/check-release-evidence.py" --repo-root "$dir" --version "$ver" --tag-target "$sha" \
-    --accept-rc-candidate-verified --approval-ref HEAD >"$mut/out.txt" 2>&1
+    --accept-rc-candidate-verified --approval-ref "${RC_MUT_REF:-$RC_REF}" >"$mut/out.txt" 2>&1
   rc=$?
   set -e
   if [ "$rc" -eq "$want" ]; then
@@ -1719,7 +1760,9 @@ PYEOF5
 rc_mutation_proof "rc-only-scope" publication_obligations.py \
   'return RC_VERSION_RE.fullmatch(version) is not None' 'return True' "$RC3_DIR" "$RC3_SHA" 4 "$RC3_VERSION"
 rc_mutation_proof "automated-procedure" publication_obligations.py \
-  'p.append(f"journey {jid} pending check {cid!r} declares no automated_procedure")' 'pass' "$RC_NOPROC_DIR" "$RC_NOPROC_SHA" 4
+  'proc = c.get("automated_procedure")' 'proc = cid if cid in automated_runner_ids else c.get("automated_procedure")' "$RC_NOPROC_DIR" "$RC_NOPROC_SHA" 4
+rc_mutation_proof "manual-marker-refused" publication_obligations.py \
+  'proc = c.get("automated_procedure")' 'proc = cid if cid in automated_runner_ids else c.get("automated_procedure")' "$RC_MANUAL_DIR" "$RC_MANUAL_SHA" 4
 rc_mutation_proof "failure-response-shape" publication_obligations.py \
   'p.append(f"journey {jid} pending check {cid!r} failure_response must be '"'"'{prefix}<anchor>'"'"'")' 'pass' "$RC_NOFR_DIR" "$RC_NOFR_SHA" 4
 rc_mutation_proof "failure-response-anchor" publication_obligations.py \
@@ -1730,6 +1773,16 @@ rc_mutation_proof "approval-required" check-release-evidence.py \
   'rc_blocks += rc_approval_violations(' 'rc_blocks += [] and rc_approval_violations(' "$RC_APNONE_DIR" "$RC_APNONE_SHA" 4
 rc_mutation_proof "approval-commit-binding" publication_obligations.py \
   '"commit_sha": tag_target_sha,' '"commit_sha": doc.get("commit_sha"),' "$RC_APCOMMIT_DIR" "$RC_APCOMMIT_SHA" 4
+RC_MUT_REF=refs/remotes/origin/stale rc_mutation_proof "approval-descends-from-target" check-release-evidence.py \
+  'if not git.is_ancestor(tag_target_sha, ref_sha):' 'if False:' "$RC_STALE_DIR" "$RC_STALE_SHA" 4
+RC_MUT_REF=origin/main rc_mutation_proof "approval-ref-fully-qualified" check-release-evidence.py \
+  'if not publication_obligations.APPROVAL_REF_RE.fullmatch(approval_ref) or ".." in approval_ref:' 'if False:' "$RC_SHORT_DIR" "$RC_SHORT_SHA" 4
+rc_mutation_proof "approval-tag" publication_obligations.py \
+  '"tag": f"v{version}", ' '"tag": doc.get("tag"), ' "$RC_APTAG_DIR" "$RC_APTAG_SHA" 4
+rc_mutation_proof "approval-candidate" publication_obligations.py \
+  '"candidate_sha": candidate_sha,' '"candidate_sha": doc.get("candidate_sha"),' "$RC_APCAND_DIR" "$RC_APCAND_SHA" 4
+rc_mutation_proof "approval-scope" publication_obligations.py \
+  '"scope": APPROVAL_SCOPE, ' '"scope": doc.get("scope"), ' "$RC_APSCOPE_DIR" "$RC_APSCOPE_SHA" 4
 rc_mutation_proof "approval-evidence-digest-binding" publication_obligations.py \
   '"scope": APPROVAL_SCOPE, "evidence_sha256": evidence_sha256,' '"scope": APPROVAL_SCOPE, "evidence_sha256": doc.get("evidence_sha256"),' "$RC_APDIG_DIR" "$RC_APDIG_SHA" 4
 

@@ -141,5 +141,20 @@ class ObligationDuplicates(unittest.TestCase):
         self.assertTrue(any("duplicate obligation entry" in p for p in problems))
 
 
+class RcRulesTests(unittest.TestCase):
+    def test_rc_version_is_strict(self):
+        for ok in ("0.0.1-rc.8", "10.20.30-rc.0"):
+            self.assertTrue(po.is_rc_version(ok), ok)
+        for bad in ("0.0.1", "0.0.1-rc.01", "00.0.1-rc.1", "0.0.1-rc.", "0.0.1-rc.1\n",
+                    "0.0.1-beta.1", "0.0.1-rc.1-x", "0.0.1-rc.\u0668", "\u0660.0.1-rc.1"):
+            self.assertFalse(po.is_rc_version(bad), repr(bad))
+
+    def test_manual_marker_is_never_accepted(self):
+        ob = {"pending_checks": [{"id": "j53-ghcr-tag-resolves", "failure_response": "x",
+              "automated_procedure": {"manual": True, "justification": "because"}}]}
+        problems = po.rc_pending_check_problems("J53", ob, frozenset({"j53-ghcr-tag-resolves"}), set())
+        self.assertTrue(any("manual markers are not accepted" in m for m in problems))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
