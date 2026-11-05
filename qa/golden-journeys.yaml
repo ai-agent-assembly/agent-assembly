@@ -2531,7 +2531,7 @@ journeys:
     selector: aa-proxy/src/audit_jsonl.rs::tests::an_allowed_record_round_trips_with_its_attribution
   - repo: agent-assembly
     kind: test
-    selector: aa-integration-tests/tests/cli_run_stub_coding_agent_workflow.rs::stub_concurrent_sessions_do_not_cross_attribute_edits_or_denials
+    selector: aa-integration-tests/tests/cli_run_stub_coding_agent_workflow.rs::stub_coding_agent::stub_concurrent_sessions_do_not_cross_attribute_edits_or_denials
   execution_lanes:
   - pr
   - main
