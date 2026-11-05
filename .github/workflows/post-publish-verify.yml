@@ -1,0 +1,64 @@
+name: Post-publish verification (rc)
+
+# AAASM-6424, ADR 0042 update. Stage 2 of the rc two-stage flow: every check an rc
+# record still owes after publication is run against the published tag, and the job
+# fails visibly if any is not PASS, so stage 2 cannot be skipped silently.
+#
+# Separate from release.yml on purpose: the GHCR images are pushed by docker.yml in
+# parallel with release.yml, so no job inside release.yml can wait for them without
+# polling across workflows. This workflow polls itself instead and leaves every
+# release.yml job condition and permission untouched. It is read-only.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*"
+
+jobs:
+  verify:
+    name: Verify owed post-publication checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Run owed checks against the published tag
+        run: |
+          set -u
+          OBL="docs/release/qa-signoff/v${GITHUB_REF_NAME#v}.publication-obligations.json"
+          if [ ! -f "$OBL" ]; then
+            echo "::error::$OBL is missing at this tag: nothing to verify, and an rc must not publish without owed checks recorded"
+            exit 1
+          fi
+          # Publication is asynchronous (release.yml and docker.yml run in parallel),
+          # so a not-yet-published artifact reads as FAIL at first. Retry, and fail
+          # only on the last attempt; any non-zero result on the last attempt fails.
+          rc=1
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            echo "::group::attempt $attempt"
+            python3 -I scripts/qa/post-publish-verify.py --tag "$GITHUB_REF_NAME" --obligations "$OBL" | tee post-publish-result.json
+            rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            [ "$rc" -eq 0 ] && break
+            [ "$attempt" -lt 10 ] && sleep 300
+          done
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::post-publication verification did not PASS every owed check (exit $rc). Follow docs/release/rc-post-publication-failure-response.md; each check's failure_response names its section. INCONCLUSIVE is not a pass."
+            exit "$rc"
+          fi
+          echo "All owed post-publication checks reported PASS for $GITHUB_REF_NAME."
+
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: post-publish-result
+          path: post-publish-result.json
+          if-no-files-found: ignore
