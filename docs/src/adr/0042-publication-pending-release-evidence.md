@@ -141,12 +141,26 @@ never `PASS`, and the checker's default exit for a pending-only record is still 
      and a `failure_response` that is a reference of the form
      `docs/release/rc-post-publication-failure-response.md#<anchor>` whose anchor
      exists in that document at the tag target.
-5. **Consumers.** `release-tag-guard.sh`, `release-readiness.sh` and
-   `release.yml`'s `release-evidence-gate` pass the flag and accept exit 0 or 4,
-   and print that `CANDIDATE_VERIFIED` is technical eligibility, not
-   authorization to create a tag or publish. Authorization remains a separate
-   owner act. No publish job condition changes.
-6. **Consequence for the obligations file.** An rc obligations file written before
+5. **Authorization is mechanical.** Exit 4 additionally requires a committed owner
+   approval record `docs/release/approvals/v<version>.approval.json` with `tag`,
+   `commit_sha` (the exact tagged commit), `candidate_sha`, `approved_by`,
+   `approved_at`, `scope: "rc-publish"` and `evidence_sha256` (sha256 of the
+   evidence file as committed at the tag target). The record names the tagged
+   commit, so it cannot be inside it: it is read from `--approval-ref`, which must
+   descend from the tag target (`<remote>/main` for the guard, `origin/main` in
+   `release.yml`). Absent, malformed or mismatching records refuse the rc path
+   (exit 1). The record is owner-authored data; no tool creates one.
+6. **Consumers.** `release-tag-guard.sh`, `release-readiness.sh` and
+   `release.yml`'s `release-evidence-gate` pass the flag and the approval ref and
+   accept exit 0 or 4. `CANDIDATE_VERIFIED` remains technical eligibility; the
+   approval record is the authorization. No publish job condition changes.
+7. **Stage 2 cannot be skipped.** `.github/workflows/post-publish-verify.yml` runs on
+   `-rc.N` tag pushes, runs `scripts/qa/post-publish-verify.py` against the
+   published tag (retrying while publication completes) and fails visibly unless
+   every owed check is `PASS`, pointing at the failure-response document. It is a
+   separate read-only workflow because the GHCR images are pushed by `docker.yml`
+   in parallel with `release.yml`, so no `release.yml` job can await them.
+8. **Consequence for the obligations file.** An rc obligations file written before
    this update has no `automated_procedure` or per-check `failure_response`; it
    yields exit 3 (blocked for tagging) until they are added. Checks with no
    runner must gain a runner or an explicit justified manual marker.
