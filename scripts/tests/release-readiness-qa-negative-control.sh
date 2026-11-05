@@ -171,6 +171,40 @@ else
   printf '  ✓ %s\n' "check 14 never passes on CANDIDATE_VERIFIED"
 fi
 
+echo "== State (j) (AAASM-6424): evidence checker exits 4 (rc two-stage) — check 14 passes, but readiness never claims authorization =="
+SHIM_DIR="$(mktemp -d)"
+cat > "$SHIM_DIR/python3" <<SHIMEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *check-release-evidence.py*)
+    echo "RC_CANDIDATE_ELIGIBLE — v0.0.0-rc.1 is CANDIDATE_VERIFIED: NOT authorization (exit 4)."
+    exit 4 ;;
+esac
+exec "$REAL_PY" "\$@"
+SHIMEOF
+chmod +x "$SHIM_DIR/python3"
+PATH="$SHIM_DIR:$PATH" bash scripts/release-readiness.sh "$TESTVERSION" > "$OUT_FILE" 2>&1
+rm -rf "$SHIM_DIR"
+assert_line "$OUT_FILE" '✓ Release-assurance evidence is RC_CANDIDATE_ELIGIBLE' "check 14 accepts the rc-only exit 4"
+assert_line "$OUT_FILE" 'RC_CANDIDATE_ELIGIBLE \(rc two-stage\).*NOT authorization' "readiness carries the checker's not-authorization statement"
+if grep -q 'safe to tag' "$OUT_FILE"; then
+  printf '  ✗ %s\n' "readiness claimed 'safe to tag' for an rc with obligations owed"; FAILED=1
+else
+  printf '  ✓ %s\n' "readiness never says 'safe to tag' for CANDIDATE_VERIFIED"
+fi
+
+echo "== State (k) (AAASM-6424): release.yml gate accepts exit 0 and 4 only, and passes the rc flag =="
+GATE_STEP="$(awk '/release-evidence-gate:/{g=1} g && /check-release-evidence.py/{p=1} p{print} p && /esac/{exit}' .github/workflows/release.yml)"
+if printf '%s' "$GATE_STEP" | grep -q -- '--accept-rc-candidate-verified' \
+  && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+0\) ;;' \
+  && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+4\) echo' \
+  && printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+\*\) exit "\$rc" ;;' \
+  && ! printf '%s' "$GATE_STEP" | grep -qE '^[[:space:]]+[1235-9]\)'; then
+  printf '  ✓ %s\n' "release-evidence-gate accepts only checker exit 0 and 4 (3 stays a refusal)"
+else
+  printf '  ✗ %s\n' "release-evidence-gate no longer maps exit 0/4 to success and everything else to failure"; FAILED=1
+fi
+
 echo
 if [ "$FAILED" -ne 0 ]; then
   echo "release-readiness-qa-negative-control: FAILED"
