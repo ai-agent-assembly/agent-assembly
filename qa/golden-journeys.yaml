@@ -606,6 +606,21 @@ journeys:
     selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::same_secret_is_deny_under_block_and_redact_under_redact_only
   - repo: agent-assembly
     kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::redact_only_control_without_secret_is_unredacted_allow
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::block_control_without_secret_is_allow
+  - repo: agent-assembly
+    kind: test
+    selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::pii_control_without_ssn_is_unredacted_allow
+  - repo: agent-assembly
+    kind: test
+    selector: aa-runtime/src/pipeline/mod.rs::tests::normalize_gateway_decision_collapses_unknown_to_deny
+  - repo: agent-assembly
+    kind: test
+    selector: aa-sdk-client/src/decision.rs::tests::redact_preserved_in_both_modes
+  - repo: agent-assembly
+    kind: test
     selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::pii_ssn_is_redacted_under_redact_only
   - repo: agent-assembly
     kind: test
