@@ -20,6 +20,10 @@ every consumer that gates on exit 0 (release.yml's release-evidence-gate,
 release-tag-guard.sh) keeps refusing, so pending can never authorize a tag or a
 publish. Exit-code-3 handling is the only place the distinct state surfaces;
 nothing converts it to OK.
+Exit 4 ("RC_CANDIDATE_ELIGIBLE", AAASM-6424) exists only behind
+--accept-rc-candidate-verified and only for -rc.N versions: the exit-3 state plus
+automated procedures and failure responses for every owed check. It is technical
+eligibility, not authorization to tag or publish, and is never exit 0.
 Exit 1 reasons: every BLOCK reason is printed with the rule that
 raised it and the specific journey/path/file it concerns, so a human (or a
 follow-up agent) can act on the output without re-deriving the investigation.
@@ -113,6 +117,17 @@ def _load_render_signoff_journeys():
 
 
 render_signoff_journeys = _load_render_signoff_journeys()
+
+
+def _load_post_publish_runner_ids() -> frozenset[str]:
+    """Same hyphenated-script loading as above. The allowlist is read from the
+    checkout the checker itself runs from, which release.yml pins to the tag."""
+    module_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "post-publish-verify.py")
+    spec = importlib.util.spec_from_file_location("post_publish_verify", module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["post_publish_verify"] = module  # its dataclasses resolve their module here
+    spec.loader.exec_module(module)
+    return module.automated_runner_ids()
 
 
 class GitRepo:
@@ -1643,6 +1658,35 @@ def rule_r10_artifact_identity(
 # main
 # ---------------------------------------------------------------------------
 
+def rc_two_stage_violations(
+    git: GitRepo, evidence: dict[str, Any], version: str, tag_target_sha: str,
+    required_ids: set[str],
+) -> list[str]:
+    """Why an rc record that is otherwise CANDIDATE_VERIFIED (exit 3) is still
+    not eligible to be tagged (AAASM-6424, ADR 0042 update). Every R1-R11 rule
+    has already passed when this runs, so candidate SHA, artifact digests and
+    registry digest binding, and FAIL / NOT_COVERED rows, are settled; this adds
+    what only the two-stage flow needs."""
+    out: list[str] = []
+    for j in evidence["journeys"]:
+        if j["id"] in required_ids and j.get("status") not in ("PASS", publication_obligations.PENDING_STATUS):
+            out.append(
+                f"journey {j['id']} is {j.get('status')!r}: an rc candidate needs every check that "
+                "can run before publication to PASS, and a waiver is not a pass"
+            )
+    obl_text = git.show_file(tag_target_sha, publication_obligations.obligation_path(version))
+    if obl_text is None:
+        return out + ["obligations file is absent at the tag target"]
+    entries, problems = publication_obligations.index_obligations(json.loads(obl_text))
+    out += problems
+    doc_text = git.show_file(tag_target_sha, publication_obligations.FAILURE_RESPONSE_DOC)
+    anchors = None if doc_text is None else publication_obligations.heading_anchors(doc_text)
+    runner_ids = _load_post_publish_runner_ids()
+    for jid in sorted(entries):
+        out += publication_obligations.rc_pending_check_problems(jid, entries[jid], runner_ids, anchors)
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", required=True, help="e.g. 0.0.1-rc.7")
@@ -1664,6 +1708,11 @@ def main() -> int:
                          help="default: <repo-root>/docs/release/qa-signoff/v<version>.md")
     parser.add_argument("--security-signoff", default=None,
                          help="default: <repo-root>/docs/release/security-signoff/v<version>.md")
+    parser.add_argument("--accept-rc-candidate-verified", action="store_true",
+                         help="for -rc.N versions only: report a record that would exit 3 as exit 4 "
+                              "(RC_CANDIDATE_ELIGIBLE) when every owed check is publication-dependent, "
+                              "automated and has a failure response. Technical eligibility, never "
+                              "authorization to tag or publish; other versions still exit 3 (ADR 0042)")
     parser.add_argument("--post-publish", action="store_true",
                          help="also run R9 (post-publish tag binding) and R10 (post-publish "
                               "artifact identity) against the actually-published tag/release")
@@ -1895,6 +1944,21 @@ def main() -> int:
         for b in all_blocks:
             print(f"  - {b}")
         return 1
+
+    if pending_ids and args.accept_rc_candidate_verified and publication_obligations.is_rc_version(args.version):
+        rc_blocks = rc_two_stage_violations(git, evidence, args.version, tag_target_sha, required_ids)
+        if rc_blocks:
+            print(f"BLOCK — {len(rc_blocks)} rc two-stage violation(s):")
+            for b in rc_blocks:
+                print(f"  - {b}")
+            return 1
+        print(
+            f"RC_CANDIDATE_ELIGIBLE — v{args.version} is CANDIDATE_VERIFIED at {args.tag_target}: every "
+            f"pre-publication check passed on the pinned candidate and {len(pending_ids)} journey(s) owe "
+            f"automated post-publication checks: {pending_ids}. This is technical eligibility only; it is "
+            "NOT authorization to create a tag or publish (exit 4)."
+        )
+        return 4
 
     if pending_ids:
         print(

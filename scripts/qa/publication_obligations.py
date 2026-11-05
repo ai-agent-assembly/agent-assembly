@@ -231,3 +231,69 @@ def candidate_artifact_digests(obligation: dict[str, Any]) -> dict[str, dict[str
         if isinstance(c, dict) and c.get("artifact_digests"):
             out[c["id"]] = dict(sorted(c["artifact_digests"].items()))
     return out
+
+
+# --- rc two-stage acceptance (AAASM-6424, ADR 0042 update) -------------------
+# Scope is deliberately the `-rc.N` series only: final tags and every other
+# prerelease keep the exit-0-only gate.
+RC_VERSION_RE = re.compile(r"\d+\.\d+\.\d+-rc\.\d+")
+FAILURE_RESPONSE_DOC = "docs/release/rc-post-publication-failure-response.md"
+_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+
+
+def is_rc_version(version: str) -> bool:
+    return RC_VERSION_RE.fullmatch(version) is not None
+
+
+def heading_anchors(markdown: str) -> set[str]:
+    """GitHub-style heading slugs, so a failure_response reference can be proven
+    to point at a heading that really exists rather than at a dead link."""
+    out: set[str] = set()
+    for m in _HEADING_RE.finditer(markdown):
+        slug = re.sub(r"[^\w\- ]", "", m.group(1).strip().lower()).replace(" ", "-")
+        out.add(slug)
+    return out
+
+
+def rc_pending_check_problems(
+    jid: str,
+    obligation: dict[str, Any],
+    automated_runner_ids: frozenset[str],
+    failure_doc_anchors: set[str] | None,
+) -> list[str]:
+    """Extra problems that stop an rc record with owed checks from being
+    eligible. `failure_doc_anchors` is None when the failure-response document
+    is absent at the tag target. The reason a check is publication-only is the
+    existing `why_publication_only`, already required by validate_obligation."""
+    p: list[str] = []
+    for c in obligation.get("pending_checks") or []:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id")
+        proc = c.get("automated_procedure")
+        if isinstance(proc, str):
+            if proc != cid:
+                p.append(f"journey {jid} pending check {cid!r} automated_procedure {proc!r} must equal the check id")
+            elif proc not in automated_runner_ids:
+                p.append(
+                    f"journey {jid} pending check {cid!r} names no automated runner in "
+                    "post-publish-verify.py RUNNERS (a missing or manual runner only ever reports INCONCLUSIVE)"
+                )
+        elif isinstance(proc, dict):
+            if proc.get("manual") is not True or not _nonempty_str(proc.get("justification")):
+                p.append(
+                    f"journey {jid} pending check {cid!r} manual automated_procedure needs "
+                    "manual: true and a non-empty justification"
+                )
+        else:
+            p.append(f"journey {jid} pending check {cid!r} declares no automated_procedure")
+
+        ref = c.get("failure_response")
+        prefix = FAILURE_RESPONSE_DOC + "#"
+        if not (isinstance(ref, str) and ref.startswith(prefix) and len(ref) > len(prefix)):
+            p.append(f"journey {jid} pending check {cid!r} failure_response must be '{prefix}<anchor>'")
+        elif failure_doc_anchors is None:
+            p.append(f"journey {jid} pending check {cid!r} failure_response targets {FAILURE_RESPONSE_DOC}, absent at the tag target")
+        elif ref[len(prefix):] not in failure_doc_anchors:
+            p.append(f"journey {jid} pending check {cid!r} failure_response anchor {ref[len(prefix):]!r} is not a heading in {FAILURE_RESPONSE_DOC}")
+    return p
