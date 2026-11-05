@@ -19,6 +19,9 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
   does not hash to its digest, a missing platform). A timeout, a 5xx, a rate limit or
   an auth refusal is INCONCLUSIVE: "could not tell" is not "wrong" and not "right".
+* The release-assets probe checks that the release is published, not a draft, and that
+  SHA256SUMS names every required tarball for every platform. It does not download or
+  hash the tarballs, so it proves presence, not contents.
 * Exit 0 only when at least one check ran, every check is PASS, and every pending check in
   the obligations file was run. 1 if any FAIL, 3 if some are INCONCLUSIVE and none FAIL,
   4 if every selected check PASSED but `--only` left other pending checks NOT run (a
@@ -324,7 +327,11 @@ def run_release_assets(p: Probe, tag: str) -> Result:
 
 
 def manual(why: str) -> Callable[[Probe, str], Result]:
-    return lambda p, tag: (INCONCLUSIVE, f"operator step, no automated probe: {why}")
+    runner: Callable[[Probe, str], Result] = lambda p, tag: (INCONCLUSIVE, f"operator step, no automated probe: {why}")
+    # Marked so the rc release gate can tell a probe that can PASS from a stub
+    # that always reports INCONCLUSIVE, without re-reading this table by hand.
+    runner.is_manual = True  # type: ignore[attr-defined]
+    return runner
 
 
 # The allowlist. Key = pending-check id; the record's `command` text plays no part.
@@ -339,6 +346,11 @@ RUNNERS: dict[str, Callable[[Probe, str], Result]] = {
     "j59-install-release-assets": run_release_assets,
     "j59-published-binaries-golden-path": manual("download, verify against SHA256SUMS and re-run scripts/qa/j59-candidate-harness.py on the extracted binaries"),
 }
+
+
+def automated_runner_ids() -> frozenset[str]:
+    """Ids whose runner can reach PASS, i.e. every RUNNERS key except manual stubs."""
+    return frozenset(i for i, r in RUNNERS.items() if not getattr(r, "is_manual", False))
 
 
 def load_pending(doc: Any) -> list[dict[str, Any]]:
@@ -385,6 +397,19 @@ def verify(pending: list[dict[str, Any]], tag: str, fetch: Fetcher, timeout: flo
 
 
 PARTIAL_EXIT = 4
+
+# Only "not there yet" is worth retrying while an asynchronous publish finishes. A body
+# that hashes wrong or a missing platform is definitive and must not be retried away.
+_NOT_YET_RE = re.compile(r"not found \(404\)|asset .* missing|still a draft")
+
+
+def retryable(results: list[dict[str, Any]]) -> bool:
+    """True when nothing definitive failed: every non-PASS is INCONCLUSIVE or a FAIL that
+    only says the artifact is not published yet. All-PASS is not retryable (nothing to retry)."""
+    bad = [r for r in results if r["status"] != PASS]
+    return bool(bad) and all(
+        r["status"] == INCONCLUSIVE or _NOT_YET_RE.search(r["detail"]) for r in bad
+    )
 
 
 def exit_code(results: list[dict[str, Any]], pending_total: int | None = None) -> int:
@@ -437,6 +462,7 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
         "obligations_sha256": _digest(raw), "exit_code": code,
         "partial": {"run": len(results), "pending": len(pending), "not_run": not_run} if not_run else None,
         "summary": {s: sum(1 for r in results if r["status"] == s) for s in (PASS, FAIL, INCONCLUSIVE)},
+        "retryable": retryable(results),
         "results": results,
     }, indent=2))
     return code

@@ -1,0 +1,57 @@
+name: Post-publish watchdog (rc)
+
+# AAASM-6424. post-publish-verify.yml runs once per rc tag push. This read-only
+# watchdog fails visibly if a published rc tag has no successful run of it after
+# WATCHDOG_HOURS, so stage 2 of the rc flow cannot be skipped by a run that never
+# started, was cancelled, or failed and was never repaired.
+#
+# Limits, stated plainly: a scheduled workflow is best-effort and GitHub disables
+# schedules after 60 days without repository activity; it reports by failing a run
+# (visible in Actions and by GitHub's own failed-workflow notification), it does not
+# page anyone; and it only looks at rc tags whose commit contains
+# post-publish-verify.yml (earlier rc tags never had stage 2) and that are newer than
+# WATCHDOG_WINDOW_DAYS.
+
+permissions:
+  contents: read
+  actions: read
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+env:
+  WATCHDOG_HOURS: "6"
+  WATCHDOG_WINDOW_DAYS: "30"
+
+jobs:
+  watchdog:
+    name: Every rc tag has a successful post-publish verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Look for rc tags without a successful verification run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          now=$(date +%s)
+          bad=0
+          for tag in $(git tag -l 'v[0-9]*.[0-9]*.[0-9]*-rc.[0-9]*'); do
+            git cat-file -e "${tag}:.github/workflows/post-publish-verify.yml" 2>/dev/null || continue
+            created=$(git for-each-ref --format='%(creatordate:unix)' "refs/tags/$tag")
+            age=$(( now - created ))
+            [ "$age" -lt $(( WATCHDOG_HOURS * 3600 )) ] && continue
+            [ "$age" -gt $(( WATCHDOG_WINDOW_DAYS * 86400 )) ] && continue
+            ok=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow post-publish-verify.yml \
+                   --branch "$tag" --status success --limit 1 --json databaseId --jq length)
+            if [ "$ok" != "1" ]; then
+              echo "::error::$tag was tagged more than ${WATCHDOG_HOURS}h ago and has no successful post-publish-verify run. Follow docs/release/rc-post-publication-failure-response.md."
+              bad=1
+            fi
+          done
+          exit "$bad"

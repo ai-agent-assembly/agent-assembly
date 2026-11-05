@@ -117,3 +117,19 @@ lefthook.toml @Chisanan232
 # The supply-chain advisory gate config — re-routed to require a security
 # reviewer because any `ignore` entry suppresses a real advisory (AAASM-3565).
 deny.toml @Chisanan232 @ai-agent-assembly/security
+
+# ──────────────────────────────────────────────────────────────────────
+# rc release authorization path (AAASM-6424). An rc is authorized by a record
+# under docs/release/approvals/, and the scripts and workflows below decide
+# whether it is honoured, so each is its own line (not left to the catch-all)
+# and is placed last so last-match wins. This only routes review; it protects
+# nothing unless branch protection on `main` requires code-owner review without
+# self-approval, which is a GitHub setting this file cannot configure.
+# ──────────────────────────────────────────────────────────────────────
+/docs/release/approvals/                       @Chisanan232
+/scripts/qa/                                   @Chisanan232
+/scripts/release-readiness.sh                  @Chisanan232
+/scripts/release-tag-guard.sh                  @Chisanan232
+/.github/workflows/release.yml                 @Chisanan232
+/.github/workflows/post-publish-verify.yml     @Chisanan232
+/.github/workflows/post-publish-watchdog.yml   @Chisanan232
