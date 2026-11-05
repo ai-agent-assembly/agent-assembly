@@ -145,7 +145,15 @@ fi
 # narrower step 5b below does not call R1b at all, so without this step a
 # release-readiness.sh that's stubbed/stale/skipped would let a
 # post-candidate tampered evidence file through undetected until here.
-if ! python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD; then
+# Exit 4 is the rc-only two-stage state (ADR 0042, AAASM-6424): technical
+# eligibility for an -rc.N tag, never authorization. Exit 3 and every other
+# non-zero code still refuse, so final tags keep the exit-0-only rule.
+python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD \
+  --accept-rc-candidate-verified
+EVIDENCE_RC=$?
+if [ "$EVIDENCE_RC" -eq 4 ]; then
+  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization to publish; post-publication verification stays owed"
+elif [ "$EVIDENCE_RC" -ne 0 ]; then
   fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi
 

@@ -452,9 +452,19 @@ jobs:
       - name: Check release-assurance evidence binds this tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
+          # Exit 4 exists only for -rc.N tags with every owed check automated
+          # (ADR 0042, AAASM-6424). Exit 3 (pending, not an rc) and every other
+          # non-zero code still fail the gate, so final tags need exit 0.
+          rc=0
           python3 scripts/qa/check-release-evidence.py \
             --version "$VERSION" \
-            --tag-target "${{ github.sha }}"
+            --tag-target "${{ github.sha }}" \
+            --accept-rc-candidate-verified || rc=$?
+          case "$rc" in
+            0) ;;
+            4) echo "::notice::CANDIDATE_VERIFIED is technical eligibility for this rc, not authorization to publish; post-publication verification (scripts/qa/post-publish-verify.py) is still owed." ;;
+            *) exit "$rc" ;;
+          esac
 
   publish:
     name: Publish GitHub Release
