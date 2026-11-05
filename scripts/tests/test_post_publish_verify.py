@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from pathlib import Path
 from unittest import TestCase, main, mock
 from urllib.parse import urlparse
@@ -877,7 +878,7 @@ class CratesTests(TestCase):
     def test_pass_and_request_shape(self):
         r = self.reg()
         self.assertEqual(one(r, self.ID)[0], "PASS")
-        call = next(c for c in r.calls if "crates.io" in c[0])
+        call = next(c for c in r.calls if urllib.parse.urlsplit(c[0]).hostname == "crates.io")
         self.assertEqual(call[0], f"https://crates.io/api/v1/crates/aa-cli/{VER}")
         self.assertIn("User-Agent", call[1])
 
