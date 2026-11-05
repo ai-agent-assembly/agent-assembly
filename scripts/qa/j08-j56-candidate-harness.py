@@ -14,7 +14,7 @@ Checks (fidelity real_local_process unless noted), one report per `--journey`:
        register-authenticated           good key registers; a wrong key does not
        allow-read-file                  `golden-path` ALLOW reaches the tool body
        deny-delete-file-typed-no-sideeffect   typed SDK error, sentinel untouched
-       send-email-approval-or-gap       never PASS: FAIL if the email was sent, else a classified gap
+       send-email-approval-or-gap       FAIL if the email ran unapproved or no approval can be queued/resolved
        audit-correlation                `aasm audit export` shows the allow and the deny for this agent
        policy-flip-changes-behavior     read_file flipped to deny changes the same call
        unwired-callbacks-control        the same delete_file with the SDK hook not invoked DOES run,
@@ -133,6 +133,7 @@ class Backend:
     def apply_policy(self, policy: Path) -> tuple[int, str]: raise NotImplementedError
     def audit(self, agent: str) -> tuple[int, str]: raise NotImplementedError
     def agent_list(self) -> tuple[int, str]: raise NotImplementedError
+    def approvals(self, *args: str) -> tuple[int, str]: raise NotImplementedError
     def stop(self) -> None: raise NotImplementedError
     # Framework matrix (J08 --frameworks): one venv per example, no gateway involved.
     def fw_install(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
@@ -245,6 +246,9 @@ class LocalBackend(Backend):
 
     def agent_list(self) -> tuple[int, str]:
         return self._cli("agent", "list")
+
+    def approvals(self, *args: str) -> tuple[int, str]:
+        return self._cli("approvals", *args)
 
     def _fw_venv(self, fid: str) -> Path:
         return self.ctx.tmp / "fwvenvs" / fid
@@ -385,7 +389,21 @@ def check_allow_deny(ctx: c.Context, be: Backend, allow_id: str, deny_id: str | 
     return not p_allow, not p_deny
 
 
+def _pending_approvals(be: Backend) -> tuple[list[dict[str, Any]] | None, str]:
+    rc, out = be.approvals("list", "--output", "json")
+    if rc != 0:
+        return None, f"`aasm approvals list` exited {rc}: {out.strip()[:120]}"
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return None, f"`aasm approvals list` printed non-JSON: {out.strip()[:120]!r}"
+    return (rows if isinstance(rows, list) else None), ""
+
+
 def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
+    """Step 6: the APPROVAL tool must not run unapproved, must queue a pending approval an operator can see and
+    resolve with the product CLI, and must leave an ApprovalRequested audit record. What the SDK does after an
+    approval is recorded, not assumed: the blocked call has already raised, so a retry is judged on its own."""
     r, s, _ = _drive(ctx, be, "send_email", "email")
     sent = Path(str(s) + ".sent").exists()
     neg = _tn("test_send_email_executed_without_approval_fails")
@@ -393,11 +411,36 @@ def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
     if sent or r.get("executed"):
         ctx.add(cid, c.FAIL, "real_local_process", "send_email ran although the policy requires approval", arts, neg)
         return
-    # The harness drives no approver, so an approved path is never exercised: the best this can
-    # be is a classified gap, and PASS would claim an approval flow nobody ran.
-    ctx.add(cid, c.NOT_COVERED, "real_local_process",
-            f"gap:no-approver-driven: send_email did not execute (SDK outcome: {r.get('error') or 'none'}); the "
-            "pending-approval resolution surface of the SDK is not driven by this harness", arts, neg)
+    problems: list[str] = []
+    if not _blocked(r):
+        problems.append(f"the unapproved call did not raise a typed SDK error (error={r.get('error')!r})")
+    rows, why = _pending_approvals(be)
+    pending = [x for x in (rows or []) if x.get("status") == "pending" and x.get("reason") == "requires_approval"]
+    if rows is None:
+        problems.append(why)
+    elif not pending:
+        problems.append("no pending requires_approval request was queued for the blocked send_email")
+    else:
+        rc, out = be.approvals("approve", str(pending[0].get("id")), "--reason", "j56 harness approver")
+        if rc != 0 or "approved" not in out.lower():
+            problems.append(f"`aasm approvals approve` exited {rc}: {out.strip()[:120]}")
+        else:
+            left, why2 = _pending_approvals(be)
+            if left is None or any(x.get("id") == pending[0].get("id") and x.get("status") == "pending" for x in left):
+                problems.append(why2 or "the approved request is still pending")
+    rc, audit = be.audit(getattr(be, "agent", ""))
+    if rc != 0 or "ApprovalRequested" not in audit:
+        problems.append("the audit chain has no ApprovalRequested record for send_email")
+    if problems:
+        ctx.add(cid, c.FAIL, "real_local_process", "; ".join(problems), arts, neg)
+        return
+    retry, rs, _ = _drive(ctx, be, "send_email", "email2")
+    again = "an approved request is not consumed: the same call is blocked again and queues a new approval" \
+        if not (retry.get("executed") or Path(str(rs) + ".sent").exists()) else "the approved call runs on retry"
+    ctx.add(cid, c.PASS, "real_local_process",
+            "send_email did not run unapproved, queued a pending approval, `aasm approvals approve` resolved it and the "
+            f"audit chain recorded ApprovalRequested; after approval {again} (SDK resume-after-approval is not part of "
+            "this contract step)", arts, neg)
 
 
 def check_audit(ctx: c.Context, be: Backend, cid: str) -> None:
@@ -737,7 +780,7 @@ def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None 
         report["sdk_wheel_sha256"] = ctx.artifacts[WHEEL]
         report["observations"] = [
             "The record is bound to candidate_sha, sdk_sha and sdk_wheel_sha256; a wheel whose sha256 differs from the expected digest FAILS the artifacts-bound check.",
-            "send-email-approval-or-gap is never PASS: no approver is driven, so it stays a classified NOT_COVERED gap unless the email ran (FAIL).",
+            "send-email-approval-or-gap drives a real approver (`aasm approvals approve`); it FAILS if the email ran unapproved, no approval was queued, it cannot be resolved, or the audit chain lacks ApprovalRequested. Whether an approved call can resume is recorded in its detail, not assumed.",
             "The wheel is built from sdk_sha, not downloaded from PyPI; the published install stays PENDING.",
         ]
         return c.finish(ctx, report, a.out, a.obligation_fragment)

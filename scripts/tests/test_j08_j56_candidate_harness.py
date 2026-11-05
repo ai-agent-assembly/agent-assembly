@@ -60,6 +60,7 @@ class FakeBackend(H.Backend):
         self.read_allowed = True
         self.log: list[tuple[str, str]] = []
         self.install_cmds: list[object] = []
+        self.pending: list[dict[str, str]] = []
 
     def version_of(self, name):
         return 0, f"{name} {'0.0.1-rc.7' if self.mode == 'wrong_version' else self.version}\n"
@@ -86,6 +87,14 @@ class FakeBackend(H.Backend):
         entries = [{"tool": t, "result": r} for t, r in self.log if not (self.mode == "audit_no_deny" and r == "deny")]
         return 0, json.dumps({"entries": entries})
 
+    def approvals(self, *args):
+        if args[0] == "list":
+            return 0, json.dumps(self.pending)
+        if self.mode == "approve_fails":
+            return 1, "approval service unavailable"
+        self.pending = [x for x in self.pending if x["id"] != args[1]]
+        return 0, f"Approved: {args[1]} (status: approved)\n"
+
     def stop(self):
         pass
 
@@ -106,6 +115,10 @@ class FakeBackend(H.Backend):
             if self.mode == "email_sent":
                 Path(str(s) + ".sent").write_text("sent\n")
                 return {"executed": True, "error": None, "typed": False}
+            if self.mode != "no_pending_approval":
+                self.pending.append({"id": f"ap-{len(self.pending)}", "status": "pending", "reason": "requires_approval"})
+            if self.mode != "audit_no_approval":
+                self.log.append((tool, "ApprovalRequested"))
             return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
         if deny:
             self.log.append((tool, "deny"))
@@ -217,7 +230,7 @@ def registry_ids(journey: str) -> list[str]:
 
 
 J56_EXECUTED = ["j56-c-artifacts-bound-to-candidate", "j56-c-binary-identity", "j56-c-install-clean-venv-native-core",
-                "j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-deny-delete-file-typed-no-sideeffect",
+                "j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-send-email-approval-or-gap", "j56-c-deny-delete-file-typed-no-sideeffect",
                 "j56-c-audit-correlation", "j56-c-policy-flip-changes-behavior", "j56-c-unwired-callbacks-control"]
 
 
@@ -228,16 +241,25 @@ class HarnessShapeTests(unittest.TestCase):
         for cid in J56_EXECUTED:
             self.assertEqual(st(rep, cid), "PASS", f"{cid}: {json.dumps(rep['candidate_checks'], indent=1)}")
         self.assertEqual(rep["schema"], "b1-candidate-report/1")
+        # Every candidate row passes, so the candidate is eligible; the published-artifact row stays PENDING.
+        self.assertEqual(rep["verdict"], "CANDIDATE_VERIFIED")
+        self.assertEqual(rc, 0)
+        self.assertEqual([p["id"] for p in rep["pending_checks"]], registry_ids("J56"))
+        self.assertTrue(fx.frag.exists(), "an eligible candidate writes its obligation fragment")
+
+    def test_a_not_covered_row_keeps_the_candidate_incomplete_and_writes_no_fragment(self):
+        fx = Fixture(self)
+        fx.write_digests()
+        rc, rep = fx.run(digests=None)
         self.assertEqual(rep["verdict"], "CANDIDATE_INCOMPLETE")
         self.assertEqual(rc, 3)
-        self.assertFalse(fx.frag.exists(), "no obligation fragment while a row is NOT_COVERED")
+        self.assertFalse(fx.frag.exists())
 
-    def test_send_email_is_a_classified_gap_never_pass(self):
+    def test_send_email_exercises_the_approval_flow_and_records_the_resume_limit(self):
         _, rep = Fixture(self).run()
         row = next(c for c in rep["candidate_checks"] if c["id"] == "j56-c-send-email-approval-or-gap")
-        self.assertEqual(row["status"], "NOT_COVERED")
-        self.assertEqual(row["fidelity"], "none")
-        self.assertIn("gap:", row["detail"])
+        self.assertEqual(row["status"], "PASS")
+        self.assertIn("not consumed", row["detail"])
 
     def test_pending_ids_equal_registry_ids_and_are_never_pass(self):
         for journey in ("J08", "J56"):
@@ -390,6 +412,15 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_send_email_executed_without_approval_fails(self):
         self.check("email_sent", "j56-c-send-email-approval-or-gap")
+
+    def test_no_pending_approval_queued_fails(self):
+        self.check("no_pending_approval", "j56-c-send-email-approval-or-gap")
+
+    def test_approval_that_cannot_be_resolved_fails(self):
+        self.check("approve_fails", "j56-c-send-email-approval-or-gap")
+
+    def test_audit_without_approval_requested_fails(self):
+        self.check("audit_no_approval", "j56-c-send-email-approval-or-gap")
 
     def test_audit_without_the_deny_fails(self):
         self.check("audit_no_deny", "j56-c-audit-correlation")
