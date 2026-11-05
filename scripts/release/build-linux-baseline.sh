@@ -24,18 +24,29 @@ IMAGE="quay.io/pypa/manylinux_2_28@sha256:9fb89714cd6ef368f87a7d6be6a3b2d7d028a7
 case "$TARGET" in
   x86_64-unknown-linux-gnu)
     PROTOC_ARCH=x86_64
-    PROTOC_SHA=3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8 ;;
+    PROTOC_SHA=3a4c1e5f2516c639d3079b1586e703fc7bcfa2136d58bda24d1d54f949c315e8
+    RUSTUP_ARCH=x86_64
+    RUSTUP_SHA=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;;
   aarch64-unknown-linux-gnu)
     PROTOC_ARCH=aarch_64
-    PROTOC_SHA=2dd17f75d66a682640b136e31848da9fb2eefe68d55303baf8b32617374f6711 ;;
+    PROTOC_SHA=2dd17f75d66a682640b136e31848da9fb2eefe68d55303baf8b32617374f6711
+    RUSTUP_ARCH=aarch64
+    RUSTUP_SHA=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;;
   *) echo "unsupported target: $TARGET" >&2; exit 2 ;;
 esac
+
+# Pinned, checksum-verified toolchain bootstrap (no `curl | sh`). Bump these
+# together, deliberately; the rustc version is the one rc.8 was built with.
+RUSTUP_VERSION=1.28.2
+RUST_TOOLCHAIN=1.99.1
 
 docker run --rm \
   --user "$(id -u):$(id -g)" \
   -e HOME=/tmp/home -e CARGO_HOME=/tmp/home/.cargo -e RUSTUP_HOME=/tmp/home/.rustup \
   -e CARGO_TERM_COLOR -e RUST_BACKTRACE -e TARGET="$TARGET" \
   -e PROTOC_ARCH="$PROTOC_ARCH" -e PROTOC_SHA="$PROTOC_SHA" \
+  -e RUSTUP_ARCH="$RUSTUP_ARCH" -e RUSTUP_SHA="$RUSTUP_SHA" \
+  -e RUSTUP_VERSION="$RUSTUP_VERSION" -e RUST_TOOLCHAIN="$RUST_TOOLCHAIN" \
   -e CARGO_ARGS="$*" \
   -v "$PWD:/work" -w /work \
   "$IMAGE" bash -euo pipefail -c '
@@ -45,8 +56,12 @@ docker run --rm \
     echo "${PROTOC_SHA}  /tmp/protoc.zip" | sha256sum -c -
     unzip -q /tmp/protoc.zip -d /tmp/protoc
     export PROTOC=/tmp/protoc/bin/protoc PROTOC_INCLUDE=/tmp/protoc/include
-    curl -sSfL https://sh.rustup.rs | sh -s -- -y --profile minimal \
-      --default-toolchain stable --target "$TARGET" >/dev/null
+    curl -sSfL -o /tmp/rustup-init \
+      "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${RUSTUP_ARCH}-unknown-linux-gnu/rustup-init"
+    echo "${RUSTUP_SHA}  /tmp/rustup-init" | sha256sum -c -
+    chmod +x /tmp/rustup-init
+    /tmp/rustup-init -y --profile minimal \
+      --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET" >/dev/null
     . "$CARGO_HOME/env"
     ldd --version | head -1
     # shellcheck disable=SC2086
