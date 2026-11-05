@@ -425,5 +425,17 @@ class SafetyTests(TestCase):
         self.assertIn("--obligations", p.stdout)
 
 
+class AutomatedRunnerIdsTests(TestCase):
+    def test_manual_stubs_are_excluded_and_probes_included(self):
+        ids = ppv.automated_runner_ids()
+        self.assertIn("j53-ghcr-tag-resolves", ids)
+        self.assertIn("j59-install-release-assets", ids)
+        # A stub that can only report INCONCLUSIVE must never count as automation.
+        self.assertNotIn("j53-published-image-runs-healthy", ids)
+        self.assertNotIn("j59-published-binaries-golden-path", ids)
+        self.assertEqual(ids, frozenset(ppv.RUNNERS) - {
+            "j53-published-image-runs-healthy", "j59-published-binaries-golden-path"})
+
+
 if __name__ == "__main__":
     main(verbosity=2)

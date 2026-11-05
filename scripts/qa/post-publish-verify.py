@@ -324,7 +324,11 @@ def run_release_assets(p: Probe, tag: str) -> Result:
 
 
 def manual(why: str) -> Callable[[Probe, str], Result]:
-    return lambda p, tag: (INCONCLUSIVE, f"operator step, no automated probe: {why}")
+    runner: Callable[[Probe, str], Result] = lambda p, tag: (INCONCLUSIVE, f"operator step, no automated probe: {why}")
+    # Marked so the rc release gate can tell a probe that can PASS from a stub
+    # that always reports INCONCLUSIVE, without re-reading this table by hand.
+    runner.is_manual = True  # type: ignore[attr-defined]
+    return runner
 
 
 # The allowlist. Key = pending-check id; the record's `command` text plays no part.
@@ -339,6 +343,11 @@ RUNNERS: dict[str, Callable[[Probe, str], Result]] = {
     "j59-install-release-assets": run_release_assets,
     "j59-published-binaries-golden-path": manual("download, verify against SHA256SUMS and re-run scripts/qa/j59-candidate-harness.py on the extracted binaries"),
 }
+
+
+def automated_runner_ids() -> frozenset[str]:
+    """Ids whose runner can reach PASS, i.e. every RUNNERS key except manual stubs."""
+    return frozenset(i for i, r in RUNNERS.items() if not getattr(r, "is_manual", False))
 
 
 def load_pending(doc: Any) -> list[dict[str, Any]]:
