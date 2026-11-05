@@ -87,6 +87,20 @@ harnesses tied to F (the installer, the policy, the harness sources and `scripts
 harness check on F already proves for the files it reads. This reading follows the
 checker and builder code; it has not been exercised end to end on a real candidate.
 
+## Extra fields for an rc candidate (AAASM-6424)
+
+To be tagged as `CANDIDATE_VERIFIED` (checker exit 4, `-rc.N` only), every pending
+check also needs, beside `why_publication_only` (the reason it needs publication):
+
+- `automated_procedure`: the check's own id, which must be a non-manual key of
+  `RUNNERS` in `scripts/qa/post-publish-verify.py`; or
+  `{"manual": true, "justification": "<why it cannot be automated>"}`.
+- `failure_response`: `docs/release/rc-post-publication-failure-response.md#<anchor>`,
+  where the anchor is a heading in that document.
+
+An rc obligations file without them still yields checker exit 3. Final tags ignore
+all of this and need exit 0.
+
 ## After publication
 
 Evidence is immutable (Core ADR 0037). Recording a post-publication result is a new
