@@ -11,6 +11,15 @@
 # wants to bypass a check edits this script (a reviewable diff), not an env
 # var.
 #
+# rc two-stage sequencing (ADR 0042 update, AAASM-6424): for an -rc.N version the
+# evidence checker accepts a CANDIDATE_VERIFIED record only with a committed owner
+# approval naming the exact tagged commit. That record cannot be inside the commit
+# it names, so the order is: land the tag-target commit on main, then land the
+# approval commit on main (a later commit), then run this guard at the tag target.
+# The approval is read from refs/remotes/<remote>/main, fetched below. Its
+# authenticity is only as strong as who can land a commit on main (branch
+# protection with code-owner review, configured in GitHub, not by this repo).
+#
 # Usage: scripts/release-tag-guard.sh <version> [--remote <name>]
 #   e.g. scripts/release-tag-guard.sh 0.0.1-rc.7
 #
@@ -119,6 +128,13 @@ fi
 if ! git fetch "$REMOTE_NAME" --quiet 2>/dev/null; then
   fail "git fetch $REMOTE_NAME failed"
 fi
+
+# Refresh the approval source. A failure is not fatal here: a non-rc version does not
+# read it, and for an rc a missing or stale ref makes the checker refuse (fail closed
+# on absence); a stale-but-present ref is the residual risk and is why the fetch is
+# attempted at all.
+git fetch --no-tags --quiet "$REMOTE_NAME" "+refs/heads/main:refs/remotes/${REMOTE_NAME}/main" 2>/dev/null \
+  || echo "release-tag-guard: could not refresh refs/remotes/${REMOTE_NAME}/main; an rc approval is read from whatever is already fetched" >&2
 
 # --- 3. Refuse if the tag already exists, locally or on the remote — a
 # guard script must never silently move or replace a tag.

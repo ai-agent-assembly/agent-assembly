@@ -9,6 +9,13 @@
 # Each check prints ✓ <description> or ✗ <description>: <remediation hint>.
 # Exits non-zero on any failure.
 
+# rc two-stage (ADR 0042 update, AAASM-6424): for an -rc.N version, check 14 can
+# accept CANDIDATE_VERIFIED only with a committed owner approval for the exact
+# tagged commit, landed on main AFTER that commit (the record cannot be inside the
+# commit it names). It is read from refs/remotes/remote/main (or origin/main) as
+# last fetched; this script does not fetch it, so run the guard (which does) or
+# `git fetch remote main` first.
+
 set -uo pipefail
 
 if [ $# -ne 1 ]; then
