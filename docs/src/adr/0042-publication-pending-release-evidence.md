@@ -107,3 +107,46 @@ SHA-specific release approval.
   `release.yml` gate publish a candidate with owed checks; rejected as unsafe.
 - **Widening the tag-guard allowlist for the obligation file**: rejected; the
   obligation must be final at the candidate, so a later edit is an R1 BLOCK.
+
+## Update — AAASM-6424: rc-only two-stage verification
+
+The owner decision this ADR reserved ("authorizing a publish on a
+`CANDIDATE_VERIFIED` record is a separate owner decision") has been made, for
+prerelease candidates only. Nothing above is reversed: a pending row is still
+never `PASS`, and the checker's default exit for a pending-only record is still 3.
+
+1. **Scope.** Only versions matching `MAJOR.MINOR.PATCH-rc.N` (for example
+   `0.0.1-rc.8`). Final tags, and every other prerelease series (alpha, beta),
+   keep the exit-0-only gate unchanged.
+2. **Two stages.** Stage 1: every check that can run before publication has
+   passed on the pinned candidate. Stage 2: only checks that demonstrably depend
+   on actual publication remain pending, each with an automated post-publication
+   verification. The rc may be tagged on a stage-1-complete record; stage 2 runs
+   against the published artifacts.
+3. **New checker exit 4, opt-in.** `check-release-evidence.py
+   --accept-rc-candidate-verified` turns a record that would exit 3 into exit 4
+   (`RC_CANDIDATE_ELIGIBLE`) only when the version is an rc **and** every
+   additional rule below holds. Without the flag, or for a non-rc version, exit 3
+   is unchanged. Exit 4 is never exit 0: consumers must name it explicitly.
+4. **Additional rules for exit 4** (on top of every R1-R11 rule, which already
+   bind the record to the candidate SHA, the candidate artifact digests and the
+   registry digest and block any FAIL or NOT_COVERED row):
+   - every journey is either `PASS` or `PUBLICATION_PENDING`; a waiver-admitted
+     row blocks, because a waived check has not passed;
+   - every pending check in the committed obligations file declares, in addition
+     to the existing `why_publication_only` (the reason), an `automated_procedure`
+     that is the exact id of a non-manual runner in
+     `scripts/qa/post-publish-verify.py` `RUNNERS` (equal to the check id), or
+     `{"manual": true, "justification": "..."}` with a non-empty justification,
+     and a `failure_response` that is a reference of the form
+     `docs/release/rc-post-publication-failure-response.md#<anchor>` whose anchor
+     exists in that document at the tag target.
+5. **Consumers.** `release-tag-guard.sh`, `release-readiness.sh` and
+   `release.yml`'s `release-evidence-gate` pass the flag and accept exit 0 or 4,
+   and print that `CANDIDATE_VERIFIED` is technical eligibility, not
+   authorization to create a tag or publish. Authorization remains a separate
+   owner act. No publish job condition changes.
+6. **Consequence for the obligations file.** An rc obligations file written before
+   this update has no `automated_procedure` or per-check `failure_response`; it
+   yields exit 3 (blocked for tagging) until they are added. Checks with no
+   runner must gain a runner or an explicit justified manual marker.
