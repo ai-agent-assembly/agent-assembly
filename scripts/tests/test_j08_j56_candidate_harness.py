@@ -508,7 +508,6 @@ class FrameworkMatrixTests(unittest.TestCase):
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("resolution failed", row["detail"])
         self.assertEqual(rep["verdict"], "BLOCK")
-        self.assertEqual(st(rep, "j08-c-readme-fakellm-quickstart"), "FAIL")
 
     def test_skipped_test_fails_never_passes(self):
         self.assertEqual(st(self.fw("fw_skipped"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")

@@ -59,6 +59,7 @@ TEST = "scripts/tests/test_j08_j56_candidate_harness.py"
 # The SDK attaches its LangChain adapter only when `import langchain` succeeds (FrameworkAdapter.is_available), so the
 # clean venv of the LangChain quick start must carry the full package, not only langchain-core. The core bound mirrors
 # the SDK's own `langchain-test` dependency group.
+README_PACKAGES = ("langchain", "langchain-classic", "langchain-community")  # the README's own install line
 LANGCHAIN_REQUIREMENT = ("langchain", "langchain-core>=1.4.9,<1.7.0")
 FIX = "scripts/qa/fixtures/j56"
 SOURCES = {
@@ -290,9 +291,20 @@ class LocalBackend(Backend):
         return {"error": "control-no-result", "message": f"exit {rc}: {out.strip()[-200:]}"}
 
     def fw_run_snippet(self, fid: str, code: str) -> tuple[int, str]:
+        # The README tells the reader to `pip install --pre agent-assembly langchain langchain-classic
+        # langchain-community`; reproduce that in a fresh venv, with the candidate wheel standing in for
+        # the published SDK. The extras come from the index, as they do for a reader.
+        venv = self.ctx.tmp / "readme-venv"
+        rc, out = self.exec([sys.executable, "-m", "venv", str(venv)], self.env, self.ctx.tmp, 120)
+        if rc == 0:
+            env = {**self.env, "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
+            rc, out = self.exec([str(venv / "bin" / "python"), "-m", "pip", "install", "--find-links", str(self.wheel.parent),
+                                 str(self.wheel), *README_PACKAGES], env, self.ctx.tmp, 900)
+        if rc != 0:
+            return rc, f"README install step failed: {out.strip()[-300:]}"
         f = self.ctx.tmp / "readme_quickstart.py"
         f.write_text(code)
-        return self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", str(f)], self._fw_env(), self.ctx.tmp, 300)
+        return self.exec([str(venv / "bin" / "python"), "-I", str(f)], self.env, self.ctx.tmp, 300)
 
     def stop(self) -> None:
         if self.started:
@@ -685,12 +697,7 @@ def run_readme_quickstart(ctx: c.Context, be: Backend, sdk_dir: Path, examples_d
     if code is None:
         ctx.add(cid, c.FAIL, "real_local_process", "the SDK README has no python block with the FakeListLLM quick start", [WHEEL], neg)
         return
-    host = "langchain-basic-agent"
-    rc, out = be.fw_install(host, examples_dir / "python" / host)
-    if rc != 0:
-        ctx.add(cid, c.FAIL, "real_local_process", f"the langchain example venv did not install: {out.strip()[-300:]}", [WHEEL], neg)
-        return
-    rc, out = be.fw_run_snippet(host, code)
+    rc, out = be.fw_run_snippet("readme", code)
     ok = rc == 0 and "alice is in engineering" in out
     ctx.add(cid, c.PASS if ok else c.FAIL, "controlled_fake",
             "the README FakeListLLM quick start runs verbatim offline and prints the expected answer; it proves the snippet "
