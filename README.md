@@ -290,6 +290,14 @@ this is a summary of it, and where the two disagree the ADR is right.
 | macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — no prebuilt binary on any channel, and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
 | Windows | **Unsupported** | **Unsupported** | **Unsupported** |
 
+**Linux glibc baseline.** The prebuilt Linux binaries (`aasm`, `aa-gateway`,
+`aa-runtime`, `aa-api-server`, `aa-proxy`; x86_64 and aarch64) are built in a pinned
+glibc 2.28 environment and run on any glibc-based distribution with **glibc ≥ 2.28**,
+for example Debian 10+ (including Debian 12), Ubuntu 18.04+ (including 22.04 and 24.04)
+and RHEL / AlmaLinux / Rocky 8+. They are dynamically linked against glibc, not musl.
+The baseline is `scripts/release/linux-glibc-baseline.txt`; the release build fails if
+any shipped executable needs a newer `GLIBC_x.y` symbol.
+
 Windows is unsupported in all three columns rather than partial: `aa-proxy` uses
 `tokio::signal::unix` unconditionally so the crate has no Windows build path, `aasm`
 takes `aa-proxy` as an unconditional dependency, no release target is a Windows
