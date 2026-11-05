@@ -447,6 +447,7 @@ import io as _io
 import socket
 import tarfile
 import threading
+import time
 
 PENDING_IDS = frozenset({
     "j04.published_install_sh_default", "j04.published_release_checksums_and_signature",
@@ -467,6 +468,7 @@ class FakeTools:
     def __init__(self, present=("cosign", "docker"), handler=None, system=("Linux", "x86_64"), health=("SERVING",)):
         self.present, self.handler, self.system = set(present), handler, system
         self.argvs: list[list[str]] = []
+        self.envs: list[dict | None] = []
         self.health, self.health_calls = list(health), 0
 
     def which(self, name):
@@ -475,6 +477,7 @@ class FakeTools:
     def run(self, argv, timeout, cwd=None, env=None):
         assert isinstance(argv, list) and timeout > 0
         self.argvs.append(list(argv))
+        self.envs.append(env)
         return self.handler(argv, cwd) if self.handler else (0, "", "")
 
     def grpc_health(self, host, port, timeout):
@@ -499,7 +502,7 @@ class Gh(FakeRegistry):
     """A fake GitHub: release JSON with assets, asset bytes, SHA256SUMS, bundle, raw installer, tap, crates."""
 
     def __init__(self, files=None, drop=(), bundle=b'{"mediaType":"bundle"}', draft=False, digest_override=None,
-                 state="uploaded", sums_override=None, installer=INSTALLER):
+                 state="uploaded", sums_override=None, installer=INSTALLER, no_digest=(), compare="ahead"):
         super().__init__()
         names = [n for n in ppv.required_assets(TAG) if n != "SHA256SUMS"]
         self.files = files or {n: f"content-{n}".encode() for n in names}
@@ -514,16 +517,32 @@ class Gh(FakeRegistry):
                 continue
             d = (digest_override or {}).get(n, "sha256:" + hx(b))
             url = f"{API}/releases/assets/{1000 + i}"
-            assets.append({"name": n, "state": state, "size": len(b), "url": url, "digest": d})
+            assets.append({"name": n, "state": state, "size": len(b), "url": url, **({} if n in no_digest else {"digest": d})})
             self.route(f"/releases/assets/{1000 + i}", ppv.Response(200, {}, b))
         self.routes.insert(0, ("/releases/tags/", ppv.Response(200, {}, json.dumps({"draft": draft, "assets": assets}).encode())))
         if installer is not None:
             self.route("raw.githubusercontent.com", ppv.Response(200, {}, installer))
+        with_bind_routes(self, compare)
+        self.bind_routes = True
 
 
-def run_ids(reg, ids, tools=None, installer_sha=hx(INSTALLER)):
+CAND = "a" * 40
+TAG_SHA = "b" * 40
+BINDING = ppv.Binding(frozenset({CAND}), hx(INSTALLER))
+
+
+def with_bind_routes(reg, status="ahead"):
+    """Append (so specific routes win) the commit and compare answers the binding needs."""
+    reg.route("/commits/", ppv.Response(200, {}, json.dumps({"sha": TAG_SHA}).encode()))
+    reg.route("/compare/", ppv.Response(200, {}, json.dumps({"status": status}).encode()))
+    return reg
+
+
+def run_ids(reg, ids, tools=None, binding=BINDING):
     pend = [{"journey": "J", "id": i, "failure_response": None} for i in ids]
-    rows = ppv.verify(pend, TAG, reg, 5, tools=tools or FakeTools(), installer_sha256=installer_sha)
+    if not getattr(reg, "bind_routes", False):
+        with_bind_routes(reg)
+    rows = ppv.verify(pend, TAG, reg, 5, tools=tools or FakeTools(), binding=binding)
     return {r["id"]: (r["status"], r["detail"]) for r in rows}
 
 
@@ -568,8 +587,37 @@ class ChecksumSignatureTests(TestCase):
         self.assertEqual(one(Gh(), self.ID, tools=FakeTools(present=()))[0], "INCONCLUSIVE")
 
     def test_cosign_rejecting_the_signature_fails(self):
-        t = FakeTools(handler=lambda a, c: (1, "", "no matching signatures"))
+        t = FakeTools(handler=lambda a, c: (1, "", "Error: none of the expected identities matched what was in the certificate"))
         self.assertEqual(one(Gh(), self.ID, tools=t)[0], "FAIL")
+
+    def test_cosign_network_tuf_rekor_or_format_errors_are_inconclusive(self):
+        for msg in ("error updating TUF root: dial tcp: lookup tuf-repo-cdn.sigstore.dev: no such host",
+                    "Error: rekor client: context deadline exceeded", "Error: unable to unmarshal bundle: unexpected end of JSON input",
+                    "Error: HTTP 503 from transparency log"):
+            t = FakeTools(handler=lambda a, c, m=msg: (1, "", m))
+            self.assertEqual(one(Gh(), self.ID, tools=t)[0], "INCONCLUSIVE", msg)
+
+    def test_cosign_runs_with_a_temp_home_and_no_credentials(self):
+        t = FakeTools()
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_x", "MY_SECRET": "s", "PATH": os.environ.get("PATH", "")}):
+            one(Gh(), self.ID, tools=t)
+        env = t.envs[0]
+        self.assertTrue(env["HOME"].startswith(tempfile.gettempdir()) or "ppv-cosign" in env["HOME"])
+        self.assertNotIn("GITHUB_TOKEN", env)
+        self.assertNotIn("MY_SECRET", env)
+
+    def test_entries_without_a_release_api_digest_are_inconclusive_not_pass(self):
+        gh = Gh(no_digest=("aasm-aarch64-apple-darwin.tar.gz",))
+        st, d = one(gh, self.ID)
+        self.assertEqual(st, "INCONCLUSIVE")
+        self.assertIn("not hashed", d)
+
+    def test_duplicate_sums_name_with_different_digest_fails(self):
+        gh0 = Gh()
+        dup = gh0.sums + f"{'9' * 64}  aasm-aarch64-apple-darwin.tar.gz\n".encode()
+        st, d = one(Gh(sums_override=dup), self.ID)
+        self.assertEqual(st, "FAIL")
+        self.assertIn("twice", d)
 
     def test_missing_bundle_fails_and_cosign_is_not_consulted(self):
         t = FakeTools()
@@ -599,7 +647,7 @@ class ChecksumSignatureTests(TestCase):
 
 
 class InstallerTests(TestCase):
-    IDS = {"j04.published_install_sh_default": b"--version", "j17.published_installer_profile_full_gateway": b"--profile"}
+    IDS = ("j04.published_install_sh_default", "j17.published_installer_profile_full_gateway")
 
     def test_pass_and_installer_is_never_executed(self):
         t = FakeTools()
@@ -617,25 +665,82 @@ class InstallerTests(TestCase):
             self.assertEqual(one(Gh(installer=None), cid)[0], "FAIL")
             self.assertEqual(one(Gh(installer=b""), cid)[0], "FAIL")
 
-    def test_installer_without_the_option_fails(self):
-        bare = b"#!/bin/sh\n"
-        for cid in self.IDS:
-            self.assertEqual(one(Gh(installer=bare), cid, installer_sha=hx(bare))[0], "FAIL")
-
     def test_release_assets_missing_fails(self):
         for cid in self.IDS:
             self.assertEqual(one(Gh(drop=("aasm-x86_64-apple-darwin.tar.gz",)), cid)[0], "FAIL")
 
-    def test_without_record_digest_falls_back_to_the_checkout_copy(self):
-        st, _ = one(Gh(installer=(ROOT / "scripts/install-cli.sh").read_bytes()), "j04.published_install_sh_default", installer_sha=None)
-        self.assertEqual(st, "PASS")
-        st, _ = one(Gh(installer=b"--version other"), "j04.published_install_sh_default", installer_sha=None)
-        self.assertEqual(st, "FAIL")
+    def test_no_recorded_digest_is_inconclusive_never_a_checkout_fallback(self):
+        local = (ROOT / "scripts/install-cli.sh").read_bytes()
+        nb = ppv.Binding(frozenset({CAND}))
+        for cid in self.IDS:
+            st, d = one(Gh(installer=local), cid, binding=nb)
+            self.assertEqual(st, "INCONCLUSIVE", d)
 
-    def test_record_digest_is_read_from_the_obligations_file(self):
-        doc = {"journeys": [{"journey": "J04", "installer_sha256": "a" * 64}, {"journey": "J17"}]}
-        self.assertEqual(ppv.installer_sha_from(doc), "a" * 64)
-        self.assertIsNone(ppv.installer_sha_from({"journeys": [{"installer_sha256": "xyz"}]}))
+    def test_binding_reads_the_record(self):
+        doc = {"journeys": [{"journey": "J17", "registry_digest": "sha256:" + "d" * 64, "image_digests": {"aa-gateway": dg(b"x")},
+                             "candidate_checks": [{"candidate_sha": CAND, "artifact_digests": {"installer:install-cli.sh": "sha256:" + "a" * 64}}]},
+                            {"journey": "J53", "candidate_checks": [{"candidate_sha": CAND}]}]}
+        b = ppv.binding_from(doc)
+        self.assertEqual((b.candidate_shas, b.installer_sha256), (frozenset({CAND}), "a" * 64))
+        self.assertEqual(b.image_digests, {"aa-gateway": dg(b"x")})
+        self.assertEqual(b.registry_digests, frozenset({"sha256:" + "d" * 64}))
+        self.assertIsNone(ppv.binding_from({"journeys": [{"installer_sha256": "xyz"}]}).installer_sha256)
+        two = ppv.binding_from({"journeys": [{"candidate_sha": CAND}, {"candidate_sha": "c" * 40}]})
+        self.assertEqual(len(two.candidate_shas), 2)
+
+
+class BindingTests(TestCase):
+    """H1: every new runner first ties the tag to the candidate the record names."""
+
+    def test_candidate_not_an_ancestor_fails_every_bound_runner(self):
+        for status in ("diverged", "behind"):
+            for cid in ppv.RUNNERS:
+                if cid in ("j53-ghcr-tag-resolves", "j53-ghcr-digest-immutable", "j53-ghcr-multiarch",
+                           "j53-ghcr-sbom-attestation", "j59-ghcr-gateway-image", "j59-ghcr-runtime-image",
+                           "j59-install-release-assets"):
+                    continue
+                t = FakeTools()
+                st, d = one(Gh(compare=status), cid, tools=t)
+                self.assertEqual(st, "FAIL", (cid, status, d))
+                self.assertIn("does not descend", d)
+                self.assertEqual(t.argvs, [], cid)
+
+    def test_identical_and_ahead_pass_the_binding(self):
+        for status in ("identical", "ahead"):
+            self.assertEqual(one(Gh(compare=status), "j04.published_install_sh_default")[0], "PASS")
+
+    def test_no_or_conflicting_candidate_sha_is_inconclusive(self):
+        for b in (ppv.Binding(), ppv.Binding(frozenset({CAND, "c" * 40}), hx(INSTALLER))):
+            self.assertEqual(one(Gh(), "j04.published_install_sh_default", binding=b)[0], "INCONCLUSIVE")
+
+    def test_unknown_candidate_commit_fails(self):
+        gh = Gh()
+        gh.routes.insert(0, ("/compare/", ppv.Response(404, {}, b"{}")))
+        self.assertEqual(one(gh, "j04.published_install_sh_default")[0], "FAIL")
+
+    def test_compare_uses_the_obligations_candidate_not_the_remote(self):
+        gh = Gh()
+        one(gh, "j04.published_install_sh_default")
+        compares = [u for u, _ in gh.calls if "/compare/" in u]
+        self.assertEqual(compares, [f"{API}/compare/{CAND}...{TAG_SHA}"])
+
+    def test_release_and_sums_are_fetched_once_per_invocation(self):
+        gh = Gh()
+        run_ids(gh, ["j04.published_install_sh_default", "j04.published_release_checksums_and_signature",
+                     "j04.published_homebrew_tap_install"])
+        self.assertEqual(sum("/releases/tags/" in u for u, _ in gh.calls), 1)
+        sums_asset = next(u for u, _ in gh.calls if u.endswith("/releases/assets/" + str(1000 + list(gh.files).index("SHA256SUMS"))))
+        self.assertEqual(sum(u == sums_asset for u, _ in gh.calls), 1)
+
+    def test_image_digest_recorded_in_obligations_is_compared(self):
+        body = index_doc()
+        reg = good_ghcr(FakeRegistry(), "aa-gateway", body)
+        good = ppv.Binding(frozenset({CAND}), None, {"aa-gateway": dg(body)})
+        bad = ppv.Binding(frozenset({CAND}), None, {"aa-gateway": dg(b"another image")})
+        self.assertEqual(one(reg, "j53-ghcr-tag-resolves", binding=good)[0], "PASS")
+        st, d = one(reg, "j53-ghcr-tag-resolves", binding=bad)
+        self.assertEqual(st, "FAIL")
+        self.assertIn("obligations record", d)
 
 
 class LatestTests(TestCase):
@@ -647,31 +752,38 @@ class LatestTests(TestCase):
         r.route("/releases/latest", ppv.Response(200, {}, json.dumps({"tag_name": latest}).encode()) if latest else ppv.Response(404, {}, b"{}"))
         return r
 
-    def test_pass_via_fallback_and_via_latest(self):
+    def test_pass_when_latest_is_404_or_the_tag(self):
         self.assertEqual(one(self.reg(), self.ID)[0], "PASS")
         self.assertEqual(one(self.reg(latest=TAG), self.ID)[0], "PASS")
+
+    def test_a_later_rc_does_not_fail_an_earlier_one_when_latest_is_404(self):
+        st, d = one(self.reg(top="v0.0.1-rc.9"), self.ID)
+        self.assertEqual(st, "PASS")
+        self.assertIn("v0.0.1-rc.9", d)
 
     def test_latest_is_another_release_fails(self):
         st, d = one(self.reg(latest="v0.0.0"), self.ID)
         self.assertEqual(st, "FAIL")
         self.assertIn("v0.0.0", d)
 
-    def test_newest_is_not_the_tag_fails(self):
-        self.assertEqual(one(self.reg(top="v0.0.1-rc.9"), self.ID)[0], "FAIL")
-
-    def test_server_error_is_inconclusive(self):
-        r = FakeRegistry().route("/releases", ppv.Response(500, {}, b""))
+    def test_server_error_or_garbage_is_inconclusive(self):
+        r = FakeRegistry().route("/releases/latest", ppv.Response(503, {}, b""))
         self.assertEqual(one(r, self.ID)[0], "INCONCLUSIVE")
-        r = self.reg()
-        r.routes.insert(0, ("/releases/latest", ppv.Response(503, {}, b"")))
+        r = FakeRegistry().route("/releases/latest", ppv.Response(200, {}, b"<html>"))
         self.assertEqual(one(r, self.ID)[0], "INCONCLUSIVE")
 
 
-def formula(url_base="v0.0.1-rc.8", sums=None, binary="aa-gateway", names=("aasm-x86_64-apple-darwin.tar.gz", "aasm-aarch64-apple-darwin.tar.gz")):
+BASE = "https://github.com/ai-agent-assembly/agent-assembly/releases/download"
+
+
+def formula(url_base=None, sums=None, binary="aa-gateway", names=("aasm-x86_64-apple-darwin.tar.gz", "aasm-aarch64-apple-darwin.tar.gz"),
+            omit_sha=()):
+    base = url_base if url_base is not None else f"{BASE}/{TAG}"
     out = f"class X < Formula\n  # {binary}\n"
     for n in names:
-        out += f'  url "https://github.com/ai-agent-assembly/agent-assembly/releases/download/{url_base}/{n}"\n'
-        out += f'  sha256 "{(sums or {}).get(n, "0" * 64)}"\n'
+        out += f'  url "{base}/{n}"\n'
+        if n not in omit_sha:
+            out += f'  sha256 "{(sums or {}).get(n, "0" * 64)}"\n'
     return out
 
 
@@ -680,19 +792,33 @@ class HomebrewTests(TestCase):
              ("j04.published_homebrew_runtime", "Formula/aasm-runtime.rb", "aa-runtime"),
              ("j17.published_homebrew_gateway", "Formula/aasm.rb", "aa-gateway")]
 
-    def reg(self, path, binary, version=VER, mutate=None, tap_status=200):
+    def sums_of(self, gh):
+        return {n: s for s, n in (line.split("  ") for line in gh.sums.decode().splitlines())}
+
+    def reg(self, path, binary, version=VER, mutate=None, tap_status=200, text=None, **fkw):
         gh = Gh()
-        sums = {n: s for s, n in (line.split("  ") for line in gh.sums.decode().splitlines())}
+        sums = self.sums_of(gh)
         if mutate:
             sums = mutate(sums)
         gh.routes.insert(0, ("contents/metadata/versions.rb", ppv.Response(200, {}, f'VERSION = "{version}"\n'.encode())))
-        gh.routes.insert(0, (f"contents/{path}", ppv.Response(tap_status, {}, formula(sums=sums, binary=binary).encode())))
+        body = text if text is not None else formula(sums=sums, binary=binary, **fkw)
+        gh.routes.insert(0, (f"contents/{path}", ppv.Response(tap_status, {}, body.encode())))
         return gh
 
     def test_pass(self):
         for cid, path, binary in self.CASES:
             st, d = one(self.reg(path, binary), cid)
             self.assertEqual(st, "PASS", d)
+
+    def test_pass_with_explicit_version_interpolation(self):
+        gh = Gh()
+        text = formula(url_base=f"{BASE}/v#{{version}}", sums=self.sums_of(gh))
+        st, d = one(self.reg("Formula/aasm.rb", "aa-gateway", text=text), "j04.published_homebrew_tap_install")
+        self.assertEqual(st, "PASS", d)
+
+    def test_unresolvable_interpolation_fails(self):
+        text = formula(url_base=f"{BASE}/#{{tag}}")
+        self.assertEqual(one(self.reg("Formula/aasm.rb", "aa-gateway", text=text), "j04.published_homebrew_tap_install")[0], "FAIL")
 
     def test_only_reads_the_tap_via_api_with_get(self):
         gh = self.reg("Formula/aasm.rb", "aa-gateway")
@@ -718,17 +844,26 @@ class HomebrewTests(TestCase):
             self.assertEqual(one(self.reg(path, binary, tap_status=404), cid)[0], "FAIL")
             self.assertEqual(one(self.reg(path, "other-binary"), cid)[0], "FAIL")
 
-    def test_url_naming_another_tag_or_unknown_tarball_fails(self):
-        gh = self.reg("Formula/aasm.rb", "aa-gateway")
-        sums = {n: s for s, n in (line.split("  ") for line in gh.sums.decode().splitlines())}
-        gh.routes.insert(0, ("contents/Formula/aasm.rb", ppv.Response(200, {}, formula(url_base="v0.0.1-rc.7", sums=sums).encode())))
-        self.assertEqual(one(gh, "j04.published_homebrew_tap_install")[0], "FAIL")
-        gh.routes.insert(0, ("contents/Formula/aasm.rb", ppv.Response(200, {}, formula(sums=sums, names=("nope.tar.gz",)).encode())))
-        self.assertEqual(one(gh, "j04.published_homebrew_tap_install")[0], "FAIL")
+    def test_url_on_a_foreign_host_or_another_tag_or_path_fails(self):
+        sums = self.sums_of(Gh())
+        for base in ("https://evil.example/ai-agent-assembly/agent-assembly/releases/download/" + TAG,
+                     f"{BASE}/v0.0.1-rc.7", f"{BASE}/{TAG}/sub", "http://github.com/ai-agent-assembly/agent-assembly/releases/download/" + TAG):
+            text = formula(url_base=base, sums=sums)
+            st, d = one(self.reg("Formula/aasm.rb", "aa-gateway", text=text), "j04.published_homebrew_tap_install")
+            self.assertEqual(st, "FAIL", base)
+
+    def test_unknown_tarball_fails(self):
+        text = formula(sums=self.sums_of(Gh()), names=("nope.tar.gz",))
+        self.assertEqual(one(self.reg("Formula/aasm.rb", "aa-gateway", text=text), "j04.published_homebrew_tap_install")[0], "FAIL")
+
+    def test_url_without_a_sha_fails_even_if_other_urls_are_fine(self):
+        text = formula(sums=self.sums_of(Gh()), omit_sha=("aasm-x86_64-apple-darwin.tar.gz",))
+        st, d = one(self.reg("Formula/aasm.rb", "aa-gateway", text=text), "j04.published_homebrew_tap_install")
+        self.assertEqual(st, "FAIL")
+        self.assertIn("no sha256", d)
 
     def test_formula_without_any_sha_pair_fails(self):
-        gh = self.reg("Formula/aasm.rb", "aa-gateway")
-        gh.routes.insert(0, ("contents/Formula/aasm.rb", ppv.Response(200, {}, b"aa-gateway only\n")))
+        gh = self.reg("Formula/aasm.rb", "aa-gateway", text="aa-gateway only\n")
         self.assertEqual(one(gh, "j04.published_homebrew_tap_install")[0], "FAIL")
 
 
@@ -742,8 +877,9 @@ class CratesTests(TestCase):
     def test_pass_and_request_shape(self):
         r = self.reg()
         self.assertEqual(one(r, self.ID)[0], "PASS")
-        self.assertEqual(r.calls[0][0], f"https://crates.io/api/v1/crates/aa-cli/{VER}")
-        self.assertIn("User-Agent", r.calls[0][1])
+        call = next(c for c in r.calls if "crates.io" in c[0])
+        self.assertEqual(call[0], f"https://crates.io/api/v1/crates/aa-cli/{VER}")
+        self.assertIn("User-Agent", call[1])
 
     def test_yanked_wrong_version_missing_fail(self):
         self.assertEqual(one(self.reg(yanked=True), self.ID)[0], "FAIL")
@@ -804,6 +940,20 @@ class RunsHealthyTests(TestCase):
         self.assertEqual(t.argvs[-1][1:3], ["rm", "-f"])
         self.assertEqual(t.health_calls, 1)
 
+    def test_container_is_confined_and_named_uniquely(self):
+        names = set()
+        for _ in range(2):
+            (st, _), t = self.go()
+            run = next(a for a in t.argvs if a[1] == "run")
+            self.assertEqual(st, "PASS")
+            for flag in (["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--pids-limit", "256"], ["--memory", "512m"]):
+                i = run.index(flag[0])
+                self.assertEqual(run[i:i + 2], flag)
+            self.assertNotIn("--privileged", run)
+            names.add(run[run.index("--name") + 1])
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all(re.fullmatch(r"aa-ppv-[0-9a-f]{16}", n) for n in names))
+
     def test_docker_absent_is_inconclusive_and_nothing_ran(self):
         t = FakeTools(present=("cosign",))
         self.assertEqual(one(self.reg(), self.ID, tools=t)[0], "INCONCLUSIVE")
@@ -834,7 +984,7 @@ class RunsHealthyTests(TestCase):
 
 
 class GrpcHealthClientTests(TestCase):
-    def serve(self, reply: bytes):
+    def serve(self, reply: bytes, trailers: bytes | None = b"\x00\x0bgrpc-status\x010", ping: bool = False, stall: bool = False):
         srv = socket.socket()
         srv.bind(("127.0.0.1", 0))
         srv.listen(1)
@@ -852,8 +1002,23 @@ class GrpcHealthClientTests(TestCase):
                     break
                 buf += chunk
             seen["request"] = buf
-            c.sendall(frame(4, 0, 0, b"") + frame(4, 1, 0, b"") + frame(1, 0x4, 1, b"\x88")
-                      + frame(0, 0, 1, reply) + frame(1, 0x5, 1, b"\x00\x0bgrpc-status\x010"))
+            if stall:
+                time.sleep(3)
+                c.close()
+                srv.close()
+                return
+            out = frame(4, 0, 0, b"") + frame(4, 1, 0, b"")
+            if ping:
+                out += frame(6, 0, 0, b"12345678")
+            out += frame(1, 0x4, 1, b"\x88") + frame(0, 0, 1, reply)
+            out += frame(1, 0x5, 1, trailers) if trailers is not None else frame(0, 0x1, 1, b"")
+            c.sendall(out)
+            if ping:
+                c.settimeout(2)
+                try:
+                    seen["after"] = c.recv(4096)
+                except OSError:
+                    seen["after"] = b""
             c.close()
             srv.close()
         th = threading.Thread(target=run, daemon=True)
@@ -866,6 +1031,29 @@ class GrpcHealthClientTests(TestCase):
         th.join(5)
         self.assertTrue(seen["request"].startswith(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"))
         self.assertIn(b"application/grpc", seen["request"])
+
+    def test_ping_is_acknowledged_with_its_payload(self):
+        port, th, seen = self.serve(b"\x00\x00\x00\x00\x02\x08\x01", ping=True)
+        self.assertEqual(ppv.grpc_health_check("127.0.0.1", port, 5), "SERVING")
+        th.join(5)
+        self.assertIn(b"\x00\x00\x08\x06\x01\x00\x00\x00\x0012345678", seen["after"])
+
+    def test_response_without_trailers_is_an_error(self):
+        port, th, _ = self.serve(b"\x00\x00\x00\x00\x02\x08\x01", trailers=None)
+        with self.assertRaises(ppv.FetchError):
+            ppv.grpc_health_check("127.0.0.1", port, 5)
+
+    def test_non_zero_grpc_status_in_trailers_is_an_error(self):
+        port, th, _ = self.serve(b"\x00\x00\x00\x00\x02\x08\x01", trailers=b"\x00\x0bgrpc-status\x012")
+        with self.assertRaises(ppv.FetchError):
+            ppv.grpc_health_check("127.0.0.1", port, 5)
+
+    def test_overall_deadline_bounds_a_stalled_server(self):
+        port, th, _ = self.serve(b"", stall=True)
+        t0 = time.monotonic()
+        with self.assertRaises((ppv.FetchError, OSError)):
+            ppv.grpc_health_check("127.0.0.1", port, 0.5)
+        self.assertLess(time.monotonic() - t0, 2.5)
 
     def test_not_serving_status_is_reported(self):
         port, th, _ = self.serve(b"\x00\x00\x00\x00\x02\x08\x02")
@@ -903,15 +1091,20 @@ class GoldenPathTests(TestCase):
         names = [n for n in ppv.required_assets(TAG) if n != "SHA256SUMS"]
         files = {n: f"c-{n}".encode() for n in names}
         files.update(self.files(kw.pop("evil", None), kw.pop("api_members", None)))
-        gh = Gh(files=files, **kw)
-        gh.routes.insert(0, ("/commits/", ppv.Response(200, {}, json.dumps({"sha": self.SHA}).encode())))
-        return gh
+        return Gh(files=files, **kw)
+
+    @staticmethod
+    def harness_runs(t):
+        return [a for a in t.argvs if "--aasm-bin" in a]
 
     def harness(self, verdict="CANDIDATE_VERIFIED", rc=0, statuses=("PASS", "PASS"), out=None):
         seen = {}
 
         def h(argv, cwd):
+            if argv[1] == "verify-blob":
+                return 0, "", ""
             seen["argv"] = argv
+            seen["cwd"] = cwd
             seen["bins_exist"] = [Path(argv[argv.index(f)+1]).is_file() for f in ("--aasm-bin", "--api-server-bin")]
             seen["expected"] = json.loads(Path(argv[argv.index("--expected-digests") + 1]).read_text())
             body = out if out is not None else json.dumps({"verdict": verdict, "candidate_checks": [
@@ -926,9 +1119,49 @@ class GoldenPathTests(TestCase):
         argv = seen["argv"]
         self.assertEqual(argv[1:2], ["-I"])
         self.assertEqual(seen["bins_exist"], [True, True])
-        self.assertEqual(argv[argv.index("--candidate-sha") + 1], self.SHA)
+        self.assertEqual(argv[argv.index("--candidate-sha") + 1], CAND, "from the obligations, never the remote")
+        self.assertNotIn(TAG_SHA, argv)
         self.assertEqual(argv[argv.index("--expected-version") + 1], VER)
         self.assertEqual(seen["expected"]["aasm"], "sha256:" + hx(b"aasm-bin"))
+
+    def test_harness_runs_with_a_scrubbed_environment(self):
+        h, seen = self.harness()
+        t = FakeTools(handler=h)
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_x", "AWS_SECRET_ACCESS_KEY": "s"}):
+            self.assertEqual(one(self.gh(), self.ID, tools=t)[0], "PASS")
+        env = t.envs[-1]
+        self.assertEqual(set(env), {"PATH", "HOME", "TMPDIR"})
+        self.assertEqual(env["HOME"], env["TMPDIR"])
+        self.assertEqual(seen["cwd"], env["HOME"])
+
+    def test_cosign_absent_runs_nothing_and_is_inconclusive(self):
+        t = FakeTools(present=("docker",), handler=self.harness()[0])
+        st, d = one(self.gh(), self.ID, tools=t)
+        self.assertEqual(st, "INCONCLUSIVE")
+        self.assertEqual(t.argvs, [])
+        self.assertIn("signature not verified", d)
+
+    def test_signature_rejected_runs_no_downloaded_code(self):
+        t = FakeTools(handler=lambda a, c: (1, "", "none of the expected identities matched"))
+        self.assertEqual(one(self.gh(), self.ID, tools=t)[0], "FAIL")
+        self.assertEqual(self.harness_runs(t), [])
+
+    def test_signature_unreachable_runs_no_downloaded_code(self):
+        t = FakeTools(handler=lambda a, c: (1, "", "TUF: connection refused"))
+        self.assertEqual(one(self.gh(), self.ID, tools=t)[0], "INCONCLUSIVE")
+        self.assertEqual(self.harness_runs(t), [])
+
+    def test_no_candidate_sha_in_the_record_is_inconclusive_and_runs_nothing(self):
+        t = FakeTools(handler=self.harness()[0])
+        self.assertEqual(one(self.gh(), self.ID, tools=t, binding=ppv.Binding())[0], "INCONCLUSIVE")
+        self.assertEqual(t.argvs, [])
+
+    def test_tar_member_and_size_caps_fail(self):
+        for attr, val in (("MAX_TAR_MEMBERS", 0), ("MAX_TAR_BYTES", 1)):
+            t = FakeTools(handler=self.harness()[0])
+            with mock.patch.object(ppv, attr, val):
+                self.assertEqual(one(self.gh(), self.ID, tools=t)[0], "FAIL", attr)
+            self.assertEqual(self.harness_runs(t), [])
 
     def test_tarball_not_matching_sums_fails_and_harness_never_runs(self):
         t = FakeTools(handler=self.harness()[0])
@@ -938,17 +1171,17 @@ class GoldenPathTests(TestCase):
         gh2 = self.gh(sums_override="".join(f"{v}  {k}\n" for k, v in bad.items()).encode())
         st, d = one(gh2, self.ID, tools=t)
         self.assertEqual(st, "FAIL")
-        self.assertEqual(t.argvs, [])
+        self.assertEqual(self.harness_runs(t), [])
 
     def test_tarball_missing_asset_fails(self):
         t = FakeTools(handler=self.harness()[0])
         self.assertEqual(one(self.gh(drop=(f"aasm-api-{TAG}-linux-amd64.tar.gz",)), self.ID, tools=t)[0], "FAIL")
-        self.assertEqual(t.argvs, [])
+        self.assertEqual(self.harness_runs(t), [])
 
     def test_unsafe_member_path_fails(self):
         t = FakeTools(handler=self.harness()[0])
         self.assertEqual(one(self.gh(evil="../escape"), self.ID, tools=t)[0], "FAIL")
-        self.assertEqual(t.argvs, [])
+        self.assertEqual(self.harness_runs(t), [])
 
     def test_archive_without_the_binary_fails(self):
         t = FakeTools(handler=self.harness()[0])
@@ -984,9 +1217,95 @@ class RealToolsTests(TestCase):
         rc, out, _ = ppv.Tools().run([sys.executable, "-I", "-c", "import sys; print(sys.argv[1])", "a; touch /nonexistent/x"], 10)
         self.assertEqual((rc, out.strip()), (0, "a; touch /nonexistent/x"))
 
+    def test_timeout_kills_the_whole_process_group(self):
+        d = Path(tempfile.mkdtemp(prefix="ppv-pg-"))
+        atexit.register(shutil.rmtree, d, True)
+        pidfile = d / "pid"
+        code = ("import subprocess,sys,time; p=subprocess.Popen(['sleep','60']); "
+                "open(sys.argv[1],'w').write(str(p.pid)); time.sleep(60)")
+        t0 = time.monotonic()
+        with self.assertRaises(ppv.FetchError):
+            ppv.Tools().run([sys.executable, "-I", "-c", code, str(pidfile)], 1.5)
+        # without the group kill the orphan keeps the output pipes open and run() blocks until it exits
+        self.assertLess(time.monotonic() - t0, 20)
+        pid = int(pidfile.read_text())
+        for _ in range(40):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.1)
+        os.kill(pid, 9)
+        self.fail("the grandchild survived the timeout")
+
+    def test_default_environment_drops_credentials(self):
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_x", "SOME_API_KEY": "k", "KEEP_ME": "1"}):
+            rc, out, _ = ppv.Tools().run([sys.executable, "-I", "-c",
+                                          "import os; print(sorted(k for k in os.environ if k in ('GITHUB_TOKEN','SOME_API_KEY','KEEP_ME')))"], 10)
+        self.assertEqual(out.strip(), "['KEEP_ME']")
+
     def test_missing_program_is_a_fetch_error(self):
         with self.assertRaises(ppv.FetchError):
             ppv.Tools().run(["/nonexistent/program"], 5)
+
+
+class FetcherLimitTests(TestCase):
+    def test_read_capped_deadline_and_size_cap(self):
+        class R:
+            def __init__(self, chunks):
+                self.chunks = list(chunks)
+
+            def read(self, n):
+                return self.chunks.pop(0) if self.chunks else b""
+        ticks = iter([0, 1, 2, 3, 99, 100])
+        with self.assertRaises(ppv.FetchError):
+            ppv._read_capped(R([b"a"] * 10), 1 << 20, 10, clock=lambda: next(ticks))
+        with self.assertRaises(ppv.FetchError):
+            ppv._read_capped(R([b"a" * 10]), 5, 10)
+        self.assertEqual(ppv._read_capped(R([b"ab", b"c"]), 100, 10), b"abc")
+
+    def test_content_length_mismatch_is_a_transport_error(self):
+        import http.server
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "10")
+                self.end_headers()
+                self.wfile.write(b"short")
+                self.wfile.flush()
+                self.close_connection = True
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        with self.assertRaises(ppv.FetchError):
+            ppv.urllib_fetcher(f"http://127.0.0.1:{srv.server_port}/x", {}, 5)
+
+    def test_github_token_goes_only_to_api_github_com_and_never_on_downloads(self):
+        reg = FakeRegistry().route("api.github.com", ppv.Response(302, {"location": "https://objects.githubusercontent.com/x"}, b"")) \
+            .route("objects.githubusercontent.com", ppv.Response(200, {}, b"ok")).route("crates.io", ppv.Response(200, {}, b"{}")) \
+            .route("raw.githubusercontent.com", ppv.Response(200, {}, b"{}"))
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_secret"}):
+            probe = ppv.Probe(reg, 5)
+            probe.get("https://api.github.com/repos/x")
+            probe.get("https://crates.io/api/v1/crates/x")
+            probe.get("https://raw.githubusercontent.com/x")
+            probe.download("https://api.github.com/repos/x/releases/assets/1")
+        auth = {u: h.get("Authorization") for u, h in reg.calls}
+        self.assertEqual(auth["https://api.github.com/repos/x"], "Bearer ghp_secret")
+        self.assertIsNone(auth["https://crates.io/api/v1/crates/x"])
+        self.assertIsNone(auth["https://raw.githubusercontent.com/x"])
+        self.assertIsNone(auth["https://api.github.com/repos/x/releases/assets/1"])
+        self.assertIsNone(auth["https://objects.githubusercontent.com/x"])
+
+    def test_tag_with_non_ascii_digits_is_refused(self):
+        self.assertIsNone(ppv.TAG_RE.fullmatch("v\u0661.\u0660.\u0661"))
+        self.assertIsNotNone(ppv.TAG_RE.fullmatch("v0.0.1-rc.8"))
 
 
 class EveryPendingIdHasAnAutomatedRunnerTests(TestCase):
