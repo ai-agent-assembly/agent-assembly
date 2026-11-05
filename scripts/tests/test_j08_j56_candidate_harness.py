@@ -586,6 +586,22 @@ class FwControlDriverTests(unittest.TestCase):
         self.assertEqual(res["convention"], "tool_name")
         self.assertNotIn("denied.sentinel", files)
 
+    def test_async_engine_with_pending_tools(self):
+        res, files = self.drive("DENIED_TOOLS = frozenset({'delete_records'})\nPENDING_TOOLS = frozenset({'send_email'})\n"
+                                "class LocalPolicyEngine:\n"
+                                "    async def check_tool_start(self, **kw):\n"
+                                "        t = kw.get('tool_name', '')\n"
+                                "        return {'status': 'deny' if t in DENIED_TOOLS else 'pending' if t in PENDING_TOOLS else 'allow'}\n")
+        self.assertEqual(files, {"ungoverned.sentinel", "allowed.sentinel"})
+        self.assertEqual(res["deny_tool"], "delete_records")
+
+    def test_engine_that_denies_by_input_not_by_tool_name(self):
+        res, files = self.drive("class LocalPolicyEngine:\n"
+                                "    def check_tool_start(self, serialized, input_str='', **kw):\n"
+                                "        return {'status': 'deny' if 'evil.example' in input_str else 'allow'}\n")
+        self.assertEqual(files, {"ungoverned.sentinel", "allowed.sentinel"})
+        self.assertIn("evil.example", res["deny_input"])
+
     def test_engine_that_allows_everything_is_not_a_control(self):
         res, _ = self.drive("class LocalPolicyEngine:\n    def check_tool_start(self, **kw):\n        return {'status': 'allow'}\n")
         self.assertEqual(res["error"], "no-denied-and-allowed-tool-found")

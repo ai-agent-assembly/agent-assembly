@@ -11,6 +11,7 @@ and on which tool names they deny, so both are probed instead of hard-coded per 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import importlib
 import inspect
 import json
@@ -19,6 +20,9 @@ import uuid
 from pathlib import Path
 
 DENY_DEFAULTS = ["send_http_request", "write_to_disk", "write_file", "delete_files", "delete_file", "shell", "execute_code"]
+# Some engines (the LangChain research example) deny by what a tool is asked to do, not by its name,
+# so a denying input is probed with an allowed tool when no tool name is denied.
+DENY_INPUTS = ['{"url": "https://evil.example.net/exfil"}', "api_key=sk-AAAAAAAAAAAAAAAAAAAAAAAA"]
 ALLOW_DEFAULTS = ["compute_sum", "fetch_stock_price", "read_file", "search", "web_search", "calculator"]
 
 
@@ -33,13 +37,15 @@ def find_engine(mod):
     return cands[0] if cands else None
 
 
-def verdict(cls, conv, tool):
+def verdict(cls, conv, tool, inp="{}"):
     try:
         eng = cls()  # fresh per probe: budget-style engines keep state between calls
         if conv == "serialized":
-            r = eng.check_tool_start(serialized={"name": tool, "type": "tool"}, input_str="{}", run_id=uuid.uuid4())
+            r = eng.check_tool_start(serialized={"name": tool, "type": "tool"}, input_str=inp, run_id=uuid.uuid4())
         else:
-            r = eng.check_tool_start(tool_name=tool, input_str="{}")
+            r = eng.check_tool_start(tool_name=tool, input_str=inp)
+        if inspect.isawaitable(r):  # the async adapters (Google ADK, Microsoft Agent Framework, Pydantic AI)
+            r = asyncio.run(r)
     except Exception:  # noqa: BLE001  # a convention that does not fit is skipped, not fatal
         return None
     if isinstance(r, dict):
@@ -60,12 +66,19 @@ def main():
     cls = find_engine(mod)
     if cls is None:
         return emit(error="no-engine-with-check_tool_start")
-    deny = sorted(getattr(mod, "DENIED_TOOLS", ())) + sorted(getattr(mod, "APPROVAL_REQUIRED_TOOLS", ())) + DENY_DEFAULTS
+    deny = (sorted(getattr(mod, "DENIED_TOOLS", ())) + sorted(getattr(mod, "PENDING_TOOLS", ()))
+            + sorted(getattr(mod, "APPROVAL_REQUIRED_TOOLS", ())) + DENY_DEFAULTS)
     allow = list(getattr(mod, "TOOL_COSTS", {})) + ALLOW_DEFAULTS
+    d = deny_inp = None
     for conv in ("serialized", "tool_name"):
-        d = next((t for t in deny if verdict(cls, conv, t) in ("deny", "pending")), None)
         ok = next((t for t in allow if verdict(cls, conv, t) == "allow"), None)
-        if d and ok:
+        d = next((t for t in deny if verdict(cls, conv, t) in ("deny", "pending")), None)
+        deny_inp = "{}"
+        if d is None and ok:
+            # Denial by input: the same allowed tool, asked to do something the policy forbids.
+            deny_inp = next((i for i in DENY_INPUTS if verdict(cls, conv, ok, i) in ("deny", "pending")), None)
+            d = ok if deny_inp else None
+        if d and ok and deny_inp:
             break
     else:
         return emit(error="no-denied-and-allowed-tool-found", engine=cls.__name__)
@@ -75,11 +88,12 @@ def main():
         (sd / f"{name}.sentinel").write_text("executed\n")
 
     body("ungoverned")  # control: the effect exists when nothing governs it
-    if verdict(cls, conv, d) == "allow":
+    if verdict(cls, conv, d, deny_inp) == "allow":
         body("denied")
     if verdict(cls, conv, ok) == "allow":
         body("allowed")
-    emit(engine=cls.__name__, convention=conv, deny_tool=d, allow_tool=ok, deny_status=verdict(cls, conv, d))
+    emit(engine=cls.__name__, convention=conv, deny_tool=d, deny_input=deny_inp, allow_tool=ok,
+         deny_status=verdict(cls, conv, d, deny_inp))
 
 
 if __name__ == "__main__":
