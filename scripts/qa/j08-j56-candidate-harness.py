@@ -39,9 +39,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
+import textwrap
 import uuid
 import zipfile
 from pathlib import Path
@@ -57,6 +60,7 @@ SOURCES = {
     "golden-path.v1.yaml": f"{FIX}/golden-path.v1.yaml",
     "golden-path.v2-read-deny.yaml": f"{FIX}/golden-path.v2-read-deny.yaml",
     "sdk_driver.py": f"{FIX}/sdk_driver.py",
+    "fw_control.py": f"{FIX}/fw_control.py",
 }
 BINARIES = ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")
 WHEEL = "python-sdk-wheel"
@@ -125,6 +129,19 @@ class Backend:
     def audit(self, agent: str) -> tuple[int, str]: raise NotImplementedError
     def agent_list(self) -> tuple[int, str]: raise NotImplementedError
     def stop(self) -> None: raise NotImplementedError
+    # Framework matrix (J08 --frameworks): one venv per example, no gateway involved.
+    def fw_install(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
+    def fw_test(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
+    def fw_control(self, fid: str, example: Path, sentinel_dir: Path) -> dict[str, Any]: raise NotImplementedError
+    def fw_run_snippet(self, fid: str, code: str) -> tuple[int, str]: raise NotImplementedError
+
+
+# Extras the examples need beyond `dev` (their own pyproject comments); both are heavy or
+# pre-release, so the base smoke does not install them.
+FW_EXTRAS = {
+    "microsoft-agent-framework-tool-policy": ["--extra", "live", "--prerelease=allow"],
+    "crewai-research-crew": ["--extra", "live"],
+}
 
 
 class LocalBackend(Backend):
@@ -200,6 +217,50 @@ class LocalBackend(Backend):
 
     def agent_list(self) -> tuple[int, str]:
         return self._cli("agent", "list")
+
+    def _fw_venv(self, fid: str) -> Path:
+        return self.ctx.tmp / "fwvenvs" / fid
+
+    def _fw_env(self, fid: str | None = None) -> dict[str, str]:
+        # uv needs a cache to avoid re-downloading; HOME stays isolated so nothing else leaks.
+        env = {**self.env, "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),
+               "PYTHONDONTWRITEBYTECODE": "1", "PATH": f"{Path(self.uv).parent}:/usr/bin:/bin"}
+        if fid:
+            env["UV_PROJECT_ENVIRONMENT"] = str(self._fw_venv(fid))
+        return env
+
+    uv = shutil.which("uv") or "/usr/bin/uv"
+
+    def fw_install(self, fid: str, example: Path) -> tuple[int, str]:
+        env = self._fw_env(fid)
+        rc, out = self.exec([self.uv, "sync", "--frozen", "--extra", "dev", *FW_EXTRAS.get(fid, [])], env, example, 900)
+        if rc != 0:
+            return rc, out
+        # The lock pins the SDK the example was written against; the candidate wheel replaces it.
+        return self.exec([self.uv, "pip", "install", "--python", str(self._fw_venv(fid) / "bin" / "python"), "--no-index",
+                          "--find-links", str(self.wheel.parent), "--reinstall", "--no-deps", str(self.wheel)],
+                         env, example, 300)
+
+    def fw_test(self, fid: str, example: Path) -> tuple[int, str]:
+        # No cache provider: nothing may be written into the (verified-clean) examples checkout.
+        return self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", "-m", "pytest", "-rs", "-v",
+                          "-p", "no:cacheprovider", "tests/test_smoke.py"], self._fw_env(), example, 600)
+
+    def fw_control(self, fid: str, example: Path, sentinel_dir: Path) -> dict[str, Any]:
+        rc, out = self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", str(self.driver.parent / "fw_control.py"),
+                             "--example-dir", str(example), "--sentinel-dir", str(sentinel_dir)], self._fw_env(), example, 120)
+        for line in reversed(out.splitlines()):
+            if line.startswith("RESULT "):
+                try:
+                    return json.loads(line[len("RESULT "):])
+                except ValueError:
+                    break
+        return {"error": "control-no-result", "message": f"exit {rc}: {out.strip()[-200:]}"}
+
+    def fw_run_snippet(self, fid: str, code: str) -> tuple[int, str]:
+        f = self.ctx.tmp / "readme_quickstart.py"
+        f.write_text(code)
+        return self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", str(f)], self._fw_env(), self.ctx.tmp, 300)
 
     def stop(self) -> None:
         if self.started:
@@ -419,6 +480,149 @@ def run_j08(ctx: c.Context, be: Backend, repo: Path, wheel: Path) -> None:
     check_allow_deny(ctx, be, "", None, rest[1])
 
 
+def git_state(d: Path) -> tuple[str | None, str]:
+    """(HEAD sha or None, tracked-file changes). Untracked files are ignored: venvs and
+    caches are expected there, and only a tracked edit can change what a sample means."""
+    def g(*a: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["/usr/bin/git", "-C", str(d), *a], capture_output=True, text=True, timeout=60, check=False)
+    try:
+        head, st = g("rev-parse", "HEAD"), g("status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.SubprocessError):
+        return None, "git unavailable"
+    return (head.stdout.strip() if head.returncode == 0 else None), (st.stdout if st.returncode == 0 else "git status failed")
+
+
+def checkout_problem(label: str, d: Path, want_sha: str) -> str | None:
+    head, dirty = git_state(d)
+    if head is None:
+        return f"{label} {d} is not a readable git checkout"
+    if head != want_sha:
+        return f"{label} HEAD {head[:12]} != pinned {want_sha[:12]}"
+    if dirty.strip():
+        return f"{label} has uncommitted tracked changes: {dirty.strip().splitlines()[0]}"
+    return None
+
+
+def quickstart_region(main_py: str) -> list[str]:
+    out: list[str] = []
+    on = False
+    for line in main_py.splitlines():
+        if "# region: quickstart" in line:
+            on = True
+        elif on and "# endregion" in line:
+            break
+        elif on:
+            out.append(line)
+    return [l.rstrip() for l in textwrap.dedent("\n".join(out)).splitlines()]
+
+
+def slice_problem(slice_text: str, main_py: str) -> str | None:
+    """The vendored slice cannot run on its own (undefined names, `src.*` imports that exist
+    only in the examples repo), so 'verbatim' means the example's quickstart region, dedented,
+    appears unchanged as a contiguous block of the slice."""
+    region = quickstart_region(main_py)
+    if not any(region):
+        return "the example's main.py has no non-empty `# region: quickstart` block"
+    lines = [l.rstrip() for l in slice_text.splitlines()]
+    n = len(region)
+    if any(lines[i:i + n] == region for i in range(len(lines) - n + 1)):
+        return None
+    return "the vendored slice does not contain the example's quickstart region verbatim"
+
+
+PYTEST_COUNT = {k: re.compile(rf"(\d+) {k}") for k in ("passed", "skipped", "failed", "error")}
+LOCAL_SCOPE = "covers the example's client-side LocalPolicyEngine wiring, not gateway policy (that is J56)"
+
+
+def pytest_counts(out: str) -> dict[str, int]:
+    tail = "\n".join(out.strip().splitlines()[-3:])
+    return {k: int(m.group(1)) if (m := rx.search(tail)) else 0 for k, rx in PYTEST_COUNT.items()}
+
+
+def manifest_frameworks(sdk_dir: Path) -> list[dict[str, str]]:
+    return json.loads((sdk_dir / "quickstart_snippets" / "manifest.json").read_text())["frameworks"]
+
+
+def run_matrix(ctx: c.Context, be: Backend, sdk_dir: Path, examples_dir: Path, wanted: list[str]) -> None:
+    fws = {f["framework_id"]: f for f in manifest_frameworks(sdk_dir)}
+    ids = list(fws) if "all" in wanted else [w for w in wanted if w in fws]
+    installed: dict[str, tuple[int, str]] = {}
+
+    def install(fid: str, example: Path) -> tuple[int, str]:
+        if fid not in installed:
+            installed[fid] = be.fw_install(fid, example)
+        return installed[fid]
+
+    for fid in ids:
+        pre, ex = f"j08-c-fw-{fid}", examples_dir / "python" / fid
+        arts = [WHEEL]
+        verb = None
+        try:
+            verb = slice_problem((sdk_dir / "quickstart_snippets" / f"{fid}.py").read_text(), (ex / "src" / "main.py").read_text())
+        except OSError as e:
+            verb = f"cannot read the slice or the example main.py: {e}"
+        rc, out = install(fid, ex)
+        if rc != 0:
+            ctx.add(f"{pre}-install", c.FAIL, "real_local_process", f"uv sync --frozen / candidate wheel install exited {rc}: {out.strip()[-400:]}",
+                    arts, _tn("test_framework_install_failure_fails"))
+            ctx.add(f"{pre}-allow-deny", c.FAIL if verb else c.NOT_COVERED, "real_local_process",
+                    verb or f"{pre}-install failed, so the example cannot run", arts, _tn("test_missing_verbatim_slice_fails"))
+            continue
+        ctx.add(f"{pre}-install", c.PASS, "real_local_process", "uv sync --frozen from the example lock, then the candidate wheel over the pinned SDK", arts,
+                _tn("test_framework_install_failure_fails"))
+        p = [verb] if verb else []
+        trc, tout = be.fw_test(fid, ex)
+        n = pytest_counts(tout)
+        if trc != 0 or n["failed"] or n["error"]:
+            p.append(f"tests/test_smoke.py exit {trc}: {tout.strip()[-300:]}")
+        if n["skipped"]:
+            p.append(f"{n['skipped']} test(s) skipped: a skipped test proves nothing")
+        if not n["passed"]:
+            p.append("no test passed")
+        sd = ctx.tmp / "fw-sentinels" / fid
+        sd.mkdir(parents=True, exist_ok=True)
+        ctl = be.fw_control(fid, ex, sd)
+        if ctl.get("error"):
+            p.append(f"the no-governance control could not be established: {ctl['error']} {ctl.get('message', '')}".strip())
+        else:
+            if not (sd / "ungoverned.sentinel").exists():
+                p.append("control invalid: the side effect did not occur without governance")
+            if (sd / "denied.sentinel").exists():
+                p.append(f"deny case ({ctl.get('deny_tool')}) left its side effect: the denied tool ran")
+            if not (sd / "allowed.sentinel").exists():
+                p.append(f"allow case ({ctl.get('allow_tool')}) did not run")
+        _res(ctx, f"{pre}-allow-deny", p,
+             f"verbatim slice, {n['passed']} smoke tests passed with none skipped, side effect occurs ungoverned and "
+             f"is absent when denied; {LOCAL_SCOPE}", arts, _tn("test_deny_leaves_side_effect_fails"), "controlled_fake")
+
+
+def readme_fakellm_snippet(sdk_dir: Path) -> str | None:
+    text = (sdk_dir / "README.md").read_text()
+    for m in re.finditer(r"```python\n(.*?)```", text, re.S):
+        if "FakeListLLM" in m.group(1) and "init_assembly" in m.group(1):
+            return m.group(1)
+    return None
+
+
+def run_readme_quickstart(ctx: c.Context, be: Backend, sdk_dir: Path, examples_dir: Path) -> None:
+    cid, neg = "j08-c-readme-fakellm-quickstart", _tn("test_readme_quickstart_failure_fails")
+    code = readme_fakellm_snippet(sdk_dir)
+    if code is None:
+        ctx.add(cid, c.FAIL, "real_local_process", "the SDK README has no python block with the FakeListLLM quick start", [WHEEL], neg)
+        return
+    host = "langchain-basic-agent"
+    rc, out = be.fw_install(host, examples_dir / "python" / host)
+    if rc != 0:
+        ctx.add(cid, c.FAIL, "real_local_process", f"the langchain example venv did not install: {out.strip()[-300:]}", [WHEEL], neg)
+        return
+    rc, out = be.fw_run_snippet(host, code)
+    ok = rc == 0 and "alice is in engineering" in out
+    ctx.add(cid, c.PASS if ok else c.FAIL, "controlled_fake",
+            "the README FakeListLLM quick start runs verbatim offline and prints the expected answer; it proves the snippet "
+            "executes, not that init_assembly() alone governs it (see readme-snippet-matches-wiring)" if ok else
+            f"README quick start exit {rc}: {out.strip()[-300:]}", [WHEEL], neg)
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(allow_abbrev=False)
     ap.add_argument("--journey", required=True, choices=["J08", "J56"])
@@ -432,7 +636,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ap.add_argument("--expected-digests", help=f"JSON {{name: sha256:<hex>}}; names: {', '.join(BINARIES)}, {WHEEL}")
     ap.add_argument("--out")
     ap.add_argument("--obligation-fragment")
+    ap.add_argument("--frameworks", help="J08 only: `all` or comma-separated manifest framework ids (adds the readme quick start check)")
+    ap.add_argument("--sdk-dir", help="python-sdk checkout at --sdk-sha (reads quickstart_snippets/manifest.json and README.md)")
+    ap.add_argument("--examples-dir", help="examples checkout at --examples-sha")
+    ap.add_argument("--examples-sha")
     a = ap.parse_args(argv)
+    a.fw_wanted = [w.strip() for w in a.frameworks.split(",") if w.strip()] if a.frameworks else []
+    if a.fw_wanted:
+        if a.journey != "J08":
+            ap.error("--frameworks applies to --journey J08 only")
+        if not (a.sdk_dir and a.examples_dir and a.examples_sha and c.SHA40.fullmatch(a.examples_sha)):
+            ap.error("--frameworks needs --sdk-dir, --examples-dir and a 40-hex --examples-sha")
     if a.obligation_fragment:
         Path(a.obligation_fragment).unlink(missing_ok=True)
     for flag in ("candidate_sha", "sdk_sha"):
@@ -470,7 +684,22 @@ def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None 
                 ident.append(f"{name} --version {out.strip()[:80]!r} (exit {rc}), want {a.version}")
         _res(ctx, f"{pfx}-c-binary-identity", ident, f"aasm and aa-gateway both report {a.version}", ["aasm", "aa-gateway"],
              _tn("test_wrong_version_fails"))
+        if a.fw_wanted:
+            sdk_dir, ex_dir = Path(a.sdk_dir).resolve(), Path(a.examples_dir).resolve()
+            known = {f["framework_id"] for f in manifest_frameworks(sdk_dir)}
+            unknown = [w for w in a.fw_wanted if w not in known | {"all", "readme"}]
+            if unknown:
+                print(f"unknown framework id(s) not in the manifest: {unknown}", file=sys.stderr)
+                return c.EXIT_USAGE
+            for prob in (checkout_problem("--sdk-dir", sdk_dir, a.sdk_sha), checkout_problem("--examples-dir", ex_dir, a.examples_sha)):
+                if prob:
+                    print(prob, file=sys.stderr)
+                    return c.EXIT_USAGE
         (run_j56 if a.journey == "J56" else lambda x, y, z: run_j08(x, y, z, wheel))(ctx, be, repo)
+        if a.fw_wanted:
+            run_matrix(ctx, be, sdk_dir, ex_dir, a.fw_wanted)
+            if "all" in a.fw_wanted or "readme" in a.fw_wanted:
+                run_readme_quickstart(ctx, be, sdk_dir, ex_dir)
         report = c.build_report(ctx, SCRIPT, [PENDING_BY_JOURNEY[a.journey]], failure_response(a.journey), DEPENDS_ON)
         report["sdk_sha"] = a.sdk_sha
         report["sdk_wheel_sha256"] = ctx.artifacts[WHEEL]
