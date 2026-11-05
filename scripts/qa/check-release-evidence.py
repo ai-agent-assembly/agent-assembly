@@ -1696,10 +1696,15 @@ def rc_approval_violations(
     committed owner approval for this exact tag and commit (AAASM-6424)."""
     if not approval_ref:
         return ["no --approval-ref given: an rc needs a committed owner approval record"]
-    try:
-        ref_sha = git.rev_parse(approval_ref)
-    except subprocess.CalledProcessError:
-        return [f"approval ref {approval_ref!r} does not resolve"]
+    # A short name is ambiguous (a tag or local branch can shadow it), and this ref
+    # is the authorization source, so only a fully qualified remote-tracking ref is
+    # accepted and it is resolved to a SHA once; everything below reads by SHA.
+    if not publication_obligations.APPROVAL_REF_RE.fullmatch(approval_ref) or ".." in approval_ref:
+        return [f"approval ref {approval_ref!r} must be a fully qualified refs/remotes/<remote>/<branch> ref"]
+    resolved = git.run("rev-parse", "--verify", "--end-of-options", f"{approval_ref}^{{commit}}", check=False)
+    if resolved.returncode != 0:
+        return [f"approval ref {approval_ref!r} does not resolve to a commit"]
+    ref_sha = resolved.stdout.strip()
     if not git.is_ancestor(tag_target_sha, ref_sha):
         return [f"approval ref {approval_ref!r} does not descend from the tag target {tag_target_sha}"]
     path = publication_obligations.approval_path(version)

@@ -242,6 +242,7 @@ _HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
 APPROVAL_SCOPE = "rc-publish"
+APPROVAL_REF_RE = re.compile(r"refs/remotes/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+")
 _SHA40_RE = re.compile(r"[0-9a-f]{40}")
 
 

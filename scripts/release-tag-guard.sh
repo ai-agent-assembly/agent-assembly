@@ -151,10 +151,10 @@ fi
 # checker returns 4 only when a committed owner approval for this exact tag and
 # commit exists on the remote main (ref descending from HEAD).
 python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD \
-  --accept-rc-candidate-verified --approval-ref "${REMOTE_NAME}/main"
+  --accept-rc-candidate-verified --approval-ref "refs/remotes/${REMOTE_NAME}/main"
 EVIDENCE_RC=$?
 if [ "$EVIDENCE_RC" -eq 4 ]; then
-  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization on its own; an owner approval record for this exact tag and commit was verified on ${REMOTE_NAME}/main; post-publication verification stays owed"
+  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization on its own; an owner approval record for this exact tag and commit was verified on refs/remotes/${REMOTE_NAME}/main; post-publication verification stays owed"
 elif [ "$EVIDENCE_RC" -ne 0 ]; then
   fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi
