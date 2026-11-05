@@ -67,6 +67,17 @@ AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh 
 | `AASM_REQUIRE_SIGNATURE` | `0` | When `1`, a missing cosign signature aborts the install (see below) |
 | `AASM_NO_MODIFY_PATH` | `0` | When `1`, suppress the `PATH` hint |
 
+### Choose components or a profile
+
+By default the installer installs the `cli` and `api` components. Options go to the shell, not to `curl`:
+
+- `--components <a,b,c>` (or repeated `--component <name>`) installs exactly the components you name. The names are `cli` (`aasm` plus the `aa-gateway` daemon it launches), `api` (`aa-api-server`), `runtime` (`aa-runtime`), `proxy` (`aa-proxy`) and `ebpf` (supported Linux platforms only).
+- `--profile cli` installs `cli`; `--profile local` installs `cli,api,runtime`; `--profile full` installs `cli,api,runtime,proxy`.
+
+Installing `runtime` does not start it.
+
+**macOS has no `proxy` artifact.** Releases publish the `aa-proxy` tarball for Linux only, so `--profile full` (or `--components` with `proxy`) on macOS stops with `component 'proxy' is not published for <tag>` and installs nothing. On macOS install with `--profile local` instead. The proxy mechanism on macOS is built from source; see [Supported platforms in the README](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms) and [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) section 5.3.
+
 ### Supply-chain verification (checksum + cosign)
 
 The installer **always** enforces a SHA-256 checksum: it downloads `SHA256SUMS`
