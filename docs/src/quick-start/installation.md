@@ -74,9 +74,9 @@ By default the installer installs the `cli` and `api` components. Options go to 
 - `--components <a,b,c>` (or repeated `--component <name>`) installs exactly the components you name. The names are `cli` (`aasm` plus the `aa-gateway` daemon it launches), `api` (`aa-api-server`), `runtime` (`aa-runtime`), `proxy` (`aa-proxy`) and `ebpf` (supported Linux platforms only).
 - `--profile cli` installs `cli`; `--profile local` installs `cli,api,runtime`; `--profile full` installs `cli,api,runtime,proxy`.
 
-Installing `runtime` does not start it.
+Installing `runtime` does not start it. Pass options to the shell, for example `curl -sSf https://agent-assembly.com/install.sh | sh -s -- --profile local`. If you pin an old release that publishes no `api` tarball, the default `api` component is skipped with a warning.
 
-**macOS has no `proxy` artifact.** Releases publish the `aa-proxy` tarball for Linux only, so `--profile full` (or `--components` with `proxy`) on macOS stops with `component 'proxy' is not published for <tag>` and installs nothing. On macOS install with `--profile local` instead. The proxy mechanism on macOS is built from source; see [Supported platforms in the README](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms) and [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) section 5.3.
+**macOS has no `proxy` artifact.** Releases publish the `aa-proxy` tarball for Linux only, so `--profile full` (or `--components` with `proxy`) on macOS stops with `component 'proxy' is not published for <tag>` and installs nothing. On macOS install with `--profile local` instead. macOS has no prebuilt `aa-proxy` binary on any channel, so you must build it yourself; see [Supported platforms in the README](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms) and [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) section 5.3.
 
 ### Supply-chain verification (checksum + cosign)
 
