@@ -1545,48 +1545,70 @@ ${2:-pass}"
   gen_evidence "$PDIR" "$PA"
 }
 
+# Records the evidence (tag target PT), then the owner approval in a LATER commit,
+# because the approval names the tagged commit and so cannot be inside it.
+# $1: python over the approval dict `a`, or "noapproval" to commit none.
+rc_commit() {
+  PT=$(commit_all "$PDIR" "record evidence")
+  if [ "${1:-}" != noapproval ]; then
+    python3 - "$PDIR" "$VERSION" "$PT" "$PA" "${1:-pass}" <<'PYEOF6'
+import hashlib, json, os, subprocess, sys
+d, v, t, c, mut = sys.argv[1:6]
+ev = subprocess.run(["git", "-C", d, "show", f"{t}:docs/release/qa-signoff/v{v}.evidence.json"],
+                    capture_output=True, text=True, check=True).stdout
+a = {"tag": f"v{v}", "commit_sha": t, "candidate_sha": c, "approved_by": "fixture-owner",
+     "approved_at": "2026-01-01T00:00:00Z", "scope": "rc-publish",
+     "evidence_sha256": hashlib.sha256(ev.encode()).hexdigest()}
+exec(mut)
+os.makedirs(f"{d}/docs/release/approvals", exist_ok=True)
+json.dump(a, open(f"{d}/docs/release/approvals/v{v}.approval.json", "w"), indent=2)
+PYEOF6
+    commit_all "$PDIR" "owner approval" >/dev/null
+  fi
+}
+
 ORIG_VERSION="$VERSION"
 VERSION="0.0.0-rc.1"
-CHECKER_EXTRA=(--accept-rc-candidate-verified)
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
 
 echo "== RC1 (positive): rc + valid pending-only record + flag -> exit 4, never 0 =="
 rc_case rc1
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC1 rc pending-only accepted" 4 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC1 rc pending-only accepted" 4 "$PDIR" "$PT"
 assert_output_contains "RC1 states it is not authorization" "NOT authorization to create a tag or publish"
-RC1_DIR="$PDIR"; RC1_SHA="$PA"
+RC1_DIR="$PDIR"; RC1_SHA="$PT"
 
 echo "== RC2: same record, rc, WITHOUT the flag -> still exit 3 =="
 CHECKER_EXTRA=()
 assert_exit "RC2 no flag" 3 "$RC1_DIR" "$RC1_SHA"
-CHECKER_EXTRA=(--accept-rc-candidate-verified)
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
 
 echo "== RC3 (a): final / non-rc versions with a pending-only record -> still exit 3 even with the flag =="
 for v in 0.0.0 0.0.0-test 0.0.0-beta.1 0.0.0-rc.1-extra 0.0.0-rc.; do
   VERSION="$v"
   rc_case "rc3-$v"
-  commit_all "$PDIR" "record evidence" >/dev/null
-  assert_exit "RC3 version $v blocked (exit 3, not 4)" 3 "$PDIR" "$PA"
-  if [ "$v" = "0.0.0" ]; then RC3_DIR="$PDIR"; RC3_SHA="$PA"; RC3_VERSION="$v"; fi
+  rc_commit
+  assert_exit "RC3 version $v blocked (exit 3, not 4)" 3 "$PDIR" "$PT"
+  if [ "$v" = "0.0.0" ]; then RC3_DIR="$PDIR"; RC3_SHA="$PT"; RC3_VERSION="$v"; fi
 done
 VERSION="0.0.0-rc.1"
 
 # $1 label, $2 obligation mutation, $3 needle expected in the output, $4 "nodoc" or ""
 rc_blocked() {
   rc_case "rcb-$1" "$2" "${4:-}"
-  commit_all "$PDIR" "record evidence" >/dev/null
-  assert_exit "RC $1" 1 "$PDIR" "$PA"
+  rc_commit
+  assert_exit "RC $1" 1 "$PDIR" "$PT"
   assert_output_contains "RC $1 reason" "$3"
 }
 rc_blocked missing-automated-procedure 'doc["journeys"][0]["pending_checks"][0].pop("automated_procedure")' "declares no automated_procedure"
-RC_NOPROC_DIR="$PDIR"; RC_NOPROC_SHA="$PA"
+RC_NOPROC_DIR="$PDIR"; RC_NOPROC_SHA="$PT"
 rc_blocked procedure-not-the-check-id 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = "something-else"' "must equal the check id"
 rc_blocked manual-runner-stub 'doc["journeys"][0]["pending_checks"][0].update(id="j53-published-image-runs-healthy", automated_procedure="j53-published-image-runs-healthy")' "do not equal registry publication_checks ids"
 rc_blocked manual-without-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True}' "needs manual: true and a non-empty justification"
 rc_blocked missing-failure-response 'doc["journeys"][0]["pending_checks"][0].pop("failure_response")' "failure_response must be"
-RC_NOFR_DIR="$PDIR"; RC_NOFR_SHA="$PA"
+RC_NOFR_DIR="$PDIR"; RC_NOFR_SHA="$PT"
 rc_blocked failure-response-wrong-anchor 'doc["journeys"][0]["pending_checks"][0]["failure_response"] = "'"$RC_DOC_REL"'#no-such-heading"' "is not a heading in"
-RC_ANCHOR_DIR="$PDIR"; RC_ANCHOR_SHA="$PA"
+RC_ANCHOR_DIR="$PDIR"; RC_ANCHOR_SHA="$PT"
 rc_blocked failure-response-doc-absent pass "absent at the tag target" nodoc
 rc_blocked pending-without-reason 'doc["journeys"][0]["pending_checks"][0].pop("why_publication_only")' "missing 'why_publication_only'"
 rc_blocked undeclared-pending-id 'doc["journeys"][0]["pending_checks"][0].update(id="j53-ghcr-multiarch", automated_procedure="j53-ghcr-multiarch")' "do not equal registry publication_checks ids"
@@ -1597,16 +1619,16 @@ rc_blocked registry-digest-mismatch 'doc["journeys"][0]["registry_digest"] = "0"
 echo "== RC: SHA / artifact digest mismatches in the evidence record -> BLOCK =="
 rc_case rcb-sha-mismatch
 patch_evidence "$PDIR" 'doc["journeys"][0]["obligation"]["candidate_sha"] = "deadbeef"'
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC obligation candidate_sha mismatch" 1 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC obligation candidate_sha mismatch" 1 "$PDIR" "$PT"
 rc_case rcb-evidence-sha-unknown
 patch_evidence "$PDIR" 'doc["candidate"]["candidate_sha"] = "0" * 40'
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC evidence candidate_sha not an ancestor" 1 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC evidence candidate_sha not an ancestor" 1 "$PDIR" "$PT"
 rc_case rcb-digest-mismatch
 patch_evidence "$PDIR" 'doc["artifacts"]["J01"]["wheel-build"]["pkg-0.0.0.tar.gz"] = "sha256:" + "1" * 64'
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC artifact digest mismatch" 1 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC artifact digest mismatch" 1 "$PDIR" "$PT"
 assert_output_contains "RC artifact digest reason" "evidence \`artifacts\` do not match"
 
 echo "== RC: another journey admitted only by a waiver -> BLOCK (a waiver is not a pass) =="
@@ -1625,17 +1647,47 @@ write_signoffs "$PDIR" "$(qa_pending_signoff CANDIDATE_VERIFIED '
 - **Justification:** fixture
 ' | sed 's/^| J02 | P1 | \*\*PASS\*\* |/| J02 | P1 | **UNTESTED** |/')" "$SECURITY_SIGNOFF_PASS"
 RC_WAIVER_DIR="$PDIR"
+# rc_case already generated evidence for the first baseline; drop it so it is neither
+# committed with this baseline nor mistaken for a second attempt.
+rm -f "$PDIR"/docs/release/qa-signoff/*.evidence.json
 PA=$(commit_all "$PDIR" "baseline with waived J02")
 gen_evidence "$PDIR" "$PA"
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC waived sibling journey" 1 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC waived sibling journey" 1 "$PDIR" "$PT"
 assert_output_contains "RC waiver reason" "a waiver is not a pass"
-RC_WAIVER_SHA="$PA"
+RC_WAIVER_SHA="$PT"
 
 echo "== RC: explicit manual marker with a justification is accepted =="
 rc_case rc-manual-justified 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True, "justification": "needs a container runtime the gate host lacks"}'
-commit_all "$PDIR" "record evidence" >/dev/null
-assert_exit "RC justified manual marker" 4 "$PDIR" "$PA"
+rc_commit
+assert_exit "RC justified manual marker" 4 "$PDIR" "$PT"
+
+echo "== RC approval: CANDIDATE_VERIFIED is not authorization (AAASM-6424) =="
+rc_case rc-ap-none
+rc_commit noapproval
+assert_exit "RC approval absent -> blocked" 1 "$PDIR" "$PT"
+assert_output_contains "RC approval absent reason" "is not authorization"
+RC_APNONE_DIR="$PDIR"; RC_APNONE_SHA="$PT"
+CHECKER_EXTRA=(--accept-rc-candidate-verified)
+assert_exit "RC approval ref not supplied -> blocked" 1 "$RC1_DIR" "$RC1_SHA"
+assert_output_contains "RC no ref reason" "no --approval-ref given"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref "$RC1_SHA")
+assert_exit "RC approval ref that does not descend from the tag target -> blocked" 1 "$RC1_DIR" "$RC1_SHA"
+CHECKER_EXTRA=(--accept-rc-candidate-verified --approval-ref HEAD)
+rc_ap_blocked() {  # $1 label, $2 approval mutation, $3 needle
+  rc_case "rc-ap-$1"
+  rc_commit "$2"
+  assert_exit "RC approval $1" 1 "$PDIR" "$PT"
+  assert_output_contains "RC approval $1 reason" "$3"
+}
+rc_ap_blocked wrong-commit 'a["commit_sha"] = "1" * 40' "approval commit_sha"
+RC_APCOMMIT_DIR="$PDIR"; RC_APCOMMIT_SHA="$PT"
+rc_ap_blocked wrong-tag 'a["tag"] = "v0.0.0-rc.2"' "approval tag"
+rc_ap_blocked wrong-candidate 'a["candidate_sha"] = "2" * 40' "approval candidate_sha"
+rc_ap_blocked wrong-evidence-digest 'a["evidence_sha256"] = "3" * 64' "approval evidence_sha256"
+RC_APDIG_DIR="$PDIR"; RC_APDIG_SHA="$PT"
+rc_ap_blocked wrong-scope 'a["scope"] = "final-publish"' "approval scope"
+rc_ap_blocked no-approver 'a.pop("approved_by")' "approved_by is missing"
 
 # $1 label, $2 file under scripts/qa, $3 needle (must occur once), $4 replacement,
 # $5 case dir, $6 tag target, $7 outcome expected without the guard, $8 version
@@ -1653,13 +1705,14 @@ open(p, "w").write(s.replace(needle, repl))
 PYEOF5
   set +e
   python3 "$mut/check-release-evidence.py" --repo-root "$dir" --version "$ver" --tag-target "$sha" \
-    --accept-rc-candidate-verified >/dev/null 2>&1
+    --accept-rc-candidate-verified --approval-ref HEAD >"$mut/out.txt" 2>&1
   rc=$?
   set -e
   if [ "$rc" -eq "$want" ]; then
     echo "  ✓ rc mutation proof ($label): with the rule removed the checker exits $rc (guarded outcome was blocked or exit 3)"
   else
     echo "  ✗ rc mutation proof ($label): exit $rc with the rule removed, expected $want — the case does not guard it"
+    tail -5 "$mut/out.txt" | sed 's/^/    /'
     FAILED=1
   fi
 }
@@ -1673,6 +1726,12 @@ rc_mutation_proof "failure-response-anchor" publication_obligations.py \
   'elif ref[len(prefix):] not in failure_doc_anchors:' 'elif False:' "$RC_ANCHOR_DIR" "$RC_ANCHOR_SHA" 4
 rc_mutation_proof "waiver-is-not-a-pass" check-release-evidence.py \
   'if j["id"] in required_ids and j.get("status") not in ("PASS", publication_obligations.PENDING_STATUS):' 'if False:' "$RC_WAIVER_DIR" "$RC_WAIVER_SHA" 4
+rc_mutation_proof "approval-required" check-release-evidence.py \
+  'rc_blocks += rc_approval_violations(' 'rc_blocks += [] and rc_approval_violations(' "$RC_APNONE_DIR" "$RC_APNONE_SHA" 4
+rc_mutation_proof "approval-commit-binding" publication_obligations.py \
+  '"commit_sha": tag_target_sha,' '"commit_sha": doc.get("commit_sha"),' "$RC_APCOMMIT_DIR" "$RC_APCOMMIT_SHA" 4
+rc_mutation_proof "approval-evidence-digest-binding" publication_obligations.py \
+  '"scope": APPROVAL_SCOPE, "evidence_sha256": evidence_sha256,' '"scope": APPROVAL_SCOPE, "evidence_sha256": doc.get("evidence_sha256"),' "$RC_APDIG_DIR" "$RC_APDIG_SHA" 4
 
 VERSION="$ORIG_VERSION"
 CHECKER_EXTRA=()
