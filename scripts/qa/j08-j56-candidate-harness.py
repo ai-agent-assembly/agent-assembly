@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -55,6 +56,10 @@ import b1_candidate_common as c  # noqa: E402
 
 SCRIPT = "scripts/qa/j08-j56-candidate-harness.py"
 TEST = "scripts/tests/test_j08_j56_candidate_harness.py"
+# The SDK attaches its LangChain adapter only when `import langchain` succeeds (FrameworkAdapter.is_available), so the
+# clean venv of the LangChain quick start must carry the full package, not only langchain-core. The core bound mirrors
+# the SDK's own `langchain-test` dependency group.
+LANGCHAIN_REQUIREMENT = ("langchain", "langchain-core>=1.4.9,<1.7.0")
 FIX = "scripts/qa/fixtures/j56"
 SOURCES = {
     "golden-path.v1.yaml": f"{FIX}/golden-path.v1.yaml",
@@ -172,7 +177,9 @@ class LocalBackend(Backend):
         return self.exec([str(self.bindir / "aasm"), *args], self.env, self.ctx.tmp, timeout)
 
     def version_of(self, name: str) -> tuple[int, str]:
-        return self.exec([str(self.bindir / name), "--version"], self.env, self.ctx.tmp, 30)
+        # A freshly copied binary can sit in the host's first-launch validation for minutes, which says
+        # nothing about the binary; the generous bound keeps that from being misread as a wrong identity.
+        return self.exec([str(self.bindir / name), "--version"], self.env, self.ctx.tmp, 300)
 
     def install(self) -> tuple[int, str]:
         # Without --no-index a missing dependency would be fetched from PyPI and the run
@@ -182,7 +189,8 @@ class LocalBackend(Backend):
             return rc, out
         env = {**self.env, "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
         return self.exec([str(self.venv / "bin" / "python"), "-m", "pip", "install", "--no-index",
-                          "--find-links", str(self.wheel.parent), str(self.wheel)], env, self.ctx.tmp, 300)
+                          "--find-links", str(self.wheel.parent), str(self.wheel), *LANGCHAIN_REQUIREMENT], env,
+                         self.ctx.tmp, 300)
 
     def start(self, policy: Path) -> tuple[bool, str]:
         rc, out = self._cli("start", "--host", "127.0.0.1", "--port", str(self.port), timeout=90)
@@ -190,7 +198,27 @@ class LocalBackend(Backend):
         if rc != 0:
             return False, f"aasm start exited {rc}: {out.strip()[:300]}"
         rc, out = self.apply_policy(policy)
-        return rc == 0, f"aasm policy apply exited {rc}: {out.strip()[:200]}"
+        if rc != 0:
+            return False, f"aasm policy apply exited {rc}: {out.strip()[:200]}"
+        return self._start_runtime()
+
+    def _start_runtime(self) -> tuple[bool, str]:
+        """The SDK asks `aa-runtime` for every decision and fails closed without one (enforce), so the
+        stack under test is gateway + runtime. The socket is the SDK's default per-agent path, which is
+        the contract the SDK connects to; the agent id is unique per run so nothing else can collide."""
+        self.sock = Path(f"/tmp/aa-runtime-{self.agent}.sock")
+        env = {**self.env, "AA_AGENT_ID": self.agent, "AA_POLICY_PATH": "", "RUST_LOG": "warn",
+               "AA_GATEWAY_ENDPOINT": "http://127.0.0.1:50051", "AA_METRICS_ADDR": f"127.0.0.1:{c.free_port()}",
+               "AA_AUDIT_BUFFER_PATH": str(self.home / "audit-buffer.db")}
+        self.runtime = self.ctx.spawn([str(self.bindir / "aa-runtime")], env, self.ctx.tmp)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if self.sock.exists():
+                return True, "aa-runtime is listening"
+            if self.runtime.poll() is not None:
+                return False, f"aa-runtime exited {self.runtime.returncode} before binding {self.sock}"
+            time.sleep(0.2)
+        return False, f"aa-runtime did not bind {self.sock} within 20s"
 
     def sdk(self, op: str, **kw: Any) -> dict[str, Any]:
         argv = [str(self.venv / "bin" / "python"), "-I", str(self.driver), op, "--gateway-url", self.url,
@@ -267,6 +295,10 @@ class LocalBackend(Backend):
             self._cli("stop")
             self.started = False
         c.kill_owned_daemon(self.pidfile, self.ctx.tmp)
+        if getattr(self, "runtime", None) is not None:
+            c.terminate_group(self.runtime)  # the socket is removed by the runtime on a clean exit; make sure it is gone
+        if getattr(self, "sock", None) is not None:
+            self.sock.unlink(missing_ok=True)
 
 
 def _tn(name: str) -> str:

@@ -290,6 +290,35 @@ class HarnessShapeTests(unittest.TestCase):
         self.assertEqual(pip[pip.index("--find-links") + 1], str(wheel.parent))
         self.assertEqual(set(calls[-1][1]) & {"PYTHONPATH", "PIP_INDEX_URL", "VIRTUAL_ENV"}, set())
 
+    def _local_backend_with_runtime(self, runtime_body: str):
+        ctx = H.c.Context("J56", "a" * 40, VERSION)
+        self.addCleanup(ctx.cleanup)
+        wheel = ctx.tmp / "w" / "agent_assembly-0.0.1rc8-py3-none-any.whl"
+        wheel.parent.mkdir()
+        make_wheel(wheel)
+        bins = {}
+        for n in ("aasm", "aa-gateway", "aa-runtime", "aa-api-server"):
+            bins[n] = ctx.tmp / f"src-{n}"
+            bins[n].write_text(runtime_body if n == "aa-runtime" else "x")
+            bins[n].chmod(0o755)
+        be = H.LocalBackend(ctx, bins, wheel, ROOT / "scripts/qa/fixtures/j56/sdk_driver.py")
+        self.addCleanup(lambda: be.sock.unlink(missing_ok=True))
+        return be
+
+    def test_runtime_that_exits_before_binding_fails_the_stack_start(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 3\n")
+        ok, detail = be._start_runtime()
+        self.assertFalse(ok)
+        self.assertIn("exited 3 before binding", detail)
+
+    def test_runtime_that_binds_its_socket_passes_the_stack_start(self):
+        # The fake runtime creates the per-agent socket path the SDK would connect to.
+        be = self._local_backend_with_runtime('#!/bin/sh\ntouch "/tmp/aa-runtime-$AA_AGENT_ID.sock"\nsleep 30\n')
+        ok, detail = be._start_runtime()
+        self.assertTrue(ok, detail)
+        be.stop()
+        self.assertFalse(be.sock.exists())
+
 
 class StaticReadmeTests(unittest.TestCase):
     def test_claim_without_a_langchain_hook_fails(self):
