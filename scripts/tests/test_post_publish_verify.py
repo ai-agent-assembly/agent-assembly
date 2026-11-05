@@ -1080,9 +1080,12 @@ class GrpcHealthClientTests(TestCase):
 
     def test_overall_deadline_bounds_a_stalled_server(self):
         port, th, seen = self.serve(b"", stall=True)
+        t0 = time.monotonic()
         with self.assertRaises((ppv.FetchError, OSError)):
             ppv.grpc_health_check("127.0.0.1", port, 0.5)
-        # the server is still parked, so only the client's own deadline can have ended the call
+        # the server stays parked for up to 30s, so a call that ends well inside that window
+        # was ended by the client's own deadline, not by the server closing the socket
+        self.assertLess(time.monotonic() - t0, 5)
         self.assertFalse(seen["release"].is_set())
 
     def test_not_serving_status_is_reported(self):
