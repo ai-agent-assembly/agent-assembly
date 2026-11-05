@@ -37,9 +37,10 @@ jobs:
             echo "::error::$OBL is missing at this tag: nothing to verify, and an rc must not publish without owed checks recorded"
             exit 1
           fi
-          # Publication is asynchronous (release.yml and docker.yml run in parallel),
-          # so a not-yet-published artifact reads as FAIL at first. Retry, and fail
-          # only on the last attempt; any non-zero result on the last attempt fails.
+          # Publication is asynchronous (release.yml and docker.yml run in parallel), so an
+          # artifact that is not there yet reads as FAIL at first. Retry only results the
+          # verifier marks retryable (INCONCLUSIVE, or a FAIL that only says "not found" /
+          # "missing" / "draft"); a definitive FAIL, such as a wrong digest, stops at once.
           rc=1
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             echo "::group::attempt $attempt"
@@ -47,6 +48,8 @@ jobs:
             rc=${PIPESTATUS[0]}
             echo "::endgroup::"
             [ "$rc" -eq 0 ] && break
+            retry=$(python3 -I -c 'import json; print(json.load(open("post-publish-result.json")).get("retryable") is True)' 2>/dev/null || echo False)
+            if [ "$retry" != "True" ]; then echo "result is definitive; not retrying"; break; fi
             [ "$attempt" -lt 10 ] && sleep 300
           done
           if [ "$rc" -ne 0 ]; then
