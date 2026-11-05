@@ -107,3 +107,84 @@ SHA-specific release approval.
   `release.yml` gate publish a candidate with owed checks; rejected as unsafe.
 - **Widening the tag-guard allowlist for the obligation file**: rejected; the
   obligation must be final at the candidate, so a later edit is an R1 BLOCK.
+
+## Update — AAASM-6424: rc-only two-stage verification
+
+The owner decision this ADR reserved ("authorizing a publish on a
+`CANDIDATE_VERIFIED` record is a separate owner decision") has been made, for
+prerelease candidates only. Nothing above is reversed: a pending row is still
+never `PASS`, and the checker's default exit for a pending-only record is still 3.
+
+1. **Scope.** Only versions matching `MAJOR.MINOR.PATCH-rc.N` (for example
+   `0.0.1-rc.8`). Final tags, and every other prerelease series (alpha, beta),
+   keep the exit-0-only gate unchanged.
+2. **Two stages.** Stage 1: every check that can run before publication has
+   passed on the pinned candidate. Stage 2: only checks that demonstrably depend
+   on actual publication remain pending, each with an automated post-publication
+   verification. The rc may be tagged on a stage-1-complete record; stage 2 runs
+   against the published artifacts.
+3. **New checker exit 4, opt-in.** `check-release-evidence.py
+   --accept-rc-candidate-verified` turns a record that would exit 3 into exit 4
+   (`RC_CANDIDATE_ELIGIBLE`) only when the version is an rc **and** every
+   additional rule below holds. Without the flag, or for a non-rc version, exit 3
+   is unchanged. Exit 4 is never exit 0: consumers must name it explicitly.
+4. **Additional rules for exit 4** (on top of every R1-R11 rule, which already
+   bind the record to the candidate SHA, the candidate artifact digests and the
+   registry digest and block any FAIL or NOT_COVERED row):
+   - every journey is either `PASS` or `PUBLICATION_PENDING`; a waiver-admitted
+     row blocks, because a waived check has not passed;
+   - every pending check in the committed obligations file declares, in addition
+     to the existing `why_publication_only` (the reason), an `automated_procedure`
+     that is the exact id of a non-manual runner in
+     `scripts/qa/post-publish-verify.py` `RUNNERS` (equal to the check id). A manual
+     marker is not accepted, with or without a justification: the founder requires
+     an automated verification for every owed check. A check with no runner needs
+     a runner before the rc can be tagged. Each pending check also needs a
+     `failure_response` that is a reference of the form
+     `docs/release/rc-post-publication-failure-response.md#<anchor>` whose anchor
+     exists in that document at the tag target.
+5. **Authorization is mechanical.** Exit 4 additionally requires a committed owner
+   approval record `docs/release/approvals/v<version>.approval.json` with `tag`,
+   `commit_sha` (the exact tagged commit), `candidate_sha`, `approved_by`,
+   `approved_at`, `scope: "rc-publish"` and `evidence_sha256` (sha256 of the
+   evidence file as committed at the tag target). The record names the tagged
+   commit, so it cannot be inside it: it is read from `--approval-ref`, which must
+   descend from the tag target (`<remote>/main` for the guard, `origin/main` in
+   `release.yml`). Absent, malformed or mismatching records refuse the rc path
+   (exit 1). The record is owner-authored data; no tool creates one. The ref must be
+   fully qualified (`refs/remotes/...`), since a short name can be shadowed by a tag
+   or branch.
+
+   **What this does and does not authenticate.** The trust root is who can land a
+   commit on `main`: anyone who can do so can add an approval record. This repo
+   change adds explicit `.github/CODEOWNERS` lines for the approvals directory,
+   `scripts/qa/`, the guard, the readiness script and the two release workflows, but
+   CODEOWNERS only routes review. The protection holds only if branch protection on
+   `main` requires code-owner review and does not allow the author to approve their
+   own change. This change cannot configure or verify that. **Owner follow-up:**
+   confirm those GitHub settings. Until then the approval is a recorded intent, not
+   an authenticated one.
+6. **Consumers.** `release-tag-guard.sh`, `release-readiness.sh` and
+   `release.yml`'s `release-evidence-gate` pass the flag and the approval ref and
+   accept exit 0 or 4. `CANDIDATE_VERIFIED` remains technical eligibility; the
+   approval record is the authorization. No publish job condition changes.
+7. **Stage 2 cannot be skipped.** `.github/workflows/post-publish-verify.yml` runs on
+   `-rc.N` tag pushes, runs `scripts/qa/post-publish-verify.py` against the
+   published tag (retrying while publication completes) and fails visibly unless
+   every owed check is `PASS`, pointing at the failure-response document. It retries
+   only results the verifier marks retryable (INCONCLUSIVE, or a FAIL that only says
+   the artifact is not there yet); a definitive FAIL stops at once.
+   `.github/workflows/post-publish-watchdog.yml` (scheduled, read-only) fails visibly
+   if a published rc tag has no successful run after six hours. It is best-effort:
+   GitHub disables schedules after 60 days of repository inactivity and a failed run
+   notifies nobody beyond GitHub's own failed-workflow notice. The release-assets
+   check proves presence (published, not draft, `SHA256SUMS` names every required
+   tarball), not tarball contents.
+   Sequencing: the tag-target commit lands on `main` first, the approval commit later;
+   the guard fetches `<remote>/main` before reading it, readiness does not. It is a
+   separate read-only workflow because the GHCR images are pushed by `docker.yml`
+   in parallel with `release.yml`, so no `release.yml` job can await them.
+8. **Consequence for the obligations file.** An rc obligations file written before
+   this update has no `automated_procedure` or per-check `failure_response`; it
+   yields exit 3 (blocked for tagging) until they are added. Checks with no
+   runner must gain a runner.

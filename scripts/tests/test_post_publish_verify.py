@@ -425,5 +425,33 @@ class SafetyTests(TestCase):
         self.assertIn("--obligations", p.stdout)
 
 
+class AutomatedRunnerIdsTests(TestCase):
+    def test_manual_stubs_are_excluded_and_probes_included(self):
+        ids = ppv.automated_runner_ids()
+        self.assertIn("j53-ghcr-tag-resolves", ids)
+        self.assertIn("j59-install-release-assets", ids)
+        # A stub that can only report INCONCLUSIVE must never count as automation.
+        self.assertNotIn("j53-published-image-runs-healthy", ids)
+        self.assertNotIn("j59-published-binaries-golden-path", ids)
+        self.assertEqual(ids, frozenset(ppv.RUNNERS) - {
+            "j53-published-image-runs-healthy", "j59-published-binaries-golden-path"})
+
+
+class RetryableTests(TestCase):
+    def row(self, status, detail=""):
+        return {"status": status, "detail": detail}
+
+    def test_inconclusive_and_not_yet_present_retry(self):
+        self.assertTrue(ppv.retryable([self.row("INCONCLUSIVE", "x"), self.row("PASS")]))
+        self.assertTrue(ppv.retryable([self.row("FAIL", "ghcr.io/x:tag not found (404)")]))
+        self.assertTrue(ppv.retryable([self.row("FAIL", "asset SHA256SUMS missing")]))
+
+    def test_definitive_failure_never_retries(self):
+        self.assertFalse(ppv.retryable([self.row("FAIL", "body hashes to sha256:a but Docker-Content-Digest is 'b'")]))
+        self.assertFalse(ppv.retryable([self.row("INCONCLUSIVE", "x"),
+                                        self.row("FAIL", "platform linux/arm64 missing from the index")]))
+        self.assertFalse(ppv.retryable([self.row("PASS")]))
+
+
 if __name__ == "__main__":
     main(verbosity=2)

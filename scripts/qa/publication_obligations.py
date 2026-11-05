@@ -231,3 +231,103 @@ def candidate_artifact_digests(obligation: dict[str, Any]) -> dict[str, dict[str
         if isinstance(c, dict) and c.get("artifact_digests"):
             out[c["id"]] = dict(sorted(c["artifact_digests"].items()))
     return out
+
+
+# --- rc two-stage acceptance (AAASM-6424, ADR 0042 update) -------------------
+# Scope is deliberately the `-rc.N` series only: final tags and every other
+# prerelease keep the exit-0-only gate.
+# ASCII digits only and no leading zeros: `\d` alone would accept other Unicode digits.
+_NUM = r"(?:0|[1-9][0-9]*)"
+RC_VERSION_RE = re.compile(rf"{_NUM}\.{_NUM}\.{_NUM}-rc\.{_NUM}", re.ASCII)
+FAILURE_RESPONSE_DOC = "docs/release/rc-post-publication-failure-response.md"
+_HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
+
+
+APPROVAL_SCOPE = "rc-publish"
+APPROVAL_REF_RE = re.compile(r"refs/remotes/[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+")
+_SHA40_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def approval_path(version: str) -> str:
+    return f"docs/release/approvals/v{version}.approval.json"
+
+
+def approval_problems(
+    doc: Any, version: str, tag_target_sha: str, candidate_sha: str, evidence_sha256: str,
+) -> list[str]:
+    """Why an approval record does not authorize exactly this rc tag at exactly
+    this commit. The record is owner-authored data; nothing here creates one. It
+    names the tagged commit, so it cannot live in that commit and is read from a
+    ref that descends from it (see the checker's --approval-ref)."""
+    if not isinstance(doc, dict):
+        return ["approval record must be a JSON object"]
+    p: list[str] = []
+    expect = {
+        "tag": f"v{version}", "commit_sha": tag_target_sha, "candidate_sha": candidate_sha,
+        "scope": APPROVAL_SCOPE, "evidence_sha256": evidence_sha256,
+    }
+    for key, want in expect.items():
+        if doc.get(key) != want:
+            p.append(f"approval {key} {doc.get(key)!r} != expected {want!r}")
+    for key in ("approved_by", "approved_at"):
+        if not _nonempty_str(doc.get(key)):
+            p.append(f"approval {key} is missing")
+    if not _SHA40_RE.fullmatch(str(doc.get("commit_sha"))):
+        p.append("approval commit_sha must be a full 40-hex SHA")
+    return p
+
+
+def is_rc_version(version: str) -> bool:
+    return RC_VERSION_RE.fullmatch(version) is not None
+
+
+def heading_anchors(markdown: str) -> set[str]:
+    """GitHub-style heading slugs, so a failure_response reference can be proven
+    to point at a heading that really exists rather than at a dead link."""
+    out: set[str] = set()
+    for m in _HEADING_RE.finditer(markdown):
+        slug = re.sub(r"[^\w\- ]", "", m.group(1).strip().lower()).replace(" ", "-")
+        out.add(slug)
+    return out
+
+
+def rc_pending_check_problems(
+    jid: str,
+    obligation: dict[str, Any],
+    automated_runner_ids: frozenset[str],
+    failure_doc_anchors: set[str] | None,
+) -> list[str]:
+    """Extra problems that stop an rc record with owed checks from being
+    eligible. `failure_doc_anchors` is None when the failure-response document
+    is absent at the tag target. The reason a check is publication-only is the
+    existing `why_publication_only`, already required by validate_obligation."""
+    p: list[str] = []
+    for c in obligation.get("pending_checks") or []:
+        if not isinstance(c, dict):
+            continue
+        cid = c.get("id")
+        # An rc may owe only automated checks: a manual marker is not accepted, even
+        # with a justification, so an owed check can never be left to a human to remember.
+        proc = c.get("automated_procedure")
+        if not isinstance(proc, str):
+            p.append(
+                f"journey {jid} pending check {cid!r} must declare automated_procedure as the id of an "
+                "automated runner; manual markers are not accepted for an rc"
+            )
+        elif proc != cid:
+            p.append(f"journey {jid} pending check {cid!r} automated_procedure {proc!r} must equal the check id")
+        elif proc not in automated_runner_ids:
+            p.append(
+                f"journey {jid} pending check {cid!r} names no automated runner in "
+                "post-publish-verify.py RUNNERS (a missing or manual runner only ever reports INCONCLUSIVE)"
+            )
+
+        ref = c.get("failure_response")
+        prefix = FAILURE_RESPONSE_DOC + "#"
+        if not (isinstance(ref, str) and ref.startswith(prefix) and len(ref) > len(prefix)):
+            p.append(f"journey {jid} pending check {cid!r} failure_response must be '{prefix}<anchor>'")
+        elif failure_doc_anchors is None:
+            p.append(f"journey {jid} pending check {cid!r} failure_response targets {FAILURE_RESPONSE_DOC}, absent at the tag target")
+        elif ref[len(prefix):] not in failure_doc_anchors:
+            p.append(f"journey {jid} pending check {cid!r} failure_response anchor {ref[len(prefix):]!r} is not a heading in {FAILURE_RESPONSE_DOC}")
+    return p

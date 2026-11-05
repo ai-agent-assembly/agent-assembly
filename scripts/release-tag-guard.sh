@@ -11,6 +11,15 @@
 # wants to bypass a check edits this script (a reviewable diff), not an env
 # var.
 #
+# rc two-stage sequencing (ADR 0042 update, AAASM-6424): for an -rc.N version the
+# evidence checker accepts a CANDIDATE_VERIFIED record only with a committed owner
+# approval naming the exact tagged commit. That record cannot be inside the commit
+# it names, so the order is: land the tag-target commit on main, then land the
+# approval commit on main (a later commit), then run this guard at the tag target.
+# The approval is read from refs/remotes/<remote>/main, fetched below. Its
+# authenticity is only as strong as who can land a commit on main (branch
+# protection with code-owner review, configured in GitHub, not by this repo).
+#
 # Usage: scripts/release-tag-guard.sh <version> [--remote <name>]
 #   e.g. scripts/release-tag-guard.sh 0.0.1-rc.7
 #
@@ -120,6 +129,13 @@ if ! git fetch "$REMOTE_NAME" --quiet 2>/dev/null; then
   fail "git fetch $REMOTE_NAME failed"
 fi
 
+# Refresh the approval source. A failure is not fatal here: a non-rc version does not
+# read it, and for an rc a missing or stale ref makes the checker refuse (fail closed
+# on absence); a stale-but-present ref is the residual risk and is why the fetch is
+# attempted at all.
+git fetch --no-tags --quiet "$REMOTE_NAME" "+refs/heads/main:refs/remotes/${REMOTE_NAME}/main" 2>/dev/null \
+  || echo "release-tag-guard: could not refresh refs/remotes/${REMOTE_NAME}/main; an rc approval is read from whatever is already fetched" >&2
+
 # --- 3. Refuse if the tag already exists, locally or on the remote — a
 # guard script must never silently move or replace a tag.
 if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
@@ -145,7 +161,17 @@ fi
 # narrower step 5b below does not call R1b at all, so without this step a
 # release-readiness.sh that's stubbed/stale/skipped would let a
 # post-candidate tampered evidence file through undetected until here.
-if ! python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD; then
+# Exit 4 is the rc-only two-stage state (ADR 0042, AAASM-6424): technical
+# eligibility for an -rc.N tag, never authorization. Exit 3 and every other
+# non-zero code still refuse, so final tags keep the exit-0-only rule. The
+# checker returns 4 only when a committed owner approval for this exact tag and
+# commit exists on the remote main (ref descending from HEAD).
+python3 scripts/qa/check-release-evidence.py --repo-root . --version "$VERSION" --tag-target HEAD \
+  --accept-rc-candidate-verified --approval-ref "refs/remotes/${REMOTE_NAME}/main"
+EVIDENCE_RC=$?
+if [ "$EVIDENCE_RC" -eq 4 ]; then
+  echo "release-tag-guard: ${TAG} is CANDIDATE_VERIFIED (rc two-stage): technical eligibility only, NOT authorization on its own; an owner approval record for this exact tag and commit was verified on refs/remotes/${REMOTE_NAME}/main; post-publication verification stays owed"
+elif [ "$EVIDENCE_RC" -ne 0 ]; then
   fail "check-release-evidence.py refused HEAD as the tag target — see output above"
 fi
 
