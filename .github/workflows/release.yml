@@ -15,6 +15,7 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "scripts/build-ebpf-probes.sh"
+      - "scripts/release/**"
       - "aa-ebpf*/**"
       - "Cargo.lock"
       - "Cargo.toml"
@@ -117,8 +118,16 @@ jobs:
         run: |
           set -euo pipefail
           PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api)
-          if [ "$RUNNER_OS" = "Linux" ]; then PKGS+=(-p aa-proxy); fi
-          cargo build --release --target "$TARGET" "${PKGS[@]}"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            PKGS+=(-p aa-proxy)
+            # AAASM-6440: Linux binaries are built in the pinned glibc-baseline
+            # container (scripts/release/linux-glibc-baseline.txt), NOT on the
+            # ubuntu-24.04 runner image, whose glibc 2.39 leaks into every
+            # binary and breaks Debian 12 / Ubuntu 22.04 / RHEL 9.
+            scripts/release/build-linux-baseline.sh "$TARGET" "${PKGS[@]}"
+          else
+            cargo build --release --target "$TARGET" "${PKGS[@]}"
+          fi
 
       - name: Ensure x86_64 execution is available (x86_64-apple-darwin smoke test)
         if: matrix.target == 'x86_64-apple-darwin'
@@ -328,6 +337,43 @@ jobs:
           fi
           ls -lh aasm-*.tar.gz
 
+      - name: Guard - Linux archives stay within the glibc baseline (AAASM-6440)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Inspects the tarballs about to be uploaded (the shipped bytes), not
+          # the build tree. Fails if any executable needs a GLIBC symbol newer
+          # than scripts/release/linux-glibc-baseline.txt.
+          python3 -I scripts/release/check_linux_glibc_baseline.py aasm-*.tar.gz
+
+      - name: Smoke-test Linux archives on the oldest supported distros (AAASM-6440)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Native-arch containers; the loader, not just the guard, must accept
+          # the binaries. debian:12 is glibc 2.36, ubuntu:22.04 is 2.35.
+          for image in debian:12 ubuntu:22.04 ubuntu:24.04; do
+            docker run --rm -e TARGET -v "$PWD:/a:ro" "$image" bash -euc '
+              mkdir /t && cd /t
+              tar -xzf /a/aasm-${TARGET}.tar.gz
+              ./aasm --version
+              ./aa-gateway --version
+              for t in /a/aasm-runtime-*.tar.gz /a/aasm-api-*.tar.gz /a/aasm-proxy-*.tar.gz; do
+                tar -xzf "$t"
+              done
+              # ldd reports an unresolvable GLIBC version as "not found".
+              for b in aasm aa-gateway aa-runtime aa-api-server aa-proxy; do
+                out=$(ldd "./$b" 2>&1) || true
+                if echo "$out" | grep -qE "not found"; then echo "$b: $out"; exit 1; fi
+              done
+              echo "ok on $(. /etc/os-release; echo $PRETTY_NAME)"
+            ' bash
+          done
+        env:
+          TARGET: ${{ matrix.target }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -336,6 +382,20 @@ jobs:
           # leg, so merge-multiple in the publish job flattens without collision).
           path: aasm-*.tar.gz
           retention-days: 1
+
+  glibc-guard-selftest:
+    # AAASM-6440: the glibc-baseline guard run by `build` is only trustworthy if
+    # it demonstrably fails on an over-baseline ELF; this job proves that on every
+    # run (including PR dry-runs) and gates `publish`.
+    name: glibc baseline guard self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Run guard unit + negative-control tests
+        run: python3 -I scripts/tests/test_check_linux_glibc_baseline.py
 
   governance-gate:
     # AAASM-5602. A prerequisite INSIDE this workflow, not a separate required
@@ -480,7 +540,7 @@ jobs:
     # skip from the silent kind that killed the docs deploy.
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    needs: [build, governance-gate, release-evidence-gate]
+    needs: [build, governance-gate, release-evidence-gate, glibc-guard-selftest]
     permissions:
       contents: write
       id-token: write  # keyless cosign signing via GitHub OIDC
