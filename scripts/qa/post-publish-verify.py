@@ -13,9 +13,14 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
   executed, never passed to a shell, never parsed: the runner is chosen by the check
   `id` from the allowlist `RUNNERS` below, and a check id with no runner is
   INCONCLUSIVE ("no allowlisted runner"), never PASS.
-* Every probe is an HTTPS GET to an allowlisted host (ghcr.io, api.github.com) with a
-  per-request timeout. Nothing is published, yanked, tagged, pushed or written to a
-  registry, and nothing is pulled into a local Docker store.
+* Every probe is an HTTPS GET to an allowlisted host (ghcr.io, api.github.com,
+  raw.githubusercontent.com, crates.io) with a per-request timeout. Nothing is published,
+  yanked, tagged, pushed or written to a registry. Local programs run only through the
+  `Tools` seam, as argv lists (no shell): `cosign verify-blob` (INCONCLUSIVE when cosign is
+  absent), the j59 harness on binaries verified against SHA256SUMS, and, for
+  j53-published-image-runs-healthy only, `docker run` of the digest-pinned aa-gateway image
+  (INCONCLUSIVE when docker is absent; the container is always removed). The installer
+  script is fetched and hashed but never executed.
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
   does not hash to its digest, a missing platform). A timeout, a 5xx, a rate limit or
   an auth refusal is INCONCLUSIVE: "could not tell" is not "wrong" and not "right".
@@ -39,8 +44,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import platform as _platform
 import re
+import shutil
+import socket
+import subprocess
 import sys
+import tarfile
+import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -49,11 +62,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
-ALLOWED_HOSTS = {"ghcr.io", "api.github.com"}
+# raw.githubusercontent.com serves scripts/install-cli.sh at the tag; crates.io serves the
+# read-only /api/v1/crates/<name>/<version> JSON. Membership is exact hostname equality, so
+# `crates.io.evil.example` and `evilcrates.io` are refused.
+ALLOWED_HOSTS = {"ghcr.io", "api.github.com", "raw.githubusercontent.com", "crates.io"}
 # Hosts a GitHub release-asset download legitimately redirects to. Only `Probe.download`
 # may follow a redirect, and only to these; no probe ever forwards Authorization on one.
 DOWNLOAD_HOSTS = {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 MAX_REDIRECTS = 3
+MAX_BODY = 256 << 20
+USER_AGENT = "aa-post-publish-verify"
 TAG_RE = re.compile(r"v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.]*)?")
 GHCR_NAMESPACE = "ai-agent-assembly"
 GH_REPO = "ai-agent-assembly/agent-assembly"
@@ -110,7 +128,10 @@ def urllib_fetcher(url: str, headers: dict[str, str], timeout: float) -> Respons
     req = urllib.request.Request(url, headers=headers, method="GET")
     try:
         with _OPENER.open(req, timeout=timeout) as r:  # noqa: S310 - scheme and host vetted by Probe
-            return Response(r.status, {k.lower(): v for k, v in r.headers.items()}, r.read(32 << 20))
+            body = r.read(MAX_BODY + 1)
+            if len(body) > MAX_BODY:  # a silently truncated tarball would read as a digest mismatch
+                raise FetchError("response body exceeds the size cap")
+            return Response(r.status, {k.lower(): v for k, v in r.headers.items()}, body)
     except urllib.error.HTTPError as e:
         return Response(e.code, {k.lower(): v for k, v in e.headers.items()}, e.read(1 << 20))
     except (urllib.error.URLError, OSError, TimeoutError) as e:
@@ -120,15 +141,18 @@ def urllib_fetcher(url: str, headers: dict[str, str], timeout: float) -> Respons
 class Probe:
     """Vets every URL, owns the per-probe timeout and the anonymous GHCR token."""
 
-    def __init__(self, fetch: Fetcher, timeout: float):
+    def __init__(self, fetch: Fetcher, timeout: float, tools: "Tools | None" = None,
+                 installer_sha256: str | None = None):
         self._fetch, self.timeout = fetch, timeout
+        self.tools = tools or Tools()
+        self.installer_sha256 = installer_sha256
         self._tokens: dict[str, str] = {}
 
     def get(self, url: str, headers: dict[str, str] | None = None) -> Response:
         u = urllib.parse.urlsplit(url)
         if u.scheme != "https" or u.hostname not in ALLOWED_HOSTS:
             raise FetchError(f"refused non-allowlisted url {u.scheme}://{u.hostname}")
-        return self._fetch(url, dict(headers or {}), self.timeout)
+        return self._fetch(url, {"User-Agent": USER_AGENT, **(headers or {})}, self.timeout)
 
     def download(self, url: str, headers: dict[str, str] | None = None) -> Response:
         """GET that follows at most MAX_REDIRECTS redirects, re-vetting every hop against
@@ -323,6 +347,486 @@ def run_release_assets(p: Probe, tag: str) -> Result:
                   "(tarball contents are not downloaded or hashed here)")
 
 
+# --- local-tool seam (AAASM-6424) --------------------------------------------------------
+# Runners that need a local program (cosign, docker, the j59 harness) go through `Tools`, the
+# second injectable seam beside `Fetcher`. Tests pass a fake, so no test ever runs a real
+# binary, opens a socket to a container or touches a Docker daemon.
+
+def grpc_health_check(host: str, port: int, timeout: float) -> str:
+    """One unary grpc.health.v1.Health/Check over cleartext HTTP/2, stdlib only (the standard
+    library has no HTTP/2 client). Returns "SERVING" or "STATUS_<n>"; raises FetchError when no
+    gRPC message came back."""
+    def frame(kind: int, flags: int, sid: int, payload: bytes) -> bytes:
+        return len(payload).to_bytes(3, "big") + bytes([kind, flags]) + sid.to_bytes(4, "big") + payload
+
+    def lit(name: bytes, value: bytes) -> bytes:  # HPACK literal without indexing, no Huffman
+        return b"\x00" + bytes([len(name)]) + name + bytes([len(value)]) + value
+
+    headers = (b"\x83\x86"  # static table: :method POST, :scheme http
+               + lit(b":path", b"/grpc.health.v1.Health/Check")
+               + lit(b":authority", f"{host}:{port}".encode())
+               + lit(b"content-type", b"application/grpc") + lit(b"te", b"trailers"))
+    request = (b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n" + frame(4, 0, 0, b"") + frame(1, 0x4, 1, headers)
+               + frame(0, 0x1, 1, b"\x00\x00\x00\x00\x00"))  # empty HealthCheckRequest, END_STREAM
+    data = b""
+    with socket.create_connection((host, port), timeout) as s:
+        s.settimeout(timeout)
+        s.sendall(request)
+        buf = b""
+        while True:
+            while len(buf) < 9:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return parse_health_response(data)
+                buf += chunk
+            length, kind, flags = int.from_bytes(buf[:3], "big"), buf[3], buf[4]
+            sid = int.from_bytes(buf[5:9], "big") & 0x7FFFFFFF
+            while len(buf) < 9 + length:
+                chunk = s.recv(4096)
+                if not chunk:
+                    return parse_health_response(data)
+                buf += chunk
+            payload, buf = buf[9:9 + length], buf[9 + length:]
+            if kind == 4 and not flags & 1:
+                s.sendall(frame(4, 1, 0, b""))
+            elif kind == 0 and sid == 1:
+                data += payload
+            if kind in (7, 3) or (sid == 1 and flags & 1 and kind in (0, 1)):
+                return parse_health_response(data)
+
+
+def parse_health_response(data: bytes) -> str:
+    if len(data) < 5 or data[0] != 0:
+        raise FetchError("no gRPC message in the health response")
+    n = int.from_bytes(data[1:5], "big")
+    msg = data[5:5 + n]
+    if len(msg) != n or n < 2 or msg[0] != 0x08:
+        raise FetchError("malformed HealthCheckResponse")
+    return "SERVING" if msg[1] == 1 else f"STATUS_{msg[1]}"
+
+
+class Tools:
+    """Real local-program access. Every method is overridden by a fake in tests."""
+
+    def which(self, name: str) -> str | None:
+        return shutil.which(name)
+
+    def run(self, argv: list[str], timeout: float, cwd: str | None = None,
+            env: dict[str, str] | None = None) -> tuple[int, str, str]:
+        """argv list only, never a shell. A timeout is a FetchError (could not tell)."""
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env,
+                               check=False, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired as e:
+            raise FetchError(f"{Path(argv[0]).name} timed out after {timeout:.0f}s") from e
+        except OSError as e:
+            raise FetchError(f"cannot execute {Path(argv[0]).name}: {type(e).__name__}") from e
+        return r.returncode, r.stdout, r.stderr
+
+    def grpc_health(self, host: str, port: int, timeout: float) -> str:
+        try:
+            return grpc_health_check(host, port, timeout)
+        except OSError as e:
+            raise FetchError(type(e).__name__) from e
+
+    def platform(self) -> tuple[str, str]:
+        return _platform.system(), _platform.machine()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+
+# --- published-state runners (AAASM-6424) ------------------------------------------------
+RELEASE_API = f"https://api.github.com/repos/{GH_REPO}"
+TAP_API = "https://api.github.com/repos/ai-agent-assembly/homebrew-tap"
+INSTALLER_PATH = "scripts/install-cli.sh"
+SIGNING_ISSUER = "https://token.actions.githubusercontent.com"
+RAW_ACCEPT = "application/vnd.github.raw+json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+HEALTH_ATTEMPTS, HEALTH_INTERVAL = 30, 2.0
+
+
+def _release(p: Probe, tag: str) -> tuple[Result | None, dict[str, dict[str, Any]]]:
+    r = p.get(f"{RELEASE_API}/releases/tags/{urllib.parse.quote(tag)}", {"Accept": "application/vnd.github+json"})
+    gate = _http_gate(r, f"GitHub Release {tag}")
+    if gate:
+        return gate, {}
+    try:
+        rel = json.loads(r.body)
+        assets = {a["name"]: a for a in rel["assets"]}
+    except (ValueError, KeyError, TypeError):
+        return (INCONCLUSIVE, "release JSON was not parseable"), {}
+    if rel.get("draft"):
+        return (FAIL, f"release {tag} is still a draft"), {}
+    return None, assets
+
+
+def _asset(p: Probe, assets: dict[str, dict[str, Any]], name: str) -> tuple[Result | None, bytes]:
+    """Download one release asset. Missing or empty is FAIL, never an empty PASS."""
+    a = assets.get(name)
+    if a is None:
+        return (FAIL, f"release asset {name} missing"), b""
+    if a.get("state") != "uploaded" or not a.get("size"):
+        return (FAIL, f"asset {name} state={a.get('state')!r} size={a.get('size')!r}"), b""
+    url = a.get("url")
+    if not isinstance(url, str):
+        return (INCONCLUSIVE, f"asset {name} has no API url"), b""
+    r = p.download(url, {"Accept": "application/octet-stream"})
+    gate = _http_gate(r, f"{name} download")
+    if gate:
+        return gate, b""
+    if not r.body:
+        return (FAIL, f"{name} downloaded empty"), b""
+    claimed = a.get("digest")  # GitHub reports sha256:<hex> for uploaded assets
+    if isinstance(claimed, str) and claimed != _digest(r.body):
+        return (FAIL, f"{name} bytes hash to {_digest(r.body)} but the release API reports {claimed}"), b""
+    return None, r.body
+
+
+def _parse_sums(body: bytes) -> tuple[dict[str, str], list[str]]:
+    named: dict[str, str] = {}
+    bad: list[str] = []
+    for line in body.decode("utf-8", "replace").splitlines():
+        if line.strip():
+            m = SUMS_LINE.fullmatch(line.strip())
+            if m:
+                named[m.group(2)] = m.group(1)
+            else:
+                bad.append(f"malformed SHA256SUMS line {line.strip()[:60]!r}")
+    return named, bad
+
+
+def _release_sums(p: Probe, tag: str) -> tuple[Result | None, dict[str, dict[str, Any]], dict[str, str], bytes]:
+    err, assets = _release(p, tag)
+    if err:
+        return err, {}, {}, b""
+    err, body = _asset(p, assets, "SHA256SUMS")
+    if err:
+        return err, assets, {}, b""
+    named, bad = _parse_sums(body)
+    if bad or not named:
+        return (FAIL, "; ".join(bad or ["SHA256SUMS names no files"])), assets, {}, body
+    return None, assets, named, body
+
+
+def run_checksums_and_signature(p: Probe, tag: str) -> Result:
+    err, assets, named, sums = _release_sums(p, tag)
+    if err:
+        return err
+    problems = [f"SHA256SUMS names {n} but it is not an uploaded release asset"
+                for n in sorted(named) if n not in assets or assets[n].get("state") != "uploaded"]
+    compared = 0
+    for n, want in named.items():
+        d = assets.get(n, {}).get("digest")
+        if isinstance(d, str):
+            compared += 1
+            if d != f"sha256:{want}":
+                problems.append(f"{n}: release API digest {d} != SHA256SUMS sha256:{want}")
+    err, bundle = _asset(p, assets, "SHA256SUMS.cosign.bundle")
+    if err:
+        problems.append(err[1])
+    else:
+        try:
+            if not isinstance(json.loads(bundle), dict):
+                raise ValueError
+        except ValueError:
+            problems.append("SHA256SUMS.cosign.bundle is not a JSON object")
+    if problems:
+        return FAIL, "; ".join(problems)
+    cosign = p.tools.which("cosign")
+    if cosign is None:
+        return INCONCLUSIVE, ("checksums consistent and the cosign bundle is present, but the cosign binary is not "
+                              "on PATH so the signature was NOT verified")
+    with tempfile.TemporaryDirectory(prefix="ppv-cosign-") as d:
+        (Path(d) / "SHA256SUMS").write_bytes(sums)
+        (Path(d) / "SHA256SUMS.cosign.bundle").write_bytes(bundle)
+        rc, _, err_txt = p.tools.run(
+            [cosign, "verify-blob", "--bundle", "SHA256SUMS.cosign.bundle", "--certificate-identity-regexp",
+             f"^https://github.com/{GH_REPO}/\\.github/workflows/release\\.yml@refs/tags/{re.escape(tag)}$",
+             "--certificate-oidc-issuer", SIGNING_ISSUER, "SHA256SUMS"], 120, cwd=d)
+    if rc != 0:
+        return FAIL, f"cosign verify-blob failed (exit {rc}): {err_txt.strip()[:200]}"
+    return PASS, (f"cosign verify-blob accepted SHA256SUMS for release.yml at {tag}; {len(named)} listed files are "
+                  f"uploaded assets; {compared} release-API digests equal SHA256SUMS")
+
+
+def _expected_installer_sha(p: Probe) -> str | None:
+    if p.installer_sha256:
+        return p.installer_sha256
+    local = REPO_ROOT / INSTALLER_PATH
+    return hashlib.sha256(local.read_bytes()).hexdigest() if local.is_file() else None
+
+
+def _installer(p: Probe, tag: str) -> tuple[Result | None, str]:
+    expected = _expected_installer_sha(p)
+    if expected is None:
+        return (INCONCLUSIVE, "no committed installer digest to compare with"), ""
+    r = p.get(f"https://raw.githubusercontent.com/{GH_REPO}/{urllib.parse.quote(tag)}/{INSTALLER_PATH}")
+    gate = _http_gate(r, f"{INSTALLER_PATH} at {tag}")
+    if gate:
+        return gate, ""
+    if not r.body:
+        return (FAIL, f"{INSTALLER_PATH} at {tag} is empty"), ""
+    got = hashlib.sha256(r.body).hexdigest()
+    if got != expected:
+        return (FAIL, f"{INSTALLER_PATH} at {tag} hashes to {got}, committed digest is {expected}"), ""
+    return None, r.body.decode("utf-8", "replace")
+
+
+def run_installer(p: Probe, tag: str, needs: tuple[str, ...]) -> Result:
+    """Installer content and the release it installs from. It is NOT executed here: the script
+    would write outside the temp tree if it misbehaved, so execution stays an operator step."""
+    err, text = _installer(p, tag)
+    if err:
+        return err
+    missing = [n for n in needs if n not in text]
+    if missing:
+        return FAIL, f"installer at {tag} does not mention {missing}"
+    res = run_release_assets(p, tag)
+    if res[0] != PASS:
+        return res
+    return PASS, (f"{INSTALLER_PATH} at {tag} equals the committed digest and mentions {list(needs)}; "
+                  f"release assets complete; the installer was not executed")
+
+
+def _tag_name(r: Response, what: str) -> tuple[Result | None, str]:
+    gate = _http_gate(r, what)
+    if gate:
+        return gate, ""
+    try:
+        doc = json.loads(r.body)
+        doc = doc[0] if isinstance(doc, list) else doc
+        name = doc["tag_name"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return (INCONCLUSIVE, f"{what} JSON was not parseable"), ""
+    return None, name if isinstance(name, str) else ""
+
+
+def run_latest_resolves(p: Probe, tag: str) -> Result:
+    hdr = {"Accept": "application/vnd.github+json"}
+    err, top = _tag_name(p.get(f"{RELEASE_API}/releases?per_page=1", hdr), "newest release")
+    if err:
+        return err
+    if top != tag:
+        return FAIL, f"newest release is {top!r}, not {tag}"
+    r = p.get(f"{RELEASE_API}/releases/latest", hdr)
+    if r.status == 404:  # every release is a pre-release: the installer falls back to per_page=1
+        return PASS, f"newest release is {tag}; /releases/latest is 404 so the installer falls back to it"
+    err, latest = _tag_name(r, "/releases/latest")
+    if err:
+        return err
+    if latest != tag:
+        return FAIL, f"an unpinned install resolves to {latest!r}, not {tag}"
+    return PASS, f"newest release and /releases/latest are both {tag}"
+
+
+def _tap_text(p: Probe, path: str) -> tuple[Result | None, str]:
+    r = p.get(f"{TAP_API}/contents/{path}", {"Accept": RAW_ACCEPT})
+    gate = _http_gate(r, f"homebrew-tap {path}")
+    if gate:
+        return gate, ""
+    if not r.body:
+        return (FAIL, f"homebrew-tap {path} is empty"), ""
+    return None, r.body.decode("utf-8", "replace")
+
+
+URL_LINE = re.compile(r'^\s*url\s+"([^"]+)"')
+SHA_LINE = re.compile(r'^\s*sha256\s+"([^"]*)"')
+
+
+def run_homebrew(p: Probe, tag: str, formula: str, binary: str) -> Result:
+    version = tag[1:]
+    err, _, named, _ = _release_sums(p, tag)
+    if err:
+        return err
+    err, versions = _tap_text(p, "metadata/versions.rb")
+    if err:
+        return err
+    m = re.search(r'VERSION\s*=\s*"([^"]*)"', versions)
+    if not m or m.group(1) != version:
+        return FAIL, f"tap metadata/versions.rb VERSION is {m.group(1) if m else None!r}, expected {version!r}"
+    err, text = _tap_text(p, f"Formula/{formula}.rb")
+    if err:
+        return err
+    if binary not in text:
+        return FAIL, f"Formula/{formula}.rb does not mention {binary}"
+    pairs, pending_url = [], None
+    for line in text.splitlines():
+        if um := URL_LINE.match(line):
+            pending_url = um.group(1)
+        elif (sm := SHA_LINE.match(line)) and pending_url is not None:
+            pairs.append((pending_url, sm.group(1)))
+            pending_url = None
+    if not pairs:
+        return FAIL, f"Formula/{formula}.rb has no url/sha256 pair"
+    problems = []
+    for url, sha in pairs:
+        base = url.rsplit("/", 1)[-1]
+        if base not in named:
+            problems.append(f"formula url {base} is not named in SHA256SUMS")
+        elif named[base] != sha:
+            problems.append(f"{base}: formula sha256 {sha} != SHA256SUMS {named[base]}")
+        if "#{" not in url and tag not in url and version not in url:
+            problems.append(f"{base}: url does not name {tag}")
+    return (FAIL, "; ".join(problems)) if problems else (
+        PASS, f"tap VERSION is {version} and all {len(pairs)} Formula/{formula}.rb sha256 values equal SHA256SUMS")
+
+
+def run_crates_io(p: Probe, tag: str, crate: str) -> Result:
+    version = tag[1:]
+    r = p.get(f"https://crates.io/api/v1/crates/{crate}/{urllib.parse.quote(version)}", {"Accept": "application/json"})
+    gate = _http_gate(r, f"crates.io {crate} {version}")
+    if gate:
+        return gate
+    try:
+        v = json.loads(r.body)["version"]
+        num, yanked = v["num"], v["yanked"]
+    except (ValueError, KeyError, TypeError):
+        return INCONCLUSIVE, "crates.io JSON was not parseable"
+    if num != version:
+        return FAIL, f"crates.io answered version {num!r}, expected {version!r}"
+    if yanked is not False:
+        return FAIL, f"{crate} {version} is yanked (yanked={yanked!r})"
+    return PASS, f"{crate} {version} is published and not yanked"
+
+
+def run_images(p: Probe, tag: str) -> Result:
+    for image in ("aa-runtime", "aa-gateway"):
+        res = run_image_bundle(p, image, tag)
+        if res[0] != PASS:
+            return res
+    return PASS, f"aa-runtime and aa-gateway {tag} resolve, are digest-immutable and multi-arch"
+
+
+def run_image_runs_healthy(p: Probe, tag: str) -> Result:
+    """Runs the digest-pinned aa-gateway image. Never PASSes unless the container really ran,
+    answered SERVING and stopped with exit 0 on SIGTERM; the container is always removed."""
+    docker = p.tools.which("docker")
+    if docker is None:
+        return INCONCLUSIVE, "docker is not on PATH; the published image was not run"
+    err, _, digest = resolve_tag(p, "aa-gateway", tag)
+    if err:
+        return err
+    ref = f"ghcr.io/{GHCR_NAMESPACE}/aa-gateway@{digest}"
+    name = f"aa-ppv-{os.getpid()}-{int(time.time())}"
+    t = p.tools
+
+    def dk(*a: str, timeout: float = 120) -> tuple[int, str, str]:
+        return t.run([docker, *a], timeout)
+
+    try:
+        rc, _, e = dk("run", "-d", "--name", name, "-p", "127.0.0.1::50051", ref,
+                      "--listen", "0.0.0.0:50051", "--policy", "/policy/balanced.yaml", timeout=600)
+        if rc != 0:
+            return INCONCLUSIVE, f"docker run failed (exit {rc}): {e.strip()[:200]}"
+        rc, out, _ = dk("port", name, "50051/tcp")
+        m = re.search(r"(\d+\.\d+\.\d+\.\d+):(\d+)\s*$", out.strip().splitlines()[0]) if rc == 0 and out.strip() else None
+        if not m:
+            return INCONCLUSIVE, "could not resolve the published container port"
+        host, port = m.group(1), int(m.group(2))
+        status = "no answer"
+        for _ in range(HEALTH_ATTEMPTS):
+            rc, running, _ = dk("inspect", "-f", "{{.State.Running}}", name)
+            if rc != 0 or running.strip() != "true":
+                _, logs, lerr = dk("logs", "--tail", "10", name)
+                return FAIL, f"container exited before answering health: {(logs + lerr).strip()[-200:]}"
+            try:
+                status = t.grpc_health(host, port, 3.0)
+            except FetchError as ex:
+                status = f"error {ex}"
+            if status == "SERVING":
+                break
+            t.sleep(HEALTH_INTERVAL)
+        if status != "SERVING":
+            return FAIL, f"grpc.health.v1 never answered SERVING (last: {status})"
+        rc, _, e = dk("stop", "-t", "20", name, timeout=60)
+        rc2, code, _ = dk("inspect", "-f", "{{.State.ExitCode}}", name)
+        if rc != 0 or rc2 != 0 or code.strip() != "0":
+            return FAIL, f"container did not stop with exit 0 on SIGTERM (exit code {code.strip()!r})"
+        return PASS, f"{ref} answered SERVING and stopped with exit 0"
+    finally:
+        try:
+            dk("rm", "-f", name, timeout=60)
+        except FetchError:
+            pass
+
+
+def _safe_extract(archive: Path, dest: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tf:
+        for m in tf.getmembers():
+            target = (dest / m.name).resolve()
+            if not (m.isreg() or m.isdir()) or dest.resolve() not in (target, *target.parents):
+                raise tarfile.TarError(f"unsafe tar member {m.name!r}")
+        tf.extractall(dest)  # noqa: S202 - members vetted above (regular files and dirs under dest only)
+
+
+def _find_one(root: Path, name: str) -> Path | None:
+    hits = [x for x in root.rglob(name) if x.is_file()]
+    return hits[0] if len(hits) == 1 else None
+
+
+def run_golden_path(p: Probe, tag: str) -> Result:
+    system, machine = p.tools.platform()
+    oa = {("Linux", "x86_64"): "linux-amd64", ("Linux", "aarch64"): "linux-arm64", ("Linux", "arm64"): "linux-arm64",
+          ("Darwin", "arm64"): "darwin-arm64", ("Darwin", "x86_64"): "darwin-amd64"}.get((system, machine))
+    if oa is None:
+        return INCONCLUSIVE, f"no published binaries for runner platform {system}/{machine}"
+    err, assets, named, _ = _release_sums(p, tag)
+    if err:
+        return err
+    r = p.get(f"{RELEASE_API}/commits/{urllib.parse.quote(tag)}", {"Accept": "application/vnd.github+json"})
+    gate = _http_gate(r, f"commit of {tag}")
+    if gate:
+        return gate
+    try:
+        sha = json.loads(r.body)["sha"]
+    except (ValueError, KeyError, TypeError):
+        return INCONCLUSIVE, "commit JSON was not parseable"
+    harness = REPO_ROOT / "scripts/qa/j59-candidate-harness.py"
+    with tempfile.TemporaryDirectory(prefix="ppv-j59-") as tmp:
+        found: dict[str, Path] = {}
+        for comp, binary in (("cli", "aasm"), ("api", "aa-api-server")):
+            name = f"aasm-{comp}-{tag}-{oa}.tar.gz"
+            err, body = _asset(p, assets, name)
+            if err:
+                return err
+            if name not in named:
+                return FAIL, f"SHA256SUMS does not name {name}"
+            if hashlib.sha256(body).hexdigest() != named[name]:
+                return FAIL, f"{name} does not match SHA256SUMS"
+            arc, dest = Path(tmp) / name, Path(tmp) / comp
+            arc.write_bytes(body)
+            dest.mkdir()
+            try:
+                _safe_extract(arc, dest)
+            except (tarfile.TarError, OSError) as e:
+                return FAIL, f"{name} is not a readable tarball: {type(e).__name__}"
+            exe = _find_one(dest, binary)
+            if exe is None:
+                return FAIL, f"{name} does not contain exactly one {binary}"
+            exe.chmod(0o755)
+            found[binary] = exe
+        digests = Path(tmp) / "expected.json"
+        digests.write_text(json.dumps({b: "sha256:" + hashlib.sha256(x.read_bytes()).hexdigest() for b, x in found.items()}))
+        rc, out, err_txt = p.tools.run(
+            [sys.executable, "-I", str(harness), "--candidate-sha", sha, "--expected-version", tag[1:],
+             "--repo", str(REPO_ROOT), "--aasm-bin", str(found["aasm"]), "--api-server-bin", str(found["aa-api-server"]),
+             "--expected-digests", str(digests)], 900, cwd=tmp)
+    try:
+        report = json.loads(out)
+        checks = report["candidate_checks"]
+        verdict = report["verdict"]
+    except (ValueError, KeyError, TypeError):
+        return INCONCLUSIVE, f"j59 harness produced no parseable report (exit {rc}): {err_txt.strip()[:160]}"
+    bad = [c["id"] for c in checks if c.get("status") == FAIL]
+    if verdict == "BLOCK" or bad:
+        return FAIL, f"j59 harness against the published binaries: FAIL {bad}"
+    notcov = [c["id"] for c in checks if c.get("status") != PASS]
+    if rc == 0 and verdict == "CANDIDATE_VERIFIED" and checks and not notcov:
+        return PASS, f"every one of {len(checks)} j59 candidate checks passed against the published {oa} binaries"
+    return INCONCLUSIVE, f"j59 harness exit {rc}, verdict {verdict}; not PASS: {notcov}"
+
+
 def manual(why: str) -> Callable[[Probe, str], Result]:
     runner: Callable[[Probe, str], Result] = lambda p, tag: (INCONCLUSIVE, f"operator step, no automated probe: {why}")
     # Marked so the rc release gate can tell a probe that can PASS from a stub
@@ -337,11 +841,20 @@ RUNNERS: dict[str, Callable[[Probe, str], Result]] = {
     "j53-ghcr-digest-immutable": lambda p, t: run_digest_immutable(p, "aa-gateway", t),
     "j53-ghcr-multiarch": lambda p, t: run_multiarch(p, "aa-gateway", t),
     "j53-ghcr-sbom-attestation": lambda p, t: run_sbom(p, "aa-gateway", t),
-    "j53-published-image-runs-healthy": manual("run the pulled image and probe grpc.health.v1; it writes local Docker state"),
+    "j53-published-image-runs-healthy": run_image_runs_healthy,
     "j59-ghcr-gateway-image": lambda p, t: run_image_bundle(p, "aa-gateway", t),
     "j59-ghcr-runtime-image": lambda p, t: run_image_bundle(p, "aa-runtime", t),
     "j59-install-release-assets": run_release_assets,
-    "j59-published-binaries-golden-path": manual("download, verify against SHA256SUMS and re-run scripts/qa/j59-candidate-harness.py on the extracted binaries"),
+    "j59-published-binaries-golden-path": run_golden_path,
+    "j04.published_release_checksums_and_signature": run_checksums_and_signature,
+    "j04.published_install_sh_default": lambda p, t: run_installer(p, t, ("--version",)),
+    "j17.published_installer_profile_full_gateway": lambda p, t: run_installer(p, t, ("--profile", "full")),
+    "j04.published_latest_resolves_to_candidate": run_latest_resolves,
+    "j04.published_homebrew_tap_install": lambda p, t: run_homebrew(p, t, "aasm", "aa-gateway"),
+    "j04.published_homebrew_runtime": lambda p, t: run_homebrew(p, t, "aasm-runtime", "aa-runtime"),
+    "j17.published_homebrew_gateway": lambda p, t: run_homebrew(p, t, "aasm", "aa-gateway"),
+    "j04.published_crates_io_aa_cli": lambda p, t: run_crates_io(p, t, "aa-cli"),
+    "j17.published_container_image_manifest": run_images,
 }
 
 
@@ -365,8 +878,9 @@ def load_pending(doc: Any) -> list[dict[str, Any]]:
 
 
 def verify(pending: list[dict[str, Any]], tag: str, fetch: Fetcher, timeout: float,
-           only: set[str] | None = None) -> list[dict[str, Any]]:
-    probe = Probe(fetch, timeout)
+           only: set[str] | None = None, tools: Tools | None = None,
+           installer_sha256: str | None = None) -> list[dict[str, Any]]:
+    probe = Probe(fetch, timeout, tools, installer_sha256)
     results = []
     for pc in pending:
         if only and pc["id"] not in only:
@@ -409,7 +923,20 @@ def exit_code(results: list[dict[str, Any]], pending_total: int | None = None) -
     return 3
 
 
-def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
+INSTALLER_SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def installer_sha_from(doc: Any) -> str | None:
+    """Optional `installer_sha256` on a journey entry: the digest the candidate recorded for
+    scripts/install-cli.sh. Absent, the runner falls back to the checkout's own copy."""
+    for j in doc.get("journeys", []):
+        v = j.get("installer_sha256") if isinstance(j, dict) else None
+        if isinstance(v, str) and INSTALLER_SHA_RE.fullmatch(v):
+            return v
+    return None
+
+
+def main(argv: list[str], fetch: Fetcher = urllib_fetcher, tools: Tools | None = None) -> int:
     ap = argparse.ArgumentParser(allow_abbrev=False, description=__doc__.split("\n")[0])
     ap.add_argument("--tag", required=True)
     ap.add_argument("--obligations", required=True)
@@ -425,7 +952,8 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
         return 2
     try:
         raw = Path(args.obligations).read_bytes()
-        pending = load_pending(json.loads(raw))
+        doc = json.loads(raw)
+        pending = load_pending(doc)
     except (OSError, ValueError) as e:
         print(f"cannot read obligations: {e}", file=sys.stderr)
         return 2
@@ -434,7 +962,7 @@ def main(argv: list[str], fetch: Fetcher = urllib_fetcher) -> int:
     if unknown:
         print(f"unknown --only check id(s) not in the obligations file: {', '.join(unknown)}", file=sys.stderr)
         return 2
-    results = verify(pending, args.tag, fetch, args.timeout, only)
+    results = verify(pending, args.tag, fetch, args.timeout, only, tools, installer_sha_from(doc))
     code = exit_code(results, len(pending))
     ran = {r["id"] for r in results}
     not_run = [pc["id"] for pc in pending if pc["id"] not in ran]
