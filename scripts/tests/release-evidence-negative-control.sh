@@ -1603,11 +1603,13 @@ rc_blocked() {
   assert_exit "RC $1" 1 "$PDIR" "$PT"
   assert_output_contains "RC $1 reason" "$3"
 }
-rc_blocked missing-automated-procedure 'doc["journeys"][0]["pending_checks"][0].pop("automated_procedure")' "declares no automated_procedure"
+rc_blocked missing-automated-procedure 'doc["journeys"][0]["pending_checks"][0].pop("automated_procedure")' "manual markers are not accepted"
 RC_NOPROC_DIR="$PDIR"; RC_NOPROC_SHA="$PT"
 rc_blocked procedure-not-the-check-id 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = "something-else"' "must equal the check id"
 rc_blocked manual-runner-stub 'doc["journeys"][0]["pending_checks"][0].update(id="j53-published-image-runs-healthy", automated_procedure="j53-published-image-runs-healthy")' "do not equal registry publication_checks ids"
-rc_blocked manual-without-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True}' "needs manual: true and a non-empty justification"
+rc_blocked manual-without-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True}' "manual markers are not accepted"
+rc_blocked manual-with-justification 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True, "justification": "needs a container runtime the gate host lacks"}' "manual markers are not accepted"
+RC_MANUAL_DIR="$PDIR"; RC_MANUAL_SHA="$PT"
 rc_blocked missing-failure-response 'doc["journeys"][0]["pending_checks"][0].pop("failure_response")' "failure_response must be"
 RC_NOFR_DIR="$PDIR"; RC_NOFR_SHA="$PT"
 rc_blocked failure-response-wrong-anchor 'doc["journeys"][0]["pending_checks"][0]["failure_response"] = "'"$RC_DOC_REL"'#no-such-heading"' "is not a heading in"
@@ -1660,10 +1662,8 @@ assert_exit "RC waived sibling journey" 1 "$PDIR" "$PT"
 assert_output_contains "RC waiver reason" "a waiver is not a pass"
 RC_WAIVER_SHA="$PT"
 
-echo "== RC: explicit manual marker with a justification is accepted =="
-rc_case rc-manual-justified 'doc["journeys"][0]["pending_checks"][0]["automated_procedure"] = {"manual": True, "justification": "needs a container runtime the gate host lacks"}'
-rc_commit
-assert_exit "RC justified manual marker" 4 "$PDIR" "$PT"
+echo "== RC: a manual marker is refused even with a justification (founder: every owed check is automated) =="
+assert_exit "RC justified manual marker refused" 1 "$RC_MANUAL_DIR" "$RC_MANUAL_SHA"
 
 echo "== RC approval: CANDIDATE_VERIFIED is not authorization (AAASM-6424) =="
 rc_case rc-ap-none
@@ -1760,7 +1760,9 @@ PYEOF5
 rc_mutation_proof "rc-only-scope" publication_obligations.py \
   'return RC_VERSION_RE.fullmatch(version) is not None' 'return True' "$RC3_DIR" "$RC3_SHA" 4 "$RC3_VERSION"
 rc_mutation_proof "automated-procedure" publication_obligations.py \
-  'p.append(f"journey {jid} pending check {cid!r} declares no automated_procedure")' 'pass' "$RC_NOPROC_DIR" "$RC_NOPROC_SHA" 4
+  'proc = c.get("automated_procedure")' 'proc = cid if cid in automated_runner_ids else c.get("automated_procedure")' "$RC_NOPROC_DIR" "$RC_NOPROC_SHA" 4
+rc_mutation_proof "manual-marker-refused" publication_obligations.py \
+  'proc = c.get("automated_procedure")' 'proc = cid if cid in automated_runner_ids else c.get("automated_procedure")' "$RC_MANUAL_DIR" "$RC_MANUAL_SHA" 4
 rc_mutation_proof "failure-response-shape" publication_obligations.py \
   'p.append(f"journey {jid} pending check {cid!r} failure_response must be '"'"'{prefix}<anchor>'"'"'")' 'pass' "$RC_NOFR_DIR" "$RC_NOFR_SHA" 4
 rc_mutation_proof "failure-response-anchor" publication_obligations.py \
