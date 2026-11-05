@@ -86,6 +86,7 @@ from __future__ import annotations
 import argparse
 import copy
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -1687,6 +1688,37 @@ def rc_two_stage_violations(
     return out
 
 
+def rc_approval_violations(
+    git: GitRepo, evidence: dict[str, Any], version: str, tag_target_sha: str,
+    evidence_relpath: str, approval_ref: str | None,
+) -> list[str]:
+    """CANDIDATE_VERIFIED is technical eligibility. An rc is authorized only by a
+    committed owner approval for this exact tag and commit (AAASM-6424)."""
+    if not approval_ref:
+        return ["no --approval-ref given: an rc needs a committed owner approval record"]
+    try:
+        ref_sha = git.rev_parse(approval_ref)
+    except subprocess.CalledProcessError:
+        return [f"approval ref {approval_ref!r} does not resolve"]
+    if not git.is_ancestor(tag_target_sha, ref_sha):
+        return [f"approval ref {approval_ref!r} does not descend from the tag target {tag_target_sha}"]
+    path = publication_obligations.approval_path(version)
+    text = git.show_file(ref_sha, path)
+    if text is None:
+        return [f"no approval record {path} at {approval_ref}: CANDIDATE_VERIFIED is not authorization"]
+    evidence_text = git.show_file(tag_target_sha, evidence_relpath)
+    if evidence_text is None:
+        return [f"evidence {evidence_relpath} is not committed at the tag target, so no approval can bind its digest"]
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as e:
+        return [f"approval record is not valid JSON: {e}"]
+    digest = hashlib.sha256(evidence_text.encode()).hexdigest()
+    return publication_obligations.approval_problems(
+        doc, version, tag_target_sha, evidence["candidate"]["candidate_sha"], digest,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--version", required=True, help="e.g. 0.0.1-rc.7")
@@ -1713,6 +1745,11 @@ def main() -> int:
                               "(RC_CANDIDATE_ELIGIBLE) when every owed check is publication-dependent, "
                               "automated and has a failure response. Technical eligibility, never "
                               "authorization to tag or publish; other versions still exit 3 (ADR 0042)")
+    parser.add_argument("--approval-ref", default=None,
+                         help="ref to read docs/release/approvals/v<version>.approval.json from for the "
+                              "rc two-stage path. The record names the tagged commit so it is committed "
+                              "AFTER it; the ref must descend from --tag-target. Without a valid record "
+                              "the rc path is refused (exit 1), because CANDIDATE_VERIFIED is not authorization")
     parser.add_argument("--post-publish", action="store_true",
                          help="also run R9 (post-publish tag binding) and R10 (post-publish "
                               "artifact identity) against the actually-published tag/release")
@@ -1947,6 +1984,9 @@ def main() -> int:
 
     if pending_ids and args.accept_rc_candidate_verified and publication_obligations.is_rc_version(args.version):
         rc_blocks = rc_two_stage_violations(git, evidence, args.version, tag_target_sha, required_ids)
+        rc_blocks += rc_approval_violations(
+            git, evidence, args.version, tag_target_sha, evidence_relpath, args.approval_ref,
+        )
         if rc_blocks:
             print(f"BLOCK — {len(rc_blocks)} rc two-stage violation(s):")
             for b in rc_blocks:

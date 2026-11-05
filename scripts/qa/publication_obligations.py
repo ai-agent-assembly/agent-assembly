@@ -241,6 +241,39 @@ FAILURE_RESPONSE_DOC = "docs/release/rc-post-publication-failure-response.md"
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
+APPROVAL_SCOPE = "rc-publish"
+_SHA40_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def approval_path(version: str) -> str:
+    return f"docs/release/approvals/v{version}.approval.json"
+
+
+def approval_problems(
+    doc: Any, version: str, tag_target_sha: str, candidate_sha: str, evidence_sha256: str,
+) -> list[str]:
+    """Why an approval record does not authorize exactly this rc tag at exactly
+    this commit. The record is owner-authored data; nothing here creates one. It
+    names the tagged commit, so it cannot live in that commit and is read from a
+    ref that descends from it (see the checker's --approval-ref)."""
+    if not isinstance(doc, dict):
+        return ["approval record must be a JSON object"]
+    p: list[str] = []
+    expect = {
+        "tag": f"v{version}", "commit_sha": tag_target_sha, "candidate_sha": candidate_sha,
+        "scope": APPROVAL_SCOPE, "evidence_sha256": evidence_sha256,
+    }
+    for key, want in expect.items():
+        if doc.get(key) != want:
+            p.append(f"approval {key} {doc.get(key)!r} != expected {want!r}")
+    for key in ("approved_by", "approved_at"):
+        if not _nonempty_str(doc.get(key)):
+            p.append(f"approval {key} is missing")
+    if not _SHA40_RE.fullmatch(str(doc.get("commit_sha"))):
+        p.append("approval commit_sha must be a full 40-hex SHA")
+    return p
+
+
 def is_rc_version(version: str) -> bool:
     return RC_VERSION_RE.fullmatch(version) is not None
 
