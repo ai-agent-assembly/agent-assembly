@@ -262,7 +262,15 @@ mod tests {
         }
     }
 
-    const TEST_NONCE: &[u8] = &[7u8; 32];
+    /// A fresh random challenge nonce, fixed for the test process. The gateway issues a
+    /// real nonce per registration, so nothing here may depend on its value: the
+    /// tests assert on the request carrying it and on the signature verifying over
+    /// it, never on particular bytes. (A literal here is also a hard-coded
+    /// cryptographic value to static analysis.)
+    fn nonce() -> &'static [u8] {
+        static NONCE: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+        NONCE.get_or_init(rand::random::<[u8; 32]>)
+    }
 
     /// AAASM-6444: the configured org rides on the registration `AgentId` as a
     /// claim, and is empty when none is configured (the gateway then derives it
@@ -270,17 +278,17 @@ mod tests {
     #[test]
     fn register_request_carries_the_org_claim_only_when_configured() {
         let mut config = cfg("org-agent");
-        let none = build_register_request(&config, "n".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let none = build_register_request(&config, "n".into(), "custom".into(), nonce()).expect("enrolment");
         assert_eq!(none.agent_id.expect("agent_id").org_id, "");
         config.org_id = Some("acme".into());
-        let claimed = build_register_request(&config, "n".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let claimed = build_register_request(&config, "n".into(), "custom".into(), nonce()).expect("enrolment");
         assert_eq!(claimed.agent_id.expect("agent_id").org_id, "acme");
     }
 
     #[test]
     fn register_request_carries_did_and_consistent_public_key() {
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("enrolment");
 
         let agent_id = req.agent_id.expect("agent_id must be set");
         assert!(agent_id.agent_id.starts_with("did:key:z"), "got {}", agent_id.agent_id);
@@ -307,15 +315,15 @@ mod tests {
         use ed25519_dalek::{Signature, VerifyingKey};
 
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("enrolment");
 
-        assert_eq!(req.registration_nonce, TEST_NONCE);
+        assert_eq!(req.registration_nonce, nonce());
 
         let pk_bytes: [u8; 32] = hex::decode(&req.public_key).unwrap().try_into().unwrap();
         let vk = VerifyingKey::from_bytes(&pk_bytes).unwrap();
         let sig = Signature::from_bytes(&req.possession_proof.as_slice().try_into().unwrap());
         // Verifies over the nonce …
-        assert!(vk.verify_strict(TEST_NONCE, &sig).is_ok());
+        assert!(vk.verify_strict(nonce(), &sig).is_ok());
         // … and NOT over the did:key (the old, replayable challenge).
         let did = req.agent_id.unwrap().agent_id;
         assert!(vk.verify_strict(did.as_bytes(), &sig).is_err());
@@ -325,7 +333,7 @@ mod tests {
     fn challenge_request_binds_same_did_and_public_key_as_register() {
         let config = cfg("my-agent");
         let challenge = build_challenge_request(&config).expect("enrolment");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("load");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("load");
 
         assert_eq!(challenge.agent_id, req.agent_id);
         assert_eq!(challenge.public_key, req.public_key);
@@ -337,7 +345,7 @@ mod tests {
         config.team_id = Some("team-payments".into());
         config.parent_agent_id = Some("11111111-2222-3333-4444-555555555555".into());
 
-        let req = build_register_request(&config, "Child".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "Child".into(), "custom".into(), nonce()).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "team-payments");
         assert_eq!(
@@ -349,7 +357,7 @@ mod tests {
     #[test]
     fn register_request_omits_lineage_when_unset() {
         let config = cfg("root-agent");
-        let req = build_register_request(&config, "Root".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "Root".into(), "custom".into(), nonce()).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "");
         assert_eq!(req.parent_agent_id, None);
