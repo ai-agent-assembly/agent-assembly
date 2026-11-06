@@ -98,9 +98,13 @@ pub struct LogEntry {
 /// Optional filter parameters for the audit log query.
 #[derive(Debug, Clone, Deserialize, IntoParams)]
 pub struct LogFilterParams {
-    /// Filter by hex-encoded agent ID.
+    /// Filter by agent. Accepts the 32-hex audit `agent_id` this endpoint
+    /// returns, the agent's name, or its `did:key`. A value that matches no
+    /// agent returns an empty page — it never falls back to every agent — and a
+    /// blank value is a `400`.
     pub agent_id: Option<String>,
-    /// Filter by event type name (e.g. `PolicyViolation`).
+    /// Filter by event type name (e.g. `PolicyViolation`). An unrecognised
+    /// value returns an empty page.
     pub event_type: Option<String>,
     /// AAASM-2008 — filter by organisation identifier. When supplied, only
     /// audit entries whose `lineage.org_id` matches are returned. Entries
@@ -143,6 +147,7 @@ pub struct PaginatedLogResponse {
     params(PaginationParams, LogFilterParams),
     responses(
         (status = 200, description = "Paginated audit log entries", body = PaginatedLogResponse),
+        (status = 400, description = "A blank agent_id filter"),
         (status = 401, description = "Missing or invalid credentials")
     ),
     tag = "logs"
@@ -152,9 +157,34 @@ pub async fn list_logs(
     Extension(state): Extension<AppState>,
     axum::extract::Query(params): axum::extract::Query<PaginationParams>,
     axum::extract::Query(filters): axum::extract::Query<LogFilterParams>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let limit = params.per_page() as usize;
     let offset = params.offset();
+
+    // AAASM-6446 — a filter must never widen the result. Resolve the agent filter
+    // to an explicit selector: an identifier that matches nothing selects nothing
+    // (it used to be ignored, returning every agent's entries), and a blank one is
+    // refused because "no filter" and "filter on nothing" are not the same request.
+    let agent_selector = match filters.agent_id.as_deref() {
+        None => None,
+        Some(a) if a.trim().is_empty() => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "agent_id must not be blank" })),
+            )
+                .into_response();
+        }
+        Some(a) => {
+            let keys: Vec<[u8; 16]> = state
+                .agent_registry
+                .list()
+                .into_iter()
+                .filter(|r| r.name == a)
+                .map(|r| r.agent_id)
+                .collect();
+            Some(aa_gateway::audit_reader::AgentSelector::new(a, &keys))
+        }
+    };
 
     // AAASM-3483 — bind the `org_id` filter to the caller's tenant. An admin
     // honours the caller-supplied `?org_id`; a tenant-scoped caller is forced to
@@ -171,10 +201,10 @@ pub async fn list_logs(
 
     let (entries, total) = state
         .audit_reader
-        .list(
+        .list_selected(
             limit,
             offset,
-            filters.agent_id.as_deref(),
+            agent_selector.as_ref(),
             filters.event_type.as_deref(),
             effective_org,
         )
@@ -210,4 +240,5 @@ pub async fn list_logs(
             total,
         }),
     )
+        .into_response()
 }
