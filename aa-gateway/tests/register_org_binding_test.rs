@@ -590,11 +590,19 @@ async fn an_org_claim_alone_never_authorizes_a_rebind() {
     let orgless = register(addr, &kp2, &id2, None).await.unwrap();
     let dup = register(addr, &kp2, &id2, None).await.unwrap_err();
     assert_plain_collision(&dup, &orgless.credential_token);
+    // The collision message names the registry id (AAASM-6416), so compare the
+    // text each refusal is expected to carry, not the two ids to each other.
+    let collision = |id: &ProtoAgentId| format!("agent already registered: {}", hex::encode(proto_agent_id_to_key(id)));
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
     assert_eq!(
         err.message(),
-        dup.message(),
+        collision(&bound),
         "a refused re-bind looks like a fresh collision"
     );
+    assert_eq!(dup.message(), collision(&id2));
 
     let err = register(addr, &kp, &claim, Some(&keys.unbound_plain))
         .await
