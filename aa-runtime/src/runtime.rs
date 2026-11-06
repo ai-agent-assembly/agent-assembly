@@ -813,7 +813,11 @@ fn spawn_op_control(tracker: &TaskTracker, config: &RuntimeConfig, op_control: &
     let (subscriber_agent, credential) = match (&config.gateway_credential_token, &config.gateway_agent_id) {
         (Some(token), Some(gateway_agent_id)) => (
             aa_proto::assembly::common::v1::AgentId {
-                org_id: String::new(),
+                // AAASM-6444: the registry key hashes the org too, so an agent
+                // the gateway bound to an organization is only found under that
+                // org. Operators set `AA_AGENT_ORG_ID` to the org the agent's
+                // registration key is bound to; empty for an org-less agent.
+                org_id: config.agent_org_id.clone(),
                 team_id: config.agent_team_id.clone(),
                 agent_id: gateway_agent_id.clone(),
             },

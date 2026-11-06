@@ -152,8 +152,20 @@ impl AssemblyClient {
         // Captured before `request` moves into `register` below — the exact
         // triple sent, not re-derived, so it cannot drift from what the
         // gateway actually recorded (AAASM-6057).
-        let registered_identity = request.agent_id.clone();
-        let response = client.register(request).await?;
+        let mut registered_identity = request.agent_id.clone();
+        let registration_key = config.resolve_registration_key();
+        let response = client.register_with_key(request, registration_key.as_ref()).await?;
+
+        // The gateway decides the organization (AAASM-6444): when the
+        // registration key derived one the SDK did not send, the registry key
+        // hashes `org/team/agent`, so every later call must carry the
+        // authoritative triple. A gateway that predates the echo leaves it unset
+        // and the sent triple stands.
+        if let (Some(identity), Some(org)) = (registered_identity.as_mut(), response.org_id.as_deref()) {
+            if !org.is_empty() {
+                identity.org_id = org.to_owned();
+            }
+        }
 
         {
             let mut guard = self.credential_token.lock().map_err(|_| SdkClientError::LockPoisoned)?;

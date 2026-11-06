@@ -1810,11 +1810,11 @@ export interface paths {
          *     Supports optional filtering by agent ID and event type.
          *
          *     Per-tenant scoping (AAASM-3483): the audit log is per-tenant data. An admin
-         *     caller may read any org's audit (honouring an explicit `?org_id`); a
-         *     tenant-scoped caller has the `org_id` filter forced to its own org, so it
-         *     can neither read another org's audit nor omit the filter to enumerate every
-         *     org. A non-admin caller with no org scope receives an empty page rather than
-         *     a cross-tenant dump.
+         *     caller with no org binding may read any org's audit (honouring an explicit
+         *     `?org_id`); a caller bound to an org, admin or not, has the `org_id` filter
+         *     forced to its own org, so it can neither read another org's audit nor omit
+         *     the filter to enumerate every org. A non-admin caller with no org scope
+         *     receives an empty page rather than a cross-tenant dump.
          */
         get: operations["list_logs"];
         put?: never;

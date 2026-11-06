@@ -136,11 +136,11 @@ pub struct PaginatedLogResponse {
 /// Supports optional filtering by agent ID and event type.
 ///
 /// Per-tenant scoping (AAASM-3483): the audit log is per-tenant data. An admin
-/// caller may read any org's audit (honouring an explicit `?org_id`); a
-/// tenant-scoped caller has the `org_id` filter forced to its own org, so it
-/// can neither read another org's audit nor omit the filter to enumerate every
-/// org. A non-admin caller with no org scope receives an empty page rather than
-/// a cross-tenant dump.
+/// caller with no org binding may read any org's audit (honouring an explicit
+/// `?org_id`); a caller bound to an org, admin or not, has the `org_id` filter
+/// forced to its own org, so it can neither read another org's audit nor omit
+/// the filter to enumerate every org. A non-admin caller with no org scope
+/// receives an empty page rather than a cross-tenant dump.
 #[utoipa::path(
     get,
     path = "/api/v1/logs",
@@ -192,11 +192,16 @@ pub async fn list_logs(
     // `AuditReader` org filter never matches (entries with `org_id = None` never
     // match an explicit filter), yielding an empty page instead of every org's
     // audit.
+    //
+    // AAASM-6444 — a caller *bound* to an org is pinned to it even with admin
+    // scope: an org-bound admin key is a tenant admin, not a cross-tenant one. Only
+    // an admin with no org binding (the local single-process admin key, an
+    // operator) may choose the org or omit it.
     let is_admin = caller.scopes.contains(&Scope::Admin);
-    let effective_org: Option<&str> = if is_admin {
-        filters.org_id.as_deref()
-    } else {
-        Some(caller.tenant.org_id.as_deref().unwrap_or("\0__no_tenant_scope__"))
+    let effective_org: Option<&str> = match caller.tenant.org_id.as_deref() {
+        Some(bound) => Some(bound),
+        None if is_admin => filters.org_id.as_deref(),
+        None => Some("\0__no_tenant_scope__"),
     };
 
     let (entries, total) = state

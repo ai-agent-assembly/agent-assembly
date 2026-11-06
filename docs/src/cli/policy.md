@@ -88,6 +88,22 @@ the directory and file; move aside only that entry's `.meta.json` and `.yaml`
 to recover). With `$AA_POLICY` set, that policy stays active and history is
 not reinstalled, so the active-policy view may differ.
 
+The policy file the gateway watches (`$AA_POLICY`, or the generated bootstrap file) is
+re-read on every change, but only a change to that file's content replaces the live
+policy: an applied or rolled-back policy stays enforced until the file's content next
+changes, and a later real edit to the file overrides it.
+
+- Saving the file again with identical content does not override an applied policy;
+  change the content to do that.
+- An invalid or blank edit is ignored. Restoring the previous content afterwards is
+  not a change either, so the applied policy keeps winning.
+- A directory of policy files (cascade mode) has its own reload path, which this
+  behaviour does not cover; a change in the directory can replace an applied policy.
+- With `$AA_POLICY` set, a restart loads that file and drops the applied policy
+  (history is not reinstalled, see above).
+- A file edit that lands in the same instant as `aasm policy apply` can win the race;
+  `aasm policy get` then reports the applied version while the edited file is enforced.
+
 Every read of a history entry (`get`, `diff`, `rollback` and the start-up restore) verifies that
 its YAML still hashes to the SHA-256 recorded in its metadata and refuses a modified entry with an
 integrity error naming the directory and file. Entries written by earlier release candidates hash
