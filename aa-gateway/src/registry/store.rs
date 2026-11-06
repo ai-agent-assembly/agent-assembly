@@ -954,13 +954,21 @@ impl AgentRegistry {
     /// Return the scope lineage (org, team) for `agent_id`.
     ///
     /// AAASM-2008 — prefers the first-class `org_id` / `team_id` fields on
-    /// `AgentRecord`; falls back to the `metadata` map for records that
-    /// were registered before those fields were promoted from metadata.
+    /// `AgentRecord`; `team_id` still falls back to the `metadata` map for records
+    /// registered before it was promoted. `org_id` never does (AAASM-6444).
     /// Returns `None` if the agent is not in the registry.
     pub fn lineage(&self, agent_id: &[u8; 16]) -> Option<crate::registry::Lineage> {
         let record = self.agents.get(agent_id)?;
         Some(crate::registry::Lineage {
-            org_id: record.org_id.clone().or_else(|| record.metadata.get("org_id").cloned()),
+            // AAASM-6444 — only the binder-validated first-class org. The old
+            // `metadata["org_id"]` fallback read `RegisterRequest.metadata`, which is
+            // client text, so an org-less registration could tag itself into any
+            // org's audit stamp, policy cascade and sensitive-data scope. No
+            // producer in this repo writes that key on a record any more (the gateway
+            // sets `org_id` from the binding; SDK, runtime, proxy and devtool crates
+            // never send it); a pre-AAASM-2008 record that only had the metadata tag
+            // is now org-less rather than relabelled, matching the missing-org policy.
+            org_id: record.org_id.clone(),
             team_id: record
                 .team_id
                 .clone()
