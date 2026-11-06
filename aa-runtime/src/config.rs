@@ -156,12 +156,12 @@ pub struct RuntimeConfig {
     /// by `SHA256("{org_id}/{team_id}/{registered_agent_id}")`
     /// (`aa-gateway/src/registry/convert.rs`), and the human-readable
     /// `AA_AGENT_ID` this runtime instance uses to name its IPC socket is
-    /// never itself registered. The org component of that key is always
-    /// empty — every SDK registration hardcodes `org_id: ""`
-    /// (`aa-sdk-client/src/gateway.rs`) — so there is no corresponding
-    /// `AA_GATEWAY_ORG_ID`; [`agent_team_id`](Self::agent_team_id) is reused
-    /// as the team component since it already serves the identical purpose
-    /// for the unauthenticated subscription path this replaces.
+    /// never itself registered. The org component of that key is the
+    /// organization the gateway bound the registration to (AAASM-6444; empty
+    /// for an org-less agent), supplied as [`agent_org_id`](Self::agent_org_id);
+    /// [`agent_team_id`](Self::agent_team_id) is reused as the team component
+    /// since it already serves the identical purpose for the unauthenticated
+    /// subscription path this replaces.
     pub gateway_agent_id: Option<String>,
 
     /// Sliding window duration in milliseconds for the correlation engine.
