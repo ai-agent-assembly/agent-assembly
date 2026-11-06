@@ -61,6 +61,7 @@ class FakeBackend(H.Backend):
         self.log: list[tuple[str, str]] = []
         self.install_cmds: list[object] = []
         self.pending: list[dict[str, str]] = []
+        self.reverted = False
 
     def version_of(self, name):
         return 0, f"{name} {'0.0.1-rc.7' if self.mode == 'wrong_version' else self.version}\n"
@@ -97,6 +98,11 @@ class FakeBackend(H.Backend):
         self.pending = [x for x in self.pending if x["id"] != args[1]]
         return 0, f"Approved: {args[1]}\n" if self.mode == "approve_no_status" else f"Approved: {args[1]} (status: approved)\n"
 
+    def wait(self, seconds):
+        self.waited = seconds  # never really sleeps in tests
+        if self.mode == "policy_reverts":
+            self.reverted = True  # the reconciler put the bootstrap policy back
+
     def stop(self):
         pass
 
@@ -112,7 +118,7 @@ class FakeBackend(H.Backend):
                 return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
             s.unlink(missing_ok=True)
             return {"executed": True, "error": None, "typed": False}
-        deny = (tool == "delete_file" and self.mode != "delete_allowed") or (tool == "read_file" and (not self.read_allowed or self.mode == "read_blocked"))
+        deny = (tool == "delete_file" and self.mode != "delete_allowed" and not self.reverted) or (tool == "read_file" and (not self.read_allowed or self.mode == "read_blocked"))
         if tool == "send_email":
             if self.mode == "email_sent":
                 Path(str(s) + ".sent").write_text("sent\n")
@@ -232,7 +238,7 @@ def registry_ids(journey: str) -> list[str]:
 
 
 J56_EXECUTED = ["j56-c-artifacts-bound-to-candidate", "j56-c-binary-identity", "j56-c-install-clean-venv-native-core",
-                "j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-send-email-approval-or-gap", "j56-c-deny-delete-file-typed-no-sideeffect",
+                "j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-applied-policy-stays-enforced", "j56-c-send-email-approval-or-gap", "j56-c-deny-delete-file-typed-no-sideeffect",
                 "j56-c-audit-correlation", "j56-c-policy-flip-changes-behavior", "j56-c-unwired-callbacks-control"]
 
 
@@ -468,6 +474,17 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_approval_output_without_an_approved_status_fails(self):
         self.check("approve_no_status", "j56-c-send-email-approval-or-gap")
+
+    def test_applied_policy_that_reverts_fails(self):
+        rep = self.check("policy_reverts", "j56-c-applied-policy-stays-enforced")
+        detail = next(c["detail"] for c in rep["candidate_checks"] if c["id"] == "j56-c-applied-policy-stays-enforced")
+        self.assertIn("ran 15s later", detail)
+
+    def test_durability_waits_the_documented_interval_before_re_driving(self):
+        fx = Fixture(self)
+        fx.run()
+        self.assertEqual(fx.backend.waited, H.DURABLE_WAIT_S)
+        self.assertGreaterEqual(H.DURABLE_WAIT_S, 3 * 5)  # three reconcile ticks of the gateway's 5s poll
 
     def test_approval_audit_entry_naming_another_tool_fails(self):
         self.check("approval_audit_other_tool", "j56-c-send-email-approval-or-gap")
