@@ -1,0 +1,17 @@
+# J56 policy flip (AAASM-6439): same shape as golden-path.v1.yaml with read_file
+# turned to deny, so a rerun of the identical call must change behaviour.
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata:
+  name: golden-path
+  version: "1.1.0"
+spec:
+  tools:
+    read_file:
+      allow: false
+    delete_file:
+      allow: false
+    send_email:
+      allow: true
+      capabilities: [none]
+      requires_approval_if: "true"
