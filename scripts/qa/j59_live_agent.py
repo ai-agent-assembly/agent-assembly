@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -669,13 +668,25 @@ def check_core_value(ctx: Any, be: Any, cid: str, v2: Path, driver_digest: Calla
          "PolicyViolation entry; the audit chain holds the allows before the deny, and nothing but the policy changed", arts, neg)
 
 
-def check_policy_durability(ctx: Any, be: Any, cid: str, other: Path, hold_seconds: float = 12.0) -> None:
+def check_policy_durability(ctx: Any, be: Any, cid: str, other: Path, hold_seconds: float = 12.0,
+                             watched: Path | None = None, settle_seconds: float = 20.0) -> None:
     """Step 8/9: a policy applied with `aasm policy apply` must stay enforced. On the candidate the gateway swaps the
     watched policy file back over it within 5s while `aasm policy get` keeps reporting the applied version, so this
     check is expected to FAIL there. `other` must change the agent's read_file outcome relative to the watched file."""
     H = load_j56()
     neg = _tn("test_s9_applied_policy_reverting_fails")
     arts = list(H.BINARIES_ART) + [WHEEL, "golden-path.v1.yaml", "sdk_agent.py"]
+    if watched is not None:
+        # Put the watched file in the state this row needs instead of inheriting whatever an earlier row left behind;
+        # otherwise a failure in that row would turn the expected revert FAIL into a NOT_COVERED here.
+        be.set_policy_source(watched)
+        waited = 0.0
+        while not _blocked_now(be, ctx, f"dur-w{int(waited)}")[0]:
+            if waited >= settle_seconds:
+                ctx.add(cid, c.FAIL, "real_local_process", f"the watched policy file did not block read_file within {int(settle_seconds)}s, so the starting state of this row could not be established", arts, neg)
+                return
+            be.wait(1.0)
+            waited += 1.0
     if not _blocked_now(be, ctx, "dur-0")[0]:
         ctx.add(cid, c.NOT_COVERED, "real_local_process", "read_file is not blocked under the watched policy, so an applied policy that allows it cannot be told apart", arts, neg)
         return
@@ -754,7 +765,7 @@ def check_dashboard_operations(ctx: Any, be: Any, cid: str, state: dict[str, Any
             try:
                 result = json.loads(line[len("RESULT "):])
             except ValueError:
-                pass
+                pass  # an unparsable RESULT line leaves result None, which the row reports as a failure below
             break
     problems: list[str] = []
     if result is None:
@@ -833,4 +844,5 @@ def run_live(ctx: Any, be: Any, repo: Path, inputs: dict[str, Any]) -> None:
     driver = be.driver
     check_core_value(ctx, be, "j59-s12-core-value-no-agent-change", v2, lambda: c.sha256_file(driver), ctx.artifacts.get("sdk_agent.py"),
                      inputs.get("settle_seconds", 20.0))
-    check_policy_durability(ctx, be, "j59-s9-applied-policy-stays-enforced", repo / FIX / "golden-path.v1.yaml", inputs.get("hold_seconds", 12.0))
+    check_policy_durability(ctx, be, "j59-s9-applied-policy-stays-enforced", repo / FIX / "golden-path.v1.yaml", inputs.get("hold_seconds", 12.0),
+                            watched=v2, settle_seconds=inputs.get("settle_seconds", 20.0))

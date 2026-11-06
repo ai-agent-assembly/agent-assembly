@@ -446,6 +446,12 @@ class LiveRowTests(unittest.TestCase):
         self.assertIn("Decision needed", row.detail)
         self.assertEqual(res["j59-s12-core-value-no-agent-change"].status, "PASS")
 
+    def test_s9_is_not_masked_when_the_watched_file_never_blocks(self):
+        # policy_ignored makes s12 fail; s9 must still say FAIL (starting state not established), not NOT_COVERED.
+        row = stat(self, "policy_ignored")["j59-s9-applied-policy-stays-enforced"]
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("starting state", row.detail)
+
     def test_s9_apply_that_never_takes_effect_fails(self):
         self.assertEqual(stat(self, "apply_ineffective")["j59-s9-applied-policy-stays-enforced"].status, "FAIL")
 
