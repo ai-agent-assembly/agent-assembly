@@ -597,6 +597,17 @@ mod tests {
 
         let slot = Arc::new(ArcSwap::new(Arc::new(parse_doc(ALLOW_YAML))));
 
+        // `tracing` caches each callsite's interest on first registration. When
+        // exactly one dispatcher is registered (this test's scoped one), the
+        // registering thread computes interest from *its own* default
+        // dispatcher. Another test's thread (a reconciler or `handle_fs_event`
+        // caller with no dispatcher) can register the `policy hot-reloaded`
+        // callsite first and cache `never`, and nothing rebuilds it, so this
+        // test's capture would stay empty. A process-wide enabling subscriber
+        // keeps every first registration from caching `never`; the scoped
+        // subscriber below still decides what is captured.
+        let _ = subscriber::set_global_default(tracing_subscriber::registry());
+
         let sink = BufWriter::default();
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
