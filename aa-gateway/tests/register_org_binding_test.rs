@@ -97,6 +97,16 @@ async fn register(
     id: &ProtoAgentId,
     key: Option<&str>,
 ) -> Result<RegisterResponse, tonic::Status> {
+    register_with_metadata(addr, kp, id, key, Default::default()).await
+}
+
+async fn register_with_metadata(
+    addr: SocketAddr,
+    kp: &AgentKeypair,
+    id: &ProtoAgentId,
+    key: Option<&str>,
+    metadata: std::collections::HashMap<String, String>,
+) -> Result<RegisterResponse, tonic::Status> {
     let mut client: AgentLifecycleServiceClient<Channel> =
         AgentLifecycleServiceClient::connect(format!("http://{addr}"))
             .await
@@ -116,6 +126,7 @@ async fn register(
         public_key: kp.public_key_hex(),
         possession_proof: kp.sign(&challenge.nonce).to_vec(),
         registration_nonce: challenge.nonce,
+        metadata,
         ..Default::default()
     };
     let mut req = Request::new(req);
@@ -284,4 +295,45 @@ async fn event_audit_entries_carry_the_bound_org_of_each_agent() {
     assert_eq!(got["acme"].as_deref(), Some("acme"));
     assert_eq!(got["globex"].as_deref(), Some("globex"));
     assert_eq!(got["legacy"], None);
+}
+
+/// AAASM-6444 review: `RegisterRequest.metadata` is client text. An org-less
+/// registration that tags itself `org_id: victim` there must stay org-less in the
+/// lineage every downstream consumer reads (CheckAction audit stamp, policy
+/// cascade, sensitive-data scope).
+#[tokio::test]
+async fn client_metadata_org_tag_does_not_place_an_org_less_agent_in_an_org() {
+    let (addr, registry, keys) = start().await;
+    let tag: std::collections::HashMap<String, String> = [("org_id".to_string(), "globex".to_string())].into();
+
+    let (kp, id) = identity("tagger", "");
+    register_with_metadata(addr, &kp, &id, None, tag.clone())
+        .await
+        .expect("org-less registration");
+    assert_eq!(registry.lineage(&proto_agent_id_to_key(&id)).unwrap().org_id, None);
+
+    // Unbound non-admin key: still org-less, still untagged.
+    let (kp2, id2) = identity("tagger-plain", "");
+    register_with_metadata(addr, &kp2, &id2, Some(&keys.unbound_plain), tag.clone())
+        .await
+        .expect("unbound key, no claim");
+    assert_eq!(registry.lineage(&proto_agent_id_to_key(&id2)).unwrap().org_id, None);
+
+    // Positive control: a key-bound registration carries its bound org, whatever the metadata says.
+    let (kp3, id3) = identity("tagger-bound", "");
+    register_with_metadata(addr, &kp3, &id3, Some(&keys.acme), tag)
+        .await
+        .expect("bound");
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id3
+    };
+    assert_eq!(
+        registry
+            .lineage(&proto_agent_id_to_key(&bound))
+            .unwrap()
+            .org_id
+            .as_deref(),
+        Some("acme")
+    );
 }

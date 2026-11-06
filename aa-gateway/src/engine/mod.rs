@@ -6478,6 +6478,31 @@ mod tests {
     }
 
     #[test]
+    fn cascade_ignores_an_org_tag_a_client_put_in_registration_metadata() {
+        // AAASM-6444: `RegisterRequest.metadata` is client text. An org-less agent
+        // that registers with `metadata{org_id: owner-org}` must be org-less to the
+        // cascade, not placed in (or out of) an org by that tag. Only the
+        // binder-validated `AgentRecord.org_id` selects org scope. Here the tag
+        // names the org whose policy denies `bash`; an org-less agent is under the
+        // Global allow-all baseline only.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        let mut record = registry_record([0xbb; 16], "some-team", None);
+        record.metadata.insert("org_id".to_string(), "owner-org".to_string());
+        registry.register(record).expect("register");
+        let (engine, _tmp) = cascade_engine_owner_org_denies_bash();
+        let engine = engine.with_registry(registry);
+
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xbb; 16]);
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Allow,
+            "a client-supplied metadata org tag must not select org scope"
+        );
+    }
+
+    #[test]
     fn cascade_falls_back_to_ctx_org_when_agent_unregistered() {
         // With no registry record for the agent, the ctx-supplied lineage is
         // used (untenanted / convert.rs path). An agent claiming owner-org sees
