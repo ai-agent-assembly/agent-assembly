@@ -10417,9 +10417,17 @@ export interface operations {
                 page?: number | null;
                 /** @description Items per page (max 100). Defaults to 50. */
                 per_page?: number | null;
-                /** @description Filter by hex-encoded agent ID. */
+                /**
+                 * @description Filter by agent. Accepts the 32-hex audit `agent_id` this endpoint
+                 *     returns, the agent's name, or its `did:key`. A value that matches no
+                 *     agent returns an empty page — it never falls back to every agent — and a
+                 *     blank value is a `400`.
+                 */
                 agent_id?: string | null;
-                /** @description Filter by event type name (e.g. `PolicyViolation`). */
+                /**
+                 * @description Filter by event type name (e.g. `PolicyViolation`). An unrecognised
+                 *     value returns an empty page.
+                 */
                 event_type?: string | null;
                 /**
                  * @description AAASM-2008 — filter by organisation identifier. When supplied, only
@@ -10445,6 +10453,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["PaginatedLogResponse"];
                 };
+            };
+            /** @description A blank agent_id filter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Missing or invalid credentials */
             401: {
