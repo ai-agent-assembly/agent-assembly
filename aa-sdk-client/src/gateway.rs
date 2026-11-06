@@ -75,6 +75,9 @@ impl GatewayRegistrationClient {
     /// key in the `x-aa-registration-key` metadata so the gateway can bind the
     /// agent to the key's organization (AAASM-6444). The key travels in metadata,
     /// not the body, so it is never part of the signed registration message.
+    ///
+    /// The key is a bearer credential: use an `https://` gateway endpoint for any
+    /// gateway that is not on loopback, or it crosses the network in clear text.
     pub async fn register_with_key(
         &mut self,
         request: RegisterRequest,
@@ -82,12 +85,15 @@ impl GatewayRegistrationClient {
     ) -> Result<RegisterResponse, SdkClientError> {
         let mut request = tonic::Request::new(request);
         if let Some(key) = key {
-            let value = key
+            let mut value = key
                 .expose()
                 .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
                 .map_err(|_| {
                     SdkClientError::RegisterFailed("registration key is not valid gRPC metadata".to_string())
                 })?;
+            // Keeps the key out of `Debug` output of the request and out of HTTP/2
+            // header-compression indexing on the wire.
+            value.set_sensitive(true);
             request.metadata_mut().insert(REGISTRATION_KEY_METADATA_KEY, value);
         }
         let resp = self
