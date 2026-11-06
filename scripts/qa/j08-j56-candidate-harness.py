@@ -1,0 +1,913 @@
+#!/usr/bin/env python3
+"""J08 (AAASM-4530) and J56 (AAASM-4976) pre-publication candidate harness: governed Python agent.
+
+Both journeys are "install the Python SDK from PyPI, govern an agent against the gateway".
+Nothing is published before the tag, so this harness installs a python-sdk wheel built
+from a pinned SDK SHA into a clean venv (`pip install --no-index --find-links`, no
+network) and drives it against the candidate `aasm`, `aa-gateway`, `aa-runtime` and
+`aa-api-server` binaries as real local processes. Record schema, verdict tokens and exit
+codes are the shared `b1-candidate-report/1` of `b1_candidate_common.py` (AAASM-6419).
+
+Checks (fidelity real_local_process unless noted), one report per `--journey`:
+
+  J56  install-clean-venv-native-core   wheel installs in a fresh venv and `_core` imports
+       register-authenticated           good key registers; a wrong key does not
+       allow-read-file                  `golden-path` ALLOW reaches the tool body
+       deny-delete-file-typed-no-sideeffect   typed SDK error, sentinel untouched
+       send-email-approval-or-gap       FAIL if the email ran unapproved or no approval can be queued/resolved
+       audit-correlation                `aasm audit export` shows the allow and the deny for this agent
+       policy-flip-changes-behavior     read_file flipped to deny changes the same call
+       unwired-callbacks-control        the same delete_file with the SDK hook not invoked DOES run,
+                                        so the block above is attributable to the SDK wiring
+  J08  register-governed-agent, allow-deny, readme-snippet-matches-wiring (static, over the wheel)
+
+Publication-dependent rows are PENDING and equal the registry ids in
+`qa/golden-journeys.yaml`; the registry allows exactly one per journey, so public-docs
+discoverability is part of that row's `expected` text rather than a separate id.
+
+The real-run process wiring (how the four binaries are started and which endpoint the SDK
+dials) is unproven until the coordinator's first run on real binaries; a stack that does
+not come up is reported FAIL/NOT_COVERED, never PASS. Logic is unit-tested through the
+`Backend` seam in scripts/tests/test_j08_j56_candidate_harness.py.
+
+Usage:
+  python3 -I scripts/qa/j08-j56-candidate-harness.py --journey J56 --candidate-sha <40hex> \
+      --version 0.0.1-rc.8 --repo <checkout> --gateway <p> --runtime <p> --api-server <p> --aasm <p> \
+      --sdk-wheel <whl> --sdk-sha <40hex> [--expected-digests d.json] [--out r.json]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+import uuid
+import zipfile
+from pathlib import Path
+from typing import Any, Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import b1_candidate_common as c  # noqa: E402
+
+SCRIPT = "scripts/qa/j08-j56-candidate-harness.py"
+TEST = "scripts/tests/test_j08_j56_candidate_harness.py"
+# The SDK attaches its LangChain adapter only when `import langchain` succeeds (FrameworkAdapter.is_available), so the
+# clean venv of the LangChain quick start must carry the full package, not only langchain-core. The core bound mirrors
+# the SDK's own `langchain-test` dependency group.
+README_PACKAGES = ("langchain", "langchain-classic", "langchain-community")  # the README's own install line
+# The gateway's file reconciler re-reads its watched policy file every 5s (AAASM-5382). A policy applied through
+# `aasm policy apply` has to outlive several of those ticks, so durability is only claimed after this long.
+DURABLE_WAIT_S = 15
+GRPC_PORT = 50051  # the gateway default the SDK and runtime resolve; not configurable per run
+LANGCHAIN_REQUIREMENT = ("langchain", "langchain-core>=1.4.9,<1.7.0")
+FIX = "scripts/qa/fixtures/j56"
+SOURCES = {
+    "golden-path.v1.yaml": f"{FIX}/golden-path.v1.yaml",
+    "golden-path.v2-read-deny.yaml": f"{FIX}/golden-path.v2-read-deny.yaml",
+    "sdk_driver.py": f"{FIX}/sdk_driver.py",
+    "fw_control.py": f"{FIX}/fw_control.py",
+}
+BINARIES = ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")
+WHEEL = "python-sdk-wheel"
+# A syntactically valid key for a throwaway loopback server; not a credential.
+TEST_KEY = "aa_0123456789abcdef0123456789abcdef"
+WRONG_KEY = "aa_" + "f" * 32
+
+PENDING_BY_JOURNEY = {
+    "J08": c.PendingCheck(
+        "j08-published-python-sdk-governed-agent", "pypi",
+        "the published SDK only exists on PyPI after the SDK release job runs; the wheel built from the pinned SHA "
+        "is not proven byte-identical to it, and docs discoverability needs the live public docs site",
+        "pip install --pre agent-assembly==<sdk version> in a clean venv with network, then python3 -I "
+        "scripts/qa/j08-j56-candidate-harness.py --journey J08 ... --sdk-wheel <downloaded wheel>",
+        "the published wheel installs, its `_core` imports, a governed agent registers against the candidate gateway, "
+        "and the public docs quick start for the Python SDK is reachable and names the same install command",
+    ),
+    "J56": c.PendingCheck(
+        "j56-published-python-sdk-canonical-11-step", "pypi",
+        "the canonical clean-environment run must use the published SDK and published gateway, which exist only "
+        "after release; docs discoverability of the 11 steps needs the live public docs site",
+        "pip install --pre agent-assembly==<sdk version> in a clean venv with network, then python3 -I "
+        "scripts/qa/j08-j56-candidate-harness.py --journey J56 ... --sdk-wheel <downloaded wheel>",
+        "every J56 candidate check is PASS against the published wheel and published binaries, and the public docs "
+        "describe the same steps",
+    ),
+}
+JOURNEY_JIRA = {"J08": "AAASM-4530", "J56": "AAASM-4976"}
+
+
+def failure_response(journey: str) -> dict[str, Any]:
+    return {
+        "proposed_actions": [
+            f"do not announce the release as Python-SDK-ready; record {journey} as failed post-publication",
+            f"file a Bug against {JOURNEY_JIRA[journey]} naming the failing check id, the candidate SHA and the wheel digest",
+            "if the published wheel differs from the candidate wheel, re-run the SDK publish job on the same SHA before any announcement",
+        ],
+        "notify": ["release-owner"],
+        "deadline_hours": 24,
+    }
+
+
+DEPENDS_ON = [
+    {"repo": "python-sdk", "event": "SDK release publishes the wheel to PyPI"},
+    {"repo": "agent-assembly", "event": "release.yml publish (GitHub Release assets)"},
+]
+
+TYPED_ERRORS = {"ToolExecutionBlockedError", "PolicyViolationError", "MCPToolBlockedError"}
+# A LangChain callback only governs a tool when LangChain is told about it; these are the
+# hooks through which a handler held in a module global becomes part of a run.
+LANGCHAIN_HOOKS = ("register_configure_hook", "add_handler(", "inheritable_handlers", "CallbackManager.configure")
+README_CLAIM = re.compile(r"init_assembly\(\)[^\n]{0,200}(auto-load|each tool call|policy gate|allow/deny)", re.I)
+
+
+class Backend:
+    """The exec seam. Everything that starts a process or touches the SDK goes through here,
+    so the check logic can be driven by a fake in unit tests with no SDK or binaries."""
+
+    good_key = TEST_KEY
+
+    def version_of(self, name: str) -> tuple[int, str]: raise NotImplementedError
+    def install(self) -> tuple[int, str]: raise NotImplementedError
+    def start(self, policy: Path) -> tuple[bool, str]: raise NotImplementedError
+    def sdk(self, op: str, **kw: Any) -> dict[str, Any]: raise NotImplementedError
+    def apply_policy(self, policy: Path) -> tuple[int, str]: raise NotImplementedError
+    def audit(self, agent: str) -> tuple[int, str]: raise NotImplementedError
+    def agent_list(self) -> tuple[int, str]: raise NotImplementedError
+    def approvals(self, *args: str) -> tuple[int, str]: raise NotImplementedError
+    def wait(self, seconds: float) -> None: time.sleep(seconds)
+    def stop(self) -> None: raise NotImplementedError
+    # Framework matrix (J08 --frameworks): one venv per example, no gateway involved.
+    def fw_install(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
+    def fw_test(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
+    def fw_control(self, fid: str, example: Path, sentinel_dir: Path) -> dict[str, Any]: raise NotImplementedError
+    def fw_run_snippet(self, fid: str, code: str) -> tuple[int, str]: raise NotImplementedError
+
+
+# Extras the examples need beyond `dev` (their own pyproject comments); both are heavy or
+# pre-release, so the base smoke does not install them.
+FW_EXTRAS = {
+    "microsoft-agent-framework-tool-policy": ["--extra", "live", "--prerelease=allow"],
+    "crewai-research-crew": ["--extra", "live"],
+}
+
+
+class LocalBackend(Backend):
+    """Real local processes: copied binaries, isolated HOME, loopback port, offline venv."""
+
+    def __init__(self, ctx: c.Context, bins: dict[str, Path], wheel: Path, driver: Path,
+                 exec_fn: Callable[..., tuple[int, str]] = c.run):
+        self.ctx, self.wheel, self.driver, self.exec = ctx, wheel, driver, exec_fn
+        self.bindir = ctx.tmp / "bin"
+        self.bindir.mkdir()
+        for name, src in bins.items():
+            shutil.copy(src, self.bindir / name)
+        self.home = ctx.tmp / "home"
+        self.home.mkdir()
+        self.venv = ctx.tmp / "venv"
+        self.port = c.free_port()
+        self.agent = f"j56-{uuid.uuid4().hex[:8]}"
+        self.env = c.clean_env(self.home, {"PATH": f"{self.bindir}:/usr/bin:/bin", "AASM_API_KEY": TEST_KEY})
+        self.pidfile = self.home / ".aasm" / "gateway.pid"
+        ctx.owned_pidfiles.append(self.pidfile)
+        self.started = False
+        self.sock: Path | None = None
+        self.runtime: subprocess.Popen[bytes] | None = None
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    def _cli(self, *args: str, timeout: int = 30) -> tuple[int, str]:
+        return self.exec([str(self.bindir / "aasm"), *args], self.env, self.ctx.tmp, timeout)
+
+    def version_of(self, name: str) -> tuple[int, str]:
+        # A freshly copied binary can sit in the host's first-launch validation for minutes, which says
+        # nothing about the binary; the generous bound keeps that from being misread as a wrong identity.
+        return self.exec([str(self.bindir / name), "--version"], self.env, self.ctx.tmp, 300)
+
+    def install(self) -> tuple[int, str]:
+        # Without --no-index a missing dependency would be fetched from PyPI and the run
+        # would silently stop being offline.
+        rc, out = self.exec([sys.executable, "-m", "venv", str(self.venv)], self.env, self.ctx.tmp, 120)
+        if rc != 0:
+            return rc, out
+        env = {**self.env, "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
+        return self.exec([str(self.venv / "bin" / "python"), "-m", "pip", "install", "--no-index",
+                          "--find-links", str(self.wheel.parent), str(self.wheel), *LANGCHAIN_REQUIREMENT], env,
+                         self.ctx.tmp, 300)
+
+    def start(self, policy: Path) -> tuple[bool, str]:
+        if c.wait_port(GRPC_PORT, 0.5):
+            # The runtime dials the gateway's gRPC port, which is fixed; a listener there that is not this run's
+            # gateway would be driven in its place and the results would describe a different stack.
+            return False, f"127.0.0.1:{GRPC_PORT} is already in use by another process; refusing to run against it"
+        rc, out = self._cli("start", "--host", "127.0.0.1", "--port", str(self.port), timeout=90)
+        self.started = rc == 0
+        if rc != 0:
+            return False, f"aasm start exited {rc}: {out.strip()[:300]}"
+        owned, why = self._grpc_is_ours()
+        if not owned:
+            return False, why
+        rc, out = self.apply_policy(policy)
+        if rc != 0:
+            return False, f"aasm policy apply exited {rc}: {out.strip()[:200]}"
+        return self._start_runtime()
+
+    def _grpc_listener_pids(self) -> list[int] | None:
+        rc, out = self.exec(["/usr/sbin/lsof", "-nP", f"-iTCP:{GRPC_PORT}", "-sTCP:LISTEN", "-t"], self.env, self.ctx.tmp, 30)
+        if rc not in (0, 1):  # lsof exits 1 when nothing listens
+            return None
+        return [int(x) for x in out.split() if x.isdigit()]
+
+    def _grpc_is_ours(self) -> tuple[bool, str]:
+        """The pre-start port check is a point in time: another harness stack can take the fixed gRPC port between
+        it and our gateway's bind, after which this run would silently drive that stack. So after the start, every
+        listener on the port must be proven to execute a binary from this run's own bin directory."""
+        pids = self._grpc_listener_pids()
+        if pids is None:
+            return False, "cannot enumerate the gRPC listener (lsof unavailable), so the stack cannot be proven to be this run's"
+        if not pids:
+            return False, f"nothing listens on 127.0.0.1:{GRPC_PORT} after the gateway started"
+        foreign = [p for p in pids if not c.pid_owned_by(p, self.ctx.tmp)]
+        if foreign:
+            return False, f"127.0.0.1:{GRPC_PORT} is served by pid(s) {foreign} that are not this run's gateway; refusing to drive another stack"
+        return True, ""
+
+    def _start_runtime(self) -> tuple[bool, str]:
+        """The SDK asks `aa-runtime` for every decision and fails closed without one (enforce), so the
+        stack under test is gateway + runtime. The socket is the SDK's default per-agent path, which is
+        the contract the SDK connects to; the agent id is unique per run so nothing else can collide."""
+        self.sock = Path(f"/tmp/aa-runtime-{self.agent}.sock")
+        env = {**self.env, "AA_AGENT_ID": self.agent, "AA_POLICY_PATH": "", "RUST_LOG": "warn",
+               "AA_GATEWAY_ENDPOINT": f"http://127.0.0.1:{GRPC_PORT}", "AA_METRICS_ADDR": f"127.0.0.1:{c.free_port()}",
+               "AA_AUDIT_BUFFER_PATH": str(self.home / "audit-buffer.db")}
+        self.runtime_log = (self.ctx.tmp / "aa-runtime.log").open("wb")  # never a pipe: an undrained pipe stalls the runtime
+        self.runtime = subprocess.Popen([str(self.bindir / "aa-runtime")], env=env, cwd=self.ctx.tmp, stdout=self.runtime_log,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+        self.ctx._children.append(self.runtime)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if self.sock.exists():
+                return True, "aa-runtime is listening"
+            if self.runtime.poll() is not None:
+                return False, f"aa-runtime exited {self.runtime.returncode} before binding {self.sock}"
+            time.sleep(0.2)
+        return False, f"aa-runtime did not bind {self.sock} within 20s"
+
+    def sdk(self, op: str, **kw: Any) -> dict[str, Any]:
+        argv = [str(self.venv / "bin" / "python"), "-I", str(self.driver), op, "--gateway-url", self.url,
+                "--key", kw.get("key", TEST_KEY), "--agent", self.agent]
+        for flag in ("tool", "sentinel"):
+            if kw.get(flag):
+                argv += [f"--{flag}", str(kw[flag])]
+        if kw.get("unwired"):
+            argv.append("--unwired")
+        rc, out = self.exec(argv, self.env, self.ctx.tmp, 120)
+        for line in reversed(out.splitlines()):
+            if line.startswith("RESULT "):
+                try:
+                    return json.loads(line[len("RESULT "):])
+                except ValueError:
+                    break
+        return {"error": "driver-no-result", "detail": f"exit {rc}: {out.strip()[-200:]}"}
+
+    def apply_policy(self, policy: Path) -> tuple[int, str]:
+        return self._cli("policy", "apply", str(policy))
+
+    def audit(self, agent: str) -> tuple[int, str]:
+        return self._cli("audit", "export", "--format", "json", "--agent", agent)
+
+    def agent_list(self) -> tuple[int, str]:
+        return self._cli("agent", "list")
+
+    def approvals(self, *args: str) -> tuple[int, str]:
+        return self._cli("approvals", *args)
+
+    def _fw_venv(self, fid: str) -> Path:
+        return self.ctx.tmp / "fwvenvs" / fid
+
+    def _fw_env(self, fid: str | None = None) -> dict[str, str]:
+        # uv needs a cache to avoid re-downloading; HOME stays isolated so nothing else leaks.
+        env = {**self.env, "UV_CACHE_DIR": os.environ.get("UV_CACHE_DIR") or str(Path.home() / ".cache" / "uv"),
+               "PYTHONDONTWRITEBYTECODE": "1", "PATH": f"{Path(self.uv).parent}:/usr/bin:/bin"}
+        if fid:
+            env["UV_PROJECT_ENVIRONMENT"] = str(self._fw_venv(fid))
+        return env
+
+    uv = shutil.which("uv") or "/usr/bin/uv"
+
+    def fw_install(self, fid: str, example: Path) -> tuple[int, str]:
+        env = self._fw_env(fid)
+        rc, out = self.exec([self.uv, "sync", "--frozen", "--extra", "dev", *FW_EXTRAS.get(fid, [])], env, example, 900)
+        if rc != 0:
+            return rc, out
+        # The lock pins the SDK the example was written against; the candidate wheel replaces it.
+        return self.exec([self.uv, "pip", "install", "--python", str(self._fw_venv(fid) / "bin" / "python"), "--no-index",
+                          "--find-links", str(self.wheel.parent), "--reinstall", "--no-deps", str(self.wheel)],
+                         env, example, 300)
+
+    def fw_test(self, fid: str, example: Path) -> tuple[int, str]:
+        # No cache provider: nothing may be written into the (verified-clean) examples checkout.
+        return self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", "-m", "pytest", "-rs", "-v",
+                          "-p", "no:cacheprovider", "tests/test_smoke.py"], self._fw_env(), example, 600)
+
+    def fw_control(self, fid: str, example: Path, sentinel_dir: Path) -> dict[str, Any]:
+        rc, out = self.exec([str(self._fw_venv(fid) / "bin" / "python"), "-I", str(self.driver.parent / "fw_control.py"),
+                             "--example-dir", str(example), "--sentinel-dir", str(sentinel_dir)], self._fw_env(), example, 120)
+        for line in reversed(out.splitlines()):
+            if line.startswith("RESULT "):
+                try:
+                    return json.loads(line[len("RESULT "):])
+                except ValueError:
+                    break
+        return {"error": "control-no-result", "message": f"exit {rc}: {out.strip()[-200:]}"}
+
+    def fw_run_snippet(self, fid: str, code: str) -> tuple[int, str]:
+        # The README tells the reader to `pip install --pre agent-assembly langchain langchain-classic
+        # langchain-community`; reproduce that in a fresh venv, with the candidate wheel standing in for
+        # the published SDK. The extras come from the index, as they do for a reader.
+        venv = self.ctx.tmp / "readme-venv"
+        rc, out = self.exec([sys.executable, "-m", "venv", str(venv)], self.env, self.ctx.tmp, 120)
+        if rc == 0:
+            env = {**self.env, "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
+            rc, out = self.exec([str(venv / "bin" / "python"), "-m", "pip", "install", "--find-links", str(self.wheel.parent),
+                                 str(self.wheel), *README_PACKAGES], env, self.ctx.tmp, 900)
+        if rc != 0:
+            return rc, f"README install step failed: {out.strip()[-300:]}"
+        f = self.ctx.tmp / "readme_quickstart.py"
+        f.write_text(code)
+        return self.exec([str(venv / "bin" / "python"), "-I", str(f)], self.env, self.ctx.tmp, 300)
+
+    def stop(self) -> None:
+        if self.started:
+            self._cli("stop")
+            self.started = False
+        c.kill_owned_daemon(self.pidfile, self.ctx.tmp)
+        if getattr(self, "runtime", None) is not None:
+            c.terminate_group(self.runtime)  # the socket is removed by the runtime on a clean exit; make sure it is gone
+        if getattr(self, "sock", None) is not None:
+            self.sock.unlink(missing_ok=True)
+            Path(str(self.sock)[: -len(".sock")] + ".lock").unlink(missing_ok=True)  # one 0600 file per run otherwise
+
+
+def _tn(name: str) -> str:
+    return f"{TEST}::{name}"
+
+
+def _res(ctx: c.Context, cid: str, problems: list[str], ok: str, arts: list[str], neg: str,
+         fidelity: str = "real_local_process") -> bool:
+    ctx.add(cid, c.FAIL if problems else c.PASS, fidelity, "; ".join(problems) or ok, arts, neg)
+    return not problems
+
+
+def _skip(ctx: c.Context, ids: list[str], why: str) -> None:
+    for cid in ids:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", why, [])
+
+
+def _sentinel(ctx: c.Context, name: str) -> Path:
+    p = ctx.tmp / "sentinels" / name
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(f"sentinel {name}\n")
+    return p
+
+
+def _blocked(r: dict[str, Any]) -> bool:
+    return not r.get("executed") and bool(r.get("typed") or r.get("error") in TYPED_ERRORS)
+
+
+def _drive(ctx: c.Context, be: Backend, tool: str, tag: str, unwired: bool = False) -> tuple[dict[str, Any], Path, str]:
+    s = _sentinel(ctx, f"{tag}-{tool}")
+    before = s.read_text()
+    return be.sdk("call", tool=tool, sentinel=s, unwired=unwired), s, before
+
+
+def check_install(ctx: c.Context, be: Backend, pfx: str) -> bool:
+    cid = f"{pfx}-c-install-clean-venv-native-core"
+    rc, out = be.install()
+    if rc != 0:
+        ctx.add(cid, c.FAIL, "real_local_process", f"pip install --no-index exited {rc}: {out.strip()[-300:]}",
+                [WHEEL], _tn("test_install_failure_fails"))
+        return False
+    r = be.sdk("import-core")
+    return _res(ctx, cid, [] if r.get("ok") else [f"`import agent_assembly._core` failed: {r.get('error')} {r.get('message', '')}".strip()],
+                f"wheel installs offline in a fresh venv and `_core` imports (sdk {r.get('sdk_version')})",
+                [WHEEL], _tn("test_missing_native_core_fails"))
+
+
+def check_register(ctx: c.Context, be: Backend, cid: str, with_agent_list: bool) -> bool:
+    p = []
+    good = be.sdk("register", key=be.good_key)
+    if good.get("registered") is not True:
+        p.append(f"registration with the correct key reported registered={good.get('registered')!r} ({good.get('error')})")
+    bad = be.sdk("register", key=WRONG_KEY)
+    if bad.get("registered") is True:
+        p.append("registration with a wrong key reported registered=True")
+    if with_agent_list and not p:
+        rc, out = be.agent_list()
+        if rc != 0 or str(good.get("agent")) not in out:
+            p.append(f"`aasm agent list` exit {rc} does not list the registered agent")
+    return _res(ctx, cid, p, "correct key registers (and is listed by aasm); a wrong key does not register",
+                BINARIES_ART + [WHEEL], _tn("test_wrong_key_registering_fails"))
+
+
+BINARIES_ART = list(BINARIES)
+
+
+def check_allow_deny(ctx: c.Context, be: Backend, allow_id: str, deny_id: str | None, combined_id: str | None) -> tuple[bool, bool]:
+    r, s, _ = _drive(ctx, be, "read_file", "allow")
+    p_allow = [] if r.get("executed") and s.exists() else [f"read_file was not allowed: {r.get('error')} {r.get('message', '')}".strip()]
+    d, ds, before = _drive(ctx, be, "delete_file", "deny")
+    p_deny = []
+    if not _blocked(d):
+        p_deny.append(f"delete_file did not raise a typed SDK error (executed={d.get('executed')}, error={d.get('error')!r})")
+    if not ds.exists() or ds.read_text() != before:
+        p_deny.append("delete_file side effect occurred: the sentinel is missing or changed")
+    arts = BINARIES_ART + [WHEEL, "golden-path.v1.yaml"]
+    if combined_id:
+        _res(ctx, combined_id, p_allow + p_deny, "read_file allowed; delete_file denied with a typed error and the sentinel untouched",
+             arts, _tn("test_delete_allowed_leaves_side_effect_fails"))
+    else:
+        _res(ctx, allow_id, p_allow, "read_file reaches the tool body under the golden-path ALLOW", arts, _tn("test_read_file_blocked_fails"))
+        _res(ctx, deny_id or "", p_deny, "delete_file raises a typed SDK error and the sentinel is untouched", arts,
+             _tn("test_delete_allowed_leaves_side_effect_fails"))
+    return not p_allow, not p_deny
+
+
+def _pending_approvals(be: Backend) -> tuple[list[dict[str, Any]] | None, str]:
+    rc, out = be.approvals("list", "--output", "json")
+    if rc != 0:
+        return None, f"`aasm approvals list` exited {rc}: {out.strip()[:120]}"
+    try:
+        rows = json.loads(out)
+    except ValueError:
+        return None, f"`aasm approvals list` printed non-JSON: {out.strip()[:120]!r}"
+    return (rows if isinstance(rows, list) else None), ""
+
+
+def check_durable(ctx: c.Context, be: Backend, cid: str, denied_before: bool) -> None:
+    """A deny that holds for a few seconds and then lapses is not governance. Every other row of this journey is
+    judged within moments of `aasm policy apply`; this one proves the applied policy is still the one enforced after
+    the gateway's reconcile ticks have run, by re-driving the denied tool and checking the side effect."""
+    neg = _tn("test_applied_policy_that_reverts_fails")
+    arts = BINARIES_ART + [WHEEL, "golden-path.v1.yaml"]
+    if not denied_before:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", "delete_file was not denied at first, so its durability cannot be shown", arts, neg)
+        return
+    denies_before = _audit_count(be, "delete_file", r"den(y|ied)|block")
+    be.wait(DURABLE_WAIT_S)
+    r, s, before = _drive(ctx, be, "delete_file", "durable")
+    p = []
+    if not _blocked(r):
+        p.append(f"delete_file was denied right after `policy apply` but ran {DURABLE_WAIT_S}s later (executed={r.get('executed')}, error={r.get('error')!r})")
+    if not s.exists() or s.read_text() != before:
+        p.append("the delete_file side effect occurred after the wait: the applied policy no longer governs the gateway")
+    # The SDK fails closed, so a runtime or gateway that died during the wait also yields a typed error and an
+    # untouched sentinel. Two further observations separate "policy still enforced" from "stack is gone": the
+    # audit chain must have recorded one more delete_file deny after the wait, and the ALLOWed tool must still run
+    # (which also catches a lapse to a deny-everything policy).
+    denies_after = _audit_count(be, "delete_file", r"den(y|ied)|block")
+    if denies_before is None or denies_after is None or denies_after <= denies_before:
+        p.append("the audit chain recorded no new delete_file deny after the wait, so the typed error is not shown to come from the applied policy")
+    a, as_, _ = _drive(ctx, be, "read_file", "durable-allow")
+    if not (a.get("executed") and as_.exists()):
+        p.append(f"read_file, which the policy ALLOWs, did not run after the wait ({a.get('error')!r}): the stack is not enforcing the applied policy")
+    _res(ctx, cid, p, f"{DURABLE_WAIT_S}s after the policy was applied delete_file is still denied (typed error, no side effect, a new audit deny) and read_file still runs",
+         arts, neg)
+
+
+def _audit_count(be: Backend, tool: str, verdict_rx: str) -> int | None:
+    rc, out = be.audit(getattr(be, "agent", ""))
+    try:
+        data = json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+    entries = data.get("entries", data) if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return None
+    return sum(1 for e in entries if tool in json.dumps(e).lower() and re.search(verdict_rx, json.dumps(e).lower()))
+
+
+def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
+    """Step 6: the APPROVAL tool must not run unapproved, must queue a pending approval an operator can see and
+    resolve with the product CLI, and must leave an ApprovalRequested audit record. What the SDK does after an
+    approval is recorded, not assumed: the blocked call has already raised, so a retry is judged on its own."""
+    r, s, _ = _drive(ctx, be, "send_email", "email")
+    sent = Path(str(s) + ".sent").exists()
+    neg = _tn("test_send_email_executed_without_approval_fails")
+    arts = BINARIES_ART + [WHEEL, "golden-path.v1.yaml"]
+    if sent or r.get("executed"):
+        ctx.add(cid, c.FAIL, "real_local_process", "send_email ran although the policy requires approval", arts, neg)
+        return
+    problems: list[str] = []
+    if not _blocked(r):
+        problems.append(f"the unapproved call did not raise a typed SDK error (error={r.get('error')!r})")
+    rows, why = _pending_approvals(be)
+    pending = [x for x in (rows or []) if x.get("status") == "pending" and x.get("reason") == "requires_approval"]
+    if rows is None:
+        problems.append(why)
+    elif not pending:
+        problems.append("no pending requires_approval request was queued for the blocked send_email")
+    else:
+        rc, out = be.approvals("approve", str(pending[0].get("id")), "--reason", "j56 harness approver")
+        if rc != 0 or "status: approved" not in out.lower():
+            problems.append(f"`aasm approvals approve` exited {rc}: {out.strip()[:120]}")
+        else:
+            left, why2 = _pending_approvals(be)
+            if left is None or any(x.get("id") == pending[0].get("id") and x.get("status") == "pending" for x in left):
+                problems.append(why2 or "the approved request is still pending")
+    rc, audit = be.audit(getattr(be, "agent", ""))
+    try:
+        adata = json.loads(audit) if rc == 0 else None
+    except ValueError:
+        adata = None
+    aentries = adata.get("entries", adata) if isinstance(adata, dict) else adata
+    if not any("ApprovalRequested" in json.dumps(e) and "send_email" in json.dumps(e)
+               for e in (aentries if isinstance(aentries, list) else [])):
+        problems.append("the audit chain has no ApprovalRequested record naming send_email")
+    if problems:
+        ctx.add(cid, c.FAIL, "real_local_process", "; ".join(problems), arts, neg)
+        return
+    retry, rs, _ = _drive(ctx, be, "send_email", "email2")
+    again = "an approved request is not consumed: the same call is blocked again and queues a new approval" \
+        if not (retry.get("executed") or Path(str(rs) + ".sent").exists()) else "the approved call runs on retry"
+    ctx.add(cid, c.PASS, "real_local_process",
+            "send_email did not run unapproved, queued a pending approval, `aasm approvals approve` resolved it and the "
+            f"audit chain recorded ApprovalRequested; after approval {again} (SDK resume-after-approval is not part of "
+            "this contract step)", arts, neg)
+
+
+def check_audit(ctx: c.Context, be: Backend, cid: str) -> None:
+    rc, out = be.audit(getattr(be, "agent", ""))
+    neg = _tn("test_audit_without_the_deny_fails")
+    arts = BINARIES_ART
+    if rc != 0:
+        ctx.add(cid, c.FAIL, "real_local_process", f"aasm audit export exit {rc}: {out.strip()[:200]}", arts, neg)
+        return
+    try:
+        data = json.loads(out)
+    except ValueError:
+        ctx.add(cid, c.FAIL, "real_local_process", "aasm audit export did not print JSON", arts, neg)
+        return
+    entries = data.get("entries", data) if isinstance(data, dict) else data
+    texts = [json.dumps(e, sort_keys=True).lower() for e in entries] if isinstance(entries, list) else []
+    allow = any("read_file" in t and re.search(r"\ballow", t) and not re.search(r"den(y|ied)|block", t) for t in texts)
+    deny = any("delete_file" in t and re.search(r"den(y|ied)|block", t) for t in texts)
+    p = []
+    if not allow:
+        p.append("no audit entry shows read_file allowed")
+    if not deny:
+        p.append("no audit entry shows delete_file denied")
+    _res(ctx, cid, p, "the audit chain shows the read_file allow and the delete_file deny for this agent", arts, neg)
+
+
+def check_flip(ctx: c.Context, be: Backend, cid: str, flip: Path, allowed_before: bool) -> None:
+    neg = _tn("test_policy_flip_ignored_fails")
+    arts = BINARIES_ART + [WHEEL, "golden-path.v1.yaml", "golden-path.v2-read-deny.yaml"]
+    if not allowed_before:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", "read_file was not allowed before the flip, so a change cannot be shown", arts, neg)
+        return
+    rc, out = be.apply_policy(flip)
+    if rc != 0:
+        ctx.add(cid, c.FAIL, "real_local_process", f"applying the read_file=deny policy exited {rc}: {out.strip()[:200]}", arts, neg)
+        return
+    r, s, _ = _drive(ctx, be, "read_file", "flip")
+    p = [] if _blocked(r) else [f"read_file still behaves as allowed after the flip (executed={r.get('executed')}, error={r.get('error')!r})"]
+    if not p:
+        # A typed error alone also appears when the runtime or gateway died after the earlier checks (the SDK fails
+        # closed), so the new policy version must be visible as a read_file deny in the audit chain, which holds
+        # only allow entries for read_file before the flip.
+        rc, audit = be.audit(getattr(be, "agent", ""))
+        try:
+            data = json.loads(audit) if rc == 0 else None
+        except ValueError:
+            data = None
+        entries = data.get("entries", data) if isinstance(data, dict) else data
+        denied = any("read_file" in json.dumps(e).lower() and re.search(r"den(y|ied)|block", json.dumps(e).lower())
+                     for e in (entries if isinstance(entries, list) else []))
+        if not denied:
+            p.append("read_file raised after the flip but the audit chain has no read_file deny: the policy change is not shown to be the cause")
+    _res(ctx, cid, p, "the same read_file call is allowed under 1.0.0, raises a typed error under 1.1.0, and the audit chain records the deny",
+         arts, neg)
+
+
+def check_unwired(ctx: c.Context, be: Backend, cid: str, blocked_when_wired: bool) -> None:
+    neg = _tn("test_unwired_control_still_blocked_fails")
+    arts = BINARIES_ART + [WHEEL]
+    if not blocked_when_wired:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", "the wired delete_file was not blocked, so there is no block to attribute", arts, neg)
+        return
+    r, s, _ = _drive(ctx, be, "delete_file", "unwired", unwired=True)
+    ran = r.get("executed") is True and not s.exists()
+    _res(ctx, cid, [] if ran else ["with the SDK hook not invoked delete_file did not run: the harness cannot tell SDK blocking from a fixture that refuses"],
+         "delete_file runs when the SDK hook is not invoked, so the block seen when wired is caused by the SDK", arts, neg)
+
+
+def check_readme(ctx: c.Context, wheel: Path, cid: str) -> None:
+    neg = _tn("test_readme_claim_without_langchain_hook_fails")
+    try:
+        with zipfile.ZipFile(wheel) as z:
+            meta = next((n for n in z.namelist() if n.endswith(".dist-info/METADATA")), None)
+            readme = z.read(meta).decode("utf-8", "replace") if meta else ""
+            # Only the LangChain adapter and the init path can make init_assembly() reach LangChain; a hook name
+            # elsewhere in the SDK (or in a comment) says nothing about this claim.
+            code = "\n".join(
+                "\n".join(l for l in z.read(n).decode("utf-8", "replace").splitlines() if not l.lstrip().startswith("#"))
+                for n in z.namelist()
+                if n.endswith(".py") and (n.startswith("agent_assembly/adapters/langchain/") or n == "agent_assembly/core/assembly.py"))
+    except (OSError, zipfile.BadZipFile) as e:
+        ctx.add(cid, c.NOT_COVERED, "static_analysis", f"cannot read the wheel: {e}", [WHEEL], neg)
+        return
+    if not README_CLAIM.search(readme) or not code:
+        ctx.add(cid, c.NOT_COVERED, "static_analysis",
+                "the wheel metadata makes no init_assembly() governance claim, or carries no agent_assembly sources", [WHEEL], neg)
+        return
+    wired = [h for h in LANGCHAIN_HOOKS if h in code]
+    ctx.add(cid, c.PASS if wired else c.FAIL, "static_analysis",
+            f"README claims init_assembly() governs tool calls; LangChain hook(s) found in the SDK: {wired}" if wired else
+            "README claims init_assembly() alone governs LangChain tool calls, but the SDK only stores a callback handler "
+            f"and never registers it with LangChain (none of {list(LANGCHAIN_HOOKS)} present)", [WHEEL], neg)
+
+
+def run_j56(ctx: c.Context, be: Backend, repo: Path) -> None:
+    fx = {k: repo / v for k, v in SOURCES.items()}
+    ok_id = "j56-c-install-clean-venv-native-core"
+    rest = ["j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-deny-delete-file-typed-no-sideeffect",
+            "j56-c-applied-policy-stays-enforced", "j56-c-send-email-approval-or-gap", "j56-c-audit-correlation",
+            "j56-c-policy-flip-changes-behavior", "j56-c-unwired-callbacks-control"]
+    if not check_install(ctx, be, "j56"):
+        _skip(ctx, rest, f"{ok_id} did not pass, so the SDK cannot be driven")
+        return
+    up, why = be.start(fx["golden-path.v1.yaml"])
+    if not up:
+        ctx.add("j56-c-register-authenticated", c.FAIL, "real_local_process", f"candidate stack did not come up: {why}",
+                BINARIES_ART, _tn("test_stack_start_failure_fails"))
+        _skip(ctx, rest[1:], "the candidate stack did not start")
+        return
+    check_register(ctx, be, "j56-c-register-authenticated", with_agent_list=False)
+    allowed, denied = check_allow_deny(ctx, be, "j56-c-allow-read-file", "j56-c-deny-delete-file-typed-no-sideeffect", None)
+    check_durable(ctx, be, "j56-c-applied-policy-stays-enforced", denied)
+    check_send_email(ctx, be, "j56-c-send-email-approval-or-gap")
+    check_audit(ctx, be, "j56-c-audit-correlation")
+    check_flip(ctx, be, "j56-c-policy-flip-changes-behavior", fx["golden-path.v2-read-deny.yaml"], allowed)
+    check_unwired(ctx, be, "j56-c-unwired-callbacks-control", denied)
+
+
+def run_j08(ctx: c.Context, be: Backend, repo: Path, wheel: Path) -> None:
+    fx = {k: repo / v for k, v in SOURCES.items()}
+    check_readme(ctx, wheel, "j08-c-readme-snippet-matches-wiring")
+    rest = ["j08-c-register-governed-agent", "j08-c-allow-deny"]
+    if not check_install(ctx, be, "j08"):
+        _skip(ctx, rest, "the SDK did not install, so it cannot be driven")
+        return
+    up, why = be.start(fx["golden-path.v1.yaml"])
+    if not up:
+        ctx.add(rest[0], c.FAIL, "real_local_process", f"candidate stack did not come up: {why}", BINARIES_ART, _tn("test_stack_start_failure_fails"))
+        _skip(ctx, rest[1:], "the candidate stack did not start")
+        return
+    check_register(ctx, be, rest[0], with_agent_list=True)
+    check_allow_deny(ctx, be, "", None, rest[1])
+
+
+def git_state(d: Path) -> tuple[str | None, str]:
+    """(HEAD sha or None, tracked-file changes). Untracked files are ignored: venvs and
+    caches are expected there, and only a tracked edit can change what a sample means."""
+    def g(*a: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["/usr/bin/git", "-C", str(d), *a], capture_output=True, text=True, timeout=60, check=False)
+    try:
+        head, st = g("rev-parse", "HEAD"), g("status", "--porcelain", "--untracked-files=no")
+    except (OSError, subprocess.SubprocessError):
+        return None, "git unavailable"
+    return (head.stdout.strip() if head.returncode == 0 else None), (st.stdout if st.returncode == 0 else "git status failed")
+
+
+def checkout_problem(label: str, d: Path, want_sha: str) -> str | None:
+    head, dirty = git_state(d)
+    if head is None:
+        return f"{label} {d} is not a readable git checkout"
+    if head != want_sha:
+        return f"{label} HEAD {head[:12]} != pinned {want_sha[:12]}"
+    if dirty.strip():
+        return f"{label} has uncommitted tracked changes: {dirty.strip().splitlines()[0]}"
+    return None
+
+
+def quickstart_region(main_py: str) -> list[str]:
+    out: list[str] = []
+    on = False
+    for line in main_py.splitlines():
+        if "# region: quickstart" in line:
+            on = True
+        elif on and "# endregion" in line:
+            break
+        elif on:
+            out.append(line)
+    return [l.rstrip() for l in textwrap.dedent("\n".join(out)).splitlines()]
+
+
+def slice_problem(slice_text: str, main_py: str) -> str | None:
+    """The vendored slice cannot run on its own (undefined names, `src.*` imports that exist
+    only in the examples repo), so 'verbatim' means the example's quickstart region, dedented,
+    appears unchanged as a contiguous block of the slice."""
+    region = quickstart_region(main_py)
+    if not any(region):
+        return "the example's main.py has no non-empty `# region: quickstart` block"
+    lines = [l.rstrip() for l in slice_text.splitlines()]
+    n = len(region)
+    if any(lines[i:i + n] == region for i in range(len(lines) - n + 1)):
+        return None
+    return "the vendored slice does not contain the example's quickstart region verbatim"
+
+
+PYTEST_COUNT = {k: re.compile(rf"(\d+) {k}") for k in ("passed", "skipped", "failed", "error")}
+LOCAL_SCOPE = "covers the example's client-side LocalPolicyEngine wiring, not gateway policy (that is J56)"
+
+
+def pytest_counts(out: str) -> dict[str, int]:
+    tail = "\n".join(out.strip().splitlines()[-3:])
+    return {k: int(m.group(1)) if (m := rx.search(tail)) else 0 for k, rx in PYTEST_COUNT.items()}
+
+
+def manifest_frameworks(sdk_dir: Path) -> list[dict[str, str]]:
+    return json.loads((sdk_dir / "quickstart_snippets" / "manifest.json").read_text())["frameworks"]
+
+
+def run_matrix(ctx: c.Context, be: Backend, sdk_dir: Path, examples_dir: Path, wanted: list[str]) -> None:
+    fws = {f["framework_id"]: f for f in manifest_frameworks(sdk_dir)}
+    bad = [fid for fid in fws if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(fid))]
+    if bad:  # ids become path components below; a manifest cannot be allowed to point outside the scratch dirs
+        ctx.add("j08-c-manifest-framework-ids", c.FAIL, "real_local_process", f"manifest framework id(s) are not plain slugs: {bad}",
+                [], _tn("test_manifest_framework_id_with_path_traversal_fails"))
+        return
+    ids = list(fws) if "all" in wanted else [w for w in wanted if w in fws]
+    installed: dict[str, tuple[int, str]] = {}
+
+    def install(fid: str, example: Path) -> tuple[int, str]:
+        if fid not in installed:
+            installed[fid] = be.fw_install(fid, example)
+        return installed[fid]
+
+    for fid in ids:
+        pre, ex = f"j08-c-fw-{fid}", examples_dir / "python" / fid
+        arts = [WHEEL]
+        verb = None
+        try:
+            verb = slice_problem((sdk_dir / "quickstart_snippets" / f"{fid}.py").read_text(), (ex / "src" / "main.py").read_text())
+        except OSError as e:
+            verb = f"cannot read the slice or the example main.py: {e}"
+        rc, out = install(fid, ex)
+        if rc != 0:
+            ctx.add(f"{pre}-install", c.FAIL, "real_local_process", f"uv sync --frozen / candidate wheel install exited {rc}: {out.strip()[-400:]}",
+                    arts, _tn("test_framework_install_failure_fails"))
+            ctx.add(f"{pre}-allow-deny", c.FAIL if verb else c.NOT_COVERED, "real_local_process",
+                    verb or f"{pre}-install failed, so the example cannot run", arts, _tn("test_missing_verbatim_slice_fails"))
+            continue
+        ctx.add(f"{pre}-install", c.PASS, "real_local_process", "uv sync --frozen from the example lock, then the candidate wheel over the pinned SDK", arts,
+                _tn("test_framework_install_failure_fails"))
+        p = [verb] if verb else []
+        trc, tout = be.fw_test(fid, ex)
+        n = pytest_counts(tout)
+        if trc != 0 or n["failed"] or n["error"]:
+            p.append(f"tests/test_smoke.py exit {trc}: {tout.strip()[-300:]}")
+        if n["skipped"]:
+            p.append(f"{n['skipped']} test(s) skipped: a skipped test proves nothing")
+        if not n["passed"]:
+            p.append("no test passed")
+        sd = ctx.tmp / "fw-sentinels" / fid
+        sd.mkdir(parents=True, exist_ok=True)
+        ctl = be.fw_control(fid, ex, sd)
+        if ctl.get("error"):
+            p.append(f"the no-governance control could not be established: {ctl['error']} {ctl.get('message', '')}".strip())
+        else:
+            if not (sd / "ungoverned.sentinel").exists():
+                p.append("control invalid: the side effect did not occur without governance")
+            if (sd / "denied.sentinel").exists():
+                p.append(f"deny case ({ctl.get('deny_tool')}) left its side effect: the denied tool ran")
+            if not (sd / "allowed.sentinel").exists():
+                p.append(f"allow case ({ctl.get('allow_tool')}) did not run")
+        _res(ctx, f"{pre}-allow-deny", p,
+             f"verbatim slice, {n['passed']} smoke tests passed with none skipped, side effect occurs ungoverned and "
+             f"is absent when denied; {LOCAL_SCOPE}", arts, _tn("test_deny_leaves_side_effect_fails"), "controlled_fake")
+
+
+def readme_fakellm_snippet(sdk_dir: Path) -> str | None:
+    text = (sdk_dir / "README.md").read_text()
+    for m in re.finditer(r"```python\n(.*?)```", text, re.S):
+        if "FakeListLLM" in m.group(1) and "init_assembly" in m.group(1):
+            return m.group(1)
+    return None
+
+
+def run_readme_quickstart(ctx: c.Context, be: Backend, sdk_dir: Path, examples_dir: Path) -> None:
+    cid, neg = "j08-c-readme-fakellm-quickstart", _tn("test_readme_quickstart_failure_fails")
+    code = readme_fakellm_snippet(sdk_dir)
+    if code is None:
+        ctx.add(cid, c.FAIL, "real_local_process", "the SDK README has no python block with the FakeListLLM quick start", [WHEEL], neg)
+        return
+    rc, out = be.fw_run_snippet("readme", code)
+    ok = rc == 0 and "alice is in engineering" in out
+    ctx.add(cid, c.PASS if ok else c.FAIL, "controlled_fake",
+            "the README FakeListLLM quick start runs verbatim offline and prints the expected answer; it proves the snippet "
+            "executes, not that init_assembly() alone governs it (see readme-snippet-matches-wiring)" if ok else
+            f"README quick start exit {rc}: {out.strip()[-300:]}", [WHEEL], neg)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(allow_abbrev=False)
+    ap.add_argument("--journey", required=True, choices=["J08", "J56"])
+    ap.add_argument("--candidate-sha", required=True, help="40-hex candidate commit")
+    ap.add_argument("--version", required=True, help="candidate version, e.g. 0.0.1-rc.8")
+    ap.add_argument("--repo", required=True, help="checkout containing the candidate sources")
+    for b in ("gateway", "runtime", "api-server", "aasm"):
+        ap.add_argument(f"--{b}", required=True)
+    ap.add_argument("--sdk-wheel", required=True)
+    ap.add_argument("--sdk-sha", required=True, help="40-hex python-sdk commit the wheel was built from")
+    ap.add_argument("--expected-digests", help=f"JSON {{name: sha256:<hex>}}; names: {', '.join(BINARIES)}, {WHEEL}")
+    ap.add_argument("--out")
+    ap.add_argument("--obligation-fragment")
+    ap.add_argument("--frameworks", help="J08 only: `all` or comma-separated manifest framework ids (adds the readme quick start check)")
+    ap.add_argument("--sdk-dir", help="python-sdk checkout at --sdk-sha (reads quickstart_snippets/manifest.json and README.md)")
+    ap.add_argument("--examples-dir", help="examples checkout at --examples-sha")
+    ap.add_argument("--examples-sha")
+    a = ap.parse_args(argv)
+    a.fw_wanted = [w.strip() for w in a.frameworks.split(",") if w.strip()] if a.frameworks else []
+    if a.fw_wanted:
+        if a.journey != "J08":
+            ap.error("--frameworks applies to --journey J08 only")
+        if not (a.sdk_dir and a.examples_dir and a.examples_sha and c.SHA40.fullmatch(a.examples_sha)):
+            ap.error("--frameworks needs --sdk-dir, --examples-dir and a 40-hex --examples-sha")
+    if a.obligation_fragment:
+        Path(a.obligation_fragment).unlink(missing_ok=True)
+    for flag in ("candidate_sha", "sdk_sha"):
+        if not c.SHA40.fullmatch(getattr(a, flag)):
+            ap.error(f"--{flag.replace('_', '-')} must be 40 lowercase hex characters")
+    try:
+        a.expected = c.load_expected(a.expected_digests)
+    except ValueError as e:
+        ap.error(f"--expected-digests: {e}")
+    return a
+
+
+def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None = None) -> int:
+    a = parse_args(argv)
+    repo = Path(a.repo).resolve()
+    ctx = c.Context(a.journey, a.candidate_sha, a.version)
+    be: Backend | None = None
+    try:
+        bins = {"aasm": Path(a.aasm), "aa-gateway": Path(a.gateway), "aa-runtime": Path(a.runtime), "aa-api-server": Path(a.api_server)}
+        bins = {k: v.resolve() for k, v in bins.items()}
+        wheel = Path(a.sdk_wheel).resolve()
+        for name, p in (*bins.items(), (WHEEL, wheel), *[(k, repo / v) for k, v in SOURCES.items()]):
+            if not p.is_file():
+                print(f"missing artifact {name}: {p}", file=sys.stderr)
+                return c.EXIT_USAGE
+            ctx.register(name, p)
+        pfx = a.journey.lower()
+        c.check_artifact_binding(ctx, f"{pfx}-c-artifacts-bound-to-candidate", {**bins, WHEEL: wheel}, SOURCES, repo,
+                                 a.expected, _tn("test_tampered_wheel_digest_fails"))
+        ident = []
+        be = (backend_factory or LocalBackend)(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
+        for name in ("aasm", "aa-gateway"):
+            rc, out = be.version_of(name)
+            if rc != 0 or not re.search(rf"(?<![\w.-]){re.escape(a.version)}(?![\w.])", out):
+                ident.append(f"{name} --version {out.strip()[:80]!r} (exit {rc}), want {a.version}")
+        _res(ctx, f"{pfx}-c-binary-identity", ident, f"aasm and aa-gateway both report {a.version}", ["aasm", "aa-gateway"],
+             _tn("test_wrong_version_fails"))
+        if a.fw_wanted:
+            sdk_dir, ex_dir = Path(a.sdk_dir).resolve(), Path(a.examples_dir).resolve()
+            known = {f["framework_id"] for f in manifest_frameworks(sdk_dir)}
+            unknown = [w for w in a.fw_wanted if w not in known | {"all", "readme"}]
+            if unknown:
+                print(f"unknown framework id(s) not in the manifest: {unknown}", file=sys.stderr)
+                return c.EXIT_USAGE
+            for prob in (checkout_problem("--sdk-dir", sdk_dir, a.sdk_sha), checkout_problem("--examples-dir", ex_dir, a.examples_sha)):
+                if prob:
+                    print(prob, file=sys.stderr)
+                    return c.EXIT_USAGE
+        (run_j56 if a.journey == "J56" else lambda x, y, z: run_j08(x, y, z, wheel))(ctx, be, repo)
+        if a.fw_wanted:
+            run_matrix(ctx, be, sdk_dir, ex_dir, a.fw_wanted)
+            if "all" in a.fw_wanted or "readme" in a.fw_wanted:
+                run_readme_quickstart(ctx, be, sdk_dir, ex_dir)
+        report = c.build_report(ctx, SCRIPT, [PENDING_BY_JOURNEY[a.journey]], failure_response(a.journey), DEPENDS_ON)
+        report["sdk_sha"] = a.sdk_sha
+        report["sdk_wheel_sha256"] = ctx.artifacts[WHEEL]
+        report["observations"] = [
+            "The record is bound to candidate_sha, sdk_sha and sdk_wheel_sha256; a wheel whose sha256 differs from the expected digest FAILS the artifacts-bound check.",
+            "send-email-approval-or-gap drives a real approver (`aasm approvals approve`); it FAILS if the email ran unapproved, no approval was queued, it cannot be resolved, or the audit chain lacks ApprovalRequested. Whether an approved call can resume is recorded in its detail, not assumed.",
+            "The wheel is built from sdk_sha, not downloaded from PyPI; the published install stays PENDING.",
+        ]
+        return c.finish(ctx, report, a.out, a.obligation_fragment)
+    finally:
+        if be is not None:
+            be.stop()
+        ctx.cleanup()
+
+
+if __name__ == "__main__":
+    c.main_guard(run_harness)
