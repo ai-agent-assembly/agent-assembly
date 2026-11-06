@@ -40,7 +40,7 @@ downloads a pre-built binary for `x86_64`/`aarch64` on macOS
 ## Linux runtime requirement
 
 The prebuilt Linux release binaries (x86_64 and aarch64) require **glibc ≥ 2.28**
-(Debian 10+, Ubuntu 18.04+, RHEL / AlmaLinux / Rocky 8+). They are glibc-linked,
+(Debian 10+, Ubuntu 20.04+, RHEL / AlmaLinux / Rocky 8+). They are glibc-linked,
 not musl, so Alpine is not a supported host for them. The release workflow builds
 them in a pinned glibc 2.28 container and fails if any shipped executable requires
 a newer `GLIBC_x.y` symbol (`scripts/release/check_linux_glibc_baseline.py`; the
