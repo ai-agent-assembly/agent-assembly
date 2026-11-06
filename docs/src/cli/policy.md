@@ -88,6 +88,11 @@ the directory and file; move aside only that entry's `.meta.json` and `.yaml`
 to recover). With `$AA_POLICY` set, that policy stays active and history is
 not reinstalled, so the active-policy view may differ.
 
+The policy file the gateway watches (`$AA_POLICY`, or the generated bootstrap file) is
+re-read on every change, but only a change to that file replaces the live policy: an
+applied or rolled-back policy stays enforced until the file's content next changes, and
+a later real edit to the file overrides it.
+
 Every read of a history entry (`get`, `diff`, `rollback` and the start-up restore) verifies that
 its YAML still hashes to the SHA-256 recorded in its metadata and refuses a modified entry with an
 integrity error naming the directory and file. Entries written by earlier release candidates hash
