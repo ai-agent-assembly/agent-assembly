@@ -39,6 +39,12 @@ class ExpiryTests(unittest.TestCase):
     def test_past_expiry_fails(self):
         self.assertIn("expired", check(entry("expires: 2026-12-15"), dt.date(2027, 1, 1))[0])
 
+    def test_far_future_expiry_fails(self):
+        self.assertIn("short-lived", check(entry("expires: 2099-12-31"))[0])
+
+    def test_exactly_the_maximum_horizon_passes(self):
+        self.assertEqual(check(entry("expires: 2027-02-04")), [])  # TODAY + 90 days
+
     def test_entry_without_expiry_fails(self):
         self.assertIn("must end", check(entry("dev-only, no date"))[0])
 

@@ -16,6 +16,9 @@ import tomllib
 from pathlib import Path
 
 EXPIRES = re.compile(r"expires:\s*(\d{4}-\d{2}-\d{2})\b")
+# A far-future date would turn the guard into a no-op, so an exception can never run longer than this
+# from the day the check runs; renewing it is then a new, visible, owner-approved change.
+MAX_HORIZON = dt.timedelta(days=90)
 
 
 def problems(deny_toml: Path, today: dt.date) -> list[str]:
@@ -37,6 +40,8 @@ def problems(deny_toml: Path, today: dt.date) -> list[str]:
             continue
         if today >= end:
             out.append(f"{ident}: exception expired on {end}; remove it or renew it with a new owner-approved change")
+        elif end - today > MAX_HORIZON:
+            out.append(f"{ident}: `expires: {end}` is more than {MAX_HORIZON.days} days away; an exception must stay short-lived")
     return out
 
 
