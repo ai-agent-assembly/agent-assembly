@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import argparse
 import io
+import re
 import struct
 import sys
 import tarfile
 from pathlib import Path
 
 ET_EXEC, ET_DYN = 2, 3
+PT_INTERP, PT_DYNAMIC = 3, 2
 SHT_DYNSYM, SHT_GNU_verneed, SHT_GNU_versym = 11, 0x6FFFFFFE, 0x6FFFFFFF
 BASELINE_FILE = Path(__file__).with_name("linux-glibc-baseline.txt")
 
@@ -47,28 +49,44 @@ def _cstr(blob: bytes, off: int) -> str:
     return blob[off : blob.index(b"\0", off)].decode()
 
 
-def glibc_requirements(data: bytes) -> dict[str, list[str]] | None:
-    """Return {GLIBC_x.y: [symbols]} for an ELF image, or None if not a
-    loadable little-endian ELF executable/shared object."""
-    if data[:4] != b"\x7fELF" or data[5] != 1:  # little-endian only (x86_64, aarch64)
-        return None
-    is64 = data[4] == 2
-    if not is64:
+def _program_header_types(data: bytes) -> set[int]:
+    (e_phoff,) = struct.unpack_from("<Q", data, 0x20)
+    e_phentsize, e_phnum = struct.unpack_from("<HH", data, 0x36)
+    return {
+        struct.unpack_from("<I", data, e_phoff + i * e_phentsize)[0] for i in range(e_phnum)
+    }
+
+
+def inspect_elf(data: bytes) -> dict | None:
+    """Classify an ELF image, or return None if it is not a little-endian
+    64-bit ELF executable/shared object (BPF objects, scripts, ... are skipped).
+
+    Result keys: ``reqs`` {GLIBC_x: [symbols]}, ``problem`` (str or None: the
+    reason the image cannot be vouched for), ``static`` (bool).
+    """
+    if data[:4] != b"\x7fELF" or data[5] != 1 or data[4] != 2:
         return None
     (e_type,) = struct.unpack_from("<H", data, 16)
     if e_type not in (ET_EXEC, ET_DYN):
         return None
-    e_shoff, = struct.unpack_from("<Q", data, 0x28)
+    dynamic = bool(_program_header_types(data) & {PT_INTERP, PT_DYNAMIC})
+    (e_shoff,) = struct.unpack_from("<Q", data, 0x28)
     e_shentsize, e_shnum = struct.unpack_from("<HH", data, 0x3A)
-    sections = []
-    for i in range(e_shnum):
-        sh = struct.unpack_from("<IIQQQQIIQQ", data, e_shoff + i * e_shentsize)
-        sections.append(sh)  # name,type,flags,addr,off,size,link,info,align,entsize
-    by_type = {}
+    if e_shnum == 0:
+        # Section-stripped: the version tables cannot be read, so a pass would
+        # be a vacuous one. Refuse rather than fail open.
+        return {"reqs": {}, "problem": "no section headers (stripped); cannot verify", "static": False}
+    sections = [
+        struct.unpack_from("<IIQQQQIIQQ", data, e_shoff + i * e_shentsize)
+        for i in range(e_shnum)
+    ]  # name,type,flags,addr,off,size,link,info,align,entsize
+    by_type: dict[int, tuple] = {}
     for sh in sections:
         by_type.setdefault(sh[1], sh)
     if SHT_GNU_verneed not in by_type:
-        return {}
+        if dynamic:
+            return {"reqs": {}, "problem": "dynamically linked but has no .gnu.version_r; cannot verify", "static": False}
+        return {"reqs": {}, "problem": None, "static": True}
     vn = by_type[SHT_GNU_verneed]
     strtab = sections[vn[6]]
     strs = data[strtab[4] : strtab[4] + strtab[5]]
@@ -99,7 +117,12 @@ def glibc_requirements(data: bytes) -> dict[str, list[str]] | None:
             name = idx_to_ver.get(ver)
             if name and name.startswith("GLIBC_"):
                 result[name].append(_cstr(dstrs, st_name))
-    return result
+    return {"reqs": result, "problem": None, "static": False}
+
+
+def glibc_requirements(data: bytes) -> dict[str, list[str]] | None:
+    info = inspect_elf(data)
+    return None if info is None else info["reqs"]
 
 
 def iter_inputs(paths: list[Path]):
@@ -117,19 +140,38 @@ def iter_inputs(paths: list[Path]):
             yield str(p), p.read_bytes()
 
 
+_NUMERIC = re.compile(r"\d+(\.\d+)*")
+
+
 def check(paths: list[Path], baseline: Version) -> tuple[int, int]:
     inspected = failed = 0
+    base = ".".join(map(str, baseline))
     for label, data in iter_inputs(paths):
-        reqs = glibc_requirements(data)
-        if reqs is None:
+        info = inspect_elf(data)
+        if info is None:
             continue
         inspected += 1
-        top = max((parse_version(v[6:]) for v in reqs), default=())
-        shown = ".".join(map(str, top)) if top else "none"
-        bad = {v: s for v, s in reqs.items() if parse_version(v[6:]) > baseline}
-        if bad:
+        if info["problem"]:
             failed += 1
-            print(f"FAIL {label}: max GLIBC_{shown} > baseline {'.'.join(map(str, baseline))}")
+            print(f"FAIL {label}: {info['problem']}")
+            continue
+        if info["static"]:
+            print(f"ok   {label}: static executable, no glibc dependency")
+            continue
+        reqs = info["reqs"]
+        # GLIBC_PRIVATE (or any non-numeric tag) is glibc-internal ABI: a shipped
+        # binary must never need it, and it has no orderable version.
+        odd = sorted(v for v in reqs if not _NUMERIC.fullmatch(v[6:]))
+        numeric = {v: s for v, s in reqs.items() if v not in odd}
+        top = max((parse_version(v[6:]) for v in numeric), default=())
+        shown = ".".join(map(str, top)) if top else "none"
+        bad = {v: s for v, s in numeric.items() if parse_version(v[6:]) > baseline}
+        if odd or bad:
+            failed += 1
+            print(f"FAIL {label}: max GLIBC_{shown} vs baseline {base}")
+            for v in odd:
+                print(f"       {v}: non-numeric glibc version tag is not allowed "
+                      f"({', '.join(sorted(set(reqs[v]))[:8]) or 'symbols not attributed'})")
             for v in sorted(bad, key=lambda x: parse_version(x[6:])):
                 print(f"       {v}: {', '.join(sorted(set(bad[v]))[:8]) or '(symbols not attributed)'}")
         else:
