@@ -251,10 +251,25 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
             ),
+            org_id: None,
+            registration_key: None,
         }
     }
 
     const TEST_NONCE: &[u8] = &[7u8; 32];
+
+    /// AAASM-6444: the configured org rides on the registration `AgentId` as a
+    /// claim, and is empty when none is configured (the gateway then derives it
+    /// from the registration key or leaves the agent org-less).
+    #[test]
+    fn register_request_carries_the_org_claim_only_when_configured() {
+        let mut config = cfg("org-agent");
+        let none = build_register_request(&config, "n".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        assert_eq!(none.agent_id.expect("agent_id").org_id, "");
+        config.org_id = Some("acme".into());
+        let claimed = build_register_request(&config, "n".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        assert_eq!(claimed.agent_id.expect("agent_id").org_id, "acme");
+    }
 
     #[test]
     fn register_request_carries_did_and_consistent_public_key() {
