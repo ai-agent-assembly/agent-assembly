@@ -63,7 +63,7 @@ docker run --rm \
     /tmp/rustup-init -y --profile minimal \
       --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET" >/dev/null
     . "$CARGO_HOME/env"
-    ldd --version | head -1
+    ldd --version | sed -n 1p
     # shellcheck disable=SC2086
     cargo build --release --target "$TARGET" $CARGO_ARGS
   '
