@@ -1358,6 +1358,67 @@ impl AgentGraph {
 }
 
 #[cfg(test)]
+mod lineage_org_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn record(org_id: Option<&str>, metadata_org: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: [7u8; 16],
+            name: "t".into(),
+            framework: "t".into(),
+            version: "0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "pk".into(),
+            credential_token: "tok".into(),
+            metadata: metadata_org
+                .map(|o| [("org_id".to_string(), o.to_string())].into())
+                .unwrap_or_default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team".into()),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+            org_id: org_id.map(str::to_string),
+        }
+    }
+
+    /// AAASM-6444: the lineage org (audit stamp, policy cascade, sensitive-data
+    /// scope) is the binder-validated `org_id` and nothing the client wrote into
+    /// the free-form registration metadata.
+    #[test]
+    fn lineage_org_is_never_read_from_client_metadata() {
+        let registry = AgentRegistry::new();
+        registry.register(record(None, Some("victim"))).unwrap();
+        assert_eq!(registry.lineage(&[7u8; 16]).unwrap().org_id, None);
+    }
+
+    #[test]
+    fn lineage_org_is_the_bound_org_even_when_metadata_names_another() {
+        let registry = AgentRegistry::new();
+        registry.register(record(Some("acme"), Some("victim"))).unwrap();
+        assert_eq!(registry.lineage(&[7u8; 16]).unwrap().org_id.as_deref(), Some("acme"));
+    }
+}
+
+#[cfg(test)]
 mod tree_tests {
     use super::*;
     use crate::registry::AgentStatus;
