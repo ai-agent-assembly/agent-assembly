@@ -39,7 +39,7 @@ pub mod keypair;
 pub mod preflight;
 
 pub use client::AssemblyClient;
-pub use config::AssemblyConfig;
+pub use config::{AssemblyConfig, RegistrationKey};
 pub use decision::resolve_decision;
 pub use error::SdkClientError;
 pub use identity::{agent_id_to_did_key, legacy_derived_did};

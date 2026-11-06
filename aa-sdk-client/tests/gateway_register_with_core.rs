@@ -165,6 +165,8 @@ async fn register_then_check_carries_token_and_surfaces_deny() {
         parent_agent_id: None,
         sdk_version: None,
         identity_dir: None,
+        org_id: None,
+        registration_key: None,
     };
 
     // 1) Register directly against the mock gateway — issues + stores the token.
@@ -330,6 +332,8 @@ async fn register_then_check_carries_the_full_registered_triple_including_team_i
         parent_agent_id: None,
         sdk_version: None,
         identity_dir: None,
+        org_id: None,
+        registration_key: None,
     };
 
     client
