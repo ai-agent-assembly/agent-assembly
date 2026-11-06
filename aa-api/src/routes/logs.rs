@@ -101,7 +101,10 @@ pub struct LogFilterParams {
     /// Filter by agent. Accepts the 32-hex audit `agent_id` this endpoint
     /// returns, the agent's name, or its `did:key`. A value that matches no
     /// agent returns an empty page — it never falls back to every agent — and a
-    /// blank value is a `400`.
+    /// blank value is a `400`. Filtering by an agent that has delegated sub-agents
+    /// also returns the descendants' entries recorded under its root id; filtering
+    /// by a sub-agent's name may miss that sub-agent's own allow entries, which are
+    /// recorded under the root.
     pub agent_id: Option<String>,
     /// Filter by event type name (e.g. `PolicyViolation`). An unrecognised
     /// value returns an empty page.
