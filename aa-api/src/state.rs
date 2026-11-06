@@ -932,7 +932,21 @@ impl AppState {
                     api_keys_path: state.auth_config.api_keys_path.clone(),
                     rate_limit_rpm: state.auth_config.rate_limit_rpm,
                 });
-                state.key_store = Arc::new(ApiKeyStore::from_entries(vec![entry]));
+                // AAASM-6444 — operator keys bound to an organization / team live in
+                // the `AA_API_KEYS_PATH` file the gateway's registration binding
+                // reads too. Merge them in when the operator set that path, so one
+                // key file gives a REST caller and a registering agent the same
+                // tenant. The unset path keeps the single local admin key.
+                let mut entries = vec![entry];
+                if let Some(path) = std::env::var_os("AA_API_KEYS_PATH").filter(|p| !p.is_empty()) {
+                    match ApiKeyStore::load(std::path::Path::new(&path)) {
+                        Ok(store) => entries.extend(store.entries().iter().cloned()),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "AA_API_KEYS_PATH unreadable — only the local admin key is active")
+                        }
+                    }
+                }
+                state.key_store = Arc::new(ApiKeyStore::from_entries(entries));
             }
         }
 
