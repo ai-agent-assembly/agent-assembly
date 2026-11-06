@@ -129,9 +129,12 @@ pub struct AgentRecord {
     /// scope-by-org filtering and by Org-scoped policy evaluation.
     ///
     /// Historically the org tag flowed only through the `metadata.get("org_id")`
-    /// map; promoting it to a first-class field lets the registry maintain a
-    /// secondary index (org_index) and lets the audit pipeline propagate it
-    /// into [`aa_core::Lineage::org_id`] without parsing the metadata BTreeMap.
+    /// map, which is client-controlled; AAASM-6444 resolves the org from the
+    /// authenticated operator key at Register and lineage no longer reads the
+    /// metadata map, so a record that carried only a metadata tag is org-less.
+    /// The first-class field lets the registry maintain a secondary index
+    /// (org_index) and lets the audit pipeline propagate it into
+    /// [`aa_core::Lineage::org_id`].
     pub org_id: Option<String>,
     /// Delegation depth in the agent hierarchy — 0 for root agents.
     pub depth: u32,
