@@ -549,6 +549,8 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             parent_agent_id: echo_parent_agent_id,
             team_id: echo_team_id,
             root_agent_id: echo_root,
+            // Set once Register binds an organization (next commits); absent until then.
+            org_id: None,
         }))
     }
 
