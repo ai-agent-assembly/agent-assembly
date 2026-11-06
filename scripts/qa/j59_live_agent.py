@@ -442,8 +442,8 @@ def check_team_model(ctx: Any, be: Any, cid: str) -> None:
                 problems.append(f"{view}: agent {agent}'s allow entry carries team_id {sorted(map(str, got))}, want {team!r}")
     _row(ctx, cid, problems,
          f"two agents registered by the SDK with team_id {TEAM_A!r} and {TEAM_B!r} appear as two one-agent teams in "
-         "/api/v1/topology/overview and their allow entries carry the matching team_id (deny and approval entries do not "
-         "carry team_id on this build; see observations)", arts, neg)
+         "/api/v1/topology/overview and their allow entries carry the matching team_id (entries from an agent's "
+         "later SDK processes carry none; see the report observations)", arts, neg)
 
 
 def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
