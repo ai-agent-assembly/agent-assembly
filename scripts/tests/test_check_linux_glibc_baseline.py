@@ -21,8 +21,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "release"))
 import check_linux_glibc_baseline as guard  # noqa: E402
 
 
-def make_elf(glibc_syms: dict[str, str], e_type: int = 3) -> bytes:
-    """ELF64 LE image whose only content is a dynamic symbol table versioned
+def make_elf(
+    glibc_syms: dict[str, str],
+    e_type: int = 3,
+    phdr_types: tuple[int, ...] = (),
+    strip_sections: bool = False,
+    drop_verneed: bool = False,
+) -> bytes:
+    """(phdr_types: PT_* values to emit; strip_sections zeroes e_shnum;
+    drop_verneed retypes .gnu.version_r so the tables are absent.)
+    ELF64 LE image whose only content is a dynamic symbol table versioned
     against libc.so.6: {symbol: "GLIBC_x.y"}."""
     versions = sorted(set(glibc_syms.values()))
     dynstr = bytearray(b"\0")
@@ -60,12 +68,17 @@ def make_elf(glibc_syms: dict[str, str], e_type: int = 3) -> bytes:
     sh.append(struct.pack("<IIQQQQIIQQ", 0, guard.SHT_DYNSYM, 2, 0, offs[0], len(dynsym), 2, 1, 8, 24))
     sh.append(struct.pack("<IIQQQQIIQQ", 0, 3, 2, 0, offs[1], len(dynstr), 0, 0, 1, 0))
     sh.append(struct.pack("<IIQQQQIIQQ", 0, guard.SHT_GNU_versym, 2, 0, offs[2], len(versym), 1, 0, 2, 2))
-    sh.append(struct.pack("<IIQQQQIIQQ", 0, guard.SHT_GNU_verneed, 2, 0, offs[3], len(verneed), 2, 1, 8, 0))
+    sh.append(struct.pack("<IIQQQQIIQQ", 0, 1 if drop_verneed else guard.SHT_GNU_verneed, 2, 0, offs[3], len(verneed), 2, 1, 8, 0))
+    phoff = shoff + 64 * len(sh)
+    phdrs = b"".join(struct.pack("<IIQQQQQQ", t, 0, 0, 0, 0, 0, 0, 0) for t in phdr_types)
     ehdr = (
         b"\x7fELF" + bytes([2, 1, 1, 0]) + b"\0" * 8
-        + struct.pack("<HHIQQQIHHHHHH", e_type, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64, len(sh), 0)
+        + struct.pack(
+            "<HHIQQQIHHHHHH", e_type, 62, 1, 0, phoff if phdr_types else 0, shoff, 0, 64,
+            56 if phdr_types else 0, len(phdr_types), 64, 0 if strip_sections else len(sh), 0,
+        )
     )
-    return ehdr + b"".join(blobs) + b"".join(sh)
+    return ehdr + b"".join(blobs) + b"".join(sh) + phdrs
 
 
 class GlibcRequirements(unittest.TestCase):
@@ -120,6 +133,41 @@ class Check(unittest.TestCase):
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
         self.assertEqual(self.run_on(("a.tar.gz", buf.getvalue())), (1, 1))
+
+
+class FailClosed(Check):
+    """A binary the guard cannot read must fail, never count as a clean pass."""
+
+    def test_glibc_private_fails_instead_of_crashing(self) -> None:
+        self.assertEqual(self.run_on(("p", make_elf({"x": "GLIBC_PRIVATE", "y": "GLIBC_2.14"}))), (1, 1))
+
+    def test_stripped_sections_fail(self) -> None:
+        good = make_elf({"x": "GLIBC_2.14"}, phdr_types=(guard.PT_INTERP,))
+        self.assertEqual(self.run_on(("g", good)), (1, 0))
+        stripped = make_elf({"x": "GLIBC_2.14"}, phdr_types=(guard.PT_INTERP,), strip_sections=True)
+        self.assertEqual(self.run_on(("s", stripped)), (1, 1))
+
+    def test_dynamic_without_version_tables_fails(self) -> None:
+        elf = make_elf({"x": "GLIBC_2.14"}, phdr_types=(guard.PT_INTERP, guard.PT_DYNAMIC), drop_verneed=True)
+        self.assertEqual(self.run_on(("d", elf)), (1, 1))
+
+    def test_static_executable_passes_and_is_reported_static(self) -> None:
+        elf = make_elf({}, e_type=2, drop_verneed=True)
+        self.assertTrue(guard.inspect_elf(elf)["static"])
+        self.assertEqual(self.run_on(("st", elf)), (1, 0))
+
+
+class BaselineDrift(unittest.TestCase):
+    """The documented number and the build image must follow the baseline file."""
+
+    root = Path(__file__).resolve().parents[2]
+
+    def test_docs_and_build_image_match_baseline_file(self) -> None:
+        base = guard.read_baseline()
+        for rel in ("README.md", "docs/src/quick-start/requirements.md"):
+            self.assertIn(f"glibc ≥ {base}", (self.root / rel).read_text(), rel)
+        script = (self.root / "scripts/release/build-linux-baseline.sh").read_text()
+        self.assertIn("manylinux_" + base.replace(".", "_") + "@sha256:", script)
 
 
 class Cli(unittest.TestCase):
