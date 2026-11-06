@@ -69,7 +69,7 @@ async fn start_combined_server() -> SocketAddr {
     let engine = Arc::new(PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap());
     let registry = Arc::new(AgentRegistry::new());
 
-    let lifecycle = AgentLifecycleServiceImpl::new(Arc::clone(&registry));
+    let lifecycle = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_org_binder(operator_binder());
     let (audit_tx, _audit_rx) = tokio::sync::mpsc::channel(4096);
     let policy = PolicyServiceImpl::with_registry(
         Arc::clone(&engine),
@@ -86,7 +86,10 @@ async fn start_combined_server() -> SocketAddr {
         let _tmp = tmp;
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(lifecycle))
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                lifecycle,
+                operator_interceptor(),
+            ))
             .add_service(PolicyServiceServer::new(policy))
             .serve_with_incoming(incoming)
             .await
@@ -114,6 +117,49 @@ async fn register_with_challenge(
     req.possession_proof = test_keypair().sign(&challenge.nonce).to_vec();
     req.registration_nonce = challenge.nonce;
     client.register(req).await.unwrap().into_inner().credential_token
+}
+
+// ── Operator org binding (AAASM-6444) ──────────────────────────────────────
+//
+// `Register` no longer admits an `agent_id.org_id` claim without an operator
+// credential. These tests exercise lifecycle behaviour, not the binding itself
+// (see `register_org_binding_test.rs`), so the server runs as an operator-trusted
+// gateway: an unbound admin key is attached to every request by a server-side
+// interceptor and the binder validates it.
+
+fn operator_key() -> &'static (String, aa_auth::api_key::ApiKeyEntry) {
+    static KEY: std::sync::OnceLock<(String, aa_auth::api_key::ApiKeyEntry)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let key = aa_auth::api_key::ApiKey::generate();
+        let entry = aa_auth::api_key::ApiKeyEntry {
+            id: "operator".into(),
+            key_hash: key.hash().unwrap(),
+            scopes: vec![aa_auth::scope::Scope::Admin],
+            created_at: 0,
+            expires_at: None,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(key.lookup()),
+        };
+        (key.as_str().to_owned(), entry)
+    })
+}
+
+fn operator_binder() -> aa_gateway::service::org_binding::OrgBinder {
+    aa_gateway::service::org_binding::OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(vec![
+        operator_key().1.clone(),
+    ])))
+}
+
+fn operator_interceptor() -> impl FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone {
+    |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert(
+            aa_gateway::service::org_binding::REGISTRATION_KEY_METADATA_KEY,
+            operator_key().0.parse().unwrap(),
+        );
+        Ok(req)
+    }
 }
 
 #[tokio::test]

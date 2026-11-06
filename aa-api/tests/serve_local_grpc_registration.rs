@@ -36,6 +36,8 @@ fn sdk_config(agent_id: &str, endpoint: String) -> AssemblyConfig {
                 .to_string_lossy()
                 .into_owned(),
         ),
+        org_id: None,
+        registration_key: None,
     }
 }
 

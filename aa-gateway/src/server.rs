@@ -1047,8 +1047,11 @@ pub async fn serve_tcp(
     let lifecycle_svc = match challenge_store {
         Some(store) => AgentLifecycleServiceImpl::new(registry)
             .with_challenge_store(store)
-            .with_tenancy_mode(tenancy_mode),
-        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
+            .with_tenancy_mode(tenancy_mode)
+            .with_org_binder(crate::auth::registration_org_binder()),
+        None => AgentLifecycleServiceImpl::new(registry)
+            .with_tenancy_mode(tenancy_mode)
+            .with_org_binder(crate::auth::registration_org_binder()),
     };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);
@@ -1281,8 +1284,11 @@ pub async fn serve_uds(
     let lifecycle_svc = match challenge_store {
         Some(store) => AgentLifecycleServiceImpl::new(registry)
             .with_challenge_store(store)
-            .with_tenancy_mode(tenancy_mode),
-        None => AgentLifecycleServiceImpl::new(registry).with_tenancy_mode(tenancy_mode),
+            .with_tenancy_mode(tenancy_mode)
+            .with_org_binder(crate::auth::registration_org_binder()),
+        None => AgentLifecycleServiceImpl::new(registry)
+            .with_tenancy_mode(tenancy_mode)
+            .with_org_binder(crate::auth::registration_org_binder()),
     };
     let approval_svc =
         ApprovalServiceImpl::new_with_escalation(approval_queue, escalation_scheduler).with_db_scheduler(db_scheduler);

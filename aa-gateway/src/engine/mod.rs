@@ -534,10 +534,15 @@ impl PolicyEngine {
         }
         let budget = Arc::new(budget_tracker);
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
-        let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
+        // Seeded with the content just loaded: the watchers react to a change of
+        // this file, never to the slot diverging from it (AAASM-6443 — an
+        // `apply_yaml` swap must outlive the next reconcile tick).
+        let file_baseline = crate::engine::watcher::FileBaseline::seeded(&yaml);
+        let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone(), file_baseline.clone()).ok();
         let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
+            file_baseline,
             crate::engine::watcher::RECONCILE_INTERVAL,
         ));
         Ok(PolicyEngine {
@@ -889,10 +894,15 @@ impl PolicyEngine {
             })
             .unwrap_or_default();
         let policy_arc = Arc::new(ArcSwap::new(Arc::new(output.document)));
-        let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone()).ok();
+        // Seeded with the content just loaded: the watchers react to a change of
+        // this file, never to the slot diverging from it (AAASM-6443 — an
+        // `apply_yaml` swap must outlive the next reconcile tick).
+        let file_baseline = crate::engine::watcher::FileBaseline::seeded(&yaml);
+        let watcher = crate::engine::watcher::start_watcher(path, policy_arc.clone(), file_baseline.clone()).ok();
         let reconciler = Some(crate::engine::watcher::start_reconciler(
             path,
             policy_arc.clone(),
+            file_baseline,
             crate::engine::watcher::RECONCILE_INTERVAL,
         ));
         Ok(PolicyEngine {
@@ -4836,9 +4846,11 @@ mod tests {
         // the *original* `allow: true` content, which matches that stale
         // baseline, so the poll never fires — `slot` stays stuck at
         // `false` forever, independent of how long this waits. See
-        // `start_reconciler`'s doc in `watcher.rs` for the fix (compare
-        // against `slot`, not a private baseline) — restored to the
-        // original *4 (20s) budget now that the real defect is fixed.
+        // `FileBaseline` in `watcher.rs` for the fix (the push path and the
+        // reconciler share one baseline, so the push-applied intermediate
+        // content is recorded and the restoring save counts as a change) —
+        // restored to the original *4 (20s) budget now that the real defect
+        // is fixed.
         rename_save(
             dir.path(),
             &path,
@@ -5138,6 +5150,36 @@ mod tests {
         // History store has the entry
         let list = store.list(10).await.unwrap();
         assert_eq!(list.len(), 1);
+    }
+
+    /// AAASM-6443: wiring check for the real constructor. `load_from_file`
+    /// must seed the watchers' baseline from the content it loaded, so a policy
+    /// applied at runtime outlives the production `RECONCILE_INTERVAL` tick
+    /// while the file is untouched. Waits one interval plus margin because the
+    /// interval is a fixed production constant.
+    #[tokio::test]
+    async fn applied_policy_outlives_the_production_reconcile_interval() {
+        use crate::policy::history::{FsHistoryStore, HistoryConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, "version: \"1\"\ntools:\n  delete_file:\n    allow: true\n").unwrap();
+        let store = FsHistoryStore::new(HistoryConfig {
+            history_dir: dir.path().join("history"),
+            max_versions: 50,
+        });
+        let (alert_tx, _) = tokio::sync::broadcast::channel::<crate::budget::BudgetAlert>(64);
+        let engine = PolicyEngine::load_from_file(&path, alert_tx).unwrap();
+
+        engine
+            .apply_yaml("tools:\n  delete_file:\n    allow: false\n", Some("tester"), &store)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(crate::engine::watcher::RECONCILE_INTERVAL + std::time::Duration::from_millis(1_500)).await;
+        assert!(
+            !engine.policy.load().tools["delete_file"].allow,
+            "the reconciler reverted the applied policy to the watched file's content"
+        );
     }
 
     #[tokio::test]
@@ -6432,6 +6474,31 @@ mod tests {
                 reason: "tool denied by policy".into()
             },
             "registered owner-org deny must apply despite the client-forged org_id"
+        );
+    }
+
+    #[test]
+    fn cascade_ignores_an_org_tag_a_client_put_in_registration_metadata() {
+        // AAASM-6444: `RegisterRequest.metadata` is client text. An org-less agent
+        // that registers with `metadata{org_id: owner-org}` must be org-less to the
+        // cascade, not placed in (or out of) an org by that tag. Only the
+        // binder-validated `AgentRecord.org_id` selects org scope. Here the tag
+        // names the org whose policy denies `bash`; an org-less agent is under the
+        // Global allow-all baseline only.
+        let registry = Arc::new(crate::registry::AgentRegistry::new());
+        let mut record = registry_record([0xbb; 16], "some-team", None);
+        record.metadata.insert("org_id".to_string(), "owner-org".to_string());
+        registry.register(record).expect("register");
+        let (engine, _tmp) = cascade_engine_owner_org_denies_bash();
+        let engine = engine.with_registry(registry);
+
+        let mut ctx = make_ctx();
+        ctx.agent_id = AgentId::from_bytes([0xbb; 16]);
+
+        assert_eq!(
+            engine.evaluate(&ctx, &tool_call("bash", "")).decision,
+            PolicyResult::Allow,
+            "a client-supplied metadata org tag must not select org scope"
         );
     }
 

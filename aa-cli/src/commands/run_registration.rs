@@ -214,6 +214,8 @@ fn sdk_config(agent_id: &str, team_id: Option<&str>, parent_agent_id: Option<&st
         parent_agent_id: parent_agent_id.map(str::to_string),
         sdk_version: None,
         identity_dir: identity_dir_override(),
+        org_id: None,
+        registration_key: None,
     }
 }
 
