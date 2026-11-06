@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -664,7 +663,7 @@ def check_dashboard_operations(ctx: Any, be: Any, cid: str, state: dict[str, Any
             try:
                 result = json.loads(line[len("RESULT "):])
             except ValueError:
-                pass
+                pass  # an unparsable RESULT line leaves result None, which the row reports as a failure below
             break
     problems: list[str] = []
     if result is None:
