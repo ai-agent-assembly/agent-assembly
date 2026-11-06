@@ -181,6 +181,8 @@ on:
       - "scripts/tests/test_j53_candidate_harness.py"
       - "scripts/tests/test_j59_candidate_harness.py"
       - "scripts/tests/test_j08_j56_candidate_harness.py"
+      - "scripts/tests/test_j59_live_agent.py"
+      - "scripts/qa/j59_live_agent.py"
       - "scripts/qa/j08-j56-candidate-harness.py"
       - "scripts/qa/fixtures/j56/**"
       # AAASM-6419: registry-level publication_checks controls. Paired with the
@@ -682,6 +684,8 @@ jobs:
               - 'scripts/tests/test_j53_candidate_harness.py'
               - 'scripts/tests/test_j59_candidate_harness.py'
               - 'scripts/tests/test_j08_j56_candidate_harness.py'
+              - 'scripts/tests/test_j59_live_agent.py'
+              - 'scripts/qa/j59_live_agent.py'
               - 'scripts/qa/j08-j56-candidate-harness.py'
               - 'scripts/qa/fixtures/j56/**'
               - '.github/workflows/ci.yml'
@@ -1751,6 +1755,9 @@ jobs:
 
       - name: Self-test the J08/J56 candidate harness
         run: python3 -I scripts/tests/test_j08_j56_candidate_harness.py
+
+      - name: Self-test the J59 live-agent rows
+        run: python3 -I scripts/tests/test_j59_live_agent.py
 
   community-health-gate:
     needs: [changes]
