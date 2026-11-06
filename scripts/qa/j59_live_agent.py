@@ -296,7 +296,7 @@ def drive_second_agent(ctx: Any, be: Any) -> list[str]:
         if tool == "read_file" and not r.get("executed"):
             problems.append(f"agent B read_file was not allowed: {r.get('error')}")
         if tool != "read_file" and not H._blocked(r):
-            problems.append(f"agent B {tool} was not blocked ({r.get('error')})")
+            problems.append(f"agent B {tool} was not blocked: driver result {json.dumps(r, sort_keys=True)[:240]}")
     return problems
 
 
