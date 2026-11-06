@@ -562,8 +562,12 @@ pub async fn serve_agent_plane_grpc(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tenancy_mode = aa_gateway::service::TenancyMode::from_env();
-    let lifecycle =
-        aa_gateway::service::AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_tenancy_mode(tenancy_mode);
+    let lifecycle = aa_gateway::service::AgentLifecycleServiceImpl::new(Arc::clone(&registry))
+            .with_tenancy_mode(tenancy_mode)
+            // AAASM-6444: without a binder every org claim is refused, so the shipped
+            // single-process server could never register an org-bound agent. The
+            // same `AA_API_KEYS_PATH` file the REST key store merges (state.rs).
+            .with_org_binder(aa_gateway::auth::registration_org_binder());
     let enrich = aa_gateway::iam::enrich_interceptor(Arc::clone(&registry));
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
