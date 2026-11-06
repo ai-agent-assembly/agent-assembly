@@ -19,7 +19,7 @@ use aa_proto::assembly::agent::v1::{
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tonic::transport::Channel;
 
-use crate::config::AssemblyConfig;
+use crate::config::{AssemblyConfig, RegistrationKey};
 use crate::error::SdkClientError;
 use crate::keypair::AgentKeypair;
 
@@ -37,6 +37,9 @@ pub struct GatewayRegistrationClient {
 /// cannot force an unbounded response buffer (AAASM-3996). A `RegisterResponse`
 /// / `ChallengeResponse` is a few hundred bytes, so 4 MiB is comfortably
 /// generous.
+/// gRPC metadata key the gateway reads the operator registration key from.
+const REGISTRATION_KEY_METADATA_KEY: &str = "x-aa-registration-key";
+
 const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 impl GatewayRegistrationClient {
@@ -65,6 +68,28 @@ impl GatewayRegistrationClient {
 
     /// Call `AgentLifecycleService.Register` and return the response.
     pub async fn register(&mut self, request: RegisterRequest) -> Result<RegisterResponse, SdkClientError> {
+        self.register_with_key(request, None).await
+    }
+
+    /// Like [`register`](Self::register), presenting an operator registration
+    /// key in the `x-aa-registration-key` metadata so the gateway can bind the
+    /// agent to the key's organization (AAASM-6444). The key travels in metadata,
+    /// not the body, so it is never part of the signed registration message.
+    pub async fn register_with_key(
+        &mut self,
+        request: RegisterRequest,
+        key: Option<&RegistrationKey>,
+    ) -> Result<RegisterResponse, SdkClientError> {
+        let mut request = tonic::Request::new(request);
+        if let Some(key) = key {
+            let value = key
+                .expose()
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                .map_err(|_| {
+                    SdkClientError::RegisterFailed("registration key is not valid gRPC metadata".to_string())
+                })?;
+            request.metadata_mut().insert(REGISTRATION_KEY_METADATA_KEY, value);
+        }
         let resp = self
             .client
             .register(request)
@@ -95,7 +120,8 @@ impl GatewayRegistrationClient {
 }
 
 /// The `ProtoAgentId` triple this config's durable identity registers as:
-/// `org_id` (currently always empty — `AssemblyConfig` has no org concept),
+/// `org_id` (the configured *claim*, empty when none — the gateway decides the
+/// authoritative org from the registration key, AAASM-6444),
 /// `team_id` from config, and the `did:key` derived from the durable keypair.
 ///
 /// Shared by [`build_challenge_request`] and [`build_register_request`] so the
@@ -109,7 +135,7 @@ impl GatewayRegistrationClient {
 /// the registered record even after AAASM-5835 corrected `agent_id` alone.
 pub(crate) fn registered_identity(config: &AssemblyConfig, keypair: &AgentKeypair) -> ProtoAgentId {
     ProtoAgentId {
-        org_id: String::new(),
+        org_id: config.org_id.clone().unwrap_or_default(),
         team_id: config.team_id.clone().unwrap_or_default(),
         agent_id: keypair.did_key(),
     }
