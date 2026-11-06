@@ -24,8 +24,18 @@ yanked = "deny"
 # Audited exception list. MUST stay empty unless a security reviewer signs off:
 # every entry here suppresses a real advisory, so adding one requires the
 # devtool/deny.toml CODEOWNERS security reviewer (see .github/CODEOWNERS).
-# Format: advisory IDs ("RUSTSEC-YYYY-NNNN") or "crate@version".
-ignore = []
+# Format: advisory IDs ("RUSTSEC-YYYY-NNNN") or "crate@version". An exception must be a
+# table whose reason carries `expires: YYYY-MM-DD`; scripts/ci/check_deny_exception_expiry.py
+# fails CI from that date on, so an exception cannot become open-ended.
+ignore = [
+    # RUSTSEC-2026-0440 -- `astral-tokio-tar` is UNMAINTAINED (informational notice, not a
+    # vulnerability, not unsound) and no upgrade exists: testcontainers 0.27.3 and 0.28.0 both
+    # require ^0.6.1. It is reachable only through the dev-dependency chain testcontainers ->
+    # testcontainers-modules (container-backed tests); `cargo tree --workspace --all-features
+    # --target all -e normal,build -i astral-tokio-tar` matches nothing, so no shipped target
+    # links it. Owner-authorized 2026-11-06 (AAASM-6441); removal tracked in AAASM-6442.
+    { id = "RUSTSEC-2026-0440", reason = "unmaintained notice; test-only dependency chain; expires: 2026-12-15 (AAASM-6442)" },
+]
 
 [licenses]
 # Minimum confidence for inferring license text (0.0–1.0)
