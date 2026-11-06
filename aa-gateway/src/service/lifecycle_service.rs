@@ -258,6 +258,31 @@ fn verify_possession_proof(
     Ok(())
 }
 
+/// Answer a `Register` for an agent that is already in the registry
+/// (AAASM-6447), once the caller has proven possession of its key.
+///
+/// The record keeps its original attribution (team, org, lineage) and its
+/// credential token, so every process of one agent shares one identity and one
+/// `agent_id` in the audit trail. A `public_key` that differs from the stored one
+/// cannot happen under the did:key binding; it is refused rather than overwritten
+/// so a registration can never replace the key an agent is known by.
+fn rebind_existing(existing: &AgentRecord, public_key: &str) -> Result<Response<RegisterResponse>, Status> {
+    if existing.public_key != public_key {
+        return Err(Status::already_exists(
+            "agent already registered under a different public key",
+        ));
+    }
+    tracing::info!(agent = ?existing.name, "agent re-registered: re-bound to its existing identity");
+    Ok(Response::new(RegisterResponse {
+        credential_token: existing.credential_token.clone(),
+        assigned_policy: String::new(),
+        heartbeat_interval_sec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
+        parent_agent_id: existing.parent_agent_id.clone(),
+        team_id: existing.team_id.clone(),
+        root_agent_id: existing.root_agent_id.map(|b| b.to_vec()),
+    }))
+}
+
 /// gRPC service implementation wiring `Register` / `Heartbeat` / `Deregister` /
 /// `ControlStream` to the in-memory [`AgentRegistry`].
 pub struct AgentLifecycleServiceImpl {
@@ -456,6 +481,19 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         verify_possession_proof(&verifying_key, &req.registration_nonce, &req.possession_proof)?;
 
         let agent_key = proto_agent_id_to_key(proto_id);
+
+        // AAASM-6447: a later process of an agent that is already registered
+        // re-binds to the same identity instead of being refused. Reaching this
+        // line means the caller just signed a fresh server-issued nonce with the
+        // private half of `public_key`, and `enforce_did_key_binding` tied that
+        // key to the `agent_id` did:key — so it is the same principal, not
+        // someone who merely knows the id. The registry key also hashes
+        // `org_id/team_id`, so a different org or team can never land on this
+        // record: it is a different agent and registers on its own.
+        if let Some(existing) = self.registry.get(&agent_key) {
+            return rebind_existing(&existing, &req.public_key);
+        }
+
         let credential_token = generate_credential_token();
         let now = Utc::now();
 
@@ -530,12 +568,21 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             org_id: echo_org_id,
         };
 
-        self.registry.register_persisted(record).await.map_err(|e| match e {
-            RegistryError::AlreadyRegistered(_) => Status::already_exists(e.to_string()),
-            RegistryError::Lineage(LineageError::CircularDelegation { .. })
-            | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. }) => Status::invalid_argument(e.to_string()),
-            _ => Status::internal(e.to_string()),
-        })?;
+        let public_key = record.public_key.clone();
+        match self.registry.register_persisted(record).await {
+            Ok(()) => {}
+            // Lost the race against a concurrent registration of the same agent
+            // (two SDK processes starting together): re-bind to the winner.
+            Err(RegistryError::AlreadyRegistered(_)) => match self.registry.get(&agent_key) {
+                Some(existing) => return rebind_existing(&existing, &public_key),
+                None => return Err(Status::already_exists("agent already registered")),
+            },
+            Err(
+                e @ (RegistryError::Lineage(LineageError::CircularDelegation { .. })
+                | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. })),
+            ) => return Err(Status::invalid_argument(e.to_string())),
+            Err(e) => return Err(Status::internal(e.to_string())),
+        }
 
         tracing::info!(agent_id = ?proto_id.agent_id, "agent registered");
 
