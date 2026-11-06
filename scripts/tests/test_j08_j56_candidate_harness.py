@@ -62,6 +62,7 @@ class FakeBackend(H.Backend):
         self.install_cmds: list[object] = []
         self.pending: list[dict[str, str]] = []
         self.reverted = False
+        self.dead = False
 
     def version_of(self, name):
         return 0, f"{name} {'0.0.1-rc.7' if self.mode == 'wrong_version' else self.version}\n"
@@ -102,6 +103,8 @@ class FakeBackend(H.Backend):
         self.waited = seconds  # never really sleeps in tests
         if self.mode == "policy_reverts":
             self.reverted = True  # the reconciler put the bootstrap policy back
+        if self.mode == "stack_dies_during_wait":
+            self.dead = True  # the SDK fails closed: every call now raises a typed error and nothing is audited
 
     def stop(self):
         pass
@@ -113,6 +116,8 @@ class FakeBackend(H.Backend):
             good = kw.get("key") == self.good_key
             return {"registered": good or self.mode == "wrong_key_registers", "agent": self.agent}
         tool, s, unwired = kw["tool"], Path(kw["sentinel"]), kw.get("unwired", False)
+        if self.dead and not unwired:
+            return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
         if unwired:
             if self.mode == "unwired_still_blocked":
                 return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
@@ -479,6 +484,15 @@ class NegativeControlTests(unittest.TestCase):
         rep = self.check("policy_reverts", "j56-c-applied-policy-stays-enforced")
         detail = next(c["detail"] for c in rep["candidate_checks"] if c["id"] == "j56-c-applied-policy-stays-enforced")
         self.assertIn("ran 15s later", detail)
+
+    def test_a_stack_that_dies_during_the_wait_does_not_pass_durability(self):
+        rep = self.check("stack_dies_during_wait", "j56-c-applied-policy-stays-enforced")
+        detail = next(c["detail"] for c in rep["candidate_checks"] if c["id"] == "j56-c-applied-policy-stays-enforced")
+        self.assertIn("no new delete_file deny", detail)
+
+    def test_durable_row_is_not_covered_when_the_first_deny_never_happened(self):
+        _, rep = Fixture(self, mode="delete_allowed").run()
+        self.assertEqual(st(rep, "j56-c-applied-policy-stays-enforced"), "NOT_COVERED")
 
     def test_durability_waits_the_documented_interval_before_re_driving(self):
         fx = Fixture(self)

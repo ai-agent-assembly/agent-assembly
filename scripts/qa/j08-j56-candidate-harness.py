@@ -459,6 +459,7 @@ def check_durable(ctx: c.Context, be: Backend, cid: str, denied_before: bool) ->
     if not denied_before:
         ctx.add(cid, c.NOT_COVERED, "real_local_process", "delete_file was not denied at first, so its durability cannot be shown", arts, neg)
         return
+    denies_before = _audit_count(be, "delete_file", r"den(y|ied)|block")
     be.wait(DURABLE_WAIT_S)
     r, s, before = _drive(ctx, be, "delete_file", "durable")
     p = []
@@ -466,8 +467,30 @@ def check_durable(ctx: c.Context, be: Backend, cid: str, denied_before: bool) ->
         p.append(f"delete_file was denied right after `policy apply` but ran {DURABLE_WAIT_S}s later (executed={r.get('executed')}, error={r.get('error')!r})")
     if not s.exists() or s.read_text() != before:
         p.append("the delete_file side effect occurred after the wait: the applied policy no longer governs the gateway")
-    _res(ctx, cid, p, f"delete_file is still denied with a typed error and no side effect {DURABLE_WAIT_S}s after the policy was applied",
+    # The SDK fails closed, so a runtime or gateway that died during the wait also yields a typed error and an
+    # untouched sentinel. Two further observations separate "policy still enforced" from "stack is gone": the
+    # audit chain must have recorded one more delete_file deny after the wait, and the ALLOWed tool must still run
+    # (which also catches a lapse to a deny-everything policy).
+    denies_after = _audit_count(be, "delete_file", r"den(y|ied)|block")
+    if denies_before is None or denies_after is None or denies_after <= denies_before:
+        p.append("the audit chain recorded no new delete_file deny after the wait, so the typed error is not shown to come from the applied policy")
+    a, as_, _ = _drive(ctx, be, "read_file", "durable-allow")
+    if not (a.get("executed") and as_.exists()):
+        p.append(f"read_file, which the policy ALLOWs, did not run after the wait ({a.get('error')!r}): the stack is not enforcing the applied policy")
+    _res(ctx, cid, p, f"{DURABLE_WAIT_S}s after the policy was applied delete_file is still denied (typed error, no side effect, a new audit deny) and read_file still runs",
          arts, neg)
+
+
+def _audit_count(be: Backend, tool: str, verdict_rx: str) -> int | None:
+    rc, out = be.audit(getattr(be, "agent", ""))
+    try:
+        data = json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+    entries = data.get("entries", data) if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return None
+    return sum(1 for e in entries if tool in json.dumps(e).lower() and re.search(verdict_rx, json.dumps(e).lower()))
 
 
 def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
