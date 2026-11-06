@@ -10,6 +10,7 @@ helpers rather than a second copy of the stack-start logic:
   j59-s3-tenancy-team-model               team model carried by the SDK path (topology teams, audit team_id)
   j59-s3-org-scoped-audit-filter          the documented org tier: ?org_id= isolates one org's events
   j59-s12-core-value-no-agent-change      same unchanged agent: allowed under v1, denied under v2, audit records both
+  j59-s9-applied-policy-stays-enforced    a policy applied with `aasm policy apply` is still enforced 12s later
   j59-s6-dashboard-operations             Playwright drives the real dashboard (login, agents, audit, approvals)
 
 Two agents run as the same unchanged program (`fixtures/j59/sdk_agent.py`) under different agent ids and
@@ -130,14 +131,36 @@ def make_backend_class() -> type:
                         break
             return {"error": "driver-no-result", "detail": f"exit {rc}: {out.strip()[-200:]}"}
 
+        def _start_runtime(self) -> tuple[bool, str]:
+            """J56 reports the runtime up as soon as its IPC socket file exists, but the runtime binds that socket
+            before it has connected its gateway client. An SDK that connects in that window finds no runtime, and
+            without `enforce` it silently runs the tool ungoverned (seen on the candidate: delete_file executed).
+            The runtime's health listener is bound after the gateway client and the pipeline, so wait for it."""
+            ports: list[int] = []
+            real = c.free_port
+
+            def spy() -> int:
+                ports.append(real())
+                return ports[-1]
+
+            c.free_port = spy
+            try:
+                ok, why = super()._start_runtime()
+            finally:
+                c.free_port = real
+            if ok and ports and not c.wait_port(ports[-1], 30):
+                return False, "aa-runtime bound its IPC socket but its health listener never came up"
+            return ok, why
+
         def audit(self, agent: str) -> tuple[int, str]:  # noqa: ARG002  # see class docstring
             return self._cli("audit", "export", "--format", "json")
 
         def add_agent(self, name: str, team: str | None, org: str | None = None) -> tuple[bool, str]:
             """A second per-agent runtime (the SDK dials /tmp/aa-runtime-<agent>.sock) on the same gateway."""
             sock = Path(f"/tmp/aa-runtime-{name}.sock")
+            health = c.free_port()
             env = {**self.env, "AA_AGENT_ID": name, "AA_POLICY_PATH": "", "RUST_LOG": "warn",
-                   "AA_GATEWAY_ENDPOINT": f"http://127.0.0.1:{H.GRPC_PORT}", "AA_METRICS_ADDR": f"127.0.0.1:{c.free_port()}",
+                   "AA_GATEWAY_ENDPOINT": f"http://127.0.0.1:{H.GRPC_PORT}", "AA_METRICS_ADDR": f"127.0.0.1:{health}",
                    "AA_AUDIT_BUFFER_PATH": str(self.home / f"audit-{name}.db")}
             if team:
                 env["AA_AGENT_TEAM_ID"] = team
@@ -153,7 +176,10 @@ def make_backend_class() -> type:
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
                 if sock.exists():
-                    return True, "aa-runtime is listening"
+                    # ready only once the health listener is up (after the gateway client); see _start_runtime
+                    if c.wait_port(health, 30):
+                        return True, "aa-runtime is listening"
+                    return False, f"aa-runtime for {name} bound {sock} but its health listener never came up"
                 if p.poll() is not None:
                     return False, f"aa-runtime for {name} exited {p.returncode} before binding {sock}"
                 time.sleep(0.2)
@@ -172,6 +198,24 @@ def make_backend_class() -> type:
 
         def policy_get(self) -> tuple[int, str]:
             return self._cli("policy", "get")
+
+        def start(self, policy: Path) -> tuple[bool, str]:
+            """The gateway re-reads its policy *file* every 5s and swaps it over whatever `aasm policy apply` installed
+            (see check_policy_durability), so a run that relies on an applied policy is governed only by timing luck.
+            The live rows therefore start the gateway with `$AA_POLICY` pointing at the golden-path file (the operator's
+            durable route) and still apply the same policy through the CLI, as the J59 contract says."""
+            self.policy_file = self.ctx.tmp / "policy-source" / "golden-path.yaml"
+            self.policy_file.parent.mkdir(exist_ok=True)
+            self.policy_file.write_text(policy.read_text())
+            self.env["AA_POLICY"] = str(self.policy_file)
+            return super().start(policy)
+
+        def set_policy_source(self, policy: Path) -> None:
+            """Change the policy through the file the gateway watches: the route that stays enforced."""
+            self.policy_file.write_text(policy.read_text())
+
+        def wait(self, seconds: float) -> None:
+            time.sleep(seconds)
 
         def stop(self) -> None:
             super().stop()
@@ -461,9 +505,18 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
     _row(ctx, cid, problems, "agents registered under two orgs: ?org_id= returns only each org's events", arts, neg)
 
 
-def check_core_value(ctx: Any, be: Any, cid: str, v2: Path, driver_digest: Callable[[], str], bound_digest: str | None) -> None:
+def _blocked_now(be: Any, ctx: Any, tag: str) -> tuple[bool, dict[str, Any]]:
+    H = load_j56()
+    r, _, _ = H._drive(ctx, be, "read_file", tag)
+    return H._blocked(r), r
+
+
+def check_core_value(ctx: Any, be: Any, cid: str, v2: Path, driver_digest: Callable[[], str], bound_digest: str | None,
+                     settle_seconds: float = 20.0) -> None:
     """Step 12: the same unmodified agent, the same call; allowed under policy v1, denied under v2; the audit chain
-    records both decisions, and the denial is explained (typed error text and an audit reason)."""
+    records both decisions, and the denial is explained (typed error text and an audit reason). The change is made
+    through the policy file the gateway watches, because that is the only route that stays enforced (see
+    check_policy_durability); the harness polls until the gateway has picked it up (<= 5s reconcile interval)."""
     H = load_j56()
     neg = _tn("test_s12_policy_change_ignored_fails")
     arts = list(H.BINARIES_ART) + [WHEEL, "golden-path.v1.yaml", "golden-path.v2-tightened.yaml", "sdk_agent.py"]
@@ -475,48 +528,80 @@ def check_core_value(ctx: Any, be: Any, cid: str, v2: Path, driver_digest: Calla
     if not r1.get("executed"):
         ctx.add(cid, c.FAIL, "real_local_process", f"read_file was not allowed under the first policy, so no change can be shown ({r1.get('error')})", arts, neg)
         return
-    ids, _ = registered_ids(be)
-    views1, _ = _fetch_both(be)
-
-    def reads(views: dict[str, list[dict[str, Any]]], verdict: str, decision: int) -> int:
-        return max((len(find_event([e for e in v if belongs(e, be.agent, ids.get(be.agent))],
-                                   "ToolCallIntercepted" if verdict == "allow" else "PolicyViolation", "read_file", verdict, decision))
-                    for v in views.values()), default=0)
-
-    allows_before = reads(views1, "allow", 1)
-    rc, out = be.apply_policy(v2)
-    if rc != 0:
-        ctx.add(cid, c.FAIL, "real_local_process", f"applying the tightened policy exited {rc}: {out.strip()[:160]}", arts, neg)
-        return
-    rc, got = be.policy_get()
-    if 'version: "1.1.0"' not in got:
-        problems.append("`aasm policy get` does not show the tightened policy 1.1.0 after apply")
-    r2, _, _ = H._drive(ctx, be, "read_file", "s12-v2")
-    if not H._blocked(r2):
-        problems.append(f"the same read_file call was not blocked under the tightened policy (executed={r2.get('executed')}, error={r2.get('error')!r})")
-    elif not r2.get("message"):
+    be.set_policy_source(v2)
+    waited, last = 0.0, {}
+    blocked = False
+    while True:
+        blocked, last = _blocked_now(be, ctx, f"s12-v2-{int(waited)}")
+        if blocked or waited >= settle_seconds:
+            break
+        be.wait(1.0)
+        waited += 1.0
+    if not blocked:
+        problems.append(f"the same read_file call was still allowed {int(waited)}s after the policy file changed to the tightened policy "
+                        f"(executed={last.get('executed')}, error={last.get('error')!r})")
+    elif not last.get("message"):
         problems.append("the typed error carries no explanation")
-    views2, vp = _fetch_both(be)
+    ids, _ = registered_ids(be)
+    views, vp = _fetch_both(be)
     problems += vp
-    for view, entries in views2.items():
+    for view, entries in views.items():
         own = [e for e in entries if belongs(e, be.agent, ids.get(be.agent))]
         allows = find_event(own, "ToolCallIntercepted", "read_file", "allow", 1)
         denies = find_event(own, "PolicyViolation", "read_file", "deny", 2)
-        if len(allows) != allows_before:
-            problems.append(f"{view}: read_file allow entries went {allows_before} -> {len(allows)}; the denied call must not look allowed")
+        if not allows:
+            problems.append(f"{view}: no read_file allow entry for the agent before the policy change")
         if not denies:
             problems.append(f"{view}: no read_file deny entry for the agent after the policy change")
         else:
             if not denies[0]["payload"].get("reason"):
                 problems.append(f"{view}: the read_file deny entry carries no reason, so the change is not explained")
-            if allows and denies and not max(a["seq"] for a in allows) < min(d["seq"] for d in denies):
-                problems.append(f"{view}: the read_file allow entries do not precede the deny entry")
+            if allows and not max(a["seq"] for a in allows) < min(d["seq"] for d in denies):
+                problems.append(f"{view}: a read_file allow entry follows the first deny, so the change did not hold")
     if driver_digest() != before_digest:
         problems.append("the agent program changed during the run")
     _row(ctx, cid, problems,
-         f"the same unchanged agent program (sha256 {before_digest[7:19]}) ran read_file: allowed under policy 1.0.0, then "
-         "denied under 1.1.0 with a typed error and an explained PolicyViolation entry; the audit chain holds the allow "
-         "before the deny, and nothing but the applied policy changed", arts, neg)
+         f"the same unchanged agent program (sha256 {before_digest[7:19]}) ran read_file: allowed under policy 1.0.0, then, "
+         f"once the watched policy file carried 1.1.0 ({int(waited)}s later), denied with a typed error and an explained "
+         "PolicyViolation entry; the audit chain holds the allows before the deny, and nothing but the policy changed", arts, neg)
+
+
+def check_policy_durability(ctx: Any, be: Any, cid: str, other: Path, hold_seconds: float = 12.0) -> None:
+    """Step 8/9: a policy applied with `aasm policy apply` must stay enforced. On the candidate the gateway swaps the
+    watched policy file back over it within 5s while `aasm policy get` keeps reporting the applied version, so this
+    check is expected to FAIL there. `other` must change the agent's read_file outcome relative to the watched file."""
+    H = load_j56()
+    neg = _tn("test_s9_applied_policy_reverting_fails")
+    arts = list(H.BINARIES_ART) + [WHEEL, "golden-path.v1.yaml", "sdk_agent.py"]
+    if not _blocked_now(be, ctx, "dur-0")[0]:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", "read_file is not blocked under the watched policy, so an applied policy that allows it cannot be told apart", arts, neg)
+        return
+    effective = False
+    for attempt in range(3):  # a reconcile tick can land between the apply and the call; retry rather than blame the product
+        rc, out = be.apply_policy(other)
+        if rc != 0:
+            ctx.add(cid, c.FAIL, "real_local_process", f"`aasm policy apply` exited {rc}: {out.strip()[:160]}", arts, neg)
+            return
+        if not _blocked_now(be, ctx, f"dur-a{attempt}")[0]:
+            effective = True
+            break
+        be.wait(1.0)
+    if not effective:
+        ctx.add(cid, c.FAIL, "real_local_process", "the applied policy never changed read_file's outcome, even immediately after `aasm policy apply` (3 attempts)", arts, neg)
+        return
+    be.wait(hold_seconds)
+    blocked_after, last = _blocked_now(be, ctx, "dur-hold")
+    rc, got = be.policy_get()
+    still_reported = "golden-path" in got
+    problems = []
+    if blocked_after:
+        problems.append(f"the applied policy took effect and then stopped being enforced: {int(hold_seconds)}s after `aasm policy apply` read_file "
+                        f"was blocked again by the previous policy while `aasm policy get` "
+                        f"{'still reports golden-path' if still_reported else 'output changed'} (silent revert; the gateway re-reads its policy file every 5s "
+                        "and swaps it over the applied policy, aa-gateway/src/engine/watcher.rs reconcile_file_tick). Decision needed: make `policy apply` "
+                        "durable (write the file source or suspend the reconciler) or document apply as non-durable")
+    _row(ctx, cid, problems,
+         f"a policy applied with `aasm policy apply` was still enforced {int(hold_seconds)}s later", arts, neg)
 
 
 def check_dashboard_operations(ctx: Any, be: Any, cid: str, state: dict[str, Any], node: Path | None,
@@ -643,4 +728,6 @@ def run_live(ctx: Any, be: Any, repo: Path, inputs: dict[str, Any]) -> None:
     else:
         ctx.add("j59-s6-dashboard-operations", c.NOT_COVERED, "real_local_process", "no audit state was captured, so the dashboard has nothing to be compared with", [], _tn("test_s6_ui_claims_without_server_effect_fails"))
     driver = be.driver
-    check_core_value(ctx, be, "j59-s12-core-value-no-agent-change", v2, lambda: c.sha256_file(driver), ctx.artifacts.get("sdk_agent.py"))
+    check_core_value(ctx, be, "j59-s12-core-value-no-agent-change", v2, lambda: c.sha256_file(driver), ctx.artifacts.get("sdk_agent.py"),
+                     inputs.get("settle_seconds", 20.0))
+    check_policy_durability(ctx, be, "j59-s9-applied-policy-stays-enforced", repo / FIX / "golden-path.v1.yaml", inputs.get("hold_seconds", 12.0))
