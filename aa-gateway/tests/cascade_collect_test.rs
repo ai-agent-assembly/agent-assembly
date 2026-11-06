@@ -47,10 +47,8 @@ fn doc_for_scope(scope: PolicyScope) -> PolicyDocument {
 }
 
 fn register_agent(registry: &AgentRegistry, agent_id: AgentId, org_id: Option<&str>, team_id: Option<&str>) {
+    // Org scope is the first-class `record.org_id` below (AAASM-6444), not a metadata tag.
     let mut metadata = BTreeMap::new();
-    if let Some(org) = org_id {
-        // org scope is the first-class record.org_id (AAASM-6444), not a metadata tag.
-    }
     if let Some(team) = team_id {
         metadata.insert("team_id".to_string(), team.to_string());
     }

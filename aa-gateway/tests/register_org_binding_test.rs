@@ -84,6 +84,8 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
             acme,
             globex,
             unbound_plain,
+            admin_unbound,
+            revoked,
         },
     )
 }

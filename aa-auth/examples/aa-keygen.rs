@@ -64,7 +64,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
 
     let key = ApiKey::generate();
     let entry = ApiKeyEntry {
-        id: format!("keygen-{}", &key.lookup()),
+        id: format!("keygen-{}", key.lookup()),
         key_hash: key.hash().map_err(|e| e.to_string())?,
         scopes,
         created_at: std::time::SystemTime::now()
