@@ -6,6 +6,9 @@
 //! raw key to a separate owner-only file. The raw key is never printed, so it
 //! does not land in a terminal, log or transcript.
 //!
+//! The gateway reads the key file once at boot: a key added here, or revoked by
+//! removing its entry, takes effect after the gateway restarts.
+//!
 //! ```text
 //! aa-keygen --keys-file keys.json --key-out acme.key --org acme [--team t] [--scope read|write|admin]...
 //! ```
@@ -45,6 +48,16 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     let keys_file = keys_file.ok_or("--keys-file is required")?;
     let key_out = key_out.ok_or("--key-out is required")?;
+    // An empty org (or team) serialises as an empty string, which the gateway reads as
+    // "bound to nothing": the key would be an unbound key the operator thinks is bound.
+    if org.as_deref().is_some_and(str::is_empty) || team.as_deref().is_some_and(str::is_empty) {
+        return Err("--org and --team must not be empty; omit the flag for an unbound key".into());
+    }
+    if std::path::Path::new(&key_out).exists() {
+        return Err(format!(
+            "{key_out} already exists; refusing to overwrite a raw key file"
+        ));
+    }
     if scopes.is_empty() {
         scopes.push(Scope::Read);
     }
@@ -72,6 +85,18 @@ fn run(args: Vec<String>) -> Result<(), String> {
     };
     entries.push(entry);
 
+    // The key file is replaced atomically (temp file in the same directory, then rename)
+    // so a crash never leaves a truncated key store, and the raw key file is created only
+    // after that succeeded, so a failed write leaves neither an entry nor an orphan key.
+    let keys_path = std::path::Path::new(&keys_file);
+    let tmp = keys_path.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, keys_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{keys_file}: {e}")
+    })?;
+
     let mut out = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -79,10 +104,5 @@ fn run(args: Vec<String>) -> Result<(), String> {
         .open(&key_out)
         .map_err(|e| format!("{key_out}: {e}"))?;
     out.write_all(key.as_str().as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::write(
-        &keys_file,
-        serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| format!("{keys_file}: {e}"))?;
     Ok(())
 }
