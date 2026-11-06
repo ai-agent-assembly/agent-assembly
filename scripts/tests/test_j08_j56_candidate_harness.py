@@ -84,7 +84,9 @@ class FakeBackend(H.Backend):
     def audit(self, agent):
         if self.mode == "audit_fail":
             return 1, "boom"
-        entries = [{"tool": t, "result": r} for t, r in self.log if not (self.mode == "audit_no_deny" and r == "deny")]
+        entries = [{"tool": t, "result": r} for t, r in self.log
+                   if not (self.mode == "audit_no_deny" and r == "deny")
+                   and not (self.mode == "flip_no_audit" and (t, r) == ("read_file", "deny"))]
         return 0, json.dumps({"entries": entries})
 
     def approvals(self, *args):
@@ -93,7 +95,7 @@ class FakeBackend(H.Backend):
         if self.mode == "approve_fails":
             return 1, "approval service unavailable"
         self.pending = [x for x in self.pending if x["id"] != args[1]]
-        return 0, f"Approved: {args[1]} (status: approved)\n"
+        return 0, f"Approved: {args[1]}\n" if self.mode == "approve_no_status" else f"Approved: {args[1]} (status: approved)\n"
 
     def stop(self):
         pass
@@ -208,11 +210,11 @@ class Fixture:
              "--obligation-fragment", str(self.frag)]
         return a + (["--expected-digests", str(self.digests)] if digests else [])
 
-    def run(self, digests=True, sdk_sha="b" * 40):
+    def run(self, digests=True, sdk_sha="b" * 40, factory_version=VERSION):
         self.backend = None
 
         def factory(ctx, bins, wheel, driver):
-            self.backend = FakeBackend(self.mode, ctx)
+            self.backend = FakeBackend(self.mode, ctx, factory_version)
             return self.backend
 
         rc = H.run_harness(self.argv(digests, sdk_sha), factory)
@@ -348,6 +350,10 @@ class StaticReadmeTests(unittest.TestCase):
         self.assertEqual(st(rep, "j08-c-readme-snippet-matches-wiring"), "FAIL")
         self.assertEqual(rep["verdict"], "BLOCK")
 
+    def test_hook_name_only_in_a_comment_does_not_count(self):
+        _, rep = Fixture(self, journey="J08", wheel_code="x = 1\n# register_configure_hook is not called here\n").run()
+        self.assertEqual(st(rep, "j08-c-readme-snippet-matches-wiring"), "FAIL")
+
     def test_claim_with_a_hook_passes(self):
         _, rep = Fixture(self, journey="J08").run()
         self.assertEqual(st(rep, "j08-c-readme-snippet-matches-wiring"), "PASS")
@@ -421,6 +427,16 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_audit_without_approval_requested_fails(self):
         self.check("audit_no_approval", "j56-c-send-email-approval-or-gap")
+
+    def test_approval_output_without_an_approved_status_fails(self):
+        self.check("approve_no_status", "j56-c-send-email-approval-or-gap")
+
+    def test_flip_without_a_read_file_deny_in_the_audit_chain_fails(self):
+        self.check("flip_no_audit", "j56-c-policy-flip-changes-behavior")
+
+    def test_a_version_that_only_contains_the_expected_one_fails(self):
+        _, rep = Fixture(self, mode="good").run(factory_version=VERSION + "0")
+        self.assertEqual(st(rep, "j56-c-binary-identity"), "FAIL")
 
     def test_audit_without_the_deny_fails(self):
         self.check("audit_no_deny", "j56-c-audit-correlation")
@@ -508,6 +524,18 @@ class FrameworkMatrixTests(unittest.TestCase):
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("resolution failed", row["detail"])
         self.assertEqual(rep["verdict"], "BLOCK")
+
+    def test_manifest_framework_id_with_path_traversal_fails(self):
+        fx = MatrixFixture(self)
+        m = fx.sdk / "quickstart_snippets/manifest.json"
+        m.write_text(json.dumps({"frameworks": [{"framework_id": "../escape", "source_example": "python/x/src/main.py"}]}))
+        subprocess.run(["git", "-C", str(fx.sdk), "commit", "-qam", "bad id"], check=True,
+                       env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+                            "GIT_COMMITTER_EMAIL": "t@t", "PATH": "/usr/bin:/bin"})
+        sha = subprocess.run(["git", "-C", str(fx.sdk), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        _, rep = fx.run(sdk_sha=sha)
+        self.assertEqual(st(rep, "j08-c-manifest-framework-ids"), "FAIL")
+        self.assertFalse(any("escape" in c["id"] for c in rep["candidate_checks"]))
 
     def test_skipped_test_fails_never_passes(self):
         self.assertEqual(st(self.fw("fw_skipped"), "j08-c-fw-alpha-tool-policy-allow-deny"), "FAIL")

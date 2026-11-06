@@ -60,6 +60,7 @@ TEST = "scripts/tests/test_j08_j56_candidate_harness.py"
 # clean venv of the LangChain quick start must carry the full package, not only langchain-core. The core bound mirrors
 # the SDK's own `langchain-test` dependency group.
 README_PACKAGES = ("langchain", "langchain-classic", "langchain-community")  # the README's own install line
+GRPC_PORT = 50051  # the gateway default the SDK and runtime resolve; not configurable per run
 LANGCHAIN_REQUIREMENT = ("langchain", "langchain-core>=1.4.9,<1.7.0")
 FIX = "scripts/qa/fixtures/j56"
 SOURCES = {
@@ -195,6 +196,10 @@ class LocalBackend(Backend):
                          self.ctx.tmp, 300)
 
     def start(self, policy: Path) -> tuple[bool, str]:
+        if c.wait_port(GRPC_PORT, 0.5):
+            # The runtime dials the gateway's gRPC port, which is fixed; a listener there that is not this run's
+            # gateway would be driven in its place and the results would describe a different stack.
+            return False, f"127.0.0.1:{GRPC_PORT} is already in use by another process; refusing to run against it"
         rc, out = self._cli("start", "--host", "127.0.0.1", "--port", str(self.port), timeout=90)
         self.started = rc == 0
         if rc != 0:
@@ -210,9 +215,12 @@ class LocalBackend(Backend):
         the contract the SDK connects to; the agent id is unique per run so nothing else can collide."""
         self.sock = Path(f"/tmp/aa-runtime-{self.agent}.sock")
         env = {**self.env, "AA_AGENT_ID": self.agent, "AA_POLICY_PATH": "", "RUST_LOG": "warn",
-               "AA_GATEWAY_ENDPOINT": "http://127.0.0.1:50051", "AA_METRICS_ADDR": f"127.0.0.1:{c.free_port()}",
+               "AA_GATEWAY_ENDPOINT": f"http://127.0.0.1:{GRPC_PORT}", "AA_METRICS_ADDR": f"127.0.0.1:{c.free_port()}",
                "AA_AUDIT_BUFFER_PATH": str(self.home / "audit-buffer.db")}
-        self.runtime = self.ctx.spawn([str(self.bindir / "aa-runtime")], env, self.ctx.tmp)
+        self.runtime_log = (self.ctx.tmp / "aa-runtime.log").open("wb")  # never a pipe: an undrained pipe stalls the runtime
+        self.runtime = subprocess.Popen([str(self.bindir / "aa-runtime")], env=env, cwd=self.ctx.tmp, stdout=self.runtime_log,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+        self.ctx._children.append(self.runtime)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self.sock.exists():
@@ -315,6 +323,7 @@ class LocalBackend(Backend):
             c.terminate_group(self.runtime)  # the socket is removed by the runtime on a clean exit; make sure it is gone
         if getattr(self, "sock", None) is not None:
             self.sock.unlink(missing_ok=True)
+            Path(str(self.sock)[: -len(".sock")] + ".lock").unlink(missing_ok=True)  # one 0600 file per run otherwise
 
 
 def _tn(name: str) -> str:
@@ -434,15 +443,21 @@ def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
         problems.append("no pending requires_approval request was queued for the blocked send_email")
     else:
         rc, out = be.approvals("approve", str(pending[0].get("id")), "--reason", "j56 harness approver")
-        if rc != 0 or "approved" not in out.lower():
+        if rc != 0 or "status: approved" not in out.lower():
             problems.append(f"`aasm approvals approve` exited {rc}: {out.strip()[:120]}")
         else:
             left, why2 = _pending_approvals(be)
             if left is None or any(x.get("id") == pending[0].get("id") and x.get("status") == "pending" for x in left):
                 problems.append(why2 or "the approved request is still pending")
     rc, audit = be.audit(getattr(be, "agent", ""))
-    if rc != 0 or "ApprovalRequested" not in audit:
-        problems.append("the audit chain has no ApprovalRequested record for send_email")
+    try:
+        adata = json.loads(audit) if rc == 0 else None
+    except ValueError:
+        adata = None
+    aentries = adata.get("entries", adata) if isinstance(adata, dict) else adata
+    if not any("ApprovalRequested" in json.dumps(e) and "send_email" in json.dumps(e)
+               for e in (aentries if isinstance(aentries, list) else [])):
+        problems.append("the audit chain has no ApprovalRequested record naming send_email")
     if problems:
         ctx.add(cid, c.FAIL, "real_local_process", "; ".join(problems), arts, neg)
         return
@@ -490,8 +505,23 @@ def check_flip(ctx: c.Context, be: Backend, cid: str, flip: Path, allowed_before
         ctx.add(cid, c.FAIL, "real_local_process", f"applying the read_file=deny policy exited {rc}: {out.strip()[:200]}", arts, neg)
         return
     r, s, _ = _drive(ctx, be, "read_file", "flip")
-    _res(ctx, cid, [] if _blocked(r) else [f"read_file still behaves as allowed after the flip (executed={r.get('executed')}, error={r.get('error')!r})"],
-         "the same read_file call is allowed under 1.0.0 and raises a typed error under 1.1.0", arts, neg)
+    p = [] if _blocked(r) else [f"read_file still behaves as allowed after the flip (executed={r.get('executed')}, error={r.get('error')!r})"]
+    if not p:
+        # A typed error alone also appears when the runtime or gateway died after the earlier checks (the SDK fails
+        # closed), so the new policy version must be visible as a read_file deny in the audit chain, which holds
+        # only allow entries for read_file before the flip.
+        rc, audit = be.audit(getattr(be, "agent", ""))
+        try:
+            data = json.loads(audit) if rc == 0 else None
+        except ValueError:
+            data = None
+        entries = data.get("entries", data) if isinstance(data, dict) else data
+        denied = any("read_file" in json.dumps(e).lower() and re.search(r"den(y|ied)|block", json.dumps(e).lower())
+                     for e in (entries if isinstance(entries, list) else []))
+        if not denied:
+            p.append("read_file raised after the flip but the audit chain has no read_file deny: the policy change is not shown to be the cause")
+    _res(ctx, cid, p, "the same read_file call is allowed under 1.0.0, raises a typed error under 1.1.0, and the audit chain records the deny",
+         arts, neg)
 
 
 def check_unwired(ctx: c.Context, be: Backend, cid: str, blocked_when_wired: bool) -> None:
@@ -512,8 +542,12 @@ def check_readme(ctx: c.Context, wheel: Path, cid: str) -> None:
         with zipfile.ZipFile(wheel) as z:
             meta = next((n for n in z.namelist() if n.endswith(".dist-info/METADATA")), None)
             readme = z.read(meta).decode("utf-8", "replace") if meta else ""
-            code = "\n".join(z.read(n).decode("utf-8", "replace") for n in z.namelist()
-                             if n.startswith("agent_assembly/") and n.endswith(".py"))
+            # Only the LangChain adapter and the init path can make init_assembly() reach LangChain; a hook name
+            # elsewhere in the SDK (or in a comment) says nothing about this claim.
+            code = "\n".join(
+                "\n".join(l for l in z.read(n).decode("utf-8", "replace").splitlines() if not l.lstrip().startswith("#"))
+                for n in z.namelist()
+                if n.endswith(".py") and (n.startswith("agent_assembly/adapters/langchain/") or n == "agent_assembly/core/assembly.py"))
     except (OSError, zipfile.BadZipFile) as e:
         ctx.add(cid, c.NOT_COVERED, "static_analysis", f"cannot read the wheel: {e}", [WHEEL], neg)
         return
@@ -632,6 +666,11 @@ def manifest_frameworks(sdk_dir: Path) -> list[dict[str, str]]:
 
 def run_matrix(ctx: c.Context, be: Backend, sdk_dir: Path, examples_dir: Path, wanted: list[str]) -> None:
     fws = {f["framework_id"]: f for f in manifest_frameworks(sdk_dir)}
+    bad = [fid for fid in fws if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(fid))]
+    if bad:  # ids become path components below; a manifest cannot be allowed to point outside the scratch dirs
+        ctx.add("j08-c-manifest-framework-ids", c.FAIL, "real_local_process", f"manifest framework id(s) are not plain slugs: {bad}",
+                [], _tn("test_manifest_framework_id_with_path_traversal_fails"))
+        return
     ids = list(fws) if "all" in wanted else [w for w in wanted if w in fws]
     installed: dict[str, tuple[int, str]] = {}
 
@@ -762,7 +801,7 @@ def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None 
         be = (backend_factory or (lambda *x: LocalBackend(*x)))(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
         for name in ("aasm", "aa-gateway"):
             rc, out = be.version_of(name)
-            if rc != 0 or a.version not in out:
+            if rc != 0 or not re.search(rf"(?<![\w.-]){re.escape(a.version)}(?![\w.])", out):
                 ident.append(f"{name} --version {out.strip()[:80]!r} (exit {rc}), want {a.version}")
         _res(ctx, f"{pfx}-c-binary-identity", ident, f"aasm and aa-gateway both report {a.version}", ["aasm", "aa-gateway"],
              _tn("test_wrong_version_fails"))
