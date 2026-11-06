@@ -33,6 +33,8 @@ struct Keys {
     acme: String,
     globex: String,
     unbound_plain: String,
+    admin_unbound: String,
+    revoked: String,
 }
 
 fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
@@ -55,7 +57,12 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
     let (acme, e1) = entry(Some("acme"), vec![Scope::Read]);
     let (globex, e2) = entry(Some("globex"), vec![Scope::Read]);
     let (unbound_plain, e3) = entry(None, vec![Scope::Read]);
-    let binder = OrgBinder::new(Arc::new(ApiKeyStore::from_entries(vec![e1, e2, e3])));
+    let (admin_unbound, e4) = entry(None, vec![Scope::Admin]);
+    let (revoked, e5) = entry(Some("acme"), vec![Scope::Read]);
+    let revoked_id = e5.id.clone();
+    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5]);
+    store.revoke(&revoked_id);
+    let binder = OrgBinder::new(Arc::new(store));
 
     let registry = Arc::new(AgentRegistry::new());
     let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_org_binder(binder);
@@ -336,4 +343,41 @@ async fn client_metadata_org_tag_does_not_place_an_org_less_agent_in_an_org() {
             .as_deref(),
         Some("acme")
     );
+}
+
+/// Operator-authorised assertion end to end: an unbound admin key may register an
+/// agent into an org it names; the record carries it.
+#[tokio::test]
+async fn unbound_admin_key_registers_into_the_org_it_names() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("operator-placed", "initech");
+    let resp = register(addr, &kp, &id, Some(&keys.admin_unbound))
+        .await
+        .expect("admin assertion");
+    assert_eq!(resp.org_id.as_deref(), Some("initech"));
+    assert_eq!(org_of(&registry, &id), Some(Some("initech".into())));
+}
+
+/// A key revoked after boot (here: before the first request) is refused at
+/// Register, with or without an org claim, and registers nothing.
+#[tokio::test]
+async fn revoked_key_is_unauthenticated_end_to_end() {
+    let (addr, registry, keys) = start().await;
+    for claim in ["", "acme"] {
+        let (kp, id) = identity(&format!("revoked-{claim}"), claim);
+        let err = register(addr, &kp, &id, Some(&keys.revoked)).await.unwrap_err();
+        assert_eq!(err.code(), Code::Unauthenticated, "claim {claim:?}");
+        assert!(org_of(&registry, &id).is_none());
+    }
+}
+
+/// A garbled key header is not "no key": it is refused rather than downgraded to
+/// an org-less registration.
+#[tokio::test]
+async fn blank_registration_key_header_is_refused_not_ignored() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("blank-header", "");
+    let err = register(addr, &kp, &id, Some("   ")).await.unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated);
+    assert!(org_of(&registry, &id).is_none());
 }
