@@ -48,7 +48,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -70,6 +70,61 @@ use crate::policy::{PolicyDocument, PolicyValidator};
 /// promptly" for a governance control.
 pub(crate) const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 
+/// The last content of the watched policy file that this module itself loaded
+/// into the live slot (AAASM-6443).
+///
+/// The file watchers must react to a *change of the file*, never to a
+/// difference between the file and the live slot. The slot is also written by
+/// `PolicyEngine::apply_yaml` (`aasm policy apply` / rollback) and by the
+/// start-up history reinstall, so "slot != file" is the normal state after any
+/// runtime apply. Treating it as "the file changed" made the reconciler swap
+/// the bootstrap file back over the applied policy within one
+/// [`RECONCILE_INTERVAL`], silently dropping enforcement while `policy get`
+/// kept reporting the applied version.
+///
+/// Both the OS push handler and the reconciler share one baseline, so a change
+/// the push path already applied is not re-applied, and a save that restores
+/// the previous content after the push applied an intermediate one is still a
+/// change (AAASM-6052's case is preserved).
+#[derive(Debug, Default)]
+pub(crate) struct FileBaseline(Mutex<Option<String>>);
+
+impl FileBaseline {
+    /// Baseline seeded with the content the engine was constructed from, so
+    /// the first tick does not mistake the unchanged file for a change.
+    pub(crate) fn seeded(yaml: &str) -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Some(yaml.to_owned()))))
+    }
+}
+
+/// Read `path` and, only if its content differs from the last content this
+/// watcher loaded and parses as a valid policy, swap it into `slot`.
+///
+/// The compare-and-swap runs under the baseline lock so the push handler and
+/// the reconciler thread cannot interleave a stale read over a newer one.
+fn reload_if_file_changed(path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>, baseline: &FileBaseline) {
+    let Ok(yaml) = std::fs::read_to_string(path) else {
+        return;
+    };
+    // Skip a mid-truncation read: an empty file is not a valid policy, and an
+    // empty document would parse as an allow-all for the width of the write.
+    if yaml.trim().is_empty() {
+        return;
+    }
+    let mut last_loaded = baseline.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if last_loaded.as_deref() == Some(yaml.as_str()) {
+        return;
+    }
+    // Invalid content is ignored and not recorded, so the live policy stays and
+    // the same bytes are simply re-evaluated (and rejected) on the next read.
+    let Ok(output) = PolicyValidator::from_yaml(&yaml) else {
+        return;
+    };
+    log_policy_reload(path, &output.document);
+    slot.store(Arc::new(output.document));
+    *last_loaded = Some(yaml);
+}
+
 /// Start a background filesystem watcher on `path`.
 ///
 /// On [`EventKind::Create`] or [`EventKind::Modify`] events: re-parse the
@@ -85,10 +140,11 @@ pub(crate) const RECONCILE_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) fn start_watcher(
     path: &Path,
     slot: Arc<ArcSwap<PolicyDocument>>,
+    baseline: Arc<FileBaseline>,
 ) -> notify::Result<notify::RecommendedWatcher> {
     let path_buf = path.to_path_buf();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
-        handle_fs_event(res, &path_buf, &slot);
+        handle_fs_event(res, &path_buf, &slot, &baseline);
     })?;
     watcher.watch(path, RecursiveMode::NonRecursive)?;
     Ok(watcher)
@@ -100,32 +156,35 @@ pub(crate) fn start_watcher(
 /// The OS watcher above is a latency optimization, not the correctness
 /// mechanism — it can silently drop a notification (macOS) or die
 /// permanently after one rename-based save (Linux; see [`RECONCILE_INTERVAL`]'s
-/// doc). This function re-reads `path` every `interval` and, when the parsed
-/// document differs from what `slot` currently holds, swaps it in — so a
-/// missed push notification is recovered within `interval`.
+/// doc). This function re-reads `path` every `interval` and, when its content
+/// differs from the last content a watcher loaded (see [`FileBaseline`]),
+/// swaps the parsed document in — so a missed push notification is recovered
+/// within `interval`.
 ///
-/// # Why this compares against `slot`, not its own private baseline (AAASM-6052)
+/// # Why the baseline is shared and file-derived, never `slot` or private
 ///
-/// An earlier version of this function used [`notify::PollWatcher`] with
-/// `with_compare_contents(true)`, which tracks its *own* last-seen file
-/// content and only fires when the current read differs from that private
-/// baseline. That is wrong when [`start_watcher`]'s OS push already applied
-/// an intermediate change the poll never ticked over: file content A → B
-/// (delivered by the push, `slot` now holds B) → A, all inside one
-/// `interval`, leaves the poll's baseline at A throughout — its last read
-/// was A, its next read is A, so it sees no difference and never fires,
-/// even though `slot` (B) has permanently diverged from the file (A). This
-/// reproduced deterministically on Linux, where a rename-based save kills
-/// [`start_watcher`]'s single-file inotify watch after the *first* save
-/// (see this module's `//!` doc) — everything from the second save onward
-/// depends solely on this poll, and the two-saves-in-one-interval case
-/// above was exactly the reconciler's own blind spot. Comparing against
-/// `slot` instead of a private baseline makes every tick self-correcting:
-/// whatever the file actually holds either matches `slot` (no-op) or it
-/// doesn't (swap), independent of how `slot` got out of sync.
+/// Two earlier designs were each wrong in one direction:
+///
+/// - A private baseline per poll ([`notify::PollWatcher`] with
+///   `with_compare_contents(true)`, pre-AAASM-6052) missed file A → B (applied
+///   by the push, `slot` = B) → A inside one `interval`: its last read and next
+///   read were both A, so it never fired while `slot` stayed B.
+/// - Comparing the file with `slot` (AAASM-6052) fixed that but treated every
+///   non-file write to `slot` as drift. `aasm policy apply` writes `slot`, so
+///   the bootstrap file was swapped back over the applied policy within
+///   5 seconds and enforcement silently reverted (AAASM-6443).
+///
+/// One baseline shared with [`start_watcher`] and updated only when a file
+/// load happens satisfies both: B → A is a change relative to B, and an
+/// applied policy is not a file change.
 ///
 /// Returns the poll handle; drop it to stop reconciling.
-pub(crate) fn start_reconciler(path: &Path, slot: Arc<ArcSwap<PolicyDocument>>, interval: Duration) -> Reconciler {
+pub(crate) fn start_reconciler(
+    path: &Path,
+    slot: Arc<ArcSwap<PolicyDocument>>,
+    baseline: Arc<FileBaseline>,
+    interval: Duration,
+) -> Reconciler {
     let path_buf = path.to_path_buf();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
     // AAASM-6033: wait on `stop_rx` instead of `thread::sleep`, so dropping
@@ -141,33 +200,12 @@ pub(crate) fn start_reconciler(path: &Path, slot: Arc<ArcSwap<PolicyDocument>>, 
     // continues the loop.
     let handle = std::thread::spawn(move || {
         while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(interval) {
-            reconcile_file_tick(&path_buf, &slot);
+            reload_if_file_changed(&path_buf, &slot, &baseline);
         }
     });
     Reconciler::SlotCompare {
         stop: Some(stop_tx),
         handle: Some(handle),
-    }
-}
-
-/// One reconciliation tick for [`start_reconciler`]: read + parse `path`,
-/// and swap into `slot` only when the parsed document differs from what
-/// `slot` currently holds. See [`start_reconciler`]'s doc for why the
-/// comparison is against `slot` rather than a private baseline.
-fn reconcile_file_tick(path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>) {
-    let Ok(yaml) = std::fs::read_to_string(path) else {
-        return;
-    };
-    // Skip a mid-truncation read, same rationale as `handle_fs_event`.
-    if yaml.trim().is_empty() {
-        return;
-    }
-    let Ok(output) = PolicyValidator::from_yaml(&yaml) else {
-        return;
-    };
-    if slot.load().as_ref() != &output.document {
-        log_policy_reload(path, &output.document);
-        slot.store(Arc::new(output.document));
     }
 }
 
@@ -212,28 +250,19 @@ impl Drop for Reconciler {
 /// whose absent window straddles a tick. Dropping that event would resync
 /// the reconciler's baseline to absent and only recover on the *next* change,
 /// silently reintroducing the staleness window this function exists to bound.
-fn handle_fs_event(res: notify::Result<notify::Event>, path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>) {
+fn handle_fs_event(
+    res: notify::Result<notify::Event>,
+    path: &Path,
+    slot: &Arc<ArcSwap<PolicyDocument>>,
+    baseline: &FileBaseline,
+) {
     let Ok(event) = res else {
         return;
     };
     if !matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_)) {
         return;
     }
-    let Ok(yaml) = std::fs::read_to_string(path) else {
-        return;
-    };
-    // Skip events fired while the file is mid-truncation (0 bytes).
-    // On Linux (inotify), a truncate+write sequence emits a Modify
-    // event for the truncated (empty) file before the new content
-    // arrives. An empty file is not a valid policy, so skip it to
-    // avoid replacing the active policy with an empty document.
-    if yaml.trim().is_empty() {
-        return;
-    }
-    if let Ok(output) = PolicyValidator::from_yaml(&yaml) {
-        log_policy_reload(path, &output.document);
-        slot.store(Arc::new(output.document));
-    }
+    reload_if_file_changed(path, slot, baseline);
 }
 
 /// Log the operator-observable confirmation that a hot-reloaded policy is now
@@ -498,7 +527,7 @@ mod tests {
         let initial = Arc::new(parse_doc(ALLOW_YAML));
         let slot = Arc::new(ArcSwap::new(initial.clone()));
 
-        let _watcher = start_watcher(tmp.path(), slot.clone()).unwrap();
+        let _watcher = start_watcher(tmp.path(), slot.clone(), FileBaseline::seeded(ALLOW_YAML)).unwrap();
 
         // Overwrite the file with the DENY policy until the watcher reports it.
         let path = tmp.path().to_path_buf();
@@ -572,7 +601,7 @@ mod tests {
             .with_writer(sink.clone())
             .finish();
         subscriber::with_default(subscriber, || {
-            handle_fs_event(modify_event(path), path, &slot);
+            handle_fs_event(modify_event(path), path, &slot, &FileBaseline::default());
         });
 
         let out = String::from_utf8_lossy(&sink.0.lock().unwrap()).to_string();
@@ -619,7 +648,7 @@ mod tests {
         // Whitespace-only stands in for the mid-truncation read: it is what the
         // watcher sees between the truncate and the new bytes landing.
         write_file(path, "   \n");
-        handle_fs_event(modify_event(path), path, &slot);
+        handle_fs_event(modify_event(path), path, &slot, &FileBaseline::default());
         assert_eq!(
             *slot.load_full(),
             initial_doc,
@@ -627,7 +656,7 @@ mod tests {
         );
 
         write_file(path, ALLOW_YAML);
-        handle_fs_event(modify_event(path), path, &slot);
+        handle_fs_event(modify_event(path), path, &slot, &FileBaseline::default());
         assert!(
             slot.load_full().tools["search"].allow,
             "control: the same event over valid YAML must reach the parse step \
@@ -657,7 +686,7 @@ mod tests {
         let slot = Arc::new(ArcSwap::new(Arc::new(initial_doc.clone())));
 
         write_file(path, "invalid: yaml: [[[");
-        handle_fs_event(modify_event(path), path, &slot);
+        handle_fs_event(modify_event(path), path, &slot, &FileBaseline::default());
         assert_eq!(
             *slot.load_full(),
             initial_doc,
@@ -665,7 +694,7 @@ mod tests {
         );
 
         write_file(path, DENY_YAML);
-        handle_fs_event(modify_event(path), path, &slot);
+        handle_fs_event(modify_event(path), path, &slot, &FileBaseline::default());
         assert!(
             !slot.load_full().tools["search"].allow,
             "control: the same event over valid YAML must reach the parse step \
@@ -697,7 +726,12 @@ mod tests {
         let initial = Arc::new(parse_doc(ALLOW_YAML));
         let slot = Arc::new(ArcSwap::new(initial.clone()));
 
-        let _reconciler = start_reconciler(tmp.path(), slot.clone(), Duration::from_millis(100));
+        let _reconciler = start_reconciler(
+            tmp.path(),
+            slot.clone(),
+            FileBaseline::seeded(ALLOW_YAML),
+            Duration::from_millis(100),
+        );
 
         write_file(tmp.path(), DENY_YAML);
 
@@ -753,15 +787,18 @@ mod tests {
 
         let initial = Arc::new(parse_doc(ALLOW_YAML));
         let slot = Arc::new(ArcSwap::new(initial));
+        let baseline = FileBaseline::seeded(ALLOW_YAML);
 
-        let _reconciler = start_reconciler(&path, slot.clone(), Duration::from_millis(100));
+        let _reconciler = start_reconciler(&path, slot.clone(), baseline.clone(), Duration::from_millis(100));
 
-        // Simulate `start_watcher`'s inotify push already having applied an
-        // intermediate change the reconciler never itself observed.
-        slot.store(Arc::new(parse_doc(DENY_YAML)));
+        // `start_watcher`'s push applying an intermediate change: the file
+        // really holds DENY, and the push handler loads it through the shared
+        // baseline.
+        std::fs::write(&path, DENY_YAML).unwrap();
+        handle_fs_event(modify_event(&path), &path, &slot, &baseline);
+        assert!(!slot.load_full().tools["search"].allow);
 
-        // The file is written back to its *original* content — equal to
-        // whatever a private-baseline reconciler last saw before the push.
+        // The file is written back to its *original* content.
         std::fs::write(&path, ALLOW_YAML).unwrap();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -777,6 +814,108 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    const APPLIED_YAML: &str = "version: \"1\"\ntools:\n  delete_file:\n    allow: false\n";
+
+    /// AAASM-6443: a policy applied at runtime (`PolicyEngine::apply_yaml`
+    /// writes the slot, not the file) must survive every reconcile tick and
+    /// push event while the watched file is unchanged — including a touch that
+    /// rewrites identical bytes. Before the fix the reconciler swapped the
+    /// bootstrap file back over it within one interval.
+    ///
+    /// The second half is the control that keeps the negative honest and pins
+    /// the AAASM-5382 guarantee: a real change to the file is still picked up
+    /// by both the reconcile tick and the push handler, and replaces the
+    /// applied policy.
+    #[test]
+    fn applied_policy_survives_reconcile_until_the_file_really_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+
+        let slot = Arc::new(ArcSwap::new(Arc::new(parse_doc(ALLOW_YAML))));
+        let baseline = FileBaseline::seeded(ALLOW_YAML);
+
+        // `aasm policy apply`.
+        let applied = parse_doc(APPLIED_YAML);
+        slot.store(Arc::new(applied.clone()));
+
+        reload_if_file_changed(&path, &slot, &baseline);
+        reload_if_file_changed(&path, &slot, &baseline);
+        assert_eq!(
+            *slot.load_full(),
+            applied,
+            "reconcile ticks over an unchanged file must not revert apply"
+        );
+
+        // Touch: identical bytes rewritten, reported by the push path.
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+        handle_fs_event(modify_event(&path), &path, &slot, &baseline);
+        reload_if_file_changed(&path, &slot, &baseline);
+        assert_eq!(
+            *slot.load_full(),
+            applied,
+            "a touch without a content change must not revert apply"
+        );
+
+        // Control 1: a real edit is picked up by the reconcile tick.
+        std::fs::write(&path, DENY_YAML).unwrap();
+        reload_if_file_changed(&path, &slot, &baseline);
+        assert_eq!(
+            *slot.load_full(),
+            parse_doc(DENY_YAML),
+            "a real file change must still be reconciled"
+        );
+
+        // Apply again, then control 2: a real edit via the push path wins too.
+        slot.store(Arc::new(applied.clone()));
+        reload_if_file_changed(&path, &slot, &baseline);
+        assert_eq!(*slot.load_full(), applied, "second apply also survives");
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+        handle_fs_event(modify_event(&path), &path, &slot, &baseline);
+        assert_eq!(
+            *slot.load_full(),
+            parse_doc(ALLOW_YAML),
+            "a real change via push is still picked up"
+        );
+    }
+
+    /// AAASM-6443, threaded: the real reconciler thread leaves an applied
+    /// policy alone across many ticks, then still reconciles a real edit.
+    #[test]
+    fn reconciler_thread_does_not_revert_an_applied_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("policy.yaml");
+        std::fs::write(&path, ALLOW_YAML).unwrap();
+
+        let slot = Arc::new(ArcSwap::new(Arc::new(parse_doc(ALLOW_YAML))));
+        let _reconciler = start_reconciler(
+            &path,
+            slot.clone(),
+            FileBaseline::seeded(ALLOW_YAML),
+            Duration::from_millis(50),
+        );
+        let applied = Arc::new(parse_doc(APPLIED_YAML));
+        slot.store(applied.clone());
+
+        // 20+ ticks with no file change.
+        std::thread::sleep(Duration::from_millis(1_000));
+        assert!(
+            Arc::ptr_eq(&slot.load_full(), &applied),
+            "applied policy was replaced by a reconcile tick"
+        );
+
+        std::fs::write(&path, DENY_YAML).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while Arc::ptr_eq(&slot.load_full(), &applied) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "control: a real edit was never reconciled"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!slot.load_full().tools["search"].allow);
     }
 
     /// A poll tick that finds no content change must not swap or otherwise
@@ -851,7 +990,12 @@ mod tests {
         tmp.flush().unwrap();
 
         let slot = Arc::new(ArcSwap::new(Arc::new(parse_doc(ALLOW_YAML))));
-        let reconciler = start_reconciler(tmp.path(), slot, Duration::from_secs(30));
+        let reconciler = start_reconciler(
+            tmp.path(),
+            slot,
+            FileBaseline::seeded(ALLOW_YAML),
+            Duration::from_secs(30),
+        );
 
         let start = std::time::Instant::now();
         drop(reconciler);
