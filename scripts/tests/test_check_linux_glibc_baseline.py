@@ -55,7 +55,6 @@ def make_elf(
         nxt = 16 if i < len(versions) - 1 else 0
         verneed += struct.pack("<IHHII", 0, 0, ver_index[v], ver_name[v], nxt)
 
-    shstr = b"\0.dynsym\0.dynstr\0.gnu.version\0.gnu.version_r\0"
     # Section 0 null, 1 dynsym, 2 dynstr, 3 versym, 4 verneed
     blobs = [dynsym, bytes(dynstr), versym, verneed]
     off = 64
