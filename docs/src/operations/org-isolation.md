@@ -18,25 +18,55 @@ gateway enforces the following invariants:
 | Policy scope | A policy with `scope: org:<id>` cascades only for agents in that org. (Requires the multi-document loader from [AAASM-2023](https://lightning-dust-mite.atlassian.net/browse/AAASM-2023) — partial today.) |
 | Budget | Every Org owns an independent spend envelope on the `BudgetTracker.org_budgets` map. `record_cost` rolls each charge into the agent's `org_id` and enforces `org_daily_limit_usd` / `org_monthly_limit_usd` set via policy YAML or the `with_org_*_limit` builders. Exhausting one Org's envelope never affects another. |
 
-## How to set up multi-tenancy
+## How an agent gets an organization
 
-Register each agent with a non-empty `org_id`:
+An organization is **bound to an operator credential, never taken from the
+client**. `agent_id.org_id` on a registration is only a *claim*; the gateway
+decides the agent's org from the operator API key presented with the
+registration (the same `aa-auth` key store, `AA_API_KEYS_PATH`, that binds REST
+callers to a tenant) and refuses a claim the key does not back.
+
+1. The operator issues an org-bound key (an `ApiKeyEntry` with `org_id: acme`)
+   and gives it to the agent's deployment.
+2. The SDK presents it on `Register` in the `x-aa-registration-key` gRPC
+   metadata (never in the signed body):
 
 ```python
 init_assembly(
-    gateway="grpc://gateway:50051",
-    agent_id={
-        "org_id":   "acme",
-        "team_id":  "platform",
-        "agent_id": "research-bot-001",
-    },
-    credential_token=os.environ["AA_API_KEY"],
+    gateway_url="http://gateway:7391",
+    agent_id="research-bot-001",
+    team_id="platform",
+    org_id="acme",                      # optional claim; omit to take the key's org
+    registration_key=os.environ["AA_REGISTRATION_KEY"],  # org-bound operator key
 )
 ```
 
-The same convention applies via the Node and Go SDKs and via direct
-`PolicyService.CheckAction` calls — the proto `AgentId` triple is the
-canonical identity.
+`AA_REGISTRATION_KEY` is also read by the native client when the argument is
+omitted. The runtime sidecar of an org-bound agent must be started with
+`AA_AGENT_ORG_ID=<org>` so its op-control subscription finds the agent (the
+registry keys an agent by `org/team/agent`).
+
+### Registration outcomes
+
+| Registration key | Claimed `org_id` | Result |
+|---|---|---|
+| none | empty | Registered **org-less** (the single-tenant default; unchanged) |
+| none | `X` | Rejected `PermissionDenied` |
+| invalid, revoked or expired | any | Rejected `Unauthenticated` |
+| bound to `O` | empty | Registered in `O` (derived; echoed in `RegisterResponse.org_id`) |
+| bound to `O` | `O` | Registered in `O` |
+| bound to `O` | other | Rejected `PermissionDenied` (spoof) |
+| admin key, no org binding | `X` | Registered in `X` (operator-authorised) |
+| non-admin key, no org binding | `X` | Rejected `PermissionDenied` |
+| non-admin key, no org binding | empty | Registered org-less |
+
+Every refusal increments `aa_register_org_rejected_total{reason}`. An org-less
+agent's audit entries carry `org_id = null` and never match an `?org_id=`
+filter. `team_id` is never read as an organization, and entries recorded before
+an agent had an org are never relabelled.
+
+An SDK built before this field existed sends no key and no org, which is the
+org-less row above, so older SDKs keep registering unchanged.
 
 ## Querying by Org
 
@@ -54,7 +84,10 @@ aasm audit compliance-export \
   --output-file ./acme-audit.jsonl
 ```
 
-Audit entries written before the agent was registered with an `org_id`
+`GET /api/v1/logs` is also bound to the caller's own org: a key or token bound
+to one org is pinned to it (an explicit `?org_id=` for another org returns an
+empty page), and only an admin may choose the org. Audit entries written before
+the agent was registered with an `org_id`
 (or by lightweight test fixtures that bypass the registry) carry
 `org_id = None` on Lineage and **never match** an explicit `org_id`
 filter. This is intentional — multi-tenancy isolation requires explicit
