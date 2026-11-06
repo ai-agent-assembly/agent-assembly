@@ -250,6 +250,23 @@ class J59HarnessTests(unittest.TestCase):
             self.assertEqual(p.returncode, 2, text)
             self.assertNotIn("Traceback", p.stderr)
 
+    def test_partial_live_inputs_are_a_usage_error_not_a_silent_skip(self):
+        fx = Fixture(self)
+        for given in (["--gateway-bin"], ["--runtime-bin", "--sdk-wheel"]):
+            argv = fx.argv()
+            for flag in given:
+                argv += [flag, str(fx.api)]
+            p = subprocess.run(argv, env=fx.env(), capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, given)
+            self.assertIn("missing:", p.stderr)
+
+    def test_not_covered_rows_say_why_no_agent_was_driven(self):
+        fx = Fixture(self)
+        _, rep, _ = fx.run()
+        for c in rep["candidate_checks"]:
+            if c["status"] == "NOT_COVERED":
+                self.assertIn("--gateway-bin", c["detail"])
+
     def test_sigterm_mid_run_leaves_no_daemon_and_no_temp_dir(self):
         import signal
         import time
