@@ -171,6 +171,8 @@ class LocalBackend(Backend):
         self.pidfile = self.home / ".aasm" / "gateway.pid"
         ctx.owned_pidfiles.append(self.pidfile)
         self.started = False
+        self.sock: Path | None = None
+        self.runtime: subprocess.Popen[bytes] | None = None
 
     @property
     def url(self) -> str:
@@ -204,10 +206,33 @@ class LocalBackend(Backend):
         self.started = rc == 0
         if rc != 0:
             return False, f"aasm start exited {rc}: {out.strip()[:300]}"
+        owned, why = self._grpc_is_ours()
+        if not owned:
+            return False, why
         rc, out = self.apply_policy(policy)
         if rc != 0:
             return False, f"aasm policy apply exited {rc}: {out.strip()[:200]}"
         return self._start_runtime()
+
+    def _grpc_listener_pids(self) -> list[int] | None:
+        rc, out = self.exec(["/usr/sbin/lsof", "-nP", f"-iTCP:{GRPC_PORT}", "-sTCP:LISTEN", "-t"], self.env, self.ctx.tmp, 30)
+        if rc not in (0, 1):  # lsof exits 1 when nothing listens
+            return None
+        return [int(x) for x in out.split() if x.isdigit()]
+
+    def _grpc_is_ours(self) -> tuple[bool, str]:
+        """The pre-start port check is a point in time: another harness stack can take the fixed gRPC port between
+        it and our gateway's bind, after which this run would silently drive that stack. So after the start, every
+        listener on the port must be proven to execute a binary from this run's own bin directory."""
+        pids = self._grpc_listener_pids()
+        if pids is None:
+            return False, "cannot enumerate the gRPC listener (lsof unavailable), so the stack cannot be proven to be this run's"
+        if not pids:
+            return False, f"nothing listens on 127.0.0.1:{GRPC_PORT} after the gateway started"
+        foreign = [p for p in pids if not c.pid_owned_by(p, self.ctx.tmp)]
+        if foreign:
+            return False, f"127.0.0.1:{GRPC_PORT} is served by pid(s) {foreign} that are not this run's gateway; refusing to drive another stack"
+        return True, ""
 
     def _start_runtime(self) -> tuple[bool, str]:
         """The SDK asks `aa-runtime` for every decision and fails closed without one (enforce), so the

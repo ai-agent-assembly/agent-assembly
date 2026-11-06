@@ -326,8 +326,28 @@ class HarnessShapeTests(unittest.TestCase):
             bins[n].write_text(runtime_body if n == "aa-runtime" else "x")
             bins[n].chmod(0o755)
         be = H.LocalBackend(ctx, bins, wheel, ROOT / "scripts/qa/fixtures/j56/sdk_driver.py")
-        self.addCleanup(lambda: be.sock.unlink(missing_ok=True))
+        self.addCleanup(lambda: be.sock and be.sock.unlink(missing_ok=True))
         return be
+
+    def test_grpc_listener_that_is_not_ours_is_refused(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        be._grpc_listener_pids = lambda: [4242]
+        real, H.c.pid_owned_by = H.c.pid_owned_by, lambda pid, owner: False
+        self.addCleanup(setattr, H.c, "pid_owned_by", real)
+        ok, why = be._grpc_is_ours()
+        self.assertFalse(ok)
+        self.assertIn("not this run's gateway", why)
+
+    def test_grpc_listener_that_is_ours_passes_and_a_missing_listener_fails(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        real, H.c.pid_owned_by = H.c.pid_owned_by, lambda pid, owner: True
+        self.addCleanup(setattr, H.c, "pid_owned_by", real)
+        be._grpc_listener_pids = lambda: [4242]
+        self.assertTrue(be._grpc_is_ours()[0])
+        be._grpc_listener_pids = lambda: []
+        self.assertFalse(be._grpc_is_ours()[0])
+        be._grpc_listener_pids = lambda: None
+        self.assertFalse(be._grpc_is_ours()[0])
 
     def test_runtime_that_exits_before_binding_fails_the_stack_start(self):
         be = self._local_backend_with_runtime("#!/bin/sh\nexit 3\n")
