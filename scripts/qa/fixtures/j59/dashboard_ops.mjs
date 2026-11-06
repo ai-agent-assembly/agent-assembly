@@ -87,12 +87,21 @@ try {
     const n = await rows().count()
     must(n >= 2, `expected at least 2 pending requests for ${spec.approveAgent}, found ${n}`)
     must(/Approve/.test(await rows().first().innerText()) && /Reject/.test(await rows().first().innerText()), 'pending row has no Approve/Reject actions')
+    const settled = (expected) =>
+      page.waitForFunction(([a, want]) => [...document.querySelectorAll('tr')].filter((r) => r.innerText.includes(a)).length === want, [spec.approveAgent, expected], { timeout: 30000 })
     await rows().first().getByRole('button', { name: 'Approve' }).click()
     await page.getByText(/Approved 1 request/i).waitFor({ timeout: 30000 })
-    await page.waitForFunction((a) => [...document.querySelectorAll('tr')].filter((r) => r.innerText.includes(a)).length === n - 1, spec.approveAgent, { timeout: 30000 }).catch(() => {})
+    await settled(n - 1)
+    // Reject asks for a mandatory reason in a confirmation panel.
     await rows().first().getByRole('button', { name: 'Reject' }).click()
-    await page.getByText(/Rejected 1 request/i).waitFor({ timeout: 30000 })
-    return 'approved one pending request and rejected another through the UI (toasts shown)'
+    await page.getByText('Reason (required)').waitFor({ timeout: 30000 })
+    await page.locator('textarea').fill('j59 harness: rejected from the dashboard')
+    await page.getByRole('button', { name: 'Confirm reject' }).click()
+    await settled(n - 2)
+    await page.getByRole('button', { name: /^Decided \(/ }).click()
+    const decided = await page.locator('body').innerText()
+    must(/Decided \(\d+\)/.test(decided), 'no Decided tab count')
+    return 'approved one pending request (toast) and rejected another with a reason (confirmation panel) through the UI; both left the pending list'
   })
 
   await step('no-failed-api-calls', async () => {

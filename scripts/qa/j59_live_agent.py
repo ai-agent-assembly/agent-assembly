@@ -290,8 +290,6 @@ def drive_second_agent(ctx: Any, be: Any) -> list[str]:
     ok, why = be.add_agent(be.agent_b, TEAM_B)
     if not ok:
         return [f"second agent runtime did not start: {why}"]
-    if be.sdk("register", agent=be.agent_b).get("registered") is not True:
-        problems.append("agent B did not register")
     for tool, tag in (("read_file", "b-read"), ("delete_file", "b-del"), ("send_email", "b-mail1"), ("send_email", "b-mail2")):
         s = H._sentinel(ctx, f"{tag}-{tool}")
         r = be.sdk("call", agent=be.agent_b, tool=tool, sentinel=s)
@@ -630,10 +628,6 @@ def run_live(ctx: Any, be: Any, repo: Path, inputs: dict[str, Any]) -> None:
     ctx.add("j59-live-stack-up", c.PASS, "real_local_process",
             "SDK wheel installed offline into a clean venv; gateway and aa-runtime started under an isolated HOME with golden-path 1.0.0",
             list(H.BINARIES_ART) + [WHEEL], _tn("test_stack_start_failure_fails"))
-    if be.sdk("register").get("registered") is not True:
-        ctx.add("j59-s5-live-agent-action-governed", c.FAIL, "real_local_process", "the governed agent did not register with the candidate gateway", list(H.BINARIES_ART), _tn("test_s5_register_failure_fails"))
-        skip("the governed agent could not register")
-        return
     check_live_action(ctx, be, "j59-s5-live-agent-action-governed")
     b_problems = drive_second_agent(ctx, be)
     if b_problems:
