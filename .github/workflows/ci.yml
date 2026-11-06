@@ -29,6 +29,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "deny.toml"
+      - "scripts/ci/check_deny_exception_expiry.py"
+      - "scripts/tests/test_check_deny_exception_expiry.py"
       # AAASM-5385: the Rust jobs' own shell implementations, by exact filename.
       # Without these, editing a gate's script does not re-run the gate that the
       # script IS. Named individually rather than `.ci/*.sh` because the other
@@ -376,6 +378,8 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'deny.toml'
+              - 'scripts/ci/check_deny_exception_expiry.py'
+              - 'scripts/tests/test_check_deny_exception_expiry.py'
               - '.ci/verify-range-builds.sh'
               - '.ci/check-compatibility-matrix.sh'
               # AAASM-5738: the closure gate's own script. Its VERDICT is the
