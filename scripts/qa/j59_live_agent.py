@@ -132,10 +132,11 @@ def make_backend_class() -> type:
             return {"error": "driver-no-result", "detail": f"exit {rc}: {out.strip()[-200:]}"}
 
         def _start_runtime(self) -> tuple[bool, str]:
-            """J56 reports the runtime up as soon as its IPC socket file exists, but the runtime binds that socket
-            before it has connected its gateway client. An SDK that connects in that window finds no runtime, and
-            without `enforce` it silently runs the tool ungoverned (seen on the candidate: delete_file executed).
-            The runtime's health listener is bound after the gateway client and the pipeline, so wait for it."""
+            """J56 reports the runtime up as soon as its IPC socket file exists, but the runtime logs binding that
+            socket before it has connected its gateway client. No run was seen to depend on the gap (the ungoverned
+            calls investigated while building this were the policy revert, see check_policy_durability), so this is a
+            cheap guard, not a fix for an observed failure: wait for the health listener, which is bound after the
+            gateway client and the pipeline."""
             ports: list[int] = []
             real = c.free_port
 
