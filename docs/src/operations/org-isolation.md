@@ -42,7 +42,9 @@ init_assembly(
 ```
 
 `AA_REGISTRATION_KEY` is also read by the native client when the argument is
-omitted. The runtime sidecar of an org-bound agent must be started with
+omitted. The key is a bearer credential: use an `https://` gateway for anything
+that is not on loopback. The client marks the header sensitive, but it does not
+encrypt the connection. The runtime sidecar of an org-bound agent must be started with
 `AA_AGENT_ORG_ID=<org>` so its op-control subscription finds the agent (the
 registry keys an agent by `org/team/agent`).
 
@@ -59,6 +61,28 @@ registry keys an agent by `org/team/agent`).
 | admin key, no org binding | `X` | Registered in `X` (operator-authorised) |
 | non-admin key, no org binding | `X` | Rejected `PermissionDenied` |
 | non-admin key, no org binding | empty | Registered org-less |
+
+Only the org the registration binding validated is ever used as the agent's org
+(audit stamp, policy cascade, sensitive-data scope). A free-form
+`RegisterRequest.metadata` entry named `org_id` is client text and is ignored.
+
+An unusable header (blank, non-ASCII, or sent twice) is `Unauthenticated`, never
+"no key".
+
+### Issuing and revoking keys
+
+`cargo run -p aa-auth --example aa-keygen -- --keys-file <AA_API_KEYS_PATH file>
+--key-out <raw key file> --org <org> [--team <team>] [--scope read|write|admin]`
+appends the key's argon2 hash to the key file and writes the raw key to a separate
+owner-only file; it never prints the key and rejects an empty `--org`.
+
+* The gateway reads the key file **once at boot**. A new key, or a key you remove
+  from the file, takes effect when the gateway restarts. A key revoked through the
+  REST/IAM path stays valid for `Register` until that restart.
+* A key file that is missing or unreadable at boot leaves the gateway with an
+  empty key store (it logs `registration key file unreadable`): org-less
+  registration keeps working and every org claim and every key is refused.
+* The key's `team_id` is not enforced at `Register`; only its org is.
 
 Every refusal increments `aa_register_org_rejected_total{reason}`. An org-less
 agent's audit entries carry `org_id = null` and never match an `?org_id=`
@@ -85,8 +109,9 @@ aasm audit compliance-export \
 ```
 
 `GET /api/v1/logs` is also bound to the caller's own org: a key or token bound
-to one org is pinned to it (an explicit `?org_id=` for another org returns an
-empty page), and only an admin may choose the org. Audit entries written before
+to one org is pinned to it, admin scope included (an explicit `?org_id=` for
+another org returns the caller's own org's entries, never the other's), and only
+an admin with **no** org binding may choose the org. Audit entries written before
 the agent was registered with an `org_id`
 (or by lightweight test fixtures that bypass the registry) carry
 `org_id = None` on Lineage and **never match** an explicit `org_id`
