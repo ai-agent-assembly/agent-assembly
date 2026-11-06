@@ -57,12 +57,19 @@ impl OrgBinder {
     /// `claimed` is the request's `AgentId.org_id` (empty when absent). Returns
     /// the authoritative organization to record, `None` for an org-less agent.
     pub fn resolve<T>(&self, request: &Request<T>, claimed: &str) -> Result<Option<String>, Status> {
-        let presented = request
-            .metadata()
-            .get(REGISTRATION_KEY_METADATA_KEY)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .filter(|v| !v.is_empty());
+        let values = request.metadata().get_all(REGISTRATION_KEY_METADATA_KEY);
+        let mut it = values.iter();
+        let presented = match (it.next(), it.next()) {
+            (None, _) => None,
+            // A header that is present must be one usable key. Ignoring a garbled
+            // or repeated one would turn "a key was sent and it is wrong" into
+            // "no key", i.e. an org-less registration the caller did not ask for.
+            (Some(v), None) => match v.to_str().map(str::trim) {
+                Ok(key) if !key.is_empty() => Some(key),
+                _ => return Err(unusable_header()),
+            },
+            (Some(_), Some(_)) => return Err(unusable_header()),
+        };
         self.resolve_presented(presented, claimed)
     }
 
@@ -108,6 +115,13 @@ impl OrgBinder {
             )),
         }
     }
+}
+
+fn unusable_header() -> Status {
+    reject(
+        "unauthenticated",
+        Status::unauthenticated("x-aa-registration-key must be one non-empty ASCII value"),
+    )
 }
 
 fn reject(reason: &'static str, status: Status) -> Status {
@@ -207,6 +221,42 @@ mod tests {
                 b.resolve_presented(Some(&raw), "acme").unwrap_err().code(),
                 tonic::Code::Unauthenticated
             );
+        }
+    }
+
+    fn request_with(values: &[&[u8]]) -> Request<()> {
+        let mut req = Request::new(());
+        for v in values {
+            let value = tonic::metadata::MetadataValue::<tonic::metadata::Ascii>::try_from(*v).expect("header bytes");
+            req.metadata_mut().append(REGISTRATION_KEY_METADATA_KEY, value);
+        }
+        req
+    }
+
+    #[test]
+    fn header_is_trimmed_and_resolved() {
+        let (raw, e) = entry(Some("acme"), vec![Scope::Read]);
+        let b = binder(vec![e]);
+        let padded = format!("  {raw} ");
+        let req = request_with(&[padded.as_bytes()]);
+        assert_eq!(b.resolve(&req, "").unwrap().as_deref(), Some("acme"));
+    }
+
+    #[test]
+    fn absent_header_is_the_org_less_path() {
+        assert_eq!(binder(vec![]).resolve(&request_with(&[]), "").unwrap(), None);
+    }
+
+    #[test]
+    fn blank_non_ascii_or_repeated_headers_are_unauthenticated_not_ignored() {
+        let (raw, e) = entry(Some("acme"), vec![Scope::Read]);
+        let b = binder(vec![e]);
+        for bad in [
+            request_with(&[b"   "]),
+            request_with(&[&[0xC3, 0xA9][..]]),
+            request_with(&[raw.as_bytes(), raw.as_bytes()]),
+        ] {
+            assert_eq!(b.resolve(&bad, "").unwrap_err().code(), tonic::Code::Unauthenticated);
         }
     }
 }
