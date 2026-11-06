@@ -143,10 +143,11 @@ impl AuditServiceImpl {
                 // requires a separate registry lookup by name — deferred to a follow-up.
                 parent_agent_id: None,
                 team_id: record.team_id.clone(),
-                // AAASM-2008 — populated in a follow-up commit once AgentRecord
-                // gains a first-class org_id field. Placeholder None preserves
-                // existing audit hash output until that field lands.
-                org_id: None,
+                // AAASM-6444 — the registry record's org is the authenticated
+                // binding resolved at Register, so the event audit carries the
+                // same org the CheckAction audit already does. `None` (an
+                // org-less agent) hashes identically to pre-org entries.
+                org_id: record.org_id.clone(),
                 delegation_reason: record.delegation_reason.clone(),
                 spawned_by_tool: record.spawned_by_tool.clone(),
                 depth: Some(record.depth),

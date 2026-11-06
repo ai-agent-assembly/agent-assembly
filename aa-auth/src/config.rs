@@ -89,6 +89,16 @@ impl AuthConfig {
     }
 }
 
+/// Resolve the API-key file path from `AA_API_KEYS_PATH` (default
+/// `~/.aa/api-keys.json`), independent of [`AuthMode`].
+///
+/// Used by consumers that bind a credential to a tenant but do not run the HTTP
+/// auth extractors (e.g. the gRPC registration org binding, AAASM-6444).
+pub fn resolve_api_keys_path() -> PathBuf {
+    let raw = std::env::var("AA_API_KEYS_PATH").unwrap_or_else(|_| DEFAULT_API_KEYS_PATH.to_string());
+    expand_tilde(&raw)
+}
+
 /// Resolve the per-key requests-per-minute limit from `AA_RATE_LIMIT_RPM`.
 ///
 /// Returns [`DEFAULT_RATE_LIMIT_RPM`] when the variable is unset, and an

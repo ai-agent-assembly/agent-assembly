@@ -274,6 +274,11 @@ impl ApiKeyStore {
         self.validate_detailed(raw_key).ok()
     }
 
+    /// The stored entries, for callers that merge two key sources into one store.
+    pub fn entries(&self) -> &[ApiKeyEntry] {
+        &self.entries
+    }
+
     /// Return the number of stored entries.
     pub fn len(&self) -> usize {
         self.entries.len()

@@ -1,7 +1,8 @@
 /// Agent lineage resolved from the registry for scope-chain walking.
 ///
-/// `org_id` and `team_id` mirror the metadata keys that the lifecycle
-/// service writes at registration time (keys `"org_id"` and `"team_id"`).
+/// `org_id` is the organization the registry bound at Register (the first-class
+/// `AgentRecord::org_id`, never the client's request metadata); `team_id` mirrors
+/// the `"team_id"` metadata key the lifecycle service writes at registration.
 ///
 /// AAASM-3377 — the delegation fields (`root_agent_id`, `parent_agent_id`,
 /// `depth`, `delegation_reason`, `spawned_by_tool`) mirror the first-class

@@ -62,6 +62,8 @@ fn sdk_config(agent_id: &str) -> AssemblyConfig {
         // the developer's real `~/.aasm`, and the CLI under test is pointed at
         // the same one by `AASM_STATE_DIR` so both surfaces read one key.
         identity_dir: Some(identity_dir()),
+        org_id: None,
+        registration_key: None,
     }
 }
 

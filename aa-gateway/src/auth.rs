@@ -111,6 +111,21 @@ impl AuthExtensions {
     }
 }
 
+/// Build the registration org binder from the operator API-key file
+/// (`AA_API_KEYS_PATH`), regardless of whether REST auth is on (AAASM-6444).
+///
+/// A missing or unreadable file yields an empty store, which fails closed:
+/// agents can register org-less but no org claim is admitted. Keys are read once
+/// at boot, like the REST key store.
+pub fn registration_org_binder() -> crate::service::org_binding::OrgBinder {
+    let path = aa_auth::config::resolve_api_keys_path();
+    let store = ApiKeyStore::load(&path).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "registration key file unreadable — organization claims will be refused");
+        ApiKeyStore::from_entries(Vec::new())
+    });
+    crate::service::org_binding::OrgBinder::new(Arc::new(store))
+}
+
 /// Whether the operator has explicitly opted the gateway into enforcing auth.
 ///
 /// True when `AA_GATEWAY_AUTH` is a truthy value (case-insensitive: `on`,
