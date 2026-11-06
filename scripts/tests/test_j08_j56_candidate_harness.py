@@ -120,7 +120,7 @@ class FakeBackend(H.Backend):
             if self.mode != "no_pending_approval":
                 self.pending.append({"id": f"ap-{len(self.pending)}", "status": "pending", "reason": "requires_approval"})
             if self.mode != "audit_no_approval":
-                self.log.append((tool, "ApprovalRequested"))
+                self.log.append(("delete_file" if self.mode == "approval_audit_other_tool" else tool, "ApprovalRequested"))
             return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
         if deny:
             self.log.append((tool, "deny"))
@@ -326,8 +326,46 @@ class HarnessShapeTests(unittest.TestCase):
             bins[n].write_text(runtime_body if n == "aa-runtime" else "x")
             bins[n].chmod(0o755)
         be = H.LocalBackend(ctx, bins, wheel, ROOT / "scripts/qa/fixtures/j56/sdk_driver.py")
-        self.addCleanup(lambda: be.sock.unlink(missing_ok=True))
+        self.addCleanup(lambda: be.sock and be.sock.unlink(missing_ok=True))
         return be
+
+    def test_lsof_exit_codes_decide_whether_the_listener_can_be_enumerated(self):
+        out = {}
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        for rc, text, want in ((0, "11\n22\n", [11, 22]), (1, "", []), (124, "timeout", None), (127, "", None), (2, "boom", None)):
+            be.exec = lambda argv, env, cwd, timeout=30, _r=(rc, text): _r
+            out[rc] = (be._grpc_listener_pids(), want)
+        for rc, (got, want) in out.items():
+            self.assertEqual(got, want, f"lsof exit {rc}")
+
+    def test_a_foreign_grpc_listener_stops_start_before_the_policy_is_applied(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        calls = []
+        be.exec = lambda argv, env, cwd, timeout=30: (calls.append(argv[1:3]) or (0, ""))
+        be._grpc_is_ours = lambda: (False, "foreign listener")
+        ok, why = be.start(Path("policy.yaml"))
+        self.assertEqual((ok, why), (False, "foreign listener"))
+        self.assertNotIn(["policy", "apply"], calls)
+
+    def test_grpc_listener_that_is_not_ours_is_refused(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        be._grpc_listener_pids = lambda: [4242]
+        real, H.c.pid_owned_by = H.c.pid_owned_by, lambda pid, owner: False
+        self.addCleanup(setattr, H.c, "pid_owned_by", real)
+        ok, why = be._grpc_is_ours()
+        self.assertFalse(ok)
+        self.assertIn("not this run's gateway", why)
+
+    def test_grpc_listener_that_is_ours_passes_and_a_missing_listener_fails(self):
+        be = self._local_backend_with_runtime("#!/bin/sh\nexit 0\n")
+        real, H.c.pid_owned_by = H.c.pid_owned_by, lambda pid, owner: True
+        self.addCleanup(setattr, H.c, "pid_owned_by", real)
+        be._grpc_listener_pids = lambda: [4242]
+        self.assertTrue(be._grpc_is_ours()[0])
+        be._grpc_listener_pids = lambda: []
+        self.assertFalse(be._grpc_is_ours()[0])
+        be._grpc_listener_pids = lambda: None
+        self.assertFalse(be._grpc_is_ours()[0])
 
     def test_runtime_that_exits_before_binding_fails_the_stack_start(self):
         be = self._local_backend_with_runtime("#!/bin/sh\nexit 3\n")
@@ -430,6 +468,9 @@ class NegativeControlTests(unittest.TestCase):
 
     def test_approval_output_without_an_approved_status_fails(self):
         self.check("approve_no_status", "j56-c-send-email-approval-or-gap")
+
+    def test_approval_audit_entry_naming_another_tool_fails(self):
+        self.check("approval_audit_other_tool", "j56-c-send-email-approval-or-gap")
 
     def test_flip_without_a_read_file_deny_in_the_audit_chain_fails(self):
         self.check("flip_no_audit", "j56-c-policy-flip-changes-behavior")
