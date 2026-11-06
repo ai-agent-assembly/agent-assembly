@@ -6,11 +6,44 @@
 use std::env;
 use std::path::PathBuf;
 
+use zeroize::Zeroizing;
+
 /// Default gateway gRPC endpoint, matching `aa-runtime`'s
 /// `AA_GATEWAY_ENDPOINT` default. This is the **gRPC** port (`:50051`) that
 /// serves `AgentLifecycleService` / `PolicyService` — *not* the gateway's
 /// `:8080` HTTP/OpenAPI surface that some docs reference for REST.
 pub const DEFAULT_GATEWAY_ENDPOINT: &str = "http://127.0.0.1:50051";
+
+/// Environment variable read for the operator registration key when
+/// [`AssemblyConfig::registration_key`] is not set explicitly.
+pub const REGISTRATION_KEY_ENV: &str = "AA_REGISTRATION_KEY";
+
+/// Operator API key presented to the gateway at registration so it can bind the
+/// agent to an organization (AAASM-6444).
+///
+/// Held in [`Zeroizing`] and hand-redacted in `Debug` — a derived `Debug` on
+/// [`AssemblyConfig`] would otherwise print the plaintext credential.
+#[derive(Clone)]
+pub struct RegistrationKey(Zeroizing<String>);
+
+impl RegistrationKey {
+    /// Wrap a raw `aa_…` key. Empty input is a configuration error the gateway
+    /// would report as an invalid key, so callers should pass `None` instead.
+    pub fn new(raw: impl Into<String>) -> Self {
+        Self(Zeroizing::new(raw.into()))
+    }
+
+    /// The plaintext key, for attaching to the outgoing gRPC metadata only.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for RegistrationKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegistrationKey(REDACTED)")
+    }
+}
 
 /// Configuration for connecting to `aa-runtime`.
 #[derive(Debug, Clone)]
@@ -46,9 +79,33 @@ pub struct AssemblyConfig {
     /// enrolments to be its own — a process-wide environment variable cannot
     /// give parallel tests separate identities.
     pub identity_dir: Option<String>,
+    /// Organization this agent *claims* to belong to (AAASM-6444). Forwarded as
+    /// the `org_id` of the registration `AgentId`. It is not an authorization:
+    /// the gateway admits it only when the presented
+    /// [`registration_key`](Self::registration_key) is bound to the same org (or
+    /// is an operator admin key), and rejects it otherwise. `None` leaves the
+    /// org to the key's binding, or unset.
+    pub org_id: Option<String>,
+    /// Operator API key the gateway binds to an organization. When `None`,
+    /// resolved from [`REGISTRATION_KEY_ENV`]; see
+    /// [`resolve_registration_key`](Self::resolve_registration_key).
+    pub registration_key: Option<RegistrationKey>,
 }
 
 impl AssemblyConfig {
+    /// The registration key to present: the explicit one, else
+    /// [`REGISTRATION_KEY_ENV`], else none (an org-less registration).
+    pub fn resolve_registration_key(&self) -> Option<RegistrationKey> {
+        if let Some(key) = &self.registration_key {
+            return Some(key.clone());
+        }
+        env::var(REGISTRATION_KEY_ENV)
+            .ok()
+            .map(|v| v.trim().to_owned())
+            .filter(|v| !v.is_empty())
+            .map(RegistrationKey::new)
+    }
+
     /// Resolve the Unix domain socket path to connect to.
     ///
     /// Resolution order:
@@ -178,7 +235,25 @@ mod tests {
             parent_agent_id: None,
             sdk_version: None,
             identity_dir: None,
+            org_id: None,
+            registration_key: None,
         }
+    }
+
+    #[test]
+    fn registration_key_debug_never_prints_the_key() {
+        let mut config = make_config("a", None);
+        config.registration_key = Some(RegistrationKey::new("aa_00112233445566778899aabbccddeeff"));
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("00112233445566778899aabbccddeeff"), "{rendered}");
+        assert!(rendered.contains("REDACTED"));
+    }
+
+    #[test]
+    fn explicit_registration_key_wins_over_env() {
+        let mut config = make_config("a", None);
+        config.registration_key = Some(RegistrationKey::new("aa_explicit"));
+        assert_eq!(config.resolve_registration_key().unwrap().expose(), "aa_explicit");
     }
 
     #[test]
@@ -208,6 +283,8 @@ mod tests {
             parent_agent_id: None,
             sdk_version: None,
             identity_dir: None,
+            org_id: None,
+            registration_key: None,
         };
         assert_eq!(config.resolve_gateway_endpoint(), "http://gw.example:50051");
     }

@@ -129,9 +129,12 @@ pub struct AgentRecord {
     /// scope-by-org filtering and by Org-scoped policy evaluation.
     ///
     /// Historically the org tag flowed only through the `metadata.get("org_id")`
-    /// map; promoting it to a first-class field lets the registry maintain a
-    /// secondary index (org_index) and lets the audit pipeline propagate it
-    /// into [`aa_core::Lineage::org_id`] without parsing the metadata BTreeMap.
+    /// map, which is client-controlled; AAASM-6444 resolves the org from the
+    /// authenticated operator key at Register and lineage no longer reads the
+    /// metadata map, so a record that carried only a metadata tag is org-less.
+    /// The first-class field lets the registry maintain a secondary index
+    /// (org_index) and lets the audit pipeline propagate it into
+    /// [`aa_core::Lineage::org_id`].
     pub org_id: Option<String>,
     /// Delegation depth in the agent hierarchy — 0 for root agents.
     pub depth: u32,
@@ -954,13 +957,21 @@ impl AgentRegistry {
     /// Return the scope lineage (org, team) for `agent_id`.
     ///
     /// AAASM-2008 — prefers the first-class `org_id` / `team_id` fields on
-    /// `AgentRecord`; falls back to the `metadata` map for records that
-    /// were registered before those fields were promoted from metadata.
+    /// `AgentRecord`; `team_id` still falls back to the `metadata` map for records
+    /// registered before it was promoted. `org_id` never does (AAASM-6444).
     /// Returns `None` if the agent is not in the registry.
     pub fn lineage(&self, agent_id: &[u8; 16]) -> Option<crate::registry::Lineage> {
         let record = self.agents.get(agent_id)?;
         Some(crate::registry::Lineage {
-            org_id: record.org_id.clone().or_else(|| record.metadata.get("org_id").cloned()),
+            // AAASM-6444 — only the binder-validated first-class org. The old
+            // `metadata["org_id"]` fallback read `RegisterRequest.metadata`, which is
+            // client text, so an org-less registration could tag itself into any
+            // org's audit stamp, policy cascade and sensitive-data scope. No
+            // producer in this repo writes that key on a record any more (the gateway
+            // sets `org_id` from the binding; SDK, runtime, proxy and devtool crates
+            // never send it); a pre-AAASM-2008 record that only had the metadata tag
+            // is now org-less rather than relabelled, matching the missing-org policy.
+            org_id: record.org_id.clone(),
             team_id: record
                 .team_id
                 .clone()
@@ -1354,6 +1365,67 @@ impl AgentGraph {
             team_stats.insert(entry.key().clone(), entry.value().len());
         }
         Self { team_stats }
+    }
+}
+
+#[cfg(test)]
+mod lineage_org_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    fn record(org_id: Option<&str>, metadata_org: Option<&str>) -> AgentRecord {
+        AgentRecord {
+            agent_id: [7u8; 16],
+            name: "t".into(),
+            framework: "t".into(),
+            version: "0".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "pk".into(),
+            credential_token: "tok".into(),
+            metadata: metadata_org
+                .map(|o| [("org_id".to_string(), o.to_string())].into())
+                .unwrap_or_default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team".into()),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+            org_id: org_id.map(str::to_string),
+        }
+    }
+
+    /// AAASM-6444: the lineage org (audit stamp, policy cascade, sensitive-data
+    /// scope) is the binder-validated `org_id` and nothing the client wrote into
+    /// the free-form registration metadata.
+    #[test]
+    fn lineage_org_is_never_read_from_client_metadata() {
+        let registry = AgentRegistry::new();
+        registry.register(record(None, Some("victim"))).unwrap();
+        assert_eq!(registry.lineage(&[7u8; 16]).unwrap().org_id, None);
+    }
+
+    #[test]
+    fn lineage_org_is_the_bound_org_even_when_metadata_names_another() {
+        let registry = AgentRegistry::new();
+        registry.register(record(Some("acme"), Some("victim"))).unwrap();
+        assert_eq!(registry.lineage(&[7u8; 16]).unwrap().org_id.as_deref(), Some("acme"));
     }
 }
 

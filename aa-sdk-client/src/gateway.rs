@@ -19,7 +19,7 @@ use aa_proto::assembly::agent::v1::{
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tonic::transport::Channel;
 
-use crate::config::AssemblyConfig;
+use crate::config::{AssemblyConfig, RegistrationKey};
 use crate::error::SdkClientError;
 use crate::keypair::AgentKeypair;
 
@@ -37,6 +37,9 @@ pub struct GatewayRegistrationClient {
 /// cannot force an unbounded response buffer (AAASM-3996). A `RegisterResponse`
 /// / `ChallengeResponse` is a few hundred bytes, so 4 MiB is comfortably
 /// generous.
+/// gRPC metadata key the gateway reads the operator registration key from.
+const REGISTRATION_KEY_METADATA_KEY: &str = "x-aa-registration-key";
+
 const MAX_DECODING_MESSAGE_SIZE: usize = 4 * 1024 * 1024;
 
 impl GatewayRegistrationClient {
@@ -65,6 +68,34 @@ impl GatewayRegistrationClient {
 
     /// Call `AgentLifecycleService.Register` and return the response.
     pub async fn register(&mut self, request: RegisterRequest) -> Result<RegisterResponse, SdkClientError> {
+        self.register_with_key(request, None).await
+    }
+
+    /// Like [`register`](Self::register), presenting an operator registration
+    /// key in the `x-aa-registration-key` metadata so the gateway can bind the
+    /// agent to the key's organization (AAASM-6444). The key travels in metadata,
+    /// not the body, so it is never part of the signed registration message.
+    ///
+    /// The key is a bearer credential: use an `https://` gateway endpoint for any
+    /// gateway that is not on loopback, or it crosses the network in clear text.
+    pub async fn register_with_key(
+        &mut self,
+        request: RegisterRequest,
+        key: Option<&RegistrationKey>,
+    ) -> Result<RegisterResponse, SdkClientError> {
+        let mut request = tonic::Request::new(request);
+        if let Some(key) = key {
+            let mut value = key
+                .expose()
+                .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                .map_err(|_| {
+                    SdkClientError::RegisterFailed("registration key is not valid gRPC metadata".to_string())
+                })?;
+            // Keeps the key out of `Debug` output of the request and out of HTTP/2
+            // header-compression indexing on the wire.
+            value.set_sensitive(true);
+            request.metadata_mut().insert(REGISTRATION_KEY_METADATA_KEY, value);
+        }
         let resp = self
             .client
             .register(request)
@@ -95,7 +126,8 @@ impl GatewayRegistrationClient {
 }
 
 /// The `ProtoAgentId` triple this config's durable identity registers as:
-/// `org_id` (currently always empty — `AssemblyConfig` has no org concept),
+/// `org_id` (the configured *claim*, empty when none — the gateway decides the
+/// authoritative org from the registration key, AAASM-6444),
 /// `team_id` from config, and the `did:key` derived from the durable keypair.
 ///
 /// Shared by [`build_challenge_request`] and [`build_register_request`] so the
@@ -109,7 +141,7 @@ impl GatewayRegistrationClient {
 /// the registered record even after AAASM-5835 corrected `agent_id` alone.
 pub(crate) fn registered_identity(config: &AssemblyConfig, keypair: &AgentKeypair) -> ProtoAgentId {
     ProtoAgentId {
-        org_id: String::new(),
+        org_id: config.org_id.clone().unwrap_or_default(),
         team_id: config.team_id.clone().unwrap_or_default(),
         agent_id: keypair.did_key(),
     }
@@ -225,15 +257,38 @@ mod tests {
                     .to_string_lossy()
                     .into_owned(),
             ),
+            org_id: None,
+            registration_key: None,
         }
     }
 
-    const TEST_NONCE: &[u8] = &[7u8; 32];
+    /// A fresh random challenge nonce, fixed for the test process. The gateway issues a
+    /// real nonce per registration, so nothing here may depend on its value: the
+    /// tests assert on the request carrying it and on the signature verifying over
+    /// it, never on particular bytes. (A literal here is also a hard-coded
+    /// cryptographic value to static analysis.)
+    fn nonce() -> &'static [u8] {
+        static NONCE: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+        NONCE.get_or_init(rand::random::<[u8; 32]>)
+    }
+
+    /// AAASM-6444: the configured org rides on the registration `AgentId` as a
+    /// claim, and is empty when none is configured (the gateway then derives it
+    /// from the registration key or leaves the agent org-less).
+    #[test]
+    fn register_request_carries_the_org_claim_only_when_configured() {
+        let mut config = cfg("org-agent");
+        let none = build_register_request(&config, "n".into(), "custom".into(), nonce()).expect("enrolment");
+        assert_eq!(none.agent_id.expect("agent_id").org_id, "");
+        config.org_id = Some("acme".into());
+        let claimed = build_register_request(&config, "n".into(), "custom".into(), nonce()).expect("enrolment");
+        assert_eq!(claimed.agent_id.expect("agent_id").org_id, "acme");
+    }
 
     #[test]
     fn register_request_carries_did_and_consistent_public_key() {
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("enrolment");
 
         let agent_id = req.agent_id.expect("agent_id must be set");
         assert!(agent_id.agent_id.starts_with("did:key:z"), "got {}", agent_id.agent_id);
@@ -260,15 +315,15 @@ mod tests {
         use ed25519_dalek::{Signature, VerifyingKey};
 
         let config = cfg("my-agent");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("enrolment");
 
-        assert_eq!(req.registration_nonce, TEST_NONCE);
+        assert_eq!(req.registration_nonce, nonce());
 
         let pk_bytes: [u8; 32] = hex::decode(&req.public_key).unwrap().try_into().unwrap();
         let vk = VerifyingKey::from_bytes(&pk_bytes).unwrap();
         let sig = Signature::from_bytes(&req.possession_proof.as_slice().try_into().unwrap());
         // Verifies over the nonce …
-        assert!(vk.verify_strict(TEST_NONCE, &sig).is_ok());
+        assert!(vk.verify_strict(nonce(), &sig).is_ok());
         // … and NOT over the did:key (the old, replayable challenge).
         let did = req.agent_id.unwrap().agent_id;
         assert!(vk.verify_strict(did.as_bytes(), &sig).is_err());
@@ -278,7 +333,7 @@ mod tests {
     fn challenge_request_binds_same_did_and_public_key_as_register() {
         let config = cfg("my-agent");
         let challenge = build_challenge_request(&config).expect("enrolment");
-        let req = build_register_request(&config, "My Agent".into(), "custom".into(), TEST_NONCE).expect("load");
+        let req = build_register_request(&config, "My Agent".into(), "custom".into(), nonce()).expect("load");
 
         assert_eq!(challenge.agent_id, req.agent_id);
         assert_eq!(challenge.public_key, req.public_key);
@@ -290,7 +345,7 @@ mod tests {
         config.team_id = Some("team-payments".into());
         config.parent_agent_id = Some("11111111-2222-3333-4444-555555555555".into());
 
-        let req = build_register_request(&config, "Child".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "Child".into(), "custom".into(), nonce()).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "team-payments");
         assert_eq!(
@@ -302,7 +357,7 @@ mod tests {
     #[test]
     fn register_request_omits_lineage_when_unset() {
         let config = cfg("root-agent");
-        let req = build_register_request(&config, "Root".into(), "custom".into(), TEST_NONCE).expect("enrolment");
+        let req = build_register_request(&config, "Root".into(), "custom".into(), nonce()).expect("enrolment");
 
         assert_eq!(req.agent_id.expect("agent_id must be set").team_id, "");
         assert_eq!(req.parent_agent_id, None);

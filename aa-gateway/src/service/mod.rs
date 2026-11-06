@@ -81,6 +81,7 @@ pub mod approval_service;
 pub mod audit_service;
 pub mod convert;
 pub mod lifecycle_service;
+pub mod org_binding;
 pub mod policy_service;
 pub mod secrets_service;
 pub mod topology_service;

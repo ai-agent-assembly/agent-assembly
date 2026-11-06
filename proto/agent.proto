@@ -127,7 +127,12 @@ message RegisterResponse {
   // For root agents equals the registering agent's own UUID bytes.
   // For sub-agents equals parent.root_agent_id (propagated transitively).
   optional bytes  root_agent_id          = 6;
-  // next: 7
+  // Authoritative organization the gateway recorded for this agent (AAASM-6444). Set only when the
+  // registration was bound to an organization; absent for an org-less agent and from gateways that
+  // predate the field. The client must register-key and address the agent by the triple that carries
+  // this value, since the registry key hashes `org_id/team_id/agent_id`.
+  optional string org_id                 = 7;
+  // next: 8
 }
 
 // ── Heartbeat ─────────────────────────────────────────────────────────────────

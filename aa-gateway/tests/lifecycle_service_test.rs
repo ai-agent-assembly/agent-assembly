@@ -17,6 +17,49 @@ use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tokio::net::TcpListener;
 use tonic::transport::{Channel, Server};
 
+// ── Operator org binding (AAASM-6444) ──────────────────────────────────────
+//
+// `Register` no longer admits an `agent_id.org_id` claim without an operator
+// credential. These tests exercise lifecycle behaviour, not the binding itself
+// (see `register_org_binding_test.rs`), so the server runs as an operator-trusted
+// gateway: an unbound admin key is attached to every request by a server-side
+// interceptor and the binder validates it.
+
+fn operator_key() -> &'static (String, aa_auth::api_key::ApiKeyEntry) {
+    static KEY: std::sync::OnceLock<(String, aa_auth::api_key::ApiKeyEntry)> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let key = aa_auth::api_key::ApiKey::generate();
+        let entry = aa_auth::api_key::ApiKeyEntry {
+            id: "operator".into(),
+            key_hash: key.hash().unwrap(),
+            scopes: vec![aa_auth::scope::Scope::Admin],
+            created_at: 0,
+            expires_at: None,
+            label: None,
+            team_id: None,
+            org_id: None,
+            key_lookup: Some(key.lookup()),
+        };
+        (key.as_str().to_owned(), entry)
+    })
+}
+
+fn operator_binder() -> aa_gateway::service::org_binding::OrgBinder {
+    aa_gateway::service::org_binding::OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(vec![
+        operator_key().1.clone(),
+    ])))
+}
+
+fn operator_interceptor() -> impl FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Clone {
+    |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert(
+            aa_gateway::service::org_binding::REGISTRATION_KEY_METADATA_KEY,
+            operator_key().0.parse().unwrap(),
+        );
+        Ok(req)
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// The deterministic test keypair. Register/RequestChallenge now bind the
@@ -85,7 +128,7 @@ fn test_agent_id() -> ProtoAgentId {
 /// Start an AgentLifecycleService gRPC server and return the address + registry.
 async fn start_server() -> (SocketAddr, Arc<AgentRegistry>) {
     let registry = Arc::new(AgentRegistry::new());
-    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry));
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_org_binder(operator_binder());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -95,7 +138,10 @@ async fn start_server() -> (SocketAddr, Arc<AgentRegistry>) {
         let _reg = registry_clone;
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(service))
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                service,
+                operator_interceptor(),
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -119,7 +165,8 @@ async fn start_server_with_engine(
     let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
     let engine = Arc::new(PolicyEngine::load_from_file(tmp.path(), alert_tx).unwrap());
 
-    let service = AgentLifecycleServiceImpl::with_policy_engine(Arc::clone(&registry), Arc::clone(&engine));
+    let service = AgentLifecycleServiceImpl::with_policy_engine(Arc::clone(&registry), Arc::clone(&engine))
+        .with_org_binder(operator_binder());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -127,7 +174,10 @@ async fn start_server_with_engine(
     tokio::spawn(async move {
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(service))
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                service,
+                operator_interceptor(),
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -141,7 +191,9 @@ async fn start_server_with_engine(
 /// tenancy posture, so the registration invariant can be exercised.
 async fn start_server_with_tenancy(mode: aa_gateway::service::TenancyMode) -> (SocketAddr, Arc<AgentRegistry>) {
     let registry = Arc::new(AgentRegistry::new());
-    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_tenancy_mode(mode);
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry))
+        .with_org_binder(operator_binder())
+        .with_tenancy_mode(mode);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -151,7 +203,10 @@ async fn start_server_with_tenancy(mode: aa_gateway::service::TenancyMode) -> (S
         let _reg = registry_clone;
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(service))
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                service,
+                operator_interceptor(),
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();
@@ -985,7 +1040,9 @@ async fn start_server_with_audit() -> (
 ) {
     let registry = Arc::new(AgentRegistry::new());
     let (audit_tx, audit_rx) = tokio::sync::mpsc::channel::<aa_core::AuditEntry>(64);
-    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_audit_tx(audit_tx);
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry))
+        .with_org_binder(operator_binder())
+        .with_audit_tx(audit_tx);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -993,7 +1050,10 @@ async fn start_server_with_audit() -> (
     tokio::spawn(async move {
         let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
         Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(service))
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                service,
+                operator_interceptor(),
+            ))
             .serve_with_incoming(incoming)
             .await
             .unwrap();

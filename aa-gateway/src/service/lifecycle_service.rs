@@ -28,6 +28,7 @@ use crate::registry::convert::{
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
+use crate::service::org_binding::OrgBinder;
 use crate::service::TenancyMode;
 
 /// Default heartbeat interval returned to agents at registration (seconds).
@@ -280,6 +281,7 @@ fn rebind_existing(existing: &AgentRecord, public_key: &str) -> Result<Response<
         parent_agent_id: existing.parent_agent_id.clone(),
         team_id: existing.team_id.clone(),
         root_agent_id: existing.root_agent_id.map(|b| b.to_vec()),
+        org_id: existing.org_id.clone(),
     }))
 }
 
@@ -303,6 +305,11 @@ pub struct AgentLifecycleServiceImpl {
     /// team-less agents exactly as before; in [`TenancyMode::Tenanted`],
     /// `Register` rejects an agent that carries no `team_id`.
     tenancy_mode: TenancyMode,
+    /// Authoritative organization binding for `Register` (AAASM-6444). Defaults
+    /// to a binder over an empty key store, which fails closed: an agent can
+    /// only be org-less until the operator wires an org-bound key store via
+    /// [`Self::with_org_binder`].
+    org_binder: OrgBinder,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -316,6 +323,7 @@ impl AgentLifecycleServiceImpl {
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
             challenges: Arc::new(InMemoryChallengeStore::default()),
             tenancy_mode: TenancyMode::default(),
+            org_binder: OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(Vec::new()))),
         }
     }
 
@@ -332,6 +340,7 @@ impl AgentLifecycleServiceImpl {
             audit_last_hash: Arc::new(Mutex::new([0u8; 32])),
             challenges: Arc::new(InMemoryChallengeStore::default()),
             tenancy_mode: TenancyMode::default(),
+            org_binder: OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(Vec::new()))),
         }
     }
 
@@ -363,6 +372,13 @@ impl AgentLifecycleServiceImpl {
     /// [`TenancyMode::Untenanted`], registration is unchanged.
     pub fn with_tenancy_mode(mut self, mode: TenancyMode) -> Self {
         self.tenancy_mode = mode;
+        self
+    }
+
+    /// Bind agent organizations to operator credentials (AAASM-6444). See
+    /// [`crate::service::org_binding`] for the decision table.
+    pub fn with_org_binder(mut self, binder: OrgBinder) -> Self {
+        self.org_binder = binder;
         self
     }
 }
@@ -419,6 +435,17 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
     }
 
     async fn register(&self, request: Request<RegisterRequest>) -> Result<Response<RegisterResponse>, Status> {
+        // AAASM-6444: the organization is decided from the operator credential
+        // in the request metadata, never from `agent_id.org_id` alone. Resolved
+        // before `into_inner` drops the metadata and before the challenge nonce
+        // is consumed, so a refused claim burns no nonce.
+        let claimed_org = request
+            .get_ref()
+            .agent_id
+            .as_ref()
+            .map(|id| id.org_id.clone())
+            .unwrap_or_default();
+        let bound_org = self.org_binder.resolve(&request, &claimed_org)?;
         let req = request.into_inner();
 
         let proto_id = req
@@ -480,16 +507,26 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             .await?;
         verify_possession_proof(&verifying_key, &req.registration_nonce, &req.possession_proof)?;
 
-        let agent_key = proto_agent_id_to_key(proto_id);
+        // The registry key hashes the whole triple, so it is built from the
+        // authoritative organization (AAASM-6444), not the claimed one.
+        let effective_id = ProtoAgentId {
+            org_id: bound_org.clone().unwrap_or_default(),
+            team_id: proto_id.team_id.clone(),
+            agent_id: proto_id.agent_id.clone(),
+        };
+        let agent_key = proto_agent_id_to_key(&effective_id);
 
         // AAASM-6447: a later process of an agent that is already registered
         // re-binds to the same identity instead of being refused. Reaching this
         // line means the caller just signed a fresh server-issued nonce with the
         // private half of `public_key`, and `enforce_did_key_binding` tied that
         // key to the `agent_id` did:key — so it is the same principal, not
-        // someone who merely knows the id. The registry key also hashes
-        // `org_id/team_id`, so a different org or team can never land on this
-        // record: it is a different agent and registers on its own.
+        // someone who merely knows the id. The registry key hashes the
+        // *authoritative* `org_id/team_id/agent_id` (`effective_id` above, after the
+        // org binding ran), so a process presenting a different key, or a different
+        // team, can never land on this record: it is a different agent and registers
+        // on its own, and a process with no key that claims an org was already refused
+        // by the binding. A re-bind returns the record's own org and never changes it.
         if let Some(existing) = self.registry.get(&agent_key) {
             return rebind_existing(&existing, &req.public_key);
         }
@@ -504,13 +541,9 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         } else {
             Some(proto_id.team_id.clone())
         };
-        // AAASM-2008 — capture org_id from proto into AgentRecord so the
-        // multi-tenancy tier is queryable as a first-class field.
-        let echo_org_id = if proto_id.org_id.is_empty() {
-            None
-        } else {
-            Some(proto_id.org_id.clone())
-        };
+        // AAASM-2008 / AAASM-6444 — the record's org is the authenticated binding
+        // resolved above, never the raw `agent_id.org_id` claim.
+        let echo_org_id = bound_org;
 
         // Compute root_agent_id, parent_key, and depth server-side before building the record.
         // Root agents: root = self, depth = 0, parent_key = None.
@@ -518,7 +551,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // Fail with INVALID_ARGUMENT if the declared parent is not registered.
         let (root_agent_id, resolved_parent_key, agent_depth) = if let Some(ref parent_str) = echo_parent_agent_id {
             let parent_proto_id = ProtoAgentId {
-                org_id: proto_id.org_id.clone(),
+                org_id: effective_id.org_id.clone(),
                 team_id: proto_id.team_id.clone(),
                 agent_id: parent_str.clone(),
             };
@@ -565,7 +598,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             parent_key: resolved_parent_key,
             enforcement_mode: authoritative_enforcement_mode(req.enforcement_mode),
             enforcement_mode_expires_at: None,
-            org_id: echo_org_id,
+            org_id: echo_org_id.clone(),
         };
 
         let public_key = record.public_key.clone();
@@ -588,6 +621,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
 
         // root_agent_id is Copy ([u8;16]) so we can use it after moving into record above.
         let echo_root = root_agent_id.map(|b| b.to_vec());
+        let echo_org_echo = echo_org_id;
 
         Ok(Response::new(RegisterResponse {
             credential_token,
@@ -596,6 +630,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             parent_agent_id: echo_parent_agent_id,
             team_id: echo_team_id,
             root_agent_id: echo_root,
+            org_id: echo_org_echo,
         }))
     }
 
