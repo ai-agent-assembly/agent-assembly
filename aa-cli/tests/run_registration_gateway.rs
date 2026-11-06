@@ -363,30 +363,62 @@ async fn registering_the_clis_did_under_a_foreign_key_is_refused() -> anyhow::Re
 
 // ── parity: neither surface is on easier terms than the other ──────────────
 
-/// Equivalent inputs, equivalent outcomes — asserted in both directions.
+/// Equivalent inputs, equivalent outcomes — asserted in both directions, and the
+/// re-bind rule pinned from both sides (AAASM-6447).
 ///
 /// Forward: the SDK configured with the identifier the CLI already registered
 /// collides with it (`AlreadyExists`) instead of creating a second record. That
 /// is a stronger statement than "both were accepted": it shows the two surfaces
 /// resolve to *one* agent in the registry, which is what a single identity
 /// contract has to mean. A CLI on its own weaker terms would land elsewhere and
-/// both would succeed.
+/// both would succeed. The CLI registers with no operator key, so its record has no
+/// organization and **nothing can re-bind it**: the SDK is refused with a plain
+/// collision and is not handed the CLI's credential.
+///
+/// Authorized half: an SDK presenting an operator key bound to an organization
+/// registers, and a *later process* presenting that key again re-binds to the same
+/// record and credential. The two keyed registrations are one agent, distinct from
+/// the CLI's org-less one.
 ///
 /// Backward: an SDK request degraded exactly as the CLI's was is refused by the
 /// same check with the same code and the same message. Without this half, a
 /// gateway that accepted everything would satisfy the forward half.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
-    let gateway = TestGateway::start().await?;
+    let key = aa_auth::api_key::ApiKey::generate();
+    let entry = aa_auth::api_key::ApiKeyEntry {
+        id: "cli-parity".into(),
+        key_hash: key.hash().expect("hash the operator key"),
+        scopes: vec![aa_auth::scope::Scope::Read],
+        created_at: 0,
+        expires_at: None,
+        label: None,
+        team_id: None,
+        org_id: Some("acme".into()),
+        key_lookup: Some(key.lookup()),
+    };
+    let binder =
+        aa_gateway::service::org_binding::OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(vec![
+            entry,
+        ])));
+    let gateway = TestGateway::start_with_binder(binder).await?;
     let _env = GatewayEnv::point_at(gateway.endpoint());
 
     // The CLI's path: accepted.
     let cli = run_registration::register(descriptor("shared-identity", "L2Enforce"))
         .await
         .expect("the CLI must be accepted");
+    let cli_token = gateway
+        .registry()
+        .list()
+        .iter()
+        .map(|r| r.credential_token.clone())
+        .next()
+        .expect("the CLI's record exists");
 
-    // The SDK's path, same identifier: the *same* agent, so the gateway says the
-    // identity is taken rather than filing a second record beside it.
+    // The SDK's path, same identifier and no operator key: the *same* agent, so
+    // the gateway says the identity is taken rather than filing a second record
+    // beside it, and an org-less record cannot be re-bound by anyone.
     let config = sdk_config("shared-identity");
     let nonce = fresh_nonce(gateway.endpoint(), &config).await;
     let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce)
@@ -404,6 +436,10 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         tonic::Code::AlreadyExists,
         "the SDK reached a different agent than the CLI did: {status:?}"
     );
+    assert!(
+        !status.message().contains(&cli_token),
+        "a refused re-bind must not disclose the CLI's credential"
+    );
     assert_eq!(
         gateway.registry().list().len(),
         1,
@@ -414,6 +450,39 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
             .iter()
             .map(|r| hex::encode(r.agent_id))
             .collect::<Vec<_>>()
+    );
+
+    // Authorized half: with an org-bound operator key an SDK process registers,
+    // and the next process of the same agent re-binds to it.
+    let keyed = sdk_config("keyed-identity");
+    let registration_key = aa_sdk_client::RegistrationKey::new(key.as_str());
+    let mut tokens = Vec::new();
+    for _ in 0..2 {
+        let mut client = aa_sdk_client::gateway::GatewayRegistrationClient::connect(gateway.endpoint().to_string())
+            .await
+            .expect("the test gateway must be reachable");
+        let challenge = client
+            .request_challenge(build_challenge_request(&keyed).expect("durable identity"))
+            .await
+            .expect("challenge");
+        let request = build_register_request(&keyed, "sdk-agent".into(), "langgraph".into(), &challenge.nonce)
+            .expect("durable identity");
+        let response = client
+            .register_with_key(request, Some(&registration_key))
+            .await
+            .expect("an operator-authorized process must register and re-bind");
+        assert_eq!(response.org_id.as_deref(), Some("acme"));
+        tokens.push(response.credential_token);
+    }
+    assert_eq!(
+        tokens[0], tokens[1],
+        "the later process re-binds to the same credential"
+    );
+    assert_ne!(tokens[0], cli_token, "the keyed agent is not the CLI's org-less agent");
+    assert_eq!(
+        gateway.registry().list().len(),
+        2,
+        "the CLI's agent and one keyed agent, no more"
     );
 
     // And the SDK is refused by exactly the check that refuses the CLI. A fresh
