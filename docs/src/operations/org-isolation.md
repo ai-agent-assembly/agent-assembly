@@ -69,6 +69,26 @@ Only the org the registration binding validated is ever used as the agent's org
 An unusable header (blank, non-ASCII, or sent twice) is `Unauthenticated`, never
 "no key".
 
+### A later process of an already-registered agent
+
+A second process of an agent that is already registered (same did:key, team and
+organization) re-binds to the existing record, and receives its existing credential
+and `team_id`, **only** when it presents a registration key bound to the record's
+organization. Proving possession of the agent key shows who the agent is, not that
+the caller may take over its credential, so the operator's key is what authorizes it.
+
+Every other case is the same `AlreadyExists` a plain duplicate gets, with no
+credential in the response:
+
+* the record has no organization (registered without a key, as the CLI does);
+* the caller is an unbound admin key merely asserting the organization;
+* the registration is still in flight, or its durable write was rolled back (retry).
+
+**Limitation.** An org-less agent, or an agent registered without an operator key,
+can never be re-bound: its later processes keep colliding, run unregistered, and
+their audit entries carry the agent name without a `team_id`. Register such agents
+with an organization-bound key to get one identity across processes.
+
 ### Issuing and revoking keys
 
 `cargo run -p aa-auth --example aa-keygen -- --keys-file <AA_API_KEYS_PATH file>
