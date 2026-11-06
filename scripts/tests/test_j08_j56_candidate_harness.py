@@ -63,6 +63,7 @@ class FakeBackend(H.Backend):
         self.pending: list[dict[str, str]] = []
         self.reverted = False
         self.dead = False
+        self.after_wait = False
 
     def version_of(self, name):
         return 0, f"{name} {'0.0.1-rc.7' if self.mode == 'wrong_version' else self.version}\n"
@@ -84,6 +85,8 @@ class FakeBackend(H.Backend):
         return 0, self.agent + "\n"
 
     def audit(self, agent):
+        if self.mode == "audit_fails_after_wait" and self.after_wait:
+            return 1, "audit store unavailable"
         if self.mode == "audit_fail":
             return 1, "boom"
         entries = [{"tool": t, "result": r} for t, r in self.log
@@ -103,6 +106,7 @@ class FakeBackend(H.Backend):
         self.waited = seconds  # never really sleeps in tests
         if self.mode == "policy_reverts":
             self.reverted = True  # the reconciler put the bootstrap policy back
+        self.after_wait = True
         if self.mode == "stack_dies_during_wait":
             self.dead = True  # the SDK fails closed: every call now raises a typed error and nothing is audited
 
@@ -123,6 +127,9 @@ class FakeBackend(H.Backend):
                 return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
             s.unlink(missing_ok=True)
             return {"executed": True, "error": None, "typed": False}
+        if tool == "read_file" and self.mode == "deny_everything_after_wait" and self.after_wait:
+            self.log.append((tool, "deny"))
+            return {"executed": False, "error": "PolicyViolationError", "typed": True}
         deny = (tool == "delete_file" and self.mode != "delete_allowed" and not self.reverted) or (tool == "read_file" and (not self.read_allowed or self.mode == "read_blocked"))
         if tool == "send_email":
             if self.mode == "email_sent":
@@ -484,6 +491,14 @@ class NegativeControlTests(unittest.TestCase):
         rep = self.check("policy_reverts", "j56-c-applied-policy-stays-enforced")
         detail = next(c["detail"] for c in rep["candidate_checks"] if c["id"] == "j56-c-applied-policy-stays-enforced")
         self.assertIn("ran 15s later", detail)
+
+    def test_a_lapse_to_a_deny_everything_policy_does_not_pass_durability(self):
+        rep = self.check("deny_everything_after_wait", "j56-c-applied-policy-stays-enforced")
+        detail = next(c["detail"] for c in rep["candidate_checks"] if c["id"] == "j56-c-applied-policy-stays-enforced")
+        self.assertIn("read_file, which the policy ALLOWs, did not run", detail)
+
+    def test_an_audit_export_that_fails_after_the_wait_does_not_pass_durability(self):
+        self.check("audit_fails_after_wait", "j56-c-applied-policy-stays-enforced")
 
     def test_a_stack_that_dies_during_the_wait_does_not_pass_durability(self):
         rep = self.check("stack_dies_during_wait", "j56-c-applied-policy-stays-enforced")
