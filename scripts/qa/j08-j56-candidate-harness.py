@@ -60,6 +60,9 @@ TEST = "scripts/tests/test_j08_j56_candidate_harness.py"
 # clean venv of the LangChain quick start must carry the full package, not only langchain-core. The core bound mirrors
 # the SDK's own `langchain-test` dependency group.
 README_PACKAGES = ("langchain", "langchain-classic", "langchain-community")  # the README's own install line
+# The gateway's file reconciler re-reads its watched policy file every 5s (AAASM-5382). A policy applied through
+# `aasm policy apply` has to outlive several of those ticks, so durability is only claimed after this long.
+DURABLE_WAIT_S = 15
 GRPC_PORT = 50051  # the gateway default the SDK and runtime resolve; not configurable per run
 LANGCHAIN_REQUIREMENT = ("langchain", "langchain-core>=1.4.9,<1.7.0")
 FIX = "scripts/qa/fixtures/j56"
@@ -136,6 +139,7 @@ class Backend:
     def audit(self, agent: str) -> tuple[int, str]: raise NotImplementedError
     def agent_list(self) -> tuple[int, str]: raise NotImplementedError
     def approvals(self, *args: str) -> tuple[int, str]: raise NotImplementedError
+    def wait(self, seconds: float) -> None: time.sleep(seconds)
     def stop(self) -> None: raise NotImplementedError
     # Framework matrix (J08 --frameworks): one venv per example, no gateway involved.
     def fw_install(self, fid: str, example: Path) -> tuple[int, str]: raise NotImplementedError
@@ -446,6 +450,49 @@ def _pending_approvals(be: Backend) -> tuple[list[dict[str, Any]] | None, str]:
     return (rows if isinstance(rows, list) else None), ""
 
 
+def check_durable(ctx: c.Context, be: Backend, cid: str, denied_before: bool) -> None:
+    """A deny that holds for a few seconds and then lapses is not governance. Every other row of this journey is
+    judged within moments of `aasm policy apply`; this one proves the applied policy is still the one enforced after
+    the gateway's reconcile ticks have run, by re-driving the denied tool and checking the side effect."""
+    neg = _tn("test_applied_policy_that_reverts_fails")
+    arts = BINARIES_ART + [WHEEL, "golden-path.v1.yaml"]
+    if not denied_before:
+        ctx.add(cid, c.NOT_COVERED, "real_local_process", "delete_file was not denied at first, so its durability cannot be shown", arts, neg)
+        return
+    denies_before = _audit_count(be, "delete_file", r"den(y|ied)|block")
+    be.wait(DURABLE_WAIT_S)
+    r, s, before = _drive(ctx, be, "delete_file", "durable")
+    p = []
+    if not _blocked(r):
+        p.append(f"delete_file was denied right after `policy apply` but ran {DURABLE_WAIT_S}s later (executed={r.get('executed')}, error={r.get('error')!r})")
+    if not s.exists() or s.read_text() != before:
+        p.append("the delete_file side effect occurred after the wait: the applied policy no longer governs the gateway")
+    # The SDK fails closed, so a runtime or gateway that died during the wait also yields a typed error and an
+    # untouched sentinel. Two further observations separate "policy still enforced" from "stack is gone": the
+    # audit chain must have recorded one more delete_file deny after the wait, and the ALLOWed tool must still run
+    # (which also catches a lapse to a deny-everything policy).
+    denies_after = _audit_count(be, "delete_file", r"den(y|ied)|block")
+    if denies_before is None or denies_after is None or denies_after <= denies_before:
+        p.append("the audit chain recorded no new delete_file deny after the wait, so the typed error is not shown to come from the applied policy")
+    a, as_, _ = _drive(ctx, be, "read_file", "durable-allow")
+    if not (a.get("executed") and as_.exists()):
+        p.append(f"read_file, which the policy ALLOWs, did not run after the wait ({a.get('error')!r}): the stack is not enforcing the applied policy")
+    _res(ctx, cid, p, f"{DURABLE_WAIT_S}s after the policy was applied delete_file is still denied (typed error, no side effect, a new audit deny) and read_file still runs",
+         arts, neg)
+
+
+def _audit_count(be: Backend, tool: str, verdict_rx: str) -> int | None:
+    rc, out = be.audit(getattr(be, "agent", ""))
+    try:
+        data = json.loads(out) if rc == 0 else None
+    except ValueError:
+        return None
+    entries = data.get("entries", data) if isinstance(data, dict) else data
+    if not isinstance(entries, list):
+        return None
+    return sum(1 for e in entries if tool in json.dumps(e).lower() and re.search(verdict_rx, json.dumps(e).lower()))
+
+
 def check_send_email(ctx: c.Context, be: Backend, cid: str) -> None:
     """Step 6: the APPROVAL tool must not run unapproved, must queue a pending approval an operator can see and
     resolve with the product CLI, and must leave an ApprovalRequested audit record. What the SDK does after an
@@ -591,8 +638,8 @@ def run_j56(ctx: c.Context, be: Backend, repo: Path) -> None:
     fx = {k: repo / v for k, v in SOURCES.items()}
     ok_id = "j56-c-install-clean-venv-native-core"
     rest = ["j56-c-register-authenticated", "j56-c-allow-read-file", "j56-c-deny-delete-file-typed-no-sideeffect",
-            "j56-c-send-email-approval-or-gap", "j56-c-audit-correlation", "j56-c-policy-flip-changes-behavior",
-            "j56-c-unwired-callbacks-control"]
+            "j56-c-applied-policy-stays-enforced", "j56-c-send-email-approval-or-gap", "j56-c-audit-correlation",
+            "j56-c-policy-flip-changes-behavior", "j56-c-unwired-callbacks-control"]
     if not check_install(ctx, be, "j56"):
         _skip(ctx, rest, f"{ok_id} did not pass, so the SDK cannot be driven")
         return
@@ -604,6 +651,7 @@ def run_j56(ctx: c.Context, be: Backend, repo: Path) -> None:
         return
     check_register(ctx, be, "j56-c-register-authenticated", with_agent_list=False)
     allowed, denied = check_allow_deny(ctx, be, "j56-c-allow-read-file", "j56-c-deny-delete-file-typed-no-sideeffect", None)
+    check_durable(ctx, be, "j56-c-applied-policy-stays-enforced", denied)
     check_send_email(ctx, be, "j56-c-send-email-approval-or-gap")
     check_audit(ctx, be, "j56-c-audit-correlation")
     check_flip(ctx, be, "j56-c-policy-flip-changes-behavior", fx["golden-path.v2-read-deny.yaml"], allowed)
@@ -823,7 +871,7 @@ def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None 
         c.check_artifact_binding(ctx, f"{pfx}-c-artifacts-bound-to-candidate", {**bins, WHEEL: wheel}, SOURCES, repo,
                                  a.expected, _tn("test_tampered_wheel_digest_fails"))
         ident = []
-        be = (backend_factory or (lambda *x: LocalBackend(*x)))(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
+        be = (backend_factory or LocalBackend)(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
         for name in ("aasm", "aa-gateway"):
             rc, out = be.version_of(name)
             if rc != 0 or not re.search(rf"(?<![\w.-]){re.escape(a.version)}(?![\w.])", out):

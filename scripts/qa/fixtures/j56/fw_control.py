@@ -62,10 +62,12 @@ def main():
     try:
         mod = importlib.import_module("src.policy")
     except Exception as e:  # noqa: BLE001
-        return emit(error="policy-import-failed", message=f"{type(e).__name__}: {e}"[:200])
+        emit(error="policy-import-failed", message=f"{type(e).__name__}: {e}"[:200])
+        return 0
     cls = find_engine(mod)
     if cls is None:
-        return emit(error="no-engine-with-check_tool_start")
+        emit(error="no-engine-with-check_tool_start")
+        return 0
     deny = (sorted(getattr(mod, "DENIED_TOOLS", ())) + sorted(getattr(mod, "PENDING_TOOLS", ()))
             + sorted(getattr(mod, "APPROVAL_REQUIRED_TOOLS", ())) + DENY_DEFAULTS)
     allow = list(getattr(mod, "TOOL_COSTS", {})) + ALLOW_DEFAULTS
@@ -81,7 +83,8 @@ def main():
         if d and ok and deny_inp:
             break
     else:
-        return emit(error="no-denied-and-allowed-tool-found", engine=cls.__name__)
+        emit(error="no-denied-and-allowed-tool-found", engine=cls.__name__)
+        return 0
     sd = Path(a.sentinel_dir)
 
     def body(name):
@@ -94,7 +97,8 @@ def main():
         body("allowed")
     emit(engine=cls.__name__, convention=conv, deny_tool=d, deny_input=deny_inp, allow_tool=ok,
          deny_status=verdict(cls, conv, d, deny_inp))
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())

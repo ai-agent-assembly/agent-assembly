@@ -1,0 +1,2 @@
+# Oldest glibc a shipped Linux executable may require (AAASM-6440).
+2.28
