@@ -111,7 +111,16 @@ aasm audit compliance-export \
 `GET /api/v1/logs` is also bound to the caller's own org: a key or token bound
 to one org is pinned to it, admin scope included (an explicit `?org_id=` for
 another org returns the caller's own org's entries, never the other's), and only
-an admin with **no** org binding may choose the org. Audit entries written before
+an admin with **no** org binding may choose the org.
+
+**Admin scope is cross-org on the other API routes.** Only `/api/v1/logs` pins an
+org-bound key. Other routes (violations and sandbox summaries under `/api/v1/audit`,
+topology, agents, approvals, edges, alerts) still treat the `admin` scope as a global
+administrator, so an `admin` key issued with `--org` can read other orgs' data there.
+Do not issue `--scope admin` keys with `--org` expecting a tenant-limited administrator;
+use `read` or `write` for org-bound keys.
+
+Audit entries written before
 the agent was registered with an `org_id`
 (or by lightweight test fixtures that bypass the registry) carry
 `org_id = None` on Lineage and **never match** an explicit `org_id`
