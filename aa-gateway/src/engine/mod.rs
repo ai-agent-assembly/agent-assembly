@@ -4846,9 +4846,11 @@ mod tests {
         // the *original* `allow: true` content, which matches that stale
         // baseline, so the poll never fires — `slot` stays stuck at
         // `false` forever, independent of how long this waits. See
-        // `start_reconciler`'s doc in `watcher.rs` for the fix (compare
-        // against `slot`, not a private baseline) — restored to the
-        // original *4 (20s) budget now that the real defect is fixed.
+        // `FileBaseline` in `watcher.rs` for the fix (the push path and the
+        // reconciler share one baseline, so the push-applied intermediate
+        // content is recorded and the restoring save counts as a change) —
+        // restored to the original *4 (20s) budget now that the real defect
+        // is fixed.
         rename_save(
             dir.path(),
             &path,

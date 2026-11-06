@@ -100,9 +100,12 @@ impl FileBaseline {
 /// Read `path` and, only if its content differs from the last content this
 /// watcher loaded and parses as a valid policy, swap it into `slot`.
 ///
-/// The compare-and-swap runs under the baseline lock so the push handler and
-/// the reconciler thread cannot interleave a stale read over a newer one.
+/// The read, compare and swap all run under the baseline lock so the push
+/// handler and the reconciler thread cannot interleave a stale read over a
+/// newer one: whichever takes the lock second reads the file after the first
+/// has recorded its content.
 fn reload_if_file_changed(path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>, baseline: &FileBaseline) {
+    let mut last_loaded = baseline.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Ok(yaml) = std::fs::read_to_string(path) else {
         return;
     };
@@ -111,7 +114,6 @@ fn reload_if_file_changed(path: &Path, slot: &Arc<ArcSwap<PolicyDocument>>, base
     if yaml.trim().is_empty() {
         return;
     }
-    let mut last_loaded = baseline.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if last_loaded.as_deref() == Some(yaml.as_str()) {
         return;
     }
@@ -775,10 +777,10 @@ mod tests {
     /// (that test's two saves land close enough together that inotify's
     /// push delivers the first one before the reconciler's next tick).
     ///
-    /// The fix (see `start_reconciler`'s doc) compares each tick's read
-    /// against `slot`'s *current* content instead of a private baseline, so
-    /// this file/slot desync self-corrects on the very next tick regardless
-    /// of how `slot` came to disagree with the file.
+    /// The fix (see [`FileBaseline`]) makes the push path and the reconciler
+    /// share one baseline: the push-applied intermediate content is recorded,
+    /// so the restoring save is a change relative to it and the next tick
+    /// loads it.
     #[test]
     fn reconciler_recovers_a_slot_desynced_by_an_external_push() {
         let dir = tempfile::tempdir().unwrap();
@@ -809,8 +811,8 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "reconciler did not recover a slot desynced by an external push — \
-                 it is comparing against a private baseline instead of `slot`'s \
-                 current content (AAASM-6052)"
+                 the restoring save was not seen as a change relative to the \
+                 baseline the push path recorded (AAASM-6052)"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
