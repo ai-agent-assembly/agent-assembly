@@ -340,6 +340,7 @@ def run_harness(argv: list[str]) -> int:
         ap.add_argument("--api-server-bin", required=True)
         ap.add_argument("--gateway-bin", help="live rows: candidate aa-gateway")
         ap.add_argument("--runtime-bin", help="live rows: candidate aa-runtime")
+        ap.add_argument("--keygen-bin", help="live rows: aa-keygen (cargo example of aa-auth) used to issue the org-bound operator keys")
         ap.add_argument("--sdk-wheel", help="live rows: candidate python-sdk wheel (its cp tag must match this interpreter)")
         ap.add_argument("--node-bin", help="dashboard row: node executable")
         ap.add_argument("--dashboard-dir", help="dashboard row: dashboard checkout whose node_modules has @playwright/test")
@@ -374,7 +375,8 @@ def run_harness(argv: list[str]) -> int:
         if is_live:
             stack.stop()  # the live stack binds the same fixed gRPC port
             be = live.make_backend_class()(ctx, {k: binaries[k] for k in ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")},
-                                           binaries[live.WHEEL], repo / live.LIVE_SOURCES["sdk_agent.py"])
+                                           binaries[live.WHEEL], repo / live.LIVE_SOURCES["sdk_agent.py"],
+                                           keygen=Path(a.keygen_bin).resolve() if a.keygen_bin else None)
             live.run_live(ctx, be, repo, {"node": Path(a.node_bin).resolve() if a.node_bin else None,
                                           "dash_dir": Path(a.dashboard_dir).resolve() if a.dashboard_dir else None,
                                           "browsers": Path(a.playwright_browsers).resolve() if a.playwright_browsers else None})

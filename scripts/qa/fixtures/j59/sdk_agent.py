@@ -27,6 +27,10 @@ def _init(a):
     kw = {"team_id": a.team} if a.team else {}
     if a.org:
         kw["org_id"] = a.org  # only passed when asked: the SDK may not accept it (see op_org_probe)
+    if a.registration_key_file:
+        # The operator key the gateway binds to an organization. Read from a file the harness wrote owner-only, so the
+        # secret is never on a command line or in a transcript.
+        kw["registration_key"] = Path(a.registration_key_file).read_text().strip()
     return init_assembly(gateway_url=a.gateway_url, api_key=a.key, agent_id=a.agent, mode="sdk-only", **kw)
 
 
@@ -94,6 +98,7 @@ def main():
     ap.add_argument("--agent")
     ap.add_argument("--team")
     ap.add_argument("--org")
+    ap.add_argument("--registration-key-file")
     ap.add_argument("--unwired", action="store_true")  # accepted so the J56 check helpers can drive this agent; unused
     ap.add_argument("--tool")
     ap.add_argument("--sentinel")
