@@ -9,30 +9,36 @@ beyond that port) and classifies the rest. Per step:
   1  install the recommended distribution      PENDING   needs published release assets / images
   2  start + health                            candidate (aasm start, /api/v1/health, aasm status)
   3  authentication                            candidate (401 without/with wrong key, ok with key)
-     tenancy / team model                      NOT_COVERED (no hermetic surface identified)
+     tenancy / team model                      live (j59-s3-tenancy-team-model: two SDK agents under two teams;
+                                               j59-s3-org-scoped-audit-filter: the documented org tier)
   4  load the golden-path policy               candidate (validate, apply, get)
-  5  allow / deny / approval                   candidate as an ENGINE decision: `aasm policy simulate`
-                                               replays three synthetic tool-call events through the
-                                               real policy engine. NOT a governed live agent action:
-                                               that stays NOT_COVERED (needs SDK/runtime; D5, AAASM-6415)
+  5  allow / deny / approval                   engine decision via `aasm policy simulate` (replayed synthetic
+                                               events) AND, with the live inputs, a governed live agent action
+                                               (j59-s5-live-agent-action-governed: real SDK -> runtime -> gateway)
   6  CLI and Dashboard operations              CLI candidate; dashboard asset served is a candidate check;
-                                               operating the dashboard is NOT_COVERED (browser)
-  7  audit, logs, observability                candidate for the surfaces; audit events from a governed
-                                               action are NOT_COVERED (no agent produced any)
+                                               j59-s6-dashboard-operations drives the dashboard with Playwright
+  7  audit, logs, observability                candidate for the surfaces; j59-s7-audit-events-of-governed-action
+                                               inspects the audit content of the governed actions
   8  change and apply a policy                 candidate
-  9  change affects behaviour                  candidate, again as an engine decision flip, not a live agent
+  9  change affects behaviour                  candidate, as an engine decision flip (see 12 for the live one)
   10 diagnose a bad policy / wrong endpoint    candidate
   11 roll back to known-good                   candidate
-  12 core-value moment                         NOT_COVERED (composite; needs the live-agent leg of 5 and 7)
+  12 core-value moment                         j59-s12-core-value-no-agent-change: the same unchanged agent is
+                                               allowed under policy 1.0.0 and denied under 1.1.0; audit records both
 
-NOT_COVERED rows keep the verdict at CANDIDATE_INCOMPLETE and withhold the obligation
-fragment: the obligation schema has no slot for "neither executed nor publication-
-dependent", so those rows would otherwise vanish silently. That is a decision for the
-release owner, not something this script can paper over.
+The five live rows (s3 tenancy, s5, s6 dashboard, s7, s12) need the live inputs: --gateway-bin, --runtime-bin and
+--sdk-wheel (all three, built from the candidate; run this script with the interpreter whose ABI tag matches the
+wheel), plus --node-bin, --dashboard-dir (a dashboard checkout with node_modules holding @playwright/test) and
+--playwright-browsers for the browser row. Without them the rows stay NOT_COVERED with the missing input named,
+which keeps the verdict at CANDIDATE_INCOMPLETE and withholds the obligation fragment. The live stack binds the
+gateway's fixed gRPC port 127.0.0.1:50051, so only one such run can be active on a host; it starts only after the
+`aasm start` steps above have stopped their own server. The live logic lives in scripts/qa/j59_live_agent.py and
+reuses the J08/J56 harness's LocalBackend and allow/deny/approval helpers.
 
 Usage:
   python3 -I scripts/qa/j59-candidate-harness.py --candidate-sha <40hex> --expected-version 0.0.1-rc.8 \
-      --repo <checkout> --aasm-bin <path> --api-server-bin <path> [--expected-digests d.json] [--out r.json]
+      --repo <checkout> --aasm-bin <path> --api-server-bin <path> [--expected-digests d.json] [--out r.json] \
+      [--gateway-bin <path> --runtime-bin <path> --sdk-wheel <whl> [--node-bin <node> --dashboard-dir <dir> --playwright-browsers <dir>]]
 """
 from __future__ import annotations
 
@@ -46,6 +52,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import b1_candidate_common as c  # noqa: E402
+import j59_live_agent as live  # noqa: E402
 
 SCRIPT = "scripts/qa/j59-candidate-harness.py"
 TEST = "scripts/tests/test_j59_candidate_harness.py"
@@ -120,12 +127,12 @@ class Stack:
 
     def __init__(self, ctx: c.Context, aasm: Path, api: Path):
         self.ctx = ctx
-        self.bindir = ctx.tmp / "bin"
+        self.bindir = ctx.tmp / "j59-bin"  # the live stack of the J08/J56 backend owns tmp/bin and tmp/home
         self.bindir.mkdir()
         self.aasm = self.bindir / "aasm"
         shutil.copy(aasm, self.aasm)
         shutil.copy(api, self.bindir / "aa-api-server")
-        self.home = ctx.tmp / "home"
+        self.home = ctx.tmp / "j59-home"
         self.home.mkdir()
         self.env = c.clean_env(self.home, {"PATH": f"{self.bindir}:/usr/bin:/bin", "AASM_API_KEY": TEST_KEY})
         self.port = c.free_port()
@@ -322,15 +329,8 @@ def run_steps(ctx: c.Context, st: Stack, repo: Path) -> None:
          "real_local_process", bins, f"{TEST}::test_rollback_not_restoring_fails")
 
 
-def not_covered(ctx: c.Context) -> None:
-    rows = [
-        ("j59-s3-tenancy-team-model", "step 3: no hermetic surface for the minimum tenancy/team model was identified; needs an owner decision on what to assert"),
-        ("j59-s5-live-agent-action-governed", "step 5: allow/deny/approval on a live governed agent action needs the SDK or runtime in the loop (python-sdk, D5 AAASM-6415 unmerged); the engine decision above is not this"),
-        ("j59-s6-dashboard-operations", "step 6: operating the dashboard needs a real browser"),
-        ("j59-s7-audit-events-of-governed-action", "step 7: no agent produced audit events, so audit content and trace were not inspected"),
-        ("j59-s12-core-value-no-agent-change", "step 12: composite of the live-agent legs of steps 5, 7 and 9; not executable without an agent"),
-    ]
-    for cid, why in rows:
+def not_covered(ctx: c.Context, why: str) -> None:
+    for cid in live.ROW_IDS:
         ctx.add(cid, c.NOT_COVERED, "real_local_process", why, [])
 
 
@@ -338,31 +338,60 @@ def run_harness(argv: list[str]) -> int:
     def extra(ap):
         ap.add_argument("--aasm-bin", required=True)
         ap.add_argument("--api-server-bin", required=True)
+        ap.add_argument("--gateway-bin", help="live rows: candidate aa-gateway")
+        ap.add_argument("--runtime-bin", help="live rows: candidate aa-runtime")
+        ap.add_argument("--sdk-wheel", help="live rows: candidate python-sdk wheel (its cp tag must match this interpreter)")
+        ap.add_argument("--node-bin", help="dashboard row: node executable")
+        ap.add_argument("--dashboard-dir", help="dashboard row: dashboard checkout whose node_modules has @playwright/test")
+        ap.add_argument("--playwright-browsers", help="dashboard row: Playwright browser cache directory")
     a = c.parse_common_args(argv, extra)
     repo = Path(a.repo).resolve()
+    live_args = {"--gateway-bin": a.gateway_bin, "--runtime-bin": a.runtime_bin, "--sdk-wheel": a.sdk_wheel}
+    if any(live_args.values()) and not all(live_args.values()):
+        print(f"the live rows need all of {', '.join(live_args)}; missing: {', '.join(k for k, v in live_args.items() if not v)}", file=sys.stderr)
+        return c.EXIT_USAGE
+    is_live = all(live_args.values())
     ctx = c.Context("J59", a.candidate_sha, a.expected_version)
     stack = None
+    be = None
     try:
         aasm, api = Path(a.aasm_bin).resolve(), Path(a.api_server_bin).resolve()
-        for name, p in (("aasm", aasm), ("aa-api-server", api), *[(k, repo / v) for k, v in SOURCES.items()]):
+        binaries = {"aasm": aasm, "aa-api-server": api}
+        sources = dict(SOURCES)
+        if is_live:
+            binaries.update({"aa-gateway": Path(a.gateway_bin).resolve(), "aa-runtime": Path(a.runtime_bin).resolve(),
+                             live.WHEEL: Path(a.sdk_wheel).resolve()})
+            sources.update(live.LIVE_SOURCES)
+        for name, p in (*binaries.items(), *[(k, repo / v) for k, v in sources.items()]):
             if not p.is_file():
                 print(f"missing artifact {name}: {p}", file=sys.stderr)
                 return c.EXIT_USAGE
             ctx.register(name, p)
-        c.check_artifact_binding(ctx, "j59-artifacts-bound-to-candidate", {"aasm": aasm, "aa-api-server": api},
-                                 SOURCES, repo, a.expected, f"{TEST}::test_tampered_binary_fails")
+        c.check_artifact_binding(ctx, "j59-artifacts-bound-to-candidate", binaries,
+                                 sources, repo, a.expected, f"{TEST}::test_tampered_binary_fails")
         stack = Stack(ctx, aasm, api)
         run_steps(ctx, stack, repo)
-        not_covered(ctx)
+        if is_live:
+            stack.stop()  # the live stack binds the same fixed gRPC port
+            be = live.make_backend_class()(ctx, {k: binaries[k] for k in ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")},
+                                           binaries[live.WHEEL], repo / live.LIVE_SOURCES["sdk_agent.py"])
+            live.run_live(ctx, be, repo, {"node": Path(a.node_bin).resolve() if a.node_bin else None,
+                                          "dash_dir": Path(a.dashboard_dir).resolve() if a.dashboard_dir else None,
+                                          "browsers": Path(a.playwright_browsers).resolve() if a.playwright_browsers else None})
+        else:
+            not_covered(ctx, "live-agent inputs (--gateway-bin, --runtime-bin, --sdk-wheel) were not supplied, so no agent was driven")
         report = c.build_report(ctx, SCRIPT, PENDING, FAILURE_RESPONSE, DEPENDS_ON)
         report["observations"] = [
-            "Steps 5 and 9 are engine decisions over replayed synthetic events (aasm policy simulate), not governed live agent actions.",
+            "j59-s5-engine-allow-deny-approval and j59-s9-change-flips-outcome are engine decisions over replayed synthetic events (aasm policy simulate); the live-agent rows (s3, s5, s6, s7, s12) are the governed-agent legs.",
+            "The live rows run one SDK program (fixtures/j59/sdk_agent.py, bound to the candidate commit) as two agents under two teams; audit attribution to an agent is done by this harness because `aasm audit export --agent` did not filter on the candidate.",
             "Candidate binaries are identified by version and by sha256 against the expected-digests record; aasm exposes no build-sha, so there is no build-sha check for J59.",
             "j59-published-binaries-golden-path is an operator step with no recording mechanism yet (tracked follow-up); post-publish-verify.py reports it INCONCLUSIVE, never PASS.",
-            "J59 can only reach CANDIDATE_VERIFIED once the NOT_COVERED rows are executed or the release owner records them as accepted gaps; the obligation schema has no field for them.",
+            "Rows are NOT_COVERED only when their inputs were not supplied (or the live stack did not come up); the obligation schema has no field for them, so J59 reaches CANDIDATE_VERIFIED only when every row is executed and PASS.",
         ]
         return c.finish(ctx, report, a.out, a.obligation_fragment)
     finally:
+        if be is not None:
+            be.stop()
         if stack:
             stack.stop()
         ctx.cleanup()
