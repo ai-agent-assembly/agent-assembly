@@ -566,15 +566,15 @@ class MatrixFixture(Fixture):
             (self.ex / f"python/{i}/src/main.py").write_text(REGION)
         self.ex_sha = _commit_repo(self.ex)
 
-    def argv(self, digests=True, sdk_sha=None, frameworks="all", ex_sha=None):
+    def argv(self, digests=True, sdk_sha=None, *, frameworks="all", ex_sha=None):
         a = super().argv(digests, sdk_sha or self.sdk_sha)
         return a + ["--frameworks", frameworks, "--sdk-dir", str(self.sdk), "--examples-dir", str(self.ex),
                     "--examples-sha", ex_sha or self.ex_sha]
 
-    def run(self, digests=True, sdk_sha=None, frameworks="all", ex_sha=None):
+    def run(self, digests=True, sdk_sha=None, factory_version=VERSION, *, frameworks="all", ex_sha=None):
         def factory(ctx, bins, wheel, driver):
-            return FakeBackend(self.mode, ctx)
-        rc = H.run_harness(self.argv(digests, sdk_sha, frameworks, ex_sha), factory)
+            return FakeBackend(self.mode, ctx, factory_version)
+        rc = H.run_harness(self.argv(digests, sdk_sha, frameworks=frameworks, ex_sha=ex_sha), factory)
         return rc, (json.loads(self.out.read_text()) if self.out.exists() else None)
 
 

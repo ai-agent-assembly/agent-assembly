@@ -871,7 +871,7 @@ def run_harness(argv: list[str], backend_factory: Callable[..., Backend] | None 
         c.check_artifact_binding(ctx, f"{pfx}-c-artifacts-bound-to-candidate", {**bins, WHEEL: wheel}, SOURCES, repo,
                                  a.expected, _tn("test_tampered_wheel_digest_fails"))
         ident = []
-        be = (backend_factory or (lambda *x: LocalBackend(*x)))(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
+        be = (backend_factory or LocalBackend)(ctx, bins, wheel, repo / SOURCES["sdk_driver.py"])
         for name in ("aasm", "aa-gateway"):
             rc, out = be.version_of(name)
             if rc != 0 or not re.search(rf"(?<![\w.-]){re.escape(a.version)}(?![\w.])", out):
