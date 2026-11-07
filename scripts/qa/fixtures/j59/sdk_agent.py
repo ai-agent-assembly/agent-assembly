@@ -43,7 +43,18 @@ def op_import_core(_a):
 
 
 def op_register(a):
-    emit(registered=bool(getattr(_init(a), "registered", False)), agent=a.agent, team=a.team)
+    # The SDK reports a refused registration as a stderr warning ("registration failed: <gateway status text>") and
+    # `registered=False`. Keep that warning so the harness can tell a duplicate-identity refusal from a crash; the SDK
+    # states its warnings carry no credentials, and the operator key is only ever read from a file.
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        ctx = _init(a)
+    sys.stderr.write(buf.getvalue())
+    warning = " ".join(buf.getvalue().split())[:300]
+    emit(registered=bool(getattr(ctx, "registered", False)), agent=a.agent, team=a.team, warning=warning)
 
 
 def _body(tool, sentinel: Path):
