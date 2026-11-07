@@ -789,15 +789,21 @@ async fn a_keyless_agent_process_restart_rebinds_to_the_same_record() {
     assert_eq!(record.credential_token, first.credential_token);
 }
 
-/// The marker lives on the record, so a later process built by a client that does
-/// not (or no longer) sets the flag still re-binds the record that has it.
+/// Re-binding needs BOTH: the stored record carries the marker, and the later process
+/// declares a held key itself. A client that does not (an old one, whose key may be
+/// computable) is never re-bound onto a record, so a squatter who registered first
+/// with a computable key and the flag set cannot hand it a credential the squatter
+/// already holds.
 #[tokio::test]
-async fn the_flag_is_read_from_the_record_not_from_the_later_request() {
-    let (addr, _, _) = start().await;
-    let (kp, id) = identity("flag-on-record", "");
+async fn a_later_process_that_does_not_declare_a_durable_key_is_not_rebound() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("flag-both-sides", "");
     let first = register_durable(addr, &kp, &id, None).await.unwrap();
-    let later = register(addr, &kp, &id, None).await.expect("re-bind without the flag");
-    assert_eq!(later.credential_token, first.credential_token);
+    let err = register(addr, &kp, &id, None)
+        .await
+        .expect_err("a process that does not declare a held key must not be re-bound");
+    assert_plain_collision(&err, &first.credential_token);
+    assert_eq!(registry.list().len(), 1);
 }
 
 /// A process that presents an operator key which resolves to no organization, and
@@ -839,7 +845,11 @@ async fn presenting_a_victims_did_with_another_key_obtains_no_credential() {
     let err = register_durable(addr, &attacker_kp, &victim_id, None)
         .await
         .expect_err("the attacker does not hold the victim's key");
-    assert_ne!(err.code(), Code::Ok);
+    assert_eq!(
+        err.code(),
+        Code::Unauthenticated,
+        "the did binding must be what refuses a did presented with another key: {err:?}"
+    );
     assert!(!err.message().contains(&first.credential_token), "{err:?}");
     assert_eq!(registry.list().len(), 1);
     assert_eq!(

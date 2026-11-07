@@ -116,7 +116,8 @@ message RegisterRequest {
   // re-bind an org-less record (AAASM-6447). Unset (every client that predates
   // it, and any request built outside aa-sdk-client) means the gateway cannot
   // tell a held key from a computable one, so that record is never re-bound by
-  // possession.
+  // possession. This is the client's own claim; the gateway cannot verify it, so a
+  // later process is re-bound only if it declares a held key too.
   bool                           durable_identity_key = 16;
   // next: 17
 }
