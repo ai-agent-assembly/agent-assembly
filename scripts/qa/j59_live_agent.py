@@ -644,12 +644,13 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
     if seen_teams != {rb_team}:
         problems.append(f"the re-bound agent's entries carry team_id {sorted(map(str, seen_teams))}, want only {rb_team!r}")
     # Half of "a key bound to the record's org" is the org: a later process presenting ANOTHER org's valid key is refused
-    # as a duplicate, the same as no key, with the right-key process above as its positive control.
-    wrong = be.sdk("register", agent=bound, org="acme", key_org="globex")
+    # as a duplicate, the same as no key, with the right-key process above as its positive control. It must claim no
+    # org, otherwise the refusal comes from the claim-versus-key gate (the spoof leg) and not from the re-bind rule.
+    wrong = be.sdk("register", agent=bound, key_org="globex")  # claims nothing: the key alone is org-bound, the record is not
     if not _duplicate_refusal(wrong):
         problems.append("a later process of an org-bound agent presenting another org's operator key was not refused as "
                         f"AlreadyExists (registered={wrong.get('registered')}, {_refusal_text(wrong)!r})")
-    nokey_later = be.sdk("register", agent=bound, org="acme", no_key=True)
+    nokey_later = be.sdk("register", agent=bound, no_key=True)  # no claim either: isolates the re-bind rule from the claim gate
     if nokey_later.get("registered"):
         problems.append("a later process of an org-bound agent presenting no key was registered")
     o1 = be.sdk("register", agent=orgless, no_key=True)

@@ -147,6 +147,13 @@ class FakeLive:
                 # A later process of an agent that is already registered (AAASM-6447): the gateway re-binds it only
                 # for an agent registered under an org-bound operator key presented again; otherwise AlreadyExists.
                 later_org = None if kw.get("no_key") else kw.get("key_org", kw.get("org"))
+                if later_org and kw.get("org") and kw["org"] != later_org:
+                    # the claim-versus-key gate runs before any re-bind decision (org_binding.rs), as on the real path
+                    return {"registered": False, "agent": agent, "error": "PermissionDenied",
+                            "warning": "registration failed: claimed org_id does not match the registration key"}
+                if kw.get("org") and not later_org:
+                    return {"registered": False, "agent": agent, "error": "PermissionDenied",
+                            "warning": "registration failed: org claim without a registration key"}
                 rebindable = agent in self.key_bound and later_org is not None and later_org == self.org_of.get(agent)
                 if self.mode == "any_key_rebinds":
                     rebindable = agent in self.key_bound and later_org is not None

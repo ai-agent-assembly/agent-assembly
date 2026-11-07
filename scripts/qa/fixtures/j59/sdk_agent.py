@@ -53,7 +53,12 @@ def op_register(a):
     with contextlib.redirect_stderr(buf):
         ctx = _init(a)
     sys.stderr.write(buf.getvalue())
-    warning = " ".join(buf.getvalue().split())[:300]
+    warning = " ".join(buf.getvalue().split())
+    if a.registration_key_file:
+        key = Path(a.registration_key_file).read_text().strip()
+        if key:
+            warning = warning.replace(key, "<redacted>")
+    warning = warning[:300]
     emit(registered=bool(getattr(ctx, "registered", False)), agent=a.agent, team=a.team, warning=warning)
 
 
