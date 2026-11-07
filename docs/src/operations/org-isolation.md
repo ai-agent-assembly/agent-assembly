@@ -89,9 +89,10 @@ duplicate gets, with no credential in the response:
 * the key is confined to a different team than the record's;
 * the registration is still in flight, or its durable write failed (retry).
 
-A process with a different key, a different org or no key does not reach the record
-at all: the registry identity includes the organization, so it simply registers a
-separate agent.
+A process with no key, or with a key bound to a different organization, does not
+reach the record at all: the registry identity includes the organization, so it
+simply registers a separate agent. A different key bound to the same organization
+does reach the record and re-binds only if the team rule above allows it.
 
 A registration abandoned mid-write (the client went away) is removed again, so a
 later re-bind is never handed its credential. If the durable write had already
