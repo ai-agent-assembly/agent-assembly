@@ -469,8 +469,7 @@ def check_team_model(ctx: Any, be: Any, cid: str) -> None:
                 problems.append(f"{view}: agent {agent}'s allow entry carries team_id {sorted(map(str, got))}, want {team!r}")
     _row(ctx, cid, problems,
          f"two agents registered by the SDK with team_id {TEAM_A!r} and {TEAM_B!r} appear as two one-agent teams in "
-         "/api/v1/topology/overview and their allow entries carry the matching team_id (a later SDK "
-         "process of an agent re-binds to the same identity, AAASM-6447)", arts, neg)
+         "/api/v1/topology/overview and their allow entries carry the matching team_id", arts, neg)
 
 
 def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
@@ -601,10 +600,51 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         _, filtered = items_of(f"/api/v1/logs?org_id={org}&per_page=500")
         if any(belongs(e, legacy, legacy_id) for e in (filtered or [])):
             problems.append(f"the org-less agent's entries matched ?org_id={org}")
+    # 5. Later process of an already-registered agent (AAASM-6447). The owner decision makes a re-bind operator-authorized:
+    # a later process re-binds to the existing identity only when it presents an operator key bound to the agent's org.
+    # The authorized leg runs the later process WITH the key; the org-less leg is the negative control and must stay a
+    # refusal. A later process of an org-less agent is NOT re-bound, so that leg FAILS the row if it ever registers: the
+    # original acceptance (one identity across processes) is met for org-bound agents only.
+    rb_team = TEAM_A
+    bound, orgless = f"j59r-{uuid.uuid4().hex[:6]}", f"j59n-{uuid.uuid4().hex[:6]}"
+    for name, org in ((bound, "acme"), (orgless, None)):
+        ok, why = be.add_agent(name, rb_team, org)
+        if not ok:
+            problems.append(why)
+    b1 = be.sdk("register", agent=bound, org="acme", key_org="acme")
+    b2 = be.sdk("register", agent=bound, org="acme", key_org="acme")  # a later process of the same agent, with the key
+    if not (b1.get("registered") and b2.get("registered")):
+        problems.append("an org-bound agent's later process, presenting its org's operator key, did not re-bind "
+                        f"(first registered={b1.get('registered')}, later registered={b2.get('registered')}, "
+                        f"{b2.get('error')} {b2.get('message', '')})".strip())
+    for tag in ("first", "later"):
+        s = H._sentinel(ctx, f"org-rebind-{tag}")
+        r = be.sdk("call", agent=bound, org="acme", tool="read_file", sentinel=s)
+        if not r.get("executed"):
+            problems.append(f"the {tag} process of the re-bound agent could not run read_file: {r.get('error')} {r.get('message', '')}".strip())
+    ids, _ = registered_ids(be)
+    _, acme_items = items_of("/api/v1/logs?org_id=acme&per_page=500")
+    own = [e for e in (acme_items or []) if belongs(e, bound, ids.get(bound))]
+    seen_ids = {e["agent_id"] for e in own}
+    seen_teams = {e["payload"].get("team_id") for e in own}
+    if len(seen_ids) != 1:
+        problems.append(f"the re-bound agent's entries carry {len(seen_ids)} agent ids {sorted(map(str, seen_ids))}, want one")
+    if seen_teams != {rb_team}:
+        problems.append(f"the re-bound agent's entries carry team_id {sorted(map(str, seen_teams))}, want only {rb_team!r}")
+    o1 = be.sdk("register", agent=orgless, no_key=True)
+    o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
+    if not o1.get("registered"):
+        problems.append(f"negative control failed: the org-less agent's first process did not register ({o1.get('error')} {o1.get('message', '')})".strip())
+    if o2.get("registered"):
+        problems.append("an org-less agent's later process was re-bound; the owner decision allows no re-bind without an "
+                        "org-bound operator key (it must get AlreadyExists)")
     _row(ctx, cid, problems,
          "two orgs registered with org-bound operator keys: ?org_id= returns only each org's events; an acme-bound key cannot "
          "read globex (admin control sees it); acme's key claiming globex is refused and registers nothing; no key plus an org "
-         "claim is refused; an org-less agent registers with org_id null and never matches an org filter", arts, neg)
+         "claim is refused; an org-less agent registers with org_id null and never matches an org filter; AAASM-6447 is "
+         "resolved ONLY for operator-key-authorized org-bound agents (a later process presenting the org's key re-binds to one "
+         "agent id with its team_id) and is NOT resolved for org-less agents (a later process gets AlreadyExists and is not "
+         "re-bound: the acceptance is not met for them)", arts, neg)
 
 
 def _blocked_now(be: Any, ctx: Any, tag: str) -> tuple[bool, dict[str, Any]]:

@@ -54,6 +54,9 @@ class FakeLive:
         self.org_key_files = {"acme": Path("acme.key"), "globex": Path("globex.key")}
         self.org_keys_error = "no aa-keygen" if mode == "no_keygen" else None
         self.refused: set[str] = set()
+        self.key_bound: set[str] = set()  # agents registered under an org-bound operator key (AAASM-6447)
+        self.registered_once: set[str] = set()
+        self.rebound: set[str] = set()
         self.driver = ctx.tmp / "sdk_agent.py"
         self.driver.write_text("# the unchanged agent program\n")
         self.dash_calls = 0
@@ -89,6 +92,7 @@ class FakeLive:
         if claim and claim != key_org and self.mode != "spoof_accepted":
             return False, "claimed org does not match the key's organization"
         self.org_of[agent] = claim or key_org
+        self.key_bound.add(agent)
         return True, ""
 
     # -- policy
@@ -139,9 +143,21 @@ class FakeLive:
             return {"executed": False, "error": "RegisterFailed", "typed": False, "message": "registration refused"}
         if op == "register":
             self.seen.setdefault(agent, 0)
+            if agent in self.registered_once:
+                # A later process of an agent that is already registered (AAASM-6447): the gateway re-binds it only
+                # for an agent registered under an org-bound operator key presented again; otherwise AlreadyExists.
+                rebindable = agent in self.key_bound and kw.get("key_org", kw.get("org")) and not kw.get("no_key")
+                if self.mode == "orgless_rebound":
+                    rebindable = True
+                if self.mode == "bound_no_rebind":
+                    rebindable = False
+                if not rebindable:
+                    return {"registered": False, "agent": agent, "error": "AlreadyExists", "message": "agent already registered"}
+                self.rebound.add(agent)
+            self.registered_once.add(agent)
             return {"registered": True, "agent": agent}
         tool, s = kw["tool"], Path(kw["sentinel"])
-        first = self.seen.get(agent, 0) == 0
+        first = self.seen.get(agent, 0) == 0 or agent in self.rebound
         self.seen[agent] = self.seen.get(agent, 0) + 1
         if self.mode == "driver_mutated" and tool == "read_file" and self.file_version == "1.1.0":
             self.driver.write_text("# the program was edited to make the call pass\n")
@@ -395,6 +411,21 @@ class LiveRowTests(unittest.TestCase):
         row = self._org_row("cross_org_read_allowed")
         self.assertEqual(row.status, "FAIL")
         self.assertIn("acme-bound key", row.detail)
+
+    def test_s3_org_less_agent_rebound_fails(self):
+        """The org-less negative control: the row fails if an org-less agent's later process is ever re-bound."""
+        row = self._org_row("orgless_rebound")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("org-less agent's later process was re-bound", row.detail)
+
+    def test_s3_org_bound_agent_not_rebound_with_its_key_fails(self):
+        row = self._org_row("bound_no_rebind")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("did not re-bind", row.detail)
+
+    def test_s3_org_row_states_the_rebind_limitation(self):
+        row = self._org_row("good")
+        self.assertIn("NOT resolved for org-less agents", row.detail)
 
     def test_s3_spoofed_org_registered_fails(self):
         row = self._org_row("spoof_accepted")
