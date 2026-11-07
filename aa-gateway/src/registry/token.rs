@@ -125,6 +125,30 @@ mod tests {
     }
 
     #[test]
+    fn a_record_without_a_credential_validates_no_token_including_the_empty_one() {
+        // AAASM-6450: a record rehydrated from storage carries an empty credential.
+        // `ct_eq` of two empty strings is equal, so without a guard an empty token
+        // would authenticate Heartbeat, Deregister and ControlStream for it.
+        let reg = AgentRegistry::new();
+        let id = [8u8; 16];
+        reg.register(record_with_token(id, "")).unwrap();
+        assert!(matches!(validate_token(&reg, &id, ""), Err(TokenError::InvalidToken)));
+        assert!(matches!(
+            validate_token(&reg, &id, "anything"),
+            Err(TokenError::InvalidToken)
+        ));
+    }
+
+    #[test]
+    fn an_empty_token_is_rejected_for_a_record_that_has_a_credential() {
+        let reg = AgentRegistry::new();
+        let id = [7u8; 16];
+        reg.register(record_with_token(id, &generate_credential_token()))
+            .unwrap();
+        assert!(matches!(validate_token(&reg, &id, ""), Err(TokenError::InvalidToken)));
+    }
+
+    #[test]
     fn unknown_agent_is_not_found() {
         let reg = AgentRegistry::new();
         assert!(matches!(
