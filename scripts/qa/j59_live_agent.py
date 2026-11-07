@@ -127,7 +127,9 @@ def make_backend_class() -> type:
             # `key_org` names which organization's operator key the agent presents at registration (it defaults to the
             # org it claims); `no_key` presents none. The key is passed as a file path, never as an argument value.
             key_org = None if kw.get("no_key") else kw.get("key_org", kw.get("org"))
-            if key_org and key_org in self.org_key_files:
+            if key_org:
+                if key_org not in self.org_key_files:
+                    return {"error": "no-operator-key", "message": f"no operator key was issued for org {key_org}"}
                 argv += ["--registration-key-file", str(self.org_key_files[key_org])]
             rc, out = self.exec(argv, self.env, self.ctx.tmp, 120)
             for line in reversed(out.splitlines()):
@@ -298,6 +300,16 @@ EXPECTED_EVENTS = (
 def find_event(entries: list[dict[str, Any]], etype: str, action: str, verdict: str, decision: int) -> list[dict[str, Any]]:
     return [e for e in entries if e["event_type"] == etype and e["payload"].get("action") == action
             and e["payload"].get("verdict") == verdict and e["payload"].get("decision") == decision]
+
+
+def _refusal_text(r: dict[str, Any]) -> str:
+    return " ".join(str(r.get(k) or "") for k in ("warning", "message", "detail", "error")).strip()[:300]
+
+
+def _duplicate_refusal(r: dict[str, Any]) -> bool:
+    """Refused as a duplicate identity: not registered AND the gateway's own AlreadyExists text. A crash, a timeout or a
+    driver without a result is not this."""
+    return not r.get("registered") and "already registered" in _refusal_text(r).lower()
 
 
 def registered_ids(be: Any) -> tuple[dict[str, str], str]:
@@ -631,6 +643,15 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         problems.append(f"the re-bound agent's entries carry {len(seen_ids)} agent ids {sorted(map(str, seen_ids))}, want one")
     if seen_teams != {rb_team}:
         problems.append(f"the re-bound agent's entries carry team_id {sorted(map(str, seen_teams))}, want only {rb_team!r}")
+    # Half of "a key bound to the record's org" is the org: a later process presenting ANOTHER org's valid key is refused
+    # as a duplicate, the same as no key, with the right-key process above as its positive control.
+    wrong = be.sdk("register", agent=bound, org="acme", key_org="globex")
+    if not _duplicate_refusal(wrong):
+        problems.append("a later process of an org-bound agent presenting another org's operator key was not refused as "
+                        f"AlreadyExists (registered={wrong.get('registered')}, {_refusal_text(wrong)!r})")
+    nokey_later = be.sdk("register", agent=bound, org="acme", no_key=True)
+    if nokey_later.get("registered"):
+        problems.append("a later process of an org-bound agent presenting no key was registered")
     o1 = be.sdk("register", agent=orgless, no_key=True)
     o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
     if not o1.get("registered"):
@@ -638,6 +659,9 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
     if o2.get("registered"):
         problems.append("an org-less agent's later process was re-bound; the owner decision allows no re-bind without an "
                         "org-bound operator key (it must get AlreadyExists)")
+    elif not _duplicate_refusal(o2):
+        problems.append("an org-less agent's later process was not registered, but not because the gateway refused it as "
+                        f"AlreadyExists, so the control proves nothing ({o2.get('error')} {_refusal_text(o2)!r})")
     _row(ctx, cid, problems,
          "two orgs registered with org-bound operator keys: ?org_id= returns only each org's events; an acme-bound key cannot "
          "read globex (admin control sees it); acme's key claiming globex is refused and registers nothing; no key plus an org "

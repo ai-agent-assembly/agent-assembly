@@ -146,13 +146,18 @@ class FakeLive:
             if agent in self.registered_once:
                 # A later process of an agent that is already registered (AAASM-6447): the gateway re-binds it only
                 # for an agent registered under an org-bound operator key presented again; otherwise AlreadyExists.
-                rebindable = agent in self.key_bound and kw.get("key_org", kw.get("org")) and not kw.get("no_key")
+                later_org = None if kw.get("no_key") else kw.get("key_org", kw.get("org"))
+                rebindable = agent in self.key_bound and later_org is not None and later_org == self.org_of.get(agent)
+                if self.mode == "any_key_rebinds":
+                    rebindable = agent in self.key_bound and later_org is not None
+                if self.mode == "orgless_crash" and agent not in self.key_bound:
+                    return {"registered": False, "agent": agent, "error": "RuntimeError", "message": "driver crashed"}
                 if self.mode == "orgless_rebound":
                     rebindable = True
                 if self.mode == "bound_no_rebind":
                     rebindable = False
                 if not rebindable:
-                    return {"registered": False, "agent": agent, "error": "AlreadyExists", "message": "agent already registered"}
+                    return {"registered": False, "agent": agent, "warning": "registration failed: agent already registered: ab12"}
                 self.rebound.add(agent)
             self.registered_once.add(agent)
             return {"registered": True, "agent": agent}
@@ -422,6 +427,17 @@ class LiveRowTests(unittest.TestCase):
         row = self._org_row("bound_no_rebind")
         self.assertEqual(row.status, "FAIL")
         self.assertIn("did not re-bind", row.detail)
+
+    def test_s3_other_orgs_key_rebinding_the_agent_fails(self):
+        row = self._org_row("any_key_rebinds")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("another org's operator key was not refused", row.detail)
+
+    def test_s3_orgless_control_that_crashes_instead_of_being_refused_fails(self):
+        """The control must see the gateway's AlreadyExists, not just `registered` false."""
+        row = self._org_row("orgless_crash")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("not because the gateway refused it as AlreadyExists", row.detail)
 
     def test_s3_org_row_states_the_rebind_limitation(self):
         row = self._org_row("good")
