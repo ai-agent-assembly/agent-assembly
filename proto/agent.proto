@@ -109,7 +109,16 @@ message RegisterRequest {
   // nonce is unknown, expired, already used, or was not issued for this
   // agent_id + public_key.
   bytes                          registration_nonce = 15;
-  // next: 16
+  // The registering key is random and held by the agent (AAASM-5332), never
+  // derived from a public identifier such as the agent id. Recorded at FIRST
+  // registration only, and read back from the stored record (never from a later
+  // request) so that a later process proving possession of this same key may
+  // re-bind an org-less record (AAASM-6447). Unset (every client that predates
+  // it, and any request built outside aa-sdk-client) means the gateway cannot
+  // tell a held key from a computable one, so that record is never re-bound by
+  // possession.
+  bool                           durable_identity_key = 16;
+  // next: 17
 }
 
 message RegisterResponse {
