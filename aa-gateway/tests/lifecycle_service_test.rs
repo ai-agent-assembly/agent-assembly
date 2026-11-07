@@ -646,7 +646,7 @@ async fn reregistration_with_a_different_key_cannot_hijack_the_agent() {
     let err = register_with_challenge_as(&mut client, &attacker_kp, hijack)
         .await
         .unwrap_err();
-    assert_ne!(err.code(), tonic::Code::Ok);
+    assert_eq!(err.code(), tonic::Code::Unauthenticated, "{err:?}");
 
     let key = aa_gateway::registry::convert::proto_agent_id_to_key(&test_agent_id());
     let record = registry.get(&key).expect("victim record untouched");

@@ -37,6 +37,8 @@ struct Keys {
     revoked: String,
     acme_second: String,
     acme_expired: String,
+    acme_team_a: String,
+    acme_team_b: String,
 }
 
 fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
@@ -65,7 +67,11 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
     let (acme_second, e6) = entry(Some("acme"), vec![Scope::Read]);
     let (acme_expired, mut e7) = entry(Some("acme"), vec![Scope::Read]);
     e7.expires_at = Some(1);
-    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7]);
+    let (acme_team_a, mut e8) = entry(Some("acme"), vec![Scope::Read]);
+    e8.team_id = Some("team-a".into());
+    let (acme_team_b, mut e9) = entry(Some("acme"), vec![Scope::Read]);
+    e9.team_id = Some("team-b".into());
+    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7, e8, e9]);
     store.revoke(&revoked_id);
     let binder = OrgBinder::new(Arc::new(store));
 
@@ -93,15 +99,21 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
             revoked,
             acme_second,
             acme_expired,
+            acme_team_a,
+            acme_team_b,
         },
     )
 }
 
 fn identity(name: &str, org: &str) -> (AgentKeypair, ProtoAgentId) {
+    identity_in_team(name, org, "team-1")
+}
+
+fn identity_in_team(name: &str, org: &str, team: &str) -> (AgentKeypair, ProtoAgentId) {
     let kp = AgentKeypair::derive_transport_key(name);
     let id = ProtoAgentId {
         org_id: org.into(),
-        team_id: "team-1".into(),
+        team_id: team.into(),
         agent_id: kp.did_key(),
     };
     (kp, id)
@@ -687,5 +699,38 @@ async fn parallel_first_registrations_never_hand_out_an_uncommitted_credential()
     let record = registry.get(&proto_agent_id_to_key(&bound)).expect("one record");
     assert_eq!(tokens.len(), 1, "every success shares one credential: {tokens:?}");
     assert!(tokens.contains(&record.credential_token));
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// AAASM-3139: a key confined to one team is not authorized for another team's
+/// agent. Registered by an org-wide key, a team-b record can be re-bound by an
+/// org-wide key or a key confined to team-b, never by a key confined to team-a,
+/// even though that key sends `team_id = team-b` and so reaches the record.
+#[tokio::test]
+async fn a_key_confined_to_another_team_cannot_rebind_the_agent() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity_in_team("rebind-team-scope", "", "team-b");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+
+    let err = register(addr, &kp, &id, Some(&keys.acme_team_a)).await.unwrap_err();
+    assert_plain_collision(&err, &first.credential_token);
+    let record = registry.get(&proto_agent_id_to_key(&bound)).expect("untouched");
+    assert_eq!(record.credential_token, first.credential_token);
+    assert_eq!(record.team_id.as_deref(), Some("team-b"));
+
+    // Positive controls: the refusal above is the team scope, not the agent or the org.
+    for (label, key) in [
+        ("org-wide key", keys.acme.as_str()),
+        ("key confined to the record's team", keys.acme_team_b.as_str()),
+    ] {
+        let again = register(addr, &kp, &id, Some(key))
+            .await
+            .unwrap_or_else(|e| panic!("{label} must re-bind: {e:?}"));
+        assert_eq!(again.credential_token, first.credential_token, "{label}");
+    }
     assert_eq!(registry.list().len(), 1);
 }
