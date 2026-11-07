@@ -30,7 +30,8 @@ pub struct ExportArgs {
     #[arg(long)]
     pub output_file: Option<String>,
 
-    /// Filter by agent identifier.
+    /// Filter by agent: its name, its did:key, or the 32-hex agent id of the
+    /// audit log. An agent that matches nothing exports nothing.
     #[arg(long)]
     pub agent: Option<String>,
 

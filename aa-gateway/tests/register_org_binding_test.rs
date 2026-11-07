@@ -35,6 +35,10 @@ struct Keys {
     unbound_plain: String,
     admin_unbound: String,
     revoked: String,
+    acme_second: String,
+    acme_expired: String,
+    acme_team_a: String,
+    acme_team_b: String,
 }
 
 fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
@@ -60,7 +64,14 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
     let (admin_unbound, e4) = entry(None, vec![Scope::Admin]);
     let (revoked, e5) = entry(Some("acme"), vec![Scope::Read]);
     let revoked_id = e5.id.clone();
-    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5]);
+    let (acme_second, e6) = entry(Some("acme"), vec![Scope::Read]);
+    let (acme_expired, mut e7) = entry(Some("acme"), vec![Scope::Read]);
+    e7.expires_at = Some(1);
+    let (acme_team_a, mut e8) = entry(Some("acme"), vec![Scope::Read]);
+    e8.team_id = Some("team-a".into());
+    let (acme_team_b, mut e9) = entry(Some("acme"), vec![Scope::Read]);
+    e9.team_id = Some("team-b".into());
+    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7, e8, e9]);
     store.revoke(&revoked_id);
     let binder = OrgBinder::new(Arc::new(store));
 
@@ -86,15 +97,23 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
             unbound_plain,
             admin_unbound,
             revoked,
+            acme_second,
+            acme_expired,
+            acme_team_a,
+            acme_team_b,
         },
     )
 }
 
 fn identity(name: &str, org: &str) -> (AgentKeypair, ProtoAgentId) {
+    identity_in_team(name, org, "team-1")
+}
+
+fn identity_in_team(name: &str, org: &str, team: &str) -> (AgentKeypair, ProtoAgentId) {
     let kp = AgentKeypair::derive_transport_key(name);
     let id = ProtoAgentId {
         org_id: org.into(),
-        team_id: "team-1".into(),
+        team_id: team.into(),
         agent_id: kp.did_key(),
     };
     (kp, id)
@@ -382,4 +401,336 @@ async fn blank_registration_key_header_is_refused_not_ignored() {
     let err = register(addr, &kp, &id, Some("   ")).await.unwrap_err();
     assert_eq!(err.code(), Code::Unauthenticated);
     assert!(org_of(&registry, &id).is_none());
+}
+
+// ── AAASM-6447: a later process of an already-registered agent re-binds, and the
+// re-bind never inherits, changes or widens an org ─────────────────────────────
+
+/// A second process presenting the same org-bound key re-binds to the same agent:
+/// same credential, same org (echoed), one record.
+#[tokio::test]
+async fn rebind_with_the_same_bound_key_keeps_the_org_and_the_credential() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-same-key", "");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.expect("first process");
+    let second = register(addr, &kp, &id, Some(&keys.acme))
+        .await
+        .expect("second process re-binds");
+
+    assert_eq!(second.credential_token, first.credential_token);
+    assert_eq!(second.org_id.as_deref(), Some("acme"));
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    assert_eq!(org_of(&registry, &bound), Some(Some("acme".into())));
+    assert_eq!(registry.list().len(), 1, "one agent, not two");
+}
+
+/// The org binding runs before the re-bind: a later process that claims the org but
+/// presents no key is refused exactly as in the registration table, and the bound
+/// agent is untouched.
+#[tokio::test]
+async fn rebind_without_a_key_but_with_the_org_claim_is_refused() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-claim-no-key", "");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.expect("bound");
+    let claimant = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+    let err = register(addr, &kp, &claimant, None).await.unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    let record = registry.get(&proto_agent_id_to_key(&bound)).expect("still there");
+    assert_eq!(record.credential_token, first.credential_token);
+    assert_eq!(record.org_id.as_deref(), Some("acme"));
+}
+
+/// A later process with no key and no claim, or with another org's key, is a
+/// different registry key: it never receives the bound agent's credential or org, and
+/// the bound agent keeps its own.
+#[tokio::test]
+async fn a_rebind_never_inherits_or_widens_an_org() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-no-widening", "");
+    let acme = register(addr, &kp, &id, Some(&keys.acme)).await.expect("acme-bound");
+
+    let org_less = register(addr, &kp, &id, None).await.expect("a separate org-less agent");
+    assert_ne!(org_less.credential_token, acme.credential_token);
+    assert_eq!(org_less.org_id, None);
+    assert_eq!(org_of(&registry, &id), Some(None));
+
+    let globex = register(addr, &kp, &id, Some(&keys.globex))
+        .await
+        .expect("a separate globex agent");
+    assert_ne!(globex.credential_token, acme.credential_token);
+    assert_eq!(globex.org_id.as_deref(), Some("globex"));
+
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    let record = registry
+        .get(&proto_agent_id_to_key(&bound))
+        .expect("acme agent untouched");
+    assert_eq!(record.credential_token, acme.credential_token);
+    assert_eq!(record.org_id.as_deref(), Some("acme"));
+}
+
+// ── AAASM-6447: a re-bind is operator-authorized ──────────────────────────────
+//
+// A later process re-binds to an existing agent only when a validated operator
+// key bound to the record's persisted organization is presented. Possession of
+// the agent key proves who the agent is, not that the caller may take over its
+// credential. Every refusal below is the same `AlreadyExists` a fresh duplicate
+// gets, and none discloses the credential.
+
+fn assert_plain_collision(err: &tonic::Status, existing_token: &str) {
+    assert_eq!(err.code(), Code::AlreadyExists, "{err:?}");
+    assert!(
+        !err.message().contains(existing_token),
+        "a refused re-bind must not disclose the credential"
+    );
+}
+
+/// A second operator key bound to the same org is equally authorized.
+#[tokio::test]
+async fn rebind_with_another_key_of_the_same_org_returns_the_existing_credential() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-second-key", "");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let second = register(addr, &kp, &id, Some(&keys.acme_second)).await.unwrap();
+    assert_eq!(second.credential_token, first.credential_token);
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// An identifier-only caller (no key, no claim) lands on the org-less registry
+/// key, never the org-bound record: it gets its own agent and none of acme's
+/// credential.
+#[tokio::test]
+async fn an_identifier_only_caller_never_receives_a_bound_agents_credential() {
+    let (addr, _registry, keys) = start().await;
+    let (kp, id) = identity("rebind-identifier-only", "");
+    let acme = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let bare = register(addr, &kp, &id, None).await.unwrap();
+    assert_ne!(bare.credential_token, acme.credential_token);
+    assert_eq!(bare.org_id, None);
+}
+
+/// Keys that fail validation get the binding's own codes and never reach the
+/// registry: invalid, revoked and expired are `Unauthenticated`, another org's key
+/// claiming this org is `PermissionDenied`, a claim with no key is
+/// `PermissionDenied`.
+#[tokio::test]
+async fn a_rebind_by_a_missing_invalid_revoked_expired_or_other_org_key_is_refused_by_the_binding() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-bad-keys", "");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let claim = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+
+    let cases: [(&str, Option<&str>, Code); 5] = [
+        ("garbage key", Some("aa_not_a_real_key"), Code::Unauthenticated),
+        ("revoked key", Some(keys.revoked.as_str()), Code::Unauthenticated),
+        ("expired key", Some(keys.acme_expired.as_str()), Code::Unauthenticated),
+        ("other org's key", Some(keys.globex.as_str()), Code::PermissionDenied),
+        ("claim without a key", None, Code::PermissionDenied),
+    ];
+    for (label, key, code) in cases {
+        let err = register(addr, &kp, &claim, key).await.unwrap_err();
+        assert_eq!(err.code(), code, "{label}: {err:?}");
+        assert!(!err.message().contains(&first.credential_token), "{label}");
+    }
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    assert_eq!(
+        registry.get(&proto_agent_id_to_key(&bound)).unwrap().credential_token,
+        first.credential_token
+    );
+}
+
+/// A record with no organization has no one to authorize a re-bind: any later
+/// registration of the same identifier, with or without a key that resolves to no
+/// org, is a plain collision.
+#[tokio::test]
+async fn an_org_less_agent_is_never_rebound() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-org-less", "");
+    let first = register(addr, &kp, &id, None).await.unwrap();
+
+    for (label, key) in [
+        ("no key", None),
+        ("unbound plain key", Some(keys.unbound_plain.as_str())),
+        ("unbound admin key", Some(keys.admin_unbound.as_str())),
+    ] {
+        let err = register(addr, &kp, &id, key)
+            .await
+            .expect_err(&format!("{label} must not re-bind an org-less agent"));
+        assert_plain_collision(&err, &first.credential_token);
+    }
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// An org claim is not an authorization: an unbound admin key asserting the org of
+/// an existing record collides exactly as an org-less duplicate does, with the same
+/// message, and an unbound non-admin key is refused by the binding.
+#[tokio::test]
+async fn an_org_claim_alone_never_authorizes_a_rebind() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-claim-only", "");
+    let acme = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let claim = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+
+    let err = register(addr, &kp, &claim, Some(&keys.admin_unbound))
+        .await
+        .unwrap_err();
+    assert_plain_collision(&err, &acme.credential_token);
+
+    let (kp2, id2) = identity("rebind-claim-only-orgless", "");
+    let orgless = register(addr, &kp2, &id2, None).await.unwrap();
+    let dup = register(addr, &kp2, &id2, None).await.unwrap_err();
+    assert_plain_collision(&dup, &orgless.credential_token);
+    // The collision message names the registry id (AAASM-6416), so compare the
+    // text each refusal is expected to carry, not the two ids to each other.
+    let collision = |id: &ProtoAgentId| format!("agent already registered: {}", hex::encode(proto_agent_id_to_key(id)));
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+    assert_eq!(
+        err.message(),
+        collision(&bound),
+        "a refused re-bind looks like a fresh collision"
+    );
+    assert_eq!(dup.message(), collision(&id2));
+
+    let err = register(addr, &kp, &claim, Some(&keys.unbound_plain))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), Code::PermissionDenied);
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    assert_eq!(
+        registry.get(&proto_agent_id_to_key(&bound)).unwrap().credential_token,
+        acme.credential_token
+    );
+}
+
+/// Concurrent authorized and unauthorized re-binds of one registered agent: every
+/// authorized caller gets the one credential, every unauthorized one a plain
+/// collision, and nobody gets a second record.
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_rebinds_split_cleanly_by_authorization() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-parallel", "");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let claim = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+    let kp = Arc::new(kp);
+
+    let mut tasks = Vec::new();
+    for i in 0..8 {
+        let (kp, id, claim) = (Arc::clone(&kp), id.clone(), claim.clone());
+        let (acme, admin) = (keys.acme.clone(), keys.admin_unbound.clone());
+        tasks.push(tokio::spawn(async move {
+            if i % 2 == 0 {
+                (true, register(addr, &kp, &id, Some(&acme)).await)
+            } else {
+                (false, register(addr, &kp, &claim, Some(&admin)).await)
+            }
+        }));
+    }
+    for task in tasks {
+        let (authorized, result) = task.await.unwrap();
+        if authorized {
+            assert_eq!(result.unwrap().credential_token, first.credential_token);
+        } else {
+            assert_plain_collision(&result.unwrap_err(), &first.credential_token);
+        }
+    }
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// Parallel FIRST registrations of one identifier under one bound key: exactly one
+/// record results, every success carries its credential, and a caller that lost the
+/// race gets either that credential (the winner had committed) or a retryable
+/// `AlreadyExists` (it had not) - never a credential for a record that does not
+/// exist.
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_first_registrations_never_hand_out_an_uncommitted_credential() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("rebind-parallel-first", "");
+    let kp = Arc::new(kp);
+
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let (kp, id, key) = (Arc::clone(&kp), id.clone(), keys.acme.clone());
+        tasks.push(tokio::spawn(async move { register(addr, &kp, &id, Some(&key)).await }));
+    }
+    let mut tokens = std::collections::BTreeSet::new();
+    for task in tasks {
+        match task.await.unwrap() {
+            Ok(resp) => {
+                tokens.insert(resp.credential_token);
+            }
+            Err(status) => assert_eq!(status.code(), Code::AlreadyExists, "{status:?}"),
+        }
+    }
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id
+    };
+    let record = registry.get(&proto_agent_id_to_key(&bound)).expect("one record");
+    assert_eq!(tokens.len(), 1, "every success shares one credential: {tokens:?}");
+    assert!(tokens.contains(&record.credential_token));
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// AAASM-3139: a key confined to one team is not authorized for another team's
+/// agent. Registered by an org-wide key, a team-b record can be re-bound by an
+/// org-wide key or a key confined to team-b, never by a key confined to team-a,
+/// even though that key sends `team_id = team-b` and so reaches the record.
+#[tokio::test]
+async fn a_key_confined_to_another_team_cannot_rebind_the_agent() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity_in_team("rebind-team-scope", "", "team-b");
+    let first = register(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let bound = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+
+    let err = register(addr, &kp, &id, Some(&keys.acme_team_a)).await.unwrap_err();
+    assert_plain_collision(&err, &first.credential_token);
+    let record = registry.get(&proto_agent_id_to_key(&bound)).expect("untouched");
+    assert_eq!(record.credential_token, first.credential_token);
+    assert_eq!(record.team_id.as_deref(), Some("team-b"));
+
+    // Positive controls: the refusal above is the team scope, not the agent or the org.
+    for (label, key) in [
+        ("org-wide key", keys.acme.as_str()),
+        ("key confined to the record's team", keys.acme_team_b.as_str()),
+    ] {
+        let again = register(addr, &kp, &id, Some(key))
+            .await
+            .unwrap_or_else(|e| panic!("{label} must re-bind: {e:?}"));
+        assert_eq!(again.credential_token, first.credential_token, "{label}");
+    }
+    assert_eq!(registry.list().len(), 1);
 }
