@@ -111,9 +111,10 @@ message RegisterRequest {
   bytes                          registration_nonce = 15;
   // The registering key is random and held by the agent (AAASM-5332), never
   // derived from a public identifier such as the agent id. Recorded at FIRST
-  // registration only, and read back from the stored record (never from a later
-  // request) so that a later process proving possession of this same key may
-  // re-bind an org-less record (AAASM-6447). Unset (every client that predates
+  // registration only. A later process proving possession of this same key may
+  // re-bind an org-less record (AAASM-6447) only if the STORED record carries the
+  // declaration (it is never taken from a later request) and the later process
+  // declares a held key too. Unset (every client that predates
   // it, and any request built outside aa-sdk-client) means the gateway cannot
   // tell a held key from a computable one, so that record is never re-bound by
   // possession. This is the client's own claim; the gateway cannot verify it, so a
