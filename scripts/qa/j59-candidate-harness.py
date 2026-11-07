@@ -340,6 +340,7 @@ def run_harness(argv: list[str]) -> int:
         ap.add_argument("--api-server-bin", required=True)
         ap.add_argument("--gateway-bin", help="live rows: candidate aa-gateway")
         ap.add_argument("--runtime-bin", help="live rows: candidate aa-runtime")
+        ap.add_argument("--keygen-bin", help="live rows: aa-keygen (cargo example of aa-auth) used to issue the org-bound operator keys")
         ap.add_argument("--sdk-wheel", help="live rows: candidate python-sdk wheel (its cp tag must match this interpreter)")
         ap.add_argument("--node-bin", help="dashboard row: node executable")
         ap.add_argument("--dashboard-dir", help="dashboard row: dashboard checkout whose node_modules has @playwright/test")
@@ -374,7 +375,8 @@ def run_harness(argv: list[str]) -> int:
         if is_live:
             stack.stop()  # the live stack binds the same fixed gRPC port
             be = live.make_backend_class()(ctx, {k: binaries[k] for k in ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")},
-                                           binaries[live.WHEEL], repo / live.LIVE_SOURCES["sdk_agent.py"])
+                                           binaries[live.WHEEL], repo / live.LIVE_SOURCES["sdk_agent.py"],
+                                           keygen=Path(a.keygen_bin).resolve() if a.keygen_bin else None)
             live.run_live(ctx, be, repo, {"node": Path(a.node_bin).resolve() if a.node_bin else None,
                                           "dash_dir": Path(a.dashboard_dir).resolve() if a.dashboard_dir else None,
                                           "browsers": Path(a.playwright_browsers).resolve() if a.playwright_browsers else None})
@@ -384,9 +386,9 @@ def run_harness(argv: list[str]) -> int:
         report["observations"] = [
             "j59-s5-engine-allow-deny-approval and j59-s9-change-flips-outcome are engine decisions over replayed synthetic events (aasm policy simulate); the live-agent rows (s3, s5, s6, s7, s12) are the governed-agent legs.",
             "FINDING (j59-s9-applied-policy-stays-enforced): a policy installed with `aasm policy apply` / POST /api/v1/policies is enforced for at most 5s and is then swapped back to the gateway's policy file (the bootstrap budget-only policy when $AA_POLICY is unset, which allows every tool) by aa-gateway/src/engine/watcher.rs reconcile_file_tick, while `aasm policy get` keeps reporting the applied policy. The live rows therefore run with $AA_POLICY pointing at the golden-path file and change policy through that file.",
-            "FINDING (j59-s3-org-scoped-audit-filter): init_assembly() has team_id but no org_id, so the SDK path cannot register an agent under an org and org-scoped audit/topology filtering is not demonstrable through it; docs/src/operations/org-isolation.md shows an init_assembly(agent_id={org_id, ...}) call that raises TypeError on this wheel.",
-            "OBSERVED (audit identity): only the first SDK process of an agent registers it as bound (did:key claimed id, root_agent_id = registered id, team_id on the allow entry). Later processes of the same agent id warn 'agent already registered', run asserted, and their entries carry the agent name and no team_id (so do the deny and approval entries of those processes). One agent therefore appears under several agent_id values in the audit chain; this harness attributes entries by claimed name or root_agent_id.",
-            "OBSERVED (audit filter): `aasm audit export --agent <x>` and GET /api/v1/logs?agent_id=<x> filter only on a 32-hex audit id; any other value (an agent name, 'zz', 'deadbeef') is ignored and every agent's entries are returned.",
+            "RESOLVED (j59-s3-org-scoped-audit-filter, AAASM-6444): init_assembly() takes org_id and registration_key. The org is bound to an operator API key (x-aa-registration-key), a client org_id is only a claim the gateway checks against the key, and the row asserts two-org isolation, cross-org read denial with an admin control, spoof refusal and the org-less policy on the live stack. Before this change the SDK could not carry an org and docs/src/operations/org-isolation.md's init_assembly(agent_id={org_id, ...}) call raised TypeError.",
+            "PARTIALLY RESOLVED (audit identity, AAASM-6447, owner decision: operator-authorized re-binding): a later SDK process of an already-registered agent used to get AlreadyExists, run asserted and write entries with the agent name and no team_id, so one agent appeared under several agent_id values. It now re-binds to the existing agent and credential ONLY when it presents an operator key bound to the agent's organization. NOT RESOLVED for org-less agents and for agents registered without an operator key: their later processes still get AlreadyExists and keep the old symptom, so the original acceptance is not met for them. The j59-s3-org-scoped-audit-filter row runs the later processes with the key and carries an org-less negative control that fails if such a re-bind ever succeeds; this harness still attributes entries by claimed name or root_agent_id.",
+            "RESOLVED (audit filter, AAASM-6446): GET /api/v1/logs?agent_id=<x> used to filter only on a 32-hex audit id and return every agent for any other value. It now matches the 32-hex id, the claimed name or did:key, and the registry-resolved agent; an unmatched value returns an empty page and a blank one is a 400. `aasm audit export --agent` goes through the same endpoint.",
             "The live rows run one SDK program (fixtures/j59/sdk_agent.py, bound to the candidate commit) as two agents under two teams; audit attribution to an agent is done by this harness because `aasm audit export --agent` did not filter on the candidate.",
             "Candidate binaries are identified by version and by sha256 against the expected-digests record; aasm exposes no build-sha, so there is no build-sha check for J59.",
             "j59-published-binaries-golden-path is an operator step with no recording mechanism yet (tracked follow-up); post-publish-verify.py reports it INCONCLUSIVE, never PASS.",

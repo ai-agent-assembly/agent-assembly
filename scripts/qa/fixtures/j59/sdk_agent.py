@@ -27,6 +27,10 @@ def _init(a):
     kw = {"team_id": a.team} if a.team else {}
     if a.org:
         kw["org_id"] = a.org  # only passed when asked: the SDK may not accept it (see op_org_probe)
+    if a.registration_key_file:
+        # The operator key the gateway binds to an organization. Read from a file the harness wrote owner-only, so the
+        # secret is never on a command line or in a transcript.
+        kw["registration_key"] = Path(a.registration_key_file).read_text().strip()
     return init_assembly(gateway_url=a.gateway_url, api_key=a.key, agent_id=a.agent, mode="sdk-only", **kw)
 
 
@@ -39,7 +43,23 @@ def op_import_core(_a):
 
 
 def op_register(a):
-    emit(registered=bool(getattr(_init(a), "registered", False)), agent=a.agent, team=a.team)
+    # The SDK reports a refused registration as a stderr warning ("registration failed: <gateway status text>") and
+    # `registered=False`. Keep that warning so the harness can tell a duplicate-identity refusal from a crash; the SDK
+    # states its warnings carry no credentials, and the operator key is only ever read from a file.
+    import contextlib
+    import io
+
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        ctx = _init(a)
+    text = buf.getvalue()
+    if a.registration_key_file:
+        key = Path(a.registration_key_file).read_text().strip()
+        if key:
+            text = text.replace(key, "<redacted>")
+    sys.stderr.write(text)
+    warning = " ".join(text.split())[:300]
+    emit(registered=bool(getattr(ctx, "registered", False)), agent=a.agent, team=a.team, warning=warning)
 
 
 def _body(tool, sentinel: Path):
@@ -94,6 +114,7 @@ def main():
     ap.add_argument("--agent")
     ap.add_argument("--team")
     ap.add_argument("--org")
+    ap.add_argument("--registration-key-file")
     ap.add_argument("--unwired", action="store_true")  # accepted so the J56 check helpers can drive this agent; unused
     ap.add_argument("--tool")
     ap.add_argument("--sentinel")

@@ -47,6 +47,7 @@ LIVE_SOURCES = {
 WHEEL = "python-sdk-wheel"
 LIVE_BINARIES = ("aa-gateway", "aa-runtime")
 TEAM_A, TEAM_B = "alpha", "beta"
+ORGS = ("acme", "globex")
 ROW_IDS = (
     "j59-s3-tenancy-team-model",
     "j59-s5-live-agent-action-governed",
@@ -105,9 +106,11 @@ def make_backend_class() -> type:
         identical), so `audit()` returns the whole export and attribution to an agent is done by this
         harness from the entries themselves (see `belongs`)."""
 
-        def __init__(self, ctx: Any, bins: dict[str, Path], wheel: Path, driver: Path, **kw: Any):
+        def __init__(self, ctx: Any, bins: dict[str, Path], wheel: Path, driver: Path, keygen: Path | None = None, **kw: Any):
             super().__init__(ctx, bins, wheel, driver, **kw)
             self.driver = driver
+            self.keygen = keygen
+            self.org_key_files: dict[str, Path] = {}
             self.team_of: dict[str, str] = {self.agent: TEAM_A}
             self.agent_b = f"j59b-{uuid.uuid4().hex[:8]}"
             self.extra: list[tuple[subprocess.Popen[bytes], Path]] = []
@@ -121,6 +124,13 @@ def make_backend_class() -> type:
             for flag in ("tool", "sentinel", "org"):
                 if kw.get(flag):
                     argv += [f"--{flag}", str(kw[flag])]
+            # `key_org` names which organization's operator key the agent presents at registration (it defaults to the
+            # org it claims); `no_key` presents none. The key is passed as a file path, never as an argument value.
+            key_org = None if kw.get("no_key") else kw.get("key_org", kw.get("org"))
+            if key_org:
+                if key_org not in self.org_key_files:
+                    return {"error": "no-operator-key", "message": f"no operator key was issued for org {key_org}"}
+                argv += ["--registration-key-file", str(self.org_key_files[key_org])]
             rc, out = self.exec(argv, self.env, self.ctx.tmp, 120)
             for line in reversed(out.splitlines()):
                 if line.startswith("RESULT "):
@@ -185,9 +195,26 @@ def make_backend_class() -> type:
                 time.sleep(0.2)
             return False, f"aa-runtime for {name} did not bind {sock} within 20s"
 
-        def http(self, path: str) -> tuple[int, str]:
+        def provision_org_keys(self, orgs: tuple[str, ...]) -> tuple[bool, str]:
+            """Issue one read-scoped operator key per org with `aa-keygen`, into the key file the gateway reads at boot
+            (`AA_API_KEYS_PATH`), which the REST side merges too. The raw keys land only in owner-only files."""
+            if self.keygen is None:
+                return False, "no aa-keygen binary was supplied (--keygen-bin), so no org-bound operator key can be issued"
+            keys_json = self.home / "org-keys.json"
+            for org in orgs:
+                out = self.home / f"org-{org}.key"
+                rc, text = self.exec([str(self.keygen), "--keys-file", str(keys_json), "--key-out", str(out), "--org", org,
+                                      "--scope", "read"], self.env, self.ctx.tmp, 60)
+                if rc != 0 or not out.is_file():
+                    return False, f"aa-keygen for {org} exited {rc}: {text.strip()[-200:]}"
+                self.org_key_files[org] = out
+            self.env["AA_API_KEYS_PATH"] = str(keys_json)
+            return True, ""
+
+        def http(self, path: str, key_org: str | None = None) -> tuple[int, str]:
             req = urllib.request.Request(self.url + path)
-            req.add_header("Authorization", f"Bearer {H.TEST_KEY}")
+            bearer = self.org_key_files[key_org].read_text().strip() if key_org else H.TEST_KEY
+            req.add_header("Authorization", f"Bearer {bearer}")
             try:
                 with urllib.request.urlopen(req, timeout=15) as r:
                     return r.status, r.read(4 << 20).decode("utf-8", "replace")
@@ -204,6 +231,9 @@ def make_backend_class() -> type:
             (see check_policy_durability), so a run that relies on an applied policy is governed only by timing luck.
             The live rows therefore start the gateway with `$AA_POLICY` pointing at the golden-path file (the operator's
             durable route) and still apply the same policy through the CLI, as the J59 contract says."""
+            ok, why = self.provision_org_keys(ORGS)
+            if not ok:
+                self.org_keys_error = why  # reported by check_org_filter; the rest of the stack still runs
             self.policy_file = self.ctx.tmp / "policy-source" / "golden-path.yaml"
             self.policy_file.parent.mkdir(exist_ok=True)
             self.policy_file.write_text(policy.read_text())
@@ -270,6 +300,16 @@ EXPECTED_EVENTS = (
 def find_event(entries: list[dict[str, Any]], etype: str, action: str, verdict: str, decision: int) -> list[dict[str, Any]]:
     return [e for e in entries if e["event_type"] == etype and e["payload"].get("action") == action
             and e["payload"].get("verdict") == verdict and e["payload"].get("decision") == decision]
+
+
+def _refusal_text(r: dict[str, Any]) -> str:
+    return " ".join(str(r.get(k) or "") for k in ("warning", "message", "detail", "error")).strip()[:300]
+
+
+def _duplicate_refusal(r: dict[str, Any]) -> bool:
+    """Refused as a duplicate identity: not registered AND the gateway's own AlreadyExists text. A crash, a timeout or a
+    driver without a result is not this."""
+    return not r.get("registered") and "already registered" in _refusal_text(r).lower()
 
 
 def registered_ids(be: Any) -> tuple[dict[str, str], str]:
@@ -441,8 +481,7 @@ def check_team_model(ctx: Any, be: Any, cid: str) -> None:
                 problems.append(f"{view}: agent {agent}'s allow entry carries team_id {sorted(map(str, got))}, want {team!r}")
     _row(ctx, cid, problems,
          f"two agents registered by the SDK with team_id {TEAM_A!r} and {TEAM_B!r} appear as two one-agent teams in "
-         "/api/v1/topology/overview and their allow entries carry the matching team_id (entries from an agent's "
-         "later SDK processes carry none; see the report observations)", arts, neg)
+         "/api/v1/topology/overview and their allow entries carry the matching team_id", arts, neg)
 
 
 def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
@@ -476,9 +515,24 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
                 "was not demonstrable. Decision needed: fix the SDK (or the docs example), or record org isolation as out of "
                 "scope for the SDK path", arts, neg)
         return
+    if getattr(be, "org_keys_error", None):
+        ctx.add(cid, c.FAIL, "real_local_process", f"the org tier needs org-bound operator keys and none could be issued: {be.org_keys_error}", arts, neg)
+        return
     problems = list(vp)
-    orgs = {"acme": f"j59o-{uuid.uuid4().hex[:6]}", "globex": f"j59o-{uuid.uuid4().hex[:6]}"}
     H = load_j56()
+    orgs = {"acme": f"j59o-{uuid.uuid4().hex[:6]}", "globex": f"j59o-{uuid.uuid4().hex[:6]}"}
+
+    def items_of(path: str, key_org: str | None = None) -> tuple[int, list[dict[str, Any]] | None]:
+        st, body = be.http(path, key_org) if key_org else be.http(path)
+        try:
+            return st, parse_entries(json.loads(body)) if st == 200 else None
+        except ValueError:
+            return st, None
+
+    def entry_orgs(entries: list[dict[str, Any]]) -> set[Any]:
+        return {e["payload"].get("org_id") for e in entries}
+
+    # 1. Isolation: each org's agent, registered under that org's key, lands in that org and nowhere else.
     for org, name in orgs.items():
         ok, why = be.add_agent(name, None, org)
         if not ok:
@@ -487,22 +541,136 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         s = H._sentinel(ctx, f"org-{org}")
         r = be.sdk("call", agent=name, org=org, tool="read_file", sentinel=s)
         if not r.get("executed"):
-            problems.append(f"{org} agent read_file did not run: {r.get('error')}")
+            problems.append(f"{org} agent read_file did not run: {r.get('error')} {r.get('message', '')}".strip())
     for org, name in orgs.items():
-        st, body = be.http(f"/api/v1/logs?org_id={org}&per_page=100")
-        try:
-            got = parse_entries(json.loads(body)) if st == 200 else None
-        except ValueError:
-            got = None
-        if not got:
-            problems.append(f"?org_id={org} returned no entries")
-            continue
-        if any(e["payload"].get("org_id") != org for e in got):
-            problems.append(f"?org_id={org} returned entries of another org")
         other = orgs["globex" if org == "acme" else "acme"]
+        st, got = items_of(f"/api/v1/logs?org_id={org}&per_page=100")
+        if not got:
+            problems.append(f"?org_id={org} returned no entries (status {st})")
+            continue
+        if entry_orgs(got) != {org}:
+            problems.append(f"?org_id={org} returned entries carrying org_id {sorted(map(str, entry_orgs(got)))}, want only {org!r}")
         if any(e["payload"].get("agent_id_claimed") == other for e in got):
             problems.append(f"?org_id={org} contains the other org's agent")
-    _row(ctx, cid, problems, "agents registered under two orgs: ?org_id= returns only each org's events", arts, neg)
+
+    # 2. Cross-org read: a key bound to acme cannot read globex's audit, by filter or by omission. The admin read of
+    # globex is the negative control: it proves the acme caller's empty answer is the authorization, not missing data.
+    st_x, cross = items_of("/api/v1/logs?org_id=globex&per_page=100", "acme")
+    leaked = entry_orgs(cross or []) - {"acme"}
+    if st_x not in (200, 403) or leaked:
+        problems.append(f"an acme-bound key reading ?org_id=globex got status {st_x} and entries of org_id {sorted(map(str, leaked))}; "
+                        "want a denial or only its own org's entries")
+    st_a, own = items_of("/api/v1/logs?per_page=100", "acme")
+    if not own:
+        problems.append(f"an acme-bound key reading its own audit got status {st_a} and no entries")
+    elif entry_orgs(own) != {"acme"}:
+        problems.append(f"an acme-bound key with no org filter saw entries of org_id {sorted(map(str, entry_orgs(own)))}, want only 'acme'")
+    st_g, admin_view = items_of(f"/api/v1/logs?org_id=globex&per_page=100")
+    if not admin_view:
+        problems.append("negative control failed: the admin read of ?org_id=globex is empty, so the acme caller's empty answer proves nothing")
+
+    # 3. Spoofed identity: acme's key claiming globex is refused and registers nothing; the matching claim registers
+    # (negative control: the refusal is about the mismatch, not about this agent or its key).
+    spoofer, honest = f"j59s-{uuid.uuid4().hex[:6]}", f"j59h-{uuid.uuid4().hex[:6]}"
+    for name, claim in ((spoofer, "globex"), (honest, "acme")):
+        ok, why = be.add_agent(name, None, claim)
+        if not ok:
+            problems.append(why)
+    bad = be.sdk("register", agent=spoofer, org="globex", key_org="acme")
+    if bad.get("registered"):
+        problems.append("an agent presenting acme's key and claiming org globex was registered")
+    good = be.sdk("register", agent=honest, org="acme", key_org="acme")
+    if not good.get("registered"):
+        problems.append(f"negative control failed: an agent presenting acme's key and claiming acme did not register ({good.get('error')} {good.get('message', '')})".strip())
+    ids, _ = registered_ids(be)
+    if spoofer in ids:
+        problems.append("the spoofing agent appears in /api/v1/agents")
+
+    # 4. Missing org: no org and no key registers org-less (legacy behaviour) and never matches an org filter; an org
+    # claim with no key is refused.
+    legacy, claimant = f"j59l-{uuid.uuid4().hex[:6]}", f"j59c-{uuid.uuid4().hex[:6]}"
+    for name in (legacy, claimant):
+        ok, why = be.add_agent(name, None, None)
+        if not ok:
+            problems.append(why)
+    s = H._sentinel(ctx, "org-legacy")
+    r = be.sdk("call", agent=legacy, tool="read_file", sentinel=s)
+    if not r.get("executed"):
+        problems.append(f"the org-less agent read_file did not run: {r.get('error')}")
+    nokey = be.sdk("register", agent=claimant, org="acme", no_key=True)
+    if nokey.get("registered"):
+        problems.append("an agent claiming org acme with no registration key was registered")
+    ids, _ = registered_ids(be)
+    legacy_id = ids.get(legacy)
+    _, everything = items_of("/api/v1/logs?per_page=500")
+    mine = [e for e in (everything or []) if belongs(e, legacy, legacy_id)]
+    if not mine:
+        problems.append("the org-less agent's audit entries are missing")
+    elif entry_orgs(mine) != {None}:
+        problems.append(f"the org-less agent's entries carry org_id {sorted(map(str, entry_orgs(mine)))}, want none")
+    for org in ("acme", "globex"):
+        _, filtered = items_of(f"/api/v1/logs?org_id={org}&per_page=500")
+        if any(belongs(e, legacy, legacy_id) for e in (filtered or [])):
+            problems.append(f"the org-less agent's entries matched ?org_id={org}")
+    # 5. Later process of an already-registered agent (AAASM-6447). The owner decision makes a re-bind operator-authorized:
+    # a later process re-binds to the existing identity only when it presents an operator key bound to the agent's org.
+    # The authorized leg runs the later process WITH the key; the org-less leg is the negative control and must stay a
+    # refusal. A later process of an org-less agent is NOT re-bound, so that leg FAILS the row if it ever registers: the
+    # original acceptance (one identity across processes) is met for org-bound agents only.
+    rb_team = TEAM_A
+    bound, orgless = f"j59r-{uuid.uuid4().hex[:6]}", f"j59n-{uuid.uuid4().hex[:6]}"
+    for name, org in ((bound, "acme"), (orgless, None)):
+        ok, why = be.add_agent(name, rb_team, org)
+        if not ok:
+            problems.append(why)
+    b1 = be.sdk("register", agent=bound, org="acme", key_org="acme")
+    b2 = be.sdk("register", agent=bound, org="acme", key_org="acme")  # a later process of the same agent, with the key
+    if not (b1.get("registered") and b2.get("registered")):
+        problems.append("an org-bound agent's later process, presenting its org's operator key, did not re-bind "
+                        f"(first registered={b1.get('registered')}, later registered={b2.get('registered')}, "
+                        f"{b2.get('error')} {b2.get('message', '')})".strip())
+    for tag in ("first", "later"):
+        s = H._sentinel(ctx, f"org-rebind-{tag}")
+        r = be.sdk("call", agent=bound, org="acme", tool="read_file", sentinel=s)
+        if not r.get("executed"):
+            problems.append(f"the {tag} process of the re-bound agent could not run read_file: {r.get('error')} {r.get('message', '')}".strip())
+    ids, _ = registered_ids(be)
+    _, acme_items = items_of("/api/v1/logs?org_id=acme&per_page=500")
+    own = [e for e in (acme_items or []) if belongs(e, bound, ids.get(bound))]
+    seen_ids = {e["agent_id"] for e in own}
+    seen_teams = {e["payload"].get("team_id") for e in own}
+    if len(seen_ids) != 1:
+        problems.append(f"the re-bound agent's entries carry {len(seen_ids)} agent ids {sorted(map(str, seen_ids))}, want one")
+    if seen_teams != {rb_team}:
+        problems.append(f"the re-bound agent's entries carry team_id {sorted(map(str, seen_teams))}, want only {rb_team!r}")
+    # Half of "a key bound to the record's org" is the org: a later process presenting ANOTHER org's valid key is refused
+    # as a duplicate, the same as no key, with the right-key process above as its positive control. It must claim no
+    # org, otherwise the refusal comes from the claim-versus-key gate (the spoof leg) and not from the re-bind rule.
+    wrong = be.sdk("register", agent=bound, key_org="globex")  # claims nothing: the key alone is org-bound, the record is not
+    if not _duplicate_refusal(wrong):
+        problems.append("a later process of an org-bound agent presenting another org's operator key was not refused as "
+                        f"AlreadyExists (registered={wrong.get('registered')}, {_refusal_text(wrong)!r})")
+    nokey_later = be.sdk("register", agent=bound, no_key=True)  # no claim either: isolates the re-bind rule from the claim gate
+    if not _duplicate_refusal(nokey_later):
+        problems.append("a later process of an org-bound agent presenting no key was not refused as AlreadyExists "
+                        f"(registered={nokey_later.get('registered')}, {_refusal_text(nokey_later)!r})")
+    o1 = be.sdk("register", agent=orgless, no_key=True)
+    o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
+    if not o1.get("registered"):
+        problems.append(f"negative control failed: the org-less agent's first process did not register ({o1.get('error')} {o1.get('message', '')})".strip())
+    if o2.get("registered"):
+        problems.append("an org-less agent's later process was re-bound; the owner decision allows no re-bind without an "
+                        "org-bound operator key (it must get AlreadyExists)")
+    elif not _duplicate_refusal(o2):
+        problems.append("an org-less agent's later process was not registered, but not because the gateway refused it as "
+                        f"AlreadyExists, so the control proves nothing ({o2.get('error')} {_refusal_text(o2)!r})")
+    _row(ctx, cid, problems,
+         "two orgs registered with org-bound operator keys: ?org_id= returns only each org's events; an acme-bound key cannot "
+         "read globex (admin control sees it); acme's key claiming globex is refused and registers nothing; no key plus an org "
+         "claim is refused; an org-less agent registers with org_id null and never matches an org filter; AAASM-6447 is "
+         "resolved ONLY for operator-key-authorized org-bound agents (a later process presenting the org's key re-binds to one "
+         "agent id with its team_id) and is NOT resolved for org-less agents (a later process gets AlreadyExists and is not "
+         "re-bound: the acceptance is not met for them)", arts, neg)
 
 
 def _blocked_now(be: Any, ctx: Any, tag: str) -> tuple[bool, dict[str, Any]]:

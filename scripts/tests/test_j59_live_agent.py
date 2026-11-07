@@ -51,6 +51,12 @@ class FakeLive:
         self.pending: list[dict] = []
         self.decided: list[dict] = []
         self.org_of: dict[str, str] = {}
+        self.org_key_files = {"acme": Path("acme.key"), "globex": Path("globex.key")}
+        self.org_keys_error = "no aa-keygen" if mode == "no_keygen" else None
+        self.refused: set[str] = set()
+        self.key_bound: set[str] = set()  # agents registered under an org-bound operator key (AAASM-6447)
+        self.registered_once: set[str] = set()
+        self.rebound: set[str] = set()
         self.driver = ctx.tmp / "sdk_agent.py"
         self.driver.write_text("# the unchanged agent program\n")
         self.dash_calls = 0
@@ -72,6 +78,21 @@ class FakeLive:
             self.team_of[name] = team
         if org:
             self.org_of[name] = org
+        return True, ""
+
+    def _bind(self, agent, claim, key_org, no_key):
+        """The gateway's org binding as the real one decides it (aa-gateway org_binding.rs); `mode` breaks one row."""
+        if no_key or not key_org:
+            if claim and self.mode != "claim_without_key_accepted":
+                return False, "org claim without a registration key"
+            self.org_of.pop(agent, None)
+            if claim:
+                self.org_of[agent] = claim
+            return True, ""
+        if claim and claim != key_org and self.mode != "spoof_accepted":
+            return False, "claimed org does not match the key's organization"
+        self.org_of[agent] = claim or key_org
+        self.key_bound.add(agent)
         return True, ""
 
     # -- policy
@@ -112,13 +133,43 @@ class FakeLive:
                 return {"has_org_param": False, "has_team_param": True, "params": ["gateway_url", "team_id"],
                         "org_attempt": {"accepted": False, "error": "TypeError", "message": "unexpected keyword argument 'org_id'"}}
             return {"has_org_param": True, "has_team_param": True, "params": ["gateway_url", "team_id", "org_id"], "org_attempt": {"accepted": True}}
+        if op in ("register", "call") and agent not in self.seen and agent not in self.refused:
+            ok, why = self._bind(agent, kw.get("org"), kw.get("key_org", kw.get("org")), bool(kw.get("no_key")))
+            if not ok:
+                self.refused.add(agent)
+                if op == "register":
+                    return {"registered": False, "agent": agent, "error": "PermissionDenied", "message": why}
+        if agent in self.refused:
+            return {"executed": False, "error": "RegisterFailed", "typed": False, "message": "registration refused"}
         if op == "register":
             self.seen.setdefault(agent, 0)
+            if agent in self.registered_once:
+                # A later process of an agent that is already registered (AAASM-6447): the gateway re-binds it only
+                # for an agent registered under an org-bound operator key presented again; otherwise AlreadyExists.
+                later_org = None if kw.get("no_key") else kw.get("key_org", kw.get("org"))
+                if later_org and kw.get("org") and kw["org"] != later_org:
+                    # the claim-versus-key gate runs before any re-bind decision (org_binding.rs), as on the real path
+                    return {"registered": False, "agent": agent, "error": "PermissionDenied",
+                            "warning": "registration failed: claimed org_id does not match the registration key"}
+                if kw.get("org") and not later_org:
+                    return {"registered": False, "agent": agent, "error": "PermissionDenied",
+                            "warning": "registration failed: org claim without a registration key"}
+                rebindable = agent in self.key_bound and later_org is not None and later_org == self.org_of.get(agent)
+                if self.mode == "any_key_rebinds":
+                    rebindable = agent in self.key_bound and later_org is not None
+                if self.mode == "orgless_crash" and agent not in self.key_bound:
+                    return {"registered": False, "agent": agent, "error": "RuntimeError", "message": "driver crashed"}
+                if self.mode == "orgless_rebound":
+                    rebindable = True
+                if self.mode == "bound_no_rebind":
+                    rebindable = False
+                if not rebindable:
+                    return {"registered": False, "agent": agent, "warning": "registration failed: agent already registered: ab12"}
+                self.rebound.add(agent)
+            self.registered_once.add(agent)
             return {"registered": True, "agent": agent}
         tool, s = kw["tool"], Path(kw["sentinel"])
-        if kw.get("org"):
-            self.org_of[agent] = kw["org"]
-        first = self.seen.get(agent, 0) == 0
+        first = self.seen.get(agent, 0) == 0 or agent in self.rebound
         self.seen[agent] = self.seen.get(agent, 0) + 1
         if self.mode == "driver_mutated" and tool == "read_file" and self.file_version == "1.1.0":
             self.driver.write_text("# the program was edited to make the call pass\n")
@@ -186,9 +237,11 @@ class FakeLive:
         return 0, f"Approved: {args[1]} (status: approved)\n"
 
     # -- REST
-    def http(self, path):
+    def http(self, path, key_org=None):
         u = urlparse(path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if key_org and u.path == "/api/v1/logs" and self.mode != "cross_org_read_allowed":
+            q["org_id"] = key_org  # a tenant-bound caller is pinned to its own org
         if u.path == "/api/v1/agents":
             return 200, json.dumps({"items": [{"id": hexid("reg-" + n), "name": n} for n in self.seen]})
         if u.path == "/api/v1/logs":
@@ -196,7 +249,9 @@ class FakeLive:
             if "agent_id" in q and self.mode != "agent_filter_ignored":
                 items = [e for e in items if e["agent_id"] == q["agent_id"]]
             if "org_id" in q and self.mode != "org_leaks":
-                items = [e for e in items if json.loads(e["payload"]).get("org_id") == q["org_id"]]
+                keep_none = self.mode == "org_less_matches_org_filter"
+                items = [e for e in items if json.loads(e["payload"]).get("org_id") == q["org_id"]
+                         or (keep_none and json.loads(e["payload"]).get("org_id") is None)]
             if self.mode == "logs_api_down":
                 return 500, "{}"
             return 200, json.dumps({"items": items, "page": 1, "per_page": 100, "total": len(items)})
@@ -355,6 +410,65 @@ class LiveRowTests(unittest.TestCase):
 
     def test_s3_org_filter_returning_other_orgs_events_fails(self):
         self.assertEqual(stat(self, "org_leaks")["j59-s3-org-scoped-audit-filter"].status, "FAIL")
+
+    # --- s3 org tier (AAASM-6444): each broken behaviour fails the row with its own message
+    def _org_row(self, mode):
+        return stat(self, mode)["j59-s3-org-scoped-audit-filter"]
+
+    def test_s3_org_row_passes_when_every_org_behaviour_holds(self):
+        row = self._org_row("good")
+        self.assertEqual(row.status, "PASS", row.detail)
+
+    def test_s3_cross_org_read_allowed_fails(self):
+        row = self._org_row("cross_org_read_allowed")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("acme-bound key", row.detail)
+
+    def test_s3_org_less_agent_rebound_fails(self):
+        """The org-less negative control: the row fails if an org-less agent's later process is ever re-bound."""
+        row = self._org_row("orgless_rebound")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("org-less agent's later process was re-bound", row.detail)
+
+    def test_s3_org_bound_agent_not_rebound_with_its_key_fails(self):
+        row = self._org_row("bound_no_rebind")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("did not re-bind", row.detail)
+
+    def test_s3_other_orgs_key_rebinding_the_agent_fails(self):
+        row = self._org_row("any_key_rebinds")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("another org's operator key was not refused", row.detail)
+
+    def test_s3_orgless_control_that_crashes_instead_of_being_refused_fails(self):
+        """The control must see the gateway's AlreadyExists, not just `registered` false."""
+        row = self._org_row("orgless_crash")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("not because the gateway refused it as AlreadyExists", row.detail)
+
+    def test_s3_org_row_states_the_rebind_limitation(self):
+        row = self._org_row("good")
+        self.assertIn("NOT resolved for org-less agents", row.detail)
+
+    def test_s3_spoofed_org_registered_fails(self):
+        row = self._org_row("spoof_accepted")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("claiming org globex was registered", row.detail)
+
+    def test_s3_org_claim_without_key_registered_fails(self):
+        row = self._org_row("claim_without_key_accepted")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("no registration key was registered", row.detail)
+
+    def test_s3_org_less_agent_matching_an_org_filter_fails(self):
+        row = self._org_row("org_less_matches_org_filter")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("org-less agent", row.detail)
+
+    def test_s3_org_row_fails_when_no_org_keys_can_be_issued(self):
+        row = self._org_row("no_keygen")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("operator keys", row.detail)
 
     # --- s12
     def test_s12_policy_change_ignored_fails(self):
