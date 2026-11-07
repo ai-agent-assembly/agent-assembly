@@ -144,7 +144,7 @@ aya = { version = "0.13", features = ["async_tokio"] }
 criterion = "0.8"
 proptest = "1"
 tempfile = "3"
-rstest = "0.27"
+rstest = "0.28"
 wat = "1"
 insta = "1"
 assert_cmd = "2"
