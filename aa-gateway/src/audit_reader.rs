@@ -11,6 +11,60 @@ use tokio::io::AsyncBufReadExt;
 use aa_core::audit::AuditEventType;
 use aa_core::{AgentId, AuditEntry};
 
+/// An agent filter for audit queries (AAASM-6446).
+///
+/// An entry is the agent's when any of these hold, so the identifiers the audit
+/// trail itself uses all work and none is silently ignored:
+///
+/// * its 16-byte audit `agent_id` equals the 32-hex `identifier` (the form
+///   `GET /api/v1/logs` returns), or equals `hash_to_16(identifier)` — how the
+///   gateway keys an entry by the id the agent *claimed* (an agent name or a
+///   `did:key`);
+/// * its payload's `agent_id_claimed` is exactly `identifier` (deny / approval
+///   entries record the claimed name);
+/// * its delegation root is the 32-hex `identifier`, or one of `registered_keys`
+///   — the registry keys of agents the caller resolved `identifier` to (an allow
+///   entry carries the agent's `did:key` as its claimed id and its registry key
+///   as `root_agent_id`, so a name only reaches it through the registry).
+///
+/// An identifier that matches nothing selects **nothing**: a filter must never
+/// widen the result.
+#[derive(Debug, Clone)]
+pub struct AgentSelector {
+    identifier: String,
+    hex_id: Option<AgentId>,
+    hashed: AgentId,
+    registered_keys: Vec<AgentId>,
+}
+
+impl AgentSelector {
+    /// Select by `identifier`, plus any registry keys it was resolved to.
+    pub fn new(identifier: &str, registered_keys: &[[u8; 16]]) -> Self {
+        Self {
+            identifier: identifier.to_owned(),
+            hex_id: parse_agent_id(identifier),
+            hashed: AgentId::from_bytes(crate::service::convert::hash_to_16(identifier)),
+            registered_keys: registered_keys.iter().copied().map(AgentId::from_bytes).collect(),
+        }
+    }
+
+    fn matches(&self, entry: &AuditEntry) -> bool {
+        let id = entry.agent_id();
+        if id == self.hashed || self.hex_id == Some(id) {
+            return true;
+        }
+        if let Some(root) = entry.root_agent_id() {
+            if self.hex_id == Some(root) || self.registered_keys.contains(&root) {
+                return true;
+            }
+        }
+        serde_json::from_str::<serde_json::Value>(entry.payload())
+            .ok()
+            .and_then(|v| v.get("agent_id_claimed").and_then(|c| c.as_str().map(str::to_owned)))
+            .is_some_and(|claimed| claimed == self.identifier)
+    }
+}
+
 /// Read-only query interface for the JSONL audit log directory.
 ///
 /// Reads files directly — does not tap the `AuditWriter` mpsc channel.
@@ -44,7 +98,22 @@ impl AuditReader {
         event_type: Option<&str>,
         org_id: Option<&str>,
     ) -> io::Result<(Vec<AuditEntry>, u64)> {
-        self.list_inner(None, limit, offset, agent_id, event_type, org_id).await
+        let selector = agent_id.map(|a| AgentSelector::new(a, &[]));
+        self.list_inner(None, limit, offset, selector.as_ref(), event_type, org_id)
+            .await
+    }
+
+    /// [`list`](Self::list) with a caller-built [`AgentSelector`], for callers
+    /// that resolve an agent name to registry keys first (AAASM-6446).
+    pub async fn list_selected(
+        &self,
+        limit: usize,
+        offset: usize,
+        agent: Option<&AgentSelector>,
+        event_type: Option<&str>,
+        org_id: Option<&str>,
+    ) -> io::Result<(Vec<AuditEntry>, u64)> {
+        self.list_inner(None, limit, offset, agent, event_type, org_id).await
     }
 
     /// List audit entries within a server-side time window, else identical to
@@ -66,7 +135,8 @@ impl AuditReader {
         event_type: Option<&str>,
         org_id: Option<&str>,
     ) -> io::Result<(Vec<AuditEntry>, u64)> {
-        self.list_inner(Some(since_ns), limit, offset, agent_id, event_type, org_id)
+        let selector = agent_id.map(|a| AgentSelector::new(a, &[]));
+        self.list_inner(Some(since_ns), limit, offset, selector.as_ref(), event_type, org_id)
             .await
     }
 
@@ -82,19 +152,20 @@ impl AuditReader {
         since_ns: Option<u64>,
         limit: usize,
         offset: usize,
-        agent_id: Option<&str>,
+        agent_filter: Option<&AgentSelector>,
         event_type: Option<&str>,
         org_id: Option<&str>,
     ) -> io::Result<(Vec<AuditEntry>, u64)> {
         let mut all_entries = self.read_all_entries_windowed(since_ns).await?;
 
-        // Parse filter values once.
-        let agent_filter: Option<AgentId> = agent_id.and_then(parse_agent_id);
-        let event_filter: Option<Vec<AuditEventType>> = event_type.and_then(parse_event_type);
+        // AAASM-6446: a filter that is present but unrecognised selects nothing.
+        // It used to parse to `None`, which read as "no filter" and returned
+        // every agent's / every event type's entries.
+        let event_filter: Option<Vec<AuditEventType>> = event_type.map(|t| parse_event_type(t).unwrap_or_default());
 
         // Apply filters.
         if agent_filter.is_some() || event_filter.is_some() || org_id.is_some() {
-            all_entries.retain(|entry| entry_matches(entry, agent_filter.as_ref(), event_filter.as_ref(), org_id));
+            all_entries.retain(|entry| entry_matches(entry, agent_filter, event_filter.as_ref(), org_id));
         }
 
         // Sort by timestamp descending (newest first).
@@ -233,12 +304,12 @@ fn parse_audit_line(line: &str, since_ns: Option<u64>) -> Option<AuditEntry> {
 /// isolation requires explicit org tagging on the entry).
 fn entry_matches(
     entry: &AuditEntry,
-    agent_filter: Option<&AgentId>,
+    agent_filter: Option<&AgentSelector>,
     event_filter: Option<&Vec<AuditEventType>>,
     org_id: Option<&str>,
 ) -> bool {
-    if let Some(aid) = agent_filter {
-        if entry.agent_id() != *aid {
+    if let Some(selector) = agent_filter {
+        if !selector.matches(entry) {
             return false;
         }
     }
