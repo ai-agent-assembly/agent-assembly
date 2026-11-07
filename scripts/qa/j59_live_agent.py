@@ -651,8 +651,9 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         problems.append("a later process of an org-bound agent presenting another org's operator key was not refused as "
                         f"AlreadyExists (registered={wrong.get('registered')}, {_refusal_text(wrong)!r})")
     nokey_later = be.sdk("register", agent=bound, no_key=True)  # no claim either: isolates the re-bind rule from the claim gate
-    if nokey_later.get("registered"):
-        problems.append("a later process of an org-bound agent presenting no key was registered")
+    if not _duplicate_refusal(nokey_later):
+        problems.append("a later process of an org-bound agent presenting no key was not refused as AlreadyExists "
+                        f"(registered={nokey_later.get('registered')}, {_refusal_text(nokey_later)!r})")
     o1 = be.sdk("register", agent=orgless, no_key=True)
     o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
     if not o1.get("registered"):
