@@ -203,6 +203,10 @@ pub fn build_register_request(
         parent_agent_id: config.parent_agent_id.clone(),
         possession_proof,
         registration_nonce: nonce.to_vec(),
+        // `identity_keypair` is always the durable store (AAASM-5332), never a key
+        // derived from the agent id, so this holds for every request built here.
+        // Requests assembled anywhere else leave it unset and so never re-bind.
+        durable_identity_key: true,
         ..Default::default()
     })
 }
