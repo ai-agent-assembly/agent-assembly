@@ -33,6 +33,15 @@ pub fn generate_credential_token() -> String {
 pub fn validate_token(registry: &AgentRegistry, agent_id: &[u8; 16], token: &str) -> Result<(), TokenError> {
     let record = registry.get(agent_id).ok_or(TokenError::AgentNotFound(*agent_id))?;
 
+    // A record that holds no credential validates nothing. Records rehydrated from
+    // durable storage come back with an empty `credential_token` (AAASM-6450), and
+    // two empty strings are equal under `ct_eq`, so without this an empty token
+    // would authenticate Heartbeat, Deregister and ControlStream for any agent whose
+    // (org, team, did) the caller knows, until the agent registers again.
+    if record.credential_token.is_empty() {
+        return Err(TokenError::InvalidToken);
+    }
+
     if bool::from(record.credential_token.as_bytes().ct_eq(token.as_bytes())) {
         Ok(())
     } else {
