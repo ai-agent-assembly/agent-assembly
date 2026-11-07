@@ -77,17 +77,37 @@ and `team_id`, **only** when it presents a registration key bound to the record'
 organization. Proving possession of the agent key shows who the agent is, not that
 the caller may take over its credential, so the operator's key is what authorizes it.
 
-Every other case is the same `AlreadyExists` a plain duplicate gets, with no
-credential in the response:
+A key confined to one team (`team_id` on the key) re-binds only agents of that
+team; it is compared with the team stored on the record, not the `team_id` the
+caller sends. An org-wide key re-binds any team's agent in its organization.
+
+Every other case that reaches the existing record is the same `AlreadyExists` a plain
+duplicate gets, with no credential in the response:
 
 * the record has no organization (registered without a key, as the CLI does);
 * the caller is an unbound admin key merely asserting the organization;
-* the registration is still in flight, or its durable write was rolled back (retry).
+* the key is confined to a different team than the record's;
+* the registration is still in flight, or its durable write failed (retry).
 
-**Limitation.** An org-less agent, or an agent registered without an operator key,
-can never be re-bound: its later processes keep colliding, run unregistered, and
-their audit entries carry the agent name without a `team_id`. Register such agents
-with an organization-bound key to get one identity across processes.
+A process with a different key, a different org or no key does not reach the record
+at all: the registry identity includes the organization, so it simply registers a
+separate agent.
+
+A registration abandoned mid-write (the client went away) is removed again, so a
+later re-bind is never handed its credential. If the durable write had already
+completed when the request was dropped, the stored row survives until the next
+registration of that agent replaces it.
+
+**Limitations.**
+
+* Registration does not check the key's scope (read, write or admin): a read-scope
+  org-bound key can re-bind, as it can register.
+* A key revoked through REST/IAM after the agent registered still authorizes a
+  re-bind until the gateway restarts.
+* An org-less agent, or an agent registered without an operator key,
+  can never be re-bound: its later processes keep colliding, run unregistered, and
+  their audit entries carry the agent name without a `team_id`. Register such agents
+  with an organization-bound key to get one identity across processes.
 
 ### Issuing and revoking keys
 
