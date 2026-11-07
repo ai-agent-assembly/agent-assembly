@@ -84,9 +84,10 @@ compute that key:
    CLI generate a random identity key per agent identity and keep it owner-only in the
    state directory (`AASM_STATE_DIR`), and say so on every registration
    (`RegisterRequest.durable_identity_key`). The gateway records that when it creates
-   the record and reads it back from the stored record, never from a later request. A
-   process restarted from the same state directory proves possession of the same key
-   and keeps the agent's id and credential; no operator key is involved.
+   the record and reads it back from the stored record, never from a later request,
+   and the later process must declare a held key too. A process restarted from the
+   same state directory proves possession of the same key and keeps the agent's id
+   and credential; no operator key is involved.
 
 An identifier alone never authorizes either: the identifier is public, the key is not.
 
@@ -123,11 +124,17 @@ registration of that agent replaces it.
 * A key revoked through REST/IAM after the agent registered still authorizes a
   re-bind until the gateway restarts.
 * A keyless agent re-binds only while the gateway that registered it keeps running
-  and only if its first registration declared the durable key. Agents registered by
-  clients built before the declaration, and every agent after a gateway restart
-  (storage keeps no key or credential), get `AlreadyExists` on a later process and
-  must register again as a new agent; register them with an organization-bound key
-  for an identity the operator controls.
+  and only if its first registration declared the durable key. After a gateway
+  restart storage keeps neither key nor credential, so the agent's record is back
+  without them, cannot be re-bound, and occupies the agent's registry slot: a later
+  process of that agent (and of any operator-key agent) gets `AlreadyExists` until
+  that record is removed. Records created by clients built before the declaration
+  behave the same way. This is a known gap; it is tracked separately.
+* The durable-key declaration is a claim by the client that creates the record. A
+  hand-built client can declare it while using a computable key, so a record is only
+  as trustworthy as its creator: whoever registers an identity first holds its
+  credential (as before), and a later process that also declares a held key and
+  proves possession of the same key shares that credential.
 * The credential is shared: every re-bound process holds the same token, so one
   process's Deregister ends the agent for all of them. Anyone who copies the agent's
   key file from the state directory holds the agent's identity and its credential.
