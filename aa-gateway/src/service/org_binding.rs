@@ -51,6 +51,9 @@ pub struct ResolvedOrg {
     /// all, is `false`: neither can authorize taking over an existing agent's
     /// credential.
     pub key_bound: bool,
+    /// The team the deciding key is confined to (`ApiKeyEntry::team_id`, AAASM-3139);
+    /// `None` for an org-wide key. Meaningful only when `key_bound`.
+    pub key_team: Option<String>,
 }
 
 /// Resolves a registration credential to the organization it is bound to.
@@ -98,7 +101,11 @@ impl OrgBinder {
     }
 
     fn bind_presented(&self, presented: Option<&str>, claimed: &str) -> Result<ResolvedOrg, Status> {
-        let unbound = |org: Option<String>| ResolvedOrg { org, key_bound: false };
+        let unbound = |org: Option<String>| ResolvedOrg {
+            org,
+            key_bound: false,
+            key_team: None,
+        };
         let claimed = (!claimed.is_empty()).then_some(claimed);
         let Some(raw) = presented else {
             return match claimed {
@@ -127,10 +134,12 @@ impl OrgBinder {
             (Some(bound), None) => Ok(ResolvedOrg {
                 org: Some(bound.to_owned()),
                 key_bound: true,
+                key_team: entry.team_id.clone().filter(|t| !t.is_empty()),
             }),
             (Some(bound), Some(c)) if bound == c => Ok(ResolvedOrg {
                 org: Some(bound.to_owned()),
                 key_bound: true,
+                key_team: entry.team_id.clone().filter(|t| !t.is_empty()),
             }),
             (Some(_), Some(_)) => Err(reject(
                 "mismatch",

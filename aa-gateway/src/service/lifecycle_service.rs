@@ -302,24 +302,46 @@ fn rebind_existing(existing: &AgentRecord, public_key: &str) -> Result<Response<
 /// registry can show a record that is not yet, and may never be, committed. A
 /// re-bind must not hand out that record's credential; this guard is what lets it
 /// tell. Released on drop, so a cancelled request cannot leave a key stuck.
+///
+/// The durable write is also the one point where tonic can drop the handler future
+/// (client gone, deadline). [`Self::armed`] is set around exactly that await; a drop
+/// while armed means the insert happened and the write never reported back, so the
+/// record is removed again rather than left for a later re-bind to return.
 struct Registering {
     keys: Arc<StdMutex<HashSet<[u8; 16]>>>,
+    registry: Arc<AgentRegistry>,
     key: [u8; 16],
+    /// Credential token of the record this registration inserted, while its durable
+    /// write is outstanding.
+    armed: Option<String>,
 }
 
 impl Registering {
     /// `None` when another registration of `key` is already in flight.
-    fn enter(keys: &Arc<StdMutex<HashSet<[u8; 16]>>>, key: [u8; 16]) -> Option<Self> {
+    fn enter(keys: &Arc<StdMutex<HashSet<[u8; 16]>>>, registry: &Arc<AgentRegistry>, key: [u8; 16]) -> Option<Self> {
         let mut set = keys.lock().unwrap_or_else(|e| e.into_inner());
         set.insert(key).then(|| Self {
             keys: Arc::clone(keys),
+            registry: Arc::clone(registry),
             key,
+            armed: None,
         })
     }
 }
 
 impl Drop for Registering {
     fn drop(&mut self) {
+        if let Some(token) = self.armed.take() {
+            // Cancelled between the in-memory insert and the durable write. Only
+            // our own record is removed: the token ties it to this registration.
+            if self
+                .registry
+                .get(&self.key)
+                .is_some_and(|record| record.credential_token == token)
+            {
+                let _ = self.registry.deregister(&self.key, OrphanMode::Suspend);
+            }
+        }
         self.keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.key);
     }
 }
@@ -460,7 +482,16 @@ impl AgentLifecycleServiceImpl {
     ) -> Result<Response<RegisterResponse>, Status> {
         let authorized_org = resolved.org.as_deref().filter(|_| resolved.key_bound);
         match (self.committed_record(agent_key), authorized_org) {
-            (Some(existing), Some(org)) if existing.org_id.as_deref() == Some(org) => {
+            // A key confined to a team (AAASM-3139) is authorized only for that
+            // team's agents. The team compared is the persisted record's, never the
+            // request's `team_id`, which the caller controls.
+            (Some(existing), Some(org))
+                if existing.org_id.as_deref() == Some(org)
+                    && resolved
+                        .key_team
+                        .as_deref()
+                        .map_or(true, |team| existing.team_id.as_deref() == Some(team)) =>
+            {
                 rebind_existing(&existing, public_key)
             }
             _ => Err(already_registered(agent_key)),
@@ -615,7 +646,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // Held until the durable write has finished or been rolled back, so a
         // concurrent re-bind cannot be handed a credential for a record that is
         // not committed. A second first-registration of the key refuses (retryable).
-        let Some(registering) = Registering::enter(&self.registering, agent_key) else {
+        let Some(mut registering) = Registering::enter(&self.registering, &self.registry, agent_key) else {
             return Err(already_registered(&agent_key));
         };
 
@@ -690,7 +721,12 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         };
 
         let public_key = record.public_key.clone();
-        match self.registry.register_persisted(record).await {
+        registering.armed = Some(record.credential_token.clone());
+        let persisted = self.registry.register_persisted(record).await;
+        // The write reported back (either way, `register_persisted` has already
+        // rolled its own insert back on failure): nothing left for the guard to undo.
+        registering.armed = None;
+        match persisted {
             Ok(()) => {}
             // A concurrent registration committed the same agent between the
             // check above and the insert: decide as for any existing agent, after
