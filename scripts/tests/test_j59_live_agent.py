@@ -57,6 +57,7 @@ class FakeLive:
         self.key_bound: set[str] = set()  # agents registered under an org-bound operator key (AAASM-6447)
         self.registered_once: set[str] = set()
         self.rebound: set[str] = set()
+        self.separate: list[tuple[str, str]] = []  # separate agents a later process created under another registry key
         self.driver = ctx.tmp / "sdk_agent.py"
         self.driver.write_text("# the unchanged agent program\n")
         self.dash_calls = 0
@@ -155,6 +156,7 @@ class FakeLive:
                     return {"registered": False, "agent": agent, "error": "PermissionDenied",
                             "warning": "registration failed: org claim without a registration key"}
                 rebindable = agent in self.key_bound and later_org is not None and later_org == self.org_of.get(agent)
+                authorized = rebindable
                 if self.mode == "any_key_rebinds":
                     rebindable = agent in self.key_bound and later_org is not None
                 if self.mode == "orgless_crash" and agent not in self.key_bound:
@@ -163,6 +165,13 @@ class FakeLive:
                     rebindable = True
                 if self.mode == "bound_no_rebind":
                     rebindable = False
+                if not rebindable and agent in self.key_bound and not authorized:
+                    # The registry identity includes the org: another org's key, or no key, is a different registry key,
+                    # so the gateway registers a SEPARATE agent rather than touching the bound record.
+                    if self.mode == "unauth_crash":
+                        return {"registered": False, "agent": agent, "error": "RuntimeError", "message": "driver crashed"}
+                    self.separate.append((agent, hexid(f"sep-{agent}-{len(self.separate)}")))
+                    return {"registered": True, "agent": agent}
                 if not rebindable:
                     return {"registered": False, "agent": agent, "warning": "registration failed: agent already registered: ab12"}
                 self.rebound.add(agent)
@@ -243,7 +252,8 @@ class FakeLive:
         if key_org and u.path == "/api/v1/logs" and self.mode != "cross_org_read_allowed":
             q["org_id"] = key_org  # a tenant-bound caller is pinned to its own org
         if u.path == "/api/v1/agents":
-            return 200, json.dumps({"items": [{"id": hexid("reg-" + n), "name": n} for n in self.seen]})
+            return 200, json.dumps({"items": [{"id": hexid("reg-" + n), "name": n} for n in self.seen]
+                                    + [{"id": i, "name": n} for n, i in self.separate]})
         if u.path == "/api/v1/logs":
             items = list(self.entries)
             if "agent_id" in q and self.mode != "agent_filter_ignored":
@@ -438,7 +448,13 @@ class LiveRowTests(unittest.TestCase):
     def test_s3_other_orgs_key_rebinding_the_agent_fails(self):
         row = self._org_row("any_key_rebinds")
         self.assertEqual(row.status, "FAIL")
-        self.assertIn("another org's operator key was not refused", row.detail)
+        self.assertIn("re-bound onto the existing record", row.detail)
+
+    def test_s3_unauthorized_later_process_that_crashes_fails(self):
+        """Neither a refusal nor a separate agent: the control must not pass on an unexplained failure."""
+        row = self._org_row("unauth_crash")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("neither registered nor was refused by the gateway", row.detail)
 
     def test_s3_orgless_control_that_crashes_instead_of_being_refused_fails(self):
         """The control must see the gateway's AlreadyExists, not just `registered` false."""

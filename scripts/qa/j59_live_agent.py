@@ -312,6 +312,39 @@ def _duplicate_refusal(r: dict[str, Any]) -> bool:
     return not r.get("registered") and "already registered" in _refusal_text(r).lower()
 
 
+def ids_named(be: Any, name: str) -> list[str]:
+    """Every registry id the agents API lists under this name (a separate agent may share a name)."""
+    st, body = be.http("/api/v1/agents?per_page=100")
+    try:
+        items = json.loads(body).get("items", []) if st == 200 else []
+    except ValueError:
+        items = []
+    return sorted(str(a.get("id")) for a in items if isinstance(a, dict) and a.get("name") == name)
+
+
+def _unauthorized_later_process(label: str, r: dict[str, Any], before: set[str], now: list[str]) -> list[str]:
+    """A later process without an authorization for the record: refused by the gateway, or a separate agent. Never a
+    re-bind onto the existing record, and never an unexplained failure."""
+    out: list[str] = []
+    if not before <= set(now):
+        out.append(f"after a later process presenting {label} the existing record's id disappeared ({sorted(before - set(now))})")
+    new = set(now) - before
+    if r.get("registered"):
+        if not new:
+            out.append(f"a later process presenting {label} registered but no separate agent appeared, so it was re-bound onto "
+                       "the existing record")
+        elif len(new) != 1:
+            out.append(f"a later process presenting {label} produced {len(new)} new agents, want one")
+    else:
+        text = _refusal_text(r).lower()
+        if not any(t in text for t in ("already registered", "permission", "unauthenticated", "denied", "not valid", "registration key")):
+            out.append(f"a later process presenting {label} neither registered nor was refused by the gateway "
+                       f"({r.get('error')} {_refusal_text(r)!r})")
+        if new:
+            out.append(f"a later process presenting {label} was refused yet a new agent appeared")
+    return out
+
+
 def registered_ids(be: Any) -> tuple[dict[str, str], str]:
     st, body = be.http("/api/v1/agents?per_page=100")
     try:
@@ -643,17 +676,20 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         problems.append(f"the re-bound agent's entries carry {len(seen_ids)} agent ids {sorted(map(str, seen_ids))}, want one")
     if seen_teams != {rb_team}:
         problems.append(f"the re-bound agent's entries carry team_id {sorted(map(str, seen_teams))}, want only {rb_team!r}")
-    # Half of "a key bound to the record's org" is the org: a later process presenting ANOTHER org's valid key is refused
-    # as a duplicate, the same as no key, with the right-key process above as its positive control. It must claim no
-    # org, otherwise the refusal comes from the claim-versus-key gate (the spoof leg) and not from the re-bind rule.
-    wrong = be.sdk("register", agent=bound, key_org="globex")  # claims nothing: the key alone is org-bound, the record is not
-    if not _duplicate_refusal(wrong):
-        problems.append("a later process of an org-bound agent presenting another org's operator key was not refused as "
-                        f"AlreadyExists (registered={wrong.get('registered')}, {_refusal_text(wrong)!r})")
-    nokey_later = be.sdk("register", agent=bound, no_key=True)  # no claim either: isolates the re-bind rule from the claim gate
-    if not _duplicate_refusal(nokey_later):
-        problems.append("a later process of an org-bound agent presenting no key was not refused as AlreadyExists "
-                        f"(registered={nokey_later.get('registered')}, {_refusal_text(nokey_later)!r})")
+    # Half of "a key bound to the record's org" is the org. The registry identity includes the org, so a later process
+    # that presents ANOTHER org's valid key (claiming nothing), or no key at all, does not reach the acme record: it
+    # either is refused or registers as a SEPARATE agent. Either way it must not be re-bound onto the existing record,
+    # and the record must stay as it was. A claim is deliberately left out, otherwise the refusal would come from the
+    # claim-versus-key gate (the spoof leg) and not from the registry identity.
+    bound_ids = ids_named(be, bound)
+    if len(bound_ids) != 1:
+        problems.append(f"before the unauthorized later processes the org-bound agent had {len(bound_ids)} registry ids, want one")
+    known = set(bound_ids)
+    for label, kw in (("another org's operator key", {"key_org": "globex"}), ("no key", {"no_key": True})):
+        r = be.sdk("register", agent=bound, **kw)
+        now = ids_named(be, bound)
+        problems += _unauthorized_later_process(label, r, known, now)
+        known |= set(now)
     o1 = be.sdk("register", agent=orgless, no_key=True)
     o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
     if not o1.get("registered"):
@@ -667,7 +703,7 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
     _row(ctx, cid, problems,
          "two orgs registered with org-bound operator keys: ?org_id= returns only each org's events; an acme-bound key cannot "
          "read globex (admin control sees it); acme's key claiming globex is refused and registers nothing; no key plus an org "
-         "claim is refused; an org-less agent registers with org_id null and never matches an org filter; AAASM-6447 is "
+         "claim is refused; a later process presenting another org's key, or none, never reaches the acme record (a separate agent or a refusal); an org-less agent registers with org_id null and never matches an org filter; AAASM-6447 is "
          "resolved ONLY for operator-key-authorized org-bound agents (a later process presenting the org's key re-binds to one "
          "agent id with its team_id) and is NOT resolved for org-less agents (a later process gets AlreadyExists and is not "
          "re-bound: the acceptance is not met for them)", arts, neg)
