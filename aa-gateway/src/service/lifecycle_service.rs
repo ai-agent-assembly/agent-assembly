@@ -1,6 +1,6 @@
 //! `AgentLifecycleService` tonic trait implementation wiring gRPC RPCs to [`AgentRegistry`].
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -28,7 +28,7 @@ use crate::registry::convert::{
 use crate::registry::store::AgentRecord;
 use crate::registry::token::{generate_credential_token, validate_token};
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
-use crate::service::org_binding::OrgBinder;
+use crate::service::org_binding::{OrgBinder, ResolvedOrg};
 use crate::service::TenancyMode;
 
 /// Default heartbeat interval returned to agents at registration (seconds).
@@ -259,6 +259,93 @@ fn verify_possession_proof(
     Ok(())
 }
 
+/// The refusal for a `Register` that reaches an agent the caller is not authorized
+/// to re-bind to.
+///
+/// Identical for every refusal reason (org-less record, caller not bound to the
+/// record's organization, registration still in flight) and to the collision a
+/// plain duplicate has always produced, so the response says nothing about which
+/// of those it was and never carries the existing credential.
+fn already_registered(agent_key: &[u8; 16]) -> Status {
+    Status::already_exists(RegistryError::AlreadyRegistered(*agent_key).to_string())
+}
+
+/// Answer a `Register` for an agent that is already in the registry
+/// (AAASM-6447), once the caller has proven possession of its key **and** the
+/// operator has authorized the re-bind (see [`AgentLifecycleServiceImpl::refuse_or_rebind`]).
+///
+/// The record keeps its original attribution (team, org, lineage) and its
+/// credential token, so every process of one agent shares one identity and one
+/// `agent_id` in the audit trail. A `public_key` that differs from the stored one
+/// cannot happen under the did:key binding; it is refused rather than overwritten
+/// so a registration can never replace the key an agent is known by.
+fn rebind_existing(existing: &AgentRecord, public_key: &str) -> Result<Response<RegisterResponse>, Status> {
+    if existing.public_key != public_key {
+        return Err(already_registered(&existing.agent_id));
+    }
+    tracing::info!(agent = ?existing.name, "agent re-registered: re-bound to its existing identity");
+    Ok(Response::new(RegisterResponse {
+        credential_token: existing.credential_token.clone(),
+        assigned_policy: String::new(),
+        heartbeat_interval_sec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
+        parent_agent_id: existing.parent_agent_id.clone(),
+        team_id: existing.team_id.clone(),
+        root_agent_id: existing.root_agent_id.map(|b| b.to_vec()),
+        org_id: existing.org_id.clone(),
+    }))
+}
+
+/// Marks an agent key as mid-registration for as long as it lives.
+///
+/// `register_persisted` inserts into the in-memory registry before the durable
+/// write and removes the entry again if that write fails, so for a moment the
+/// registry can show a record that is not yet, and may never be, committed. A
+/// re-bind must not hand out that record's credential; this guard is what lets it
+/// tell. Released on drop, so a cancelled request cannot leave a key stuck.
+///
+/// The durable write is also the one point where tonic can drop the handler future
+/// (client gone, deadline). [`Self::armed`] is set around exactly that await; a drop
+/// while armed means the insert happened and the write never reported back, so the
+/// record is removed again rather than left for a later re-bind to return.
+struct Registering {
+    keys: Arc<StdMutex<HashSet<[u8; 16]>>>,
+    registry: Arc<AgentRegistry>,
+    key: [u8; 16],
+    /// Credential token of the record this registration inserted, while its durable
+    /// write is outstanding.
+    armed: Option<String>,
+}
+
+impl Registering {
+    /// `None` when another registration of `key` is already in flight.
+    fn enter(keys: &Arc<StdMutex<HashSet<[u8; 16]>>>, registry: &Arc<AgentRegistry>, key: [u8; 16]) -> Option<Self> {
+        let mut set = keys.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(key).then(|| Self {
+            keys: Arc::clone(keys),
+            registry: Arc::clone(registry),
+            key,
+            armed: None,
+        })
+    }
+}
+
+impl Drop for Registering {
+    fn drop(&mut self) {
+        if let Some(token) = self.armed.take() {
+            // Cancelled between the in-memory insert and the durable write. Only
+            // our own record is removed: the token ties it to this registration.
+            if self
+                .registry
+                .get(&self.key)
+                .is_some_and(|record| record.credential_token == token)
+            {
+                let _ = self.registry.deregister(&self.key, OrphanMode::Suspend);
+            }
+        }
+        self.keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.key);
+    }
+}
+
 /// gRPC service implementation wiring `Register` / `Heartbeat` / `Deregister` /
 /// `ControlStream` to the in-memory [`AgentRegistry`].
 pub struct AgentLifecycleServiceImpl {
@@ -284,6 +371,9 @@ pub struct AgentLifecycleServiceImpl {
     /// only be org-less until the operator wires an org-bound key store via
     /// [`Self::with_org_binder`].
     org_binder: OrgBinder,
+    /// Agent keys whose `Register` is between the in-memory insert and the durable
+    /// write (AAASM-6447). See [`Registering`].
+    registering: Arc<StdMutex<HashSet<[u8; 16]>>>,
 }
 
 impl AgentLifecycleServiceImpl {
@@ -298,6 +388,7 @@ impl AgentLifecycleServiceImpl {
             challenges: Arc::new(InMemoryChallengeStore::default()),
             tenancy_mode: TenancyMode::default(),
             org_binder: OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(Vec::new()))),
+            registering: Arc::default(),
         }
     }
 
@@ -315,6 +406,7 @@ impl AgentLifecycleServiceImpl {
             challenges: Arc::new(InMemoryChallengeStore::default()),
             tenancy_mode: TenancyMode::default(),
             org_binder: OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(Vec::new()))),
+            registering: Arc::default(),
         }
     }
 
@@ -354,6 +446,56 @@ impl AgentLifecycleServiceImpl {
     pub fn with_org_binder(mut self, binder: OrgBinder) -> Self {
         self.org_binder = binder;
         self
+    }
+
+    /// The record for `agent_key` only once it is committed: present, not
+    /// mid-registration, and unchanged across the check (a record whose persist is
+    /// rolled back between the two reads is discarded, not returned).
+    fn committed_record(&self, agent_key: &[u8; 16]) -> Option<AgentRecord> {
+        let first = self.registry.get(agent_key)?;
+        if self
+            .registering
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(agent_key)
+        {
+            return None;
+        }
+        self.registry
+            .get(agent_key)
+            .filter(|again| again.credential_token == first.credential_token)
+    }
+
+    /// Decide a `Register` that reached an existing agent (AAASM-6447).
+    ///
+    /// Possession of the agent key proves who the agent is, not that this caller
+    /// may take over its credential, so the existing credential is returned only to
+    /// a validated operator key **bound to** the record's persisted organization.
+    /// Everything else gets [`already_registered`]: an org-less record (nobody to
+    /// authorize), an organization merely asserted by an unbound admin key, and a
+    /// record that is still mid-registration or was rolled back.
+    fn refuse_or_rebind(
+        &self,
+        agent_key: &[u8; 16],
+        resolved: &ResolvedOrg,
+        public_key: &str,
+    ) -> Result<Response<RegisterResponse>, Status> {
+        let authorized_org = resolved.org.as_deref().filter(|_| resolved.key_bound);
+        match (self.committed_record(agent_key), authorized_org) {
+            // A key confined to a team (AAASM-3139) is authorized only for that
+            // team's agents. The team compared is the persisted record's, never the
+            // request's `team_id`, which the caller controls.
+            (Some(existing), Some(org))
+                if existing.org_id.as_deref() == Some(org)
+                    && resolved
+                        .key_team
+                        .as_deref()
+                        .map_or(true, |team| existing.team_id.as_deref() == Some(team)) =>
+            {
+                rebind_existing(&existing, public_key)
+            }
+            _ => Err(already_registered(agent_key)),
+        }
     }
 }
 
@@ -419,7 +561,8 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             .as_ref()
             .map(|id| id.org_id.clone())
             .unwrap_or_default();
-        let bound_org = self.org_binder.resolve(&request, &claimed_org)?;
+        let resolved = self.org_binder.resolve_binding(&request, &claimed_org)?;
+        let bound_org = resolved.org.clone();
         let req = request.into_inner();
 
         let proto_id = req
@@ -489,6 +632,24 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             agent_id: proto_id.agent_id.clone(),
         };
         let agent_key = proto_agent_id_to_key(&effective_id);
+
+        // AAASM-6447: a later process of an agent that is already registered may
+        // re-bind to it, but only with an operator key bound to the record's
+        // organization (`refuse_or_rebind`). The registry key hashes the
+        // *authoritative* `org_id/team_id/agent_id` (`effective_id` above), so a
+        // process presenting a different key, or a different team, never lands on
+        // this record: it is a different agent and registers on its own, and a
+        // process with no key that claims an org was already refused by the binding.
+        if self.registry.get(&agent_key).is_some() {
+            return self.refuse_or_rebind(&agent_key, &resolved, &req.public_key);
+        }
+        // Held until the durable write has finished or been rolled back, so a
+        // concurrent re-bind cannot be handed a credential for a record that is
+        // not committed. A second first-registration of the key refuses (retryable).
+        let Some(mut registering) = Registering::enter(&self.registering, &self.registry, agent_key) else {
+            return Err(already_registered(&agent_key));
+        };
+
         let credential_token = generate_credential_token();
         let now = Utc::now();
 
@@ -559,12 +720,29 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             org_id: echo_org_id.clone(),
         };
 
-        self.registry.register_persisted(record).await.map_err(|e| match e {
-            RegistryError::AlreadyRegistered(_) => Status::already_exists(e.to_string()),
-            RegistryError::Lineage(LineageError::CircularDelegation { .. })
-            | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. }) => Status::invalid_argument(e.to_string()),
-            _ => Status::internal(e.to_string()),
-        })?;
+        let public_key = record.public_key.clone();
+        registering.armed = Some(record.credential_token.clone());
+        let persisted = self.registry.register_persisted(record).await;
+        // The write reported back (either way, `register_persisted` has already
+        // rolled its own insert back on failure): nothing left for the guard to undo.
+        registering.armed = None;
+        match persisted {
+            Ok(()) => {}
+            // A concurrent registration committed the same agent between the
+            // check above and the insert: decide as for any existing agent, after
+            // releasing our own mark so it does not read as "in flight".
+            Err(RegistryError::AlreadyRegistered(_)) => {
+                drop(registering);
+                return self.refuse_or_rebind(&agent_key, &resolved, &public_key);
+            }
+            Err(
+                e @ (RegistryError::Lineage(LineageError::CircularDelegation { .. })
+                | RegistryError::Lineage(LineageError::MaxDepthExceeded { .. })),
+            ) => return Err(Status::invalid_argument(e.to_string())),
+            Err(e) => return Err(Status::internal(e.to_string())),
+        }
+        // Committed: a re-bind may now be answered.
+        drop(registering);
 
         tracing::info!(agent_id = ?proto_id.agent_id, "agent registered");
 

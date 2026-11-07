@@ -60,6 +60,55 @@ fn operator_interceptor() -> impl FnMut(tonic::Request<()>) -> Result<tonic::Req
     }
 }
 
+/// A key bound to `org`, and a server whose interceptor presents it on every
+/// request: the operator-authorized caller of an AAASM-6447 re-bind.
+fn bound_key(org: &str) -> (String, aa_auth::api_key::ApiKeyEntry) {
+    let key = aa_auth::api_key::ApiKey::generate();
+    let entry = aa_auth::api_key::ApiKeyEntry {
+        id: format!("bound-{org}"),
+        key_hash: key.hash().unwrap(),
+        scopes: vec![aa_auth::scope::Scope::Read],
+        created_at: 0,
+        expires_at: None,
+        label: None,
+        team_id: None,
+        org_id: Some(org.to_owned()),
+        key_lookup: Some(key.lookup()),
+    };
+    (key.as_str().to_owned(), entry)
+}
+
+async fn start_bound_server(org: &str) -> (SocketAddr, Arc<AgentRegistry>) {
+    let (secret, entry) = bound_key(org);
+    let binder =
+        aa_gateway::service::org_binding::OrgBinder::new(Arc::new(aa_auth::api_key::ApiKeyStore::from_entries(vec![
+            entry,
+        ])));
+    let registry = Arc::new(AgentRegistry::new());
+    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_org_binder(binder);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(AgentLifecycleServiceServer::with_interceptor(
+                service,
+                move |mut req: tonic::Request<()>| {
+                    req.metadata_mut().insert(
+                        aa_gateway::service::org_binding::REGISTRATION_KEY_METADATA_KEY,
+                        secret.parse().unwrap(),
+                    );
+                    Ok(req)
+                },
+            ))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    (addr, registry)
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// The deterministic test keypair. Register/RequestChallenge now bind the
@@ -461,9 +510,14 @@ async fn deregister_unregistered_agent_returns_not_found() {
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
 }
 
+/// AAASM-6447: a later process of an already-registered agent re-binds to the
+/// same identity instead of being refused. Before this, the second `Register`
+/// returned `AlreadyExists`, the SDK ran unregistered ("asserted") and its audit
+/// entries carried the agent name and no `team_id`, so one agent appeared under
+/// several `agent_id` values.
 #[tokio::test]
-async fn duplicate_register_returns_already_exists() {
-    let (addr, _registry) = start_server().await;
+async fn reregistering_the_same_identity_rebinds_to_the_existing_agent() {
+    let (addr, registry) = start_bound_server("org-test").await;
     let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
         .await
         .unwrap();
@@ -473,17 +527,131 @@ async fn duplicate_register_returns_already_exists() {
         name: "dup-agent".into(),
         framework: "custom".into(),
         version: "1.0.0".into(),
-        risk_tier: 0,
-        tool_names: vec![],
         public_key: test_ed25519_public_key_hex(),
-        metadata: Default::default(),
         ..Default::default()
     };
 
-    register_with_challenge(&mut client, req.clone()).await.unwrap();
+    let first = register_with_challenge(&mut client, req.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let second = register_with_challenge(&mut client, req).await.unwrap().into_inner();
 
-    let status = register_with_challenge(&mut client, req).await.unwrap_err();
-    assert_eq!(status.code(), tonic::Code::AlreadyExists);
+    assert_eq!(
+        second.credential_token, first.credential_token,
+        "same agent, same credential"
+    );
+    assert_eq!(second.team_id.as_deref(), Some("team-test"), "team attribution intact");
+    assert_eq!(second.root_agent_id, first.root_agent_id);
+    let key = aa_gateway::registry::convert::proto_agent_id_to_key(&test_agent_id());
+    let record = registry.get(&key).expect("one record");
+    assert_eq!(record.credential_token, first.credential_token);
+    assert_eq!(record.team_id.as_deref(), Some("team-test"));
+}
+
+/// AAASM-6447, operator-authorized: a registration the operator did not bind to an
+/// organization (an unbound admin key merely asserting `org-test`) never re-binds.
+/// It collides exactly as a fresh duplicate does and receives no credential.
+#[tokio::test]
+async fn an_unbound_admin_key_cannot_rebind_an_existing_agent() {
+    let (addr, registry) = start_server().await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    let req = RegisterRequest {
+        agent_id: Some(test_agent_id()),
+        name: "dup-agent".into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        public_key: test_ed25519_public_key_hex(),
+        ..Default::default()
+    };
+    let first = register_with_challenge(&mut client, req.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let err = register_with_challenge(&mut client, req).await.unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::AlreadyExists);
+    assert!(
+        !err.message().contains(&first.credential_token),
+        "a refused re-bind must not disclose the credential"
+    );
+    let key = aa_gateway::registry::convert::proto_agent_id_to_key(&test_agent_id());
+    assert_eq!(registry.get(&key).unwrap().credential_token, first.credential_token);
+}
+
+/// The same did:key under another team is a different registry key (the key
+/// hashes `org/team/agent`), so it registers as its own agent with its own
+/// credential and never receives, or alters, the first agent's record.
+#[tokio::test]
+async fn reregistration_never_crosses_teams() {
+    let (addr, registry) = start_bound_server("org-test").await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    let base = RegisterRequest {
+        agent_id: Some(test_agent_id()),
+        name: "a".into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        public_key: test_ed25519_public_key_hex(),
+        ..Default::default()
+    };
+    let first = register_with_challenge(&mut client, base.clone())
+        .await
+        .unwrap()
+        .into_inner();
+
+    let mut other = base;
+    other.agent_id = Some(ProtoAgentId {
+        team_id: "team-other".into(),
+        ..test_agent_id()
+    });
+    let second = register_with_challenge(&mut client, other).await.unwrap().into_inner();
+
+    assert_ne!(second.credential_token, first.credential_token);
+    assert_eq!(second.team_id.as_deref(), Some("team-other"));
+    let key = aa_gateway::registry::convert::proto_agent_id_to_key(&test_agent_id());
+    let original = registry.get(&key).expect("original record untouched");
+    assert_eq!(original.team_id.as_deref(), Some("team-test"));
+    assert_eq!(original.credential_token, first.credential_token);
+}
+
+/// Negative control for the re-bind: someone who knows the registered did:key but
+/// holds a different key pair cannot obtain the victim's credential. The did:key
+/// binding refuses the pairing before the registry is consulted.
+#[tokio::test]
+async fn reregistration_with_a_different_key_cannot_hijack_the_agent() {
+    let (addr, registry) = start_bound_server("org-test").await;
+    let mut client = AgentLifecycleServiceClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    let victim = RegisterRequest {
+        agent_id: Some(test_agent_id()),
+        name: "victim".into(),
+        framework: "custom".into(),
+        version: "1.0.0".into(),
+        public_key: test_ed25519_public_key_hex(),
+        ..Default::default()
+    };
+    let first = register_with_challenge(&mut client, victim.clone())
+        .await
+        .unwrap()
+        .into_inner();
+
+    let attacker_kp = aa_sdk_client::AgentKeypair::derive_transport_key("attacker-key");
+    let mut hijack = victim;
+    hijack.public_key = attacker_kp.public_key_hex();
+    let err = register_with_challenge_as(&mut client, &attacker_kp, hijack)
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unauthenticated, "{err:?}");
+
+    let key = aa_gateway::registry::convert::proto_agent_id_to_key(&test_agent_id());
+    let record = registry.get(&key).expect("victim record untouched");
+    assert_eq!(record.credential_token, first.credential_token);
+    assert_eq!(record.public_key, test_ed25519_public_key_hex());
 }
 
 // ── Heartbeat suspend signaling ──────────────────────────────────────────

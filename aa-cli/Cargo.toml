@@ -174,7 +174,9 @@ wiremock       = "0.6"
 # AAASM-5323: `aasm run`'s registration tests stand up the *real*
 # `AgentLifecycleServiceImpl` over tonic and verify the possession proof the CLI
 # submits against the registered public key. A mock gateway would only ever
-# prove the CLI agrees with the mock.
+# prove the CLI agrees with the mock. AAASM-6447: the same tests build the
+# operator-key store a keyed registration is validated against.
+aa-auth        = { path = "../aa-auth" }
 ed25519-dalek  = "3"
 tonic          = { workspace = true }
 tokio-stream   = { workspace = true }

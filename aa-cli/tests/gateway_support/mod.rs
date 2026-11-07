@@ -41,7 +41,13 @@ pub struct TestGateway {
 impl TestGateway {
     /// Bind on a free loopback port and serve until dropped.
     pub async fn start() -> anyhow::Result<Self> {
-        Self::bind(None).await
+        Self::bind(None, None).await
+    }
+
+    /// As [`start`](Self::start), with an operator-key [`OrgBinder`] so a
+    /// registration can present an organization-bound key (AAASM-6444/6447).
+    pub async fn start_with_binder(binder: aa_gateway::service::org_binding::OrgBinder) -> anyhow::Result<Self> {
+        Self::bind(None, Some(binder)).await
     }
 
     /// As [`start`](Self::start), but every `Register` the gateway receives is
@@ -53,19 +59,23 @@ impl TestGateway {
     /// sends, at which point the "bypass is refused" claim is about a request
     /// nothing produces.
     pub async fn start_recording(seen: Arc<std::sync::Mutex<Vec<RegisterRequest>>>) -> anyhow::Result<Self> {
-        Self::bind(Some(seen)).await
+        Self::bind(Some(seen), None).await
     }
 
-    async fn bind(seen: Option<Arc<std::sync::Mutex<Vec<RegisterRequest>>>>) -> anyhow::Result<Self> {
+    async fn bind(
+        seen: Option<Arc<std::sync::Mutex<Vec<RegisterRequest>>>>,
+        binder: Option<aa_gateway::service::org_binding::OrgBinder>,
+    ) -> anyhow::Result<Self> {
         let registry = Arc::new(AgentRegistry::new());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        let service = Recording {
-            inner: AgentLifecycleServiceImpl::new(Arc::clone(&registry)),
-            seen,
-        };
+        let mut inner = AgentLifecycleServiceImpl::new(Arc::clone(&registry));
+        if let Some(binder) = binder {
+            inner = inner.with_org_binder(binder);
+        }
+        let service = Recording { inner, seen };
         let serving = tokio::spawn(async move {
             let _ = tonic::transport::Server::builder()
                 .add_service(AgentLifecycleServiceServer::new(service))

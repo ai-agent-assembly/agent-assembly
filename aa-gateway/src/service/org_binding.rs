@@ -40,6 +40,22 @@ pub const METRIC_REGISTER_ORG_REJECTED: &str = "aa_register_org_rejected_total";
 /// agent credential token on every other call (see `iam::grpc_auth`).
 pub const REGISTRATION_KEY_METADATA_KEY: &str = "x-aa-registration-key";
 
+/// The outcome of resolving a registration's organization, with the provenance a
+/// later re-bind (AAASM-6447) depends on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedOrg {
+    /// The authoritative organization to record; `None` for an org-less agent.
+    pub org: Option<String>,
+    /// `true` only when a validated operator key *bound to* `org` decided it. An
+    /// organization merely asserted by an unbound admin key, or no organization at
+    /// all, is `false`: neither can authorize taking over an existing agent's
+    /// credential.
+    pub key_bound: bool,
+    /// The team the deciding key is confined to (`ApiKeyEntry::team_id`, AAASM-3139);
+    /// `None` for an org-wide key. Meaningful only when `key_bound`.
+    pub key_team: Option<String>,
+}
+
 /// Resolves a registration credential to the organization it is bound to.
 #[derive(Clone)]
 pub struct OrgBinder {
@@ -57,6 +73,12 @@ impl OrgBinder {
     /// `claimed` is the request's `AgentId.org_id` (empty when absent). Returns
     /// the authoritative organization to record, `None` for an org-less agent.
     pub fn resolve<T>(&self, request: &Request<T>, claimed: &str) -> Result<Option<String>, Status> {
+        self.resolve_binding(request, claimed).map(|resolved| resolved.org)
+    }
+
+    /// [`resolve`](Self::resolve), also reporting whether the organization came
+    /// from a key bound to it (see [`ResolvedOrg::key_bound`]).
+    pub fn resolve_binding<T>(&self, request: &Request<T>, claimed: &str) -> Result<ResolvedOrg, Status> {
         let values = request.metadata().get_all(REGISTRATION_KEY_METADATA_KEY);
         let mut it = values.iter();
         let presented = match (it.next(), it.next()) {
@@ -70,14 +92,24 @@ impl OrgBinder {
             },
             (Some(_), Some(_)) => return Err(unusable_header()),
         };
-        self.resolve_presented(presented, claimed)
+        self.bind_presented(presented, claimed)
     }
 
+    #[cfg(test)]
     fn resolve_presented(&self, presented: Option<&str>, claimed: &str) -> Result<Option<String>, Status> {
+        self.bind_presented(presented, claimed).map(|resolved| resolved.org)
+    }
+
+    fn bind_presented(&self, presented: Option<&str>, claimed: &str) -> Result<ResolvedOrg, Status> {
+        let unbound = |org: Option<String>| ResolvedOrg {
+            org,
+            key_bound: false,
+            key_team: None,
+        };
         let claimed = (!claimed.is_empty()).then_some(claimed);
         let Some(raw) = presented else {
             return match claimed {
-                None => Ok(None),
+                None => Ok(unbound(None)),
                 Some(_) => Err(reject(
                     "no_credential",
                     Status::permission_denied(
@@ -99,16 +131,24 @@ impl OrgBinder {
         };
 
         match (entry.org_id.as_deref().filter(|o| !o.is_empty()), claimed) {
-            (Some(bound), None) => Ok(Some(bound.to_owned())),
-            (Some(bound), Some(c)) if bound == c => Ok(Some(bound.to_owned())),
+            (Some(bound), None) => Ok(ResolvedOrg {
+                org: Some(bound.to_owned()),
+                key_bound: true,
+                key_team: entry.team_id.clone().filter(|t| !t.is_empty()),
+            }),
+            (Some(bound), Some(c)) if bound == c => Ok(ResolvedOrg {
+                org: Some(bound.to_owned()),
+                key_bound: true,
+                key_team: entry.team_id.clone().filter(|t| !t.is_empty()),
+            }),
             (Some(_), Some(_)) => Err(reject(
                 "mismatch",
                 Status::permission_denied(
                     "claimed org_id does not match the organization bound to the registration key",
                 ),
             )),
-            (None, None) => Ok(None),
-            (None, Some(c)) if entry.scopes.contains(&Scope::Admin) => Ok(Some(c.to_owned())),
+            (None, None) => Ok(unbound(None)),
+            (None, Some(c)) if entry.scopes.contains(&Scope::Admin) => Ok(unbound(Some(c.to_owned()))),
             (None, Some(_)) => Err(reject(
                 "unbound_key",
                 Status::permission_denied("the registration key is not bound to an organization and cannot assert one"),
@@ -258,5 +298,22 @@ mod tests {
         ] {
             assert_eq!(b.resolve(&bad, "").unwrap_err().code(), tonic::Code::Unauthenticated);
         }
+    }
+
+    #[test]
+    fn only_a_key_bound_to_the_org_marks_the_binding_as_key_bound() {
+        let (bound_raw, bound) = entry(Some("acme"), vec![Scope::Read]);
+        let (admin_raw, admin) = entry(None, vec![Scope::Admin]);
+        let b = binder(vec![bound, admin]);
+
+        let resolved = b.bind_presented(Some(&bound_raw), "").unwrap();
+        assert_eq!((resolved.org.as_deref(), resolved.key_bound), (Some("acme"), true));
+        let resolved = b.bind_presented(Some(&bound_raw), "acme").unwrap();
+        assert_eq!((resolved.org.as_deref(), resolved.key_bound), (Some("acme"), true));
+
+        let asserted = b.bind_presented(Some(&admin_raw), "acme").unwrap();
+        assert_eq!((asserted.org.as_deref(), asserted.key_bound), (Some("acme"), false));
+        let none = b.bind_presented(None, "").unwrap();
+        assert_eq!((none.org, none.key_bound), (None, false));
     }
 }
