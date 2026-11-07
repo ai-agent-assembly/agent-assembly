@@ -285,6 +285,17 @@ mod tests {
         assert_eq!(claimed.agent_id.expect("agent_id").org_id, "acme");
     }
 
+    /// AAASM-6447: every registration built here signs with the durable, random
+    /// identity key (never one derived from the agent id), and says so, so the
+    /// gateway can record that and let a later process holding the same key
+    /// re-bind an org-less record.
+    #[test]
+    fn register_request_declares_the_durable_identity_key() {
+        let config = cfg("durable-agent");
+        let req = build_register_request(&config, "n".into(), "custom".into(), nonce()).expect("enrolment");
+        assert!(req.durable_identity_key);
+    }
+
     #[test]
     fn register_request_carries_did_and_consistent_public_key() {
         let config = cfg("my-agent");
