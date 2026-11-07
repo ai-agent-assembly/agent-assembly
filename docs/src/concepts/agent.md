@@ -33,8 +33,11 @@ An agent's lifecycle has three phases:
    `RequestChallenge` to obtain a single-use `registration_nonce`, then calls
    `Register` with the agent's name, framework (for example `langgraph` or
    `crewai`), declared tool names, an Ed25519 `public_key`, metadata, that
-   `registration_nonce`, and a `possession_proof` — a 64-byte Ed25519 signature
-   over the nonce. The gateway consumes the nonce (so it cannot be replayed) and
+   `registration_nonce`, a `possession_proof` — a 64-byte Ed25519 signature
+   over the nonce — and `durable_identity_key`, which says the key is random and held
+   by the agent rather than derived from its identifier (the gateway records it, and a
+   later process holding the same key can then re-bind a keyless agent; see
+   [org isolation](../operations/org-isolation.md)). The gateway consumes the nonce (so it cannot be replayed) and
    verifies the proof against the submitted `public_key`; a missing nonce, a
    missing proof, or a proof that does not verify is rejected as unauthenticated.
    Only then does it store an `AgentRecord` and issue the short-lived

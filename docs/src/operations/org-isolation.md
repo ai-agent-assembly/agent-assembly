@@ -73,9 +73,22 @@ An unusable header (blank, non-ASCII, or sent twice) is `Unauthenticated`, never
 
 A second process of an agent that is already registered (same did:key, team and
 organization) re-binds to the existing record, and receives its existing credential
-and `team_id`, **only** when it presents a registration key bound to the record's
-organization. Proving possession of the agent key shows who the agent is, not that
-the caller may take over its credential, so the operator's key is what authorizes it.
+and `team_id`, in exactly two cases. Proving possession of an agent key shows who the
+agent is, and that is enough to take over its credential only when no one else can
+compute that key:
+
+1. **An organization-bound agent**, when the process presents a registration key bound
+   to the record's organization. The operator's key is what authorizes it.
+2. **A keyless (org-less) agent**, by possession of its own key, when its first
+   registration declared that key to be random and held by the agent. The SDK and the
+   CLI generate a random identity key per agent identity and keep it owner-only in the
+   state directory (`AASM_STATE_DIR`), and say so on every registration
+   (`RegisterRequest.durable_identity_key`). The gateway records that when it creates
+   the record and reads it back from the stored record, never from a later request. A
+   process restarted from the same state directory proves possession of the same key
+   and keeps the agent's id and credential; no operator key is involved.
+
+An identifier alone never authorizes either: the identifier is public, the key is not.
 
 A key confined to one team (`team_id` on the key) re-binds only agents of that
 team; it is compared with the team stored on the record, not the `team_id` the
@@ -84,7 +97,11 @@ caller sends. An org-wide key re-binds any team's agent in its organization.
 Every other case that reaches the existing record is the same `AlreadyExists` a plain
 duplicate gets, with no credential in the response:
 
-* the record has no organization (registered without a key, as the CLI does);
+* the record has no organization and did not declare a durable key, so its key may be
+  computable from a public identifier (registered by a client that predates the
+  declaration);
+* the record came back from storage after a gateway restart, which keeps neither the
+  key nor the credential;
 * the caller is an unbound admin key merely asserting the organization;
 * the key is confined to a different team than the record's;
 * the registration is still in flight, or its durable write failed (retry).
@@ -105,10 +122,17 @@ registration of that agent replaces it.
   org-bound key can re-bind, as it can register.
 * A key revoked through REST/IAM after the agent registered still authorizes a
   re-bind until the gateway restarts.
-* An org-less agent, or an agent registered without an operator key,
-  can never be re-bound: its later processes keep colliding, run unregistered, and
-  their audit entries carry the agent name without a `team_id`. Register such agents
-  with an organization-bound key to get one identity across processes.
+* A keyless agent re-binds only while the gateway that registered it keeps running
+  and only if its first registration declared the durable key. Agents registered by
+  clients built before the declaration, and every agent after a gateway restart
+  (storage keeps no key or credential), get `AlreadyExists` on a later process and
+  must register again as a new agent; register them with an organization-bound key
+  for an identity the operator controls.
+* The credential is shared: every re-bound process holds the same token, so one
+  process's Deregister ends the agent for all of them. Anyone who copies the agent's
+  key file from the state directory holds the agent's identity and its credential.
+* Another holder of the same label (another machine, a fresh state directory) has a
+  different key and so is a different agent; the two do not merge.
 
 ### Issuing and revoking keys
 
