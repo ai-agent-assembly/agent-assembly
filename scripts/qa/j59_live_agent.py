@@ -132,6 +132,12 @@ def make_backend_class() -> type:
                 if key_org not in self.org_key_files:
                     return {"error": "no-operator-key", "message": f"no operator key was issued for org {key_org}"}
                 argv += ["--registration-key-file", str(self.org_key_files[key_org])]
+            if kw.get("unknown_key"):
+                # A registration key of a valid shape that no organization was issued: the gateway refuses it
+                # whether or not the caller claims an org (org_binding.rs resolve_binding).
+                unknown = self.ctx.tmp / "unknown-registration-key"
+                unknown.write_text("aa_" + "e" * 32)
+                argv += ["--registration-key-file", str(unknown)]
             env = self.env
             if kw.get("fresh_identity"):
                 # A different holder of the same label: its own HOME and state dir, so the SDK enrols a new durable key
@@ -640,7 +646,16 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
     nokey = be.sdk("register", agent=claimant, org="acme", no_key=True)
     if nokey.get("registered"):
         problems.append("an agent claiming org acme with no registration key was registered")
+    unknown_holder = f"j59u-{uuid.uuid4().hex[:6]}"
+    ok, why = be.add_agent(unknown_holder, None, None)
+    if not ok:
+        problems.append(why)
+    unknown = be.sdk("register", agent=unknown_holder, unknown_key=True)
+    if unknown.get("registered"):
+        problems.append("an agent presenting a registration key no organization was issued, with no org claim, was registered")
     ids, _ = registered_ids(be)
+    if unknown_holder in ids:
+        problems.append("the agent that presented an unknown registration key appears in /api/v1/agents")
     legacy_id = ids.get(legacy)
     _, everything = items_of("/api/v1/logs?per_page=500")
     mine = [e for e in (everything or []) if belongs(e, legacy, legacy_id)]
