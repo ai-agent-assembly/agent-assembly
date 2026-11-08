@@ -155,14 +155,28 @@ class FakeLive:
                 if kw.get("org") and not later_org:
                     return {"registered": False, "agent": agent, "error": "PermissionDenied",
                             "warning": "registration failed: org claim without a registration key"}
+                if agent not in self.key_bound:
+                    # A keyless agent (AAASM-6447): its later process, restarted from the same state dir, proves possession
+                    # of its own durable key and is re-bound to the same record. A holder of another key (a fresh state
+                    # dir) is another did, so another agent.
+                    if kw.get("fresh_identity"):
+                        if self.mode == "stranger_rebinds":
+                            return {"registered": True, "agent": agent}
+                        self.separate.append((agent, hexid(f"stranger-{agent}-{len(self.separate)}")))
+                        return {"registered": True, "agent": agent}
+                    if self.mode == "orgless_crash":
+                        return {"registered": False, "agent": agent, "error": "RuntimeError", "message": "driver crashed"}
+                    if self.mode == "orgless_not_rebound":
+                        return {"registered": False, "agent": agent, "warning": "registration failed: agent already registered: ab12"}
+                    if self.mode == "orgless_new_agent_per_process":
+                        self.separate.append((agent, hexid(f"second-{agent}-{len(self.separate)}")))
+                        return {"registered": True, "agent": agent}
+                    self.rebound.add(agent)
+                    return {"registered": True, "agent": agent}
                 rebindable = agent in self.key_bound and later_org is not None and later_org == self.org_of.get(agent)
                 authorized = rebindable
                 if self.mode == "any_key_rebinds":
                     rebindable = agent in self.key_bound and later_org is not None
-                if self.mode == "orgless_crash" and agent not in self.key_bound:
-                    return {"registered": False, "agent": agent, "error": "RuntimeError", "message": "driver crashed"}
-                if self.mode == "orgless_rebound":
-                    rebindable = True
                 if self.mode == "bound_no_rebind":
                     rebindable = False
                 if not rebindable and agent in self.key_bound and not authorized:
@@ -434,11 +448,23 @@ class LiveRowTests(unittest.TestCase):
         self.assertEqual(row.status, "FAIL")
         self.assertIn("acme-bound key", row.detail)
 
-    def test_s3_org_less_agent_rebound_fails(self):
-        """The org-less negative control: the row fails if an org-less agent's later process is ever re-bound."""
-        row = self._org_row("orgless_rebound")
+    def test_s3_keyless_agent_not_rebound_across_a_restart_fails(self):
+        """The original acceptance: the default keyless agent's later process must re-bind, or the row fails."""
+        row = self._org_row("orgless_not_rebound")
         self.assertEqual(row.status, "FAIL")
-        self.assertIn("org-less agent's later process was re-bound", row.detail)
+        self.assertIn("was not re-bound", row.detail)
+
+    def test_s3_keyless_restart_that_creates_a_second_agent_fails(self):
+        """Registering is not enough: the agent id must stay one and stable across restarts."""
+        row = self._org_row("orgless_new_agent_per_process")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("registry ids changed across restarts", row.detail)
+
+    def test_s3_another_holder_of_the_label_rebinding_the_record_fails(self):
+        """A fresh key must not reach the first agent's record: that would be the takeover."""
+        row = self._org_row("stranger_rebinds")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("re-bound onto the existing record", row.detail)
 
     def test_s3_org_bound_agent_not_rebound_with_its_key_fails(self):
         row = self._org_row("bound_no_rebind")
@@ -456,15 +482,15 @@ class LiveRowTests(unittest.TestCase):
         self.assertEqual(row.status, "FAIL")
         self.assertIn("neither registered nor was refused by the gateway", row.detail)
 
-    def test_s3_orgless_control_that_crashes_instead_of_being_refused_fails(self):
-        """The control must see the gateway's AlreadyExists, not just `registered` false."""
+    def test_s3_keyless_restart_that_crashes_fails(self):
         row = self._org_row("orgless_crash")
         self.assertEqual(row.status, "FAIL")
-        self.assertIn("not because the gateway refused it as AlreadyExists", row.detail)
+        self.assertIn("was not re-bound", row.detail)
 
-    def test_s3_org_row_states_the_rebind_limitation(self):
+    def test_s3_org_row_states_the_acceptance_it_proves(self):
         row = self._org_row("good")
-        self.assertIn("NOT resolved for org-less agents", row.detail)
+        self.assertEqual(row.status, "PASS", row.detail)
+        self.assertIn("keyless agent restarted with its own durable key", row.detail)
 
     def test_s3_spoofed_org_registered_fails(self):
         row = self._org_row("spoof_accepted")

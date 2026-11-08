@@ -250,9 +250,11 @@ fn register_request_topology_fields_round_trip() {
         enforcement_mode: 0,
         possession_proof: vec![1, 2, 3, 4],
         registration_nonce: vec![5, 6, 7, 8],
+        durable_identity_key: true,
     };
     let bytes = original.encode_to_vec();
     let decoded = RegisterRequest::decode(bytes.as_slice()).expect("decode RegisterRequest");
+    assert!(decoded.durable_identity_key);
     assert_eq!(decoded.parent_agent_id, original.parent_agent_id);
     assert_eq!(decoded.delegation_reason, original.delegation_reason);
     assert_eq!(decoded.spawned_by_tool, original.spawned_by_tool);

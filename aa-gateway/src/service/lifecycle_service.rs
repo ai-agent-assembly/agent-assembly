@@ -262,12 +262,32 @@ fn verify_possession_proof(
 /// The refusal for a `Register` that reaches an agent the caller is not authorized
 /// to re-bind to.
 ///
-/// Identical for every refusal reason (org-less record, caller not bound to the
-/// record's organization, registration still in flight) and to the collision a
+/// Identical for every refusal reason (a record whose key is not known to be held
+/// by its agent, caller not bound to the record's organization, registration still
+/// in flight) and to the collision a
 /// plain duplicate has always produced, so the response says nothing about which
 /// of those it was and never carries the existing credential.
 fn already_registered(agent_key: &[u8; 16]) -> Status {
     Status::already_exists(RegistryError::AlreadyRegistered(*agent_key).to_string())
+}
+
+/// Record-metadata key holding the durable-key marker (AAASM-6447). Reserved: the
+/// gateway strips it from client-supplied metadata and sets it only from the typed
+/// `RegisterRequest.durable_identity_key`, so a free-form metadata entry can never
+/// make a record re-bindable.
+pub(crate) const DURABLE_KEY_MARKER: &str = "aa.identity_key";
+/// The marker's value: the registering key was random and held by the agent.
+pub(crate) const DURABLE_KEY_V1: &str = "durable/1";
+
+/// Metadata for a new record: the client's entries minus the reserved marker key,
+/// plus the marker when (and only when) the request declared a durable identity key.
+fn record_metadata(client: HashMap<String, String>, durable_identity_key: bool) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::from_iter(client);
+    metadata.remove(DURABLE_KEY_MARKER);
+    if durable_identity_key {
+        metadata.insert(DURABLE_KEY_MARKER.to_owned(), DURABLE_KEY_V1.to_owned());
+    }
+    metadata
 }
 
 /// Answer a `Register` for an agent that is already in the registry
@@ -468,17 +488,22 @@ impl AgentLifecycleServiceImpl {
 
     /// Decide a `Register` that reached an existing agent (AAASM-6447).
     ///
-    /// Possession of the agent key proves who the agent is, not that this caller
-    /// may take over its credential, so the existing credential is returned only to
-    /// a validated operator key **bound to** the record's persisted organization.
-    /// Everything else gets [`already_registered`]: an org-less record (nobody to
-    /// authorize), an organization merely asserted by an unbound admin key, and a
-    /// record that is still mid-registration or was rolled back.
+    /// Possession of the agent key proves who the agent is, and that is enough to
+    /// take over its credential only where the key cannot be computed by anyone
+    /// else, so the existing credential is returned to (1) a validated operator key
+    /// **bound to** the record's persisted organization, or (2) the holder of the
+    /// key of an org-less record whose first registration declared that key random
+    /// and held (`DURABLE_KEY_MARKER`). Everything else gets [`already_registered`]:
+    /// an org-less record without the marker (its key may be computable), an
+    /// organization merely asserted by an unbound admin key, and a record that is
+    /// still mid-registration, was rolled back, or came back from storage without a
+    /// key or a credential.
     fn refuse_or_rebind(
         &self,
         agent_key: &[u8; 16],
         resolved: &ResolvedOrg,
         public_key: &str,
+        declares_durable_key: bool,
     ) -> Result<Response<RegisterResponse>, Status> {
         let authorized_org = resolved.org.as_deref().filter(|_| resolved.key_bound);
         match (self.committed_record(agent_key), authorized_org) {
@@ -491,6 +516,28 @@ impl AgentLifecycleServiceImpl {
                         .key_team
                         .as_deref()
                         .map_or(true, |team| existing.team_id.as_deref() == Some(team)) =>
+            {
+                rebind_existing(&existing, public_key)
+            }
+            // An org-less record created by a client that declared its key random
+            // and held (the marker, read from the RECORD, never from this request)
+            // is re-bound by the caller who proved possession of that key. Nothing
+            // here is derived from a public identifier: a record without the marker
+            // may have a computable key, so it never re-binds. `resolved.org` is
+            // `None` only when the binding found no organization at all, so an org
+            // merely asserted by an unbound admin key does not qualify, and a
+            // record that carries an org (or came back from storage without a key
+            // or a credential) is left to the operator-key arm above. The caller must
+            // also declare a held key itself: a client that does not (an old one
+            // whose key may be computable) is never re-bound onto a record, so a
+            // squatter who registered first with a computable key and the flag set
+            // cannot hand that client a credential the squatter already holds.
+            (Some(existing), _)
+                if declares_durable_key
+                    && resolved.org.is_none()
+                    && existing.org_id.is_none()
+                    && !existing.credential_token.is_empty()
+                    && existing.metadata.get(DURABLE_KEY_MARKER).map(String::as_str) == Some(DURABLE_KEY_V1) =>
             {
                 rebind_existing(&existing, public_key)
             }
@@ -604,6 +651,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // did:key together with their OWN public_key + a proof under their own
         // key and squat/register the victim's DID.
         enforce_did_key_binding(&proto_id.agent_id, &req.public_key)?;
+        let declares_durable_key = req.durable_identity_key;
 
         // AAASM-3591 / AAASM-3866: prove the caller actually HOLDS the private
         // key for `public_key` before minting a credential_token. Without this,
@@ -641,7 +689,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         // this record: it is a different agent and registers on its own, and a
         // process with no key that claims an org was already refused by the binding.
         if self.registry.get(&agent_key).is_some() {
-            return self.refuse_or_rebind(&agent_key, &resolved, &req.public_key);
+            return self.refuse_or_rebind(&agent_key, &resolved, &req.public_key, declares_durable_key);
         }
         // Held until the durable write has finished or been rolled back, so a
         // concurrent re-bind cannot be handed a credential for a record that is
@@ -695,7 +743,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             tool_names: req.tool_names,
             public_key: req.public_key,
             credential_token: credential_token.clone(),
-            metadata: BTreeMap::from_iter(req.metadata),
+            metadata: record_metadata(req.metadata, req.durable_identity_key),
             registered_at: now,
             last_heartbeat: now,
             status: AgentStatus::Active,
@@ -733,7 +781,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
             // releasing our own mark so it does not read as "in flight".
             Err(RegistryError::AlreadyRegistered(_)) => {
                 drop(registering);
-                return self.refuse_or_rebind(&agent_key, &resolved, &public_key);
+                return self.refuse_or_rebind(&agent_key, &resolved, &public_key, declares_durable_key);
             }
             Err(
                 e @ (RegistryError::Lineage(LineageError::CircularDelegation { .. })

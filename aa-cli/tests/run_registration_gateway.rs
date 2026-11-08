@@ -91,6 +91,17 @@ async fn submit(endpoint: &str, request: RegisterRequest) -> Result<(), tonic::S
     client.register(request).await.map(|_| ())
 }
 
+/// Like [`submit`], returning the credential token the gateway issued.
+async fn submit_token(endpoint: &str, request: RegisterRequest) -> Result<String, tonic::Status> {
+    let mut client = AgentLifecycleServiceClient::connect(endpoint.to_string())
+        .await
+        .expect("the test gateway must be reachable");
+    client
+        .register(request)
+        .await
+        .map(|response| response.into_inner().credential_token)
+}
+
 /// Obtain a genuine, fresh nonce for `config` from `endpoint`.
 async fn fresh_nonce(endpoint: &str, config: &AssemblyConfig) -> Vec<u8> {
     let mut client = AgentLifecycleServiceClient::connect(endpoint.to_string())
@@ -367,13 +378,13 @@ async fn registering_the_clis_did_under_a_foreign_key_is_refused() -> anyhow::Re
 /// re-bind rule pinned from both sides (AAASM-6447).
 ///
 /// Forward: the SDK configured with the identifier the CLI already registered
-/// collides with it (`AlreadyExists`) instead of creating a second record. That
-/// is a stronger statement than "both were accepted": it shows the two surfaces
-/// resolve to *one* agent in the registry, which is what a single identity
-/// contract has to mean. A CLI on its own weaker terms would land elsewhere and
-/// both would succeed. The CLI registers with no operator key, so its record has no
-/// organization and **nothing can re-bind it**: the SDK is refused with a plain
-/// collision and is not handed the CLI's credential.
+/// resolves to the CLI's record rather than creating a second one, which is a
+/// stronger statement than "both were accepted": it shows the two surfaces are one
+/// agent in the registry, which is what a single identity contract has to mean. The
+/// CLI registers with no operator key, so its record has no organization, but both
+/// surfaces hold one random durable key for the identifier, and the CLI's request
+/// declared it (`durable_identity_key`), so the SDK process that proves possession
+/// of that key is re-bound to the CLI's record and handed the CLI's own credential.
 ///
 /// Authorized half: an SDK presenting an operator key bound to an organization
 /// registers, and a *later process* presenting that key again re-binds to the same
@@ -416,9 +427,10 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         .next()
         .expect("the CLI's record exists");
 
-    // The SDK's path, same identifier and no operator key: the *same* agent, so
-    // the gateway says the identity is taken rather than filing a second record
-    // beside it, and an org-less record cannot be re-bound by anyone.
+    // The SDK's path, same identifier and no operator key. The CLI and the SDK
+    // hold one durable key for one identifier, so this is the same agent: the later
+    // process proves possession of the key the CLI registered with and is re-bound
+    // to that record (AAASM-6447), not filed beside it and not refused.
     let config = sdk_config("shared-identity");
     let nonce = fresh_nonce(gateway.endpoint(), &config).await;
     let sdk = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce)
@@ -428,17 +440,12 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         cli.registration_did,
         "the two surfaces must derive one identity from one identifier"
     );
-    let status = submit(gateway.endpoint(), sdk)
+    let sdk_token = submit_token(gateway.endpoint(), sdk)
         .await
-        .expect_err("the SDK must collide with the CLI's registration, not sit beside it");
+        .expect("the SDK process holds the CLI's key and must re-bind to its record");
     assert_eq!(
-        status.code(),
-        tonic::Code::AlreadyExists,
-        "the SDK reached a different agent than the CLI did: {status:?}"
-    );
-    assert!(
-        !status.message().contains(&cli_token),
-        "a refused re-bind must not disclose the CLI's credential"
+        sdk_token, cli_token,
+        "re-binding returns the CLI record's own credential, not a new one"
     );
     assert_eq!(
         gateway.registry().list().len(),
@@ -501,6 +508,80 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
         .expect_err("the SDK must be refused without a proof, exactly as the CLI is");
     assert_eq!(status.code(), tonic::Code::Unauthenticated, "{status:?}");
     assert!(status.message().contains("possession_proof"), "{}", status.message());
+    Ok(())
+}
+
+/// The default keyless quickstart across a process restart (AAASM-6447): each
+/// process builds its configuration afresh and reads the agent's key back from the
+/// identity directory, as a restarted process does. The agent keeps one identity
+/// and one record, and is handed the credential it already had.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_keyless_sdk_agent_keeps_one_identity_across_a_process_restart() -> anyhow::Result<()> {
+    let gateway = TestGateway::start().await?;
+    let mut seen = Vec::new();
+    for _process in 0..3 {
+        let config = sdk_config("restarted-keyless-agent");
+        let nonce = fresh_nonce(gateway.endpoint(), &config).await;
+        let request = build_register_request(&config, "sdk-agent".into(), "langgraph".into(), &nonce)
+            .expect("the SDK agent must have a durable identity");
+        let did = request.agent_id.as_ref().expect("agent_id is set").agent_id.clone();
+        let token = submit_token(gateway.endpoint(), request)
+            .await
+            .expect("every process of the agent registers or re-binds");
+        seen.push((did, token));
+    }
+    assert!(
+        seen.iter().all(|s| s == &seen[0]),
+        "one agent id and one credential across restarts: {seen:?}"
+    );
+    assert_eq!(gateway.registry().list().len(), 1, "a restart is not a second agent");
+    Ok(())
+}
+
+/// Possession of the key is the whole authorization. The same identifier with a
+/// different key (a fresh identity directory, a second machine, an attacker who
+/// knows the label) is another did, so another agent: it registers on its own and
+/// the first agent's record and credential are untouched and never disclosed.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_identifier_with_another_key_is_a_separate_agent_not_a_takeover() -> anyhow::Result<()> {
+    let gateway = TestGateway::start().await?;
+    let owner = sdk_config("contested-label");
+    let owner_token = submit_token(
+        gateway.endpoint(),
+        build_register_request(
+            &owner,
+            "sdk-agent".into(),
+            "langgraph".into(),
+            &fresh_nonce(gateway.endpoint(), &owner).await,
+        )
+        .expect("durable identity"),
+    )
+    .await
+    .expect("the owner registers");
+
+    let mut elsewhere = sdk_config("contested-label");
+    elsewhere.identity_dir = Some(
+        std::env::temp_dir()
+            .join(format!("aa-cli-other-holder-{}", std::process::id()))
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let _ = std::fs::remove_dir_all(elsewhere.identity_dir.as_deref().expect("set above"));
+    let request = build_register_request(
+        &elsewhere,
+        "sdk-agent".into(),
+        "langgraph".into(),
+        &fresh_nonce(gateway.endpoint(), &elsewhere).await,
+    )
+    .expect("durable identity");
+    let other_token = submit_token(gateway.endpoint(), request)
+        .await
+        .expect("another key is another agent and registers on its own");
+    assert_ne!(
+        other_token, owner_token,
+        "the other holder never receives the owner's credential"
+    );
+    assert_eq!(gateway.registry().list().len(), 2);
     Ok(())
 }
 
