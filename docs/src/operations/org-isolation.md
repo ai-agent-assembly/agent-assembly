@@ -72,8 +72,10 @@ An unusable header (blank, non-ASCII, or sent twice) is `Unauthenticated`, never
 ### A later process of an already-registered agent
 
 A second process of an agent that is already registered (same did:key, team and
-organization) re-binds to the existing record, and receives its existing credential
-and `team_id`, in exactly two cases. Proving possession of an agent key shows who the
+organization) re-binds to the existing record, and receives its credential and
+`team_id`, in exactly two cases. While the gateway that registered the agent keeps
+running the credential is the existing one; after a gateway restart it is a new one
+(see below). Proving possession of an agent key shows who the
 agent is, and that is enough to take over its credential only when no one else can
 compute that key:
 
@@ -101,8 +103,9 @@ duplicate gets, with no credential in the response:
 * the record has no organization and did not declare a durable key, so its key may be
   computable from a public identifier (registered by a client that predates the
   declaration);
-* the record came back from storage after a gateway restart, which keeps neither the
-  key nor the credential;
+* the record is a row written by a gateway older than the restart re-bind
+  (AAASM-6451), which did not store the agent's key: nothing shows the caller holds
+  the key the record was created with;
 * the caller is an unbound admin key merely asserting the organization;
 * the key is confined to a different team than the record's;
 * the registration is still in flight, or its durable write failed (retry).
@@ -123,13 +126,20 @@ registration of that agent replaces it.
   org-bound key can re-bind, as it can register.
 * A key revoked through REST/IAM after the agent registered still authorizes a
   re-bind until the gateway restarts.
-* A keyless agent re-binds only while the gateway that registered it keeps running
-  and only if its first registration declared the durable key. After a gateway
-  restart storage keeps neither key nor credential, so the agent's record is back
-  without them, cannot be re-bound, and occupies the agent's registry slot: a later
-  process of that agent (and of any operator-key agent) gets `AlreadyExists` until
-  that record is removed. Records created by clients built before the declaration
-  behave the same way. This is a known gap; it is tracked separately.
+* **After a gateway restart** an agent re-registers with the same agent id, from the
+  same state directory (keyless) or with its organization's operator key, and
+  receives a **new** credential. The gateway stores the agent's organization and public
+  key, never its credential, so a leaked database is not a leaked token. The
+  pre-restart credential stops working, an empty token never authenticates, and
+  processes that re-register at the same time share the one new credential. A
+  running process holds the old credential and does not re-register by itself: it
+  has to be restarted after the gateway restarts (the SDK does not yet re-register on
+  `Unauthenticated`).
+* Rows written before AAASM-6451, and records created by clients built before the
+  declaration, cannot be re-bound and occupy the agent's registry slot: a later
+  process of that agent gets `AlreadyExists` until the record is removed
+  (`DELETE /api/v1/agents/:id`). After upgrading, every agent registered by the older
+  gateway is in this state once.
 * The durable-key declaration is a claim by the client that creates the record. A
   hand-built client can declare it while using a computable key, so a record is only
   as trustworthy as its creator: whoever registers an identity first holds its
