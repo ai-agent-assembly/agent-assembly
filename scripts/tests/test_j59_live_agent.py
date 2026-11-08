@@ -242,7 +242,8 @@ class FakeLive:
 
     def _approval(self, agent):
         if self.mode != "no_pending_approval":
-            self.pending.append({"id": f"ap-{len(self.pending) + len(self.decided)}", "agent_id": agent, "status": "pending", "reason": "requires_approval"})
+            self.pending.append({"id": f"ap-{len(self.pending) + len(self.decided)}", "agent_id": f"did:key:z6Mk{agent}", "team_id": self.team_of.get(agent),
+                                 "status": "pending", "reason": "requires_approval"})
         if self.mode == "b_not_audited" and agent == self.agent_b:
             return
         self._entry(agent, "ApprovalRequested", "send_email", "pending", 3, False)
@@ -296,10 +297,10 @@ class FakeLive:
     def exec(self, argv, env, cwd, timeout):
         self.dash_calls += 1
         spec = json.loads(Path(argv[2]).read_text())
-        assert spec["approveAgent"] == self.agent_b and len(spec["auditRows"]) == 3 and spec["agents"] == [self.agent, self.agent_b]
+        assert spec["approveAgent"] == f"did:key:z6Mk{self.agent_b}" and len(spec["auditRows"]) == 3 and spec["agents"] == [self.agent, self.agent_b]
         if self.mode == "ui_no_result":
             return 1, "Error: browser launch failed\n"
-        mine = [p for p in self.pending if p["agent_id"] == self.agent_b]
+        mine = [p for p in self.pending if p["agent_id"] == f"did:key:z6Mk{self.agent_b}"]
         if self.mode != "ui_no_server_effect" and len(mine) >= 2:
             first, second = mine[0], mine[1]
             self.pending = [p for p in self.pending if p["id"] not in (first["id"], second["id"])]
