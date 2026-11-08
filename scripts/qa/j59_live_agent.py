@@ -882,9 +882,24 @@ def check_dashboard_operations(ctx: Any, be: Any, cid: str, state: dict[str, Any
     if len(rows) != len(EXPECTED_EVENTS):
         ctx.add(cid, c.FAIL, "real_local_process", "the audit API holds no allow/deny/approval entries for the agent, so there is nothing for the dashboard to show", arts, neg)
         return
+    # Approvals carry the agent's did:key as agent_id (AAASM-6447 made every entry of one agent use that single id),
+    # not the label the harness asked for. Agent B is the only agent of its team, so its identity is read from the
+    # pending requests routed to that team; the label is never trusted for this.
+    st, body = be.http("/api/v1/approvals?status=pending&per_page=100")
+    try:
+        team_b = [i for i in json.loads(body).get("items", []) if i.get("team_id") == TEAM_B] if st == 200 else None
+    except ValueError:
+        team_b = None
+    b_ids = {i.get("agent_id") for i in team_b or []}
+    if len(b_ids) != 1 or None in b_ids:
+        ctx.add(cid, c.FAIL, "real_local_process",
+                f"the pending approvals routed to team {TEAM_B} must all name one agent (GET /api/v1/approvals -> {st}, agents {sorted(map(str, b_ids))})",
+                arts, neg)
+        return
+    b_id = b_ids.pop()
     spec = work / "spec.json"
     spec.write_text(json.dumps({"url": be.url, "apiKey": load_j56().TEST_KEY, "agents": [be.agent, be.agent_b],
-                                "auditRows": rows, "approveAgent": be.agent_b}))
+                                "auditRows": rows, "approveAgent": b_id}))
     env = c.clean_env(ctx.tmp / "dash-home", {"PATH": f"{node.parent}:/usr/bin:/bin", "PLAYWRIGHT_BROWSERS_PATH": str(browsers)})
     (ctx.tmp / "dash-home").mkdir(exist_ok=True)
     rc, out = be.exec([str(node), str(work / "dashboard_ops.mjs"), str(spec)], env, work, 300)
@@ -914,12 +929,12 @@ def check_dashboard_operations(ctx: Any, be: Any, cid: str, state: dict[str, Any
                 items = json.loads(body).get("items", []) if st == 200 else None
             except ValueError:
                 items = None
-            n = sum(1 for i in (items or []) if i.get("agent_id") == be.agent_b and i.get("status") == status)
+            n = sum(1 for i in (items or []) if i.get("agent_id") == b_id and i.get("status") == status)
             if items is None or n != want:
                 problems.append(f"the UI reported a {status} request but the API holds {n} {status} request(s) for {be.agent_b} (want {want})")
         st, body = be.http("/api/v1/approvals?status=pending&per_page=100")
         try:
-            pend = [i for i in json.loads(body).get("items", []) if i.get("agent_id") == be.agent_b] if st == 200 else None
+            pend = [i for i in json.loads(body).get("items", []) if i.get("agent_id") == b_id] if st == 200 else None
         except ValueError:
             pend = None
         if pend is None or pend:
