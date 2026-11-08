@@ -134,6 +134,10 @@ class FakeLive:
                 return {"has_org_param": False, "has_team_param": True, "params": ["gateway_url", "team_id"],
                         "org_attempt": {"accepted": False, "error": "TypeError", "message": "unexpected keyword argument 'org_id'"}}
             return {"has_org_param": True, "has_team_param": True, "params": ["gateway_url", "team_id", "org_id"], "org_attempt": {"accepted": True}}
+        if op == "register" and kw.get("unknown_key") and self.mode != "unknown_key_accepted":
+            # org_binding.rs: a registration key no organization was issued is Unauthenticated, org claim or not
+            return {"registered": False, "agent": agent, "error": "Unauthenticated",
+                    "warning": "registration failed: registration key is not valid"}
         if op in ("register", "call") and agent not in self.seen and agent not in self.refused:
             ok, why = self._bind(agent, kw.get("org"), kw.get("key_org", kw.get("org")), bool(kw.get("no_key")))
             if not ok:
@@ -497,6 +501,11 @@ class LiveRowTests(unittest.TestCase):
         row = self._org_row("spoof_accepted")
         self.assertEqual(row.status, "FAIL")
         self.assertIn("claiming org globex was registered", row.detail)
+
+    def test_s3_unknown_registration_key_registered_fails(self):
+        row = self._org_row("unknown_key_accepted")
+        self.assertEqual(row.status, "FAIL")
+        self.assertIn("no organization was issued", row.detail)
 
     def test_s3_org_claim_without_key_registered_fails(self):
         row = self._org_row("claim_without_key_accepted")
