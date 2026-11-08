@@ -117,8 +117,7 @@ class FakeBackend(H.Backend):
         if op == "import-core":
             return {"ok": False, "error": "ModuleNotFoundError"} if self.mode == "no_core" else {"ok": True, "sdk_version": "0.0.1rc8"}
         if op == "register":
-            good = kw.get("key") == self.good_key
-            return {"registered": good or self.mode == "wrong_key_registers", "agent": self.agent}
+            return {"registered": self.mode != "register_fails", "agent": self.agent}
         tool, s, unwired = kw["tool"], Path(kw["sentinel"]), kw.get("unwired", False)
         if self.dead and not unwired:
             return {"executed": False, "error": "ToolExecutionBlockedError", "typed": True}
@@ -457,9 +456,9 @@ class NegativeControlTests(unittest.TestCase):
         rep = self.check("start_fail", "j56-c-register-authenticated")
         self.assertEqual(st(rep, "j56-c-deny-delete-file-typed-no-sideeffect"), "NOT_COVERED")
 
-    def test_wrong_key_registering_fails(self):
-        self.check("wrong_key_registers", "j56-c-register-authenticated")
-        self.check("wrong_key_registers", "j08-c-register-governed-agent", journey="J08")
+    def test_registration_failing_fails(self):
+        self.check("register_fails", "j56-c-register-authenticated")
+        self.check("register_fails", "j08-c-register-governed-agent", journey="J08")
 
     def test_read_file_blocked_fails(self):
         self.check("read_blocked", "j56-c-allow-read-file")

@@ -11,7 +11,7 @@ codes are the shared `b1-candidate-report/1` of `b1_candidate_common.py` (AAASM-
 Checks (fidelity real_local_process unless noted), one report per `--journey`:
 
   J56  install-clean-venv-native-core   wheel installs in a fresh venv and `_core` imports
-       register-authenticated           good key registers; a wrong key does not
+       register-authenticated           the SDK registers with the gateway under the key it was given and the agent is listed
        allow-read-file                  `golden-path` ALLOW reaches the tool body
        deny-delete-file-typed-no-sideeffect   typed SDK error, sentinel untouched
        send-email-approval-or-gap       FAIL if the email ran unapproved or no approval can be queued/resolved
@@ -76,7 +76,6 @@ BINARIES = ("aasm", "aa-gateway", "aa-runtime", "aa-api-server")
 WHEEL = "python-sdk-wheel"
 # A syntactically valid key for a throwaway loopback server; not a credential.
 TEST_KEY = "aa_0123456789abcdef0123456789abcdef"
-WRONG_KEY = "aa_" + "f" * 32
 
 PENDING_BY_JOURNEY = {
     "J08": c.PendingCheck(
@@ -405,15 +404,16 @@ def check_register(ctx: c.Context, be: Backend, cid: str, with_agent_list: bool)
     good = be.sdk("register", key=be.good_key)
     if good.get("registered") is not True:
         p.append(f"registration with the correct key reported registered={good.get('registered')!r} ({good.get('error')})")
-    bad = be.sdk("register", key=WRONG_KEY)
-    if bad.get("registered") is True:
-        p.append("registration with a wrong key reported registered=True")
+    # Registration over gRPC does not check `api_key`: the default keyless quickstart registers with none, and a second
+    # process of the same agent re-binds to its record (AAASM-6447). The refusal of an unauthorized caller (wrong or
+    # missing operator key, another holder of the label) is asserted where it can be observed, by J59's
+    # `j59-s3-org-scoped-audit-filter`. A wrong-key negative here only ever passed because the label collided.
     if with_agent_list and not p:
         rc, out = be.agent_list()
         if rc != 0 or str(good.get("agent")) not in out:
             p.append(f"`aasm agent list` exit {rc} does not list the registered agent")
-    return _res(ctx, cid, p, "correct key registers (and is listed by aasm); a wrong key does not register",
-                BINARIES_ART + [WHEEL], _tn("test_wrong_key_registering_fails"))
+    return _res(ctx, cid, p, "the SDK registers with the gateway (and the agent is listed by aasm)",
+                BINARIES_ART + [WHEEL], _tn("test_registration_failing_fails"))
 
 
 BINARIES_ART = list(BINARIES)
