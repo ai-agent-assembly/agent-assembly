@@ -33,6 +33,15 @@ pub fn generate_credential_token() -> String {
 pub fn validate_token(registry: &AgentRegistry, agent_id: &[u8; 16], token: &str) -> Result<(), TokenError> {
     let record = registry.get(agent_id).ok_or(TokenError::AgentNotFound(*agent_id))?;
 
+    // A record that holds no credential validates nothing. Records rehydrated from
+    // durable storage come back with an empty `credential_token` (AAASM-6450), and
+    // two empty strings are equal under `ct_eq`, so without this an empty token
+    // would authenticate Heartbeat, Deregister and ControlStream for any agent whose
+    // (org, team, did) the caller knows, until the agent registers again.
+    if record.credential_token.is_empty() {
+        return Err(TokenError::InvalidToken);
+    }
+
     if bool::from(record.credential_token.as_bytes().ct_eq(token.as_bytes())) {
         Ok(())
     } else {
@@ -122,6 +131,30 @@ mod tests {
             validate_token(&reg, &id, prefix),
             Err(TokenError::InvalidToken)
         ));
+    }
+
+    #[test]
+    fn a_record_without_a_credential_validates_no_token_including_the_empty_one() {
+        // AAASM-6450: a record rehydrated from storage carries an empty credential.
+        // `ct_eq` of two empty strings is equal, so without a guard an empty token
+        // would authenticate Heartbeat, Deregister and ControlStream for it.
+        let reg = AgentRegistry::new();
+        let id = [8u8; 16];
+        reg.register(record_with_token(id, "")).unwrap();
+        assert!(matches!(validate_token(&reg, &id, ""), Err(TokenError::InvalidToken)));
+        assert!(matches!(
+            validate_token(&reg, &id, "anything"),
+            Err(TokenError::InvalidToken)
+        ));
+    }
+
+    #[test]
+    fn an_empty_token_is_rejected_for_a_record_that_has_a_credential() {
+        let reg = AgentRegistry::new();
+        let id = [7u8; 16];
+        reg.register(record_with_token(id, &generate_credential_token()))
+            .unwrap();
+        assert!(matches!(validate_token(&reg, &id, ""), Err(TokenError::InvalidToken)));
     }
 
     #[test]
