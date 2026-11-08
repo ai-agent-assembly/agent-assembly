@@ -135,6 +135,29 @@ async fn register_with_metadata(
     key: Option<&str>,
     metadata: std::collections::HashMap<String, String>,
 ) -> Result<RegisterResponse, tonic::Status> {
+    register_full(addr, kp, id, key, metadata, false).await
+}
+
+/// A registration from a client whose key is random and held by the agent
+/// (`durable_identity_key`), as `aa-sdk-client` sends it. The plain helpers above
+/// model a client that predates the flag.
+async fn register_durable(
+    addr: SocketAddr,
+    kp: &AgentKeypair,
+    id: &ProtoAgentId,
+    key: Option<&str>,
+) -> Result<RegisterResponse, tonic::Status> {
+    register_full(addr, kp, id, key, Default::default(), true).await
+}
+
+async fn register_full(
+    addr: SocketAddr,
+    kp: &AgentKeypair,
+    id: &ProtoAgentId,
+    key: Option<&str>,
+    metadata: std::collections::HashMap<String, String>,
+    durable_identity_key: bool,
+) -> Result<RegisterResponse, tonic::Status> {
     let mut client: AgentLifecycleServiceClient<Channel> =
         AgentLifecycleServiceClient::connect(format!("http://{addr}"))
             .await
@@ -155,6 +178,7 @@ async fn register_with_metadata(
         possession_proof: kp.sign(&challenge.nonce).to_vec(),
         registration_nonce: challenge.nonce,
         metadata,
+        durable_identity_key,
         ..Default::default()
     };
     let mut req = Request::new(req);
@@ -733,4 +757,230 @@ async fn a_key_confined_to_another_team_cannot_rebind_the_agent() {
         assert_eq!(again.credential_token, first.credential_token, "{label}");
     }
     assert_eq!(registry.list().len(), 1);
+}
+
+// ---- AAASM-6447: an org-less agent re-binds by possession of its own key ----------
+//
+// A record created by a client that declared its key random and held
+// (`durable_identity_key`) is re-bound by a later process that proves possession of
+// that same key, with no operator key. The marker is read from the STORED record,
+// never from the later request, so a record created without it can never be taken
+// over by possession, whatever the later request claims.
+
+fn key_of(id: &ProtoAgentId) -> [u8; 16] {
+    proto_agent_id_to_key(id)
+}
+
+#[tokio::test]
+async fn a_keyless_agent_process_restart_rebinds_to_the_same_record() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("keyless-restart", "");
+    let first = register_durable(addr, &kp, &id, None).await.unwrap();
+
+    let later = register_durable(addr, &kp, &id, None)
+        .await
+        .expect("a later process holding the same key re-binds");
+    assert_eq!(later.credential_token, first.credential_token);
+    assert_eq!(later.org_id, None);
+    assert_eq!(later.team_id, first.team_id);
+    assert_eq!(registry.list().len(), 1, "one record, not a second agent");
+    let record = registry.get(&key_of(&id)).unwrap();
+    assert_eq!(record.org_id, None, "the record's org is not changed");
+    assert_eq!(record.credential_token, first.credential_token);
+}
+
+/// Re-binding needs BOTH: the stored record carries the marker, and the later process
+/// declares a held key itself. A client that does not (an old one, whose key may be
+/// computable) is never re-bound onto a record, so a squatter who registered first
+/// with a computable key and the flag set cannot hand it a credential the squatter
+/// already holds.
+#[tokio::test]
+async fn a_later_process_that_does_not_declare_a_durable_key_is_not_rebound() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("flag-both-sides", "");
+    let first = register_durable(addr, &kp, &id, None).await.unwrap();
+    let err = register(addr, &kp, &id, None)
+        .await
+        .expect_err("a process that does not declare a held key must not be re-bound");
+    assert_plain_collision(&err, &first.credential_token);
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// A process that presents an operator key which resolves to no organization, and
+/// claims none, is the same keyless caller: the credential that matters is the key
+/// the agent holds, and an unbound key confers nothing at Register.
+#[tokio::test]
+async fn an_unbound_operator_key_with_no_claim_does_not_block_a_keyless_rebind() {
+    let (addr, _, keys) = start().await;
+    let (kp, id) = identity("keyless-unbound-key", "");
+    let first = register_durable(addr, &kp, &id, None).await.unwrap();
+    let later = register_durable(addr, &kp, &id, Some(&keys.unbound_plain))
+        .await
+        .unwrap();
+    assert_eq!(later.credential_token, first.credential_token);
+}
+
+/// A record created WITHOUT the flag (a client that predates it, so its key may be
+/// computable from a public identifier) is never re-bound by possession, and a later
+/// request that carries the flag does not change that.
+#[tokio::test]
+async fn a_record_created_without_the_flag_is_never_rebound_even_if_a_later_request_claims_it() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("unmarked-record", "");
+    let first = register(addr, &kp, &id, None).await.unwrap();
+    let err = register_durable(addr, &kp, &id, None).await.unwrap_err();
+    assert_plain_collision(&err, &first.credential_token);
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// Knowing the victim's did is not enough: presenting it with the attacker's own
+/// public key is refused by the did binding, and nothing about the record changes.
+#[tokio::test]
+async fn presenting_a_victims_did_with_another_key_obtains_no_credential() {
+    let (addr, registry, _) = start().await;
+    let (victim_kp, victim_id) = identity("keyless-victim", "");
+    let first = register_durable(addr, &victim_kp, &victim_id, None).await.unwrap();
+    let (attacker_kp, _) = identity("keyless-attacker", "");
+
+    let err = register_durable(addr, &attacker_kp, &victim_id, None)
+        .await
+        .expect_err("the attacker does not hold the victim's key");
+    assert_eq!(
+        err.code(),
+        Code::Unauthenticated,
+        "the did binding must be what refuses a did presented with another key: {err:?}"
+    );
+    assert!(!err.message().contains(&first.credential_token), "{err:?}");
+    assert_eq!(registry.list().len(), 1);
+    assert_eq!(
+        registry.get(&key_of(&victim_id)).unwrap().credential_token,
+        first.credential_token
+    );
+}
+
+/// Another key under the same label and team is another did, so it is another agent:
+/// it registers on its own and the victim's record and credential are untouched.
+#[tokio::test]
+async fn another_key_under_the_same_label_is_a_separate_agent() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("keyless-original", "");
+    let first = register_durable(addr, &kp, &id, None).await.unwrap();
+    let (other_kp, other_id) = identity("keyless-other-holder", "");
+    let other = register_durable(addr, &other_kp, &other_id, None).await.unwrap();
+    assert_ne!(other.credential_token, first.credential_token);
+    assert_eq!(registry.list().len(), 2);
+    assert_eq!(
+        registry.get(&key_of(&id)).unwrap().credential_token,
+        first.credential_token
+    );
+}
+
+/// An organization merely asserted by an unbound admin key never authorizes a
+/// re-bind, marked record or not.
+#[tokio::test]
+async fn an_org_asserted_by_an_unbound_admin_key_never_rebinds_a_marked_record() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("keyless-admin-claim", "");
+    let acme = register_durable(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let claim = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+    let err = register_durable(addr, &kp, &claim, Some(&keys.admin_unbound))
+        .await
+        .unwrap_err();
+    assert_plain_collision(&err, &acme.credential_token);
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// A keyless later process of an org-BOUND agent does not reach the bound record:
+/// the registry identity includes the organization, so it is a separate org-less agent.
+#[tokio::test]
+async fn a_keyless_process_never_reaches_an_org_bound_marked_record() {
+    let (addr, registry, keys) = start().await;
+    let (kp, id) = identity("keyless-vs-bound", "");
+    let bound = register_durable(addr, &kp, &id, Some(&keys.acme)).await.unwrap();
+    let later = register_durable(addr, &kp, &id, None)
+        .await
+        .expect("a separate org-less agent registers on its own");
+    assert_ne!(later.credential_token, bound.credential_token);
+    assert_eq!(later.org_id, None);
+    assert_eq!(registry.list().len(), 2);
+    let acme_id = ProtoAgentId {
+        org_id: "acme".into(),
+        ..id.clone()
+    };
+    assert_eq!(
+        registry.get(&key_of(&acme_id)).unwrap().credential_token,
+        bound.credential_token
+    );
+}
+
+/// Records that came back from storage after a gateway restart carry no key and no
+/// credential; a record in that shape, or one with an organization, must never be
+/// handed out by possession even if it carries the marker.
+#[tokio::test]
+async fn a_marked_record_without_a_key_or_a_credential_or_with_an_org_is_never_rebound() {
+    use aa_gateway::registry::OrphanMode;
+
+    let (addr, registry, _) = start().await;
+    for (label, strip) in [("no credential", 0u8), ("no public key", 1), ("has an org", 2)] {
+        let (kp, id) = identity(&format!("rehydrated-shape-{label}"), "");
+        let first = register_durable(addr, &kp, &id, None).await.unwrap();
+        let key = key_of(&id);
+        let (mut record, _) = registry.deregister(&key, OrphanMode::Suspend).unwrap();
+        match strip {
+            0 => record.credential_token = String::new(),
+            1 => record.public_key = String::new(),
+            _ => record.org_id = Some("acme".into()),
+        }
+        registry.register(record).unwrap();
+
+        let err = register_durable(addr, &kp, &id, None)
+            .await
+            .expect_err(&format!("{label}: must not re-bind"));
+        assert_plain_collision(&err, &first.credential_token);
+    }
+}
+
+/// First registrations racing for one key: exactly one record, one credential.
+#[tokio::test]
+async fn racing_first_registrations_of_a_marked_agent_create_one_record() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("keyless-race", "");
+    let kp = Arc::new(kp);
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let (kp, id) = (Arc::clone(&kp), id.clone());
+        tasks.push(tokio::spawn(
+            async move { register_durable(addr, &kp, &id, None).await },
+        ));
+    }
+    let mut tokens = std::collections::HashSet::new();
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(r) => {
+                tokens.insert(r.credential_token);
+            }
+            Err(e) => assert_eq!(e.code(), Code::AlreadyExists, "{e:?}"),
+        }
+    }
+    assert_eq!(tokens.len(), 1, "every success carries the one credential");
+    assert_eq!(registry.list().len(), 1);
+}
+
+/// The marker is set only by the typed field: a client cannot plant it through the
+/// free-form metadata and so make an unmarked record re-bindable.
+#[tokio::test]
+async fn the_marker_cannot_be_planted_through_request_metadata() {
+    let (addr, registry, _) = start().await;
+    let (kp, id) = identity("planted-marker", "");
+    let planted = std::collections::HashMap::from([("aa.identity_key".to_string(), "durable/1".to_string())]);
+    let first = register_with_metadata(addr, &kp, &id, None, planted).await.unwrap();
+    assert_eq!(
+        registry.get(&key_of(&id)).unwrap().metadata.get("aa.identity_key"),
+        None
+    );
+    let err = register(addr, &kp, &id, None).await.unwrap_err();
+    assert_plain_collision(&err, &first.credential_token);
 }

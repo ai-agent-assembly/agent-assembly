@@ -27,6 +27,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -131,7 +132,13 @@ def make_backend_class() -> type:
                 if key_org not in self.org_key_files:
                     return {"error": "no-operator-key", "message": f"no operator key was issued for org {key_org}"}
                 argv += ["--registration-key-file", str(self.org_key_files[key_org])]
-            rc, out = self.exec(argv, self.env, self.ctx.tmp, 120)
+            env = self.env
+            if kw.get("fresh_identity"):
+                # A different holder of the same label: its own HOME and state dir, so the SDK enrols a new durable key
+                # (a second machine, or an attacker who knows the label) instead of reading the first one back.
+                home = Path(tempfile.mkdtemp(prefix="j59-other-holder-", dir=str(self.ctx.tmp)))
+                env = {**self.env, "HOME": str(home), "AASM_STATE_DIR": str(home / ".aasm")}
+            rc, out = self.exec(argv, env, self.ctx.tmp, 120)
             for line in reversed(out.splitlines()):
                 if line.startswith("RESULT "):
                     try:
@@ -645,11 +652,8 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         _, filtered = items_of(f"/api/v1/logs?org_id={org}&per_page=500")
         if any(belongs(e, legacy, legacy_id) for e in (filtered or [])):
             problems.append(f"the org-less agent's entries matched ?org_id={org}")
-    # 5. Later process of an already-registered agent (AAASM-6447). The owner decision makes a re-bind operator-authorized:
-    # a later process re-binds to the existing identity only when it presents an operator key bound to the agent's org.
-    # The authorized leg runs the later process WITH the key; the org-less leg is the negative control and must stay a
-    # refusal. A later process of an org-less agent is NOT re-bound, so that leg FAILS the row if it ever registers: the
-    # original acceptance (one identity across processes) is met for org-bound agents only.
+    # 5. Later process of an already-registered agent (AAASM-6447). An org-bound agent re-binds with an operator key bound
+    # to its org (below); a keyless agent re-binds by possession of its own durable key (further below).
     rb_team = TEAM_A
     bound, orgless = f"j59r-{uuid.uuid4().hex[:6]}", f"j59n-{uuid.uuid4().hex[:6]}"
     for name, org in ((bound, "acme"), (orgless, None)):
@@ -690,23 +694,46 @@ def check_org_filter(ctx: Any, be: Any, cid: str) -> None:
         now = ids_named(be, bound)
         problems += _unauthorized_later_process(label, r, known, now)
         known |= set(now)
+    # The default keyless quickstart (AAASM-6447, owner: not waived). Each be.sdk() call is a separate `python -I` process,
+    # so a later call is a real process restart reading the agent's durable key back from its state dir. The later process
+    # must re-bind to the SAME registry id, with no operator key; another holder of the same label (a fresh state dir, so
+    # another key) must become a SEPARATE agent and leave the first agent's record alone.
     o1 = be.sdk("register", agent=orgless, no_key=True)
-    o2 = be.sdk("register", agent=orgless, no_key=True)  # a later process of an org-less agent
     if not o1.get("registered"):
-        problems.append(f"negative control failed: the org-less agent's first process did not register ({o1.get('error')} {o1.get('message', '')})".strip())
-    if o2.get("registered"):
-        problems.append("an org-less agent's later process was re-bound; the owner decision allows no re-bind without an "
-                        "org-bound operator key (it must get AlreadyExists)")
-    elif not _duplicate_refusal(o2):
-        problems.append("an org-less agent's later process was not registered, but not because the gateway refused it as "
-                        f"AlreadyExists, so the control proves nothing ({o2.get('error')} {_refusal_text(o2)!r})")
+        problems.append(f"the org-less agent's first process did not register ({o1.get('error')} {o1.get('message', '')})".strip())
+    orgless_ids = ids_named(be, orgless)
+    if len(orgless_ids) != 1:
+        problems.append(f"after its first process the org-less agent had {len(orgless_ids)} registry ids, want one")
+    for n in (2, 3):
+        later = be.sdk("register", agent=orgless, no_key=True)
+        if not later.get("registered"):
+            problems.append(f"the org-less agent's restarted process #{n} was not re-bound: it must be, or its later processes "
+                            f"run asserted under a second identity ({later.get('error')} {_refusal_text(later)!r})")
+    after = ids_named(be, orgless)
+    if after != orgless_ids:
+        problems.append(f"the org-less agent's registry ids changed across restarts: {orgless_ids} -> {after}, want one stable id")
+    o_calls = []
+    for tag in ("before-restart", "after-restart"):
+        sent = H._sentinel(ctx, f"orgless-{tag}")
+        r = be.sdk("call", agent=orgless, tool="read_file", sentinel=sent)
+        o_calls.append(r)
+        if not r.get("executed"):
+            problems.append(f"the org-less agent's {tag} process could not run read_file: {r.get('error')} {r.get('message', '')}".strip())
+    stranger = be.sdk("register", agent=orgless, no_key=True, fresh_identity=True)
+    ids_now = ids_named(be, orgless)
+    if not set(orgless_ids) <= set(ids_now):
+        problems.append("another holder of the label made the org-less agent's record disappear")
+    if stranger.get("registered"):
+        if len(set(ids_now) - set(orgless_ids)) != 1:
+            problems.append("another holder of the label registered but did not become exactly one separate agent: it was "
+                            f"re-bound onto the existing record ({orgless_ids} -> {ids_now})")
+    elif not _duplicate_refusal(stranger):
+        problems.append("another holder of the label neither registered separately nor was refused by the gateway "
+                        f"({stranger.get('error')} {_refusal_text(stranger)!r})")
     _row(ctx, cid, problems,
          "two orgs registered with org-bound operator keys: ?org_id= returns only each org's events; an acme-bound key cannot "
          "read globex (admin control sees it); acme's key claiming globex is refused and registers nothing; no key plus an org "
-         "claim is refused; a later process presenting another org's key, or none, never reaches the acme record (a separate agent or a refusal); an org-less agent registers with org_id null and never matches an org filter; AAASM-6447 is "
-         "resolved ONLY for operator-key-authorized org-bound agents (a later process presenting the org's key re-binds to one "
-         "agent id with its team_id) and is NOT resolved for org-less agents (a later process gets AlreadyExists and is not "
-         "re-bound: the acceptance is not met for them)", arts, neg)
+         "claim is refused; a later process presenting another org's key, or none, never reaches the acme record (a separate agent or a refusal); an org-less agent registers with org_id null and never matches an org filter; AAASM-6447: a later process re-binds to ONE stable agent id both for an org-bound agent presenting its org's operator key and, with no key at all, for a keyless agent restarted with its own durable key (the original acceptance), while another holder of the same label becomes a separate agent and never reaches the first record", arts, neg)
 
 
 def _blocked_now(be: Any, ctx: Any, tag: str) -> tuple[bool, dict[str, Any]]:
