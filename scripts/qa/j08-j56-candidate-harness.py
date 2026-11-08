@@ -404,10 +404,11 @@ def check_register(ctx: c.Context, be: Backend, cid: str, with_agent_list: bool)
     good = be.sdk("register", key=be.good_key)
     if good.get("registered") is not True:
         p.append(f"registration with the correct key reported registered={good.get('registered')!r} ({good.get('error')})")
-    # Registration over gRPC does not check `api_key`: the default keyless quickstart registers with none, and a second
-    # process of the same agent re-binds to its record (AAASM-6447). The refusal of an unauthorized caller (wrong or
-    # missing operator key, another holder of the label) is asserted where it can be observed, by J59's
-    # `j59-s3-org-scoped-audit-filter`. A wrong-key negative here only ever passed because the label collided.
+    # The driver's `api_key` is a REST bearer: the SDK does not send it on the gRPC Register call, so the gateway never
+    # sees it. Only the registration key (`x-aa-registration-key`) is checked there, and the default keyless quickstart
+    # registers without one. A second process of the same agent re-binds to its record (AAASM-6447). The refusals that
+    # can be observed (unknown, wrong-org or missing operator key, another holder of the label) are asserted by J59's
+    # `j59-s3-org-scoped-audit-filter`. A wrong-`api_key` negative here only ever passed because the label collided.
     if with_agent_list and not p:
         rc, out = be.agent_list()
         if rc != 0 or str(good.get("agent")) not in out:
