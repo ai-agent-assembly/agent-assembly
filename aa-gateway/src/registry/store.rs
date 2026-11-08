@@ -416,6 +416,35 @@ impl AgentRegistry {
         self.agents.get(agent_id).map(|r| r.clone())
     }
 
+    /// Give a record that came back from storage without a credential its new one
+    /// (AAASM-6451), and return the credential the record now holds.
+    ///
+    /// The credential is never persisted, so after a restart the first caller who
+    /// proves possession of the agent's key and is authorized to re-bind it installs
+    /// `fresh`. The check and the install happen under one map lock, which makes this
+    /// a compare-and-set: it installs only when the stored `public_key` equals
+    /// `public_key` **and** the stored credential is still empty. Otherwise it
+    /// installs nothing and returns `None`, so a second caller racing the first
+    /// cannot overwrite the token the first was handed; the caller then decides
+    /// again against the record as it now stands and receives the same token the
+    /// winner did (the shared-credential model of the live re-bind).
+    ///
+    /// `public_key` must be non-empty: an empty stored key is the shape of a row
+    /// written before the key was persisted, and no caller is ever allowed to
+    /// adopt such a record.
+    pub fn adopt_credential(&self, agent_id: &[u8; 16], public_key: &str, fresh: &str) -> Option<String> {
+        if public_key.is_empty() || fresh.is_empty() {
+            return None;
+        }
+        let mut record = self.agents.get_mut(agent_id)?;
+        if record.public_key != public_key || !record.credential_token.is_empty() {
+            return None;
+        }
+        record.credential_token = fresh.to_owned();
+        self.credential_index.insert(fresh.to_owned(), *agent_id);
+        Some(fresh.to_owned())
+    }
+
     /// Remove an agent from the registry. Returns the removed record and a list of
     /// `OrphanEffect`s describing what happened to each descendant under `mode`.
     ///
@@ -1426,6 +1455,99 @@ mod lineage_org_tests {
         let registry = AgentRegistry::new();
         registry.register(record(Some("acme"), Some("victim"))).unwrap();
         assert_eq!(registry.lineage(&[7u8; 16]).unwrap().org_id.as_deref(), Some("acme"));
+    }
+}
+
+#[cfg(test)]
+mod adopt_credential_tests {
+    use super::*;
+    use crate::registry::AgentStatus;
+
+    /// A record as a restarted gateway rehydrates it: key restored, credential absent.
+    fn rehydrated(public_key: &str) -> AgentRecord {
+        AgentRecord {
+            agent_id: [3u8; 16],
+            name: "a".into(),
+            framework: String::new(),
+            version: String::new(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: public_key.into(),
+            credential_token: String::new(),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn the_first_adopter_installs_the_credential_and_it_is_indexed() {
+        let registry = AgentRegistry::new();
+        registry.register(rehydrated("pk")).unwrap();
+        assert_eq!(
+            registry.adopt_credential(&[3u8; 16], "pk", "fresh-1").as_deref(),
+            Some("fresh-1")
+        );
+        assert_eq!(registry.get(&[3u8; 16]).unwrap().credential_token, "fresh-1");
+        assert_eq!(registry.find_by_credential_token("fresh-1"), Some([3u8; 16]));
+    }
+
+    #[test]
+    fn a_second_adopter_does_not_overwrite_the_first_credential() {
+        let registry = AgentRegistry::new();
+        registry.register(rehydrated("pk")).unwrap();
+        registry.adopt_credential(&[3u8; 16], "pk", "fresh-1").unwrap();
+        assert_eq!(registry.adopt_credential(&[3u8; 16], "pk", "fresh-2"), None);
+        assert_eq!(registry.get(&[3u8; 16]).unwrap().credential_token, "fresh-1");
+        assert_eq!(registry.find_by_credential_token("fresh-2"), None);
+    }
+
+    #[test]
+    fn a_different_key_adopts_nothing() {
+        let registry = AgentRegistry::new();
+        registry.register(rehydrated("pk")).unwrap();
+        assert_eq!(registry.adopt_credential(&[3u8; 16], "other", "fresh-1"), None);
+        assert_eq!(registry.get(&[3u8; 16]).unwrap().credential_token, "");
+        assert_eq!(registry.find_by_credential_token("fresh-1"), None);
+    }
+
+    #[test]
+    fn a_record_with_no_stored_key_is_never_adopted() {
+        // The shape of a row written before the key was persisted: no caller may
+        // adopt it, not even one presenting an empty key.
+        let registry = AgentRegistry::new();
+        registry.register(rehydrated("")).unwrap();
+        assert_eq!(registry.adopt_credential(&[3u8; 16], "", "fresh-1"), None);
+        assert_eq!(registry.adopt_credential(&[3u8; 16], "pk", "fresh-1"), None);
+        assert_eq!(registry.get(&[3u8; 16]).unwrap().credential_token, "");
+    }
+
+    #[test]
+    fn an_empty_credential_is_never_installed_and_an_unknown_agent_is_none() {
+        let registry = AgentRegistry::new();
+        registry.register(rehydrated("pk")).unwrap();
+        assert_eq!(registry.adopt_credential(&[3u8; 16], "pk", ""), None);
+        assert_eq!(registry.adopt_credential(&[9u8; 16], "pk", "fresh-1"), None);
     }
 }
 
