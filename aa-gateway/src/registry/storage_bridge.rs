@@ -10,7 +10,11 @@
 //! Conversion runtime → storage is lossy by design: runtime-only fields
 //! (`recent_events`, `active_sessions`, `credential_token`, lineage links,
 //! …) are dropped because they are either ephemeral, security-sensitive,
-//! or reconstructible at the next agent connect. On rehydrate the inverse
+//! or reconstructible at the next agent connect. The organization and the
+//! registered public key are kept (AAASM-6451) so a restarted gateway can tell
+//! that a re-registering caller holds the key of the record it is about to
+//! re-bind; the credential is deliberately not kept, so a leaked database is not
+//! a leaked token — the re-bind mints a new one. On rehydrate the inverse
 //! direction synthesises defaults for the missing runtime fields so the
 //! agent reappears in the registry as a root-level entry with status
 //! [`AgentStatus::Active`].
@@ -42,6 +46,15 @@ const DEFAULT_ENFORCEMENT_MODE: &str = "enforce";
 /// `metadata["name"]` keeps the storage schema flat.
 const METADATA_KEY_NAME: &str = "name";
 
+/// Reserved metadata key carrying the agent's registered public key through
+/// storage (AAASM-6451). `storage::AgentRecord` has no column for it, and a
+/// rehydrated record with no key can never prove a re-registering caller holds
+/// the same one. Only the bridge writes it: [`runtime_to_storage`] drops any
+/// client-supplied entry under this key before inserting the record's own
+/// `public_key`, and [`storage_to_runtime`] always removes it from the metadata
+/// it hands back, so it never reaches a runtime record's metadata.
+pub(crate) const METADATA_KEY_PUBLIC_KEY: &str = "aa.identity_pubkey";
+
 /// Convert a runtime `AgentRecord` into its durable storage equivalent.
 ///
 /// Lossy — runtime-only fields are dropped. `name` is round-tripped through
@@ -54,6 +67,10 @@ const METADATA_KEY_NAME: &str = "name";
 pub fn runtime_to_storage(record: &RuntimeAgentRecord) -> StorageAgentRecord {
     let mut metadata = record.metadata.clone();
     metadata.insert(METADATA_KEY_NAME.to_string(), record.name.clone());
+    metadata.remove(METADATA_KEY_PUBLIC_KEY);
+    if !record.public_key.is_empty() {
+        metadata.insert(METADATA_KEY_PUBLIC_KEY.to_string(), record.public_key.clone());
+    }
     let enforcement_mode = record
         .enforcement_mode
         .map(EnforcementMode::as_wire)
@@ -62,10 +79,10 @@ pub fn runtime_to_storage(record: &RuntimeAgentRecord) -> StorageAgentRecord {
     StorageAgentRecord {
         agent_id: AgentId::from_bytes(record.agent_id),
         team_id: record.team_id.clone(),
-        // The runtime record has no org_id field today; storage carries
-        // None until later Sub-tasks add an explicit field or the value
-        // gets piggy-backed through metadata.
-        org_id: None,
+        // Persisted so a re-registering caller's operator key can be matched to
+        // the record's organization after a restart (AAASM-6451), and so a
+        // tenant-scoped delete finds the row it is meant to remove.
+        org_id: record.org_id.clone(),
         metadata,
         registered_at: record.registered_at,
         last_seen_at: record.last_heartbeat,
@@ -86,7 +103,7 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
     let StorageAgentRecord {
         agent_id,
         team_id,
-        org_id: _,
+        org_id,
         mut metadata,
         registered_at,
         last_seen_at,
@@ -95,6 +112,7 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
     } = stored;
 
     let name = metadata.remove(METADATA_KEY_NAME).unwrap_or_default();
+    let public_key = metadata.remove(METADATA_KEY_PUBLIC_KEY).unwrap_or_default();
 
     // AAASM-5288 — mandatory-expiry semantics must survive a restart. If the
     // persisted mode carried a shadow-window deadline that has already passed,
@@ -135,14 +153,15 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
     RuntimeAgentRecord {
         agent_id: *agent_id.as_bytes(),
         name,
-        // Framework / version / public_key are not persisted today — left
-        // empty so rehydrated entries are flagged for the next connect to
-        // refresh.
+        // Framework / version are not persisted today — left empty so
+        // rehydrated entries are flagged for the next connect to refresh. The
+        // public key comes back from its reserved metadata entry; a row written
+        // before AAASM-6451 has none and stays empty, which no presented key equals.
         framework: String::new(),
         version: String::new(),
         risk_tier: 0,
         tool_names: Vec::new(),
-        public_key: String::new(),
+        public_key,
         credential_token: String::new(),
         metadata,
         registered_at,
@@ -168,10 +187,7 @@ pub fn storage_to_runtime(stored: StorageAgentRecord) -> RuntimeAgentRecord {
         parent_key: None,
         enforcement_mode,
         enforcement_mode_expires_at,
-        // AAASM-2008 — org_id is not persisted in the current storage
-        // schema either; populated as None until the storage layer carries
-        // it through (follow-up).
-        org_id: None,
+        org_id,
     }
 }
 
@@ -250,6 +266,57 @@ mod tests {
         assert!(matches!(restored.status, AgentStatus::Active));
         assert_eq!(restored.parent_key, None);
         assert_eq!(restored.root_agent_id, Some(id));
+    }
+
+    #[test]
+    fn org_and_public_key_survive_a_restart() {
+        // AAASM-6451 — without these a restarted gateway cannot match a
+        // re-registering caller's operator key to the record's organization, nor
+        // check that the caller holds the key the record was created with.
+        let id = [8u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.org_id = Some("acme".to_string());
+        rec.public_key = "pk-acme".to_string();
+        rec.metadata
+            .insert("aa.identity_key".to_string(), "durable/1".to_string());
+
+        let stored = runtime_to_storage(&rec);
+        assert_eq!(stored.org_id.as_deref(), Some("acme"));
+        let restored = storage_to_runtime(stored);
+        assert_eq!(restored.org_id.as_deref(), Some("acme"));
+        assert_eq!(restored.public_key, "pk-acme");
+        assert_eq!(
+            restored.metadata.get("aa.identity_key").map(String::as_str),
+            Some("durable/1"),
+            "the durable-key marker must survive so an org-less record can be re-bound"
+        );
+        assert!(
+            !restored.metadata.contains_key(METADATA_KEY_PUBLIC_KEY),
+            "the reserved key is a transport detail and must not appear in runtime metadata"
+        );
+        assert_eq!(restored.credential_token, "", "the credential is never persisted");
+    }
+
+    #[test]
+    fn a_client_supplied_public_key_entry_cannot_become_the_stored_key() {
+        // The reserved entry is the gateway's alone: a record with no public key
+        // must not carry whatever a client put under that name, or a legacy-shaped
+        // row would look like it holds a key.
+        let id = [10u8; 16];
+        let mut rec = sample_runtime(id);
+        rec.public_key = String::new();
+        rec.metadata
+            .insert(METADATA_KEY_PUBLIC_KEY.to_string(), "planted".to_string());
+        let stored = runtime_to_storage(&rec);
+        assert!(!stored.metadata.contains_key(METADATA_KEY_PUBLIC_KEY));
+        assert_eq!(storage_to_runtime(stored).public_key, "");
+
+        let mut with_key = sample_runtime(id);
+        with_key.public_key = "real".to_string();
+        with_key
+            .metadata
+            .insert(METADATA_KEY_PUBLIC_KEY.to_string(), "planted".to_string());
+        assert_eq!(storage_to_runtime(runtime_to_storage(&with_key)).public_key, "real");
     }
 
     #[test]
