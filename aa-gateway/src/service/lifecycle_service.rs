@@ -298,14 +298,42 @@ fn record_metadata(client: HashMap<String, String>, durable_identity_key: bool) 
 /// credential token, so every process of one agent shares one identity and one
 /// `agent_id` in the audit trail. A `public_key` that differs from the stored one
 /// cannot happen under the did:key binding; it is refused rather than overwritten
-/// so a registration can never replace the key an agent is known by.
-fn rebind_existing(existing: &AgentRecord, public_key: &str) -> Result<Response<RegisterResponse>, Status> {
-    if existing.public_key != public_key {
+/// so a registration can never replace the key an agent is known by. A record with
+/// no stored key (a row written before the key was persisted) is refused for the
+/// same reason: nothing proves this caller holds the key it was created with.
+///
+/// A record rehydrated after a gateway restart has the key but no credential
+/// (AAASM-6451: the credential is never persisted). The first authorized caller
+/// installs a fresh one through [`AgentRegistry::adopt_credential`]; a caller that
+/// loses that race is handed the credential the winner installed, so concurrent
+/// processes of one agent still share one token.
+fn rebind_existing(
+    registry: &AgentRegistry,
+    committed: impl Fn() -> Option<AgentRecord>,
+    existing: &AgentRecord,
+    public_key: &str,
+) -> Result<Response<RegisterResponse>, Status> {
+    if existing.public_key.is_empty() || existing.public_key != public_key {
         return Err(already_registered(&existing.agent_id));
     }
+    let credential_token = if existing.credential_token.is_empty() {
+        let fresh = generate_credential_token();
+        match registry.adopt_credential(&existing.agent_id, public_key, &fresh) {
+            Some(installed) => installed,
+            // Another process of this agent re-bound first: take the credential it
+            // installed, but only from a record that is still committed and still
+            // holds this key.
+            None => match committed() {
+                Some(now) if now.public_key == public_key && !now.credential_token.is_empty() => now.credential_token,
+                _ => return Err(already_registered(&existing.agent_id)),
+            },
+        }
+    } else {
+        existing.credential_token.clone()
+    };
     tracing::info!(agent = ?existing.name, "agent re-registered: re-bound to its existing identity");
     Ok(Response::new(RegisterResponse {
-        credential_token: existing.credential_token.clone(),
+        credential_token,
         assigned_policy: String::new(),
         heartbeat_interval_sec: DEFAULT_HEARTBEAT_INTERVAL_SEC,
         parent_agent_id: existing.parent_agent_id.clone(),
@@ -497,7 +525,9 @@ impl AgentLifecycleServiceImpl {
     /// an org-less record without the marker (its key may be computable), an
     /// organization merely asserted by an unbound admin key, and a record that is
     /// still mid-registration, was rolled back, or came back from storage without a
-    /// key or a credential.
+    /// key (a row that predates AAASM-6451). A record that came back with its key and
+    /// organization but no credential is re-bound like a live one and receives a new
+    /// credential.
     fn refuse_or_rebind(
         &self,
         agent_key: &[u8; 16],
@@ -517,7 +547,12 @@ impl AgentLifecycleServiceImpl {
                         .as_deref()
                         .map_or(true, |team| existing.team_id.as_deref() == Some(team)) =>
             {
-                rebind_existing(&existing, public_key)
+                rebind_existing(
+                    &self.registry,
+                    || self.committed_record(agent_key),
+                    &existing,
+                    public_key,
+                )
             }
             // An org-less record created by a client that declared its key random
             // and held (the marker, read from the RECORD, never from this request)
@@ -526,8 +561,9 @@ impl AgentLifecycleServiceImpl {
             // may have a computable key, so it never re-binds. `resolved.org` is
             // `None` only when the binding found no organization at all, so an org
             // merely asserted by an unbound admin key does not qualify, and a
-            // record that carries an org (or came back from storage without a key
-            // or a credential) is left to the operator-key arm above. The caller must
+            // record that carries an org is left to the operator-key arm above.
+            // The stored key must be present: a row from before AAASM-6451 has none,
+            // and nothing then shows the caller holds the key it was made with. The caller must
             // also declare a held key itself: a client that does not (an old one
             // whose key may be computable) is never re-bound onto a record, so a
             // squatter who registered first with a computable key and the flag set
@@ -536,10 +572,15 @@ impl AgentLifecycleServiceImpl {
                 if declares_durable_key
                     && resolved.org.is_none()
                     && existing.org_id.is_none()
-                    && !existing.credential_token.is_empty()
+                    && !existing.public_key.is_empty()
                     && existing.metadata.get(DURABLE_KEY_MARKER).map(String::as_str) == Some(DURABLE_KEY_V1) =>
             {
-                rebind_existing(&existing, public_key)
+                rebind_existing(
+                    &self.registry,
+                    || self.committed_record(agent_key),
+                    &existing,
+                    public_key,
+                )
             }
             _ => Err(already_registered(agent_key)),
         }

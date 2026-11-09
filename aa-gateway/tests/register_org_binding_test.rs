@@ -57,7 +57,7 @@ fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
     (key.as_str().to_owned(), e)
 }
 
-async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
+fn key_store() -> (Arc<ApiKeyStore>, Keys) {
     let (acme, e1) = entry(Some("acme"), vec![Scope::Read]);
     let (globex, e2) = entry(Some("globex"), vec![Scope::Read]);
     let (unbound_plain, e3) = entry(None, vec![Scope::Read]);
@@ -73,24 +73,8 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
     e9.team_id = Some("team-b".into());
     let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7, e8, e9]);
     store.revoke(&revoked_id);
-    let binder = OrgBinder::new(Arc::new(store));
-
-    let registry = Arc::new(AgentRegistry::new());
-    let service = AgentLifecycleServiceImpl::new(Arc::clone(&registry)).with_org_binder(binder);
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-        Server::builder()
-            .add_service(AgentLifecycleServiceServer::new(service))
-            .serve_with_incoming(incoming)
-            .await
-            .unwrap();
-    });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     (
-        addr,
-        registry,
+        Arc::new(store),
         Keys {
             acme,
             globex,
@@ -103,6 +87,31 @@ async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
             acme_team_b,
         },
     )
+}
+
+/// Serve `Register` over `registry`, authorizing operator keys against `store`.
+async fn serve(registry: Arc<AgentRegistry>, store: Arc<ApiKeyStore>) -> SocketAddr {
+    let binder = OrgBinder::new(store);
+    let service = AgentLifecycleServiceImpl::new(registry).with_org_binder(binder);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        Server::builder()
+            .add_service(AgentLifecycleServiceServer::new(service))
+            .serve_with_incoming(incoming)
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    addr
+}
+
+async fn start() -> (SocketAddr, Arc<AgentRegistry>, Keys) {
+    let (store, keys) = key_store();
+    let registry = Arc::new(AgentRegistry::new());
+    let addr = serve(Arc::clone(&registry), store).await;
+    (addr, registry, keys)
 }
 
 fn identity(name: &str, org: &str) -> (AgentKeypair, ProtoAgentId) {
@@ -916,21 +925,20 @@ async fn a_keyless_process_never_reaches_an_org_bound_marked_record() {
     );
 }
 
-/// Records that came back from storage after a gateway restart carry no key and no
-/// credential; a record in that shape, or one with an organization, must never be
-/// handed out by possession even if it carries the marker.
+/// A marked record that carries no public key, or one that carries an organization,
+/// must never be handed out to a keyless caller by possession. (A record with a key
+/// but no credential is the restart shape and is re-bound; see the restart tests.)
 #[tokio::test]
-async fn a_marked_record_without_a_key_or_a_credential_or_with_an_org_is_never_rebound() {
+async fn a_marked_record_without_a_key_or_with_an_org_is_never_rebound() {
     use aa_gateway::registry::OrphanMode;
 
     let (addr, registry, _) = start().await;
-    for (label, strip) in [("no credential", 0u8), ("no public key", 1), ("has an org", 2)] {
+    for (label, strip) in [("no public key", 1u8), ("has an org", 2)] {
         let (kp, id) = identity(&format!("rehydrated-shape-{label}"), "");
         let first = register_durable(addr, &kp, &id, None).await.unwrap();
         let key = key_of(&id);
         let (mut record, _) = registry.deregister(&key, OrphanMode::Suspend).unwrap();
         match strip {
-            0 => record.credential_token = String::new(),
             1 => record.public_key = String::new(),
             _ => record.org_id = Some("acme".into()),
         }
@@ -983,4 +991,262 @@ async fn the_marker_cannot_be_planted_through_request_metadata() {
     );
     let err = register(addr, &kp, &id, None).await.unwrap_err();
     assert_plain_collision(&err, &first.credential_token);
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-6451 — re-registration after a gateway restart.
+//
+// A "restart" here is a second gateway over the same SQLite file: a fresh
+// registry that rehydrates from storage, serving the same operator keys. The
+// credential is never persisted, so a re-bound agent receives a new one.
+// ---------------------------------------------------------------------------
+
+use aa_gateway::registry::token::validate_token;
+use aa_gateway::registry::OrphanMode;
+use aa_gateway::storage::{open_sqlite_backend, StorageBackend};
+
+async fn boot(db: &std::path::Path, store: &Arc<ApiKeyStore>) -> (SocketAddr, Arc<AgentRegistry>) {
+    let storage: Arc<dyn StorageBackend> = open_sqlite_backend(db).await.expect("open storage");
+    let registry = Arc::new(AgentRegistry::new().with_storage(storage));
+    registry.rehydrate_from_storage().await.expect("rehydrate");
+    let addr = serve(Arc::clone(&registry), Arc::clone(store)).await;
+    (addr, registry)
+}
+
+/// The first gateway of a restart test, with its operator keys.
+async fn first_boot(db: &std::path::Path) -> (SocketAddr, Arc<AgentRegistry>, Keys, Arc<ApiKeyStore>) {
+    let (store, keys) = key_store();
+    let (addr, registry) = boot(db, &store).await;
+    (addr, registry, keys, store)
+}
+
+#[tokio::test]
+async fn a_keyless_agent_rebinds_after_a_gateway_restart_with_a_new_credential() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart.db");
+    let (addr1, _r1, _keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-keyless", "");
+    let first = register_durable(addr1, &kp, &id, None).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    let record = registry2.get(&key_of(&id)).expect("rehydrated");
+    assert_eq!(record.credential_token, "", "the credential is not persisted");
+    assert!(
+        validate_token(&registry2, &key_of(&id), "").is_err(),
+        "a rehydrated record authenticates no token, empty included"
+    );
+
+    let again = register_durable(addr2, &kp, &id, None)
+        .await
+        .expect("the agent re-registers after the restart");
+    assert!(!again.credential_token.is_empty());
+    assert_ne!(
+        again.credential_token, first.credential_token,
+        "a new credential, not the old one"
+    );
+    assert_eq!(registry2.list().len(), 1, "one agent, the same record");
+    assert!(validate_token(&registry2, &key_of(&id), &again.credential_token).is_ok());
+    assert!(
+        validate_token(&registry2, &key_of(&id), &first.credential_token).is_err(),
+        "the pre-restart credential is rejected"
+    );
+    assert_eq!(
+        registry2.find_by_credential_token(&again.credential_token),
+        Some(key_of(&id)),
+        "the new credential is indexed"
+    );
+}
+
+#[tokio::test]
+async fn an_org_bound_agent_rebinds_after_a_restart_with_its_operator_key() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-org.db");
+    let (addr1, _r1, keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-acme", "acme");
+    register(addr1, &kp, &id, Some(&keys.acme)).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    assert_eq!(
+        org_of(&registry2, &id),
+        Some(Some("acme".into())),
+        "the org is persisted"
+    );
+
+    let again = register(addr2, &kp, &id, Some(&keys.acme_second))
+        .await
+        .expect("a second acme key re-binds");
+    assert_eq!(again.org_id.as_deref(), Some("acme"));
+    assert!(!again.credential_token.is_empty());
+    assert!(validate_token(&registry2, &key_of(&id), &again.credential_token).is_ok());
+}
+
+/// After a restart the same callers are refused as before it: an identifier, another
+/// org's key, no key, an unbound admin key and the wrong team's key never re-bind an
+/// org-bound record, and a refusal carries no credential and installs none.
+#[tokio::test]
+async fn unauthorized_callers_cannot_take_over_an_org_bound_record_after_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-org-stranger.db");
+    let (addr1, _r1, keys, store) = first_boot(&db).await;
+    let (kp, id) = identity_in_team("restart-victim", "acme", "team-a");
+    register(addr1, &kp, &id, Some(&keys.acme_team_a)).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    for (label, key) in [
+        ("another org's key", Some(keys.globex.as_str())),
+        ("no key", None),
+        ("a garbage key", Some("aa_not_a_real_key")),
+        ("the wrong team's key", Some(keys.acme_team_b.as_str())),
+    ] {
+        let err = register(addr2, &kp, &id, key)
+            .await
+            .expect_err(&format!("{label} must not re-bind the record"));
+        assert!(
+            matches!(
+                err.code(),
+                Code::AlreadyExists | Code::PermissionDenied | Code::Unauthenticated
+            ),
+            "{label}: {err:?}"
+        );
+        assert_eq!(
+            registry2.get(&key_of(&id)).unwrap().credential_token,
+            "",
+            "{label}: a refusal must install no credential"
+        );
+    }
+    // An unbound admin key only asserts the org: a plain collision, as before the restart.
+    let err = register(addr2, &kp, &id, Some(&keys.admin_unbound)).await.unwrap_err();
+    assert_eq!(err.code(), Code::AlreadyExists, "{err:?}");
+    assert_eq!(registry2.get(&key_of(&id)).unwrap().credential_token, "");
+}
+
+#[tokio::test]
+async fn a_stranger_cannot_take_over_a_keyless_record_after_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-stranger.db");
+    let (addr1, _r1, _keys, store) = first_boot(&db).await;
+    let (victim_kp, id) = identity("restart-keyless-victim", "");
+    register_durable(addr1, &victim_kp, &id, None).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    // The victim's identifier with the stranger's own key fails the did binding.
+    let stranger_kp = AgentKeypair::derive_transport_key("restart-keyless-stranger-key");
+    let err = register_durable(addr2, &stranger_kp, &id, None).await.unwrap_err();
+    assert_eq!(err.code(), Code::Unauthenticated, "{err:?}");
+    // The stranger's own identity is a separate agent, not the victim's record.
+    let (own_kp, own_id) = identity("restart-keyless-stranger", "");
+    register_durable(addr2, &own_kp, &own_id, None).await.unwrap();
+    assert_eq!(
+        registry2.get(&key_of(&id)).unwrap().credential_token,
+        "",
+        "the victim's record still has no credential"
+    );
+    assert_eq!(registry2.list().len(), 2);
+}
+
+/// A client that did not declare a held key created the record, so its key may be
+/// computable: it is never re-bound, before or after a restart.
+#[tokio::test]
+async fn a_record_created_without_the_declaration_is_not_rebound_after_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-undeclared.db");
+    let (addr1, _r1, _keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-undeclared", "");
+    register(addr1, &kp, &id, None).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    let err = register_durable(addr2, &kp, &id, None).await.unwrap_err();
+    assert_eq!(err.code(), Code::AlreadyExists, "{err:?}");
+    assert_eq!(registry2.get(&key_of(&id)).unwrap().credential_token, "");
+}
+
+/// A row written before the key was persisted has no key to compare: nothing shows
+/// the caller holds the key the record was created with, so it stays refused.
+#[tokio::test]
+async fn a_row_written_before_the_key_was_persisted_is_not_rebound() {
+    use aa_core::identity::AgentId;
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-legacy.db");
+    let (addr1, _r1, _keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-legacy", "");
+    register_durable(addr1, &kp, &id, None).await.unwrap();
+
+    // Overwrite the row with the shape the previous release stored: no key, marker kept.
+    let storage = open_sqlite_backend(&db).await.unwrap();
+    let mut metadata = std::collections::BTreeMap::new();
+    metadata.insert("name".to_owned(), "agent".to_owned());
+    metadata.insert("aa.identity_key".to_owned(), "durable/1".to_owned());
+    storage
+        .upsert_agent(aa_gateway::storage::AgentRecord {
+            agent_id: AgentId::from_bytes(key_of(&id)),
+            team_id: Some("team-1".into()),
+            org_id: None,
+            metadata,
+            registered_at: chrono::Utc::now(),
+            last_seen_at: chrono::Utc::now(),
+            enforcement_mode: "enforce".into(),
+            enforcement_mode_expires_at: None,
+        })
+        .await
+        .unwrap();
+    drop(storage);
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    assert_eq!(registry2.get(&key_of(&id)).unwrap().public_key, "");
+    let err = register_durable(addr2, &kp, &id, None).await.unwrap_err();
+    assert_eq!(err.code(), Code::AlreadyExists, "{err:?}");
+    assert_eq!(registry2.get(&key_of(&id)).unwrap().credential_token, "");
+}
+
+/// Processes of one agent that re-register at once after a restart converge on one
+/// credential: the shared-credential model of a live re-bind.
+#[tokio::test]
+async fn concurrent_rebinds_after_a_restart_share_one_credential() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-race.db");
+    let (addr1, _r1, _keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-race", "");
+    register_durable(addr1, &kp, &id, None).await.unwrap();
+
+    let (addr2, registry2) = boot(&db, &store).await;
+    let kp = Arc::new(kp);
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let (kp, id) = (Arc::clone(&kp), id.clone());
+        tasks.push(tokio::spawn(
+            async move { register_durable(addr2, &kp, &id, None).await },
+        ));
+    }
+    let mut tokens = std::collections::HashSet::new();
+    for t in tasks {
+        match t.await.unwrap() {
+            Ok(r) => {
+                tokens.insert(r.credential_token);
+            }
+            // A retryable refusal when a concurrent adopt lands between the two reads.
+            Err(e) => assert_eq!(e.code(), Code::AlreadyExists, "{e:?}"),
+        }
+    }
+    assert_eq!(tokens.len(), 1, "every success carries the one credential");
+    let token = tokens.into_iter().next().unwrap();
+    assert!(!token.is_empty());
+    assert_eq!(registry2.get(&key_of(&id)).unwrap().credential_token, token);
+}
+
+/// An org-bound record that was deregistered does not come back at the next boot:
+/// the delete is scoped to the row's org, which used to be stored as NULL.
+#[tokio::test]
+async fn a_deregistered_org_bound_agent_does_not_return_after_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db = tmp.path().join("restart-deregister.db");
+    let (addr1, registry1, keys, store) = first_boot(&db).await;
+    let (kp, id) = identity("restart-gone", "acme");
+    register(addr1, &kp, &id, Some(&keys.acme)).await.unwrap();
+    registry1
+        .deregister_persisted(&key_of(&id), OrphanMode::Suspend)
+        .await
+        .expect("deregister");
+
+    let (_addr2, registry2) = boot(&db, &store).await;
+    assert!(registry2.get(&key_of(&id)).is_none(), "the agent must not return");
 }
