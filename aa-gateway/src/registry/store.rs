@@ -432,6 +432,10 @@ impl AgentRegistry {
     /// `public_key` must be non-empty: an empty stored key is the shape of a row
     /// written before the key was persisted, and no caller is ever allowed to
     /// adopt such a record.
+    ///
+    /// This checks the key only. The caller must already have authorized the
+    /// organization and the declared durable key (`refuse_or_rebind`); do not call it
+    /// from a path that has not.
     pub fn adopt_credential(&self, agent_id: &[u8; 16], public_key: &str, fresh: &str) -> Option<String> {
         if public_key.is_empty() || fresh.is_empty() {
             return None;
