@@ -130,15 +130,17 @@ registration of that agent replaces it.
   same state directory (keyless) or with its organization's operator key, and
   receives a **new** credential. The gateway stores the agent's organization and public
   key, never its credential, so a leaked database is not a leaked token. The
-  pre-restart credential stops working, an empty token never authenticates, and
-  processes that re-register at the same time share the one new credential. A
-  running process holds the old credential and does not re-register by itself: it
+  pre-restart credential stops working, and an empty token never authenticates.
+  Processes that re-register at the same moment normally share the one new
+  credential, but one of them can be refused with `AlreadyExists` if it races the
+  install; retrying succeeds. Every rehydrated agent comes back `Active`, so a
+  suspension does not survive a restart. A running process holds the old credential and does not re-register by itself: it
   has to be restarted after the gateway restarts (the SDK does not yet re-register on
   `Unauthenticated`).
 * Rows written before AAASM-6451, and records created by clients built before the
   declaration, cannot be re-bound and occupy the agent's registry slot: a later
   process of that agent gets `AlreadyExists` until the record is removed
-  (`DELETE /api/v1/agents/:id`). After upgrading, every agent registered by the older
+  (`DELETE /api/v1/agents/:id`; a record with no team needs an admin-scope key). After upgrading, every agent registered by the older
   gateway is in this state once.
 * The durable-key declaration is a claim by the client that creates the record. A
   hand-built client can declare it while using a computable key, so a record is only
