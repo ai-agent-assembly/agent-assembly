@@ -9,52 +9,52 @@
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed",
             "policy:low-risk.yaml": "sha256:61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
-          "detail": "checkout HEAD is f0d5f7593663060a452e57410200225469f9e319; installer, policy, harness and common module equal their candidate blobs",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "detail": "checkout HEAD is d4093e89b07d8ba1c38e6caa92637d2e8edb65d7; installer, policy, harness and common module equal their candidate blobs",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.source_matches_candidate_sha",
           "status": "PASS"
         },
         {
           "artifact_digests": {
-            "SHA256SUMS": "sha256:21e19e61dfb16bd4d697efad8140566d6232701150b425c8e77534b889df5eb2",
-            "aasm-aarch64-apple-darwin.tar.gz": "sha256:61cccb8a3185ade9c42adbd8ac91e4e7e05ee3b94979ca620b7d0692c7d2386e",
-            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:35345932fe4f24e913f9591afadbbe12317212d0905ef618f92eba7c0b2a7e27",
+            "SHA256SUMS": "sha256:4a414246eb01394d8cb3a4c996aec3b539bd941ecc6655cb9b0f3f514bd609cb",
+            "aasm-aarch64-apple-darwin.tar.gz": "sha256:04275498b8d1fc8637f03a543c3f6a86c93e4972a925d74fb5c62346451f0dbe",
+            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:6ae5a3a3721b0a3c7bc7884931ad05d91ed15d4cd78f512a128dad239ad50fdc",
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "detail": "aa-gateway installed beside aasm (where `aasm gateway start` looks)",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.installer_places_gateway_beside_aasm",
           "status": "PASS"
         },
         {
           "artifact_digests": {
-            "SHA256SUMS": "sha256:21e19e61dfb16bd4d697efad8140566d6232701150b425c8e77534b889df5eb2",
-            "aasm-aarch64-apple-darwin.tar.gz": "sha256:61cccb8a3185ade9c42adbd8ac91e4e7e05ee3b94979ca620b7d0692c7d2386e",
-            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:35345932fe4f24e913f9591afadbbe12317212d0905ef618f92eba7c0b2a7e27",
+            "SHA256SUMS": "sha256:4a414246eb01394d8cb3a4c996aec3b539bd941ecc6655cb9b0f3f514bd609cb",
+            "aasm-aarch64-apple-darwin.tar.gz": "sha256:04275498b8d1fc8637f03a543c3f6a86c93e4972a925d74fb5c62346451f0dbe",
+            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:6ae5a3a3721b0a3c7bc7884931ad05d91ed15d4cd78f512a128dad239ad50fdc",
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
-          "detail": "aa-gateway --version rc=0 output='aa-gateway 0.0.1-rc.8\\nbuild-sha: f0d5f7593663060a452e57410200225469f9e319\\nbuild-identity-source: checkout\\nbuild-source-path: <a local scratch directory, elided>' expected to contain '0.0.1-rc.8'",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "detail": "aa-gateway --version rc=0 output='aa-gateway 0.0.1-rc.8\\nbuild-sha: d4093e89b07d8ba1c38e6caa92637d2e8edb65d7\\nbuild-identity-source: checkout\\nbuild-source-path: /Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-A' expected to contain '0.0.1-rc.8'",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.installed_gateway_version_output",
           "status": "PASS"
         },
         {
           "artifact_digests": {
-            "SHA256SUMS": "sha256:21e19e61dfb16bd4d697efad8140566d6232701150b425c8e77534b889df5eb2",
-            "aasm-aarch64-apple-darwin.tar.gz": "sha256:61cccb8a3185ade9c42adbd8ac91e4e7e05ee3b94979ca620b7d0692c7d2386e",
-            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:35345932fe4f24e913f9591afadbbe12317212d0905ef618f92eba7c0b2a7e27",
+            "SHA256SUMS": "sha256:4a414246eb01394d8cb3a4c996aec3b539bd941ecc6655cb9b0f3f514bd609cb",
+            "aasm-aarch64-apple-darwin.tar.gz": "sha256:04275498b8d1fc8637f03a543c3f6a86c93e4972a925d74fb5c62346451f0dbe",
+            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:6ae5a3a3721b0a3c7bc7884931ad05d91ed15d4cd78f512a128dad239ad50fdc",
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed",
             "policy:low-risk.yaml": "sha256:61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
-          "detail": "accepted TCP on 127.0.0.1:63716; control (missing policy): exited early rc=1: '\\x1b[32m INFO\\x1b[0m \\x1b[2maa_gateway::server\\x1b[0m\\x1b[2m:\\x1b[0m budget state loaded \\x1b[3mpath\\x1b[0m\\x1b[2m=\\x1b[0m<harness temp dir>/03-install/home/.aa/budget.json\\nError: \"failed to load policy: Io(Os { code: 2, kind: NotFound, message: \\\\\"No such file or directory\\\\\" })\"\\n'",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "detail": "accepted TCP on 127.0.0.1:57312; control (missing policy): exited early rc=1: '\\x1b[32m INFO\\x1b[0m \\x1b[2maa_gateway::server\\x1b[0m\\x1b[2m:\\x1b[0m budget state loaded \\x1b[3mpath\\x1b[0m\\x1b[2m=\\x1b[0m/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/b1-harness-omddlvsf/03-install/home/.aa/budget.json\\nError: \"failed to load policy: Io(Os { code: 2, kind: NotFound, message: \\\\\"No such file or directory\\\\\" })\"\\n'",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.gateway_serves_sample_policy",
           "negative_control": "same start check with a nonexistent --policy path must FAIL (it did)",
@@ -62,15 +62,15 @@
         },
         {
           "artifact_digests": {
-            "SHA256SUMS": "sha256:21e19e61dfb16bd4d697efad8140566d6232701150b425c8e77534b889df5eb2",
-            "aasm-aarch64-apple-darwin.tar.gz": "sha256:61cccb8a3185ade9c42adbd8ac91e4e7e05ee3b94979ca620b7d0692c7d2386e",
-            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:35345932fe4f24e913f9591afadbbe12317212d0905ef618f92eba7c0b2a7e27",
+            "SHA256SUMS": "sha256:4a414246eb01394d8cb3a4c996aec3b539bd941ecc6655cb9b0f3f514bd609cb",
+            "aasm-aarch64-apple-darwin.tar.gz": "sha256:04275498b8d1fc8637f03a543c3f6a86c93e4972a925d74fb5c62346451f0dbe",
+            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:6ae5a3a3721b0a3c7bc7884931ad05d91ed15d4cd78f512a128dad239ad50fdc",
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed",
             "policy:low-risk.yaml": "sha256:61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "detail": "listener=up `aasm gateway status` exit 0; `aasm gateway status` non-zero before start: True",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.aasm_gateway_start_status_stop",
           "negative_control": "`aasm gateway status` must be non-zero before start and zero after",
@@ -78,15 +78,15 @@
         },
         {
           "artifact_digests": {
-            "SHA256SUMS": "sha256:21e19e61dfb16bd4d697efad8140566d6232701150b425c8e77534b889df5eb2",
-            "aasm-aarch64-apple-darwin.tar.gz": "sha256:61cccb8a3185ade9c42adbd8ac91e4e7e05ee3b94979ca620b7d0692c7d2386e",
-            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:35345932fe4f24e913f9591afadbbe12317212d0905ef618f92eba7c0b2a7e27",
+            "SHA256SUMS": "sha256:4a414246eb01394d8cb3a4c996aec3b539bd941ecc6655cb9b0f3f514bd609cb",
+            "aasm-aarch64-apple-darwin.tar.gz": "sha256:04275498b8d1fc8637f03a543c3f6a86c93e4972a925d74fb5c62346451f0dbe",
+            "aasm-api-v0.0.1-rc.8-darwin-arm64.tar.gz": "sha256:6ae5a3a3721b0a3c7bc7884931ad05d91ed15d4cd78f512a128dad239ad50fdc",
             "control-installer:install-cli.pre-aaasm-6414.sh": "sha256:70c96c54070263ccf01cbe0cffdba16f65730b597d9934ad7132c8ecc4aea1c4",
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed"
           },
-          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319",
+          "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "detail": "control showed the AAASM-6414 defect signature",
-          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha f0d5f7593663060a452e57410200225469f9e319",
+          "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.negative_control_old_installer_has_no_gateway",
           "negative_control": "old installer must exit 0, install aasm only (no aa-gateway, no aa-api-server); pinned sha 70c96c54070263ccf01cbe0cffdba16f65730b597d9934ad7132c8ecc4aea1c4",
@@ -96,36 +96,36 @@
       "pending_checks": [
         {
           "channel": "github-release+agent-assembly.com",
-          "command": "sh -c 'set -eu\nTAG=v0.0.1-rc.8\nVER=\"${TAG#v}\"\nBASE=\"${B1_RELEASE_BASE:-https://github.com/ai-agent-assembly/agent-assembly/releases/download}/$TAG\"\nD=\"$(mktemp -d)\"\ntrap '\"'\"'rm -rf \"$D\"'\"'\"' EXIT\nsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\" | cut -d'\"'\"' '\"'\"' -f1; else shasum -a 256 \"$1\" | cut -d'\"'\"' '\"'\"' -f1; fi; }\nneed_sha() { [ \"$(sha \"$1\")\" = \"$2\" ] || { echo \"digest mismatch for $1 (candidate expects $2)\" >&2; exit 1; }; }\nneed_ver() { case \"$1\" in *\"$VER\"*) ;; *) echo \"version output '\"'\"'$1'\"'\"' lacks $VER\" >&2; exit 1 ;; esac; }\nexport HOME=\"$D/home\"; mkdir -p \"$HOME\"\ncurl -fsSL \"${B1_INSTALL_SH_URL:-https://agent-assembly.com/install.sh}\" -o \"$D/install.sh\"\nAASM_NO_MODIFY_PATH=1 sh \"$D/install.sh\" --profile full --version \"$TAG\" --install-dir \"$D/bin\"\nneed_ver \"$(\"$D/bin/aa-gateway\" --version)\"\nneed_sha \"$D/bin/aa-gateway\" a0a25523655c1629d0da940cf0417453c8ad75e9be3ed2d48e0f26e55b7d1619\ncurl -fsSL \"${B1_POLICY_URL:-https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/$TAG/policy-examples/low-risk.yaml}\" -o \"$D/low-risk.yaml\"\nneed_sha \"$D/low-risk.yaml\" 61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858\nP=\"$(python3 -I -c '\"'\"'import socket;s=socket.socket();s.bind((\"127.0.0.1\",0));print(s.getsockname()[1])'\"'\"')\"\n\"$D/bin/aa-gateway\" --policy \"$D/low-risk.yaml\" --listen \"127.0.0.1:$P\" --audit-dir \"$D/audit\" --db-path \"$D/gw.db\" >\"$D/gw.log\" 2>&1 &\nG=$!\ntrap '\"'\"'kill \"$G\" 2>/dev/null || true; rm -rf \"$D\"'\"'\"' EXIT\ni=0\nuntil python3 -I -c '\"'\"'import socket,sys; socket.create_connection((\"127.0.0.1\", int(sys.argv[1])), 1)'\"'\"' \"$P\" 2>/dev/null; do\n  i=$((i+1))\n  if [ \"$i\" -ge 60 ] || ! kill -0 \"$G\" 2>/dev/null; then echo \"gateway did not listen on $P\" >&2; exit 1; fi\n  sleep 0.5\ndone\n'",
+          "command": "sh -c 'set -eu\nTAG=v0.0.1-rc.8\nVER=\"${TAG#v}\"\nBASE=\"${B1_RELEASE_BASE:-https://github.com/ai-agent-assembly/agent-assembly/releases/download}/$TAG\"\nD=\"$(mktemp -d)\"\ntrap '\"'\"'rm -rf \"$D\"'\"'\"' EXIT\nsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\" | cut -d'\"'\"' '\"'\"' -f1; else shasum -a 256 \"$1\" | cut -d'\"'\"' '\"'\"' -f1; fi; }\nneed_sha() { [ \"$(sha \"$1\")\" = \"$2\" ] || { echo \"digest mismatch for $1 (candidate expects $2)\" >&2; exit 1; }; }\nneed_ver() { case \"$1\" in *\"$VER\"*) ;; *) echo \"version output '\"'\"'$1'\"'\"' lacks $VER\" >&2; exit 1 ;; esac; }\nexport HOME=\"$D/home\"; mkdir -p \"$HOME\"\ncurl -fsSL \"${B1_INSTALL_SH_URL:-https://agent-assembly.com/install.sh}\" -o \"$D/install.sh\"\nAASM_NO_MODIFY_PATH=1 sh \"$D/install.sh\" --profile full --version \"$TAG\" --install-dir \"$D/bin\"\nneed_ver \"$(\"$D/bin/aa-gateway\" --version)\"\nneed_sha \"$D/bin/aa-gateway\" 79281571b64b3cb40f1fce131553cff3fb78e84702b8db6d6dcbf2df64f269a6\ncurl -fsSL \"${B1_POLICY_URL:-https://raw.githubusercontent.com/ai-agent-assembly/agent-assembly/$TAG/policy-examples/low-risk.yaml}\" -o \"$D/low-risk.yaml\"\nneed_sha \"$D/low-risk.yaml\" 61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858\nP=\"$(python3 -I -c '\"'\"'import socket;s=socket.socket();s.bind((\"127.0.0.1\",0));print(s.getsockname()[1])'\"'\"')\"\n\"$D/bin/aa-gateway\" --policy \"$D/low-risk.yaml\" --listen \"127.0.0.1:$P\" --audit-dir \"$D/audit\" --db-path \"$D/gw.db\" >\"$D/gw.log\" 2>&1 &\nG=$!\ntrap '\"'\"'kill \"$G\" 2>/dev/null || true; rm -rf \"$D\"'\"'\"' EXIT\ni=0\nuntil python3 -I -c '\"'\"'import socket,sys; socket.create_connection((\"127.0.0.1\", int(sys.argv[1])), 1)'\"'\"' \"$P\" 2>/dev/null; do\n  i=$((i+1))\n  if [ \"$i\" -ge 60 ] || ! kill -0 \"$G\" 2>/dev/null; then echo \"gateway did not listen on $P\" >&2; exit 1; fi\n  sleep 0.5\ndone\n'",
           "deadline_hours": 24,
           "expected": "exit 0: installed aa-gateway reports the tag's version, equals the candidate member, and serves the sample policy on a loopback port",
-          "failure_response": "Do not announce or tag as released. Open a Bug sub-ticket under the journey Story with the command output; notify the release owner within the deadline; fix forward with a new candidate and re-run this harness plus this pending check. No yank/delete of published assets without owner approval.",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#installer-check-fails",
           "id": "j17.published_installer_profile_full_gateway",
           "side_effects": "isolated: everything lives in one mktemp dir removed on exit; only reads the public internet",
-          "status": "PUBLICATION_PENDING",
-          "why_publication_only": "Installs from the public Release assets."
+          "why_publication_only": "Installs from the public Release assets.",
+          "automated_procedure": "j17.published_installer_profile_full_gateway"
         },
         {
           "channel": "homebrew-tap",
-          "command": "sh -c 'set -eu\nTAG=v0.0.1-rc.8\nVER=\"${TAG#v}\"\nBASE=\"${B1_RELEASE_BASE:-https://github.com/ai-agent-assembly/agent-assembly/releases/download}/$TAG\"\nD=\"$(mktemp -d)\"\ntrap '\"'\"'rm -rf \"$D\"'\"'\"' EXIT\nsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\" | cut -d'\"'\"' '\"'\"' -f1; else shasum -a 256 \"$1\" | cut -d'\"'\"' '\"'\"' -f1; fi; }\nneed_sha() { [ \"$(sha \"$1\")\" = \"$2\" ] || { echo \"digest mismatch for $1 (candidate expects $2)\" >&2; exit 1; }; }\nneed_ver() { case \"$1\" in *\"$VER\"*) ;; *) echo \"version output '\"'\"'$1'\"'\"' lacks $VER\" >&2; exit 1 ;; esac; }\ncommand -v brew >/dev/null 2>&1 || { echo \"brew not found\" >&2; exit 1; }\nbrew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP=\"$(brew --prefix)/bin\"\n[ -x \"$P/aa-gateway\" ] || { echo \"aa-gateway not installed by the formula\" >&2; exit 1; }\nneed_ver \"$(\"$P/aa-gateway\" --version)\"\nneed_sha \"$P/aa-gateway\" a0a25523655c1629d0da940cf0417453c8ad75e9be3ed2d48e0f26e55b7d1619\n'",
+          "command": "sh -c 'set -eu\nTAG=v0.0.1-rc.8\nVER=\"${TAG#v}\"\nBASE=\"${B1_RELEASE_BASE:-https://github.com/ai-agent-assembly/agent-assembly/releases/download}/$TAG\"\nD=\"$(mktemp -d)\"\ntrap '\"'\"'rm -rf \"$D\"'\"'\"' EXIT\nsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\" | cut -d'\"'\"' '\"'\"' -f1; else shasum -a 256 \"$1\" | cut -d'\"'\"' '\"'\"' -f1; fi; }\nneed_sha() { [ \"$(sha \"$1\")\" = \"$2\" ] || { echo \"digest mismatch for $1 (candidate expects $2)\" >&2; exit 1; }; }\nneed_ver() { case \"$1\" in *\"$VER\"*) ;; *) echo \"version output '\"'\"'$1'\"'\"' lacks $VER\" >&2; exit 1 ;; esac; }\ncommand -v brew >/dev/null 2>&1 || { echo \"brew not found\" >&2; exit 1; }\nbrew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP=\"$(brew --prefix)/bin\"\n[ -x \"$P/aa-gateway\" ] || { echo \"aa-gateway not installed by the formula\" >&2; exit 1; }\nneed_ver \"$(\"$P/aa-gateway\" --version)\"\nneed_sha \"$P/aa-gateway\" 79281571b64b3cb40f1fce131553cff3fb78e84702b8db6d6dcbf2df64f269a6\n'",
           "deadline_hours": 24,
           "expected": "aa-gateway installed by the formula, reports the tag's version and equals the candidate member (AAASM-4448/4449 suspect)",
-          "failure_response": "Do not announce or tag as released. Open a Bug sub-ticket under the journey Story with the command output; notify the release owner within the deadline; fix forward with a new candidate and re-run this harness plus this pending check. No yank/delete of published assets without owner approval.",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#homebrew-tap-check-fails",
           "id": "j17.published_homebrew_gateway",
           "side_effects": "NOT ISOLATED: installs or UPGRADES in the REAL Homebrew prefix (`brew upgrade || brew install`); a stale older install cannot false-PASS because the version and candidate digest are asserted",
-          "status": "PUBLICATION_PENDING",
-          "why_publication_only": "Formula lives in the tap after publication."
+          "why_publication_only": "Formula lives in the tap after publication.",
+          "automated_procedure": "j17.published_homebrew_gateway"
         },
         {
           "channel": "ghcr.io",
           "command": "sh -c 'set -eu\nTAG=v0.0.1-rc.8\nVER=\"${TAG#v}\"\nBASE=\"${B1_RELEASE_BASE:-https://github.com/ai-agent-assembly/agent-assembly/releases/download}/$TAG\"\nD=\"$(mktemp -d)\"\ntrap '\"'\"'rm -rf \"$D\"'\"'\"' EXIT\nsha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum \"$1\" | cut -d'\"'\"' '\"'\"' -f1; else shasum -a 256 \"$1\" | cut -d'\"'\"' '\"'\"' -f1; fi; }\nneed_sha() { [ \"$(sha \"$1\")\" = \"$2\" ] || { echo \"digest mismatch for $1 (candidate expects $2)\" >&2; exit 1; }; }\nneed_ver() { case \"$1\" in *\"$VER\"*) ;; *) echo \"version output '\"'\"'$1'\"'\"' lacks $VER\" >&2; exit 1 ;; esac; }\ncommand -v docker >/dev/null 2>&1 || { echo \"docker not found\" >&2; exit 1; }\ndocker manifest inspect \"ghcr.io/ai-agent-assembly/aa-runtime:$TAG\" > \"$D/m.json\"\npython3 -I -c '\"'\"'import json,sys; m=json.load(open(sys.argv[1])); p={(x[\"platform\"][\"os\"],x[\"platform\"][\"architecture\"]) for x in m.get(\"manifests\",[])}; sys.exit(0 if {(\"linux\",\"amd64\"),(\"linux\",\"arm64\")}<=p else 1)'\"'\"' \"$D/m.json\"\n'",
           "deadline_hours": 24,
           "expected": "manifest resolves for linux/amd64 and linux/arm64 (read-only registry probe)",
-          "failure_response": "Do not announce or tag as released. Open a Bug sub-ticket under the journey Story with the command output; notify the release owner within the deadline; fix forward with a new candidate and re-run this harness plus this pending check. No yank/delete of published assets without owner approval.",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails",
           "id": "j17.published_container_image_manifest",
           "side_effects": "read-only registry probe; needs docker and network",
-          "status": "PUBLICATION_PENDING",
-          "why_publication_only": "The image exists in GHCR only after the release workflow pushes it. Note: .github/workflows/docker.yml publishes both the aa-runtime and the aa-gateway images to ghcr.io on a tag, but this pending check's command probes only the aa-runtime image, so publication of the aa-gateway image is NOT covered by this obligation."
+          "why_publication_only": "The image exists in GHCR only after the release workflow pushes it. Inferred: only ghcr.io/ai-agent-assembly/aa-runtime is referenced in-repo; no gateway image name was found.",
+          "automated_procedure": "j17.published_container_image_manifest"
         }
       ],
       "depends_on": [
@@ -234,35 +234,45 @@
           "channel": "ghcr",
           "why_publication_only": "the image tag exists in GHCR only after release.yml/docker.yml publish-gateway runs on the tag",
           "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j53-ghcr-tag-resolves",
-          "expected": "anonymous GET of ghcr.io/ai-agent-assembly/aa-gateway:<tag> returns a manifest whose body hashes to Docker-Content-Digest"
+          "expected": "anonymous GET of ghcr.io/ai-agent-assembly/aa-gateway:<tag> returns a manifest whose body hashes to Docker-Content-Digest",
+          "automated_procedure": "j53-ghcr-tag-resolves",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
         },
         {
           "id": "j53-ghcr-digest-immutable",
           "channel": "ghcr",
           "why_publication_only": "pull-by-digest needs the published manifest digest",
           "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j53-ghcr-digest-immutable",
-          "expected": "fetching the manifest by the digest the tag resolved to returns byte-identical content"
+          "expected": "fetching the manifest by the digest the tag resolved to returns byte-identical content",
+          "automated_procedure": "j53-ghcr-digest-immutable",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
         },
         {
           "id": "j53-ghcr-multiarch",
           "channel": "ghcr",
           "why_publication_only": "the multi-arch index is created by the publish job",
           "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j53-ghcr-multiarch",
-          "expected": "the tag resolves to an index that lists linux/amd64 and linux/arm64"
+          "expected": "the tag resolves to an index that lists linux/amd64 and linux/arm64",
+          "automated_procedure": "j53-ghcr-multiarch",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
         },
         {
           "id": "j53-ghcr-sbom-attestation",
           "channel": "ghcr",
           "why_publication_only": "the SBOM attestation is pushed alongside the image by build-push-action (sbom: true)",
           "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j53-ghcr-sbom-attestation",
-          "expected": "the index carries at least one attestation-manifest entry per platform image"
+          "expected": "the index carries at least one attestation-manifest entry per platform image",
+          "automated_procedure": "j53-ghcr-sbom-attestation",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
         },
         {
           "id": "j53-published-image-runs-healthy",
           "channel": "ghcr",
           "why_publication_only": "running the pulled image needs the published image and a container runtime; it writes local Docker state, so it is a post-publication operator step and is not a read-only probe",
           "command": "docker run --rm -p 50051:50051 ghcr.io/ai-agent-assembly/aa-gateway@<digest> --listen 0.0.0.0:50051 --policy /policy/balanced.yaml  # then grpc.health.v1 Check",
-          "expected": "container stays up, grpc.health.v1.Health/Check answers SERVING, SIGTERM stops it with exit 0"
+          "expected": "container stays up, grpc.health.v1.Health/Check answers SERVING, SIGTERM stops it with exit 0",
+          "automated_procedure": "j53-published-image-runs-healthy",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#published-binary-or-runtime-check-fails"
         }
       ],
       "depends_on": [
