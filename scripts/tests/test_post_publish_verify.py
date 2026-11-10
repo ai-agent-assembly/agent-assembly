@@ -448,6 +448,7 @@ import io as _io
 import socket
 import tarfile
 import threading
+import zipfile
 import time
 
 PENDING_IDS = frozenset({
@@ -457,6 +458,7 @@ PENDING_IDS = frozenset({
     "j17.published_installer_profile_full_gateway", "j17.published_homebrew_gateway",
     "j17.published_container_image_manifest", "j53-published-image-runs-healthy",
     "j59-published-binaries-golden-path",
+    "j08-published-python-sdk-governed-agent", "j56-published-python-sdk-canonical-11-step",
 })
 API = "https://api.github.com/repos/ai-agent-assembly/agent-assembly"
 VER = TAG[1:]
@@ -1244,6 +1246,202 @@ class GoldenPathTests(TestCase):
         self.assertEqual(one(self.gh(), self.ID, tools=t)[0], "INCONCLUSIVE")
 
 
+class SdkWheelTests(TestCase):
+    """AAASM-6419: the J08/J56 published-SDK runners. PyPI and the release are faked; the harness
+    and `pip download` are answered by a handler, so no network and no program is ever run."""
+    IDS = {"J08": "j08-published-python-sdk-governed-agent", "J56": "j56-published-python-sdk-canonical-11-step"}
+    SDK_VER = "0.0.1rc8"
+    CP = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    WHEEL = f"agent_assembly-{SDK_VER}-{CP}-{CP}-manylinux_2_28_x86_64.whl"
+
+    @staticmethod
+    def wheel_bytes(name="agent-assembly", version="0.0.1rc8", extra_meta=True):
+        b = _io.BytesIO()
+        with zipfile.ZipFile(b, "w") as zf:
+            zf.writestr(f"agent_assembly-{version}.dist-info/METADATA",
+                        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n\nbody\n")
+        return b.getvalue()
+
+    def reg(self, wheel=None, pypi_status=200, filename=None, digest=None, yanked=False, version=None,
+            extra_files=(), drop=(), api_members=None, runtime_members=None):
+        wheel = wheel if wheel is not None else self.wheel_bytes()
+        names = [n for n in ppv.required_assets(TAG) if n != "SHA256SUMS"]
+        files = {n: f"c-{n}".encode() for n in names}
+        tarballs = {
+            f"aasm-cli-{TAG}-linux-amd64.tar.gz": tarball({"pkg/aasm": b"aasm-bin", "pkg/aa-gateway": b"gw-bin"}),
+            f"aasm-api-{TAG}-linux-amd64.tar.gz": tarball(api_members or {"aa-api-server": b"api-bin"}),
+            f"aasm-runtime-{TAG}-linux-amd64.tar.gz": tarball(runtime_members or {"aa-runtime": b"rt-bin"}),
+        }
+        files.update(tarballs)
+        gh = Gh(files=files, drop=drop)
+        fn = filename or self.WHEEL
+        doc = {"info": {"version": version or self.SDK_VER}, "urls": [
+            {"filename": fn, "packagetype": "bdist_wheel", "url": f"https://files.pythonhosted.org/packages/x/{fn}",
+             "digests": {"sha256": digest or hx(wheel)}, "yanked": yanked}, *extra_files]}
+        gh.routes.insert(0, (f"pypi.org/pypi/agent-assembly/{self.SDK_VER}/json",
+                             ppv.Response(pypi_status, {}, json.dumps(doc).encode())))
+        gh.routes.insert(0, ("files.pythonhosted.org/", ppv.Response(200, {}, wheel)))
+        return gh
+
+    @staticmethod
+    def harness(journey="J08", verdict="CANDIDATE_VERIFIED", rc=0, statuses=("PASS", "PASS"), out=None, pip_rc=0):
+        seen = {"pip": [], "harness": []}
+
+        def h(argv, cwd):
+            if argv[1] == "verify-blob":
+                return 0, "", ""
+            if "pip" in argv and "download" in argv:
+                seen["pip"].append(argv)
+                return pip_rc, "", "no matching distribution" if pip_rc else ""
+            seen["harness"].append(argv)
+            seen["expected"] = json.loads(Path(argv[argv.index("--expected-digests") + 1]).read_text())
+            seen["wheel_exists"] = Path(argv[argv.index("--sdk-wheel") + 1]).is_file()
+            body = out if out is not None else json.dumps({"verdict": verdict, "candidate_checks": [
+                {"id": f"c{i}", "status": s} for i, s in enumerate(statuses)]})
+            return rc, body, ""
+        return h, seen
+
+    def go(self, journey="J08", handler=None, **kw):
+        h, seen = (handler, {}) if handler else self.harness(journey)
+        t = FakeTools(handler=h)
+        return one(self.reg(**kw), self.IDS[journey], tools=t), t, seen
+
+    def test_version_rule(self):
+        self.assertEqual(ppv.sdk_version_for_tag("v0.0.1-rc.8"), "0.0.1rc8")
+        self.assertEqual(ppv.sdk_version_for_tag("v1.2.3-rc.10"), "1.2.3rc10")
+        for bad in ("v0.0.1", "v0.0.1-beta.1", "v0.0.1-rc.8.1", "v0.0.1-rc.08x"):
+            self.assertIsNone(ppv.sdk_version_for_tag(bad), bad)
+
+    def test_pass_runs_the_harness_on_the_pypi_wheel_and_release_binaries(self):
+        for j in ("J08", "J56"):
+            (st, d), t, seen = self.go(j)
+            self.assertEqual(st, "PASS", d)
+            argv = seen["harness"][0]
+            self.assertEqual(argv[1:2], ["-I"])
+            self.assertEqual(argv[argv.index("--journey") + 1], j)
+            self.assertEqual(argv[argv.index("--candidate-sha") + 1], CAND)
+            self.assertEqual(argv[argv.index("--version") + 1], VER)
+            self.assertTrue(seen["wheel_exists"])
+            self.assertEqual(seen["expected"]["python-sdk-wheel"], "sha256:" + hx(self.wheel_bytes()))
+            self.assertEqual(seen["expected"]["aa-gateway"], "sha256:" + hx(b"gw-bin"))
+            self.assertEqual(seen["expected"]["aa-runtime"], "sha256:" + hx(b"rt-bin"))
+            self.assertIn("--only-binary=:all:", seen["pip"][0])
+            self.assertIn("docs", d)  # the PASS text says what it did not probe
+
+    def test_harness_runs_with_a_scrubbed_environment(self):
+        h, _ = self.harness()
+        t = FakeTools(handler=h)
+        with mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_x", "AWS_SECRET_ACCESS_KEY": "s"}):
+            self.assertEqual(one(self.reg(), self.IDS["J08"], tools=t)[0], "PASS")
+        for env in t.envs[1:]:  # every run after cosign's own
+            self.assertEqual(set(env) & {"GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY"}, set())
+
+    def test_wheel_not_published_is_fail_and_retryable_not_yet(self):
+        (st, d), t, _ = self.go(pypi_status=404)
+        self.assertEqual(st, "FAIL")
+        self.assertTrue(ppv._NOT_YET_RE.search(d), d)
+        self.assertEqual(t.argvs, [])
+
+    def test_pypi_server_error_is_inconclusive(self):
+        self.assertEqual(self.go(pypi_status=503)[0][0], "INCONCLUSIVE")
+
+    def test_wheel_bytes_not_matching_pypi_digest_fails_and_nothing_runs(self):
+        (st, d), t, _ = self.go(digest="0" * 64)
+        self.assertEqual(st, "FAIL")
+        self.assertEqual(t.argvs, [])
+
+    def test_wheel_with_wrong_name_or_version_metadata_fails(self):
+        for w in (self.wheel_bytes(name="evil-pkg"), self.wheel_bytes(version="0.0.1rc7")):
+            (st, d), t, _ = self.go(wheel=w)
+            self.assertEqual(st, "FAIL", d)
+            self.assertEqual(t.argvs, [])
+
+    def test_non_zip_wheel_fails(self):
+        self.assertEqual(self.go(wheel=b"not a zip")[0][0], "FAIL")
+
+    def test_yanked_release_file_fails(self):
+        self.assertEqual(self.go(yanked=True)[0][0], "FAIL")
+
+    def test_pypi_reporting_another_version_fails(self):
+        self.assertEqual(self.go(version="0.0.1rc7")[0][0], "FAIL")
+
+    def test_no_wheel_for_the_runner_is_inconclusive_and_sdist_only_is_fail(self):
+        st, d = self.go(filename=f"agent_assembly-{self.SDK_VER}-{self.CP}-{self.CP}-win_amd64.whl")[0]
+        self.assertEqual(st, "INCONCLUSIVE", d)
+        reg = self.reg()
+        reg.routes.insert(0, (f"pypi.org/pypi/agent-assembly/{self.SDK_VER}/json", ppv.Response(200, {}, json.dumps(
+            {"info": {"version": self.SDK_VER}, "urls": [{"filename": "a.tar.gz", "packagetype": "sdist"}]}).encode())))
+        self.assertEqual(one(reg, self.IDS["J08"], tools=FakeTools(handler=self.harness()[0]))[0], "FAIL")
+
+    def test_wheel_selection_is_platform_and_python_aware(self):
+        m = ppv._wheel_matches_runner
+        self.assertTrue(m(self.WHEEL, "Linux", "x86_64"))
+        self.assertFalse(m(self.WHEEL, "Linux", "aarch64"))
+        self.assertFalse(m(self.WHEEL, "Darwin", "arm64"))
+        self.assertTrue(m(f"a-1-{self.CP}-{self.CP}-macosx_11_0_arm64.whl", "Darwin", "arm64"))
+        self.assertTrue(m("a-1-cp39-abi3-manylinux_2_17_x86_64.whl", "Linux", "x86_64"))
+        self.assertFalse(m("a-1-cp27-cp27mu-manylinux1_x86_64.whl", "Linux", "x86_64"))
+        self.assertTrue(m("a-1-py3-none-any.whl", "Linux", "x86_64"))
+        self.assertFalse(m("../../etc/passwd", "Linux", "x86_64"))
+
+    def test_signature_not_verified_runs_no_downloaded_code(self):
+        h, seen = self.harness()
+        t = FakeTools(present=("docker",), handler=h)
+        st, d = one(self.reg(), self.IDS["J56"], tools=t)
+        self.assertEqual(st, "INCONCLUSIVE")
+        self.assertEqual((t.argvs, seen["harness"], seen["pip"]), ([], [], []))
+        t2 = FakeTools(handler=lambda a, c: (1, "", "none of the expected identities matched"))
+        self.assertEqual(one(self.reg(), self.IDS["J56"], tools=t2)[0], "FAIL")
+
+    def test_missing_runtime_tarball_or_member_fails_and_harness_never_runs(self):
+        for kw in ({"drop": (f"aasm-runtime-{TAG}-linux-amd64.tar.gz",)}, {"runtime_members": {"README": b"x"}}):
+            h, seen = self.harness()
+            st, d = one(self.reg(**kw), self.IDS["J08"], tools=FakeTools(handler=h))
+            self.assertEqual(st, "FAIL", d)
+            self.assertEqual(seen["harness"], [])
+
+    def test_dependency_download_failure_is_inconclusive_not_pass(self):
+        h, seen = self.harness(pip_rc=1)
+        st, d = one(self.reg(), self.IDS["J08"], tools=FakeTools(handler=h))
+        self.assertEqual(st, "INCONCLUSIVE", d)
+        self.assertEqual(seen["harness"], [])
+
+    def test_no_single_candidate_sha_is_inconclusive_and_runs_nothing(self):
+        h, _ = self.harness()
+        t = FakeTools(handler=h)
+        self.assertEqual(one(self.reg(), self.IDS["J08"], tools=t, binding=ppv.Binding())[0], "INCONCLUSIVE")
+        self.assertEqual(t.argvs, [])
+
+    def test_harness_outcomes_map_to_status(self):
+        cases = [
+            (dict(verdict="BLOCK", rc=1, statuses=("PASS", "FAIL")), "FAIL"),
+            (dict(verdict="CANDIDATE_INCOMPLETE", rc=3, statuses=("PASS", "NOT_COVERED")), "INCONCLUSIVE"),
+            (dict(statuses=("PASS", "NOT_COVERED")), "INCONCLUSIVE"),
+            (dict(statuses=()), "INCONCLUSIVE"),
+            (dict(out="Traceback..."), "INCONCLUSIVE"),
+            (dict(rc=1), "INCONCLUSIVE"),
+        ]
+        for kw, want in cases:
+            h, _ = self.harness(**kw)
+            st, d = one(self.reg(), self.IDS["J56"], tools=FakeTools(handler=h))
+            self.assertEqual(st, want, (kw, d))
+
+    def test_pypi_hosts_are_allowlisted_exactly(self):
+        probe = ppv.Probe(FakeRegistry(), 5)
+        probe.get("https://pypi.org/pypi/agent-assembly/1/json")
+        for url in ("https://pypi.org.evil.example/x", "https://evilpypi.org/x", "https://files.pythonhosted.org/x"):
+            with self.assertRaises(ppv.FetchError, msg=url):
+                probe.get(url)  # the download host is reachable only through a vetted redirect hop
+        reg = FakeRegistry().route("/a", ppv.Response(302, {"location": "https://files.pythonhosted.org.evil.example/x"}, b""))
+        with self.assertRaises(ppv.FetchError):
+            ppv.Probe(reg, 5).download("https://pypi.org/a")
+
+    def test_no_pending_id_is_a_manual_stub(self):
+        for i in self.IDS.values():
+            self.assertIn(i, ppv.automated_runner_ids())
+
+
+
 class RealToolsTests(TestCase):
     def test_timeout_is_a_fetch_error_and_argv_is_not_a_shell(self):
         with self.assertRaises(ppv.FetchError):
@@ -1347,8 +1545,9 @@ class EveryPendingIdHasAnAutomatedRunnerTests(TestCase):
         """The ids are read from the harness sources, so a renamed or added pending id
         without a runner fails here rather than at the gate."""
         found = set()
-        for rel in ("scripts/qa/b1/candidate_harness.py", "scripts/qa/j53-candidate-harness.py", "scripts/qa/j59-candidate-harness.py"):
-            found |= set(re.findall(r'"((?:j04|j17)\.published_[a-z0-9_]+|j53-published-[a-z-]+|j59-published-[a-z-]+)"',
+        for rel in ("scripts/qa/b1/candidate_harness.py", "scripts/qa/j53-candidate-harness.py", "scripts/qa/j59-candidate-harness.py",
+                    "scripts/qa/j08-j56-candidate-harness.py"):
+            found |= set(re.findall(r'"((?:j04|j17)\.published_[a-z0-9_]+|j53-published-[a-z-]+|j59-published-[a-z-]+|j08-published-[a-z-]+|j56-published-[a-z0-9-]+)"',
                                     (ROOT / rel).read_text()))
         self.assertTrue(PENDING_IDS <= found, sorted(PENDING_IDS - found))
         self.assertEqual(found - ppv.automated_runner_ids(), set())

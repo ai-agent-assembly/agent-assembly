@@ -14,13 +14,17 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
   `id` from the allowlist `RUNNERS` below, and a check id with no runner is
   INCONCLUSIVE ("no allowlisted runner"), never PASS.
 * Every probe is an HTTPS GET to an allowlisted host (ghcr.io, api.github.com,
-  raw.githubusercontent.com, crates.io) with a per-request timeout. Nothing is published,
+  raw.githubusercontent.com, crates.io, pypi.org; downloads may also follow a redirect to files.pythonhosted.org)
+  with a per-request timeout. Nothing is published,
   yanked, tagged, pushed or written to a registry. Local programs run only through the
   `Tools` seam, as argv lists (no shell): `cosign verify-blob` (INCONCLUSIVE when cosign is
   absent or cannot reach sigstore; cosign itself contacts sigstore's TUF and Rekor hosts,
   which are NOT in ALLOWED_HOSTS and are not vetted by Probe), the j59 harness on binaries verified against SHA256SUMS, and, for
   j53-published-image-runs-healthy only, `docker run` of the digest-pinned aa-gateway image
-  (INCONCLUSIVE when docker is absent; the container is always removed). The installer
+  (INCONCLUSIVE when docker is absent; the container is always removed), and, for the two
+  published-Python-SDK checks (J08, J56), `pip download --only-binary=:all:` of the SDK's dependency wheels (pip contacts
+  PyPI itself, outside Probe's vetting, and runs no package code) followed by the j08/j56 harness on the PyPI wheel and
+  the release binaries (signature-gated like the j59 harness). The installer
   script is fetched and hashed but never executed.
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
   does not hash to its digest, a missing platform). A timeout, a 5xx, a rate limit or
@@ -47,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform as _platform
@@ -60,6 +65,7 @@ import tarfile
 import tempfile
 import time
 import uuid
+import zipfile
 import http.client
 import urllib.error
 import urllib.parse
@@ -72,10 +78,10 @@ PASS, FAIL, INCONCLUSIVE = "PASS", "FAIL", "INCONCLUSIVE"
 # raw.githubusercontent.com serves scripts/install-cli.sh at the tag; crates.io serves the
 # read-only /api/v1/crates/<name>/<version> JSON. Membership is exact hostname equality, so
 # `crates.io.evil.example` and `evilcrates.io` are refused.
-ALLOWED_HOSTS = {"ghcr.io", "api.github.com", "raw.githubusercontent.com", "crates.io"}
+ALLOWED_HOSTS = {"ghcr.io", "api.github.com", "raw.githubusercontent.com", "crates.io", "pypi.org"}
 # Hosts a GitHub release-asset download legitimately redirects to. Only `Probe.download`
 # may follow a redirect, and only to these; no probe ever forwards Authorization on one.
-DOWNLOAD_HOSTS = {"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
+DOWNLOAD_HOSTS = {"objects.githubusercontent.com", "release-assets.githubusercontent.com", "files.pythonhosted.org"}
 MAX_REDIRECTS = 3
 MAX_BODY = 256 << 20
 USER_AGENT = "aa-post-publish-verify"
@@ -962,6 +968,43 @@ def _find_one(root: Path, name: str) -> Path | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def _published_platform(p: Probe) -> str | None:
+    """The release-asset os-arch suffix for the machine running the verifier, or None."""
+    return {("Linux", "x86_64"): "linux-amd64", ("Linux", "aarch64"): "linux-arm64", ("Linux", "arm64"): "linux-arm64",
+            ("Darwin", "arm64"): "darwin-arm64", ("Darwin", "x86_64"): "darwin-amd64"}.get(p.tools.platform())
+
+
+def _extract_published(p: Probe, tag: str, assets: dict[str, dict[str, Any]], named: dict[str, str], tmp: Path,
+                       oa: str, wanted: tuple[tuple[str, tuple[str, ...]], ...]) -> tuple[Result | None, dict[str, Path]]:
+    """Download `aasm-<comp>-<tag>-<oa>.tar.gz` for each (comp, binaries) in `wanted`, require its
+    digest in SHA256SUMS, extract it safely under `tmp` and return each binary's path. A defect in
+    the published archive is FAIL; the caller has already verified the signature of SHA256SUMS."""
+    found: dict[str, Path] = {}
+    for comp, binaries in wanted:
+        name = f"aasm-{comp}-{tag}-{oa}.tar.gz"
+        err, body = _asset(p, assets, name)
+        if err:
+            return err, {}
+        if name not in named:
+            return (FAIL, f"SHA256SUMS does not name {name}"), {}
+        if hashlib.sha256(body).hexdigest() != named[name]:
+            return (FAIL, f"{name} does not match SHA256SUMS"), {}
+        arc, dest = tmp / name, tmp / comp
+        arc.write_bytes(body)
+        dest.mkdir()
+        try:
+            _safe_extract(arc, dest)
+        except (tarfile.TarError, OSError) as e:
+            return (FAIL, f"{name} is not a safe readable tarball: {e}"), {}
+        for binary in binaries:
+            exe = _find_one(dest, binary)
+            if exe is None:
+                return (FAIL, f"{name} does not contain exactly one {binary}"), {}
+            exe.chmod(0o755)
+            found[binary] = exe
+    return None, found
+
+
 def run_golden_path(p: Probe, tag: str) -> Result:
     """Downloads the published tarballs, verifies them against SHA256SUMS and re-runs the j59
     harness on the extracted binaries. Executes downloaded code, so it first requires that the
@@ -974,38 +1017,19 @@ def run_golden_path(p: Probe, tag: str) -> Result:
     sig = _signature(p, tag)
     if sig[0] != PASS:
         return (FAIL if sig[0] == FAIL else INCONCLUSIVE), f"not running downloaded binaries: signature not verified ({sig[1]})"
-    system, machine = p.tools.platform()
-    oa = {("Linux", "x86_64"): "linux-amd64", ("Linux", "aarch64"): "linux-arm64", ("Linux", "arm64"): "linux-arm64",
-          ("Darwin", "arm64"): "darwin-arm64", ("Darwin", "x86_64"): "darwin-amd64"}.get((system, machine))
+    oa = _published_platform(p)
     if oa is None:
+        system, machine = p.tools.platform()
         return INCONCLUSIVE, f"no published binaries for runner platform {system}/{machine}"
     err, assets, named, _ = _release_sums(p, tag)
     if err:
         return err
     harness = REPO_ROOT / "scripts/qa/j59-candidate-harness.py"
     with tempfile.TemporaryDirectory(prefix="ppv-j59-") as tmp:
-        found: dict[str, Path] = {}
-        for comp, binary in (("cli", "aasm"), ("api", "aa-api-server")):
-            name = f"aasm-{comp}-{tag}-{oa}.tar.gz"
-            err, body = _asset(p, assets, name)
-            if err:
-                return err
-            if name not in named:
-                return FAIL, f"SHA256SUMS does not name {name}"
-            if hashlib.sha256(body).hexdigest() != named[name]:
-                return FAIL, f"{name} does not match SHA256SUMS"
-            arc, dest = Path(tmp) / name, Path(tmp) / comp
-            arc.write_bytes(body)
-            dest.mkdir()
-            try:
-                _safe_extract(arc, dest)
-            except (tarfile.TarError, OSError) as e:
-                return FAIL, f"{name} is not a safe readable tarball: {e}"
-            exe = _find_one(dest, binary)
-            if exe is None:
-                return FAIL, f"{name} does not contain exactly one {binary}"
-            exe.chmod(0o755)
-            found[binary] = exe
+        err, found = _extract_published(p, tag, assets, named, Path(tmp), oa,
+                                        (("cli", ("aasm",)), ("api", ("aa-api-server",))))
+        if err:
+            return err
         digests = Path(tmp) / "expected.json"
         digests.write_text(json.dumps({b: "sha256:" + hashlib.sha256(x.read_bytes()).hexdigest()
                                        for b, x in found.items()}))
@@ -1027,6 +1051,167 @@ def run_golden_path(p: Probe, tag: str) -> Result:
     if rc == 0 and verdict == "CANDIDATE_VERIFIED" and checks and not notcov:
         return PASS, f"every one of {len(checks)} j59 candidate checks passed against the published {oa} binaries"
     return INCONCLUSIVE, f"j59 harness exit {rc}, verdict {verdict}; not PASS: {notcov}"
+
+
+# --- published Python SDK (J08, J56) ----------------------------------------------------
+SDK_DIST = "agent-assembly"
+PYPI_JSON = f"https://pypi.org/pypi/{SDK_DIST}"
+RC_TAG_RE = re.compile(r"v([0-9]+\.[0-9]+\.[0-9]+)-rc\.([0-9]+)", re.ASCII)
+WHEEL_NAME_RE = re.compile(r"[A-Za-z0-9_.+]+-[A-Za-z0-9_.+]+(?:-[0-9][A-Za-z0-9_.]*)?-([a-z0-9_.]+)-([a-z0-9_.]+)-([A-Za-z0-9_.]+)\.whl")
+# Mirrors LANGCHAIN_REQUIREMENT in j08-j56-candidate-harness.py: the dependencies its clean venv installs beside the SDK.
+SDK_HARNESS_DEPS = ("langchain", "langchain-core>=1.4.9,<1.7.0")
+# The harness records --sdk-sha but never uses it to select or verify anything. A wheel downloaded from PyPI has no
+# known source commit, so an all-zero value says "unknown" rather than naming a commit it was not built from.
+UNKNOWN_SDK_SHA = "0" * 40
+
+
+def sdk_version_for_tag(tag: str) -> str | None:
+    """PEP 440 version of the Python SDK expected to ship in lockstep with an `-rc.N` core tag
+    (`v0.0.1-rc.8` -> `0.0.1rc8`). None for any other tag shape: only the rc series has a rule."""
+    m = RC_TAG_RE.fullmatch(tag)
+    return f"{m.group(1)}rc{m.group(2)}" if m else None
+
+
+def _wheel_matches_runner(name: str, system: str, machine: str) -> bool:
+    m = WHEEL_NAME_RE.fullmatch(name)
+    if not m:
+        return False
+    pytag, abi, plat = m.groups()
+    cp = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    if not (plat == "any" or pytag == cp or (abi == "abi3" and pytag.startswith("cp"))):
+        return False
+    if plat == "any":
+        return True
+    arch = {"x86_64": ("x86_64", "amd64"), "arm64": ("arm64", "aarch64"), "aarch64": ("aarch64", "arm64")}.get(machine, (machine,))
+    if system == "Darwin":
+        return "macosx" in plat and any(a in plat for a in arch + ("universal2",))
+    if system == "Linux":
+        return "linux" in plat and any(a in plat for a in arch)
+    return False
+
+
+def _pypi_wheel(p: Probe, tag: str, dest: Path) -> tuple[Result | None, Path | None]:
+    """Fetch the published SDK wheel for this runner from PyPI into `dest`. Absent is FAIL, a
+    wheel whose bytes do not hash to the digest PyPI itself reports is FAIL, and nothing is
+    executed or installed here."""
+    ver = sdk_version_for_tag(tag)
+    if ver is None:
+        return (INCONCLUSIVE, f"no Python SDK version rule for tag {tag!r} (only -rc.N)"), None
+    what = f"PyPI {SDK_DIST} {ver}"
+    r = p.get(f"{PYPI_JSON}/{ver}/json", {"Accept": "application/json"})
+    gate = _http_gate(r, what)
+    if gate:
+        return gate, None
+    try:
+        doc = json.loads(r.body)
+        got_ver, files = doc["info"]["version"], doc["urls"]
+        if not isinstance(files, list):
+            raise TypeError
+    except (ValueError, KeyError, TypeError):
+        return (INCONCLUSIVE, f"{what} JSON was not parseable"), None
+    if got_ver != ver:
+        return (FAIL, f"PyPI answered version {got_ver!r}, expected {ver!r}"), None
+    files = [f for f in files if isinstance(f, dict)]
+    yanked = [f.get("filename") for f in files if f.get("yanked")]
+    if yanked:
+        return (FAIL, f"{what} has yanked file(s): {yanked}"), None
+    wheels = [f for f in files if f.get("packagetype") == "bdist_wheel" and isinstance(f.get("filename"), str)]
+    if not wheels:
+        return (FAIL, f"{what} publishes no wheel"), None
+    system, machine = p.tools.platform()
+    fit = sorted((f for f in wheels if _wheel_matches_runner(f["filename"], system, machine)), key=lambda f: f["filename"])
+    if not fit:
+        return (INCONCLUSIVE, f"{what} has no wheel for {system}/{machine} on Python "
+                              f"{sys.version_info.major}.{sys.version_info.minor}: {sorted(f['filename'] for f in wheels)}"), None
+    pick = fit[0]
+    want = (pick.get("digests") or {}).get("sha256")
+    if not (isinstance(want, str) and SHA256_RE.fullmatch(want) and isinstance(pick.get("url"), str)):
+        return (INCONCLUSIVE, f"{what} file {pick['filename']} lacks a usable sha256 or url"), None
+    dl = p.download(pick["url"])
+    gate = _http_gate(dl, f"{pick['filename']} download")
+    if gate:
+        return gate, None
+    if hashlib.sha256(dl.body).hexdigest() != want:
+        return (FAIL, f"{pick['filename']} bytes hash to {_digest(dl.body)} but PyPI reports sha256:{want}"), None
+    try:
+        with zipfile.ZipFile(io.BytesIO(dl.body)) as zf:
+            metas = [n for n in zf.namelist() if n.count("/") == 1 and n.endswith(".dist-info/METADATA")]
+            if len(metas) != 1:
+                return (FAIL, f"{pick['filename']} has {len(metas)} dist-info/METADATA files"), None
+            meta = zf.read(metas[0]).decode("utf-8", "replace")
+    except (zipfile.BadZipFile, OSError, ValueError) as e:
+        return (FAIL, f"{pick['filename']} is not a readable wheel: {type(e).__name__}"), None
+    fields = dict(re.findall(r"^(Name|Version): (.+)$", meta.split("\n\n", 1)[0], re.M))
+    if re.sub(r"[-_.]+", "-", fields.get("Name", "")).lower() != SDK_DIST or fields.get("Version", "").strip() != ver:
+        return (FAIL, f"{pick['filename']} METADATA says {fields.get('Name')!r} {fields.get('Version')!r}, "
+                      f"expected {SDK_DIST!r} {ver!r}"), None
+    path = dest / pick["filename"]
+    path.write_bytes(dl.body)
+    return None, path
+
+
+def run_sdk_governed_agent(p: Probe, tag: str, journey: str) -> Result:
+    """Runs the j08/j56 candidate harness with the wheel published on PyPI and the binaries published
+    in the GitHub Release. Executes downloaded code, so it requires the SHA256SUMS signature first and
+    runs the harness with a minimal environment in its own process group. The dependency wheels the
+    harness's offline venv needs are fetched by `pip download --only-binary=:all:`, which contacts PyPI
+    itself (not through Probe, like cosign contacting sigstore) and runs no package code.
+    What a PASS covers: every check the harness emits for `journey` passed against the published wheel and
+    release binaries. It does NOT cover public-docs discoverability, which no probe here reads."""
+    shas = p.binding.candidate_shas
+    if len(shas) != 1:
+        return INCONCLUSIVE, "obligations record no single candidate_sha to hand the harness"
+    with tempfile.TemporaryDirectory(prefix=f"ppv-{journey.lower()}-") as tmp:
+        house = Path(tmp) / "house"
+        house.mkdir()
+        err, wheel = _pypi_wheel(p, tag, house)
+        if err or wheel is None:
+            return err or (INCONCLUSIVE, "no wheel")
+        sig = _signature(p, tag)
+        if sig[0] != PASS:
+            return (FAIL if sig[0] == FAIL else INCONCLUSIVE), f"not running downloaded binaries: signature not verified ({sig[1]})"
+        oa = _published_platform(p)
+        if oa is None:
+            system, machine = p.tools.platform()
+            return INCONCLUSIVE, f"no published binaries for runner platform {system}/{machine}"
+        err, assets, named, _ = _release_sums(p, tag)
+        if err:
+            return err
+        err, found = _extract_published(p, tag, assets, named, Path(tmp), oa, (
+            ("cli", ("aasm", "aa-gateway")), ("api", ("aa-api-server",)), ("runtime", ("aa-runtime",))))
+        if err:
+            return err
+        env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": tmp, "TMPDIR": tmp,
+               "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
+        rc, _, e = p.tools.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--dest", str(house),
+                                "--find-links", str(house), str(wheel), *SDK_HARNESS_DEPS], 600, cwd=tmp, env=env)
+        if rc != 0:
+            return INCONCLUSIVE, f"could not fetch the SDK's dependency wheels (pip exit {rc}): {e.strip()[-200:]}"
+        digests = Path(tmp) / "expected.json"
+        expected = {b: "sha256:" + hashlib.sha256(x.read_bytes()).hexdigest() for b, x in found.items()}
+        expected["python-sdk-wheel"] = "sha256:" + hashlib.sha256(wheel.read_bytes()).hexdigest()
+        digests.write_text(json.dumps(expected))
+        harness = REPO_ROOT / "scripts/qa/j08-j56-candidate-harness.py"
+        rc, out, err_txt = p.tools.run(
+            [sys.executable, "-I", str(harness), "--journey", journey, "--candidate-sha", next(iter(shas)),
+             "--version", tag[1:], "--repo", str(REPO_ROOT), "--aasm", str(found["aasm"]),
+             "--gateway", str(found["aa-gateway"]), "--runtime", str(found["aa-runtime"]),
+             "--api-server", str(found["aa-api-server"]), "--sdk-wheel", str(wheel), "--sdk-sha", UNKNOWN_SDK_SHA,
+             "--expected-digests", str(digests)], 1800, cwd=tmp, env=env)
+    try:
+        report = json.loads(out)
+        checks = report["candidate_checks"]
+        verdict = report["verdict"]
+    except (ValueError, KeyError, TypeError):
+        return INCONCLUSIVE, f"{journey} harness produced no parseable report (exit {rc}): {err_txt.strip()[:160]}"
+    bad = [c["id"] for c in checks if c.get("status") == FAIL]
+    if verdict == "BLOCK" or bad:
+        return FAIL, f"{journey} harness against the published SDK wheel and binaries: FAIL {bad}"
+    notcov = [c["id"] for c in checks if c.get("status") != PASS]
+    if rc == 0 and verdict == "CANDIDATE_VERIFIED" and checks and not notcov:
+        return PASS, (f"every one of {len(checks)} {journey} checks passed with the published {wheel.name} and the "
+                      f"published {oa} binaries (public-docs discoverability was not probed)")
+    return INCONCLUSIVE, f"{journey} harness exit {rc}, verdict {verdict}; not PASS: {notcov}"
 
 
 def manual(why: str) -> Callable[[Probe, str], Result]:
@@ -1057,6 +1242,8 @@ RUNNERS: dict[str, Callable[[Probe, str], Result]] = {
     "j17.published_homebrew_gateway": _bound(lambda p, t: run_homebrew(p, t, "aasm", "aa-gateway")),
     "j04.published_crates_io_aa_cli": _bound(lambda p, t: run_crates_io(p, t, "aa-cli")),
     "j17.published_container_image_manifest": _bound(run_images),
+    "j08-published-python-sdk-governed-agent": _bound(lambda p, t: run_sdk_governed_agent(p, t, "J08")),
+    "j56-published-python-sdk-canonical-11-step": _bound(lambda p, t: run_sdk_governed_agent(p, t, "J56")),
 }
 
 
