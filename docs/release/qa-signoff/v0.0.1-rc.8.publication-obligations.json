@@ -1,6 +1,112 @@
 {
   "journeys": [
     {
+      "journey": "J08",
+      "registry_digest": "sha256:5d00854e8096040c93c88cfdc22e93ce53e1d9fccb5bf94e4ee038de5da56f1a",
+      "candidate_checks": [
+        {
+          "id": "j08-c-artifacts-bound-to-candidate",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-artifacts-bound-to-candidate@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_tampered_wheel_digest_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "fw_control.py": "sha256:e34d767b0a8853be401e9710534d4b4c4beb74fb11e29b36a504b9e732f0cff3",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "golden-path.v2-read-deny.yaml": "sha256:c840f8ab2892a9ca7de5d6164e8b73a6fb9ad254419acda9426528fdaf4878c5",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b",
+            "sdk_driver.py": "sha256:f4684c23de1fb4adba758518100b998ec8dcb1ccb1ccbebcf24144ad9fa13a79"
+          }
+        },
+        {
+          "id": "j08-c-binary-identity",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-binary-identity@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_wrong_version_fails",
+          "artifact_digests": {
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j08-c-install-clean-venv-native-core",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-install-clean-venv-native-core@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_missing_native_core_fails",
+          "artifact_digests": {
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j08-c-register-governed-agent",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-register-governed-agent@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_registration_failing_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j08-c-allow-deny",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-allow-deny@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_delete_allowed_leaves_side_effect_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        }
+      ],
+      "pending_checks": [
+        {
+          "id": "j08-published-python-sdk-governed-agent",
+          "channel": "pypi",
+          "why_publication_only": "the published SDK only exists on PyPI after the SDK release job runs; the wheel built from the pinned SHA is not proven byte-identical to it, and docs discoverability needs the live public docs site",
+          "command": "pip install --pre agent-assembly==<sdk version> in a clean venv with network, then python3 -I scripts/qa/j08-j56-candidate-harness.py --journey J08 ... --sdk-wheel <downloaded wheel>",
+          "expected": "the published agent-assembly wheel for the tag's lockstep version installs from PyPI, its `_core` imports and every J08 harness check passes against the published release binaries; public-docs discoverability is NOT probed by the automated runner",
+          "automated_procedure": "j08-published-python-sdk-governed-agent",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#pypi-python-sdk-check-fails"
+        }
+      ],
+      "depends_on": [
+        {
+          "repo": "python-sdk",
+          "event": "SDK release publishes the wheel to PyPI"
+        },
+        {
+          "repo": "agent-assembly",
+          "event": "release.yml publish (GitHub Release assets)"
+        }
+      ],
+      "failure_response": {
+        "proposed_actions": [
+          "do not announce the release as Python-SDK-ready; record J08 as failed post-publication",
+          "file a Bug against AAASM-4530 naming the failing check id, the candidate SHA and the wheel digest",
+          "if the published wheel differs from the candidate wheel, re-run the SDK publish job on the same SHA before any announcement"
+        ],
+        "notify": [
+          "release-owner"
+        ],
+        "deadline_hours": 24
+      }
+    },
+    {
       "journey": "J17",
       "registry_digest": "sha256:64d00dd0c34fa3f66973684a1690f085632406f4868c951f971dede31b11edfb",
       "candidate_checks": [
@@ -286,6 +392,200 @@
           "do not announce the release; mark the GHCR aa-gateway tag as not verified",
           "if the tag is missing or the digest or index is wrong, re-run docker.yml publish-gateway on the same tag (the tag already exists, so this repairs the publication, it does not change the candidate)",
           "if the pulled image does not run healthy, file a Bug against AAASM-4751 and decide yank/hold with the release owner"
+        ],
+        "notify": [
+          "release-owner"
+        ],
+        "deadline_hours": 24
+      }
+    },
+    {
+      "journey": "J56",
+      "registry_digest": "sha256:db1438ad2754fdf5ac42d36d15d8b9518e2f2a5e54f2411279e1a42ad1f66be3",
+      "candidate_checks": [
+        {
+          "id": "j56-c-artifacts-bound-to-candidate",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-artifacts-bound-to-candidate@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_tampered_wheel_digest_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "fw_control.py": "sha256:e34d767b0a8853be401e9710534d4b4c4beb74fb11e29b36a504b9e732f0cff3",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "golden-path.v2-read-deny.yaml": "sha256:c840f8ab2892a9ca7de5d6164e8b73a6fb9ad254419acda9426528fdaf4878c5",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b",
+            "sdk_driver.py": "sha256:f4684c23de1fb4adba758518100b998ec8dcb1ccb1ccbebcf24144ad9fa13a79"
+          }
+        },
+        {
+          "id": "j56-c-binary-identity",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-binary-identity@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_wrong_version_fails",
+          "artifact_digests": {
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j56-c-install-clean-venv-native-core",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-install-clean-venv-native-core@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_missing_native_core_fails",
+          "artifact_digests": {
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-register-authenticated",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-register-authenticated@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_registration_failing_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-allow-read-file",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-allow-read-file@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_read_file_blocked_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-deny-delete-file-typed-no-sideeffect",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-deny-delete-file-typed-no-sideeffect@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_delete_allowed_leaves_side_effect_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-applied-policy-stays-enforced",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-applied-policy-stays-enforced@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_applied_policy_that_reverts_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-send-email-approval-or-gap",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-send-email-approval-or-gap@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_send_email_executed_without_approval_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-audit-correlation",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-audit-correlation@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_audit_without_the_deny_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j56-c-policy-flip-changes-behavior",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-policy-flip-changes-behavior@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_policy_flip_ignored_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:618d73be5e67644bcdce14ac0303e95583a01702d365d742fa28550f768c724d",
+            "golden-path.v2-read-deny.yaml": "sha256:c840f8ab2892a9ca7de5d6164e8b73a6fb9ad254419acda9426528fdaf4878c5",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        },
+        {
+          "id": "j56-c-unwired-callbacks-control",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j56-c-unwired-callbacks-control@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j08_j56_candidate_harness.py::test_unwired_control_still_blocked_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          }
+        }
+      ],
+      "pending_checks": [
+        {
+          "id": "j56-published-python-sdk-canonical-11-step",
+          "channel": "pypi",
+          "why_publication_only": "the canonical clean-environment run must use the published SDK and published gateway, which exist only after release; docs discoverability of the 11 steps needs the live public docs site",
+          "command": "pip install --pre agent-assembly==<sdk version> in a clean venv with network, then python3 -I scripts/qa/j08-j56-candidate-harness.py --journey J56 ... --sdk-wheel <downloaded wheel>",
+          "expected": "the published agent-assembly wheel for the tag's lockstep version installs from PyPI, its `_core` imports and every J56 harness check passes against the published release binaries; public-docs discoverability is NOT probed by the automated runner",
+          "automated_procedure": "j56-published-python-sdk-canonical-11-step",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#pypi-python-sdk-check-fails"
+        }
+      ],
+      "depends_on": [
+        {
+          "repo": "python-sdk",
+          "event": "SDK release publishes the wheel to PyPI"
+        },
+        {
+          "repo": "agent-assembly",
+          "event": "release.yml publish (GitHub Release assets)"
+        }
+      ],
+      "failure_response": {
+        "proposed_actions": [
+          "do not announce the release as Python-SDK-ready; record J56 as failed post-publication",
+          "file a Bug against AAASM-4976 naming the failing check id, the candidate SHA and the wheel digest",
+          "if the published wheel differs from the candidate wheel, re-run the SDK publish job on the same SHA before any announcement"
         ],
         "notify": [
           "release-owner"
