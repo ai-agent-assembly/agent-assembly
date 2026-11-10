@@ -592,6 +592,337 @@
         ],
         "deadline_hours": 24
       }
+    },
+    {
+      "journey": "J59",
+      "registry_digest": "sha256:87d0bde8a355fbdcc12979cda1d7e1b2665015c28b3f396ce3c9623443606d0b",
+      "candidate_checks": [
+        {
+          "id": "j59-artifacts-bound-to-candidate",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-artifacts-bound-to-candidate@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_tampered_binary_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "dashboard_ops.mjs": "sha256:6e3a1786e83266508d5e2ca6aaa97c08862a9cc6299edb2f96b2b18f10314b0e",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "golden-path.v2-tightened.yaml": "sha256:1da2c10fd84c107eba2ab61ff42b0d62959e3eb7ea1d53d4d96c12d4570ab0fc",
+            "malformed.yaml": "sha256:073de9825f9a39aff7b986844507146f45b01f762381cb052b49f78855721e9f",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8",
+            "sdk_agent.py": "sha256:2d34c3b9a628e4ad24ce77f57b4ca7518ce2420cf77b0757a3204c8f0d69c768",
+            "tool-calls.jsonl": "sha256:e4fc11a3fbbdc57e6a6aa6efd9357bdea8d0906a56ab8e7b99f8eeba6da108ff"
+          }
+        },
+        {
+          "id": "j59-binary-identity",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-binary-identity@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_wrong_version_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s2-start-health",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s2-start-health@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_start_failure_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s3-auth-enforced",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s3-auth-enforced@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_unauthenticated_api_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s4-policy-load",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s4-policy-load@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_policy_apply_failure_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77"
+          }
+        },
+        {
+          "id": "j59-s5-engine-allow-deny-approval",
+          "status": "PASS",
+          "fidelity": "controlled_fake",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s5-engine-allow-deny-approval@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_engine_that_denies_everything_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "tool-calls.jsonl": "sha256:e4fc11a3fbbdc57e6a6aa6efd9357bdea8d0906a56ab8e7b99f8eeba6da108ff"
+          }
+        },
+        {
+          "id": "j59-s6-s7-cli-operations",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s6-s7-cli-operations@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_cli_command_failure_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s6-dashboard-asset-served",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s6-dashboard-asset-served@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_dashboard_placeholder_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s8-policy-change-apply",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s8-policy-change-apply@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_policy_apply_failure_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v2-tightened.yaml": "sha256:1da2c10fd84c107eba2ab61ff42b0d62959e3eb7ea1d53d4d96c12d4570ab0fc"
+          }
+        },
+        {
+          "id": "j59-s9-change-flips-outcome",
+          "status": "PASS",
+          "fidelity": "controlled_fake",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s9-change-flips-outcome@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_engine_that_ignores_policy_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "golden-path.v2-tightened.yaml": "sha256:1da2c10fd84c107eba2ab61ff42b0d62959e3eb7ea1d53d4d96c12d4570ab0fc",
+            "tool-calls.jsonl": "sha256:e4fc11a3fbbdc57e6a6aa6efd9357bdea8d0906a56ab8e7b99f8eeba6da108ff"
+          }
+        },
+        {
+          "id": "j59-s10-diagnose-failures",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s10-diagnose-failures@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_rejected_apply_that_changes_state_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "malformed.yaml": "sha256:073de9825f9a39aff7b986844507146f45b01f762381cb052b49f78855721e9f"
+          }
+        },
+        {
+          "id": "j59-s11-rollback",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s11-rollback@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_candidate_harness.py::test_rollback_not_restoring_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-live-stack-up",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-live-stack-up@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_stack_start_failure_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8"
+          }
+        },
+        {
+          "id": "j59-s5-live-agent-action-governed",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s5-live-agent-action-governed@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s5_delete_executing_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8",
+            "sdk_agent.py": "sha256:2d34c3b9a628e4ad24ce77f57b4ca7518ce2420cf77b0757a3204c8f0d69c768"
+          }
+        },
+        {
+          "id": "j59-s7-audit-events-of-governed-action",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s7-audit-events-of-governed-action@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s7_missing_deny_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s3-tenancy-team-model",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s3-tenancy-team-model@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s3_single_team_topology_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02"
+          }
+        },
+        {
+          "id": "j59-s3-org-scoped-audit-filter",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s3-org-scoped-audit-filter@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s3_org_filter_without_org_support_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8"
+          }
+        },
+        {
+          "id": "j59-s6-dashboard-operations",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s6-dashboard-operations@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s6_ui_claims_without_server_effect_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "dashboard_ops.mjs": "sha256:6e3a1786e83266508d5e2ca6aaa97c08862a9cc6299edb2f96b2b18f10314b0e"
+          }
+        },
+        {
+          "id": "j59-s12-core-value-no-agent-change",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s12-core-value-no-agent-change@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s12_policy_change_ignored_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "golden-path.v2-tightened.yaml": "sha256:1da2c10fd84c107eba2ab61ff42b0d62959e3eb7ea1d53d4d96c12d4570ab0fc",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8",
+            "sdk_agent.py": "sha256:2d34c3b9a628e4ad24ce77f57b4ca7518ce2420cf77b0757a3204c8f0d69c768"
+          }
+        },
+        {
+          "id": "j59-s9-applied-policy-stays-enforced",
+          "status": "PASS",
+          "fidelity": "real_local_process",
+          "evidence_ref": "scripts/qa/j59-candidate-harness.py::j59-s9-applied-policy-stays-enforced@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "negative_control": "scripts/tests/test_j59_live_agent.py::test_s9_applied_policy_reverting_fails",
+          "artifact_digests": {
+            "aa-api-server": "sha256:867139e02c728cd47fefe795861202924d749464c9e89bbe031c3cdf929d2c82",
+            "aa-gateway": "sha256:860f7adf5fd6f5e2e0cbe94ea33f12c0373250e439479edd1112fe83e8cb83c4",
+            "aa-runtime": "sha256:69847bba6185f7a3ca71a41050f923b65347ee971687684e2fd802439cfb0769",
+            "aasm": "sha256:e0a52dc4871172e21cb38e17e198bfb5b55fd7d5c451fc678de47a26f85e4a02",
+            "golden-path.v1.yaml": "sha256:3a5e7271a54a74eba701a2bb7a5fec52198b722f73cae67f010ea393f678db77",
+            "python-sdk-wheel": "sha256:20210011a990cf7b1460a8667b748e142f947a9c5abc3bc218c0015e45a2c3f8",
+            "sdk_agent.py": "sha256:2d34c3b9a628e4ad24ce77f57b4ca7518ce2420cf77b0757a3204c8f0d69c768"
+          }
+        }
+      ],
+      "pending_checks": [
+        {
+          "id": "j59-install-release-assets",
+          "channel": "github-release",
+          "why_publication_only": "step 1 installs the recommended distribution from published release tarballs (and the Homebrew tap and install.sh that resolve them, whose evidence J04 owns); the assets exist only after release.yml publishes",
+          "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j59-install-release-assets",
+          "expected": "the release is not a draft; SHA256SUMS parses; every file it names is an uploaded release asset; and the legacy aasm-<target>, aasm-cli-<tag>-<os-arch> and aasm-api-<tag>-<os-arch> tarballs (aa-api-server ships only in aasm-api-*) exist for linux and darwin on amd64 and arm64 and are named in SHA256SUMS. Tarball contents are not downloaded or hashed",
+          "automated_procedure": "j59-install-release-assets",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#github-release-asset-check-fails"
+        },
+        {
+          "id": "j59-ghcr-gateway-image",
+          "channel": "ghcr",
+          "why_publication_only": "step 1/2 deploy the recommended OSS distribution, which names ghcr.io/ai-agent-assembly/aa-gateway:<tag>",
+          "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j59-ghcr-gateway-image",
+          "expected": "aa-gateway:<tag> resolves anonymously to an index with linux/amd64 and linux/arm64 whose body hashes to its digest",
+          "automated_procedure": "j59-ghcr-gateway-image",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
+        },
+        {
+          "id": "j59-ghcr-runtime-image",
+          "channel": "ghcr",
+          "why_publication_only": "step 1/2 deploy also names ghcr.io/ai-agent-assembly/aa-runtime:<tag>",
+          "command": "python3 -I scripts/qa/post-publish-verify.py --tag <tag> --obligations <file> --only j59-ghcr-runtime-image",
+          "expected": "aa-runtime:<tag> resolves anonymously to an index with linux/amd64 and linux/arm64 whose body hashes to its digest",
+          "automated_procedure": "j59-ghcr-runtime-image",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails"
+        },
+        {
+          "id": "j59-published-binaries-golden-path",
+          "channel": "github-release",
+          "why_publication_only": "steps 2 to 11 must be re-run against the published binaries: release.yml rebuilds them, so the candidate binaries verified here are not proven identical to what users download. Operator step (it downloads and extracts tarballs), so post-publish-verify.py reports it INCONCLUSIVE until an operator records it",
+          "command": "download aasm-cli-<ver>-<os>-<arch>.tar.gz and aasm-api-<ver>-<os>-<arch>.tar.gz, verify against SHA256SUMS, extract, then: python3 -I scripts/qa/j59-candidate-harness.py --candidate-sha <tag commit> --expected-version <ver> --repo <checkout> --aasm-bin <extracted aasm> --api-server-bin <extracted aa-api-server>",
+          "expected": "every candidate check of this harness is PASS against the extracted published binaries",
+          "automated_procedure": "j59-published-binaries-golden-path",
+          "failure_response": "docs/release/rc-post-publication-failure-response.md#published-binary-or-runtime-check-fails"
+        }
+      ],
+      "depends_on": [
+        {
+          "repo": "agent-assembly",
+          "event": "release.yml publish (GitHub Release assets)"
+        },
+        {
+          "repo": "agent-assembly",
+          "event": "docker.yml publish-gateway and publish-runtime on the release tag"
+        }
+      ],
+      "failure_response": {
+        "proposed_actions": [
+          "do not announce the release as operator-ready; record J59 as failed post-publication",
+          "file a Bug against AAASM-4979 naming the failing check id and the published asset digest",
+          "if a published binary or image is wrong, re-run the publish job on the same tag; if the defect is in the product, decide yank or hold with the release owner before any announcement"
+        ],
+        "notify": [
+          "release-owner"
+        ],
+        "deadline_hours": 24
+      }
     }
   ]
 }
