@@ -156,7 +156,7 @@
             "installer:install-cli.sh": "sha256:02a3ef6349fb228167a1add47c8427f0348a2df9134172c272ad18275d4b2aed"
           },
           "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
-          "detail": "aa-gateway --version rc=0 output='aa-gateway 0.0.1-rc.8\\nbuild-sha: d4093e89b07d8ba1c38e6caa92637d2e8edb65d7\\nbuild-identity-source: checkout\\nbuild-source-path: /Users/bryant/Bryant-Developments/AI-agent-assembly/agent-assembly-v0.0.1-A' expected to contain '0.0.1-rc.8'",
+          "detail": "aa-gateway --version rc=0 output='aa-gateway 0.0.1-rc.8\\nbuild-sha: d4093e89b07d8ba1c38e6caa92637d2e8edb65d7\\nbuild-identity-source: checkout\\nbuild-source-path: <a local scratch directory, elided>' expected to contain '0.0.1-rc.8'",
           "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.installed_gateway_version_output",
@@ -171,7 +171,7 @@
             "policy:low-risk.yaml": "sha256:61e40c48e806e353e6810c29152b6c54efeb9127eb068d9698b3b150193e4858"
           },
           "candidate_sha": "d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
-          "detail": "accepted TCP on 127.0.0.1:57312; control (missing policy): exited early rc=1: '\\x1b[32m INFO\\x1b[0m \\x1b[2maa_gateway::server\\x1b[0m\\x1b[2m:\\x1b[0m budget state loaded \\x1b[3mpath\\x1b[0m\\x1b[2m=\\x1b[0m/var/folders/b7/6_9p89_119bcsnt8jqn98_7h0000gn/T/b1-harness-omddlvsf/03-install/home/.aa/budget.json\\nError: \"failed to load policy: Io(Os { code: 2, kind: NotFound, message: \\\\\"No such file or directory\\\\\" })\"\\n'",
+          "detail": "accepted TCP on 127.0.0.1:57312; control (missing policy): exited early rc=1: '\\x1b[32m INFO\\x1b[0m \\x1b[2maa_gateway::server\\x1b[0m\\x1b[2m:\\x1b[0m budget state loaded \\x1b[3mpath\\x1b[0m\\x1b[2m=\\x1b[0m<harness temp dir>/03-install/home/.aa/budget.json\\nError: \"failed to load policy: Io(Os { code: 2, kind: NotFound, message: \\\\\"No such file or directory\\\\\" })\"\\n'",
           "evidence_ref": "candidate_harness.py j17 --version v0.0.1-rc.8 --candidate-sha d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
           "fidelity": "real_local_process",
           "id": "j17.gateway_serves_sample_policy",
@@ -242,7 +242,7 @@
           "failure_response": "docs/release/rc-post-publication-failure-response.md#ghcr-image-check-fails",
           "id": "j17.published_container_image_manifest",
           "side_effects": "read-only registry probe; needs docker and network",
-          "why_publication_only": "The image exists in GHCR only after the release workflow pushes it. Inferred: only ghcr.io/ai-agent-assembly/aa-runtime is referenced in-repo; no gateway image name was found.",
+          "why_publication_only": "The image exists in GHCR only after the release workflow pushes it. Note: .github/workflows/docker.yml publishes both the aa-runtime and the aa-gateway images to ghcr.io on a tag, but this pending check's command probes only the aa-runtime image, so publication of the aa-gateway image is NOT covered by this obligation.",
           "automated_procedure": "j17.published_container_image_manifest"
         }
       ],
