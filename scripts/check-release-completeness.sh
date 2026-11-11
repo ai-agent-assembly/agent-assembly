@@ -121,6 +121,18 @@ for b in $RELEASE_BINARIES; do
   esac
 done
 
+# 3b. Platform parity (AAASM-4542). Every release binary must be built on EVERY
+#    matrix leg: its `-p <pkg>` has to sit on release.yml's unconditional
+#    `PKGS=(...)` initialiser, not behind an OS branch. aa-proxy used to be
+#    appended inside `if [ "$RUNNER_OS" = "Linux" ]`, which is why no darwin
+#    proxy artifact existed and step 3's substring check could not see it.
+for b in $RELEASE_BINARIES; do
+  pkg="$(pkg_of "$b")"
+  if ! grep -Eq "^[[:space:]]*PKGS=\(.*-p $pkg[ )]" "$RELEASE_YML"; then
+    err "release binary '$b' (package '$pkg') is not on release.yml's unconditional PKGS=(...) list, so some matrix legs (e.g. the darwin ones) would ship without it (AAASM-4542)."
+  fi
+done
+
 # 4. Downstream bot-PR base-branch drift (AAASM-4955 / AAASM-4957).
 #    release.yml opens a bot PR into each downstream repo (homebrew-tap + the
 #    three SDKs) via peter-evans/create-pull-request, each with a hardcoded
