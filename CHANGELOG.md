@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Prebuilt macOS `aa-proxy` in release archives (AAASM-4542)** — the release workflow now builds and packages `aa-proxy` on both darwin legs, publishing `aasm-proxy-<tag>-darwin-arm64.tar.gz` and `aasm-proxy-<tag>-darwin-amd64.tar.gz` under the same `SHA256SUMS` and cosign signature as the Linux ones, so `install.sh --profile full` installs it on macOS instead of stopping with `component 'proxy' is not published`. A new archive-set gate (`scripts/release/check_release_archive_set.py`) fails a release whose os/arch legs lack any component tarball, and `check-release-completeness.sh` fails a release build list that is OS-conditional. Certificate trust is unchanged: installing the proxy never trusts its CA; on macOS that is still attempted only at proxy start, behind the System Keychain admin prompt. The Homebrew tap and GHCR still carry no macOS proxy; releases through `0.0.1-rc.7` have no macOS proxy tarball.
 - **Release gate: `PUBLICATION_PENDING` / `CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042)** — a
   `published_artifact` journey can now be recorded as verified-on-the-candidate with its
   publication-dependent checks still owed, instead of needing a blanket waiver. Pending is never

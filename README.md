@@ -145,10 +145,12 @@ fixed pipeline, and each one holds a stated boundary — lowest-latency first:
   leaves the machine, without changing the *agent's* own code. It must be
   installed, started, routed to (`HTTPS_PROXY`) and have its CA trusted, and
   `llm_only` defaults to `true`, so only the built-in LLM hosts are decrypted.
-  Linux and macOS. On macOS no prebuilt binary exists on any channel — not the
-  GitHub Release assets, not the Homebrew tap, not the `install.sh` component
-  installer, not GHCR — so a source build of the `aa-proxy` crate from crates.io
-  (`cargo install aa-proxy`) is the only route.
+  Linux and macOS. From `v0.0.1-rc.8` the GitHub Release assets carry
+  `aasm-proxy-<tag>-darwin-arm64.tar.gz` and `-darwin-amd64.tar.gz`, which
+  `install.sh --profile full` installs on macOS; releases through `v0.0.1-rc.7`
+  have no macOS proxy tarball. The Homebrew tap and GHCR carry no macOS proxy,
+  and `cargo install aa-proxy` remains the source route. Installing the proxy
+  never trusts its CA: see the platform table for the trust boundary.
 - **eBPF** (`aa-ebpf*`) — **Linux only**; there is no macOS or Windows host
   adapter. Its TLS, file and exec probes reach *observed* / *detected* and no
   further — a blocked path sets an alert bit and the syscall still proceeds. Its
@@ -287,7 +289,7 @@ this is a summary of it, and where the two disagree the ADR is right.
 |---|---|---|---|
 | Linux x86_64 | Implemented | Implemented | Implemented — observation (TLS / file / exec); syscall guard opt-in and asynchronous. Needs kernel ≥ 5.8 with BTF and a nightly toolchain |
 | Linux aarch64 | Implemented | Implemented | Implemented (partial) — TLS and exec only; no file-I/O kprobes, whose attach targets are `__x64_sys_*` |
-| macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — no prebuilt binary on any channel, and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
+| macOS (Apple Silicon / Intel) | Implemented | Implemented, with conditions — prebuilt `darwin-arm64` / `darwin-amd64` release tarballs from `v0.0.1-rc.8` (none on Homebrew or GHCR), and CA trust is attempted at proxy start via an admin prompt that fails startup if refused | **Unsupported** — no host adapter exists |
 | Windows | **Unsupported** | **Unsupported** | **Unsupported** |
 
 **Linux glibc baseline.** The prebuilt Linux binaries (`aasm`, `aa-gateway`,

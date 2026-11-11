@@ -12,12 +12,12 @@ refusing or redacting a request before it leaves the machine. The *agent's* own
 code does not change, but the proxy does have to be installed, started, routed to
 (`HTTPS_PROXY`, honoured by the client) and have its CA trusted; `llm_only`
 defaults to `true`, so only the built-in LLM hosts are decrypted. Linux and
-macOS, with Windows unsupported. The release pipeline builds this crate on Linux
-only, so on macOS no prebuilt binary exists on any channel: the GitHub Release
-assets carry `aasm-proxy` for `linux-amd64` and `linux-arm64` alone, the Homebrew
-formula is `depends_on :linux`, the `install.sh` component installer resolves to
-a darwin release asset that is never published, and no GHCR image carries it. A
-source build of this crate from crates.io (`cargo install aa-proxy`) is the only
-route. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
+macOS, with Windows unsupported. From `v0.0.1-rc.8` the release pipeline builds
+and publishes `aasm-proxy` for `linux-amd64`, `linux-arm64`, `darwin-arm64` and
+`darwin-amd64`, and `install.sh --profile full` installs it on macOS (earlier
+releases have no macOS tarball). The Homebrew formula is `depends_on :linux` and
+no GHCR image carries it; `cargo install aa-proxy` remains the source route.
+Installing never trusts the CA; on macOS that is attempted at proxy start behind
+an admin prompt. Runs as a standalone binary or embedded in-process via `aa_proxy::run()`.
 
 Part of [Agent Assembly](https://github.com/ai-agent-assembly/agent-assembly) — [documentation](https://docs.agent-assembly.com/) · [monorepo](https://github.com/ai-agent-assembly/agent-assembly).
