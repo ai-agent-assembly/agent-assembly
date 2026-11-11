@@ -104,7 +104,19 @@
           "release-owner"
         ],
         "deadline_hours": 24
-      }
+      },
+      "unrecorded_candidate_checks": [
+        {
+          "id": "j08-c-readme-snippet-matches-wiring",
+          "status": "PASS",
+          "fidelity": "static_analysis",
+          "evidence_ref": "scripts/qa/j08-j56-candidate-harness.py::j08-c-readme-snippet-matches-wiring@d4093e89b07d8ba1c38e6caa92637d2e8edb65d7",
+          "artifact_digests": {
+            "python-sdk-wheel": "sha256:eb4800761386757fd9f811f61110c39d1fce6e52e87feabbe29e8f425ee9806b"
+          },
+          "reason": "static_analysis is not in the registry fidelity enum or in CANDIDATE_FIDELITIES, so the check cannot be a candidate check; it is a text search of the wheel, not a behaviour proof. The runtime j08-c-allow-deny check covers the behaviour. This is a recorded gap, not a PASS credited to the obligation."
+        }
+      ]
     },
     {
       "journey": "J17",
