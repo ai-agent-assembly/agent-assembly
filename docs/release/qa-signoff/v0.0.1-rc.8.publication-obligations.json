@@ -292,7 +292,8 @@
             "aa-gateway/Dockerfile": "sha256:7577a0d5ad61cadba1dd528ffd50dce93e9cac4c5596b6a8456aeb315fc9b273",
             "docker.yml": "sha256:d3d5b6fda83e9ceb7d0229038dcd468a99a009247779e651a762ab2a59b11192",
             "policy-sample": "sha256:c71130f01895e08aa0e22a33df3b0b3b0cb0f238255d5fb7439a73b211ea5587"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         },
         {
           "id": "j53-dockerfile-contract",
@@ -302,7 +303,8 @@
           "negative_control": "scripts/tests/test_j53_candidate_harness.py::test_dockerfile_without_entrypoint_fails",
           "artifact_digests": {
             "aa-gateway/Dockerfile": "sha256:7577a0d5ad61cadba1dd528ffd50dce93e9cac4c5596b6a8456aeb315fc9b273"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         },
         {
           "id": "j53-publish-workflow-contract",
@@ -312,7 +314,8 @@
           "negative_control": "scripts/tests/test_j53_candidate_harness.py::test_workflow_without_sbom_fails",
           "artifact_digests": {
             "docker.yml": "sha256:d3d5b6fda83e9ceb7d0229038dcd468a99a009247779e651a762ab2a59b11192"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         },
         {
           "id": "j53-gateway-binary-identity",
@@ -322,7 +325,8 @@
           "negative_control": "scripts/tests/test_j53_candidate_harness.py::test_wrong_version_fails",
           "artifact_digests": {
             "aa-gateway": "sha256:a0a25523655c1629d0da940cf0417453c8ad75e9be3ed2d48e0f26e55b7d1619"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         },
         {
           "id": "j53-gateway-start-health-stop",
@@ -333,7 +337,8 @@
           "artifact_digests": {
             "aa-gateway": "sha256:a0a25523655c1629d0da940cf0417453c8ad75e9be3ed2d48e0f26e55b7d1619",
             "policy-sample": "sha256:c71130f01895e08aa0e22a33df3b0b3b0cb0f238255d5fb7439a73b211ea5587"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         },
         {
           "id": "j53-docs-container-operation",
@@ -343,7 +348,8 @@
           "negative_control": "scripts/tests/test_j53_candidate_harness.py::test_docs_missing_digest_pull_fails",
           "artifact_digests": {
             "docs-tree": "sha256:730e5dd6b4b0272f84496426ade59d917f875813371316314c7a8b5094921319"
-          }
+          },
+          "candidate_sha": "f0d5f7593663060a452e57410200225469f9e319"
         }
       ],
       "pending_checks": [
