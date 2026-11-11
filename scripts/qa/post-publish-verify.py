@@ -23,7 +23,8 @@ Safety properties (each has a test in scripts/tests/test_post_publish_verify.py)
   j53-published-image-runs-healthy only, `docker run` of the digest-pinned aa-gateway image
   (INCONCLUSIVE when docker is absent; the container is always removed), and, for the two
   published-Python-SDK checks (J08, J56), `pip download --only-binary=:all:` of the SDK's dependency wheels (pip contacts
-  PyPI itself, outside Probe's vetting, and runs no package code) followed by the j08/j56 harness on the PyPI wheel and
+  PyPI itself, outside Probe's vetting, without hash pinning, and runs no package code at download time; the harness
+  then installs and imports those wheels) followed by the j08/j56 harness on the PyPI wheel and
   the release binaries (signature-gated like the j59 harness). The installer
   script is fetched and hashed but never executed.
 * FAIL means positive evidence the publication is wrong (a 404 for the tag, a body that
@@ -1063,6 +1064,20 @@ SDK_HARNESS_DEPS = ("langchain", "langchain-core>=1.4.9,<1.7.0")
 # The harness records --sdk-sha but never uses it to select or verify anything. A wheel downloaded from PyPI has no
 # known source commit, so an all-zero value says "unknown" rather than naming a commit it was not built from.
 UNKNOWN_SDK_SHA = "0" * 40
+PYPI_INDEX = "https://pypi.org/simple"
+MAX_METADATA_BYTES = 1 << 20
+# The check ids each harness must emit for a PASS. A harness edit that drops a check must not PASS, so the runner
+# asks for these by name instead of trusting "every check the report happens to contain passed".
+SDK_EXPECTED_CHECKS: dict[str, frozenset[str]] = {
+    "J08": frozenset(f"j08-c-{n}" for n in (
+        "artifacts-bound-to-candidate", "binary-identity", "readme-snippet-matches-wiring",
+        "install-clean-venv-native-core", "register-governed-agent", "allow-deny")),
+    "J56": frozenset(f"j56-c-{n}" for n in (
+        "artifacts-bound-to-candidate", "binary-identity", "install-clean-venv-native-core", "register-authenticated",
+        "allow-read-file", "deny-delete-file-typed-no-sideeffect", "applied-policy-stays-enforced",
+        "send-email-approval-or-gap", "audit-correlation", "policy-flip-changes-behavior",
+        "unwired-callbacks-control")),
+}
 
 
 def sdk_version_for_tag(tag: str) -> str | None:
@@ -1138,6 +1153,8 @@ def _pypi_wheel(p: Probe, tag: str, dest: Path) -> tuple[Result | None, Path | N
             metas = [n for n in zf.namelist() if n.count("/") == 1 and n.endswith(".dist-info/METADATA")]
             if len(metas) != 1:
                 return (FAIL, f"{pick['filename']} has {len(metas)} dist-info/METADATA files"), None
+            if zf.getinfo(metas[0]).file_size > MAX_METADATA_BYTES:
+                return (FAIL, f"{pick['filename']} METADATA exceeds {MAX_METADATA_BYTES} bytes"), None
             meta = zf.read(metas[0]).decode("utf-8", "replace")
     except (zipfile.BadZipFile, OSError, ValueError) as e:
         return (FAIL, f"{pick['filename']} is not a readable wheel: {type(e).__name__}"), None
@@ -1157,7 +1174,10 @@ def run_sdk_governed_agent(p: Probe, tag: str, journey: str) -> Result:
     harness's offline venv needs are fetched by `pip download --only-binary=:all:`, which contacts PyPI
     itself (not through Probe, like cosign contacting sigstore) and runs no package code.
     What a PASS covers: every check the harness emits for `journey` passed against the published wheel and
-    release binaries. It does NOT cover public-docs discoverability, which no probe here reads."""
+    release binaries. It does NOT cover public-docs discoverability, which no probe here reads.
+    Disclosed limitation: the dependency wheels are resolved from pypi.org at run time WITHOUT hash pinning (no
+    pinned constraints file exists for them), then installed and imported by the harness. pip runs with no config file,
+    no prompts, an explicit pypi.org index, no extra index and binary wheels only (no build scripts run)."""
     shas = p.binding.candidate_shas
     if len(shas) != 1:
         return INCONCLUSIVE, "obligations record no single candidate_sha to hand the harness"
@@ -1182,9 +1202,10 @@ def run_sdk_governed_agent(p: Probe, tag: str, journey: str) -> Result:
         if err:
             return err
         env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": tmp, "TMPDIR": tmp,
-               "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1"}
-        rc, _, e = p.tools.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--dest", str(house),
-                                "--find-links", str(house), str(wheel), *SDK_HARNESS_DEPS], 600, cwd=tmp, env=env)
+               "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PIP_NO_INPUT": "1", "PIP_CONFIG_FILE": os.devnull}
+        rc, _, e = p.tools.run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--index-url", PYPI_INDEX,
+                                "--dest", str(house), "--find-links", str(house), str(wheel), *SDK_HARNESS_DEPS],
+                               600, cwd=tmp, env=env)
         if rc != 0:
             return INCONCLUSIVE, f"could not fetch the SDK's dependency wheels (pip exit {rc}): {e.strip()[-200:]}"
         digests = Path(tmp) / "expected.json"
@@ -1208,10 +1229,13 @@ def run_sdk_governed_agent(p: Probe, tag: str, journey: str) -> Result:
     if verdict == "BLOCK" or bad:
         return FAIL, f"{journey} harness against the published SDK wheel and binaries: FAIL {bad}"
     notcov = [c["id"] for c in checks if c.get("status") != PASS]
-    if rc == 0 and verdict == "CANDIDATE_VERIFIED" and checks and not notcov:
-        return PASS, (f"every one of {len(checks)} {journey} checks passed with the published {wheel.name} and the "
-                      f"published {oa} binaries (public-docs discoverability was not probed)")
-    return INCONCLUSIVE, f"{journey} harness exit {rc}, verdict {verdict}; not PASS: {notcov}"
+    missing = sorted(SDK_EXPECTED_CHECKS[journey] - {c.get("id") for c in checks if c.get("status") == PASS})
+    if rc == 0 and verdict == "CANDIDATE_VERIFIED" and checks and not notcov and not missing:
+        return PASS, (f"every one of {len(checks)} {journey} checks passed (all {len(SDK_EXPECTED_CHECKS[journey])} expected ids "
+                      f"present) with the published {wheel.name} and the published {oa} binaries; the SDK's dependency "
+                      "wheels were fetched from PyPI without hash pinning and then executed; public-docs discoverability "
+                      "was not probed")
+    return INCONCLUSIVE, f"{journey} harness exit {rc}, verdict {verdict}; not PASS: {notcov}; expected ids missing: {missing}"
 
 
 def manual(why: str) -> Callable[[Probe, str], Result]:

@@ -1284,7 +1284,7 @@ class SdkWheelTests(TestCase):
         return gh
 
     @staticmethod
-    def harness(journey="J08", verdict="CANDIDATE_VERIFIED", rc=0, statuses=("PASS", "PASS"), out=None, pip_rc=0):
+    def harness(journey="J08", verdict="CANDIDATE_VERIFIED", rc=0, statuses=None, out=None, pip_rc=0, drop_id=None):
         seen = {"pip": [], "harness": []}
 
         def h(argv, cwd):
@@ -1296,8 +1296,11 @@ class SdkWheelTests(TestCase):
             seen["harness"].append(argv)
             seen["expected"] = json.loads(Path(argv[argv.index("--expected-digests") + 1]).read_text())
             seen["wheel_exists"] = Path(argv[argv.index("--sdk-wheel") + 1]).is_file()
+            j = argv[argv.index("--journey") + 1]
+            ids = sorted(ppv.SDK_EXPECTED_CHECKS[j] - {drop_id})
+            sts = list(statuses) if statuses is not None else ["PASS"] * len(ids)
             body = out if out is not None else json.dumps({"verdict": verdict, "candidate_checks": [
-                {"id": f"c{i}", "status": s} for i, s in enumerate(statuses)]})
+                {"id": i, "status": st} for i, st in zip(ids, sts)]})
             return rc, body, ""
         return h, seen
 
@@ -1305,6 +1308,11 @@ class SdkWheelTests(TestCase):
         h, seen = (handler, {}) if handler else self.harness(journey)
         t = FakeTools(handler=h)
         return one(self.reg(**kw), self.IDS[journey], tools=t), t, seen
+
+    @staticmethod
+    def pip_call(t):
+        i = next(n for n, a in enumerate(t.argvs) if "pip" in a and "download" in a)
+        return t.argvs[i], t.envs[i]
 
     def test_version_rule(self):
         self.assertEqual(ppv.sdk_version_for_tag("v0.0.1-rc.8"), "0.0.1rc8")
@@ -1422,7 +1430,7 @@ class SdkWheelTests(TestCase):
             (dict(rc=1), "INCONCLUSIVE"),
         ]
         for kw, want in cases:
-            h, _ = self.harness(**kw)
+            h, _ = self.harness(journey="J56", **kw)
             st, d = one(self.reg(), self.IDS["J56"], tools=FakeTools(handler=h))
             self.assertEqual(st, want, (kw, d))
 
@@ -1435,6 +1443,68 @@ class SdkWheelTests(TestCase):
         reg = FakeRegistry().route("/a", ppv.Response(302, {"location": "https://files.pythonhosted.org.evil.example/x"}, b""))
         with self.assertRaises(ppv.FetchError):
             ppv.Probe(reg, 5).download("https://pypi.org/a")
+
+    def test_pip_runs_hardened_against_the_pypi_index_only(self):
+        (st, d), t, _ = self.go()
+        self.assertEqual(st, "PASS", d)
+        argv, env = self.pip_call(t)
+        self.assertEqual(env["PIP_CONFIG_FILE"], os.devnull)
+        self.assertEqual(env["PIP_NO_INPUT"], "1")
+        self.assertEqual(argv[argv.index("--index-url") + 1], "https://pypi.org/simple")
+        self.assertNotIn("--extra-index-url", argv)
+        self.assertNotIn("--trusted-host", argv)
+        self.assertIn("--only-binary=:all:", argv)
+        self.assertIn("without hash pinning", d)
+
+    def test_a_dropped_expected_check_cannot_pass(self):
+        for j, drop in (("J08", "j08-c-allow-deny"), ("J08", "j08-c-register-governed-agent"),
+                        ("J56", "j56-c-deny-delete-file-typed-no-sideeffect")):
+            h, _ = self.harness(j, drop_id=drop)
+            st, d = one(self.reg(), self.IDS[j], tools=FakeTools(handler=h))
+            self.assertEqual(st, "INCONCLUSIVE", (drop, d))
+            self.assertIn(drop, d)
+
+    def test_expected_ids_match_the_harness_source(self):
+        src = (ROOT / "scripts/qa/j08-j56-candidate-harness.py").read_text()
+        for ids in ppv.SDK_EXPECTED_CHECKS.values():
+            for i in ids:
+                self.assertIn(i.split("-c-", 1)[1], src, i)
+        self.assertEqual((len(ppv.SDK_EXPECTED_CHECKS["J08"]), len(ppv.SDK_EXPECTED_CHECKS["J56"])), (6, 11))
+
+    def test_the_first_sorted_matching_wheel_is_the_one_downloaded(self):
+        other = f"agent_assembly-{self.SDK_VER}-{self.CP}-{self.CP}-manylinux_2_17_x86_64.whl"
+        wb = self.wheel_bytes()
+        extra = [{"filename": other, "packagetype": "bdist_wheel", "url": f"https://files.pythonhosted.org/packages/x/{other}",
+                  "digests": {"sha256": hx(wb)}, "yanked": False}]
+        reg = self.reg(extra_files=extra)
+        h, seen = self.harness()
+        st, d = one(reg, self.IDS["J08"], tools=FakeTools(handler=h))
+        self.assertEqual(st, "PASS", d)
+        fetched = [u for u, _ in reg.calls if "files.pythonhosted.org" in u]
+        self.assertEqual(fetched, [f"https://files.pythonhosted.org/packages/x/{other}"])
+        self.assertEqual(Path(seen["harness"][0][seen["harness"][0].index("--sdk-wheel") + 1]).name, other)
+
+    def test_oversized_metadata_is_refused(self):
+        with mock.patch.object(ppv, "MAX_METADATA_BYTES", 1):
+            (st, d), t, _ = self.go()
+        self.assertEqual(st, "FAIL", d)
+        self.assertIn("METADATA exceeds", d)
+        self.assertEqual(t.argvs, [])
+
+    def test_two_different_candidate_shas_in_the_record_refuse_to_bind(self):
+        doc = {"journeys": [
+            {"journey": "J17", "candidate_checks": [{"candidate_sha": CAND}]},
+            {"journey": "J53", "candidate_checks": [{"candidate_sha": "f" * 40}]}]}
+        b = ppv.binding_from(doc)
+        self.assertEqual(b.candidate_shas, frozenset({CAND, "f" * 40}))
+        h, _ = self.harness()
+        t = FakeTools(handler=h)
+        st, d = one(self.reg(), self.IDS["J08"], tools=t, binding=b)
+        self.assertEqual(st, "INCONCLUSIVE")
+        self.assertIn("2 different candidate_sha", d)
+        self.assertEqual(t.argvs, [])
+        one_sha = {"journeys": [{"journey": "J17", "candidate_checks": [{"candidate_sha": CAND}]}]}
+        self.assertEqual(ppv.binding_from(one_sha).candidate_shas, frozenset({CAND}))
 
     def test_no_pending_id_is_a_manual_stub(self):
         for i in self.IDS.values():
