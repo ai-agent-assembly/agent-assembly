@@ -1480,7 +1480,7 @@ class SdkWheelTests(TestCase):
         h, seen = self.harness()
         st, d = one(reg, self.IDS["J08"], tools=FakeTools(handler=h))
         self.assertEqual(st, "PASS", d)
-        fetched = [u for u, _ in reg.calls if "files.pythonhosted.org" in u]
+        fetched = [u for u, _ in reg.calls if urlparse(u).hostname == "files.pythonhosted.org"]
         self.assertEqual(fetched, [f"https://files.pythonhosted.org/packages/x/{other}"])
         self.assertEqual(Path(seen["harness"][0][seen["harness"][0].index("--sdk-wheel") + 1]).name, other)
 
