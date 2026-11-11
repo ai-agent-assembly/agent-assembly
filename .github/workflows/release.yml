@@ -94,7 +94,7 @@ jobs:
           # Verify the SPA entry-point made it
           test -f aa-api/_embedded/dashboard/dist/index.html
           echo "✓ aa-api/_embedded/dashboard/dist/ staged ($(find aa-api/_embedded -type f | wc -l) files)"
-      - name: Build release binaries (cli/gateway/runtime/api, +proxy on Linux)
+      - name: Build release binaries (cli/gateway/runtime/api/proxy)
         # aasm is the operator CLI; aa-gateway is the core daemon that
         # `aasm gateway start` spawns. Both must ship in the CLI tarball
         # (AAASM-2975) so a release / Homebrew install can launch a core —
@@ -103,9 +103,10 @@ jobs:
         # (no eBPF / cross-target quirks), so it builds for every matrix target.
         #
         # AAASM-3951: also build the componentized daemons — aa-runtime (the
-        # local sidecar) on every target, and aa-proxy on Linux only (the proxy
-        # component artifact is Linux-only per ADR-014). They are packaged into
-        # their own component tarballs below.
+        # local sidecar) and aa-proxy on every target. AAASM-4542: aa-proxy used
+        # to be Linux-only here, so no darwin proxy artifact existed even though
+        # ADR 0033 5.3 describes an implemented macOS proxy. They are packaged
+        # into their own component tarballs below.
         #
         # AAASM-4449: build aa-api's `aa-api-server` binary too. `aasm start
         # --mode local` execs `aa-api-server` (it serves the dashboard SPA + the
@@ -117,9 +118,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api)
+          PKGS=(-p aa-cli -p aa-gateway -p aa-runtime -p aa-api -p aa-proxy)
           if [ "$RUNNER_OS" = "Linux" ]; then
-            PKGS+=(-p aa-proxy)
             # AAASM-6440: Linux binaries are built in the pinned glibc-baseline
             # container (scripts/release/linux-glibc-baseline.txt), NOT on the
             # ubuntu-24.04 runner image, whose glibc 2.39 leaks into every
@@ -331,11 +331,30 @@ jobs:
           if [ -f "$REL/aa-api-server" ]; then
             tar -czf "aasm-api-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-api-server
           fi
-          # proxy is a Linux-only component (ADR-014); only built/packaged there.
-          if [ -f "$REL/aa-proxy" ]; then
-            tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
-          fi
+          # AAASM-4542: proxy ships on every os/arch, so it is packaged
+          # unconditionally; a missing binary fails here, not at install time.
+          tar -czf "aasm-proxy-${VER}-${OSARCH}.tar.gz" -C "$REL" aa-proxy
           ls -lh aasm-*.tar.gz
+
+          # Inspect the tarballs just written (the shipped bytes): every
+          # component, each holding its real-named executable.
+          python3 -I scripts/release/check_release_archive_set.py \
+            --version "$VER" --osarch "$OSARCH" .
+
+      - name: Smoke-test aa-proxy archive (macOS - AAASM-4542)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Executes the packaged proxy binary for `--version` only. It does not
+          # start the proxy, so no CA is created and nothing touches a keychain;
+          # the empty HOME and AA_PROXY_SYSTEM_TRUST_INSTALL=never are belt and
+          # braces. x86_64-apple-darwin runs under Rosetta (see the step above).
+          T="$(mktemp -d)"
+          H="$(mktemp -d)"
+          tar -xzf aasm-proxy-*-*.tar.gz -C "$T"
+          file "$T/aa-proxy"
+          HOME="$H" AA_PROXY_SYSTEM_TRUST_INSTALL=never "$T/aa-proxy" --version
 
       - name: Guard - Linux archives stay within the glibc baseline (AAASM-6440)
         if: runner.os == 'Linux'
@@ -396,6 +415,9 @@ jobs:
           python-version: "3.12"
       - name: Run guard unit + negative-control tests
         run: python3 -I scripts/tests/test_check_linux_glibc_baseline.py
+
+      - name: Run archive-set gate unit + negative-control tests (AAASM-4542)
+        run: python3 -I scripts/tests/test_check_release_archive_set.py
 
   governance-gate:
     # AAASM-5602. A prerequisite INSIDE this workflow, not a separate required
@@ -632,6 +654,20 @@ jobs:
             exit 1
           fi
           echo "Local-mode dashboard SPA smoke test passed"
+
+      - name: Check out the release gate scripts (AAASM-4542)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/release
+          path: gate-src
+          persist-credentials: false
+
+      - name: Require the full component set on every os/arch (AAASM-4542)
+        run: |
+          python3 -I gate-src/scripts/release/check_release_archive_set.py \
+            --version "${GITHUB_REF_NAME}" \
+            --osarch linux-amd64 --osarch linux-arm64 \
+            --osarch darwin-arm64 --osarch darwin-amd64 artifacts
 
       - name: Generate SHA256SUMS
         run: |

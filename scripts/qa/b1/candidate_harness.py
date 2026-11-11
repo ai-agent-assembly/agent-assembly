@@ -678,6 +678,15 @@ def j04_checks(ctx: Ctx) -> None:
         prob = install_problems(r, ctx, core + ["aa-runtime", "aa-proxy"])
         ctx.record("j04.installer_profile_full", not prob, "; ".join(prob) or "--profile full installed cli+api+runtime+proxy",
                    base + [rt, px])
+        # AAASM-4542: the proxy is a real binary on every os/arch the installer
+        # supports, so on a native host the INSTALLED one is executed. --version
+        # does not start the proxy: no CA is created and no trust store is touched.
+        if plat.native and r.installed("aa-proxy"):
+            ok, d = native_version_output(r.dest / "aa-proxy", r.home, v.lstrip("v"))
+            ctx.record("j04.installed_proxy_version_output", ok, d, base + [px])
+        elif not plat.native:
+            ctx.skip("j04.installed_proxy_version_output",
+                     f"candidate platform {plat.os}/{plat.arch} is not the host {'/'.join(plat.host)}; run on a matching host")
     else:
         ctx.skip("j04.installer_profile_full", f"{rt} and {px} are both required")
 

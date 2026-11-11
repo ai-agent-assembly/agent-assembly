@@ -107,6 +107,11 @@ jobs:
       - name: Run release-artifact completeness gate
         run: bash scripts/check-release-completeness.sh
 
+      # AAASM-4542: the gate's platform-parity step is only trusted because the
+      # pre-fix shape (aa-proxy built on Linux only) demonstrably fails it.
+      - name: Run platform-parity negative control
+        run: python3 -I scripts/tests/test_check_release_completeness_parity.py
+
   publish-surface:
     # AAASM-5309: the sibling gate above proves the release *ships* what it
     # should. This one proves what ships is coherent — that the published CLI

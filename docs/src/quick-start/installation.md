@@ -76,7 +76,9 @@ By default the installer installs the `cli` and `api` components. Options go to 
 
 Installing `runtime` does not start it. Pass options to the shell, for example `curl -sSf https://agent-assembly.com/install.sh | sh -s -- --profile local`. If you pin an old release that publishes no `api` tarball, the default `api` component is skipped with a warning.
 
-**macOS has no `proxy` artifact.** Releases publish the `aa-proxy` tarball for Linux only, so `--profile full` (or `--components` with `proxy`) on macOS stops with `component 'proxy' is not published for <tag>` and installs nothing. On macOS install with `--profile local` instead. macOS has no prebuilt `aa-proxy` binary on any channel, so you must build it yourself; see [Supported platforms in the README](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms) and [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) section 5.3.
+**macOS `proxy` artifact.** From `v0.0.1-rc.8` the release publishes `aasm-proxy-<tag>-darwin-arm64.tar.gz` and `aasm-proxy-<tag>-darwin-amd64.tar.gz` next to the Linux ones, covered by the same `SHA256SUMS` and cosign signature, so `--profile full` installs `aa-proxy` on macOS. Releases through `v0.0.1-rc.7` publish no macOS proxy tarball; there `--profile full` (or `--components` with `proxy`) stops with `component 'proxy' is not published for <tag>` and installs nothing, and `--profile local` is the working choice. The Homebrew tap and GHCR carry no macOS proxy.
+
+Installing the proxy does not trust its certificate authority. On macOS the CA install into the System Keychain is attempted only when you start the proxy, through `security add-trusted-cert`, which needs admin authorization: macOS prompts, and a refusal fails proxy startup (`AA_PROXY_SYSTEM_TRUST_INSTALL=never` skips it for launches that bring their own process-scoped trust). See [Supported platforms in the README](https://github.com/ai-agent-assembly/agent-assembly#supported-platforms) and [ADR 0033](../adr/0033-canonical-governance-and-enforcement-architecture.md) section 5.3.
 
 ### Supply-chain verification (checksum + cosign)
 

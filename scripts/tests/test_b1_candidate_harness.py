@@ -72,6 +72,10 @@ def tearDownModule() -> None:
 FAKE_PLAIN = "#!/bin/sh\necho fake\n"
 
 
+def fake_proxy(version: str = VER.lstrip("v")) -> str:
+    return f"#!/bin/sh\necho 'aa-proxy {version}'\n"
+
+
 def fake_aasm(version: str = VER.lstrip("v")) -> str:
     return f"""#!{PY}
 import os, subprocess, sys
@@ -150,7 +154,7 @@ def write_sums(d: Path) -> None:
 
 
 def build_mirror(d: Path, plat: "H.Platform", cli_members=None, api_members=None, runtime=True, proxy=True,
-                 gateway: str | None = None) -> None:
+                 gateway: str | None = None, proxy_version: str = VER.lstrip("v")) -> None:
     d.mkdir(parents=True, exist_ok=True)
     for old in d.glob("*.tar.gz"):
         old.unlink()
@@ -159,7 +163,7 @@ def build_mirror(d: Path, plat: "H.Platform", cli_members=None, api_members=None
     if runtime:
         make_tar(d / plat.component_tarball("runtime", VER), {"aa-runtime": FAKE_PLAIN})
     if proxy:
-        make_tar(d / plat.component_tarball("proxy", VER), {"aa-proxy": FAKE_PLAIN})
+        make_tar(d / plat.component_tarball("proxy", VER), {"aa-proxy": fake_proxy(proxy_version)})
     write_sums(d)
 
 
@@ -189,6 +193,7 @@ J04_IDS = {
     "j04.installer_latest_resolution", "j04.installer_refuses_tampered_tarball", "j04.installer_uninstall_removes_binaries",
     "j04.installer_components_cli_runtime", "j04.installer_profile_local_installs_runtime", "j04.installer_profile_full",
     "j04.installed_aasm_version_output", "j04.installed_gateway_version_output", "j04.installed_api_server_starts",
+    "j04.installed_proxy_version_output",
     "j04.negative_control_old_installer_fails",
 }
 J17_IDS = {
@@ -356,6 +361,28 @@ class HarnessTests(TestCase):
         rc, out = run("j04", self.mirror)
         self.assertEqual(rc, 1)
         self.assertEqual(status(out, "j04.installed_aasm_version_output"), "FAIL")
+
+    def test_installed_proxy_with_wrong_version_fails(self) -> None:
+        build_mirror(self.mirror, self.plat, proxy_version="9.9.9")
+        rc, out = run("j04", self.mirror)
+        self.assertEqual(rc, 1)
+        self.assertEqual(status(out, "j04.installed_proxy_version_output"), "FAIL")
+
+    # ---- AAASM-4542: darwin ships a proxy, so its full profile is a real install
+    def test_darwin_full_profile_installs_the_proxy_tarball(self) -> None:
+        mirror = self.tmp / "darwin"
+        build_mirror(mirror, H.Platform("darwin/aarch64"))
+        rc, out = run("j04", mirror, "--platform", "darwin/aarch64")
+        self.assertEqual(status(out, "j04.installer_profile_full"), "PASS", json.dumps(out["candidate_checks"], indent=1))
+        self.assertNotIn("j04.installer_profile_full", [n["id"] for n in out["not_run"]])
+
+    def test_darwin_mirror_without_proxy_never_passes_the_full_profile(self) -> None:
+        mirror = self.tmp / "darwin"
+        build_mirror(mirror, H.Platform("darwin/aarch64"), proxy=False)
+        rc, out = run("j04", mirror, "--platform", "darwin/aarch64")
+        self.assertEqual(rc, 3)
+        self.assertEqual(out["overall"], "INCOMPLETE")
+        self.assertIn("j04.installer_profile_full", [n["id"] for n in out["not_run"]])
 
     def test_api_server_that_does_not_start_fails(self) -> None:
         build_mirror(self.mirror, self.plat, api_members={"aa-api-server": "#!/bin/sh\nexit 1\n"})
