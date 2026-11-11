@@ -123,6 +123,25 @@ exercise it (golden path, health probe).
   only what the check itself created.
 - Notify: release owner, QA orchestrator.
 
+## PyPI Python SDK check fails
+
+Applies to the J08 and J56 published-SDK checks (the `agent-assembly` wheel for the
+tag's lockstep version on PyPI, run with the harness against the published release
+binaries).
+
+- Version absent on PyPI: the SDK release job has not run or failed; re-run it in
+  `ai-agent-assembly/python-sdk`, then re-run the check. A PyPI version number is never
+  freed, so a wheel that is wrong is superseded by the next rc, not replaced.
+- Wheel bytes that do not hash to the digest PyPI reports, or whose metadata names a
+  different project or version: treat as a supply-chain incident for the release owner
+  and supersede; do not run the wheel.
+- The harness reports a failing check (for example a policy-denied tool still executing):
+  reproduce against the candidate wheel the record's digests name. A difference means the
+  publish changed the bytes; no difference means the defect is in the candidate. Either way
+  supersede.
+- Yanking on PyPI needs the release owner's explicit approval.
+- Notify: release owner, QA orchestrator.
+
 ## Who is notified
 
 For every section above: the release owner and the QA orchestrator, within the
@@ -137,6 +156,8 @@ supersession; no agent or workflow performs a yank, unpublish or deletion on its
   self-approval is a GitHub setting this repository cannot configure or verify (owner
   follow-up).
 - The release-assets check proves the assets are listed, not their contents.
+- The J08 and J56 published-SDK checks do not probe the public docs site; docs
+  discoverability of the quick start and the 11 steps is not automated.
 - Verification and its watchdog are best-effort automation: a scheduled workflow can be
   disabled by GitHub after 60 days of inactivity, so the release owner still looks at
   the result.
