@@ -45,20 +45,26 @@ fn private_dir() -> tempfile::TempDir {
 /// so the assertion cannot pass merely because the host umask is 077. The
 /// buffer crate has no libc dependency, so the umask is set by `sh`.
 fn under_umask_022(test: &str, body: impl FnOnce()) {
-    if std::env::var_os("AA_6460_UMASK_CHILD").is_some() {
+    // The child writes this marker after `body` returns, so a renamed test
+    // (which `--exact` would then silently match nothing for) cannot pass.
+    if let Some(marker) = std::env::var_os("AA_6460_UMASK_MARKER") {
         body();
+        std::fs::write(marker, b"ran").unwrap();
         return;
     }
+    let marker_dir = tempdir().unwrap();
+    let marker = marker_dir.path().join("ran");
     let exe = std::env::current_exe().unwrap();
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg(r#"umask 022 && exec "$0" --exact "$1" --nocapture"#)
         .arg(exe)
         .arg(test)
-        .env("AA_6460_UMASK_CHILD", "1")
+        .env("AA_6460_UMASK_MARKER", &marker)
         .status()
         .unwrap();
     assert!(status.success(), "{test} failed under umask 022");
+    assert!(marker.exists(), "{test} did not run in the umask-022 child");
 }
 
 #[test]
