@@ -122,21 +122,37 @@ operator can believe retention is on while it is off:
 The SQLite buffer holds interception records until NATS accepts them
 ([AAASM-6460](https://lightning-dust-mite.atlassian.net/browse/AAASM-6460)).
 
-- **Isolated: other local uids.** The buffer directory is created `0700`, the
-  database `0600` before SQLite opens it (so `-wal`/`-shm` start `0600`), and on
-  Unix the open is refused unless the parent directory is a real directory owned
-  by the runtime's effective uid with no group/other write bit, and the database
-  plus any `-wal`/`-shm`/`-journal` are regular, singly-linked files owned by that
-  uid with no group/other access. Because only that uid can then modify the
-  directory, no other uid can swap a checked file between the check and the open.
+- **Isolated: other local uids, under stated assumptions.** The buffer
+  directory is created `0700`, the database `0600` before SQLite opens it (so
+  `-wal`/`-shm` start `0600`). On Unix the open is refused unless: the parent is
+  a real directory owned by the runtime's effective uid with no group/other write
+  bit; **every ancestor** of its canonical path is owned by that uid or root and
+  is either not group/other-writable or sticky; and the database plus any
+  `-wal`/`-shm`/`-journal` are regular, singly-linked files owned by that uid
+  with no group/other access. The refusal names the offending path. Given that,
+  no other uid can create or replace those files or swap a directory on the path
+  between the check and the open.
+- **Outside the check.** It reads POSIX mode bits and owners only: ACLs, NFS
+  root squash, bind mounts and root itself are not seen. A `$HOME` writable by
+  another uid is outside the threat model.
 - **Not isolated: the same uid.** The governed agent runs as the runtime's uid
   and can read or write the buffer like anything else the runtime can. The buffer
   is a reconnect cushion on the agent's host, not tamper-proof storage; the
-  tamper-evident record is the one the gateway persists.
+  tamper-evident record is the one the gateway persists. Root can replace the
+  files too.
 - **Operator-shared directories are refused.** An `AA_AUDIT_BUFFER_PATH` whose
   parent is group/other-writable (`/tmp`, `/var/tmp`) cannot meet the guarantee
   and is rejected, which disables the publisher with a warning that names the
   path. Point it at a private directory instead.
+- **Gateway databases are weaker on one point.** They are created `0700`/`0600`
+  at their default paths but do not validate the ownership of a *pre-existing*
+  file, so their owner-only guarantee holds on a fresh or owner-clean `~/.aasm`
+  and `~/.aa`; a state directory already owned or writable by another uid is
+  outside it.
+- **Upgrading.** A buffer left at the old default
+  (`<temp>/aa-audit-buffer-<agent_id>.db`) is not migrated and never opened;
+  the runtime logs a warning naming it, and any events still in it are not
+  replayed.
 - **SQLite context.** The bundled SQLite is older than 3.54, which carries
   RUSTSEC-2026-0459. The private directory limits who can present a crafted
   database to it, but does not remove the advisory; the scoped exception is
