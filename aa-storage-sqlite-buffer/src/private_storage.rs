@@ -63,7 +63,10 @@ fn sidecar(db: &Path, suffix: &str) -> PathBuf {
 /// Returns the path SQLite must open: on Unix the canonicalized, validated
 /// parent joined with the file name, so a symlink component in the operator's
 /// path cannot be retargeted between validation and open. A loose `-journal`
-/// (like any sidecar outside a default state dir) is refused, never repaired.
+/// is refused, never repaired, even in a default state dir (only the database,
+/// `-wal` and `-shm` are tightened there). Missing directories are created
+/// (0700) before validation, so a refusal can leave empty private directories
+/// behind; it never leaves a database file.
 pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
     // SQLite would treat these as in-memory or URI databases, bypassing every
     // file check below.
@@ -86,15 +89,20 @@ pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
         let euid = private_fs::effective_uid();
         validate_parent_dir(parent, euid)?;
         let canonical = std::fs::canonicalize(parent).map_err(|e| io_err("resolve buffer directory", parent, e))?;
+        // The directory actually opened, not just the configured path to it.
+        validate_parent_dir(&canonical, euid)?;
         validate_ancestors(&canonical, euid)?;
         let db = canonical.join(file_name);
         // Only a database inside a default state dir is tightened (private_fs
         // rules); anywhere else a too-loose file is refused below, not changed.
         private_fs::tighten_sqlite_family_if_default(&db, &private_fs::default_state_dirs())
             .map_err(|e| io_err("tighten buffer files", &db, e))?;
+        // Validate what already exists first so a refusal leaves no new file.
+        validate_files(&db, euid)?;
         // Create 0600 *before* SQLite opens it so the -wal/-shm it derives
         // from this file start private rather than umask-dependent.
         private_fs::ensure_private_file(&db).map_err(|e| io_err("create buffer database", &db, e))?;
+        // Again: covers a file that appeared between the two steps.
         validate_files(&db, euid)?;
         Ok(db)
     }
@@ -236,6 +244,47 @@ mod tests {
         chmod(&parent, 0o700);
         chmod(&anc, ancestor_mode);
         (root, parent)
+    }
+
+    #[test]
+    fn prepare_returns_the_canonical_path_through_a_symlinked_component() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        chmod(&real, 0o700);
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let opened = prepare(&link.join("sub/buffer.db")).unwrap();
+        assert_eq!(opened, std::fs::canonicalize(&real).unwrap().join("sub/buffer.db"));
+        assert_ne!(opened, link.join("sub/buffer.db"));
+    }
+
+    #[test]
+    fn a_loose_leaf_behind_a_symlinked_component_is_refused() {
+        for m in [0o777, 0o775] {
+            let root = tempfile::tempdir().unwrap();
+            let real = root.path().join("real");
+            std::fs::create_dir_all(real.join("sub")).unwrap();
+            chmod(&real, 0o700);
+            chmod(&real.join("sub"), m);
+            let link = root.path().join("link");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let err = prepare(&link.join("sub/buffer.db")).unwrap_err();
+            assert!(err.to_string().contains("writable by group/other"), "{m:o}: {err}");
+            assert!(!real.join("sub/buffer.db").exists());
+        }
+    }
+
+    #[test]
+    fn a_refused_sidecar_leaves_no_database_behind() {
+        let root = tempfile::tempdir().unwrap();
+        chmod(root.path(), 0o700);
+        let db = root.path().join("buffer.db");
+        let wal = sidecar(&db, "-wal");
+        std::fs::write(&wal, b"").unwrap();
+        chmod(&wal, 0o666);
+        assert!(prepare(&db).is_err());
+        assert!(!db.exists(), "validation runs before the database is created");
     }
 
     #[test]
