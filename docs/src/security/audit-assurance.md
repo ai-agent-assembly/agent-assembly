@@ -139,7 +139,9 @@ The SQLite buffer holds interception records until NATS accepts them
   which CI runs, but not verified on every platform). A loose pre-existing
   `-journal` is refused, not repaired, even in a default state directory (only
   the database, `-wal` and `-shm` are tightened there). A refusal can leave empty
-  `0700` directories it created, never a database file. `:memory:`, `file:` URIs and paths containing `?` are rejected.
+  `0700` directories it created. It does not leave a database file, except when
+  a sidecar or hardlink appears between the two validations (only the runtime
+  uid or root can do that), which can leave an empty `0600` database. `:memory:`, `file:` URIs and paths containing `?` are rejected.
 - **Outside the check.** It reads POSIX mode bits and owners only: ACLs, NFS
   root squash, bind mounts and root itself are not seen. A `$HOME` writable by
   another uid is outside the threat model. Consequently a `$HOME` that is
@@ -164,7 +166,8 @@ The SQLite buffer holds interception records until NATS accepts them
   outside it.
 - **Upgrading.** A buffer left at the old default
   (`<temp>/aa-audit-buffer-<agent_id>.db`) is not migrated and never opened;
-  the runtime logs a warning naming it, and any events still in it are not
+  the runtime logs a warning naming it (only when `AA_AUDIT_BUFFER_PATH` is
+  unset, since only then is the default in use), and any events still in it are not
   replayed.
 - **SQLite context.** The bundled SQLite is older than 3.54, which carries
   RUSTSEC-2026-0459. The private directory limits who can present a crafted
