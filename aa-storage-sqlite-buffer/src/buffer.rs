@@ -57,16 +57,15 @@ impl EventBuffer {
     /// events.
     ///
     /// Enables WAL journaling and `synchronous = NORMAL` for a durability/perf
-    /// balance, and creates the `events` table if it does not yet exist. Parent
-    /// directories are created as needed.
+    /// balance, and creates the `events` table if it does not yet exist. Missing
+    /// directories are created `0700` and the database `0600` before SQLite opens
+    /// it. On Unix the open is refused unless the parent directory and the
+    /// database/`-wal`/`-shm`/`-journal` files are owned by the effective uid and
+    /// private (see `private_storage`), so a path in a shared directory such as
+    /// `/tmp` is an error rather than a silent exposure (AAASM-6460).
     pub fn new(path: impl AsRef<Path>, cap: usize) -> Result<Self> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| StorageError::Backend(format!("create buffer directory {}: {e}", parent.display())))?;
-            }
-        }
+        crate::private_storage::prepare(path)?;
         let conn = Connection::open(path).map_err(backend_err)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
