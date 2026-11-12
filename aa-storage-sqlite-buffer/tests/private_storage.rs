@@ -129,6 +129,50 @@ fn private_parent_below_a_replaceable_ancestor_is_refused() {
 }
 
 #[test]
+fn a_symlinked_directory_component_is_resolved_and_the_resolved_path_is_opened() {
+    let root = private_dir();
+    let real = root.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    chmod(&real, 0o700);
+    let link = root.path().join("link");
+    symlink(&real, &link).unwrap();
+
+    let buffer = EventBuffer::new(link.join("sub/buffer.db"), 10).unwrap();
+    buffer.enqueue(&sample_entry(1, "x")).unwrap();
+    assert!(
+        real.join("sub/buffer.db").is_file(),
+        "opened under the resolved directory"
+    );
+    assert_eq!(mode(&real.join("sub")), 0o700);
+}
+
+#[test]
+fn in_memory_uri_and_query_paths_are_refused() {
+    let root = private_dir();
+    for bad in [
+        ":memory:".to_string(),
+        "file:buffer.db".to_string(),
+        root.path().join("buffer.db?mode=memory").to_string_lossy().into_owned(),
+    ] {
+        let msg = refusal(EventBuffer::new(&bad, 10));
+        assert!(msg.contains("plain filesystem path"), "{bad}: {msg}");
+    }
+    assert!(!root.path().join("buffer.db").exists());
+}
+
+#[test]
+fn a_loose_journal_is_refused_not_repaired() {
+    let root = private_dir();
+    let db = root.path().join("buffer.db");
+    drop(EventBuffer::new(&db, 10).unwrap());
+    let journal = sidecar(&db, "-journal");
+    std::fs::write(&journal, b"").unwrap();
+    chmod(&journal, 0o644);
+    refusal(EventBuffer::new(&db, 10));
+    assert_eq!(mode(&journal), 0o644);
+}
+
+#[test]
 fn symlinked_parent_directory_is_refused() {
     let root = private_dir();
     let real = root.path().join("real");
@@ -192,6 +236,7 @@ fn world_writable_sticky_temp_dir_is_refused() {
     // The old default location. /tmp is 1777 on Linux and macOS.
     // /tmp is a symlink on macOS; resolve it so the *directory* itself is judged.
     let Ok(tmp) = std::fs::canonicalize("/tmp") else {
+        eprintln!("SKIPPED: /tmp cannot be canonicalized on this host");
         return;
     };
     let db = tmp.join(format!("aa-6460-sticky-{}.db", std::process::id()));
