@@ -7,24 +7,34 @@
 //! symlink. [`prepare`] therefore creates what is missing owner-only and
 //! *refuses* anything that is not ours, before SQLite opens the file.
 //!
-//! # Why check-then-open is sound here
+//! # What the check relies on, and what it does not cover
 //!
-//! The parent directory must be owned by the effective uid and not writable by
-//! group/other. Only a process with our uid (or root) can then create, rename
-//! or unlink entries in it, so no other uid can swap a validated file for a
-//! symlink or hardlink between the check and SQLite's `open`. A process running
-//! as our own uid is outside this guarantee by construction: the governed agent
-//! shares the runtime's uid and can already read or write anything the runtime
-//! can. An operator-configured path whose parent is shared or group-writable
-//! (`/tmp`, `/var/tmp`) is refused for the same reason: the guarantee cannot
-//! hold there.
+//! The parent directory must be a real directory owned by the effective uid
+//! with no group/other write bit, and **every ancestor** of its canonical path
+//! must be owned by the effective uid or root and either not group/other
+//! writable or sticky. Under those conditions only our uid or root can create,
+//! rename or unlink the buffer's files or replace any directory on the path, so
+//! another uid cannot swap a validated file (or the validated directory) for a
+//! symlink or hardlink between the check and SQLite's `open`.
+//!
+//! Limits, stated plainly:
+//! * The checks read POSIX mode bits and owners only. POSIX ACLs, NFS root
+//!   squash / uid mapping, bind mounts and similar are not seen.
+//! * root, and any process running as our own uid (including the governed
+//!   agent, which shares the runtime's uid), can still read or replace the
+//!   files. A `$HOME` writable by another uid is outside the threat model.
+//! * An operator path under a shared or group-writable directory (`/tmp`,
+//!   `/var/tmp`) is refused: the conditions cannot hold there.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use aa_core::private_fs;
 use aa_core::storage::{Result, StorageError};
 
 /// SQLite files that live next to the database and inherit its trust boundary.
+#[cfg(unix)]
 const SIDECAR_SUFFIXES: [&str; 3] = ["-wal", "-shm", "-journal"];
 
 fn refuse(msg: String) -> StorageError {
@@ -35,6 +45,7 @@ fn io_err(what: &str, path: &Path, e: std::io::Error) -> StorageError {
     refuse(format!("{what} {}: {e}", path.display()))
 }
 
+#[cfg(unix)]
 fn sidecar(db: &Path, suffix: &str) -> PathBuf {
     let mut name = db.as_os_str().to_os_string();
     name.push(suffix);
@@ -53,6 +64,7 @@ pub(crate) fn prepare(db: &Path) -> Result<()> {
     {
         let euid = private_fs::effective_uid();
         validate_parent_dir(parent, euid)?;
+        validate_ancestors(parent, euid)?;
         // Only a database inside a default state dir is tightened (private_fs
         // rules); anywhere else a too-loose file is refused below, not changed.
         private_fs::tighten_sqlite_family_if_default(db, &private_fs::default_state_dirs())
@@ -93,6 +105,35 @@ pub(crate) fn validate_parent_dir(parent: &Path, euid: u32) -> Result<()> {
             "refusing audit buffer: directory {} is writable by group/other (mode {mode:04o}); {hint}",
             parent.display()
         )));
+    }
+    Ok(())
+}
+
+/// Every ancestor of `parent`'s canonical path (symlinks resolved once) must be
+/// owned by `euid` or root and be either free of group/other write bits or
+/// sticky, so no other uid can rename the validated directory out from under
+/// the open. Mode bits and owners only; see the module docs for the limits.
+#[cfg(unix)]
+pub(crate) fn validate_ancestors(parent: &Path, euid: u32) -> Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let canonical = std::fs::canonicalize(parent).map_err(|e| io_err("resolve buffer directory", parent, e))?;
+    for ancestor in canonical.ancestors().skip(1) {
+        let md = std::fs::metadata(ancestor).map_err(|e| io_err("inspect buffer ancestor", ancestor, e))?;
+        let shown = ancestor.display();
+        if md.uid() != euid && md.uid() != 0 {
+            return Err(refuse(format!(
+                "refusing audit buffer: ancestor {shown} is owned by uid {}, not the effective uid {euid} or root; \
+                 use a private directory (for example ~/.aa/audit-buffer)",
+                md.uid()
+            )));
+        }
+        let mode = md.permissions().mode() & 0o7777;
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(refuse(format!(
+                "refusing audit buffer: ancestor {shown} is writable by group/other without the sticky bit \
+                 (mode {mode:04o}), so another user could replace the buffer directory; use a private directory"
+            )));
+        }
     }
     Ok(())
 }
@@ -151,6 +192,63 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(validate_parent_dir(dir.path(), euid()).is_ok());
         let err = validate_parent_dir(dir.path(), euid().wrapping_add(1)).unwrap_err();
+        assert!(err.to_string().contains("owned by uid"), "{err}");
+    }
+
+    fn chmod(p: &Path, m: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap();
+    }
+
+    /// `<tmp>/anc` (mode `ancestor_mode`) / `p` (0700), both ours.
+    fn chain(ancestor_mode: u32) -> (tempfile::TempDir, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let anc = root.path().join("anc");
+        let parent = anc.join("p");
+        std::fs::create_dir_all(&parent).unwrap();
+        chmod(&parent, 0o700);
+        chmod(&anc, ancestor_mode);
+        (root, parent)
+    }
+
+    #[test]
+    fn a_non_sticky_writable_ancestor_above_a_private_parent_is_refused() {
+        for m in [0o777, 0o770, 0o707] {
+            let (_root, parent) = chain(m);
+            assert!(
+                validate_parent_dir(&parent, euid()).is_ok(),
+                "the parent itself is fine"
+            );
+            let err = validate_ancestors(&parent, euid()).unwrap_err();
+            assert!(err.to_string().contains("without the sticky bit"), "{m:o}: {err}");
+            assert!(err.to_string().contains("anc"), "names the ancestor: {err}");
+        }
+    }
+
+    #[test]
+    fn a_sticky_or_non_writable_ancestor_is_accepted() {
+        for m in [0o1777, 0o755, 0o700] {
+            let (_root, parent) = chain(m);
+            validate_ancestors(&parent, euid()).unwrap_or_else(|e| panic!("{m:o}: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_symlinked_ancestor_path_is_checked_on_the_real_chain() {
+        let (root, parent) = chain(0o777);
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(parent.parent().unwrap(), &link).unwrap();
+        // Reached through the symlink, the unsafe real ancestor is still found.
+        assert!(validate_ancestors(&link.join("p"), euid()).is_err());
+    }
+
+    #[test]
+    fn an_ancestor_owned_by_another_uid_is_refused() {
+        if euid() == 0 {
+            return; // root-owned ancestors are always trusted
+        }
+        let (_root, parent) = chain(0o755);
+        let err = validate_ancestors(&parent, euid().wrapping_add(1)).unwrap_err();
         assert!(err.to_string().contains("owned by uid"), "{err}");
     }
 
