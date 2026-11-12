@@ -49,7 +49,7 @@ fn lifecycle_config(agent_id: &str) -> RuntimeConfig {
         correlation_interval_ms: 50,
         // No NATS config → audit publisher disabled.
         nats_config_path: None,
-        audit_buffer_path: std::env::temp_dir().join(format!("aa-audit-buffer-{agent_id}.db")),
+        audit_buffer_path: None,
         enforcement_max_field_bytes: DEFAULT_MAX_FIELD_BYTES,
         gateway_fail_closed: true,
         gateway_timeout_ms: aa_runtime::config::DEFAULT_GATEWAY_TIMEOUT_MS,
