@@ -661,7 +661,7 @@ async fn build_audit_publisher(
     let buffer = match aa_storage_sqlite_buffer::EventBuffer::new(buffer_path, AUDIT_BUFFER_CAPACITY) {
         Ok(buffer) => std::sync::Arc::new(buffer),
         Err(err) => {
-            tracing::warn!(error = %err, path = %buffer_path.display(), "audit publisher disabled — cannot open buffer");
+            tracing::error!(error = %err, path = %buffer_path.display(), "audit publisher disabled — cannot open buffer; audit retention is OFF");
             return None;
         }
     };
