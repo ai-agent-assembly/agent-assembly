@@ -11,7 +11,7 @@
 //! * **Creation** always makes missing directories `0700` and new files `0600`.
 //! * **Tightening** an *existing* object (removing group/other bits, never adding
 //!   any) happens only for the exact default state locations
-//!   ([`default_state_dirs`]: `~/.aasm`, `~/.aa`, `<data dir>/aa/audit`) and the
+//!   ([`default_state_dirs`]: `~/.aasm`, `~/.aa`, `~/.aa/audit-buffer`, `<data dir>/aa/audit`) and the
 //!   known files inside them, only when the object is owned by the effective uid,
 //!   and never through a symlink (`O_NOFOLLOW`, then `fstat`/`fchmod` on the open
 //!   descriptor, so there is no check-then-use gap). A parent of a default
@@ -37,14 +37,30 @@ pub const PRIVATE_DIR_MODE: u32 = 0o700;
 #[cfg(unix)]
 pub const PRIVATE_FILE_MODE: u32 = 0o600;
 
+/// Runtime-owned directory for the audit fallback buffer: `~/.aa/audit-buffer`
+/// (AAASM-6460). `None` when no home directory can be determined; callers must
+/// then have no default rather than fall back to a shared temp directory.
+pub fn default_audit_buffer_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".aa").join("audit-buffer"))
+}
+
+/// The effective uid of this process, for callers that validate ownership of
+/// local state without taking their own `libc` dependency.
+#[cfg(unix)]
+pub fn effective_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
 /// The exact default state locations that may be tightened when they already
-/// exist: `~/.aasm`, `~/.aa` and `<data dir>/aa/audit`.
+/// exist: `~/.aasm`, `~/.aa`, `~/.aa/audit-buffer` and `<data dir>/aa/audit`.
 pub fn default_state_dirs() -> Vec<PathBuf> {
     let mut dirs_out = Vec::new();
     if let Some(home) = dirs::home_dir() {
         dirs_out.push(home.join(".aasm"));
         dirs_out.push(home.join(".aa"));
     }
+    dirs_out.extend(default_audit_buffer_dir());
     if let Some(data) = dirs::data_dir() {
         dirs_out.push(data.join("aa").join("audit"));
     }
@@ -214,6 +230,13 @@ mod tests {
         let old = unsafe { libc::umask(0o022) };
         f();
         unsafe { libc::umask(old) };
+    }
+
+    #[test]
+    fn audit_buffer_dir_is_a_default_state_dir_under_dot_aa() {
+        let dir = default_audit_buffer_dir().expect("home dir in test env");
+        assert!(dir.ends_with(".aa/audit-buffer"));
+        assert!(default_state_dirs().contains(&dir));
     }
 
     #[test]
