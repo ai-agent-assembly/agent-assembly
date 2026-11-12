@@ -41,28 +41,50 @@ fn private_dir() -> tempfile::TempDir {
     d
 }
 
+/// Run `test` in a child process whose umask is 022 (the common host default),
+/// so the assertion cannot pass merely because the host umask is 077. The
+/// buffer crate has no libc dependency, so the umask is set by `sh`.
+fn under_umask_022(test: &str, body: impl FnOnce()) {
+    if std::env::var_os("AA_6460_UMASK_CHILD").is_some() {
+        body();
+        return;
+    }
+    let exe = std::env::current_exe().unwrap();
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"umask 022 && exec "$0" --exact "$1" --nocapture"#)
+        .arg(exe)
+        .arg(test)
+        .env("AA_6460_UMASK_CHILD", "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "{test} failed under umask 022");
+}
+
 #[test]
 fn created_directory_is_0700_and_database_wal_and_shm_are_0600() {
-    let root = private_dir();
-    let db = root.path().join("nested/buf/buffer.db");
+    under_umask_022("created_directory_is_0700_and_database_wal_and_shm_are_0600", || {
+        let root = private_dir();
+        let db = root.path().join("nested/buf/buffer.db");
 
-    let buffer = EventBuffer::new(&db, 100).unwrap();
-    buffer.enqueue(&sample_entry(1, "x")).unwrap();
-    // Checkpoint-free: while the connection is open the sidecars exist.
-    let (wal, shm) = (sidecar(&db, "-wal"), sidecar(&db, "-shm"));
-    let modes = (
-        mode(db.parent().unwrap()),
-        mode(db.parent().unwrap().parent().unwrap()),
-        mode(&db),
-        wal.exists().then(|| mode(&wal)),
-        shm.exists().then(|| mode(&shm)),
-    );
+        let buffer = EventBuffer::new(&db, 100).unwrap();
+        buffer.enqueue(&sample_entry(1, "x")).unwrap();
+        // While the connection is open the sidecars exist.
+        let (wal, shm) = (sidecar(&db, "-wal"), sidecar(&db, "-shm"));
+        let modes = (
+            mode(db.parent().unwrap()),
+            mode(db.parent().unwrap().parent().unwrap()),
+            mode(&db),
+            wal.exists().then(|| mode(&wal)),
+            shm.exists().then(|| mode(&shm)),
+        );
 
-    assert_eq!(modes.0, 0o700, "created leaf directory");
-    assert_eq!(modes.1, 0o700, "created intermediate directory");
-    assert_eq!(modes.2, 0o600, "database file");
-    assert_eq!(modes.3, Some(0o600), "-wal must exist and be 0600 (Linux inheritance)");
-    assert_eq!(modes.4, Some(0o600), "-shm must exist and be 0600 (Linux inheritance)");
+        assert_eq!(modes.0, 0o700, "created leaf directory");
+        assert_eq!(modes.1, 0o700, "created intermediate directory");
+        assert_eq!(modes.2, 0o600, "database file");
+        assert_eq!(modes.3, Some(0o600), "-wal must exist and be 0600 (Linux inheritance)");
+        assert_eq!(modes.4, Some(0o600), "-shm must exist and be 0600 (Linux inheritance)");
+    });
 }
 
 #[test]

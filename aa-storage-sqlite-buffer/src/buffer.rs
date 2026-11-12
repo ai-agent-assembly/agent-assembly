@@ -193,3 +193,31 @@ impl EventBuffer {
         Ok(())
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// SQLite must be handed the canonical, validated path, not the configured
+    /// one that crosses a symlink.
+    #[test]
+    fn connection_is_opened_on_the_canonical_path() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let buffer = EventBuffer::new(link.join("sub/buffer.db"), 10).unwrap();
+        let conn = buffer.conn.lock().unwrap();
+        let file: String = conn
+            .query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let want = std::fs::canonicalize(&real).unwrap().join("sub/buffer.db");
+        assert_eq!(std::fs::canonicalize(&file).unwrap(), want);
+        assert!(!file.contains("/link/"), "configured symlink path was opened: {file}");
+    }
+}
