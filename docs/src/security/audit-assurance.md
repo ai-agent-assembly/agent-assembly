@@ -129,12 +129,23 @@ The SQLite buffer holds interception records until NATS accepts them
   bit; **every ancestor** of its canonical path is owned by that uid or root and
   is either not group/other-writable or sticky; and the database plus any
   `-wal`/`-shm`/`-journal` are regular, singly-linked files owned by that uid
-  with no group/other access. The refusal names the offending path. Given that,
-  no other uid can create or replace those files or swap a directory on the path
-  between the check and the open.
+  with no group/other access. The refusal names the offending path, and SQLite
+  opens the resolved, validated directory rather than the path as configured.
+  The checks are one-shot, at open, and their scope is exact: no symlink
+  components outside directories that only the runtime uid (or root) controls.
+  Later `-wal`/`-shm`/`-journal` files rely on SQLite giving them the `0600`
+  mode of the database (observed on macOS; asserted for Linux by the test suite,
+  which CI runs, but not verified on every platform). A loose pre-existing
+  `-journal`, like any loose file outside a default state directory, is refused,
+  not repaired. `:memory:`, `file:` URIs and paths containing `?` are rejected.
 - **Outside the check.** It reads POSIX mode bits and owners only: ACLs, NFS
   root squash, bind mounts and root itself are not seen. A `$HOME` writable by
-  another uid is outside the threat model.
+  another uid is outside the threat model. Consequently a `$HOME` that is
+  group-writable without the sticky bit (for example on `umask 002` hosts)
+  fails the ancestor check: the publisher is disabled and an `error`-level log
+  line carries the refusal reason. Audit retention is then off until the
+  directory is fixed or `AA_AUDIT_BUFFER_PATH` points elsewhere; the check is
+  deliberately not loosened.
 - **Not isolated: the same uid.** The governed agent runs as the runtime's uid
   and can read or write the buffer like anything else the runtime can. The buffer
   is a reconnect cushion on the agent's host, not tamper-proof storage; the
