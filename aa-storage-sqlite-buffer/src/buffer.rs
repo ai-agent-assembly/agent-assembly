@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa_core::storage::{AuditEntry, AuditSink, Result, StorageError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 /// Map a `rusqlite` error onto the storage contract's backend variant.
 fn backend_err(err: rusqlite::Error) -> StorageError {
@@ -65,8 +65,11 @@ impl EventBuffer {
     /// `/tmp` is an error rather than a silent exposure (AAASM-6460).
     pub fn new(path: impl AsRef<Path>, cap: usize) -> Result<Self> {
         let path = path.as_ref();
-        crate::private_storage::prepare(path)?;
-        let conn = Connection::open(path).map_err(backend_err)?;
+        let path = crate::private_storage::prepare(path)?;
+        // Explicit flags: no URI interpretation of the path (rusqlite's default
+        // enables it), so the validated file is the file opened.
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(&path, flags).map_err(backend_err)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;

@@ -17,6 +17,12 @@
 //! another uid cannot swap a validated file (or the validated directory) for a
 //! symlink or hardlink between the check and SQLite's `open`.
 //!
+//! The checks are one-shot, at open. Later `-wal`/`-shm`/`-journal` files are
+//! created by SQLite and rely on it giving them the 0600 mode of the database
+//! (observed on macOS; asserted for Linux by `tests/private_storage.rs`, which
+//! CI runs). Only directories controlled by our uid or root may contain symlink
+//! components on the path; the open uses the resolved, validated directory.
+//!
 //! Limits, stated plainly:
 //! * The checks read POSIX mode bits and owners only. POSIX ACLs, NFS root
 //!   squash / uid mapping, bind mounts and similar are not seen.
@@ -53,30 +59,51 @@ fn sidecar(db: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Create the buffer directory and database owner-only, then validate them.
-/// Returns once SQLite may safely open `db`.
-pub(crate) fn prepare(db: &Path) -> Result<()> {
+///
+/// Returns the path SQLite must open: on Unix the canonicalized, validated
+/// parent joined with the file name, so a symlink component in the operator's
+/// path cannot be retargeted between validation and open. A loose `-journal`
+/// (like any sidecar outside a default state dir) is refused, never repaired.
+pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
+    // SQLite would treat these as in-memory or URI databases, bypassing every
+    // file check below.
+    let raw = db.to_string_lossy();
+    if raw.is_empty() || raw == ":memory:" || raw.starts_with("file:") || raw.contains('?') {
+        return Err(refuse(format!(
+            "refusing audit buffer path {raw:?}: it must be a plain filesystem path (no ':memory:', 'file:' URI or '?')"
+        )));
+    }
     let parent = match db.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => Path::new("."),
     };
+    let file_name = db
+        .file_name()
+        .ok_or_else(|| refuse(format!("refusing audit buffer path {}: no file name", db.display())))?;
     private_fs::create_private_dir_all(parent).map_err(|e| io_err("create buffer directory", parent, e))?;
     #[cfg(unix)]
     {
         let euid = private_fs::effective_uid();
         validate_parent_dir(parent, euid)?;
-        validate_ancestors(parent, euid)?;
+        let canonical = std::fs::canonicalize(parent).map_err(|e| io_err("resolve buffer directory", parent, e))?;
+        validate_ancestors(&canonical, euid)?;
+        let db = canonical.join(file_name);
         // Only a database inside a default state dir is tightened (private_fs
         // rules); anywhere else a too-loose file is refused below, not changed.
-        private_fs::tighten_sqlite_family_if_default(db, &private_fs::default_state_dirs())
-            .map_err(|e| io_err("tighten buffer files", db, e))?;
+        private_fs::tighten_sqlite_family_if_default(&db, &private_fs::default_state_dirs())
+            .map_err(|e| io_err("tighten buffer files", &db, e))?;
         // Create 0600 *before* SQLite opens it so the -wal/-shm it derives
         // from this file start private rather than umask-dependent.
-        private_fs::ensure_private_file(db).map_err(|e| io_err("create buffer database", db, e))?;
-        validate_files(db, euid)?;
+        private_fs::ensure_private_file(&db).map_err(|e| io_err("create buffer database", &db, e))?;
+        validate_files(&db, euid)?;
+        Ok(db)
     }
     #[cfg(not(unix))]
-    private_fs::ensure_private_file(db).map_err(|e| io_err("create buffer database", db, e))?;
-    Ok(())
+    {
+        private_fs::ensure_private_file(db).map_err(|e| io_err("create buffer database", db, e))?;
+        let _ = file_name;
+        Ok(db.to_path_buf())
+    }
 }
 
 /// The parent must be a real directory owned by `euid` that no other uid can
@@ -245,7 +272,8 @@ mod tests {
     #[test]
     fn an_ancestor_owned_by_another_uid_is_refused() {
         if euid() == 0 {
-            return; // root-owned ancestors are always trusted
+            eprintln!("SKIPPED: running as root, where root-owned ancestors are always trusted");
+            return;
         }
         let (_root, parent) = chain(0o755);
         let err = validate_ancestors(&parent, euid().wrapping_add(1)).unwrap_err();
