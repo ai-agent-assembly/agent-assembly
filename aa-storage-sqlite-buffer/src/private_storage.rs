@@ -29,8 +29,10 @@
 //! * root, and any process running as our own uid (including the governed
 //!   agent, which shares the runtime's uid), can still read or replace the
 //!   files. A `$HOME` writable by another uid is outside the threat model.
-//! * An operator path under a shared or group-writable directory (`/tmp`,
-//!   `/var/tmp`) is refused: the conditions cannot hold there.
+//! * A path whose parent directory is itself `/tmp` or `/var/tmp`
+//!   (group/other-writable, root-owned) is refused. A private `0700`
+//!   subdirectory beneath such a sticky directory is accepted: sticky ancestors
+//!   are allowed because other uids cannot rename entries they do not own.
 
 use std::path::Path;
 #[cfg(unix)]
@@ -66,7 +68,9 @@ fn sidecar(db: &Path, suffix: &str) -> PathBuf {
 /// is refused, never repaired, even in a default state dir (only the database,
 /// `-wal` and `-shm` are tightened there). Missing directories are created
 /// (0700) before validation, so a refusal can leave empty private directories
-/// behind; it never leaves a database file.
+/// behind. It does not leave a database file, except when a sidecar or
+/// hardlink appears between the two validations (only our uid or root can do
+/// that), which can leave an empty 0600 database.
 pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
     // SQLite would treat these as in-memory or URI databases, bypassing every
     // file check below.
@@ -88,10 +92,7 @@ pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
     {
         let euid = private_fs::effective_uid();
         validate_parent_dir(parent, euid)?;
-        let canonical = std::fs::canonicalize(parent).map_err(|e| io_err("resolve buffer directory", parent, e))?;
-        // The directory actually opened, not just the configured path to it.
-        validate_parent_dir(&canonical, euid)?;
-        validate_ancestors(&canonical, euid)?;
+        let canonical = validate_resolved(parent, euid)?;
         let db = canonical.join(file_name);
         // Only a database inside a default state dir is tightened (private_fs
         // rules); anywhere else a too-loose file is refused below, not changed.
@@ -112,6 +113,18 @@ pub(crate) fn prepare(db: &Path) -> Result<PathBuf> {
         let _ = file_name;
         Ok(db.to_path_buf())
     }
+}
+
+/// Resolve `parent` (symlinks followed once) and validate the directory that
+/// will actually be opened, not just the configured path to it: the resolved
+/// leaf must itself be private and every ancestor must be trusted. Returns the
+/// canonical path.
+#[cfg(unix)]
+pub(crate) fn validate_resolved(parent: &Path, euid: u32) -> Result<PathBuf> {
+    let canonical = std::fs::canonicalize(parent).map_err(|e| io_err("resolve buffer directory", parent, e))?;
+    validate_parent_dir(&canonical, euid)?;
+    validate_ancestors(&canonical, euid)?;
+    Ok(canonical)
 }
 
 /// The parent must be a real directory owned by `euid` that no other uid can
@@ -244,6 +257,25 @@ mod tests {
         chmod(&parent, 0o700);
         chmod(&anc, ancestor_mode);
         (root, parent)
+    }
+
+    #[test]
+    fn validate_resolved_checks_the_canonical_leaf() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        chmod(&real, 0o775);
+        let err = validate_resolved(&link, euid()).unwrap_err();
+        assert!(err.to_string().contains("writable by group/other"), "{err}");
+
+        chmod(&real, 0o700);
+        assert_eq!(
+            validate_resolved(&link, euid()).unwrap(),
+            std::fs::canonicalize(&real).unwrap()
+        );
     }
 
     #[test]
