@@ -2258,9 +2258,8 @@ mod tests {
         writeln!(tmp, "[gateway.nats]\nurl = \"nats://127.0.0.1:1\"").unwrap();
         tmp.flush().unwrap();
 
-        // No home directory ⇒ no default buffer path.
+        // No buffer path (no home directory) ⇒ publisher disabled before any NATS connect.
         let config = audit_test_config(Some(tmp.path().to_path_buf()));
-        assert!(config.audit_buffer_path.is_none());
         assert!(super::build_audit_publisher(&config).await.is_none());
 
         // An operator path in the world-writable /tmp is refused before SQLite

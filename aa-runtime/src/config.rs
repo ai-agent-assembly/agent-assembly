@@ -269,6 +269,12 @@ fn default_audit_buffer_path(agent_id: &str) -> Option<PathBuf> {
     audit_buffer_path_in(aa_core::private_fs::default_audit_buffer_dir(), agent_id)
 }
 
+/// The pre-AAASM-6460 default buffer location, when it still exists in `temp`.
+fn legacy_audit_buffer_in(temp: &std::path::Path, agent_id: &str) -> Option<PathBuf> {
+    let legacy = temp.join(format!("aa-audit-buffer-{agent_id}.db"));
+    std::fs::symlink_metadata(&legacy).ok().map(|_| legacy)
+}
+
 fn audit_buffer_path_in(dir: Option<PathBuf>, agent_id: &str) -> Option<PathBuf> {
     dir.map(|dir| dir.join(format!("aa-audit-buffer-{agent_id}.db")))
 }
@@ -414,7 +420,17 @@ impl RuntimeConfig {
             .ok()
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| default_audit_buffer_path(&agent_id));
+            .or_else(|| {
+                // Default in use: surface a buffer left in the old shared-temp location.
+                if let Some(legacy) = legacy_audit_buffer_in(&std::env::temp_dir(), &agent_id) {
+                    tracing::warn!(
+                        path = %legacy.display(),
+                        "orphaned legacy audit buffer in the shared temp dir; its unreplayed events are NOT replayed \
+                         (no migration, never opened) — delete it or move it into the private buffer directory"
+                    );
+                }
+                default_audit_buffer_path(&agent_id)
+            });
 
         let enforcement_max_field_bytes = std::env::var("AA_ENFORCEMENT_MAX_FIELD_BYTES")
             .ok()
@@ -1087,6 +1103,16 @@ mod tests {
 
         env.unset("AA_AGENT_ID");
         env.unset("AA_AUDIT_BUFFER_PATH");
+    }
+
+    #[test]
+    fn legacy_temp_buffer_is_detected_only_when_it_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "a1"), None);
+        let legacy = tmp.path().join("aa-audit-buffer-a1.db");
+        std::fs::write(&legacy, b"").unwrap();
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "a1"), Some(legacy));
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "other"), None);
     }
 
     #[test]
