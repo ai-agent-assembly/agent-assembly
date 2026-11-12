@@ -42,10 +42,13 @@ ignore = [
     # allows one copy. A `[patch.crates-io]` fork is ignored when packaging, and the published
     # aa-cli and aa-gateway reach both crates, so it would break their resolution. The local
     # attack needs a less-trusted writer to supply the DB or its `-wal`: the default stores are
-    # 0700/0600 (AAASM-6387), the audit buffer moves to a private checked directory (AAASM-6460),
-    # and the remaining writers are the same-uid governed agent and an operator-chosen shared path,
-    # both outside the owner-only isolation guarantee. Owner-authorized 2026-11-12 for rc.8 only,
-    # conditional on AAASM-6460 merging; removal tracked in AAASM-6461.
+    # 0700/0600 (AAASM-6387) and only the audit buffer validates ownership of existing files before
+    # opening (AAASM-6460); the gateway/api SQLite stores rely on a private state directory and do
+    # not. Remaining writers: root, the same-uid governed agent (no boundary under `--isolation none`;
+    # confining backends deny ~/.aa only by omission from the policy allow list), and an
+    # operator-chosen shared path or state directory writable by another uid. These are outside the
+    # owner-only isolation guarantee. Owner-authorized 2026-11-12 for rc.8 only, conditional on
+    # AAASM-6460 merging; removal tracked in AAASM-6461.
     { id = "RUSTSEC-2026-0459", reason = "SQLite WAL heap disclosure; unfixable by released deps (sqlx-sqlite caps libsqlite3-sys); local attack, stores owner-only; rc.8 only; expires: 2026-12-31 (AAASM-6461)" },
 ]
 
