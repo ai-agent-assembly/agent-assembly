@@ -115,6 +115,20 @@ fn parent_directory_writable_by_group_or_other_is_refused() {
 }
 
 #[test]
+fn private_parent_below_a_replaceable_ancestor_is_refused() {
+    let root = private_dir();
+    let anc = root.path().join("anc");
+    let parent = anc.join("p");
+    std::fs::create_dir_all(&parent).unwrap();
+    chmod(&parent, 0o700);
+    chmod(&anc, 0o777);
+    let db = parent.join("buffer.db");
+    let msg = refusal(EventBuffer::new(&db, 10));
+    assert!(msg.contains("ancestor") && msg.contains("sticky"), "{msg}");
+    assert!(!db.exists(), "must not create the database");
+}
+
+#[test]
 fn symlinked_parent_directory_is_refused() {
     let root = private_dir();
     let real = root.path().join("real");
