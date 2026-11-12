@@ -85,7 +85,7 @@ in-process broadcast channel and stop there.
 ```bash
 # On the host running aa-runtime, before the agent starts.
 export AA_NATS_CONFIG_PATH=/etc/aa/agent-assembly.toml   # must contain [gateway.nats]
-export AA_AUDIT_BUFFER_PATH=/var/lib/aa/audit-buffer.db  # optional; defaults under the temp dir
+export AA_AUDIT_BUFFER_PATH=/var/lib/aa/audit-buffer.db  # optional; defaults to ~/.aa/audit-buffer/
 ```
 
 The gateway side needs its NATS audit consumer running against the same server
@@ -105,13 +105,43 @@ operator can believe retention is on while it is off:
 - **While NATS is unreachable the entries spill to a local SQLite buffer**
   (`AA_AUDIT_BUFFER_PATH`) and replay when the connection returns. That buffer is
   on the agent's host, so it is a reconnect cushion rather than a second copy of
-  the trail.
+  the trail. It lives in a runtime-owned private directory
+  (`~/.aa/audit-buffer/`, `0700`; database and `-wal`/`-shm` `0600`), never the
+  shared temp dir; see [Local buffer threat model](#local-buffer-threat-model).
+  With no home directory and no `AA_AUDIT_BUFFER_PATH` there is no default, and
+  the publisher is disabled with a warning.
 - **This switch is what an SDK-side claim of ADR 0033 §6 *Observed* rests on.**
   An SDK hands its record to the runtime's event channel; whether a durable event
   attributed to the action exists afterwards is decided here, on the runtime
   host, by this configuration. An SDK that cannot see this setting can claim the
   handoff and should stop there
   ([AAASM-5783](https://lightning-dust-mite.atlassian.net/browse/AAASM-5783)).
+
+### Local buffer threat model
+
+The SQLite buffer holds interception records until NATS accepts them
+([AAASM-6460](https://lightning-dust-mite.atlassian.net/browse/AAASM-6460)).
+
+- **Isolated: other local uids.** The buffer directory is created `0700`, the
+  database `0600` before SQLite opens it (so `-wal`/`-shm` start `0600`), and on
+  Unix the open is refused unless the parent directory is a real directory owned
+  by the runtime's effective uid with no group/other write bit, and the database
+  plus any `-wal`/`-shm`/`-journal` are regular, singly-linked files owned by that
+  uid with no group/other access. Because only that uid can then modify the
+  directory, no other uid can swap a checked file between the check and the open.
+- **Not isolated: the same uid.** The governed agent runs as the runtime's uid
+  and can read or write the buffer like anything else the runtime can. The buffer
+  is a reconnect cushion on the agent's host, not tamper-proof storage; the
+  tamper-evident record is the one the gateway persists.
+- **Operator-shared directories are refused.** An `AA_AUDIT_BUFFER_PATH` whose
+  parent is group/other-writable (`/tmp`, `/var/tmp`) cannot meet the guarantee
+  and is rejected, which disables the publisher with a warning that names the
+  path. Point it at a private directory instead.
+- **SQLite context.** The bundled SQLite is older than 3.54, which carries
+  RUSTSEC-2026-0459. The private directory limits who can present a crafted
+  database to it, but does not remove the advisory; the scoped exception is
+  tracked by
+  [AAASM-6461](https://lightning-dust-mite.atlassian.net/browse/AAASM-6461).
 
 ## What is retained, and what is deleted
 
