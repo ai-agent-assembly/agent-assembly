@@ -109,7 +109,8 @@ operator can believe retention is on while it is off:
   (`~/.aa/audit-buffer/`, `0700`; database and `-wal`/`-shm` `0600`), never the
   shared temp dir; see [Local buffer threat model](#local-buffer-threat-model).
   With no home directory and no `AA_AUDIT_BUFFER_PATH` there is no default, and
-  the publisher is disabled with a warning.
+  the publisher is disabled with a `warn`-level log line. (A refused or
+  unopenable buffer is logged at `error`.)
 - **This switch is what an SDK-side claim of ADR 0033 §6 *Observed* rests on.**
   An SDK hands its record to the runtime's event channel; whether a durable event
   attributed to the action exists afterwards is decided here, on the runtime
@@ -136,8 +137,9 @@ The SQLite buffer holds interception records until NATS accepts them
   Later `-wal`/`-shm`/`-journal` files rely on SQLite giving them the `0600`
   mode of the database (observed on macOS; asserted for Linux by the test suite,
   which CI runs, but not verified on every platform). A loose pre-existing
-  `-journal`, like any loose file outside a default state directory, is refused,
-  not repaired. `:memory:`, `file:` URIs and paths containing `?` are rejected.
+  `-journal` is refused, not repaired, even in a default state directory (only
+  the database, `-wal` and `-shm` are tightened there). A refusal can leave empty
+  `0700` directories it created, never a database file. `:memory:`, `file:` URIs and paths containing `?` are rejected.
 - **Outside the check.** It reads POSIX mode bits and owners only: ACLs, NFS
   root squash, bind mounts and root itself are not seen. A `$HOME` writable by
   another uid is outside the threat model. Consequently a `$HOME` that is
@@ -153,8 +155,8 @@ The SQLite buffer holds interception records until NATS accepts them
   files too.
 - **Operator-shared directories are refused.** An `AA_AUDIT_BUFFER_PATH` whose
   parent is group/other-writable (`/tmp`, `/var/tmp`) cannot meet the guarantee
-  and is rejected, which disables the publisher with a warning that names the
-  path. Point it at a private directory instead.
+  and is rejected, which disables the publisher with an `error`-level log line
+  that names the path and the reason. Point it at a private directory instead.
 - **Gateway databases are weaker on one point.** They are created `0700`/`0600`
   at their default paths but do not validate the ownership of a *pre-existing*
   file, so their owner-only guarantee holds on a fresh or owner-clean `~/.aasm`

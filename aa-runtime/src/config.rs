@@ -191,7 +191,7 @@ pub struct RuntimeConfig {
     /// `<home>/.aa/audit-buffer/aa-audit-buffer-<agent_id>.db`, a runtime-owned
     /// private directory (AAASM-6460). When no home directory can be determined
     /// there is no default (`None`) and the audit publisher is disabled with a
-    /// warning; the shared temp dir is never used. An operator-set path must sit
+    /// `warn` log; the shared temp dir is never used. An operator-set path must sit
     /// in a directory owned by the runtime user that is not group/other-writable,
     /// or `EventBuffer::new` refuses it. Only used when the audit publisher is
     /// enabled.
