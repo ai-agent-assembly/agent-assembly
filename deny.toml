@@ -35,6 +35,18 @@ ignore = [
     # --target all -e normal,build -i astral-tokio-tar` matches nothing, so no shipped target
     # links it. Owner-authorized 2026-11-06 (AAASM-6441); removal tracked in AAASM-6442.
     { id = "RUSTSEC-2026-0440", reason = "unmaintained notice; test-only dependency chain; expires: 2026-12-15 (AAASM-6442)" },
+    # RUSTSEC-2026-0459 (CVE-2026-119375) -- SQLite < 3.54.0 can return uninitialised page-cache
+    # bytes when a database is opened next to a crafted `-wal`; fixed in `libsqlite3-sys >= 0.39.0`.
+    # No released dependency set can take that fix: rusqlite 0.41 needs `libsqlite3-sys ^0.39`, while
+    # every released sqlx-sqlite caps it (0.8.6 `^0.30.1`, 0.9.0 `<0.38.0`) and `links = "sqlite3"`
+    # allows one copy. A `[patch.crates-io]` fork is ignored when packaging, and the published
+    # aa-cli and aa-gateway reach both crates, so it would break their resolution. The local
+    # attack needs a less-trusted writer to supply the DB or its `-wal`: the default stores are
+    # 0700/0600 (AAASM-6387), the audit buffer moves to a private checked directory (AAASM-6460),
+    # and the remaining writers are the same-uid governed agent and an operator-chosen shared path,
+    # both outside the owner-only isolation guarantee. Owner-authorized 2026-11-12 for rc.8 only,
+    # conditional on AAASM-6460 merging; removal tracked in AAASM-6461.
+    { id = "RUSTSEC-2026-0459", reason = "SQLite WAL heap disclosure; unfixable by released deps (sqlx-sqlite caps libsqlite3-sys); local attack, stores owner-only; rc.8 only; expires: 2026-12-31 (AAASM-6461)" },
 ]
 
 [licenses]
