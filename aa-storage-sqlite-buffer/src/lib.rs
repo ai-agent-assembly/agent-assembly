@@ -25,6 +25,7 @@
 
 mod buffer;
 mod config;
+mod private_storage;
 
 pub use buffer::EventBuffer;
 pub use config::{default_path, SqliteBufferConfig, DEFAULT_CAP};

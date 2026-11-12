@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aa_core::storage::{AuditEntry, AuditSink, Result, StorageError};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 /// Map a `rusqlite` error onto the storage contract's backend variant.
 fn backend_err(err: rusqlite::Error) -> StorageError {
@@ -57,17 +57,19 @@ impl EventBuffer {
     /// events.
     ///
     /// Enables WAL journaling and `synchronous = NORMAL` for a durability/perf
-    /// balance, and creates the `events` table if it does not yet exist. Parent
-    /// directories are created as needed.
+    /// balance, and creates the `events` table if it does not yet exist. Missing
+    /// directories are created `0700` and the database `0600` before SQLite opens
+    /// it. On Unix the open is refused unless the parent directory and the
+    /// database/`-wal`/`-shm`/`-journal` files are owned by the effective uid and
+    /// private (see `private_storage`), so a path in a shared directory such as
+    /// `/tmp` is an error rather than a silent exposure (AAASM-6460).
     pub fn new(path: impl AsRef<Path>, cap: usize) -> Result<Self> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| StorageError::Backend(format!("create buffer directory {}: {e}", parent.display())))?;
-            }
-        }
-        let conn = Connection::open(path).map_err(backend_err)?;
+        let path = crate::private_storage::prepare(path)?;
+        // Explicit flags: no URI interpretation of the path (rusqlite's default
+        // enables it), so the validated file is the file opened.
+        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(&path, flags).map_err(backend_err)?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
@@ -189,5 +191,33 @@ impl EventBuffer {
         conn.execute("DELETE FROM events WHERE id = ?1", params![id])
             .map_err(backend_err)?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// SQLite must be handed the canonical, validated path, not the configured
+    /// one that crosses a symlink.
+    #[test]
+    fn connection_is_opened_on_the_canonical_path() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let buffer = EventBuffer::new(link.join("sub/buffer.db"), 10).unwrap();
+        let conn = buffer.conn.lock().unwrap();
+        let file: String = conn
+            .query_row("SELECT file FROM pragma_database_list WHERE name = 'main'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let want = std::fs::canonicalize(&real).unwrap().join("sub/buffer.db");
+        assert_eq!(std::fs::canonicalize(&file).unwrap(), want);
+        assert!(!file.contains("/link/"), "configured symlink path was opened: {file}");
     }
 }

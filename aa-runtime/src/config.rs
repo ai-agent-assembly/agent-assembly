@@ -188,9 +188,14 @@ pub struct RuntimeConfig {
     /// cannot be published while NATS is unreachable.
     ///
     /// Read from `AA_AUDIT_BUFFER_PATH`; defaults to
-    /// `<temp-dir>/aa-audit-buffer-<agent_id>.db`. Only used when the audit
-    /// publisher is enabled.
-    pub audit_buffer_path: PathBuf,
+    /// `<home>/.aa/audit-buffer/aa-audit-buffer-<agent_id>.db`, a runtime-owned
+    /// private directory (AAASM-6460). When no home directory can be determined
+    /// there is no default (`None`) and the audit publisher is disabled with a
+    /// `warn` log; the shared temp dir is never used. An operator-set path must sit
+    /// in a directory owned by the runtime user that is not group/other-writable,
+    /// or `EventBuffer::new` refuses it. Only used when the audit publisher is
+    /// enabled.
+    pub audit_buffer_path: Option<PathBuf>,
 
     /// Upper bound, in bytes, on any single secret-bearing field handed to the
     /// runtime credential scanner. Fields larger than this are redacted whole
@@ -257,6 +262,23 @@ pub struct RuntimeConfig {
     pub lease_state_path: Option<PathBuf>,
 }
 
+/// Default audit-buffer database path for `agent_id` inside the runtime-owned
+/// private directory `~/.aa/audit-buffer` (AAASM-6460). `None` when no home
+/// directory exists: there is deliberately no fallback to the shared temp dir.
+fn default_audit_buffer_path(agent_id: &str) -> Option<PathBuf> {
+    audit_buffer_path_in(aa_core::private_fs::default_audit_buffer_dir(), agent_id)
+}
+
+/// The pre-AAASM-6460 default buffer location, when it still exists in `temp`.
+fn legacy_audit_buffer_in(temp: &std::path::Path, agent_id: &str) -> Option<PathBuf> {
+    let legacy = temp.join(format!("aa-audit-buffer-{agent_id}.db"));
+    std::fs::symlink_metadata(&legacy).ok().map(|_| legacy)
+}
+
+fn audit_buffer_path_in(dir: Option<PathBuf>, agent_id: &str) -> Option<PathBuf> {
+    dir.map(|dir| dir.join(format!("aa-audit-buffer-{agent_id}.db")))
+}
+
 impl RuntimeConfig {
     /// Build configuration from environment variables.
     ///
@@ -282,7 +304,7 @@ impl RuntimeConfig {
     /// | `AA_CORRELATION_WINDOW_MS` | `u64` | `5_000` |
     /// | `AA_CORRELATION_INTERVAL_MS` | `u64` | `1_000` |
     /// | `AA_NATS_CONFIG_PATH` | `Option<PathBuf>` | `None` (publisher disabled) |
-    /// | `AA_AUDIT_BUFFER_PATH` | `PathBuf` | `<temp>/aa-audit-buffer-<agent_id>.db` |
+    /// | `AA_AUDIT_BUFFER_PATH` | `Option<PathBuf>` | `<home>/.aa/audit-buffer/aa-audit-buffer-<agent_id>.db`; none without a home dir |
     /// | `AA_ENFORCEMENT_MAX_FIELD_BYTES` | `usize` | `65536` (64 KiB) |
     /// | `AA_GATEWAY_FAIL_CLOSED` | `bool` | `true` (deny on gateway unreachable) |
     /// | `AA_GATEWAY_TIMEOUT_MS` | `u64` | `5000` (per-RPC gateway deadline) |
@@ -394,11 +416,21 @@ impl RuntimeConfig {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from);
 
-        let audit_buffer_path = std::env::var("AA_AUDIT_BUFFER_PATH")
+        let audit_buffer_path: Option<PathBuf> = std::env::var("AA_AUDIT_BUFFER_PATH")
             .ok()
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join(format!("aa-audit-buffer-{agent_id}.db")));
+            .or_else(|| {
+                // Default in use: surface a buffer left in the old shared-temp location.
+                if let Some(legacy) = legacy_audit_buffer_in(&std::env::temp_dir(), &agent_id) {
+                    tracing::warn!(
+                        path = %legacy.display(),
+                        "orphaned legacy audit buffer in the shared temp dir; its unreplayed events are NOT replayed \
+                         (no migration, never opened) — delete it or move it into the private buffer directory"
+                    );
+                }
+                default_audit_buffer_path(&agent_id)
+            });
 
         let enforcement_max_field_bytes = std::env::var("AA_ENFORCEMENT_MAX_FIELD_BYTES")
             .ok()
@@ -1048,20 +1080,50 @@ mod tests {
         env.set("AA_AGENT_ID", "agent-buf");
         env.unset("AA_AUDIT_BUFFER_PATH");
 
-        let default_cfg = RuntimeConfig::from_env().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        env.set("HOME", home.path().to_str().unwrap());
+        let default_path = RuntimeConfig::from_env()
+            .unwrap()
+            .audit_buffer_path
+            .expect("default with a home");
         assert_eq!(
-            default_cfg.audit_buffer_path,
-            std::env::temp_dir().join("aa-audit-buffer-agent-buf.db")
+            default_path,
+            home.path().join(".aa/audit-buffer/aa-audit-buffer-agent-buf.db")
+        );
+        assert!(
+            default_path.starts_with(home.path().join(".aa")),
+            "under ~/.aa, not a shared dir"
         );
 
         env.set("AA_AUDIT_BUFFER_PATH", "/var/lib/aa/buf.db");
         assert_eq!(
             RuntimeConfig::from_env().unwrap().audit_buffer_path,
-            PathBuf::from("/var/lib/aa/buf.db")
+            Some(PathBuf::from("/var/lib/aa/buf.db"))
         );
 
         env.unset("AA_AGENT_ID");
         env.unset("AA_AUDIT_BUFFER_PATH");
+    }
+
+    #[test]
+    fn legacy_temp_buffer_is_detected_only_when_it_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "a1"), None);
+        let legacy = tmp.path().join("aa-audit-buffer-a1.db");
+        std::fs::write(&legacy, b"").unwrap();
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "a1"), Some(legacy));
+        assert_eq!(legacy_audit_buffer_in(tmp.path(), "other"), None);
+    }
+
+    #[test]
+    fn audit_buffer_path_has_no_default_without_a_home_dir() {
+        // `dirs::home_dir` falls back to the passwd entry, so the no-home case
+        // cannot be forced through the environment; drive the pure mapping.
+        assert_eq!(audit_buffer_path_in(None, "agent-nohome"), None);
+        assert_eq!(
+            audit_buffer_path_in(Some(PathBuf::from("/h/.aa/audit-buffer")), "a1"),
+            Some(PathBuf::from("/h/.aa/audit-buffer/aa-audit-buffer-a1.db"))
+        );
     }
 
     #[test]

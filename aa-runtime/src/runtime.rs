@@ -652,10 +652,16 @@ async fn build_audit_publisher(
             return None;
         }
     };
-    let buffer = match aa_storage_sqlite_buffer::EventBuffer::new(&config.audit_buffer_path, AUDIT_BUFFER_CAPACITY) {
+    let Some(buffer_path) = config.audit_buffer_path.as_ref() else {
+        tracing::warn!(
+            "audit publisher disabled — no home directory for the default audit buffer; set AA_AUDIT_BUFFER_PATH to a private directory"
+        );
+        return None;
+    };
+    let buffer = match aa_storage_sqlite_buffer::EventBuffer::new(buffer_path, AUDIT_BUFFER_CAPACITY) {
         Ok(buffer) => std::sync::Arc::new(buffer),
         Err(err) => {
-            tracing::warn!(error = %err, path = %config.audit_buffer_path.display(), "audit publisher disabled — cannot open buffer");
+            tracing::error!(error = %err, path = %buffer_path.display(), "audit publisher disabled — cannot open buffer; audit retention is OFF");
             return None;
         }
     };
@@ -2219,7 +2225,7 @@ mod tests {
             correlation_window_ms: 5_000,
             correlation_interval_ms: 1_000,
             nats_config_path,
-            audit_buffer_path: std::env::temp_dir().join("aa-audit-buffer-audit-test.db"),
+            audit_buffer_path: None,
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
@@ -2239,6 +2245,30 @@ mod tests {
         assert!(super::build_audit_publisher(&audit_test_config(Some(missing)))
             .await
             .is_none());
+    }
+
+    /// AAASM-6460: a valid NATS config but no usable private buffer location
+    /// disables the publisher (fail-soft) and never creates the buffer in a
+    /// shared directory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_audit_publisher_disabled_without_a_private_buffer_location() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().expect("tempfile");
+        writeln!(tmp, "[gateway.nats]\nurl = \"nats://127.0.0.1:1\"").unwrap();
+        tmp.flush().unwrap();
+
+        // No buffer path (no home directory) ⇒ publisher disabled before any NATS connect.
+        let config = audit_test_config(Some(tmp.path().to_path_buf()));
+        assert!(super::build_audit_publisher(&config).await.is_none());
+
+        // An operator path in the world-writable /tmp is refused before SQLite
+        // creates anything there.
+        let shared = std::path::PathBuf::from(format!("/tmp/aa-6460-refused-{}.db", std::process::id()));
+        let mut config = audit_test_config(Some(tmp.path().to_path_buf()));
+        config.audit_buffer_path = Some(shared.clone());
+        assert!(super::build_audit_publisher(&config).await.is_none());
+        assert!(!shared.exists(), "refused path must not be created");
     }
 
     /// A NATS config path that exists but holds malformed TOML must disable the

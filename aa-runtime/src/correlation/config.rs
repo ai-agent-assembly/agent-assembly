@@ -82,7 +82,7 @@ mod tests {
             correlation_window_ms: 8_000,
             correlation_interval_ms: 2_000,
             nats_config_path: None,
-            audit_buffer_path: std::path::PathBuf::from("/tmp/aa-audit-buffer-test.db"),
+            audit_buffer_path: None,
             enforcement_max_field_bytes: crate::pipeline::enforcement::DEFAULT_MAX_FIELD_BYTES,
             gateway_fail_closed: true,
             gateway_timeout_ms: crate::config::DEFAULT_GATEWAY_TIMEOUT_MS,
