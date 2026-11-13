@@ -6,6 +6,10 @@
 //! raw key to a separate owner-only file. The raw key is never printed, so it
 //! does not land in a terminal, log or transcript.
 //!
+//! A key bound to an organization registers agents only with `--scope write` (or
+//! `admin`); the default `--scope read` key is a read-only REST credential and the
+//! gateway refuses it at `Register` (AAASM-6463).
+//!
 //! The gateway reads the key file once at boot: a key added here, or revoked by
 //! removing its entry, takes effect after the gateway restarts.
 //!
@@ -60,6 +64,12 @@ fn run(args: Vec<String>) -> Result<(), String> {
     }
     if scopes.is_empty() {
         scopes.push(Scope::Read);
+    }
+    if org.is_some() && !Scope::Write.is_satisfied_by(&scopes) {
+        eprintln!(
+            "aa-keygen: note: this org-bound key has read scope only, so the gateway will refuse it \
+             for agent registration; pass --scope write for a registration key"
+        );
     }
 
     let key = ApiKey::generate();

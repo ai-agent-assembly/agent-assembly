@@ -209,7 +209,7 @@ def make_backend_class() -> type:
             return False, f"aa-runtime for {name} did not bind {sock} within 20s"
 
         def provision_org_keys(self, orgs: tuple[str, ...]) -> tuple[bool, str]:
-            """Issue one read-scoped operator key per org with `aa-keygen`, into the key file the gateway reads at boot
+            """Issue one write-scoped operator key per org (registration needs write, AAASM-6463) with `aa-keygen`, into the key file the gateway reads at boot
             (`AA_API_KEYS_PATH`), which the REST side merges too. The raw keys land only in owner-only files."""
             if self.keygen is None:
                 return False, "no aa-keygen binary was supplied (--keygen-bin), so no org-bound operator key can be issued"
@@ -217,7 +217,7 @@ def make_backend_class() -> type:
             for org in orgs:
                 out = self.home / f"org-{org}.key"
                 rc, text = self.exec([str(self.keygen), "--keys-file", str(keys_json), "--key-out", str(out), "--org", org,
-                                      "--scope", "read"], self.env, self.ctx.tmp, 60)
+                                      "--scope", "write"], self.env, self.ctx.tmp, 60)
                 if rc != 0 or not out.is_file():
                     return False, f"aa-keygen for {org} exited {rc}: {text.strip()[-200:]}"
                 self.org_key_files[org] = out
