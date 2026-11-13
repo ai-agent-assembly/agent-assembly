@@ -650,6 +650,42 @@ class HarnessTests(TestCase):
             self.assertIn(r"refs/tags/" + re.escape(VER) + "$", log, cid)
             self.assertNotIn("tags/v.*", log, cid)
 
+    def test_signature_check_names_the_bundle_and_the_github_actions_issuer(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        (self.tmp / "cosign.log").write_text("")
+        self.assertEqual(self._exec_pending(by["j04.published_install_sh_default"], env).returncode, 0)
+        log = (self.tmp / "cosign.log").read_text()
+        for needle in ("--bundle SHA256SUMS.cosign.bundle", "--certificate-oidc-issuer https://token.actions.githubusercontent.com",
+                       "--certificate-identity-regexp"):
+            self.assertIn(needle, log)
+
+    INSTALL_STYLE = ("j04.published_install_sh_default", "j04.published_homebrew_tap_install",
+                     "j04.published_homebrew_runtime", "j17.published_installer_profile_full_gateway",
+                     "j17.published_homebrew_gateway")
+
+    def test_install_style_checks_always_verify_published_bytes_even_when_the_candidate_lacks_tarballs(self) -> None:
+        # A candidate mirror with no runtime/proxy/api tarball must not turn an install-style check into a
+        # version-output-only pass: the check still reaches verify_sums and fails closed on the release.
+        for lacking in ("runtime", "proxy", "api"):
+            build_mirror(self.mirror, self.plat, runtime=lacking != "runtime", proxy=lacking != "proxy")
+            if lacking == "api":
+                (self.mirror / self.plat.component_tarball("api", VER)).unlink()
+                write_sums(self.mirror)
+            by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
+            for cid in self.INSTALL_STYLE:
+                # an invocation line: the shared prelude defines need_published, so the bare word proves nothing
+                self.assertRegex(by[cid]["command"], r'(?m)^need_published "', (lacking, cid))
+        self.assertIn(self.plat.component_tarball("runtime", VER), by["j04.published_homebrew_runtime"]["command"])
+
+    def test_install_style_check_fails_closed_when_the_release_lacks_the_tarball(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        rel = self.tmp / "rel" / VER
+        (rel / self.plat.component_tarball("api", VER)).unlink()
+        write_sums(rel)
+        self.assertNotEqual(self._exec_pending(by["j04.published_install_sh_default"], env).returncode, 0)
+
     def test_install_style_checks_authenticate_sha256sums_themselves(self) -> None:
         env = self._release_stand_in()
         by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}

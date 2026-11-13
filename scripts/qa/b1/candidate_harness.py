@@ -789,6 +789,12 @@ def _sh(tag: str, body: str) -> str:
     return "sh -c " + shlex.quote(script)
 
 
+INSTALL_STYLE_CHECKS = frozenset({
+    "j04.published_install_sh_default", "j04.published_homebrew_tap_install", "j04.published_homebrew_runtime",
+    "j17.published_installer_profile_full_gateway", "j17.published_homebrew_gateway",
+})
+
+
 def pending(journey: str, ctx: Ctx) -> list[dict]:
     tag, plat = ctx.version, ctx.plat
     names = {"cli": plat.cli_tarball(), "api": plat.component_tarball("api", tag),
@@ -796,9 +802,9 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
     members = {"aasm": "cli", "aa-gateway": "cli", "aa-api-server": "api", "aa-runtime": "runtime"}
 
     def eq(binary: str, path: str) -> str:
-        # Gated like the candidate checks: a platform without the tarball has nothing to compare.
-        k = members[binary]
-        return f'need_published "{path}" "{names[k]}" "{binary}"\n' if names[k] in ctx.src_digests else ""
+        # Never skipped: a candidate mirror without this platform's tarball must not turn the check into a
+        # version-output-only pass. The check then fails closed when the release lacks the tarball.
+        return f'need_published "{path}" "{names[members[binary]]}" "{binary}"\n'
 
     install = ('export HOME="$D/home"; mkdir -p "$HOME"\n'
                'curl -fsSL "${B1_INSTALL_SH_URL:-https://agent-assembly.com/install.sh}" -o "$D/install.sh"\n')
@@ -812,7 +818,8 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
     sums_loop = "".join(
         f'curl -fsSL "$BASE/{n}" -o "$D/{n}"\n'
         f'want="$(awk -v n="{n}" \'$2==n || $2=="*"n {{print $1; exit}}\' "$D/SHA256SUMS")"\n'
-        f'[ -n "$want" ] && [ "$(sha "$D/{n}")" = "$want" ] || {{ echo "{n}: published digest != SHA256SUMS" >&2; exit 1; }}\n'
+        f'got="$(sha "$D/{n}")"\n'
+        f'is_sha "$want" && is_sha "$got" && [ "$got" = "$want" ] || {{ echo "{n}: published digest != SHA256SUMS" >&2; exit 1; }}\n'
         for k, n in names.items())
 
     if journey == "J04":
@@ -903,6 +910,11 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
              "manifest resolves for linux/amd64 and linux/arm64 (read-only registry probe)",
              "read-only registry probe; needs docker and network"),
         ]
+    # Fail the generation, not the reader: every install-style check must authenticate SHA256SUMS itself.
+    for i, _, _, cmd, _, _ in items:
+        # the prelude defines need_published, so look for an invocation, not the word
+        if i in INSTALL_STYLE_CHECKS and not re.search(r'^need_published "', cmd, re.M):
+            raise AssertionError(f"{i} does not verify published bytes against the signed SHA256SUMS")
     return [{"id": i, "status": "PENDING", "channel": ch, "why_publication_only": why, "command": cmd,
              "expected": exp, "side_effects": se, "failure_response": fr,
              "deadline_hours": FAILURE_RESPONSE["deadline_hours"]}
