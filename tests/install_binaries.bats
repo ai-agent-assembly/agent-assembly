@@ -244,8 +244,9 @@ install() { run sh "$INSTALL_CLI" --version "$VER" --install-dir "$DEST" "$@"; }
   install
   [ "$status" -eq 0 ]
   [[ "$output" == *"Cosign signature verified"* ]]
-  grep -q -F -e 'release\.yml@refs/tags/v0\.0\.1\-rc\.8$' "$COSIGN_LOG"
-  ! grep -q -F -e 'v.*' "$COSIGN_LOG"
+  # the identity argument must be exactly the tag-exact regexp (no wildcard, no other tag)
+  [ "$(awk '{for(i=1;i<NF;i++) if($i=="--certificate-identity-regexp") print $(i+1)}' "$COSIGN_LOG")" = \
+    '^https://github\.com/(?i:ai-agent-assembly/agent-assembly)/\.github/workflows/release\.yml@refs/tags/v0\.0\.1\-rc\.8$' ]
   grep -q -F -e '--certificate-oidc-issuer https://token.actions.githubusercontent.com' "$COSIGN_LOG"
 }
 

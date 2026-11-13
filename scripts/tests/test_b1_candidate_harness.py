@@ -228,6 +228,44 @@ class HarnessTests(TestCase):
         self.assertEqual({c["id"] for c in out["candidate_checks"]}, J17_IDS)
         self.assertTrue(all(c["status"] == "PASS" for c in out["candidate_checks"]))
 
+    # ---- installer signature default (AASM_REQUIRE_SIGNATURE unset => required, tag-exact)
+    EXPECTED_IDENTITY = (r"^https://github\.com/(?i:ai-agent-assembly/agent-assembly)/\.github/workflows/"
+                         r"release\.yml@refs/tags/v0\.0\.1\-rc\.8$")
+
+    def _signed_mirror(self, sb, with_bundle: bool = True) -> Path:
+        m = sb.fresh("signed-mirror")
+        for f in self.mirror.iterdir():
+            shutil.copy2(f, m / f.name)
+        if with_bundle:
+            (m / "SHA256SUMS.cosign.bundle").write_text("{}")
+        return m
+
+    def test_installer_default_path_hands_cosign_the_tag_exact_identity_in_every_version_mode(self) -> None:
+        sb = H.Sandbox()
+        self.addCleanup(sb.cleanup)
+        m = self._signed_mirror(sb)
+        for mode in ("flag", "env", "latest", "list"):
+            r = H.run_installer(sb, self.plat, INSTALLER, m, VER, [], mode=mode, signature="default")
+            self.assertEqual(r.rc, 0, f"{mode}: {r.output[-400:]}")
+            self.assertIn("Cosign signature verified", r.output, mode)
+            log = (r.home.parent / "cosign.log").read_text().splitlines()
+            self.assertEqual(len(log), 1, (mode, log))
+            argv = log[0].split()  # not shlex: the regexp carries backslashes
+            self.assertEqual(argv[argv.index("--certificate-identity-regexp") + 1], self.EXPECTED_IDENTITY, mode)
+            self.assertEqual(argv[argv.index("--certificate-oidc-issuer") + 1],
+                             "https://token.actions.githubusercontent.com", mode)
+
+    def test_installer_default_path_fails_closed_without_a_bundle(self) -> None:
+        sb = H.Sandbox()
+        self.addCleanup(sb.cleanup)
+        m = self._signed_mirror(sb, with_bundle=False)
+        r = H.run_installer(sb, self.plat, INSTALLER, m, VER, [], signature="default")
+        self.assertNotEqual(r.rc, 0, r.output[-300:])
+        self.assertIn("no cosign bundle", r.output)
+        self.assertFalse(r.installed("aasm"))
+        cosign_log = r.home.parent / "cosign.log"
+        self.assertFalse(cosign_log.exists() and cosign_log.read_text(), "cosign must not be consulted without a bundle")
+
     # ---- negative controls
     def test_old_installer_fails_the_same_harness(self) -> None:
         for j, cid in (("j04", "j04.installer_default_installs_all_binaries"),

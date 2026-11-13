@@ -82,6 +82,36 @@ assert not rx.search("https://github.com/evil/agent-assembly/.github/workflows/r
   [ "$status" -eq 0 ]
 }
 
+@test "cosign_identity_re: RE2 (the engine cosign uses) accepts this tag only" {
+  command -v go >/dev/null || skip "go needed for the RE2 control (python re is not RE2)"
+  AASM_LIB=1 . "$INSTALL_CLI"
+  re="$(cosign_identity_re "$TAG")"
+  base='https://github.com/ai-agent-assembly/agent-assembly/.github/workflows/release.yml@refs/tags/'
+  g="$TMPD/g"; mkdir -p "$g"
+  cat > "$g/main.go" <<'GO'
+package main
+
+import (
+	"fmt"
+	"os"
+	"regexp"
+)
+
+func main() {
+	re := regexp.MustCompile(os.Args[1])
+	for _, s := range os.Args[2:] {
+		fmt.Println(re.MatchString(s), s)
+	}
+}
+GO
+  run go run "$g/main.go" "$re" "${base}v0.0.1-rc.8" "${base}v0.0.1-rc.7" "${base}v0.0.1-rc.80" "${base}v0.0.1-RC.8"
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "true ${base}v0.0.1-rc.8" ]
+  [ "${lines[1]}" = "false ${base}v0.0.1-rc.7" ]
+  [ "${lines[2]}" = "false ${base}v0.0.1-rc.80" ]
+  [ "${lines[3]}" = "false ${base}v0.0.1-RC.8" ]
+}
+
 @test "cosign_identity_re: refuses an empty or regexp-shaped tag" {
   AASM_LIB=1 . "$INSTALL_CLI"
   run cosign_identity_re ""
