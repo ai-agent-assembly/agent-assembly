@@ -558,8 +558,12 @@ jobs:
     # compromised build dependency baked into the binaries could have reached
     # the token that mints the Fulcio certificate and uploads release assets.
     # Here the token scope is read-only with no id-token, no checkout and no
-    # secrets. It uploads nothing and `publish` re-downloads the artifacts from
-    # `build`, so nothing this job touches can reach what gets hashed and signed.
+    # secrets. It uploads nothing, and `publish` re-downloads the four named
+    # `build` artifacts itself. Residual: the runner still holds the Actions
+    # artifact token (needed to download), which this job cannot be denied, so
+    # a compromised binary could in principle upload or overwrite an artifact;
+    # `publish` narrows that by naming the artifacts it takes and the run is
+    # still bound by the earlier gates, but it is not a proof of impossibility.
     #
     # Not `push`-gated on purpose: pull_request and workflow_dispatch dry-runs
     # now exercise the smoke tests too (they previously ran only at tag time).
@@ -671,11 +675,33 @@ jobs:
       id-token: write  # keyless cosign signing via GitHub OIDC
 
     steps:
-      - name: Download all build artifacts
+      # AAASM-6468: named artifacts only, never merge-multiple over "everything
+      # this run uploaded". check_release_archive_set.py proves required tarballs
+      # exist but does not reject extras, and `sha256sum aasm-*.tar.gz` below
+      # would hash and sign any extra tarball another job managed to upload.
+      - name: Download build artifact (x86_64-unknown-linux-gnu)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: aasm-x86_64-unknown-linux-gnu
           path: artifacts/
-          merge-multiple: true
+
+      - name: Download build artifact (aarch64-unknown-linux-gnu)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-unknown-linux-gnu
+          path: artifacts/
+
+      - name: Download build artifact (aarch64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-apple-darwin
+          path: artifacts/
+
+      - name: Download build artifact (x86_64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-apple-darwin
+          path: artifacts/
 
       - name: Download eBPF probe objects (AAASM-3601)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
