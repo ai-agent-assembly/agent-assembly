@@ -275,21 +275,21 @@ COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 cosign_identity_re() {
   # Echo the certificate-identity regexp for release tag <tag>: the fixed prefix
   # plus the tag with every non-alphanumeric character backslash-escaped, anchored.
-  tag="$1"
-  case "$tag" in
-    ""|*[!A-Za-z0-9._+-]*) err "refusing to build a signature identity from unexpected release tag: ${tag}" ;;
+  id_tag="$1"
+  case "$id_tag" in
+    ""|*[!A-Za-z0-9._+-]*) err "refusing to build a signature identity from unexpected release tag: ${id_tag}" ;;
   esac
-  printf '%s%s$\n' "$COSIGN_IDENTITY_PREFIX" "$(printf '%s' "$tag" | sed 's/[^A-Za-z0-9]/\\&/g')"
+  printf '%s%s$\n' "$COSIGN_IDENTITY_PREFIX" "$(printf '%s' "$id_tag" | sed 's/[^A-Za-z0-9]/\\&/g')"
 }
 
 verify_signature() {
-  # Verify <sums_file> against the cosign <bundle>, bound to release <tag>.
+  # Verify <sums_file> against the cosign <bundle>, bound to release <sig_tag>.
   # Signature verification is REQUIRED: a missing bundle, a missing cosign or a
   # failed verification is fatal. The only way out is the explicit, loud opt-out
   # AASM_REQUIRE_SIGNATURE=0 (checksum-only; the SHA-256 check is always enforced).
-  sums_file="$1" bundle="$2" tag="$3"
+  sums_file="$1" bundle="$2" sig_tag="$3"
   require="${AASM_REQUIRE_SIGNATURE:-1}"
-  identity_re="$(cosign_identity_re "$tag")"
+  sig_identity_re="$(cosign_identity_re "$sig_tag")"
 
   if [ "$require" = "0" ]; then
     warn "AASM_REQUIRE_SIGNATURE=0: the cosign signature on SHA256SUMS will NOT be required."
@@ -313,12 +313,12 @@ verify_signature() {
 
   if cosign verify-blob \
       --bundle "$bundle" \
-      --certificate-identity-regexp "$identity_re" \
+      --certificate-identity-regexp "$sig_identity_re" \
       --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
       "$sums_file" >/dev/null 2>&1; then
-    say "Cosign signature verified (release.yml at ${tag})."
+    say "Cosign signature verified (release.yml at ${sig_tag})."
   else
-    err "cosign signature verification FAILED for SHA256SUMS at ${tag} — refusing to install."
+    err "cosign signature verification FAILED for SHA256SUMS at ${sig_tag} — refusing to install."
   fi
 }
 
