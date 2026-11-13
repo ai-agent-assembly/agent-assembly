@@ -81,7 +81,7 @@ case "$url" in
   https://github.com/ai-agent-assembly/agent-assembly/releases/download/"$B1_TAG"/*)
     name="${url##*/}"
     case "$name" in
-      SHA256SUMS|aasm-*.tar.gz) ;;
+      SHA256SUMS|SHA256SUMS.cosign.bundle|aasm-*.tar.gz) ;;
       *) exit 22 ;;
     esac
     f="$B1_MIRROR/$name"
@@ -256,9 +256,12 @@ class InstallRun:
 
 
 def run_installer(sb: Sandbox, plat: Platform, installer: Path, mirror: Path, version: str, extra: list[str],
-                  mode: str = "flag", uninstall_of: InstallRun | None = None) -> InstallRun:
+                  mode: str = "flag", uninstall_of: InstallRun | None = None, signature: str = "off") -> InstallRun:
     """mode: flag (--version), env (AASM_VERSION), latest (API /releases/latest),
-    list (API /releases?per_page=1 fallback, /latest 404s)."""
+    list (API /releases?per_page=1 fallback, /latest 404s).
+    signature: "off" opts out of the installer's required-signature default (the dry-run mirror is unsigned);
+    "default" leaves the default path in force and puts a recording cosign stub (exit 0) on PATH, its argv in
+    <work>/cosign.log, so the identity/issuer the installer hands to cosign can be asserted."""
     work = sb.fresh("install" if uninstall_of is None else "uninstall")
     if uninstall_of is not None:
         home, dest = uninstall_of.home, uninstall_of.dest
@@ -267,7 +270,10 @@ def run_installer(sb: Sandbox, plat: Platform, installer: Path, mirror: Path, ve
         home.mkdir()
     shim = work / "shim"
     shim.mkdir()
-    for name, body in (("curl", CURL_SHIM), ("uname", UNAME_SHIM)):
+    shims = [("curl", CURL_SHIM), ("uname", UNAME_SHIM)]
+    if signature == "default":
+        shims.append(("cosign", '#!/bin/sh\necho "$@" >> "$B1_COSIGN_LOG"\nexit 0\n'))
+    for name, body in shims:
         (shim / name).write_text(body)
         (shim / name).chmod(0o755)
     latest_json = work / "latest.json"
@@ -283,12 +289,19 @@ def run_installer(sb: Sandbox, plat: Platform, installer: Path, mirror: Path, ve
         "AASM_CONFIG_DIR": str(home / ".aa"),
         "AASM_STATE_DIR": str(home / ".aasm"),
         "AASM_NO_MODIFY_PATH": "1",
+        # The dry-run mirror is unsigned (a signature exists only for a published tag, and the published-phase
+        # checks verify it for real), so these offline runs opt out of the installer's required-signature default.
+        "B1_COSIGN_LOG": str(work / "cosign.log"),
         "B1_MIRROR": str(mirror), "B1_TAG": version,
         "B1_URL_LOG": str(url_log), "B1_UNEXPECTED_LOG": str(bad_log),
         "B1_LATEST_MODE": mode if mode in ("latest", "list") else "none", "B1_LATEST_JSON": str(latest_json),
         "B1_FAKE_UNAME_S": uname_s, "B1_FAKE_UNAME_M": uname_m,
         "TMPDIR": str(work), "LANG": "C",
     }
+    if signature != "default":
+        # The dry-run mirror is unsigned (a signature exists only for a published tag, and the published-phase
+        # checks verify it for real), so these offline runs opt out of the required-signature default.
+        env["AASM_REQUIRE_SIGNATURE"] = "0"
     base = ["sh", str(installer)]
     if uninstall_of is not None:
         cmd = base + ["--uninstall", "--install-dir", str(dest)]

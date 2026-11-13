@@ -304,7 +304,7 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
         "same curl | sh network-install pattern, pinned to a specific "
         "published release tag.",
     ("docs/src/quick-start/installation.md", "Supply-chain verification (checksum + cosign)",
-     "AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh"):
+     "curl -sSf https://agent-assembly.com/install.sh | AASM_REQUIRE_SIGNATURE=0 sh"):
         "same curl | sh network-install pattern.",
     ("docs/src/quick-start/installation.md", "Homebrew",
      "brew install ai-agent-assembly/tap/aasm"):
@@ -319,11 +319,11 @@ ALLOWLIST: dict[tuple[str, str, str], str] = {
      'curl -sSfL "${BASE}/SHA256SUMS"      -o SHA256SUMS\n\n'
      '# Verify the checksum (use sha256sum on Linux, shasum -a 256 on macOS)\n'
      'shasum -a 256 -c <(grep "${ASSET}" SHA256SUMS)\n\n'
-     '# (Optional) Verify the cosign signature on the checksum file\n'
+     '# (Optional) Verify the cosign signature on the checksum file, bound to this exact tag\n'
      'curl -sSfL "${BASE}/SHA256SUMS.cosign.bundle" -o SHA256SUMS.cosign.bundle\n'
      'cosign verify-blob \\\n'
      '  --bundle SHA256SUMS.cosign.bundle \\\n'
-     "  --certificate-identity-regexp '^https://github\\.com/ai-agent-assembly/agent-assembly/\\.github/workflows/release\\.yml@refs/tags/v.*$' \\\n"
+     '  --certificate-identity "https://github.com/ai-agent-assembly/agent-assembly/.github/workflows/release.yml@refs/tags/${VERSION}" \\\n'
      "  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\\n"
      '  SHA256SUMS\n\n'
      'tar -xzf "${ASSET}" aasm\n'

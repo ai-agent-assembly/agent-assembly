@@ -234,7 +234,7 @@ new_bare_remote() {
 }
 
 # `scripts/qa/check-release-evidence.py`'s R10 reads
-# COSIGN_IDENTITY_RE/COSIGN_OIDC_ISSUER out of <repo-root>/scripts/install-cli.sh
+# COSIGN_IDENTITY_PREFIX/COSIGN_OIDC_ISSUER out of <repo-root>/scripts/install-cli.sh
 # at runtime (AAASM-5900 — reusing, not duplicating, the real installer's
 # constants) — a throwaway T6a/T6b/T6c repo needs its own fixture copy of
 # just those two lines for R10 to have anything to read, even in cases that
@@ -243,7 +243,7 @@ write_install_cli_fixture() {
   local dir="$1"
   mkdir -p "$dir/scripts"
   cat > "$dir/scripts/install-cli.sh" <<'EOF'
-COSIGN_IDENTITY_RE='(?i)^https://github\.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$'
+COSIGN_IDENTITY_PREFIX='^https://github\.com/(?i:ai-agent-assembly/agent-assembly)/\.github/workflows/release\.yml@refs/tags/'
 COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 EOF
 }

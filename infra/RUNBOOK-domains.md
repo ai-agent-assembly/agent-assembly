@@ -122,7 +122,8 @@ curl -fsSL https://agent-assembly.com/install.sh | head -5     # prints the inst
 curl -fsSL https://tool.agent-assembly.dev        | head -5     # same script
 # Health:
 curl -fsS  https://tool.agent-assembly.dev/healthz              # -> ok
-# Full end-to-end one-liner (installs aasm; run in a throwaway shell/container):
+# Full end-to-end one-liner (installs aasm; needs cosign on PATH — the installer verifies the
+# release signature by default; run in a throwaway shell/container):
 curl -fsSL https://agent-assembly.com/install.sh | sh
 aasm --version
 ```

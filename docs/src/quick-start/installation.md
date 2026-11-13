@@ -64,7 +64,7 @@ AASM_INSTALL_DIR=/usr/local/bin curl -sSf https://agent-assembly.com/install.sh 
 |---|---|---|
 | `AASM_INSTALL_DIR` | `/usr/local/bin` or `~/.local/bin` | Installation directory |
 | `AASM_VERSION` | latest | Specific release tag to install |
-| `AASM_REQUIRE_SIGNATURE` | `0` | When `1`, a missing cosign signature aborts the install (see below) |
+| `AASM_REQUIRE_SIGNATURE` | `1` | Signature verification is required: a missing cosign, a missing bundle or a bad signature aborts the install. Set `0` to opt out (see below) |
 | `AASM_NO_MODIFY_PATH` | `0` | When `1`, suppress the `PATH` hint |
 
 ### Choose components or a profile
@@ -85,17 +85,25 @@ Installing the proxy does not trust its certificate authority. On macOS the CA i
 The installer **always** enforces a SHA-256 checksum: it downloads `SHA256SUMS`
 and aborts if the tarball's hash does not match. The checksum file itself is
 additionally signed with [cosign](https://docs.sigstore.dev/) (keyless, via
-GitHub OIDC — Fulcio cert + Rekor log). If `cosign` is installed locally, the
-installer verifies that signature against the release workflow's identity before
-trusting the checksums. To make a missing/unverifiable signature fatal:
+GitHub OIDC — Fulcio cert + Rekor log), and the installer **requires** that
+signature by default. It verifies it against the release workflow's identity
+at exactly the release tag being installed, so a signature from any other
+release does not satisfy the check. This means `cosign` must be installed
+([installation guide](https://docs.sigstore.dev/cosign/system_config/installation/)):
+without it, or with a release that has no `SHA256SUMS.cosign.bundle`, the
+install stops and nothing is written.
+
+To install without the signature check (checksum only), opt out explicitly. The
+installer prints a warning when you do:
 
 ```sh
-AASM_REQUIRE_SIGNATURE=1 curl -sSf https://agent-assembly.com/install.sh | sh
+curl -sSf https://agent-assembly.com/install.sh | AASM_REQUIRE_SIGNATURE=0 sh
 ```
 
-> Releases published before signing was added carry no cosign bundle; with the
-> default `AASM_REQUIRE_SIGNATURE=0` the installer warns and falls back to
-> checksum-only (the SHA-256 check is never skipped).
+> Releases published before signing was added carry no cosign bundle and can
+> only be installed with `AASM_REQUIRE_SIGNATURE=0`. Opting out removes the
+> protection against a tampered release page: the checksum comes from the same
+> place as the tarball.
 
 </div>
 
@@ -131,11 +139,11 @@ curl -sSfL "${BASE}/SHA256SUMS"      -o SHA256SUMS
 # Verify the checksum (use sha256sum on Linux, shasum -a 256 on macOS)
 shasum -a 256 -c <(grep "${ASSET}" SHA256SUMS)
 
-# (Optional) Verify the cosign signature on the checksum file
+# (Optional) Verify the cosign signature on the checksum file, bound to this exact tag
 curl -sSfL "${BASE}/SHA256SUMS.cosign.bundle" -o SHA256SUMS.cosign.bundle
 cosign verify-blob \
   --bundle SHA256SUMS.cosign.bundle \
-  --certificate-identity-regexp '^https://github\.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$' \
+  --certificate-identity "https://github.com/ai-agent-assembly/agent-assembly/.github/workflows/release.yml@refs/tags/${VERSION}" \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   SHA256SUMS
 
