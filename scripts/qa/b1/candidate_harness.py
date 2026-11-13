@@ -750,23 +750,42 @@ trap 'rm -rf "$D"' EXIT
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 need_sha() { [ "$(sha "$1")" = "$2" ] || { echo "digest mismatch for $1 (candidate expects $2)" >&2; exit 1; }; }
 # Release builds are not reproducible, so published bytes are authoritative: the reference for a binary is the
-# member of the PUBLISHED tarball, whose own digest must equal the published SHA256SUMS (signature: see the
-# checksums check). No dry-run digest is baked into these commands.
+# member of the PUBLISHED tarball, whose own digest must equal the published SHA256SUMS, and that file must carry a
+# cosign signature from release.yml at THIS tag (the CLI tarball name has no tag, so the tag-bound identity is what
+# stops an older signed SHA256SUMS being replayed). No dry-run digest is baked into these commands.
+is_sha() { case "$1" in ""|*[!0-9a-f]*) return 1 ;; esac; [ "${#1}" -eq 64 ]; }
+verify_sums() {
+  [ -e "$D/SHA256SUMS.verified" ] && return 0
+  curl -fsSL "$BASE/SHA256SUMS" -o "$D/SHA256SUMS" || exit 1
+  curl -fsSL "$BASE/SHA256SUMS.cosign.bundle" -o "$D/SHA256SUMS.cosign.bundle" || exit 1
+  command -v cosign >/dev/null 2>&1 || { echo "cosign is required" >&2; exit 1; }
+  (cd "$D" && cosign verify-blob --bundle SHA256SUMS.cosign.bundle --certificate-identity-regexp %(ident)s \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS) || exit 1
+  : > "$D/SHA256SUMS.verified"
+}
 published_member_sha() {
-  [ -s "$D/SHA256SUMS" ] || curl -fsSL "$BASE/SHA256SUMS" -o "$D/SHA256SUMS" || exit 1
+  verify_sums
   [ -s "$D/$1" ] || curl -fsSL "$BASE/$1" -o "$D/$1" || exit 1
   want="$(awk -v n="$1" '$2==n || $2=="*"n {print $1; exit}' "$D/SHA256SUMS")"
-  [ -n "$want" ] && [ "$(sha "$D/$1")" = "$want" ] || { echo "$1: published digest != SHA256SUMS" >&2; exit 1; }
+  got="$(sha "$D/$1")"
+  is_sha "$want" && is_sha "$got" && [ "$got" = "$want" ] || { echo "$1: published digest != SHA256SUMS" >&2; exit 1; }
   mkdir -p "$D/members/$1" && tar -xzf "$D/$1" -C "$D/members/$1" "$2" || { echo "$1 has no member $2" >&2; exit 1; }
-  sha "$D/members/$1/$2"
+  m="$(sha "$D/members/$1/$2")"
+  is_sha "$m" || { echo "$1:$2 could not be hashed" >&2; exit 1; }
+  echo "$m"
 }
-need_published() { m="$(published_member_sha "$2" "$3")" || exit 1; [ "$(sha "$1")" = "$m" ] || { echo "digest mismatch for $1 (published $2:$3 differs)" >&2; exit 1; }; }
+need_published() {
+  m="$(published_member_sha "$2" "$3")" || exit 1
+  i="$(sha "$1")"
+  is_sha "$i" && is_sha "$m" && [ "$i" = "$m" ] || { echo "digest mismatch for $1 (published $2:$3 differs or is unreadable)" >&2; exit 1; }
+}
 need_ver() { case "$1" in *"$VER"*) ;; *) echo "version output '$1' lacks $VER" >&2; exit 1 ;; esac; }
 """
 
 
 def _sh(tag: str, body: str) -> str:
-    script = (_PRELUDE % {"tag": shlex.quote(tag)}) + body
+    ident = rf"^https://github.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/{re.escape(tag)}$"
+    script = (_PRELUDE % {"tag": shlex.quote(tag), "ident": shlex.quote(ident)}) + body
     return "sh -c " + shlex.quote(script)
 
 
@@ -808,14 +827,8 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
              iso),
             ("j04.published_release_checksums_and_signature", "github-release",
              "The cosign bundle is produced by release.yml at tag time and the assets are public only after publish.",
-             _sh(tag, 'curl -fsSL "$BASE/SHA256SUMS" -o "$D/SHA256SUMS"\n'
-                 'curl -fsSL "$BASE/SHA256SUMS.cosign.bundle" -o "$D/SHA256SUMS.cosign.bundle"\n'
-                 + sums_loop +
-                 'command -v cosign >/dev/null 2>&1 || { echo "cosign is required" >&2; exit 1; }\n'
-                 '(cd "$D" && cosign verify-blob --bundle SHA256SUMS.cosign.bundle --certificate-identity-regexp '
-                 + shlex.quote(r"^https://github.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$")
-                 + ' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS)\n'),
-             "exit 0: every published tarball digest equals the published SHA256SUMS; cosign verify-blob passes for release.yml at this tag",
+             _sh(tag, "verify_sums\n" + sums_loop),
+             "exit 0: cosign verify-blob passes for release.yml at exactly this tag, and every published tarball digest equals the published SHA256SUMS",
              iso),
             ("j04.published_homebrew_tap_install", "homebrew-tap",
              "The formula is committed to ai-agent-assembly/homebrew-tap by release.yml after publication.",

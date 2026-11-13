@@ -638,6 +638,51 @@ class HarnessTests(TestCase):
         self.assertNotEqual(r.returncode, 0, "the installed bytes match the tampered member, but the tarball is not the signed one")
         self.assertIn("published digest != SHA256SUMS", r.stderr)
 
+    def test_signature_identity_is_bound_to_the_exact_tag(self) -> None:
+        # The CLI tarball name carries no tag, so only a tag-bound identity stops an older signed SHA256SUMS being replayed.
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        for cid in ("j04.published_release_checksums_and_signature", "j04.published_install_sh_default"):
+            (self.tmp / "cosign.log").write_text("")
+            r = self._exec_pending(by[cid], env)
+            self.assertEqual(r.returncode, 0, f"{cid}: {r.stderr[-400:]}")
+            log = (self.tmp / "cosign.log").read_text()
+            self.assertIn(r"refs/tags/" + re.escape(VER) + "$", log, cid)
+            self.assertNotIn("tags/v.*", log, cid)
+
+    def test_install_style_checks_authenticate_sha256sums_themselves(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
+        (self.tmp / "wrap" / "cosign").write_text('#!/bin/sh\necho "$@" >> "$B1_COSIGN_LOG"\nexit 1\n')
+        for cid in ("j04.published_install_sh_default", "j17.published_installer_profile_full_gateway"):
+            r = self._exec_pending(by[cid], env)
+            self.assertNotEqual(r.returncode, 0, f"{cid} passed although cosign rejected SHA256SUMS")
+        (self.tmp / "wrap" / "cosign").unlink()
+        r = self._exec_pending(by["j04.published_install_sh_default"], env)
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_need_published_fails_on_an_unreadable_installed_file_not_an_empty_hash_match(self) -> None:
+        env = self._release_stand_in()
+        script = H._sh(VER, f'need_published {shlex.quote(str(self.tmp / "does-not-exist"))} "{self.plat.cli_tarball()}" aasm\n')
+        self.assertNotEqual(subprocess.run(shlex.split(script), env=env, capture_output=True, text=True, timeout=120).returncode, 0)
+        # a published tarball lacking the member must also fail rather than compare two empty hashes
+        rel = self.tmp / "rel" / VER
+        make_tar(rel / self.plat.cli_tarball(), {"aa-gateway": fake_gateway()})
+        write_sums(rel)
+        r = self._need_published(b"", env)
+        self.assertNotEqual(r.returncode, 0)
+        # both sides unhashable (a directory on each side hashes to the empty string, with no pipefail): "" == "" must not pass
+        with tarfile.open(rel / self.plat.cli_tarball(), "w:gz") as t:
+            ti = tarfile.TarInfo("aasm")
+            ti.type, ti.mode = tarfile.DIRTYPE, 0o755
+            t.addfile(ti)
+        write_sums(rel)
+        d = self.tmp / "a-dir"
+        d.mkdir()
+        script = H._sh(VER, f'need_published {shlex.quote(str(d))} "{self.plat.cli_tarball()}" aasm\n')
+        r = subprocess.run(shlex.split(script), env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(r.returncode, 0, "two unhashable sides compared equal")
+
     def test_need_published_refuses_a_missing_sha256sums_entry(self) -> None:
         env = self._release_stand_in()
         rel = self.tmp / "rel" / VER
