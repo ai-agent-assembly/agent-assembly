@@ -20,7 +20,7 @@ Output (stdout): one JSON object.
 - `not_covered`: acceptance criteria no check covers; not a pass for them.
 - `pending_checks` (status PENDING): checks that need a published artifact. They
   are never executed here. Each `command` is one self-contained `sh -c` script
-  with the tag and candidate digests substituted.
+  with the tag substituted (no dry-run binary digest is baked in; published bytes are authoritative).
 - `obligation_fragment`: the journey entry in the shape of
   scripts/qa/publication_obligations.py (PR #2798) with `registry_digest` and
   `depends_on` left as explicit null placeholders (listed in `_unfilled`);
@@ -749,6 +749,18 @@ D="$(mktemp -d)"
 trap 'rm -rf "$D"' EXIT
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 need_sha() { [ "$(sha "$1")" = "$2" ] || { echo "digest mismatch for $1 (candidate expects $2)" >&2; exit 1; }; }
+# Release builds are not reproducible, so published bytes are authoritative: the reference for a binary is the
+# member of the PUBLISHED tarball, whose own digest must equal the published SHA256SUMS (signature: see the
+# checksums check). No dry-run digest is baked into these commands.
+published_member_sha() {
+  [ -s "$D/SHA256SUMS" ] || curl -fsSL "$BASE/SHA256SUMS" -o "$D/SHA256SUMS" || exit 1
+  [ -s "$D/$1" ] || curl -fsSL "$BASE/$1" -o "$D/$1" || exit 1
+  want="$(awk -v n="$1" '$2==n || $2=="*"n {print $1; exit}' "$D/SHA256SUMS")"
+  [ -n "$want" ] && [ "$(sha "$D/$1")" = "$want" ] || { echo "$1: published digest != SHA256SUMS" >&2; exit 1; }
+  mkdir -p "$D/members/$1" && tar -xzf "$D/$1" -C "$D/members/$1" "$2" || { echo "$1 has no member $2" >&2; exit 1; }
+  sha "$D/members/$1/$2"
+}
+need_published() { m="$(published_member_sha "$2" "$3")" || exit 1; [ "$(sha "$1")" = "$m" ] || { echo "digest mismatch for $1 (published $2:$3 differs)" >&2; exit 1; }; }
 need_ver() { case "$1" in *"$VER"*) ;; *) echo "version output '$1' lacks $VER" >&2; exit 1 ;; esac; }
 """
 
@@ -762,16 +774,12 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
     tag, plat = ctx.version, ctx.plat
     names = {"cli": plat.cli_tarball(), "api": plat.component_tarball("api", tag),
              "runtime": plat.component_tarball("runtime", tag), "proxy": plat.component_tarball("proxy", tag)}
-    tdig = {k: ctx.src_digests[n].split(":", 1)[1] for k, n in names.items() if n in ctx.src_digests}
-    mem = {}
-    for b, k in (("aasm", "cli"), ("aa-gateway", "cli"), ("aa-api-server", "api"), ("aa-runtime", "runtime")):
-        if names[k] in ctx.src_digests:
-            m = member_sha(ctx.mirror / names[k], b)
-            if m:
-                mem[b] = m
+    members = {"aasm": "cli", "aa-gateway": "cli", "aa-api-server": "api", "aa-runtime": "runtime"}
 
     def eq(binary: str, path: str) -> str:
-        return f'need_sha "{path}" {mem[binary]}\n' if binary in mem else ""
+        # Gated like the candidate checks: a platform without the tarball has nothing to compare.
+        k = members[binary]
+        return f'need_published "{path}" "{names[k]}" "{binary}"\n' if names[k] in ctx.src_digests else ""
 
     install = ('export HOME="$D/home"; mkdir -p "$HOME"\n'
                'curl -fsSL "${B1_INSTALL_SH_URL:-https://agent-assembly.com/install.sh}" -o "$D/install.sh"\n')
@@ -780,13 +788,12 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
           "this harness plus this pending check. No yank/delete of published assets without owner approval.")
     iso = "isolated: everything lives in one mktemp dir removed on exit; only reads the public internet"
     brew_iso = ("NOT ISOLATED: installs or UPGRADES in the REAL Homebrew prefix (`brew upgrade || brew install`); "
-                "a stale older install cannot false-PASS because the version and candidate digest are asserted")
+                "a stale older install cannot false-PASS because the version and the published tarball member digest are asserted")
 
     sums_loop = "".join(
         f'curl -fsSL "$BASE/{n}" -o "$D/{n}"\n'
         f'want="$(awk -v n="{n}" \'$2==n || $2=="*"n {{print $1; exit}}\' "$D/SHA256SUMS")"\n'
         f'[ -n "$want" ] && [ "$(sha "$D/{n}")" = "$want" ] || {{ echo "{n}: published digest != SHA256SUMS" >&2; exit 1; }}\n'
-        + (f'[ "$want" = {tdig[k]} ] || {{ echo "{n}: published digest != candidate digest" >&2; exit 1; }}\n' if k in tdig else "")
         for k, n in names.items())
 
     if journey == "J04":
@@ -797,7 +804,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
                  'need_ver "$("$D/bin/aasm" --version)"\n'
                  'for b in aasm aa-gateway aa-api-server; do [ -x "$D/bin/$b" ] || { echo "missing $b" >&2; exit 1; }; done\n'
                  + eq("aasm", "$D/bin/aasm") + eq("aa-gateway", "$D/bin/aa-gateway") + eq("aa-api-server", "$D/bin/aa-api-server")),
-             "exit 0; aasm --version contains the tag's version; aasm, aa-gateway and aa-api-server present and byte-equal to the candidate tarball members",
+             "exit 0; aasm --version contains the tag's version; aasm, aa-gateway and aa-api-server present and byte-equal to the members of the published tarballs (each tarball digest equals the published SHA256SUMS)",
              iso),
             ("j04.published_release_checksums_and_signature", "github-release",
              "The cosign bundle is produced by release.yml at tag time and the assets are public only after publish.",
@@ -808,7 +815,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
                  '(cd "$D" && cosign verify-blob --bundle SHA256SUMS.cosign.bundle --certificate-identity-regexp '
                  + shlex.quote(r"^https://github.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$")
                  + ' --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS)\n'),
-             "exit 0: every published tarball digest equals both SHA256SUMS and the candidate digest; cosign verify-blob passes for release.yml at this tag",
+             "exit 0: every published tarball digest equals the published SHA256SUMS; cosign verify-blob passes for release.yml at this tag",
              iso),
             ("j04.published_homebrew_tap_install", "homebrew-tap",
              "The formula is committed to ai-agent-assembly/homebrew-tap by release.yml after publication.",
@@ -816,7 +823,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
                  'brew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  'need_ver "$("$P/aasm" --version)"\n[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  + eq("aasm", "$P/aasm") + eq("aa-gateway", "$P/aa-gateway")),
-             "aasm --version contains the tag's version; aa-gateway installed (the AAASM-4448/4449 suspect); bytes equal the candidate members",
+             "aasm --version contains the tag's version; aa-gateway installed (the AAASM-4448/4449 suspect); bytes equal the members of the published tarballs",
              brew_iso),
             ("j04.published_homebrew_runtime", "homebrew-tap",
              "Needs the tap formula for aasm-runtime.",
@@ -824,7 +831,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
                  'brew upgrade ai-agent-assembly/tap/aasm-runtime || brew install ai-agent-assembly/tap/aasm-runtime\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-runtime" ] || { echo "aa-runtime not installed" >&2; exit 1; }\n'
                  + eq("aa-runtime", "$P/aa-runtime")),
-             "aa-runtime installed and byte-equal to the candidate runtime tarball member", brew_iso),
+             "aa-runtime installed and byte-equal to the member of the published runtime tarball", brew_iso),
             ("j04.published_latest_resolves_to_candidate", "github-api",
              "Unpinned `curl | sh` resolves the latest release through the GitHub API; the candidate-time check only "
              "exercises a stand-in reply. rc tags are prereleases and may not appear in /releases/latest.",
@@ -864,7 +871,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
              "Installs from the public Release assets.",
              _sh(tag, install + 'AASM_NO_MODIFY_PATH=1 sh "$D/install.sh" --profile full --version "$TAG" --install-dir "$D/bin"\n'
                  'need_ver "$("$D/bin/aa-gateway" --version)"\n' + eq("aa-gateway", "$D/bin/aa-gateway") + gw_run),
-             "exit 0: installed aa-gateway reports the tag's version, equals the candidate member, and serves the sample policy on a loopback port",
+             "exit 0: installed aa-gateway reports the tag's version, equals the published tarball member, and serves the sample policy on a loopback port",
              iso),
             ("j17.published_homebrew_gateway", "homebrew-tap",
              "Formula lives in the tap after publication.",
@@ -872,7 +879,7 @@ def pending(journey: str, ctx: Ctx) -> list[dict]:
                  'brew upgrade ai-agent-assembly/tap/aasm || brew install ai-agent-assembly/tap/aasm\nP="$(brew --prefix)/bin"\n'
                  '[ -x "$P/aa-gateway" ] || { echo "aa-gateway not installed by the formula" >&2; exit 1; }\n'
                  'need_ver "$("$P/aa-gateway" --version)"\n' + eq("aa-gateway", "$P/aa-gateway")),
-             "aa-gateway installed by the formula, reports the tag's version and equals the candidate member (AAASM-4448/4449 suspect)",
+             "aa-gateway installed by the formula, reports the tag's version and equals the published tarball member (AAASM-4448/4449 suspect)",
              brew_iso),
             ("j17.published_container_image_manifest", "ghcr.io",
              "The image exists in GHCR only after the release workflow pushes it. Inferred: only ghcr.io/ai-agent-assembly/aa-runtime "
