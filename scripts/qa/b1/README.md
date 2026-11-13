@@ -45,7 +45,8 @@ Candidate (fidelity `real_local_process`):
   `--candidate-sha` and the installer, policy, harness and `scripts/qa/b1_candidate_common.py`
   files must equal their blobs in that commit (dirty, foreign or out-of-checkout files FAIL).
   So the installer, policy, harness and common-module scripts are tied to `candidate_sha` byte-for-byte; the artifacts in the mirror are bound only
-  by their own checksums (SHA256SUMS and the candidate digests), not by the sha.
+  by their own checksums (SHA256SUMS and the candidate digests), not by the sha. The candidate digests
+  record the tested bytes; they are not compared with the published bytes (see PENDING below).
 - J04: `j04.sha256sums_match_artifacts`, `j04.installer_default_installs_all_binaries`
   (installed bytes equal the tarball members), `j04.installer_version_pin_env`,
   `j04.installer_latest_resolution` (unpinned, via `/releases/latest` and the
@@ -70,13 +71,19 @@ prereleases and may be absent from `/releases/latest`), `j04.published_crates_io
 `j17.published_installer_profile_full_gateway`, `j17.published_homebrew_gateway`,
 `j17.published_container_image_manifest`.
 
-Each pending `command` is one self-contained `sh -c` script with the tag and the
-candidate digests substituted, runnable verbatim. It downloads what it checks,
-verifies in the right directory, and compares published bytes with the candidate's
-digests (tarballs and installed members). Install-style checks use their own temp
+Each pending `command` is one self-contained `sh -c` script with the tag
+substituted, runnable verbatim. It downloads what it checks, verifies in the right
+directory, and compares published bytes with the **published** `SHA256SUMS`: each
+tarball must hash to its SHA256SUMS entry and each installed binary must equal the member
+of that published tarball (`need_published`). No dry-run binary digest is baked in,
+because release builds are not reproducible (AAASM-6464): the tag run rebuilds, so its
+bytes differ from the candidate's even when nothing changed. The candidate digests stay
+in `candidate_checks[*].artifact_digests` as the bytes that were tested; the hosted,
+published bytes are authoritative, and their authenticity is the cosign check in
+`j04.published_release_checksums_and_signature`. Install-style checks use their own temp
 dir and `HOME`. The Homebrew checks `brew upgrade || brew install` in the real Homebrew prefix
-(`side_effects` says so); a stale install cannot false-PASS because version and
-candidate digest are asserted. Test-only environment overrides:
+(`side_effects` says so); a stale install cannot false-PASS because version and the
+published tarball member digest are asserted. Test-only environment overrides:
 `B1_RELEASE_BASE`, `B1_API_BASE`, `B1_INSTALL_SH_URL`, `B1_POLICY_URL`.
 
 Not covered (also in the JSON `not_covered`): J04 `cargo install aa-cli` docs decision;
