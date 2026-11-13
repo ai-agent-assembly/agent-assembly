@@ -7070,6 +7070,15 @@ fn effective_child_env(
     if env.remove("AA_PROXY_PROVIDER_KEYS").is_some() {
         removed.push("AA_PROXY_PROVIDER_KEYS".to_string());
     }
+    // AAASM-6463: the operator's registration key lets its holder register agents
+    // into the key's organization. `aasm` registers the launched agent itself, from
+    // its own environment, so the governed tool has no use for it and must not be
+    // able to read it. Stripped here for the same reason as above: this merge point
+    // is shared by every launch shape, and an isolation backend treats this map as
+    // the child's whole environment.
+    if env.remove(aa_sdk_client::config::REGISTRATION_KEY_ENV).is_some() {
+        removed.push(aa_sdk_client::config::REGISTRATION_KEY_ENV.to_string());
+    }
     (env, removed)
 }
 
@@ -10036,6 +10045,30 @@ mod tests {
         // When the variable was never there, it is not reported as something removed.
         let (_, removed_when_absent) = effective_child_env(&cmd, &HashMap::new(), false, &[]);
         assert!(!removed_when_absent.iter().any(|n| n == "AA_PROXY_PROVIDER_KEYS"));
+    }
+
+    #[test]
+    fn effective_child_env_never_carries_the_registration_key_to_the_tool() {
+        // AAASM-6463: the governed tool must not receive the operator registration key,
+        // whatever launch shape built `child_env`, and an adapter cannot re-add it. The
+        // control is the same call with a variable that must survive.
+        use aa_sdk_client::config::REGISTRATION_KEY_ENV;
+        let adapter = StubEnvContributing;
+        let mut child_env: HashMap<String, String> = HashMap::new();
+        child_env.insert(REGISTRATION_KEY_ENV.to_string(), "aa_QA6463".to_string());
+        child_env.insert("UNRELATED_SETTING".to_string(), "kept".to_string());
+        let cmd = adapter
+            .build_launch_command(&[], "agent-1", None, None)
+            .expect("command");
+        for no_proxy in [false, true] {
+            let (effective, removed) = effective_child_env(&cmd, &child_env, no_proxy, &[]);
+            assert!(!effective.contains_key(REGISTRATION_KEY_ENV), "{effective:?}");
+            assert!(removed.iter().any(|n| n == REGISTRATION_KEY_ENV));
+            assert_eq!(effective.get("UNRELATED_SETTING").map(String::as_str), Some("kept"));
+        }
+        // When the variable was never there, it is not reported as something removed.
+        let (_, removed_when_absent) = effective_child_env(&cmd, &HashMap::new(), false, &[]);
+        assert!(!removed_when_absent.iter().any(|n| n == REGISTRATION_KEY_ENV));
     }
 
     #[test]
