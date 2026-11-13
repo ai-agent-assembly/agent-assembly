@@ -131,7 +131,7 @@ fn context_use_switches_default() {
                     api_key: None,
                 }),
             };
-            aa_cli::commands::context::dispatch(args);
+            assert_eq!(aa_cli::commands::context::dispatch(args), ExitCode::SUCCESS);
         }
         let use_args = aa_cli::commands::context::ContextArgs {
             command: aa_cli::commands::context::ContextCommands::Use(aa_cli::commands::context::UseArgs {
