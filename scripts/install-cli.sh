@@ -9,7 +9,7 @@
 #   curl -fsSL https://agent-assembly.com/install.sh | sh -s -- --profile full
 #
 # Detects the host OS and CPU architecture, downloads the matching per-component
-# tarball(s) plus the release SHA256SUMS (and cosign bundle when present) from the
+# tarball(s) plus the release SHA256SUMS and its cosign bundle from the
 # ai-agent-assembly GitHub Release, verifies each tarball's SHA-256 (and the
 # signature on SHA256SUMS), and installs the requested component binaries into the
 # install directory. It aborts if the checksum is missing/mismatched, or if any
@@ -22,7 +22,8 @@
 #   AASM_INSTALL_DIR     Installation directory (default: auto / ~/.local/bin)
 #   AASM_VERSION         Specific release tag to install (default: latest)
 #   AASM_NO_MODIFY_PATH  Set to 1 to skip the PATH modification hint
-#   AASM_REQUIRE_SIGNATURE  Set to 1 to make a missing cosign signature fatal
+#   AASM_REQUIRE_SIGNATURE  Signature verification is required by default (cosign must be
+#                        installed); set to 0 to opt out (checksum-only, loud warning)
 set -eu
 
 REPO="ai-agent-assembly/agent-assembly"
@@ -264,39 +265,60 @@ sha256_verify() {
 # ── cosign signature verification ─────────────────────────────────────────────
 
 # Expected signer: the agent-assembly release workflow, signed keyless via GitHub
-# OIDC (Fulcio cert + Rekor log). `(?i)` keeps the org/repo match case-insensitive.
-COSIGN_IDENTITY_RE='(?i)^https://github\.com/ai-agent-assembly/agent-assembly/\.github/workflows/release\.yml@refs/tags/v.*$'
+# OIDC (Fulcio cert + Rekor log), at EXACTLY the release tag being installed.
+# Only the org/repo part is case-insensitive; the tag is matched byte-for-byte so
+# a signature minted for any other v* tag (e.g. a replayed older SHA256SUMS) is
+# rejected. scripts/qa/check-release-evidence.py (R10) reads the prefix line below.
+COSIGN_IDENTITY_PREFIX='^https://github\.com/(?i:ai-agent-assembly/agent-assembly)/\.github/workflows/release\.yml@refs/tags/'
 COSIGN_OIDC_ISSUER='https://token.actions.githubusercontent.com'
 
+cosign_identity_re() {
+  # Echo the certificate-identity regexp for release tag <tag>: the fixed prefix
+  # plus the tag with every non-alphanumeric character backslash-escaped, anchored.
+  tag="$1"
+  case "$tag" in
+    ""|*[!A-Za-z0-9._+-]*) err "refusing to build a signature identity from unexpected release tag: ${tag}" ;;
+  esac
+  printf '%s%s$\n' "$COSIGN_IDENTITY_PREFIX" "$(printf '%s' "$tag" | sed 's/[^A-Za-z0-9]/\\&/g')"
+}
+
 verify_signature() {
-  # Verify <sums_file> against the cosign <bundle>. Honors AASM_REQUIRE_SIGNATURE:
-  # when 1, a missing cosign or missing bundle is fatal; otherwise it warns and
-  # falls back to checksum-only (the SHA-256 check below is always enforced).
-  sums_file="$1" bundle="$2"
-  require="${AASM_REQUIRE_SIGNATURE:-0}"
+  # Verify <sums_file> against the cosign <bundle>, bound to release <tag>.
+  # Signature verification is REQUIRED: a missing bundle, a missing cosign or a
+  # failed verification is fatal. The only way out is the explicit, loud opt-out
+  # AASM_REQUIRE_SIGNATURE=0 (checksum-only; the SHA-256 check is always enforced).
+  sums_file="$1" bundle="$2" tag="$3"
+  require="${AASM_REQUIRE_SIGNATURE:-1}"
+  identity_re="$(cosign_identity_re "$tag")"
+
+  if [ "$require" = "0" ]; then
+    warn "AASM_REQUIRE_SIGNATURE=0: the cosign signature on SHA256SUMS will NOT be required."
+    warn "Only the SHA-256 checksum from the same release page is checked; a tampered release would not be detected."
+  fi
 
   if [ ! -f "$bundle" ]; then
-    [ "$require" = "1" ] && err "AASM_REQUIRE_SIGNATURE=1 but this release has no cosign bundle."
-    warn "no cosign bundle for this release — skipping signature check (checksum still enforced)."
+    [ "$require" = "0" ] || err "this release has no cosign bundle (SHA256SUMS.cosign.bundle), so its checksums cannot be verified.
+  Refusing to install. To install an unsigned release anyway, set AASM_REQUIRE_SIGNATURE=0 (checksum-only, NOT recommended)."
+    warn "no cosign bundle for this release — signature check SKIPPED (checksum still enforced)."
     return 0
   fi
 
   if ! command -v cosign >/dev/null 2>&1; then
-    [ "$require" = "1" ] && err "AASM_REQUIRE_SIGNATURE=1 but cosign is not installed.
-  Install it: https://docs.sigstore.dev/cosign/system_config/installation/"
-    warn "cosign not installed — skipping signature verification (checksum still enforced)."
-    warn "For full supply-chain verification install cosign, or set AASM_REQUIRE_SIGNATURE=1."
+    [ "$require" = "0" ] || err "cosign is not installed, so the signature on SHA256SUMS cannot be verified.
+  Install it: https://docs.sigstore.dev/cosign/system_config/installation/
+  Or set AASM_REQUIRE_SIGNATURE=0 to install with the checksum check only (NOT recommended)."
+    warn "cosign not installed — signature verification SKIPPED (checksum still enforced)."
     return 0
   fi
 
   if cosign verify-blob \
       --bundle "$bundle" \
-      --certificate-identity-regexp "$COSIGN_IDENTITY_RE" \
+      --certificate-identity-regexp "$identity_re" \
       --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
       "$sums_file" >/dev/null 2>&1; then
-    say "Cosign signature verified."
+    say "Cosign signature verified (release.yml at ${tag})."
   else
-    err "cosign signature verification FAILED for SHA256SUMS — refusing to install."
+    err "cosign signature verification FAILED for SHA256SUMS at ${tag} — refusing to install."
   fi
 }
 
@@ -631,9 +653,10 @@ main() {
   curl -sSfL "$SUMS_URL" -o "${TMP}/SHA256SUMS" \
     || err "SHA256SUMS download failed: ${SUMS_URL}
   Refusing to install without checksum verification."
-  # Best-effort fetch of the cosign bundle (releases before AAASM-2700 lack one).
+  # Best-effort fetch of the cosign bundle; verify_signature treats its absence as fatal
+  # unless AASM_REQUIRE_SIGNATURE=0 (releases before AAASM-2700 carry none).
   curl -sSfL "$SIG_URL" -o "${TMP}/SHA256SUMS.cosign.bundle" 2>/dev/null || true
-  verify_signature "${TMP}/SHA256SUMS" "${TMP}/SHA256SUMS.cosign.bundle"
+  verify_signature "${TMP}/SHA256SUMS" "${TMP}/SHA256SUMS.cosign.bundle" "$VERSION"
 
   # Preflight: every requested artifact must exist before we install anything.
   _avail=""

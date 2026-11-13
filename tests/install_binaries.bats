@@ -48,7 +48,17 @@ echo "UNEXPECTED NETWORK URL: $url" >> "$MIRROR/.unexpected"
 exit 99
 SHIM
   chmod +x "$BIN/curl"
-  export MIRROR
+  # Signature verification is required by default: serve a bundle and a cosign stub that
+  # records its argv (COSIGN_LOG) and exits $COSIGN_RC (default 0 = signature accepted).
+  : > "$MIRROR/SHA256SUMS.cosign.bundle"
+  cat > "$BIN/cosign" <<'SHIM'
+#!/bin/sh
+echo "$@" >> "$COSIGN_LOG"
+exit "${COSIGN_RC:-0}"
+SHIM
+  chmod +x "$BIN/cosign"
+  COSIGN_LOG="$TMP/cosign.log"; : > "$COSIGN_LOG"
+  export MIRROR COSIGN_LOG
   PATH="$BIN:$PATH"
 }
 
@@ -186,4 +196,67 @@ install() { run sh "$INSTALL_CLI" --version "$VER" --install-dir "$DEST" "$@"; }
   install --profile local
   [ "$status" -eq 0 ]
   for b in aasm aa-gateway aa-api-server aa-runtime; do [ -x "$DEST/$b" ]; done
+}
+
+@test "default install fails closed when the release has no cosign bundle; nothing is installed" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  rm "$MIRROR/SHA256SUMS.cosign.bundle"
+  install
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no cosign bundle"* ]]
+  [ ! -e "$DEST/aasm" ]
+  [ ! -s "$COSIGN_LOG" ]
+}
+
+@test "default install fails closed when cosign is not installed; nothing is installed" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  rm "$BIN/cosign"
+  # a PATH that has the curl shim and the basic tools but no cosign
+  _p="$TMP/nocosign"; mkdir -p "$_p"
+  for _t in sh awk sed tar mktemp uname cp rm mkdir chmod cat grep head cut tr dirname basename date id mv ln dd printf shasum sha256sum; do
+    _w="$(command -v "$_t" 2>/dev/null)" && ln -sf "$_w" "$_p/$_t"
+  done
+  ln -sf "$BIN/curl" "$_p/curl"
+  PATH="$_p" run sh "$INSTALL_CLI" --version "$VER" --install-dir "$DEST"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cosign is not installed"* ]]
+  [ ! -e "$DEST/aasm" ]
+}
+
+@test "a cosign rejection (wrong tag's signature) refuses the install" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  COSIGN_RC=1 install
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"signature verification FAILED"* ]]
+  [ ! -e "$DEST/aasm" ]
+}
+
+@test "default install verifies against the tag-exact identity of the tag being installed" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Cosign signature verified"* ]]
+  grep -q -F -e 'release\.yml@refs/tags/v0\.0\.1\-rc\.8$' "$COSIGN_LOG"
+  ! grep -q -F -e 'v.*' "$COSIGN_LOG"
+  grep -q -F -e '--certificate-oidc-issuer https://token.actions.githubusercontent.com' "$COSIGN_LOG"
+}
+
+@test "AASM_REQUIRE_SIGNATURE=0 is a loud opt-out: no bundle needed, install proceeds with warnings" {
+  pack "$CLI_TGZ" aasm aa-gateway
+  pack "$API_TGZ" aa-api-server
+  sums
+  rm "$MIRROR/SHA256SUMS.cosign.bundle"
+  AASM_REQUIRE_SIGNATURE=0 install
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"AASM_REQUIRE_SIGNATURE=0"* ]]
+  [[ "$output" == *"will NOT be required"* ]]
+  [ -x "$DEST/aasm" ]
 }

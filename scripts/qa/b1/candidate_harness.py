@@ -81,7 +81,7 @@ case "$url" in
   https://github.com/ai-agent-assembly/agent-assembly/releases/download/"$B1_TAG"/*)
     name="${url##*/}"
     case "$name" in
-      SHA256SUMS|aasm-*.tar.gz) ;;
+      SHA256SUMS|SHA256SUMS.cosign.bundle|aasm-*.tar.gz) ;;
       *) exit 22 ;;
     esac
     f="$B1_MIRROR/$name"
@@ -283,6 +283,9 @@ def run_installer(sb: Sandbox, plat: Platform, installer: Path, mirror: Path, ve
         "AASM_CONFIG_DIR": str(home / ".aa"),
         "AASM_STATE_DIR": str(home / ".aasm"),
         "AASM_NO_MODIFY_PATH": "1",
+        # The dry-run mirror is unsigned (a signature exists only for a published tag, and the published-phase
+        # checks verify it for real), so these offline runs opt out of the installer's required-signature default.
+        "AASM_REQUIRE_SIGNATURE": "0",
         "B1_MIRROR": str(mirror), "B1_TAG": version,
         "B1_URL_LOG": str(url_log), "B1_UNEXPECTED_LOG": str(bad_log),
         "B1_LATEST_MODE": mode if mode in ("latest", "list") else "none", "B1_LATEST_JSON": str(latest_json),

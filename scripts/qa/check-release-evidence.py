@@ -65,7 +65,7 @@ tag/release, not just `--tag-target`:
   R10 post-publish artifact identity — `cosign verify-blob` the published
       release's `SHA256SUMS` against its `SHA256SUMS.cosign.bundle`, reusing
       (not duplicating) `scripts/install-cli.sh`'s own
-      `COSIGN_IDENTITY_RE`/`COSIGN_OIDC_ISSUER` constants. Out of scope:
+      `COSIGN_IDENTITY_PREFIX`/`COSIGN_OIDC_ISSUER` constants. Out of scope:
       channel/version propagation, which stays `/release-validate-channels`'s
       job.
 
@@ -1546,12 +1546,12 @@ def rule_r9_post_publish_tag_binding(
 # R10 — post-publish artifact identity
 # ---------------------------------------------------------------------------
 
-_COSIGN_IDENTITY_RE_LINE = re.compile(r"^COSIGN_IDENTITY_RE='(.*)'$", re.M)
+_COSIGN_IDENTITY_PREFIX_LINE = re.compile(r"^COSIGN_IDENTITY_PREFIX='(.*)'$", re.M)
 _COSIGN_OIDC_ISSUER_LINE = re.compile(r"^COSIGN_OIDC_ISSUER='(.*)'$", re.M)
 
 
 def _load_cosign_constants(repo_root: str) -> tuple[str, str]:
-    """Read `COSIGN_IDENTITY_RE`/`COSIGN_OIDC_ISSUER` out of
+    """Read `COSIGN_IDENTITY_PREFIX`/`COSIGN_OIDC_ISSUER` out of
     `scripts/install-cli.sh` at runtime — R10 must verify the SAME identity
     real installers already trust, not a second hand-rolled regex that could
     silently drift from it. Fails loudly (not a fabricated default) if the
@@ -1559,11 +1559,11 @@ def _load_cosign_constants(repo_root: str) -> tuple[str, str]:
     install_cli_path = os.path.join(repo_root, "scripts", "install-cli.sh")
     with open(install_cli_path) as f:
         text = f.read()
-    identity_match = _COSIGN_IDENTITY_RE_LINE.search(text)
+    identity_match = _COSIGN_IDENTITY_PREFIX_LINE.search(text)
     issuer_match = _COSIGN_OIDC_ISSUER_LINE.search(text)
     if not identity_match or not issuer_match:
         raise SystemExit(
-            f"error: could not find COSIGN_IDENTITY_RE/COSIGN_OIDC_ISSUER in "
+            f"error: could not find COSIGN_IDENTITY_PREFIX/COSIGN_OIDC_ISSUER in "
             f"{install_cli_path} — R10 refuses to fabricate a substitute identity"
         )
     return identity_match.group(1), issuer_match.group(1)
@@ -1575,7 +1575,9 @@ def rule_r10_artifact_identity(
     cosign_bin: str, work_dir: str | None,
 ) -> list[str]:
     blocks: list[str] = []
-    identity_re, oidc_issuer = _load_cosign_constants(repo_root)
+    identity_prefix, oidc_issuer = _load_cosign_constants(repo_root)
+    # Tag-exact, like install-cli.sh: a signature minted for another v* tag must not pass.
+    identity_re = identity_prefix + re.escape(publish_tag) + "$"
 
     sums_path = sha256sums_override
     bundle_path = cosign_bundle_override
