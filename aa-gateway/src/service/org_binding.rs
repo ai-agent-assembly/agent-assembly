@@ -16,12 +16,19 @@
 //! | none                     | empty       | org-less agent (legacy / OSS default)    |
 //! | none                     | `X`         | rejected `PermissionDenied`              |
 //! | invalid / revoked/expired| any         | rejected `Unauthenticated`               |
-//! | bound to org `O`         | empty       | org `O` (derived)                        |
-//! | bound to org `O`         | `O`         | org `O`                                  |
-//! | bound to org `O`         | other       | rejected `PermissionDenied` (spoof)      |
+//! | bound to org `O`, write+ | empty       | org `O` (derived)                        |
+//! | bound to org `O`, write+ | `O`         | org `O`                                  |
+//! | bound to org `O`, write+ | other       | rejected `PermissionDenied` (spoof)      |
+//! | bound to org `O`, read   | any         | rejected `PermissionDenied` (scope)      |
 //! | admin, no org binding    | `X`         | org `X` (operator-authorised assertion)  |
 //! | non-admin, no binding    | `X`         | rejected `PermissionDenied`              |
 //! | non-admin, no binding    | empty       | org-less agent                           |
+//!
+//! A key bound to an organization must carry at least [`Scope::Write`] (admin
+//! satisfies it): registering an agent, and through the re-bind path re-adopting
+//! its credential, changes tenant state, so a key minted for read-only REST access
+//! (`aa-keygen` defaults to `--scope read`) is not a registration credential
+//! (AAASM-6463).
 //!
 //! `team_id` is never read as an organization.
 
@@ -32,7 +39,7 @@ use aa_auth::scope::Scope;
 use tonic::{Request, Status};
 
 /// Metric incremented for every registration refused by the org binding,
-/// labelled `reason = "unauthenticated" | "no_credential" | "mismatch" | "unbound_key"`.
+/// labelled `reason = "unauthenticated" | "no_credential" | "mismatch" | "unbound_key" | "insufficient_scope"`.
 pub const METRIC_REGISTER_ORG_REJECTED: &str = "aa_register_org_rejected_total";
 
 /// gRPC metadata key carrying the operator API key on `Register` /
@@ -130,7 +137,17 @@ impl OrgBinder {
             }
         };
 
-        match (entry.org_id.as_deref().filter(|o| !o.is_empty()), claimed) {
+        let bound_org = entry.org_id.as_deref().filter(|o| !o.is_empty());
+        if bound_org.is_some() && !Scope::Write.is_satisfied_by(&entry.scopes) {
+            return Err(reject(
+                "insufficient_scope",
+                Status::permission_denied(
+                    "an organization-bound registration key needs write scope; this key does not have it",
+                ),
+            ));
+        }
+
+        match (bound_org, claimed) {
             (Some(bound), None) => Ok(ResolvedOrg {
                 org: Some(bound.to_owned()),
                 key_bound: true,
@@ -216,13 +233,41 @@ mod tests {
 
     #[test]
     fn bound_key_derives_org_and_accepts_matching_claim() {
-        let (raw, e) = entry(Some("acme"), vec![Scope::Read]);
+        let (raw, e) = entry(Some("acme"), vec![Scope::Write]);
         let b = binder(vec![e]);
         assert_eq!(b.resolve_presented(Some(&raw), "").unwrap().as_deref(), Some("acme"));
         assert_eq!(
             b.resolve_presented(Some(&raw), "acme").unwrap().as_deref(),
             Some("acme")
         );
+    }
+
+    #[test]
+    fn an_org_bound_read_scope_key_cannot_register_into_its_org() {
+        // AAASM-6463 / SEC-E1: `aa-keygen` defaults to read, and a read-only REST key must
+        // not double as a registration credential. Every claim shape is refused, including
+        // the one that would otherwise derive the org (no claim) and the matching claim.
+        // The controls are the same keys at write and admin scope, which register.
+        let (read_raw, read) = entry(Some("acme"), vec![Scope::Read]);
+        let (write_raw, write) = entry(Some("acme"), vec![Scope::Write]);
+        let (admin_raw, admin) = entry(Some("acme"), vec![Scope::Admin]);
+        let b = binder(vec![read, write, admin]);
+        for claim in ["", "acme", "globex"] {
+            let err = b.resolve_presented(Some(&read_raw), claim).unwrap_err();
+            assert_eq!(err.code(), tonic::Code::PermissionDenied, "claim {claim:?}");
+        }
+        for raw in [&write_raw, &admin_raw] {
+            assert_eq!(b.resolve_presented(Some(raw), "").unwrap().as_deref(), Some("acme"));
+            assert_eq!(b.resolve_presented(Some(raw), "acme").unwrap().as_deref(), Some("acme"));
+        }
+    }
+
+    #[test]
+    fn a_read_scope_key_with_no_org_binding_still_registers_org_less() {
+        // The scope check guards an org BINDING; an unbound key asserts no organization,
+        // so it behaves as before (and the existing unbound-key rows are unchanged).
+        let (raw, e) = entry(None, vec![Scope::Read]);
+        assert_eq!(binder(vec![e]).resolve_presented(Some(&raw), "").unwrap(), None);
     }
 
     #[test]
@@ -250,9 +295,9 @@ mod tests {
 
     #[test]
     fn expired_and_revoked_keys_are_unauthenticated() {
-        let (raw_e, mut expired) = entry(Some("acme"), vec![Scope::Read]);
+        let (raw_e, mut expired) = entry(Some("acme"), vec![Scope::Write]);
         expired.expires_at = Some(1);
-        let (raw_r, revoked) = entry(Some("acme"), vec![Scope::Read]);
+        let (raw_r, revoked) = entry(Some("acme"), vec![Scope::Write]);
         let store = ApiKeyStore::from_entries(vec![expired, revoked.clone()]);
         store.revoke(&revoked.id);
         let b = OrgBinder::new(Arc::new(store));
@@ -275,7 +320,7 @@ mod tests {
 
     #[test]
     fn header_is_trimmed_and_resolved() {
-        let (raw, e) = entry(Some("acme"), vec![Scope::Read]);
+        let (raw, e) = entry(Some("acme"), vec![Scope::Write]);
         let b = binder(vec![e]);
         let padded = format!("  {raw} ");
         let req = request_with(&[padded.as_bytes()]);
@@ -289,7 +334,7 @@ mod tests {
 
     #[test]
     fn blank_non_ascii_or_repeated_headers_are_unauthenticated_not_ignored() {
-        let (raw, e) = entry(Some("acme"), vec![Scope::Read]);
+        let (raw, e) = entry(Some("acme"), vec![Scope::Write]);
         let b = binder(vec![e]);
         for bad in [
             request_with(&[b"   "]),
@@ -302,7 +347,7 @@ mod tests {
 
     #[test]
     fn only_a_key_bound_to_the_org_marks_the_binding_as_key_bound() {
-        let (bound_raw, bound) = entry(Some("acme"), vec![Scope::Read]);
+        let (bound_raw, bound) = entry(Some("acme"), vec![Scope::Write]);
         let (admin_raw, admin) = entry(None, vec![Scope::Admin]);
         let b = binder(vec![bound, admin]);
 

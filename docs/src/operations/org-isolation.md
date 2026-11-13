@@ -42,9 +42,24 @@ init_assembly(
 ```
 
 `AA_REGISTRATION_KEY` is also read by the native client when the argument is
-omitted. The key is a bearer credential: use an `https://` gateway for anything
-that is not on loopback. The client marks the header sensitive, but it does not
-encrypt the connection. The runtime sidecar of an org-bound agent must be started with
+omitted.
+
+`aasm run` does not pass `AA_REGISTRATION_KEY` on to the tool it launches
+(AAASM-6463), so a key exported in the operator's shell is not inherited by the
+governed tool by accident. `aasm run` registers the agent itself, from its own
+environment. This removes inheritance only. It is not a confidentiality boundary:
+`aasm run`'s own process still holds the key, and on the default non-isolated path
+a hostile tool running as the same user can read a parent process's environment
+(`/proc/<ppid>/environ` on Linux, `ps eww` or `KERN_PROCARGS2` on macOS) and use the
+key. Whether an `--isolation` backend hides the parent's environment from the tool
+is not something this change verifies or claims. Give an SDK-side process the key
+explicitly rather than through an inherited variable.
+
+The key is a bearer credential: use an `https://` gateway for anything that is not
+on loopback. The client marks the header sensitive, but it does not encrypt the
+connection.
+
+The runtime sidecar of an org-bound agent must be started with
 `AA_AGENT_ORG_ID=<org>` so its op-control subscription finds the agent (the
 registry keys an agent by `org/team/agent`).
 
@@ -55,9 +70,10 @@ registry keys an agent by `org/team/agent`).
 | none | empty | Registered **org-less** (the single-tenant default; unchanged) |
 | none | `X` | Rejected `PermissionDenied` |
 | invalid, revoked or expired | any | Rejected `Unauthenticated` |
-| bound to `O` | empty | Registered in `O` (derived; echoed in `RegisterResponse.org_id`) |
-| bound to `O` | `O` | Registered in `O` |
-| bound to `O` | other | Rejected `PermissionDenied` (spoof) |
+| bound to `O`, `write` or `admin` scope | empty | Registered in `O` (derived; echoed in `RegisterResponse.org_id`) |
+| bound to `O`, `write` or `admin` scope | `O` | Registered in `O` |
+| bound to `O`, `write` or `admin` scope | other | Rejected `PermissionDenied` (spoof) |
+| bound to `O`, `read` scope only | any | Rejected `PermissionDenied` (needs write scope) |
 | admin key, no org binding | `X` | Registered in `X` (operator-authorised) |
 | non-admin key, no org binding | `X` | Rejected `PermissionDenied` |
 | non-admin key, no org binding | empty | Registered org-less |
@@ -159,6 +175,13 @@ registration of that agent replaces it.
 --key-out <raw key file> --org <org> [--team <team>] [--scope read|write|admin]`
 appends the key's argon2 hash to the key file and writes the raw key to a separate
 owner-only file; it never prints the key and rejects an empty `--org`.
+
+* **A registration key needs `--scope write`.** `aa-keygen` defaults to `read`,
+  and the gateway refuses a read-scope org-bound key at `Register` (reason
+  `insufficient_scope`): registering an agent, and re-adopting its credential on a
+  re-bind, change tenant state. Keys issued before this check with the default
+  scope stop registering; re-issue them with `--scope write`. Read-scope org-bound
+  keys remain valid as REST read credentials.
 
 * The gateway reads the key file **once at boot**. A new key, or a key you remove
   from the file, takes effect when the gateway restarts. A key revoked through the
