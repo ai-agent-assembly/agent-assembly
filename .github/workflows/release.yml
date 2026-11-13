@@ -1158,7 +1158,7 @@ jobs:
         # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
         # compromised upstream tag cannot inject code into this privileged
         # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           path: tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -1265,7 +1265,7 @@ jobs:
         # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
         # compromised upstream tag cannot inject code into this privileged
         # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           path: sdk
           token: ${{ secrets.NODE_SDK_BOT_TOKEN }}
@@ -1360,7 +1360,7 @@ jobs:
         # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
         # compromised upstream tag cannot inject code into this privileged
         # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           path: sdk
           token: ${{ secrets.PYTHON_SDK_BOT_TOKEN }}
@@ -1473,7 +1473,7 @@ jobs:
         # AAASM-3135: pinned to a full commit SHA (not the mutable v8 tag) so a
         # compromised upstream tag cannot inject code into this privileged
         # PR-opening job (it runs with elevated GITHUB_TOKEN). SHA = tag v8.1.1.
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        uses: peter-evans/create-pull-request@3ffccacd46053766916f087ce41d627c0b8cf2d1 # v8.1.3
         with:
           path: sdk
           token: ${{ secrets.GO_SDK_BOT_TOKEN }}
