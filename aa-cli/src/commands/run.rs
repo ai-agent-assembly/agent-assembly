@@ -9025,6 +9025,37 @@ mod tests {
         std::fs::read_to_string(&out).expect("read captured env")
     }
 
+    /// Like [`AmbientEnvVars`] but for values that need not be valid UTF-8. The lock
+    /// lives in the guard struct, as in `AmbientEnvVars`, so it is released (and the
+    /// variables restored) even when an assertion panics.
+    struct AmbientOsEnvVars {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prior: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl AmbientOsEnvVars {
+        fn set(pairs: &[(&'static str, &std::ffi::OsStr)]) -> Self {
+            let lock = crate::test_support::env_guard();
+            let mut prior = Vec::new();
+            for (key, value) in pairs {
+                prior.push((*key, std::env::var_os(key)));
+                std::env::set_var(key, value);
+            }
+            Self { _lock: lock, prior }
+        }
+    }
+
+    impl Drop for AmbientOsEnvVars {
+        fn drop(&mut self) {
+            for (key, prior) in self.prior.drain(..) {
+                match prior {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
     /// AAASM-6463: a registration key whose value is not valid UTF-8 never enters the
     /// map `effective_child_env` works on (`inheritable_ambient_env` drops it), so the
     /// by-presence removal cannot see it, and the non-isolated child inherits this
@@ -9038,34 +9069,22 @@ mod tests {
         use aa_sdk_client::config::REGISTRATION_KEY_ENV;
         use std::os::unix::ffi::OsStrExt;
 
-        let _lock = crate::test_support::env_guard();
-        let prior_key = std::env::var_os(REGISTRATION_KEY_ENV);
-        let prior_control = std::env::var_os("QA6463_CONTROL");
-        std::env::set_var(REGISTRATION_KEY_ENV, std::ffi::OsStr::from_bytes(b"aa_QA6463\xff\xfe"));
-        std::env::set_var("QA6463_CONTROL", "inherited");
+        let _ambient = AmbientOsEnvVars::set(&[
+            (REGISTRATION_KEY_ENV, std::ffi::OsStr::from_bytes(b"aa_QA6463\xff\xfe")),
+            ("QA6463_CONTROL", std::ffi::OsStr::new("inherited")),
+        ]);
 
         // The map never carries the key: that is the shape of the defect.
         assert!(!inheritable_ambient_env().contains_key(REGISTRATION_KEY_ENV));
-        let real_env = spawn_and_capture_real_env(&HashMap::new(), false).await;
-        let real_env_no_proxy = spawn_and_capture_real_env(&HashMap::new(), true).await;
-
-        match prior_key {
-            Some(v) => std::env::set_var(REGISTRATION_KEY_ENV, v),
-            None => std::env::remove_var(REGISTRATION_KEY_ENV),
-        }
-        match prior_control {
-            Some(v) => std::env::set_var("QA6463_CONTROL", v),
-            None => std::env::remove_var("QA6463_CONTROL"),
-        }
-
-        for dump in [&real_env, &real_env_no_proxy] {
+        for no_proxy in [false, true] {
+            let dump = spawn_and_capture_real_env(&HashMap::new(), no_proxy).await;
             assert!(
                 dump.lines().any(|l| l == "QA6463_CONTROL=inherited"),
                 "control failed: an ordinary ambient variable must reach the real child"
             );
             assert!(
                 !dump.lines().any(|l| l.starts_with(&format!("{REGISTRATION_KEY_ENV}="))),
-                "the registration key reached the real spawned child's environment"
+                "the registration key reached the real spawned child's environment (no_proxy={no_proxy})"
             );
         }
     }
