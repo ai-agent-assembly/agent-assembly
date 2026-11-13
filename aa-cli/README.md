@@ -34,6 +34,10 @@ the full method matrix and PATH setup):
 curl -fsSL https://agent-assembly.com/install.sh | sh
 ```
 
+The installer requires [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/)
+to verify the release signature and stops without installing if it is missing; set
+`AASM_REQUIRE_SIGNATURE=0` on `sh` to opt out (checksum only).
+
 Pin a specific version with `AASM_VERSION`:
 
 ```sh

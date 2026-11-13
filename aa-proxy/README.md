@@ -14,7 +14,7 @@ code does not change, but the proxy does have to be installed, started, routed t
 defaults to `true`, so only the built-in LLM hosts are decrypted. Linux and
 macOS, with Windows unsupported. From `v0.0.1-rc.8` the release pipeline builds
 and publishes `aasm-proxy` for `linux-amd64`, `linux-arm64`, `darwin-arm64` and
-`darwin-amd64`, and `install.sh --profile full` installs it on macOS (earlier
+`darwin-amd64`, and `install.sh --profile full` (which requires `cosign`) installs it on macOS (earlier
 releases have no macOS tarball). The Homebrew formula is `depends_on :linux` and
 no GHCR image carries it; `cargo install aa-proxy` remains the source route.
 Installing never trusts the CA; on macOS that is attempted at proxy start behind

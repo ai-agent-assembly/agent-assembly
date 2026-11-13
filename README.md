@@ -25,6 +25,12 @@ This downloads and installs the `aasm` binary to `~/.local/bin`. Requires a
 The installer script lives at [`scripts/install-cli.sh`](scripts/install-cli.sh).
 The alternate host `https://tool.agent-assembly.dev` serves the same script.
 
+The installer verifies the release's [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+signature (bound to the exact release tag) and **requires `cosign` to be installed**; it
+stops without installing if `cosign` or the signature is missing. To install with the
+SHA-256 check only, run `curl -fsSL https://agent-assembly.com/install.sh | AASM_REQUIRE_SIGNATURE=0 sh`
+(see [Installation](docs/src/quick-start/installation.md#supply-chain-verification-checksum--cosign)).
+
 ```sh
 # Pin a specific version
 AASM_VERSION=v0.0.1-rc.8 curl -sSf https://agent-assembly.com/install.sh | sh
