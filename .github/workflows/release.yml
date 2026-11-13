@@ -575,6 +575,19 @@ jobs:
       contents: read
 
     steps:
+      - name: Reject a malformed release tag before anything is published
+        # AAASM-6468: same SemVer 2.0 shape the Homebrew job enforces, checked
+        # here so a bad tag fails before `publish` (which needs this job)
+        # rather than after assets are signed and uploaded. No extra permission.
+        if: github.event_name == 'push'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ! [[ "${REF_NAME#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::refusing non-semver release tag '${REF_NAME}'"
+            exit 1
+          fi
+
       - name: Download Linux x86_64 build artifact
         # Carries the legacy CLI tarball and every component tarball (incl. the
         # `api` component with aa-api-server) for this target.
