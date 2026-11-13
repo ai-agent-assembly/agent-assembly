@@ -996,7 +996,10 @@ jobs:
         run: bash .ci/strip-for-publish.sh
 
       - name: Install cargo-workspaces
-        run: cargo install cargo-workspaces --locked --version ^0.4
+        # AAASM-6468: exact pin, not ^0.4. The next step hands this tool
+        # CARGO_REGISTRY_TOKEN, so the version must change only via a reviewed
+        # edit. 0.4.2 is what the rc.7 release run (35163052510) resolved.
+        run: cargo install cargo-workspaces --locked --version =0.4.2
 
       - name: Publish workspace crates in topological order
         env:
