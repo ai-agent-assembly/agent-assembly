@@ -1090,8 +1090,9 @@ jobs:
           VERSION="${REF_NAME#v}"
           # AAASM-6468: the tag glob admits shell/sed metacharacters, and this value
           # is later substituted into a sed program and a branch name. Accept only
-          # a semver shape so nothing else can reach them.
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+          # SemVer 2.0 (prerelease and +build identifiers use [0-9A-Za-z-]) so no
+          # shell/sed metacharacter or whitespace can reach them.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
             echo "::error::refusing non-semver release tag '${REF_NAME}'"
             exit 1
           fi
