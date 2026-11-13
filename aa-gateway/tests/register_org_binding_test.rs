@@ -39,6 +39,7 @@ struct Keys {
     acme_expired: String,
     acme_team_a: String,
     acme_team_b: String,
+    acme_read: String,
 }
 
 fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
@@ -58,20 +59,21 @@ fn entry(org: Option<&str>, scopes: Vec<Scope>) -> (String, ApiKeyEntry) {
 }
 
 fn key_store() -> (Arc<ApiKeyStore>, Keys) {
-    let (acme, e1) = entry(Some("acme"), vec![Scope::Read]);
-    let (globex, e2) = entry(Some("globex"), vec![Scope::Read]);
+    let (acme, e1) = entry(Some("acme"), vec![Scope::Write]);
+    let (globex, e2) = entry(Some("globex"), vec![Scope::Write]);
     let (unbound_plain, e3) = entry(None, vec![Scope::Read]);
     let (admin_unbound, e4) = entry(None, vec![Scope::Admin]);
-    let (revoked, e5) = entry(Some("acme"), vec![Scope::Read]);
+    let (revoked, e5) = entry(Some("acme"), vec![Scope::Write]);
     let revoked_id = e5.id.clone();
-    let (acme_second, e6) = entry(Some("acme"), vec![Scope::Read]);
-    let (acme_expired, mut e7) = entry(Some("acme"), vec![Scope::Read]);
+    let (acme_second, e6) = entry(Some("acme"), vec![Scope::Write]);
+    let (acme_expired, mut e7) = entry(Some("acme"), vec![Scope::Write]);
     e7.expires_at = Some(1);
-    let (acme_team_a, mut e8) = entry(Some("acme"), vec![Scope::Read]);
+    let (acme_team_a, mut e8) = entry(Some("acme"), vec![Scope::Write]);
     e8.team_id = Some("team-a".into());
-    let (acme_team_b, mut e9) = entry(Some("acme"), vec![Scope::Read]);
+    let (acme_team_b, mut e9) = entry(Some("acme"), vec![Scope::Write]);
     e9.team_id = Some("team-b".into());
-    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7, e8, e9]);
+    let (acme_read, e10) = entry(Some("acme"), vec![Scope::Read]);
+    let store = ApiKeyStore::from_entries(vec![e1, e2, e3, e4, e5, e6, e7, e8, e9, e10]);
     store.revoke(&revoked_id);
     (
         Arc::new(store),
@@ -85,6 +87,7 @@ fn key_store() -> (Arc<ApiKeyStore>, Keys) {
             acme_expired,
             acme_team_a,
             acme_team_b,
+            acme_read,
         },
     )
 }
@@ -267,6 +270,30 @@ async fn spoofed_org_for_a_bound_key_is_rejected() {
         ..id
     };
     assert!(org_of(&registry, &as_acme).is_none());
+}
+
+/// AAASM-6463 / SEC-E1: a key bound to acme at read scope (the `aa-keygen` default) is a
+/// read-only REST credential. It is refused at Register whether or not an org is
+/// claimed, and registers nothing; the same org at write scope (`keys.acme`) registers.
+#[tokio::test]
+async fn an_org_bound_read_scope_key_cannot_register_an_agent() {
+    let (addr, registry, keys) = start().await;
+    for (name, claimed) in [("read-derived", ""), ("read-claiming", "acme")] {
+        let (kp, id) = identity(name, claimed);
+        let err = register(addr, &kp, &id, Some(&keys.acme_read)).await.unwrap_err();
+        assert_eq!(err.code(), Code::PermissionDenied, "{name}");
+        let as_acme = ProtoAgentId {
+            org_id: "acme".into(),
+            ..id.clone()
+        };
+        assert!(org_of(&registry, &id).is_none(), "{name}");
+        assert!(org_of(&registry, &as_acme).is_none(), "{name}");
+    }
+    let (kp, id) = identity("write-control", "acme");
+    register(addr, &kp, &id, Some(&keys.acme))
+        .await
+        .expect("write scope registers");
+    assert_eq!(org_of(&registry, &id), Some(Some("acme".into())));
 }
 
 #[tokio::test]

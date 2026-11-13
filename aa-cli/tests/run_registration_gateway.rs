@@ -400,7 +400,7 @@ async fn the_cli_and_the_sdk_get_the_same_verdicts() -> anyhow::Result<()> {
     let entry = aa_auth::api_key::ApiKeyEntry {
         id: "cli-parity".into(),
         key_hash: key.hash().expect("hash the operator key"),
-        scopes: vec![aa_auth::scope::Scope::Read],
+        scopes: vec![aa_auth::scope::Scope::Write],
         created_at: 0,
         expires_at: None,
         label: None,

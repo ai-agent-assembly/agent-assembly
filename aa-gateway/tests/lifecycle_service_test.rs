@@ -67,7 +67,7 @@ fn bound_key(org: &str) -> (String, aa_auth::api_key::ApiKeyEntry) {
     let entry = aa_auth::api_key::ApiKeyEntry {
         id: format!("bound-{org}"),
         key_hash: key.hash().unwrap(),
-        scopes: vec![aa_auth::scope::Scope::Read],
+        scopes: vec![aa_auth::scope::Scope::Write],
         created_at: 0,
         expires_at: None,
         label: None,

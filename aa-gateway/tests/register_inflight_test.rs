@@ -131,7 +131,7 @@ fn fixture(name: &str) -> Fixture {
     let entry = ApiKeyEntry {
         id: "inflight".into(),
         key_hash: key.hash().unwrap(),
-        scopes: vec![Scope::Read],
+        scopes: vec![Scope::Write],
         created_at: 0,
         expires_at: None,
         label: None,
