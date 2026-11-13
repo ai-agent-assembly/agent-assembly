@@ -6990,6 +6990,23 @@ fn withheld_from_isolation_report(isolation: &aa_isolation::IsolationReport) -> 
         .collect()
 }
 
+/// Operator credentials that must not reach the governed tool through its
+/// inherited environment: the proxy's provider keys (AAASM-6395) and the registration
+/// key that lets its holder register agents into an organization (AAASM-6463).
+///
+/// `effective_child_env` strips them from the child's map when present, and
+/// `spawn_and_wait` also `env_remove`s each one unconditionally. The second step is
+/// needed because the non-isolated child inherits this process's real environment,
+/// and `inheritable_ambient_env` drops a value that is not valid UTF-8: such a value is
+/// absent from the map, so the by-presence removal never sees it and the child would
+/// inherit it raw.
+///
+/// This stops accidental inheritance only. `aasm run`'s own process still holds these
+/// values, and a hostile same-uid tool on the non-isolated path can read a parent's
+/// environment (`/proc/<ppid>/environ` on Linux, `ps eww` or `KERN_PROCARGS2` on
+/// macOS). Whether an `--isolation` backend hides it is not claimed here.
+const TOOL_WITHHELD_ENV: [&str; 2] = ["AA_PROXY_PROVIDER_KEYS", aa_sdk_client::config::REGISTRATION_KEY_ENV];
+
 fn effective_child_env(
     cmd: &std::process::Command,
     child_env: &HashMap<String, String>,
@@ -7062,22 +7079,15 @@ fn effective_child_env(
         env.remove(name);
         removed.push(name.clone());
     }
-    // AAASM-6395: the operator's provider keys are for the proxy and never for the
-    // governed tool. `aasm` scrubs the variable at startup, but this merge point is
-    // shared by every launch shape (including isolation backends that treat this map
-    // as the child's whole environment), so the tool's environment is stripped here
-    // too, by name, as a second independent guard.
-    if env.remove("AA_PROXY_PROVIDER_KEYS").is_some() {
-        removed.push("AA_PROXY_PROVIDER_KEYS".to_string());
-    }
-    // AAASM-6463: the operator's registration key lets its holder register agents
-    // into the key's organization. `aasm` registers the launched agent itself, from
-    // its own environment, so the governed tool has no use for it and must not be
-    // able to read it. Stripped here for the same reason as above: this merge point
-    // is shared by every launch shape, and an isolation backend treats this map as
-    // the child's whole environment.
-    if env.remove(aa_sdk_client::config::REGISTRATION_KEY_ENV).is_some() {
-        removed.push(aa_sdk_client::config::REGISTRATION_KEY_ENV.to_string());
+    // AAASM-6395 / AAASM-6463: operator credentials the governed tool is never meant
+    // to inherit (see `TOOL_WITHHELD_ENV`). `aasm` scrubs the provider keys at startup,
+    // but this merge point is shared by every launch shape (including isolation
+    // backends that treat this map as the child's whole environment), so the tool's
+    // environment is stripped here too, by name, as a second independent guard.
+    for name in TOOL_WITHHELD_ENV {
+        if env.remove(name).is_some() {
+            removed.push(name.to_string());
+        }
     }
     (env, removed)
 }
@@ -7155,6 +7165,9 @@ async fn spawn_and_wait(
     let mut tokio_cmd = tokio::process::Command::from(cmd);
     tokio_cmd.envs(&effective);
     for name in &removed {
+        tokio_cmd.env_remove(name);
+    }
+    for name in TOOL_WITHHELD_ENV {
         tokio_cmd.env_remove(name);
     }
     if !no_proxy {
@@ -9010,6 +9023,51 @@ mod tests {
             .expect("spawn_and_wait must succeed");
         assert_eq!(code, 0, "the env-dumping child must exit successfully");
         std::fs::read_to_string(&out).expect("read captured env")
+    }
+
+    /// AAASM-6463: a registration key whose value is not valid UTF-8 never enters the
+    /// map `effective_child_env` works on (`inheritable_ambient_env` drops it), so the
+    /// by-presence removal cannot see it, and the non-isolated child inherits this
+    /// process's real environment. `spawn_and_wait` must `env_remove` the names in
+    /// `TOOL_WITHHELD_ENV` unconditionally; this probes the real child's environment.
+    /// The control is an ordinary ambient variable of the same launch, which must still
+    /// arrive: it shows the dump is a real inherited environment and not an empty one.
+    /// The value is a fixed placeholder, never a real key.
+    #[tokio::test]
+    async fn spawn_and_wait_withholds_a_non_utf8_registration_key_from_the_real_child() {
+        use aa_sdk_client::config::REGISTRATION_KEY_ENV;
+        use std::os::unix::ffi::OsStrExt;
+
+        let _lock = crate::test_support::env_guard();
+        let prior_key = std::env::var_os(REGISTRATION_KEY_ENV);
+        let prior_control = std::env::var_os("QA6463_CONTROL");
+        std::env::set_var(REGISTRATION_KEY_ENV, std::ffi::OsStr::from_bytes(b"aa_QA6463\xff\xfe"));
+        std::env::set_var("QA6463_CONTROL", "inherited");
+
+        // The map never carries the key: that is the shape of the defect.
+        assert!(!inheritable_ambient_env().contains_key(REGISTRATION_KEY_ENV));
+        let real_env = spawn_and_capture_real_env(&HashMap::new(), false).await;
+        let real_env_no_proxy = spawn_and_capture_real_env(&HashMap::new(), true).await;
+
+        match prior_key {
+            Some(v) => std::env::set_var(REGISTRATION_KEY_ENV, v),
+            None => std::env::remove_var(REGISTRATION_KEY_ENV),
+        }
+        match prior_control {
+            Some(v) => std::env::set_var("QA6463_CONTROL", v),
+            None => std::env::remove_var("QA6463_CONTROL"),
+        }
+
+        for dump in [&real_env, &real_env_no_proxy] {
+            assert!(
+                dump.lines().any(|l| l == "QA6463_CONTROL=inherited"),
+                "control failed: an ordinary ambient variable must reach the real child"
+            );
+            assert!(
+                !dump.lines().any(|l| l.starts_with(&format!("{REGISTRATION_KEY_ENV}="))),
+                "the registration key reached the real spawned child's environment"
+            );
+        }
     }
 
     /// Extracts only the lines of a captured env dump whose key is one of
