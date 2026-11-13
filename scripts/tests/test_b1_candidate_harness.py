@@ -13,6 +13,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -579,16 +580,151 @@ class HarnessTests(TestCase):
         self.assertIn("verify-blob", (self.tmp / "cosign.log").read_text())
         self.assertFalse((self.tmp / "realhome").exists(), "pending commands must not touch the caller's HOME")
 
-    def test_pending_commands_fail_when_published_bytes_differ_from_candidate(self) -> None:
+    def test_pending_commands_bake_in_no_dry_run_binary_digest(self) -> None:
+        # Release builds are not reproducible (AAASM-6464): a literal digest of the dry-run bytes can never match
+        # the tag run's bytes. The only 64-hex literal allowed is the committed policy file's digest.
+        policy = hashlib.sha256(POLICY.read_bytes()).hexdigest()
+        digests = {hashlib.sha256(f.read_bytes()).hexdigest() for f in self.mirror.iterdir()}
+        for j in ("j04", "j17"):
+            for p in self._pending(j):
+                found = set(re.findall(r"\b[0-9a-f]{64}\b", p["command"])) - {policy}
+                self.assertFalse(found, (p["id"], found))
+                self.assertFalse(digests & set(re.findall(r"\b[0-9a-f]{64}\b", p["command"])), p["id"])
+
+    def test_pending_commands_pass_when_published_bytes_are_self_consistent_but_not_the_candidate_build(self) -> None:
+        # A non-reproducible rebuild at the tag differs from the dry-run bytes but is internally consistent:
+        # that is the normal case and must pass; only an inconsistency with the published SHA256SUMS may fail.
         env = self._release_stand_in()
         by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
         rel = self.tmp / "rel" / VER
-        make_tar(rel / self.plat.cli_tarball(), {"aasm": fake_aasm(), "aa-gateway": fake_gateway() + "# differs\n"})
-        write_sums(rel)  # internally consistent, but not the candidate's bytes
+        make_tar(rel / self.plat.cli_tarball(), {"aasm": fake_aasm(), "aa-gateway": fake_gateway() + "# rebuilt\n"})
+        write_sums(rel)
+        for cid in ("j04.published_install_sh_default", "j04.published_release_checksums_and_signature",
+                    "j17.published_installer_profile_full_gateway"):
+            r = self._exec_pending(by[cid], env)
+            self.assertEqual(r.returncode, 0, f"{cid}: {r.stdout[-400:]} {r.stderr[-600:]}")
+
+    def test_pending_commands_fail_when_a_published_tarball_differs_from_sha256sums(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
+        rel = self.tmp / "rel" / VER
+        write_sums(rel)  # records the real digests ...
+        make_tar(rel / self.plat.cli_tarball(), {"aasm": fake_aasm(), "aa-gateway": fake_gateway() + "# tampered\n"})
         for cid in ("j04.published_install_sh_default", "j04.published_release_checksums_and_signature",
                     "j17.published_installer_profile_full_gateway"):
             r = self._exec_pending(by[cid], env)
             self.assertNotEqual(r.returncode, 0, cid)
+        r = self._exec_pending(by["j04.published_release_checksums_and_signature"], env)
+        self.assertIn("published digest != SHA256SUMS", r.stderr)
+
+    def _need_published(self, installed: bytes, env: dict) -> subprocess.CompletedProcess:
+        f = self.tmp / "installed-aasm"
+        f.write_bytes(installed)
+        script = H._sh(VER, f'need_published {shlex.quote(str(f))} "{self.plat.cli_tarball()}" aasm\n')
+        return subprocess.run(shlex.split(script), env=env, capture_output=True, text=True, timeout=120)
+
+    def test_need_published_compares_installed_bytes_with_the_published_tarball_member(self) -> None:
+        env = self._release_stand_in()
+        self.assertEqual(self._need_published(fake_aasm().encode(), env).returncode, 0)
+        r = self._need_published(fake_aasm().encode() + b"# swapped\n", env)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("digest mismatch", r.stderr)
+
+    def test_need_published_refuses_a_tarball_that_does_not_match_sha256sums(self) -> None:
+        env = self._release_stand_in()
+        rel = self.tmp / "rel" / VER
+        make_tar(rel / self.plat.cli_tarball(), {"aasm": fake_aasm() + "# tampered\n", "aa-gateway": fake_gateway()})
+        r = self._need_published(fake_aasm().encode() + b"# tampered\n", env)  # installed == tampered member
+        self.assertNotEqual(r.returncode, 0, "the installed bytes match the tampered member, but the tarball is not the signed one")
+        self.assertIn("published digest != SHA256SUMS", r.stderr)
+
+    def test_signature_identity_is_bound_to_the_exact_tag(self) -> None:
+        # The CLI tarball name carries no tag, so only a tag-bound identity stops an older signed SHA256SUMS being replayed.
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        for cid in ("j04.published_release_checksums_and_signature", "j04.published_install_sh_default"):
+            (self.tmp / "cosign.log").write_text("")
+            r = self._exec_pending(by[cid], env)
+            self.assertEqual(r.returncode, 0, f"{cid}: {r.stderr[-400:]}")
+            log = (self.tmp / "cosign.log").read_text()
+            self.assertIn(r"refs/tags/" + re.escape(VER) + "$", log, cid)
+            self.assertNotIn("tags/v.*", log, cid)
+
+    def test_signature_check_names_the_bundle_and_the_github_actions_issuer(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        (self.tmp / "cosign.log").write_text("")
+        self.assertEqual(self._exec_pending(by["j04.published_install_sh_default"], env).returncode, 0)
+        log = (self.tmp / "cosign.log").read_text()
+        for needle in ("--bundle SHA256SUMS.cosign.bundle", "--certificate-oidc-issuer https://token.actions.githubusercontent.com",
+                       "--certificate-identity-regexp"):
+            self.assertIn(needle, log)
+
+    INSTALL_STYLE = ("j04.published_install_sh_default", "j04.published_homebrew_tap_install",
+                     "j04.published_homebrew_runtime", "j17.published_installer_profile_full_gateway",
+                     "j17.published_homebrew_gateway")
+
+    def test_install_style_checks_always_verify_published_bytes_even_when_the_candidate_lacks_tarballs(self) -> None:
+        # A candidate mirror with no runtime/proxy/api tarball must not turn an install-style check into a
+        # version-output-only pass: the check still reaches verify_sums and fails closed on the release.
+        for lacking in ("runtime", "proxy", "api"):
+            build_mirror(self.mirror, self.plat, runtime=lacking != "runtime", proxy=lacking != "proxy")
+            if lacking == "api":
+                (self.mirror / self.plat.component_tarball("api", VER)).unlink()
+                write_sums(self.mirror)
+            by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
+            for cid in self.INSTALL_STYLE:
+                # an invocation line: the shared prelude defines need_published, so the bare word proves nothing
+                self.assertRegex(by[cid]["command"], r'(?m)^need_published "', (lacking, cid))
+        self.assertIn(self.plat.component_tarball("runtime", VER), by["j04.published_homebrew_runtime"]["command"])
+
+    def test_install_style_check_fails_closed_when_the_release_lacks_the_tarball(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04")}
+        rel = self.tmp / "rel" / VER
+        (rel / self.plat.component_tarball("api", VER)).unlink()
+        write_sums(rel)
+        self.assertNotEqual(self._exec_pending(by["j04.published_install_sh_default"], env).returncode, 0)
+
+    def test_install_style_checks_authenticate_sha256sums_themselves(self) -> None:
+        env = self._release_stand_in()
+        by = {p["id"]: p for p in self._pending("j04") + self._pending("j17")}
+        (self.tmp / "wrap" / "cosign").write_text('#!/bin/sh\necho "$@" >> "$B1_COSIGN_LOG"\nexit 1\n')
+        for cid in ("j04.published_install_sh_default", "j17.published_installer_profile_full_gateway"):
+            r = self._exec_pending(by[cid], env)
+            self.assertNotEqual(r.returncode, 0, f"{cid} passed although cosign rejected SHA256SUMS")
+        (self.tmp / "wrap" / "cosign").unlink()
+        r = self._exec_pending(by["j04.published_install_sh_default"], env)
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_need_published_fails_on_an_unreadable_installed_file_not_an_empty_hash_match(self) -> None:
+        env = self._release_stand_in()
+        script = H._sh(VER, f'need_published {shlex.quote(str(self.tmp / "does-not-exist"))} "{self.plat.cli_tarball()}" aasm\n')
+        self.assertNotEqual(subprocess.run(shlex.split(script), env=env, capture_output=True, text=True, timeout=120).returncode, 0)
+        # a published tarball lacking the member must also fail rather than compare two empty hashes
+        rel = self.tmp / "rel" / VER
+        make_tar(rel / self.plat.cli_tarball(), {"aa-gateway": fake_gateway()})
+        write_sums(rel)
+        r = self._need_published(b"", env)
+        self.assertNotEqual(r.returncode, 0)
+        # both sides unhashable (a directory on each side hashes to the empty string, with no pipefail): "" == "" must not pass
+        with tarfile.open(rel / self.plat.cli_tarball(), "w:gz") as t:
+            ti = tarfile.TarInfo("aasm")
+            ti.type, ti.mode = tarfile.DIRTYPE, 0o755
+            t.addfile(ti)
+        write_sums(rel)
+        d = self.tmp / "a-dir"
+        d.mkdir()
+        script = H._sh(VER, f'need_published {shlex.quote(str(d))} "{self.plat.cli_tarball()}" aasm\n')
+        r = subprocess.run(shlex.split(script), env=env, capture_output=True, text=True, timeout=120)
+        self.assertNotEqual(r.returncode, 0, "two unhashable sides compared equal")
+
+    def test_need_published_refuses_a_missing_sha256sums_entry(self) -> None:
+        env = self._release_stand_in()
+        rel = self.tmp / "rel" / VER
+        (rel / "SHA256SUMS").write_text("")
+        r = self._need_published(fake_aasm().encode(), env)
+        self.assertNotEqual(r.returncode, 0)
 
     def test_pending_install_fails_on_stale_version_not_a_false_pass(self) -> None:
         env = self._release_stand_in()

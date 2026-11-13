@@ -110,9 +110,12 @@ checks are manual and report INCONCLUSIVE); the J04/J17 pending ids carry shell
 commands and, as of that PR, have no runner, so it reports them INCONCLUSIVE. Each pending
 check's `failure_response` in the obligation file says what to do when it fails.
 
-A post-publication PASS proves each pending check's own assertion and nothing more. This tool
-does not assert that the published bytes equal the candidate's locally built bytes; the
-published bytes were not compared to the candidate bytes.
+A post-publication PASS proves each pending check's own assertion and nothing more. Release builds
+are not reproducible, so the published bytes are authoritative and are deliberately not compared
+with the candidate's locally built or dry-run bytes (AAASM-6464): the J04/J17 pending checks
+compare each published tarball with the published `SHA256SUMS` (each check verifies its
+signature against the `release.yml` identity bound to the exact tag) and each installed binary
+with the member of that tarball. The candidate digests in the obligations file record the tested bytes only.
 
 `--only` runs are partial. Whenever at least one result exists and some pending checks were not
 run, `post-publish-verify.py` prints `PARTIAL: N of M pending checks run; not run: ...` on
