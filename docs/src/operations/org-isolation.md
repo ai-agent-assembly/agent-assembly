@@ -42,13 +42,24 @@ init_assembly(
 ```
 
 `AA_REGISTRATION_KEY` is also read by the native client when the argument is
-omitted. `aasm run` removes it from the environment of the tool it launches
-(AAASM-6463), because the governed tool is the software registration governs and a
-key it can read lets it register agents into the organization; `aasm run`
-registers the agent itself, from its own environment. An SDK-side process that
-needs the key must be given it explicitly, not through an inherited variable. The key is a bearer credential: use an `https://` gateway for anything
-that is not on loopback. The client marks the header sensitive, but it does not
-encrypt the connection. The runtime sidecar of an org-bound agent must be started with
+omitted.
+
+`aasm run` does not pass `AA_REGISTRATION_KEY` on to the tool it launches
+(AAASM-6463), so a key exported in the operator's shell is not inherited by the
+governed tool by accident. `aasm run` registers the agent itself, from its own
+environment. This removes inheritance only. It is not a confidentiality boundary:
+`aasm run`'s own process still holds the key, and on the default non-isolated path
+a hostile tool running as the same user can read a parent process's environment
+(`/proc/<ppid>/environ` on Linux, `ps eww` or `KERN_PROCARGS2` on macOS) and use the
+key. Whether an `--isolation` backend hides the parent's environment from the tool
+is not something this change verifies or claims. Give an SDK-side process the key
+explicitly rather than through an inherited variable.
+
+The key is a bearer credential: use an `https://` gateway for anything that is not
+on loopback. The client marks the header sensitive, but it does not encrypt the
+connection.
+
+The runtime sidecar of an org-bound agent must be started with
 `AA_AGENT_ORG_ID=<org>` so its op-control subscription finds the agent (the
 registry keys an agent by `org/team/agent`).
 
