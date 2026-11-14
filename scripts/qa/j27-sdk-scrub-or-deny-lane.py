@@ -168,6 +168,7 @@ class Stack:
                 try:
                     os.killpg(p.pid, signal.SIGTERM)
                 except ProcessLookupError:
+                    # The group exited between poll() and killpg(): it is already gone, which is the goal.
                     pass
         for p in self.procs:
             try:
@@ -175,10 +176,8 @@ class Stack:
             except subprocess.TimeoutExpired:
                 os.killpg(p.pid, signal.SIGKILL)
                 p.wait(timeout=5)
-        try:
-            self.sock.unlink()
-        except FileNotFoundError:
-            pass
+        # aa-runtime removes its own socket on a clean shutdown, so absence is the normal case.
+        self.sock.unlink(missing_ok=True)
 
 
 def build_venv(tmp: Path, python: str, wheel: Path, wheelhouse: Path, mutate: bool) -> tuple[Path | None, str]:
@@ -217,7 +216,8 @@ def call(stack: Stack, venv: Path, name: str, args_json: str, tool: str = "write
             try:
                 result = json.loads(line[len("RESULT "):])
             except ValueError:
-                pass
+                # Not swallowed: the pre-set error result stands, so the check that reads it fails the lane.
+                result = {"error": "driver-result-unparseable", "detail": f"exit {rc}"}
             break
     result["sentinel_exists"] = sentinel.exists()
     return result
@@ -230,19 +230,24 @@ def audit_events(stack: Stack) -> list[dict[str, Any]]:
             try:
                 events.append(json.loads(line))
             except ValueError:
+                # A torn or non-JSON line carries no event. It cannot make the audit check pass: that check
+                # needs a parsed CredentialLeakBlocked event, so a lost line can only fail it.
                 continue
     return events
 
 
-def files_containing(root: Path, needle: bytes, extra: list[Path]) -> list[str]:
-    hits = []
+def files_containing(root: Path, needle: bytes, extra: list[Path]) -> tuple[list[str], list[str]]:
+    """Files holding `needle`, and files that could not be read. An unreadable file could be hiding the key, so the
+    caller must treat it as a failure rather than as a clean scan."""
+    hits: list[str] = []
+    unreadable: list[str] = []
     for p in [*root.rglob("*"), *extra]:
         try:
             if p.is_file() and needle in p.read_bytes():
                 hits.append(str(p))
         except OSError:
-            continue
-    return hits
+            unreadable.append(str(p))
+    return hits, unreadable
 
 
 def main(argv: list[str]) -> int:
@@ -294,8 +299,9 @@ def main(argv: list[str]) -> int:
                f"gateway audit event types: {sorted(set(map(str, kinds)))}")
 
         stack.stop()
-        hits = files_containing(stack.home, FAKE_AWS_KEY.encode(), stack.logs)
-        record("no-raw-secret-at-rest", not hits, f"files containing the raw key: {hits or 'none'}")
+        hits, unreadable = files_containing(stack.home, FAKE_AWS_KEY.encode(), stack.logs)
+        record("no-raw-secret-at-rest", not hits and not unreadable,
+               f"files containing the raw key: {hits or 'none'}; unreadable files: {unreadable or 'none'}")
         stack = None
     finally:
         if stack is not None:
