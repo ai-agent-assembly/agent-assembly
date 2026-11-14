@@ -499,7 +499,7 @@ criteria per path rather than as one blanket claim:
 
 | Path | Criterion | Evidence |
 |---|---|---|
-| Proxy (`aa-proxy`, LLM request bodies and other decrypted hosts) | Supported redaction rules scrub the payload **before it is forwarded**; a body the proxy cannot scrub is denied, never forwarded. | `aa-integration-tests/tests/e2e_secret_interception.rs` (`proxy_aws_key_in_body_redacted_before_forwarding`, `proxy_secret_block_policy_prevents_forwarding`) |
+| Proxy (`aa-proxy`, LLM request bodies and other decrypted hosts) | Supported redaction rules scrub the payload **before it is forwarded**; a body the proxy cannot scrub is denied, never forwarded. | `aa-proxy/tests/refusal_evidence.rs` (`credential_action_redact_only_forwards_a_scrubbed_body_never_the_original`, `credential_action_redact_only_denies_a_compressed_secret_instead_of_forwarding_it`) |
 | Non-proxy SDK path (SDK, runtime socket, gateway) | When a `redact_only` decision cannot be safely applied to tool arguments, the **runtime denies the call before the SDK can execute the tool**. | `aa-integration-tests/tests/e2e_runtime_gateway_deny.rs` (real `aa-gateway` and `aa-runtime`) and `scripts/qa/j27-sdk-scrub-or-deny-lane.py` (real Python SDK wheel; the tool body's sentinel file is never written) |
 | Forwarding **scrubbed** tool arguments through an SDK | **Deferred.** It needs the runtime's response to carry scrubbed arguments and each SDK to apply them, which is a separate public-contract change, not part of rc.8. | Not implemented, not claimed |
 
@@ -558,19 +558,23 @@ sends `CheckAction` to the runtime, registration is the only direct SDK-to-gatew
 call, and the Node and Go gateway clients use `PolicyService` only for
 `OpControlStream`. `aa-runtime` rewrites any gateway verdict that is not `Allow`,
 `Deny` or `Pending` (so a `Redact`) to `Deny` before relaying it
-(`normalize_gateway_decision`, AAASM-4020; present in every tag from `v0.0.1-rc.3`
-through `v0.0.1-rc.7`, checked with `git grep` per tag). A `redact_only` secret in
-tool arguments therefore reaches the SDK as a deny and the tool does not run, with
-no dependence on the SDK version. An earlier version of this page said a released
-SDK maps a `Redact` verdict onto a plain allow; that described the SDK in
-isolation and does not happen with the runtime in the path.
+(`normalize_gateway_decision`, AAASM-4020, called from `try_gateway_forward`: checked
+in the `v0.0.1-rc.3` and `v0.0.1-rc.7` sources, and by `git grep` in `rc.4` to `rc.6`).
+A `redact_only` secret in tool arguments therefore reaches the SDK as a deny, whatever
+the SDK version. Whether the tool then does not run is the SDK's enforcement path: the
+J27 lane exercises it end to end for the Python SDK's LangChain hook, and the Node and Go
+SDKs are covered by the shared runtime-socket test and code reading, not by a real-SDK
+run. An earlier version of this
+page said a released SDK maps a `Redact` verdict onto a plain allow; that described
+the SDK in isolation and does not happen with the runtime in the path.
 
 The SDKs also deny a `Redact` themselves, as a second layer for a runtime that
 relays one: Python SDK `d91840d` (PR #359), Node SDK `0627b0441` (PR #522), Go SDK
-`2638a5b`. Those commits are on `main` and in no released tag (checked 2026-11-14
-with `git tag --contains`; latest tags `v0.0.1-rc.7` Python, `v0.0.1-rc.6` Node and
-Go). The first layer is the runtime's; the SDK layer is defence in depth, and the
-J27 lane checks each layer holds without the other.
+`2638a5b`. None is in a released tag: on 2026-11-14 the GitHub compare API reported
+each commit as ahead of the newest tag (`v0.0.1-rc.7` for Python, excluding the stray
+`v0.0.2` and `v0.0.2a1`; `v0.0.1-rc.6` for Node and Go). The runtime is the first
+layer; the SDK layer is defence in depth, and the J27 lane checks each layer holds
+without the other.
 
 #### MCP responses through `aa-proxy`
 
