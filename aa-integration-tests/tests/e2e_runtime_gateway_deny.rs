@@ -25,11 +25,13 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use aa_proto::assembly::common::v1::{ActionType, AgentId, Decision};
 use aa_proto::assembly::ipc::v1::{HandshakeChallenge, HandshakeProof};
 use aa_proto::assembly::policy::v1::action_context::Action;
+use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, CheckActionResponse, ToolCallContext};
 use aa_sdk_client::AgentKeypair;
 use common::live_gateway::{gateway_binary_locatable, LiveGateway};
@@ -401,7 +403,7 @@ fn args_without_secret() -> String {
 /// A real gateway + real runtime pair for one `credential_action`. `None` means
 /// the binaries are absent and the precondition helper chose to skip.
 struct CredentialStack {
-    _gateway: LiveGateway,
+    gateway: LiveGateway,
     runtime: LiveRuntime,
     agent_id: String,
 }
@@ -419,7 +421,14 @@ async fn start_credential_stack(scenario: &str, credential_action: &str) -> Opti
     }
     let gateway = LiveGateway::spawn_with_policy(&credential_policy(credential_action)).expect("spawn aa-gateway");
     let endpoint = format!("http://{}", gateway.addr());
-    let agent_id = format!("aaasm6469-{credential_action}-{}", std::process::id());
+    // Tests in this file run as threads of one process and the runtime socket is derived from the
+    // agent id, so the pid alone would make two stacks share (and unlink) one socket.
+    static STACK_SEQ: AtomicU32 = AtomicU32::new(0);
+    let agent_id = format!(
+        "aaasm6469-{credential_action}-{}-{}",
+        std::process::id(),
+        STACK_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
     let metrics_port = portpicker::pick_unused_port().expect("free metrics port");
     let runtime = LiveRuntime::spawn(&runtime_bin, &agent_id, &endpoint, metrics_port).expect("spawn aa-runtime");
     assert!(
@@ -427,13 +436,30 @@ async fn start_credential_stack(scenario: &str, credential_action: &str) -> Opti
         "aa-runtime did not bind its UDS in time"
     );
     Some(CredentialStack {
-        _gateway: gateway,
+        gateway,
         runtime,
         agent_id,
     })
 }
 
 impl CredentialStack {
+    /// The same request, sent straight to the gateway and bypassing the runtime. It is what
+    /// makes the runtime the only variable between the two answers.
+    async fn check_gateway_directly(&self, args_json: &str) -> CheckActionResponse {
+        let mut client = PolicyServiceClient::connect(format!("http://{}", self.gateway.addr()))
+            .await
+            .expect("connect to the live gateway");
+        client
+            .check_action(tonic::Request::new(tool_call_with_args(
+                &self.agent_id,
+                "write_file",
+                args_json,
+            )))
+            .await
+            .expect("direct CheckAction")
+            .into_inner()
+    }
+
     async fn check(&self, args_json: &str) -> CheckActionResponse {
         check_tool(
             &self.runtime.socket_path,
@@ -461,6 +487,17 @@ async fn runtime_denies_redact_only_secret_instead_of_relaying_redact() {
     let Some(stack) = start_credential_stack(scenario, "redact_only").await else {
         return;
     };
+    // Premise: the gateway itself answers Redact for this request. Without it a Deny below
+    // could come from anywhere, and the runtime's rewrite would not be what is under test.
+    let gateway_answer = stack.check_gateway_directly(&args_with_secret()).await;
+    assert_eq!(
+        gateway_answer.decision,
+        Decision::Redact as i32,
+        "premise: the gateway must answer Redact for redact_only + a credential (got decision {}, reason: {})",
+        gateway_answer.decision,
+        gateway_answer.reason
+    );
+
     let resp = stack.check(&args_with_secret()).await;
     assert_eq!(
         resp.decision,
