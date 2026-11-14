@@ -3005,12 +3005,30 @@ journeys:
   # drives resolve_boundary and run_confined into a recording backend and
   # compares all seven ExecutionSpec fields at plan, prepare and spawn, plus the
   # child environment at the hand-off. That proves what the launch path hands
-  # to the backend. It does not prove a real backend or aa-runtime applies it
-  # to the confined process. Left `partial` for that reason; AAASM-6269 remains
-  # the gap owner for AC1. AC3 as worded (a test that fails before AAASM-6038
-  # and passes after) cannot be met by any runtime test: working_dir was
-  # already copied before that change (commit 0cd44922f), so only the
-  # structural field-sync guard protects it.
+  # to the backend. That proves what the launch path hands to the backend.
+  # Four Linux real-backend tests are now registered for the hosted
+  # `isolation-backend-linux` CI job (aa-cli/tests/run_isolation_linux.rs and
+  # aa-isolation-sandlock/tests/linux_confinement.rs): the adapter environment,
+  # the two rlimit ceilings and hostile argv are each observed from inside a
+  # really-confined child. They measure only where the confinement mechanism is
+  # installed and decline otherwise (a decline reads as a pass unless the lane's
+  # `--require-evidence` ledger is read), so registration is a selection, not a
+  # result, and nothing here proves the macOS or aa-runtime path.
+  #
+  # AC3 amendment, recorded exactly as the founder answered on 2026-11-05
+  # ("amend only if replacement preserves assurance; show structural guard
+  # detects missing/mismatched field + keep runtime value evidence; record
+  # exact amendment"). AC3's literal wording -- "a regression test exists that
+  # would have failed before AAASM-6038's fix" -- cannot be met by a runtime
+  # test: working_dir was already copied before that change (commit 0cd44922f),
+  # so no runtime test written now could have failed then. AC3 is replaced by
+  # (a) structural compile-time guards (E0027) that fail on a missing or
+  # mismatched ExecutionSpec / BoundLaunchFields field, plus (b) the registered
+  # runtime value-proof tests, plus (c) a mutation re-run proving the value
+  # tests fail when base_spec drops args, working_dir or the resource
+  # projection. (a) and (b) are registered above; (c) has NOT been run for this
+  # amendment and is to be recorded at the final release freeze. The amendment
+  # is not satisfied, and the row stays `partial`, until (c) evidence exists.
   lifecycle_state: partial
   gap_owner: AAASM-6269
   evidence:
@@ -3026,6 +3044,18 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-cli/src/commands/run.rs::confined_launch_value_proof::the_backend_receives_the_requested_spec_including_leases_and_policy_requirements
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_linux.rs::the_adapter_environment_reaches_the_confined_program
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_linux.rs::a_max_open_files_flag_reaches_the_native_backend_as_a_real_rlimit
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_isolation_linux.rs::a_max_file_size_bytes_flag_reaches_the_native_backend_as_a_real_rlimit
+  - repo: agent-assembly
+    kind: test
+    selector: aa-isolation-sandlock/tests/linux_confinement.rs::hostile_argv_reaches_the_child_verbatim
   execution_lanes:
   - pr
   - main
