@@ -588,13 +588,38 @@ journeys:
   # modes belongs in every risk-based release sweep, not just a periodic deep
   # sweep) after AAASM-5848's fix. See docs/release/qa-signoff/v0.0.1-rc.7.md
   # for the direct evidence this promotion is based on.
+  # AAASM-6469 (2026-11-14): AAASM-5848's alert_only defect is fixed and merged, so it
+  # no longer owns this row's gap. What is still open is stated per path, following the
+  # rc.8 owner decision "scrub where the layer can, otherwise deny":
+  #   - proxy path: supported redaction rules scrub before forwarding (selectors below);
+  #   - non-proxy SDK path: the runtime denies a redact_only secret before the SDK can run
+  #     the tool (e2e_runtime_gateway_deny.rs below, plus the real-SDK lane
+  #     scripts/qa/j27-sdk-scrub-or-deny-lane.py, which takes final-F binaries and wheel as
+  #     inputs and is not a registry selector);
+  #   - forwarding scrubbed arguments through the SDKs is deferred as a separate public
+  #     contract change, so it is not in scope and not claimed.
+  # Stays `partial`: the lane's PASS at the final frozen F is recorded in the sign-off, not
+  # here, and the Node and Go SDKs are covered by the shared runtime-socket test plus code
+  # reading, not by a real-SDK run.
   release_blocking: true
   lifecycle_state: partial
-  gap_owner: AAASM-5848
+  gap_owner: AAASM-6469
   evidence:
   - repo: agent-assembly
     kind: test
     selector: aa-gateway/tests/serve_secret_alert_e2e_test.rs::tool_call_with_credential_over_live_grpc_fires_secret_alert
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_runtime_gateway_deny.rs::runtime_denies_redact_only_secret_instead_of_relaying_redact
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_runtime_gateway_deny.rs::control_redact_only_without_secret_is_allowed
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_runtime_gateway_deny.rs::control_alert_only_with_secret_is_allowed
+  - repo: agent-assembly
+    kind: test
+    selector: aa-integration-tests/tests/e2e_runtime_gateway_deny.rs::control_block_with_secret_is_denied
   - repo: agent-assembly
     kind: test
     selector: aa-gateway/tests/serve_credential_modes_e2e_test.rs::redact_only_returns_redact_decision_without_the_raw_secret
