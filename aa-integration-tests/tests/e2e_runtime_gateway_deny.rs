@@ -25,11 +25,13 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use aa_proto::assembly::common::v1::{ActionType, AgentId, Decision};
 use aa_proto::assembly::ipc::v1::{HandshakeChallenge, HandshakeProof};
 use aa_proto::assembly::policy::v1::action_context::Action;
+use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::{ActionContext, CheckActionRequest, CheckActionResponse, ToolCallContext};
 use aa_sdk_client::AgentKeypair;
 use common::live_gateway::{gateway_binary_locatable, LiveGateway};
@@ -68,6 +70,9 @@ const TAG_POLICY_RESPONSE: u8 = 1;
 /// `aa-runtime::ipc::codec::TAG_HANDSHAKE_CHALLENGE` (AAASM-3585).
 const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 
+/// Env var naming an explicit `aa-runtime` binary (see `AA_GATEWAY_BIN` for the gateway).
+const RUNTIME_BIN_ENV: &str = "AA_RUNTIME_BIN";
+
 /// Locate the `aa-runtime` binary the same way `live_gateway` finds the gateway.
 ///
 /// Routes through `common::precondition::cargo_target_root()` (AAASM-5977)
@@ -76,6 +81,16 @@ const TAG_HANDSHAKE_CHALLENGE: u8 = 5;
 /// `CARGO_TARGET_DIR` convention, which made this guard always skip on a
 /// dev machine and left the conversion below unverifiable locally.
 fn locate_runtime_binary() -> Result<PathBuf, String> {
+    // AAASM-6469: an explicit binary is authoritative so a lane can qualify the
+    // exact candidate artifact; a bad path is an error, never a silent fallback.
+    if let Some(explicit) = std::env::var_os(RUNTIME_BIN_ENV) {
+        let explicit = PathBuf::from(explicit);
+        return if explicit.is_file() {
+            Ok(explicit)
+        } else {
+            Err(format!("{RUNTIME_BIN_ENV}={} is not a file", explicit.display()))
+        };
+    }
     let target_root = common::precondition::cargo_target_root();
     for profile in ["debug", "release"] {
         let candidate = target_root.join(profile).join("aa-runtime");
@@ -329,4 +344,220 @@ async fn runtime_forwards_per_tool_deny_to_gateway() {
          here is the AAASM-3430 regression (got reason: {})",
         deny.reason
     );
+}
+
+// ---------------------------------------------------------------------------
+// AAASM-6469 / J27 — "scrub where the layer can, otherwise deny" on the
+// non-proxy SDK path.
+//
+// Owner decision (2026-11-14, rc.8): on the path every SDK uses (SDK ->
+// runtime socket -> gateway), a gateway `redact_only` verdict cannot be applied
+// to tool arguments, because nothing carries scrubbed arguments back to the
+// SDK. The runtime must therefore answer `Deny` — never `Redact`, never
+// `Allow` — so the SDK cannot execute the tool with the secret-bearing
+// arguments. `aa-runtime::pipeline::normalize_gateway_decision` is the single
+// place that guarantees this; these tests drive it over the real wire.
+//
+// Every negative has a control whose only variable is the one under test, so a
+// Deny can only come from the redaction verdict being refused, not from a
+// missing backend or a malformed request.
+// ---------------------------------------------------------------------------
+
+/// Fabricated AWS-style access key (pattern-matching only, not a credential).
+const FAKE_AWS_KEY: &str = "AKIAABCDEFGHIJKLMNOP";
+
+fn credential_policy(credential_action: &str) -> String {
+    format!(
+        "\
+apiVersion: agent-assembly.dev/v1alpha1
+kind: GovernancePolicy
+metadata:
+  name: aaasm-6469-{credential_action}
+  version: \"0.1.0\"
+spec:
+  tools:
+    write_file:
+      allow: true
+  data:
+    credential_action: {credential_action}
+"
+    )
+}
+
+fn tool_call_with_args(agent_id: &str, tool_name: &str, args_json: &str) -> CheckActionRequest {
+    let mut req = tool_call_request(agent_id, tool_name);
+    if let Some(Action::ToolCall(call)) = req.context.as_mut().and_then(|c| c.action.as_mut()) {
+        call.args_json = args_json.as_bytes().to_vec();
+    }
+    req
+}
+
+fn args_with_secret() -> String {
+    format!(r#"{{"path":"/tmp/x.txt","aws_key":"{FAKE_AWS_KEY}"}}"#)
+}
+
+fn args_without_secret() -> String {
+    r#"{"path":"/tmp/x.txt","note":"nothing sensitive here"}"#.to_string()
+}
+
+/// A real gateway + real runtime pair for one `credential_action`. `None` means
+/// the binaries are absent and the precondition helper chose to skip.
+struct CredentialStack {
+    gateway: LiveGateway,
+    runtime: LiveRuntime,
+    agent_id: String,
+}
+
+async fn start_credential_stack(scenario: &str, credential_action: &str) -> Option<CredentialStack> {
+    let runtime_bin = match locate_runtime_binary() {
+        Ok(p) => p,
+        Err(e) => {
+            common::precondition::require(scenario, Err(e));
+            return None;
+        }
+    };
+    if !common::precondition::require(scenario, gateway_binary_locatable_result()) {
+        return None;
+    }
+    let gateway = LiveGateway::spawn_with_policy(&credential_policy(credential_action)).expect("spawn aa-gateway");
+    let endpoint = format!("http://{}", gateway.addr());
+    // Tests in this file run as threads of one process and the runtime socket is derived from the
+    // agent id, so the pid alone would make two stacks share (and unlink) one socket.
+    static STACK_SEQ: AtomicU32 = AtomicU32::new(0);
+    let agent_id = format!(
+        "aaasm6469-{credential_action}-{}-{}",
+        std::process::id(),
+        STACK_SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let metrics_port = portpicker::pick_unused_port().expect("free metrics port");
+    let runtime = LiveRuntime::spawn(&runtime_bin, &agent_id, &endpoint, metrics_port).expect("spawn aa-runtime");
+    assert!(
+        runtime.await_ready(Duration::from_secs(30)).await,
+        "aa-runtime did not bind its UDS in time"
+    );
+    Some(CredentialStack {
+        gateway,
+        runtime,
+        agent_id,
+    })
+}
+
+impl CredentialStack {
+    /// The same request, sent straight to the gateway and bypassing the runtime. It is what
+    /// makes the runtime the only variable between the two answers.
+    async fn check_gateway_directly(&self, args_json: &str) -> CheckActionResponse {
+        let mut client = PolicyServiceClient::connect(format!("http://{}", self.gateway.addr()))
+            .await
+            .expect("connect to the live gateway");
+        client
+            .check_action(tonic::Request::new(tool_call_with_args(
+                &self.agent_id,
+                "write_file",
+                args_json,
+            )))
+            .await
+            .expect("direct CheckAction")
+            .into_inner()
+    }
+
+    async fn check(&self, args_json: &str) -> CheckActionResponse {
+        check_tool(
+            &self.runtime.socket_path,
+            &self.agent_id,
+            &tool_call_with_args(&self.agent_id, "write_file", args_json),
+        )
+        .await
+    }
+}
+
+fn assert_no_raw_secret(resp: &CheckActionResponse, what: &str) {
+    let wire = resp.encode_to_vec();
+    assert!(
+        !wire.windows(FAKE_AWS_KEY.len()).any(|w| w == FAKE_AWS_KEY.as_bytes()),
+        "{what}: the raw secret appears in the bytes the runtime sent back to the SDK"
+    );
+}
+
+/// The J27 SDK-path contract: `redact_only` + a credential in tool arguments
+/// reaches the SDK as `Deny`. The SDK acts only on that answer, so the tool is
+/// never invoked with the unredacted arguments.
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_denies_redact_only_secret_instead_of_relaying_redact() {
+    let scenario = "runtime_denies_redact_only_secret_instead_of_relaying_redact";
+    let Some(stack) = start_credential_stack(scenario, "redact_only").await else {
+        return;
+    };
+    // Premise: the gateway itself answers Redact for this request. Without it a Deny below
+    // could come from anywhere, and the runtime's rewrite would not be what is under test.
+    let gateway_answer = stack.check_gateway_directly(&args_with_secret()).await;
+    assert_eq!(
+        gateway_answer.decision,
+        Decision::Redact as i32,
+        "premise: the gateway must answer Redact for redact_only + a credential (got decision {}, reason: {})",
+        gateway_answer.decision,
+        gateway_answer.reason
+    );
+
+    let resp = stack.check(&args_with_secret()).await;
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "redact_only + a credential in tool args must reach the SDK as Deny — Redact or Allow here lets the \
+         SDK run the tool with the raw secret (got decision {}, reason: {})",
+        resp.decision,
+        resp.reason
+    );
+    assert_no_raw_secret(&resp, "redact_only deny");
+}
+
+/// Control: same mode and tool, no credential. The Deny above must come from
+/// the redaction verdict, not from a broken stack or a policy that denies the tool.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_redact_only_without_secret_is_allowed() {
+    let scenario = "control_redact_only_without_secret_is_allowed";
+    let Some(stack) = start_credential_stack(scenario, "redact_only").await else {
+        return;
+    };
+    let resp = stack.check(&args_without_secret()).await;
+    assert_eq!(
+        resp.decision,
+        Decision::Allow as i32,
+        "clean args under redact_only must be allowed (got reason: {})",
+        resp.reason
+    );
+}
+
+/// Control: same secret, `alert_only` — the documented "forward unredacted,
+/// alert instead" mode, so the runtime must relay Allow.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_alert_only_with_secret_is_allowed() {
+    let scenario = "control_alert_only_with_secret_is_allowed";
+    let Some(stack) = start_credential_stack(scenario, "alert_only").await else {
+        return;
+    };
+    let resp = stack.check(&args_with_secret()).await;
+    assert_eq!(
+        resp.decision,
+        Decision::Allow as i32,
+        "alert_only + secret must be allowed (got reason: {})",
+        resp.reason
+    );
+}
+
+/// Control: same secret, `block` — a plain gateway Deny, which shows the Deny
+/// path in the redact_only test is the same observable outcome.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_block_with_secret_is_denied() {
+    let scenario = "control_block_with_secret_is_denied";
+    let Some(stack) = start_credential_stack(scenario, "block").await else {
+        return;
+    };
+    let resp = stack.check(&args_with_secret()).await;
+    assert_eq!(
+        resp.decision,
+        Decision::Deny as i32,
+        "block + secret must be denied (got reason: {})",
+        resp.reason
+    );
+    assert_no_raw_secret(&resp, "block deny");
 }

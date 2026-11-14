@@ -126,7 +126,23 @@ pub fn gateway_binary_locatable() -> bool {
     locate_gateway_binary().is_ok()
 }
 
+/// Env var naming an explicit `aa-gateway` binary. Lets a lane pin the exact
+/// candidate artifact under test instead of whatever a target dir or `$PATH`
+/// happens to hold (AAASM-6469); when set it is authoritative, never a hint.
+const GATEWAY_BIN_ENV: &str = "AA_GATEWAY_BIN";
+
 fn locate_gateway_binary() -> Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os(GATEWAY_BIN_ENV) {
+        let explicit = PathBuf::from(explicit);
+        return if is_executable(&explicit) {
+            Ok(explicit)
+        } else {
+            Err(anyhow!(
+                "{GATEWAY_BIN_ENV}={} is not an executable file",
+                explicit.display()
+            ))
+        };
+    }
     let manifest = std::env::var("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR not set")?;
     let workspace_root = Path::new(&manifest).parent().context("manifest has no parent")?;
     for profile in ["debug", "release"] {
