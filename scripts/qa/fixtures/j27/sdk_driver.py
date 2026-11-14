@@ -20,7 +20,7 @@ from pathlib import Path
 TYPED = ("ToolExecutionBlockedError", "PolicyViolationError", "MCPToolBlockedError")
 
 
-def emit(**fields):
+def emit(**fields: object) -> None:
     print("RESULT " + json.dumps(fields, sort_keys=True), flush=True)
 
 

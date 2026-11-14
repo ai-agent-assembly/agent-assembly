@@ -47,7 +47,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 DRIVER = HERE / "fixtures" / "j27" / "sdk_driver.py"
@@ -76,7 +78,8 @@ MUTATION_REPLACEMENT = 'if decision == "redact":\n            return {"status": 
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 def sha256(path: Path) -> str:
@@ -102,7 +105,7 @@ def version_of(binary: Path) -> list[str]:
     return out.strip().splitlines() if rc == 0 else [f"--version exited {rc}"]
 
 
-def wait_for(pred, timeout: float) -> bool:
+def wait_for(pred: Callable[[], bool], timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if pred():
@@ -200,7 +203,7 @@ def build_venv(tmp: Path, python: str, wheel: Path, wheelhouse: Path, mutate: bo
     return venv, ""
 
 
-def call(stack: Stack, venv: Path, name: str, args_json: str, tool: str = "write_file") -> dict:
+def call(stack: Stack, venv: Path, name: str, args_json: str, tool: str = "write_file") -> dict[str, Any]:
     args_file = stack.tmp / f"{name}.args.json"
     args_file.write_text(args_json)
     sentinel = stack.tmp / f"{name}.sentinel"
@@ -208,7 +211,7 @@ def call(stack: Stack, venv: Path, name: str, args_json: str, tool: str = "write
     rc, out = run([str(venv / "bin" / "python"), "-I", str(DRIVER), "--agent", stack.agent, "--tool", tool,
                    "--control-plane-url", "http://127.0.0.1:1", "--key", TEST_KEY,
                    "--args-file", str(args_file), "--sentinel", str(sentinel)], stack.sdk_env(), 180)
-    result: dict = {"error": "driver-no-result", "detail": f"exit {rc}: {out.strip()[-200:]}"}
+    result: dict[str, Any] = {"error": "driver-no-result", "detail": f"exit {rc}: {out.strip()[-200:]}"}
     for line in reversed(out.splitlines()):
         if line.startswith("RESULT "):
             try:
@@ -220,8 +223,8 @@ def call(stack: Stack, venv: Path, name: str, args_json: str, tool: str = "write
     return result
 
 
-def audit_events(stack: Stack) -> list[dict]:
-    events: list[dict] = []
+def audit_events(stack: Stack) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
     for f in stack.home.rglob("*.jsonl"):
         for line in f.read_text(errors="replace").splitlines():
             try:
@@ -259,7 +262,7 @@ def main(argv: list[str]) -> int:
 
     tmp = Path(tempfile.mkdtemp(prefix="j27-lane-"))
     stack: Stack | None = None
-    checks: list[dict] = []
+    checks: list[dict[str, str]] = []
 
     def record(cid: str, ok: bool, detail: str) -> None:
         checks.append({"id": cid, "status": "PASS" if ok else "FAIL", "detail": detail})
@@ -270,9 +273,9 @@ def main(argv: list[str]) -> int:
             print(f"setup error: {why}", file=sys.stderr)
             return 2
         stack = Stack(tmp, a.gateway, a.runtime)
-        why = stack.start()
-        if why:
-            print(f"setup error: {why}", file=sys.stderr)
+        start_error = stack.start()
+        if start_error:
+            print(f"setup error: {start_error}", file=sys.stderr)
             return 2
 
         control = call(stack, venv, "allowed-control", json.dumps({"path": "/tmp/x.txt", "note": "nothing sensitive"}))
@@ -287,7 +290,8 @@ def main(argv: list[str]) -> int:
                f"error={secret.get('error')} typed={secret.get('typed')} reason={secret.get('message')!r}")
 
         kinds = [e.get("event_type") for e in audit_events(stack)]
-        record("audit-finding-visible", "CredentialLeakBlocked" in kinds, f"gateway audit event types: {sorted(set(map(str, kinds)))}")
+        record("audit-finding-visible", "CredentialLeakBlocked" in kinds,
+               f"gateway audit event types: {sorted(set(map(str, kinds)))}")
 
         stack.stop()
         hits = files_containing(stack.home, FAKE_AWS_KEY.encode(), stack.logs)
@@ -296,22 +300,30 @@ def main(argv: list[str]) -> int:
     finally:
         if stack is not None:
             stack.stop()
+        # The args files in tmp hold the synthetic key; remove them on every path, early returns included.
+        shutil.rmtree(tmp, ignore_errors=True)
 
     verdict = "LANE_PASS" if all(c["status"] == "PASS" for c in checks) else "LANE_FAIL"
-    report = {
+    artifacts = {"aa-gateway": sha256(a.gateway), "aa-runtime": sha256(a.runtime), "sdk-wheel": sha256(a.wheel)}
+    report: dict[str, Any] = {
         "schema": "j27-sdk-scrub-or-deny-lane/1",
         "verdict": verdict,
         "mutation": "sdk-redact-allow" if a.mutate_sdk_redact_allow else "none",
-        "artifacts": {"aa-gateway": sha256(a.gateway), "aa-runtime": sha256(a.runtime), "sdk-wheel": sha256(a.wheel)},
+        "artifacts": artifacts,
         "versions": {"aa-gateway": version_of(a.gateway), "aa-runtime": version_of(a.runtime), "sdk-wheel": a.wheel.name},
         "checks": checks,
     }
     text = json.dumps(report, indent=2, sort_keys=True)
     assert FAKE_AWS_KEY not in text
-    print(text)
     if a.out:
         a.out.write_text(text + "\n")
-    shutil.rmtree(tmp, ignore_errors=True)
+    # Stdout carries only a fixed-shape summary built from fields that never hold tool arguments or driver
+    # output; the full report, whose check details quote the SDK's deny reason, goes to --out.
+    print(f"{verdict} mutation={report['mutation']}")
+    for c in checks:
+        print(f"  {c['status']} {c['id']}")
+    for name, digest in artifacts.items():
+        print(f"  {name} {digest}")
     return 0 if verdict == "LANE_PASS" else 1
 
 
