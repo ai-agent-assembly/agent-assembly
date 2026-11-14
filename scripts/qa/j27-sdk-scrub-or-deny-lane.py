@@ -37,6 +37,7 @@ Exit: 0 every check PASS, 1 any check FAIL, 2 usage or setup error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -165,11 +166,9 @@ class Stack:
         # Only processes this lane spawned, each in its own session; the runtime may have children (its proxy).
         for p in reversed(self.procs):
             if p.poll() is None:
-                try:
+                # The group may exit between poll() and killpg(); it is then already gone, which is the goal.
+                with contextlib.suppress(ProcessLookupError):
                     os.killpg(p.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    # The group exited between poll() and killpg(): it is already gone, which is the goal.
-                    pass
         for p in self.procs:
             try:
                 p.wait(timeout=15)
