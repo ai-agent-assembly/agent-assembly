@@ -92,6 +92,16 @@ def run(argv: list[str], env: dict[str, str], timeout: int) -> tuple[int, str]:
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+def version_of(binary: Path) -> list[str]:
+    """`--version` output (version and build-sha), so a PASS is tied to a candidate rather than to a file name."""
+    try:
+        # Generous: a binary the host has not seen can sit in first-launch validation for minutes.
+        rc, out = run([str(binary), "--version"], {"PATH": "/usr/bin:/bin"}, 600)
+    except (OSError, subprocess.SubprocessError) as e:
+        return [f"not probed: {type(e).__name__}"]
+    return out.strip().splitlines() if rc == 0 else [f"--version exited {rc}"]
+
+
 def wait_for(pred, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -293,6 +303,7 @@ def main(argv: list[str]) -> int:
         "verdict": verdict,
         "mutation": "sdk-redact-allow" if a.mutate_sdk_redact_allow else "none",
         "artifacts": {"aa-gateway": sha256(a.gateway), "aa-runtime": sha256(a.runtime), "sdk-wheel": sha256(a.wheel)},
+        "versions": {"aa-gateway": version_of(a.gateway), "aa-runtime": version_of(a.runtime), "sdk-wheel": a.wheel.name},
         "checks": checks,
     }
     text = json.dumps(report, indent=2, sort_keys=True)
