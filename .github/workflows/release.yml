@@ -29,6 +29,20 @@ jobs:
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # AAASM-6468: the digests of the tarballs / BPF objects exactly as this job
+    # packaged them. A job output can only be set by the job that produced it, so
+    # unlike the artifact store (which a later job can overwrite) it is a record
+    # `publish` can bind the signed bytes to. One STATIC name per matrix target:
+    # a leg whose target differs evaluates its own copy of the other names to
+    # empty, and relying on GitHub to ignore those empties is not something we
+    # can test here, so consumers fail closed on any empty value (a dry-run at
+    # the release candidate proves the merge behaviour on the real runners).
+    outputs:
+      digests_x86_64_unknown_linux_gnu: ${{ steps.digest.outputs.digests_x86_64_unknown_linux_gnu }}
+      digests_aarch64_unknown_linux_gnu: ${{ steps.digest.outputs.digests_aarch64_unknown_linux_gnu }}
+      digests_aarch64_apple_darwin: ${{ steps.digest.outputs.digests_aarch64_apple_darwin }}
+      digests_x86_64_apple_darwin: ${{ steps.digest.outputs.digests_x86_64_apple_darwin }}
+      ebpf_digests: ${{ steps.ebpf_digest.outputs.json }}
     strategy:
       fail-fast: false
       matrix:
@@ -278,6 +292,16 @@ jobs:
           bash scripts/build-ebpf-probes.sh "$OUT"
           ls -l "$OUT"
 
+      - name: Record eBPF object digests as a job output (AAASM-6468)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        id: ebpf_digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          json=$(python3 -I scripts/release/artifact_binding.py digest \
+            ebpf-objects/aa-file-io ebpf-objects/aa-exec-probes ebpf-objects/aa-tls-probes)
+          echo "json=${json}" >> "$GITHUB_OUTPUT"
+
       - name: Upload eBPF probe objects (Linux x86_64 — AAASM-3601)
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -393,6 +417,18 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
 
+      - name: Record tarball digests as a job output (AAASM-6468)
+        # Last step before upload, after every in-leg check, so the digests are of
+        # the bytes that are about to be shipped.
+        id: digest
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          json=$(python3 -I scripts/release/artifact_binding.py digest aasm-*.tar.gz)
+          echo "digests_${TARGET//-/_}=${json}" >> "$GITHUB_OUTPUT"
+
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -418,6 +454,11 @@ jobs:
 
       - name: Run archive-set gate unit + negative-control tests (AAASM-4542)
         run: python3 -I scripts/tests/test_check_release_archive_set.py
+
+      - name: Run artifact-binding unit tests + negative control (AAASM-6468)
+        run: |
+          python3 -I scripts/tests/test_artifact_binding.py
+          bash scripts/tests/artifact-binding-negative-control.sh
 
   governance-gate:
     # AAASM-5602. A prerequisite INSIDE this workflow, not a separate required
@@ -551,34 +592,112 @@ jobs:
             *) exit "$rc" ;;
           esac
 
-  publish:
-    name: Publish GitHub Release
-    # AAASM-6214: behaviour-preserving, and deliberately explicit. Both release
-    # gates this job needs are already `push`-only, so the inherited skip has
-    # always kept this job from running on `pull_request` and
-    # `workflow_dispatch` — every other job downstream of those gates states
-    # that scope in its own condition, and this one relied on the graph to
-    # imply it. Stating it means the reachability gate can tell an intended
-    # skip from the silent kind that killed the docs deploy.
-    if: github.event_name == 'push'
+  verify-artifacts:
+    # AAASM-6468: dry-run proof of the binding `publish` enforces. `publish` is
+    # push-only and cannot be exercised before a tag, so this unprivileged copy
+    # runs on every event (pull_request, workflow_dispatch, push) against the
+    # REAL artifacts and REAL `build` job outputs of the run. `publish` needs it
+    # but does not rely on it: `publish` re-verifies what it downloads itself.
+    name: Verify artifacts match build digests (unprivileged)
     runs-on: ubuntu-latest
-    needs: [build, governance-gate, release-evidence-gate, glibc-guard-selftest]
+    needs: build
     permissions:
-      contents: write
-      id-token: write  # keyless cosign signing via GitHub OIDC
-
+      contents: read
     steps:
-      - name: Download all build artifacts
+      - name: Check out the artifact-binding verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/release
+          path: gate-src
+          persist-credentials: false
+
+      - name: Download build artifact (x86_64-unknown-linux-gnu)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: aasm-x86_64-unknown-linux-gnu
           path: artifacts/
-          merge-multiple: true
 
-      - name: Download eBPF probe objects (AAASM-3601)
+      - name: Download build artifact (aarch64-unknown-linux-gnu)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-unknown-linux-gnu
+          path: artifacts/
+
+      - name: Download build artifact (aarch64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-apple-darwin
+          path: artifacts/
+
+      - name: Download build artifact (x86_64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-apple-darwin
+          path: artifacts/
+
+      - name: Download eBPF probe objects
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ebpf-objects
           path: ebpf-objects/
+
+      - name: Verify artifacts against the build job's own digests
+        env:
+          VER: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+          AA_DIGESTS_X86_64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_x86_64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_aarch64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_APPLE_DARWIN: ${{ needs.build.outputs.digests_aarch64_apple_darwin }}
+          AA_DIGESTS_X86_64_APPLE_DARWIN: ${{ needs.build.outputs.digests_x86_64_apple_darwin }}
+          AA_EBPF_DIGESTS: ${{ needs.build.outputs.ebpf_digests }}
+        run: |
+          set -euo pipefail
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-archives --version "$VER" --dir artifacts
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-ebpf --dir ebpf-objects
+
+  smoke-test:
+    # AAASM-6468 (MED-1): executes the just-built binaries, so it must NOT share a
+    # job with the OIDC/write token. These smoke tests used to run inside
+    # `publish` (contents: write, id-token: write) before `cosign sign-blob`: a
+    # compromised build dependency baked into the binaries could have reached
+    # the token that mints the Fulcio certificate and uploads release assets.
+    # Here the token scope is read-only with no id-token, no checkout and no
+    # secrets. It uploads nothing, and `publish` re-downloads the four named
+    # `build` artifacts itself. Residual: the runner still holds the Actions
+    # artifact token (needed to download), which this job cannot be denied, so
+    # a compromised binary could in principle upload or overwrite an artifact;
+    # `publish` narrows that by naming the artifacts it takes and the run is
+    # still bound by the earlier gates, but it is not a proof of impossibility.
+    #
+    # Not `push`-gated on purpose: pull_request and workflow_dispatch dry-runs
+    # now exercise the smoke tests too (they previously ran only at tag time).
+    # `publish` needs it, so a failing smoke test still blocks the release.
+    name: Smoke-test built binaries (unprivileged)
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+
+    steps:
+      - name: Reject a malformed release tag before anything is published
+        # AAASM-6468: same SemVer 2.0 shape the Homebrew job enforces, checked
+        # here so a bad tag fails before `publish` (which needs this job)
+        # rather than after assets are signed and uploaded. No extra permission.
+        if: github.event_name == 'push'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if ! [[ "${REF_NAME#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::refusing non-semver release tag '${REF_NAME}'"
+            exit 1
+          fi
+
+      - name: Download Linux x86_64 build artifact
+        # Carries the legacy CLI tarball and every component tarball (incl. the
+        # `api` component with aa-api-server) for this target.
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-unknown-linux-gnu
+          path: artifacts/
 
       - name: Smoke-test dashboard (Linux x86_64)
         run: |
@@ -655,12 +774,80 @@ jobs:
           fi
           echo "Local-mode dashboard SPA smoke test passed"
 
+  publish:
+    name: Publish GitHub Release
+    # AAASM-6214: behaviour-preserving, and deliberately explicit. Both release
+    # gates this job needs are already `push`-only, so the inherited skip has
+    # always kept this job from running on `pull_request` and
+    # `workflow_dispatch` — every other job downstream of those gates states
+    # that scope in its own condition, and this one relied on the graph to
+    # imply it. Stating it means the reachability gate can tell an intended
+    # skip from the silent kind that killed the docs deploy.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: [build, governance-gate, release-evidence-gate, glibc-guard-selftest, smoke-test, verify-artifacts]
+    permissions:
+      contents: write
+      id-token: write  # keyless cosign signing via GitHub OIDC
+
+    steps:
+      # AAASM-6468: named artifacts only, never merge-multiple over "everything
+      # this run uploaded". check_release_archive_set.py proves required tarballs
+      # exist but does not reject extras, and `sha256sum aasm-*.tar.gz` below
+      # would hash and sign any extra tarball another job managed to upload.
+      - name: Download build artifact (x86_64-unknown-linux-gnu)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-unknown-linux-gnu
+          path: artifacts/
+
+      - name: Download build artifact (aarch64-unknown-linux-gnu)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-unknown-linux-gnu
+          path: artifacts/
+
+      - name: Download build artifact (aarch64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-apple-darwin
+          path: artifacts/
+
+      - name: Download build artifact (x86_64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-apple-darwin
+          path: artifacts/
+
+      - name: Download eBPF probe objects (AAASM-3601)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ebpf-objects
+          path: ebpf-objects/
+
       - name: Check out the release gate scripts (AAASM-4542)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: scripts/release
           path: gate-src
           persist-credentials: false
+
+      - name: Verify downloaded artifacts against the build job's own digests (AAASM-6468)
+        # Binds what is about to be hashed and signed to the bytes the `build`
+        # legs packaged (job outputs only `build` can set), not to whatever the
+        # artifact store holds now. Fails on mismatch, missing, EXTRA or
+        # non-regular files, before SHA256SUMS exists.
+        env:
+          VER: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+          AA_DIGESTS_X86_64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_x86_64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_aarch64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_APPLE_DARWIN: ${{ needs.build.outputs.digests_aarch64_apple_darwin }}
+          AA_DIGESTS_X86_64_APPLE_DARWIN: ${{ needs.build.outputs.digests_x86_64_apple_darwin }}
+          AA_EBPF_DIGESTS: ${{ needs.build.outputs.ebpf_digests }}
+        run: |
+          set -euo pipefail
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-archives --version "$VER" --dir artifacts
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-ebpf --dir ebpf-objects
 
       - name: Require the full component set on every os/arch (AAASM-4542)
         run: |
@@ -968,7 +1155,10 @@ jobs:
         run: bash .ci/strip-for-publish.sh
 
       - name: Install cargo-workspaces
-        run: cargo install cargo-workspaces --locked --version ^0.4
+        # AAASM-6468: exact pin, not ^0.4. The next step hands this tool
+        # CARGO_REGISTRY_TOKEN, so the version must change only via a reviewed
+        # edit. 0.4.2 is what the rc.7 release run (35163052510) resolved.
+        run: cargo install cargo-workspaces --locked --version =0.4.2
 
       - name: Publish workspace crates in topological order
         env:
@@ -1007,7 +1197,7 @@ jobs:
   update-homebrew-tap:
     name: Update Homebrew tap formula
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [publish, build]
     if: github.event_name == 'push'
     permissions:
       contents: read
@@ -1017,11 +1207,57 @@ jobs:
     environment: release-homebrew
 
     steps:
-      - name: Download release artifacts
+      - name: Check out the artifact-binding verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: scripts/release
+          path: gate-src
+          persist-credentials: false
+
+      - name: Download build artifact (x86_64-unknown-linux-gnu)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          name: aasm-x86_64-unknown-linux-gnu
           path: artifacts/
-          merge-multiple: true
+
+      - name: Download build artifact (aarch64-unknown-linux-gnu)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-unknown-linux-gnu
+          path: artifacts/
+
+      - name: Download build artifact (aarch64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-aarch64-apple-darwin
+          path: artifacts/
+
+      - name: Download build artifact (x86_64-apple-darwin)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: aasm-x86_64-apple-darwin
+          path: artifacts/
+
+      - name: Download eBPF probe objects
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ebpf-objects
+          path: ebpf-objects/
+
+      - name: Verify artifacts against the build job's own digests (AAASM-6468)
+        # The tap PR's sha256 lines are computed from these tarballs, so they get
+        # the same binding as the signed SHA256SUMS.
+        env:
+          VER: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
+          AA_DIGESTS_X86_64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_x86_64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_UNKNOWN_LINUX_GNU: ${{ needs.build.outputs.digests_aarch64_unknown_linux_gnu }}
+          AA_DIGESTS_AARCH64_APPLE_DARWIN: ${{ needs.build.outputs.digests_aarch64_apple_darwin }}
+          AA_DIGESTS_X86_64_APPLE_DARWIN: ${{ needs.build.outputs.digests_x86_64_apple_darwin }}
+          AA_EBPF_DIGESTS: ${{ needs.build.outputs.ebpf_digests }}
+        run: |
+          set -euo pipefail
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-archives --version "$VER" --dir artifacts
+          python3 -I gate-src/scripts/release/artifact_binding.py verify-ebpf --dir ebpf-objects
 
       - name: Extract release version from tag
         id: version
@@ -1030,7 +1266,16 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           # github.ref_name is the tag (e.g. v0.0.1); strip the leading "v".
-          echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          VERSION="${REF_NAME#v}"
+          # AAASM-6468: the tag glob admits shell/sed metacharacters, and this value
+          # is later substituted into a sed program and a branch name. Accept only
+          # SemVer 2.0 (prerelease and +build identifiers use [0-9A-Za-z-]) so no
+          # shell/sed metacharacter or whitespace can reach them.
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::refusing non-semver release tag '${REF_NAME}'"
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap tap
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1142,7 +1387,7 @@ jobs:
           RUBY
           EBPF_CKSUM=$(curl -fsSL "https://index.crates.io/aa/-e/aa-ebpf" | \
             EBPF_TARGET_VERSION="$VERSION" ruby "$RUNNER_TEMP/find_ebpf_cksum.rb" || true)
-          if [ -n "$EBPF_CKSUM" ]; then
+          if [[ "$EBPF_CKSUM" =~ ^[a-f0-9]{64}$ ]]; then
             sed -i "s/sha256 \"[a-f0-9]\{64\}\"/sha256 \"${EBPF_CKSUM}\"/" Formula/aasm-ebpf.rb
             echo "aa-ebpf sha256 refreshed from crates.io index: ${EBPF_CKSUM}"
           else
@@ -1526,13 +1771,22 @@ jobs:
     # the environment in repo Settings (admin).
     environment: release-notify
     steps:
+      - name: Build dispatch payload
+        id: payload
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # AAASM-6468: jq escapes the tag; interpolating it into a JSON literal
+          # let a crafted tag name inject extra payload fields.
+          echo "json=$(jq -cn --arg tag "$REF_NAME" '{release_tag: $tag}')" >> "$GITHUB_OUTPUT"
+
       - name: Dispatch to node-sdk
         uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
         with:
           token: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
           repository: ai-agent-assembly/node-sdk
           event-type: agent-assembly-release-published
-          client-payload: '{"release_tag": "${{ github.ref_name }}"}'
+          client-payload: ${{ steps.payload.outputs.json }}
 
       - name: Dispatch to python-sdk
         # python-sdk's release-python.yml downloads `aasm-*` binaries from
@@ -1547,7 +1801,7 @@ jobs:
           token: ${{ secrets.CROSS_REPO_DISPATCH_PAT }}
           repository: ai-agent-assembly/python-sdk
           event-type: agent-assembly-release-published
-          client-payload: '{"release_tag": "${{ github.ref_name }}"}'
+          client-payload: ${{ steps.payload.outputs.json }}
 
       # go-sdk intentionally NOT dispatched from this job: pure-Go
       # module, no `aasm-*` binary consumption in its release pipeline
@@ -1577,9 +1831,12 @@ jobs:
       - name: Run check-release.sh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # AAASM-6468: the tag glob `v[0-9]*.[0-9]*.[0-9]*` lets `*` match shell
+          # metacharacters, so the ref name is data, never spliced into the script.
+          REF_NAME: ${{ github.ref_name }}
         id: status
         run: |
-          output=$(bash scripts/check-release.sh "${{ github.ref_name }}" 2>&1) || true
+          output=$(bash scripts/check-release.sh "$REF_NAME" 2>&1) || true
           {
             echo "report<<EOF_REPORT"
             printf '%s\n' "$output"
@@ -1590,13 +1847,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPORT: ${{ steps.status.outputs.report }}
+          REF_NAME: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
           body="## Release status aggregator
           \`\`\`
           ${REPORT}
           \`\`\`
           — generated by \`scripts/check-release.sh\` (AAASM-2456)"
-          gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --notes-file - <<< "$body" || true
+          gh release edit "$REF_NAME" --repo "$REPO" --notes-file - <<< "$body" || true
 
 concurrency:
   group: release-${{ github.ref }}
