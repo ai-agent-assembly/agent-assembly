@@ -194,15 +194,21 @@ mod credential_broker_e2e {
         let mut child = cmd.spawn().ok()?;
         let mut out = child.stdout.take()?;
         let mut err = child.stderr.take()?;
-        let t_out = std::thread::spawn(move || {
+        // Readers report over channels and are never joined: a grandchild (lldb's
+        // debugserver) can keep an inherited pipe open after the child is gone, and a
+        // join would then block past the deadline. After a grace period the reader is
+        // detached and what it has not delivered is treated as empty.
+        let (tx_out, rx_out) = std::sync::mpsc::channel();
+        let (tx_err, rx_err) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             let mut b = Vec::new();
             let _ = out.read_to_end(&mut b);
-            b
+            let _ = tx_out.send(b);
         });
-        let t_err = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let mut b = Vec::new();
             let _ = err.read_to_end(&mut b);
-            b
+            let _ = tx_err.send(b);
         });
         let deadline = Instant::now() + patience;
         let status = loop {
@@ -216,7 +222,9 @@ mod credential_broker_e2e {
                 }
             }
         };
-        let (stdout, stderr) = (t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default());
+        const PIPE_GRACE: Duration = Duration::from_secs(3);
+        let stdout = rx_out.recv_timeout(PIPE_GRACE).unwrap_or_default();
+        let stderr = rx_err.recv_timeout(PIPE_GRACE).unwrap_or_default();
         status.map(|status| std::process::Output { status, stdout, stderr })
     }
 
@@ -636,6 +644,13 @@ mod credential_broker_e2e {
             scan.regions,
             scan.read_failures
         );
+        // A mostly-failed scan must not read as "0 hits": at most 5% of regions may fail.
+        assert!(
+            scan.read_failures * 20 <= scan.regions,
+            "the {role} scan failed to read {} of {} regions: not a measurement",
+            scan.read_failures,
+            scan.regions
+        );
         scan
     }
 
@@ -655,7 +670,9 @@ mod credential_broker_e2e {
     ];
 
     /// File-backed surfaces known to be populated once the run has ended.
-    const POPULATED_AFTER_EXIT: [&str; 5] = [
+    const POPULATED_AFTER_EXIT: [&str; 7] = [
+        "agent:call1.body",
+        "agent:call2.body",
         "tree:state_and_receipts",
         "tree:agent_dir",
         "tree:ca_dir",
@@ -837,6 +854,31 @@ mod credential_broker_e2e {
         }
         let _ = j.finish();
         Ok(())
+    }
+
+    /// Control for the bound itself: a grandchild that keeps stdout open must not hold
+    /// `output_within` past its deadline, whether the child exits or has to be killed.
+    #[test]
+    fn control_output_within_returns_even_when_a_grandchild_holds_the_pipe() {
+        let started = Instant::now();
+        // The shell exits at once; the backgrounded sleep inherits and keeps stdout open.
+        let mut exits = std::process::Command::new("sh");
+        exits.args(["-c", "sleep 8 & echo hi"]);
+        let out = output_within(exits, Duration::from_secs(5)).expect("the shell exits on its own");
+        assert!(out.status.success());
+
+        // The shell is still running at the deadline and has to be killed.
+        let mut stalls = std::process::Command::new("sh");
+        stalls.args(["-c", "sleep 8 & sleep 8"]);
+        assert!(
+            output_within(stalls, Duration::from_secs(1)).is_none(),
+            "a stalled child is reported, not waited for"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(14),
+            "output_within waited for a grandchild's pipe: {:?}",
+            started.elapsed()
+        );
     }
 
     /// Control for every scanner kind: a value planted in a file, an argv, an
