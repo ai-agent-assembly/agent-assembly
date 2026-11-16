@@ -184,12 +184,51 @@ mod credential_broker_e2e {
         hay.windows(n.len()).filter(|w| *w == n).count()
     }
 
-    /// Combined output of a host tool. Never printed: callers only count it.
+    /// Run `cmd` for at most `patience`, then SIGKILL it: a stalled host tool must
+    /// not hold a queue lane. Pipes are drained on threads so a large output cannot
+    /// block the child. `None` means it could not start or had to be killed.
+    fn output_within(mut cmd: std::process::Command, patience: Duration) -> Option<std::process::Output> {
+        use std::io::Read;
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = cmd.spawn().ok()?;
+        let mut out = child.stdout.take()?;
+        let mut err = child.stderr.take()?;
+        let t_out = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = out.read_to_end(&mut b);
+            b
+        });
+        let t_err = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = err.read_to_end(&mut b);
+            b
+        });
+        let deadline = Instant::now() + patience;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break Some(st),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+            }
+        };
+        let (stdout, stderr) = (t_out.join().unwrap_or_default(), t_err.join().unwrap_or_default());
+        status.map(|status| std::process::Output { status, stdout, stderr })
+    }
+
+    /// Combined output of a host tool. Never printed: callers only count it. A tool
+    /// that cannot run or stalls FAILS the test: an empty result must never read as
+    /// "scanned and clean".
     fn tool(program: &str, args: &[&str]) -> Vec<u8> {
-        match std::process::Command::new(program).args(args).output() {
-            Ok(o) => [o.stdout, o.stderr].concat(),
-            Err(_) => Vec::new(),
-        }
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(args);
+        let o = output_within(cmd, Duration::from_secs(60))
+            .unwrap_or_else(|| panic!("host tool `{program}` did not run to completion (NOT RUN, not clean)"));
+        [o.stdout, o.stderr].concat()
     }
 
     /// Every regular file under `root`, concatenated with its path (a descriptor
@@ -503,14 +542,13 @@ mod credential_broker_e2e {
 
         /// `aasm proxy revoke-credential` against this launch's proxy.
         fn revoke(&self) -> std::process::Output {
-            std::process::Command::new(self.proxy.aasm())
-                .env_clear()
+            let mut cmd = std::process::Command::new(self.proxy.aasm());
+            cmd.env_clear()
                 .env("HOME", self.root.join("home"))
                 .env("AASM_STATE_DIR", &self.state)
                 .env("AA_DATA_DIR", self.proxy.data_dir())
-                .args(["proxy", "revoke-credential", "--host", HOST, "--agent", AGENT_ID])
-                .output()
-                .expect("aasm proxy revoke-credential runs")
+                .args(["proxy", "revoke-credential", "--host", HOST, "--agent", AGENT_ID]);
+            output_within(cmd, Duration::from_secs(60)).expect("aasm proxy revoke-credential ran to completion")
         }
 
         /// Release the agent for its second call and wait for the supervisor to end.
@@ -521,33 +559,109 @@ mod credential_broker_e2e {
                 "the agent never completed its second call -- see {}",
                 self.stderr_log.display()
             );
-            self.child.wait().expect("aasm run ends")
+            let deadline = Instant::now() + Duration::from_secs(60);
+            loop {
+                if let Some(st) = self.child.try_wait().expect("poll aasm run") {
+                    return st;
+                }
+                if Instant::now() >= deadline {
+                    // SAFETY: plain signal to a child this struct owns.
+                    unsafe {
+                        libc::kill(self.child.id() as i32, libc::SIGTERM);
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    panic!("aasm run did not end within 60s of the agent finishing");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
     }
 
+    /// What one `lldb` heap scan covered, so `(0, 0)` is distinguishable from a
+    /// scan that read nothing.
+    #[derive(Debug)]
+    struct MemoryScan {
+        counts: (usize, usize),
+        bytes_scanned: usize,
+        regions: usize,
+        read_failures: usize,
+    }
+
+    /// Smallest amount of writable memory a scan of these processes must cover for a
+    /// zero count to mean anything (a Rust process maps far more than this).
+    const MIN_SCANNED_BYTES: usize = 1 << 20;
+
     /// Occurrences of the full value and of its suffix in a live process's writable
     /// memory, counted by an `lldb` attached for the duration of the scan (same
-    /// uid, no core file). `None` means the debugger could not attach or scan, which
-    /// the caller must treat as "not measured", never as "clean".
-    fn memory_counts(pid: u32, synth: &(String, String)) -> Option<(usize, usize)> {
+    /// uid, no core file). `None` means the debugger could not attach, scan or
+    /// finish in time, which the caller must treat as "not measured", never "clean".
+    fn memory_counts(pid: u32, synth: &(String, String)) -> Option<MemoryScan> {
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/j84_lldb_scan.py");
-        let out = std::process::Command::new("lldb")
-            .env_clear()
+        let mut cmd = std::process::Command::new("lldb");
+        cmd.env_clear()
             .env("HOME", std::env::var_os("HOME").unwrap_or_default())
             .env("PATH", "/usr/bin:/bin")
             // The needles reach lldb through its environment, so they are in no argv.
             .env("J84_NEEDLES", format!("{},{}", synth.0, synth.1))
             .args(["--batch", "-p", &pid.to_string(), "-o"])
             .arg(format!("command script import {script}"))
-            .args(["-o", "detach"])
-            .output()
-            .ok()?;
+            .args(["-o", "detach"]);
+        let out = output_within(cmd, Duration::from_secs(300))?;
         let text = String::from_utf8_lossy(&[out.stdout, out.stderr].concat()).into_owned();
         let line = text.lines().find(|l| l.starts_with("J84SCAN counts=["))?;
         let inner = line.strip_prefix("J84SCAN counts=[")?.split(']').next()?;
         let mut parts = inner.split(',').map(|p| p.trim().parse::<usize>());
-        Some((parts.next()?.ok()?, parts.next()?.ok()?))
+        let counts = (parts.next()?.ok()?, parts.next()?.ok()?);
+        let field = |name: &str| -> Option<usize> {
+            line.split_whitespace()
+                .find_map(|w| w.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+        };
+        Some(MemoryScan {
+            counts,
+            bytes_scanned: field("bytes_scanned")?,
+            regions: field("regions")?,
+            read_failures: field("read_failures")?,
+        })
     }
+
+    /// A scan that attached but read (almost) nothing is "not measured", not clean.
+    fn scanned_enough(role: &str, scan: Option<MemoryScan>) -> MemoryScan {
+        let scan = scan.unwrap_or_else(|| panic!("lldb could not scan the {role} (NOT RUN, not clean)"));
+        assert!(
+            scan.bytes_scanned >= MIN_SCANNED_BYTES,
+            "the {role} scan covered only {} bytes in {} regions ({} read failures): not a measurement",
+            scan.bytes_scanned,
+            scan.regions,
+            scan.read_failures
+        );
+        scan
+    }
+
+    /// Surfaces a live brokered launch is known to populate.
+    const POPULATED_WHILE_RUNNING: [&str; 11] = [
+        "ps_eww:aasm",
+        "ps_eww:agent",
+        "ps_eww:proxy",
+        "lsof:aasm",
+        "lsof:agent",
+        "lsof:proxy",
+        "tree:state_and_receipts",
+        "tree:agent_dir",
+        "tree:ca_dir",
+        "tree:proxy_data",
+        "file:aasm_stderr",
+    ];
+
+    /// File-backed surfaces known to be populated once the run has ended.
+    const POPULATED_AFTER_EXIT: [&str; 5] = [
+        "tree:state_and_receipts",
+        "tree:agent_dir",
+        "tree:ca_dir",
+        "tree:proxy_data",
+        "file:aasm_stderr",
+    ];
 
     /// A "clean" verdict over a surface that is empty is vacuous. These are the
     /// surfaces the run is known to populate; each must hold something.
@@ -573,8 +687,9 @@ mod credential_broker_e2e {
             .map(|s| format!("{}={}", s.name, s.bytes.len()))
             .collect();
         println!(
-            "J84-EVIDENCE {label}: surfaces_scanned={} surfaces_with_credential={} names={:?} sizes_bytes=[{}]",
+            "J84-EVIDENCE {label}: surfaces_scanned={} non_empty={} surfaces_with_credential={} names={:?} sizes_bytes=[{}]",
             surfaces.len(),
+            surfaces.iter().filter(|s| !s.bytes.is_empty()).count(),
             hits.len(),
             hits.keys().collect::<Vec<_>>(),
             sizes.join(" ")
@@ -599,17 +714,7 @@ mod credential_broker_e2e {
 
         let before = j.surfaces();
         report("while-running", &before, &j.synth);
-        assert_populated(
-            &before,
-            &[
-                "ps_eww:aasm",
-                "ps_eww:agent",
-                "ps_eww:proxy",
-                "lsof:agent",
-                "tree:state_and_receipts",
-                "tree:agent_dir",
-            ],
-        );
+        assert_populated(&before, &POPULATED_WHILE_RUNNING);
         assert_eq!(
             leaking(&before, &j.synth),
             BTreeMap::new(),
@@ -660,10 +765,7 @@ mod credential_broker_e2e {
             ])
             .collect();
         report("after-exit", &after, &j.synth);
-        assert_populated(
-            &after,
-            &["tree:state_and_receipts", "tree:agent_dir", "file:aasm_stderr"],
-        );
+        assert_populated(&after, &POPULATED_AFTER_EXIT);
         // Receipts, audit and logs the run did not write are named, not counted clean.
         println!("J84-EVIDENCE state-tree-files: {:?}", file_names(&j.state));
         for name in [
@@ -725,7 +827,9 @@ mod credential_broker_e2e {
         });
         let hits = leaking(&surfaces, &j.synth);
         report("ambient-control", &surfaces, &j.synth);
-        for must_flag in ["ps_eww:agent", "ps_eww:aasm", "agent:self_report"] {
+        assert_populated(&surfaces, &POPULATED_WHILE_RUNNING);
+        // The proxy inherits the ambient key too, so it must flag as well.
+        for must_flag in ["ps_eww:agent", "ps_eww:aasm", "ps_eww:proxy", "agent:self_report"] {
             assert!(
                 hits.contains_key(must_flag),
                 "the scanners missed {must_flag}: {hits:?}"
@@ -786,13 +890,13 @@ mod credential_broker_e2e {
         j.wait_ready();
         assert_eq!(j.status(1), "200");
 
-        let agent = memory_counts(j.agent_pid(), &j.synth).expect("lldb must attach to and scan the agent");
-        let proxy = memory_counts(j.launch_proxy_pid(), &j.synth).expect("lldb must attach to and scan the proxy");
+        let agent = scanned_enough("agent", memory_counts(j.agent_pid(), &j.synth));
+        let proxy = scanned_enough("proxy", memory_counts(j.launch_proxy_pid(), &j.synth));
         let supervisor = memory_counts(j.child.id(), &j.synth);
-        println!("J84-EVIDENCE memory (full,suffix): agent={agent:?} proxy={proxy:?} supervisor={supervisor:?}");
-        assert_eq!(agent, (0, 0), "the agent's writable memory holds the credential");
+        println!("J84-EVIDENCE memory: agent={agent:?} proxy={proxy:?} supervisor={supervisor:?}");
+        assert_eq!(agent.counts, (0, 0), "the agent's writable memory holds the credential");
         assert!(
-            proxy.0 > 0,
+            proxy.counts.0 > 0,
             "the proxy injects the credential, so its heap must hold it; zero means the scanner is blind"
         );
         let _ = j.finish();
@@ -807,9 +911,12 @@ mod credential_broker_e2e {
     async fn memory_scan_control_an_ambient_credential_is_found_in_the_agent_heap() -> anyhow::Result<()> {
         let mut j = Journey::start(Mode::AmbientLeak).await?;
         j.wait_ready();
-        let agent = memory_counts(j.agent_pid(), &j.synth).expect("lldb must attach to and scan the agent");
-        println!("J84-EVIDENCE memory-control (full,suffix): agent={agent:?}");
-        assert!(agent.0 > 0, "the scanner cannot see an agent's memory: {agent:?}");
+        let agent = scanned_enough("agent", memory_counts(j.agent_pid(), &j.synth));
+        println!("J84-EVIDENCE memory-control: agent={agent:?}");
+        assert!(
+            agent.counts.0 > 0,
+            "the scanner cannot see an agent's memory: {agent:?}"
+        );
         let _ = j.finish();
         Ok(())
     }
