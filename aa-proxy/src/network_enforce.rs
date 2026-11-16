@@ -50,12 +50,15 @@
 //! registered agent.
 //!
 //! A cascade-scoped gateway (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`)
-//! evaluates the label as an unregistered identity, so Agent-scoped network
-//! rules keyed on the label apply. A single-file `AA_POLICY_PATH` deployment
-//! (the common case, routed through uncached `evaluate_primary`) is unaffected:
-//! its `network:` section applies regardless of identity. Threading a verified,
-//! credentialed identity through to the proxy (a `credential_token` reaching
-//! `aa-proxy` would let it act as the agent it mediates) is a materially new
+//! still has no org or team for this request, so Org/Team-scoped network rules
+//! are not consulted; its Agent tier is looked up under the label's key. Whether
+//! an operator-authored Agent-scoped document can match that key has not been
+//! verified here, so this change claims attribution (the decision and its audit
+//! entry name the launch), not Agent-scoped network policy. A single-file
+//! `AA_POLICY_PATH` deployment (the common case) is unaffected: its `network:`
+//! section applies regardless of identity. Threading a verified, credentialed
+//! identity through to the proxy (a `credential_token` reaching `aa-proxy` would
+//! let it act as the agent it mediates) is a materially new
 //! trust boundary, tracked separately (AAASM-6363) and out of scope here.
 
 use std::sync::Arc;

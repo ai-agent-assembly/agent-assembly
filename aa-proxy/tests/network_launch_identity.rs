@@ -4,8 +4,7 @@
 //! `aasm run` starts one proxy per launch and hands it that launch's label in
 //! `AA_AGENT_ID`. Before this change the proxy's own audit record carried the
 //! label but the `CheckAction` it sent to the gateway always said `aa-proxy`, so
-//! the gateway's decision and its audit entry could not tell two launches apart,
-//! and a policy keyed on one agent could never reach a connection.
+//! the gateway's decision and its audit entry could not tell two launches apart.
 //!
 //! The label is *asserted*, not verified: the request carries no
 //! `credential_token`. These tests pin the attribution by value; they do not
@@ -176,8 +175,9 @@ async fn next_record(rx: &mut mpsc::Receiver<ProxyAuditEntry>) -> ProxyAuditEntr
         .expect("audit channel closed")
 }
 
-/// The gateway sees each launch's own label, and a policy keyed on one launch
-/// reaches that launch's connection and no other.
+/// The gateway sees each launch's own label: a gateway that decides by the
+/// claimed id (a stand-in for any consumer of it) gets a different answer for
+/// each launch's connection.
 #[tokio::test]
 async fn each_launch_reaches_the_gateway_under_its_own_label() {
     let dir_a = tempfile::tempdir().unwrap();
