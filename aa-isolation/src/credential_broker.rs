@@ -79,11 +79,11 @@
 //!   returning-to-arbitrary-callers surface this ticket's own acceptance
 //!   criteria forbid.
 //! * Per-request/per-connection proxy identity attribution.
-//!   `aa-proxy/src/network_enforce.rs` sends the launch's asserted agent label
-//!   (no credential token) with each network decision, so it is attributed to
-//!   the launch but not verified (named as a residual by [`crate::egress`]'s
-//!   own module documentation). Authority here is launch-level only: this
-//!   run's own [`crate::spec::IdentityRef`] and lease subject.
+//!   `aa-proxy/src/network_enforce.rs` sends a blank identity with each network
+//!   decision, so the gateway records it as unattributed (named as a residual by
+//!   [`crate::egress`]'s own module documentation). Authority here is
+//!   launch-level only: this run's own [`crate::spec::IdentityRef`] and lease
+//!   subject.
 //! * Quantitative use/byte-ceiling *enforcement*. [`CredentialCeilings`] states
 //!   a ceiling and [`check_ceilings`] refuses when one is stated but the broker
 //!   reports no support for it — it does not account for or enforce a number.
