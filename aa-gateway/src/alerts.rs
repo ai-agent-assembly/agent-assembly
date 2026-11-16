@@ -11,6 +11,15 @@
 use aa_core::AgentId;
 use aa_security::CredentialKind;
 
+/// Subject of an alert whose traffic the gateway cannot attribute to an agent.
+///
+/// All-zero UUID bytes: a recognisably synthetic marker, never a registered
+/// agent, so a dashboard shows the alert under an id nobody can mistake for a
+/// real one. Raised by the gateway when a check claims no agent identity
+/// (AAASM-6363), and by `aa-api`'s proxy-telemetry ingest when a report names
+/// none; the telemetry hop itself carries no credential, so it is always this.
+pub const UNATTRIBUTED_PROXY_AGENT: AgentId = AgentId::from_bytes([0u8; 16]);
+
 /// Broadcast event raised when one or more credential / sensitive-value
 /// patterns are detected in an evaluated payload.
 ///

@@ -31,21 +31,28 @@
 //! keep denying even when the gateway (correctly) has nothing to say about a
 //! host it never sees because the SSRF/denylist check already refused it.
 //!
-//! ## Scope caveat — Global-tier evaluation under a synthetic identity
+//! ## Identity: none is claimed, because none can be verified
 //!
-//! Like [`crate::mcp_enforce`], this module has no real agent identity to
-//! attach to the request (the proxy is agent-agnostic — see
-//! [`crate::mcp_enforce::PROXY_AGENT_ID`]), so a cascade-scoped gateway
-//! (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`) evaluates
-//! this request under a synthetic, unregistered identity, which reaches only
-//! **Global**-tier network policy — Org/Team/Agent-scoped network rules are
-//! not consulted. A single-file `AA_POLICY_PATH` deployment (the common
-//! case, routed through uncached `evaluate_primary`) is unaffected by this
-//! caveat: its `network:` section applies regardless of identity. Threading
-//! a real, credentialed agent identity through to the proxy is tracked
-//! separately (a `credential_token` reaching `aa-proxy` would let it act as
-//! the agent it mediates — a materially new trust boundary, out of scope
-//! here).
+//! Every check this module sends carries a **blank** `agent_id` and no
+//! `credential_token`, which the gateway records as `UNATTRIBUTED`. The proxy
+//! does not send the launch's `AA_AGENT_ID` label: a label is a string any
+//! process could have chosen, and sending it made the gateway's decision and audit
+//! entry name an agent on the strength of an assertion (AAASM-6261).
+//!
+//! Two different things could be verified here, and neither is today:
+//!
+//! * **Verified proxy identity**: that this proxy instance is bound to agent X by a
+//!   gateway-validated launch authorization. It needs a credential the gateway
+//!   validates for this proxy. The only credential that exists is the agent's
+//!   general registration token, which authenticates as the agent for every action
+//!   type; handing that to the proxy is a trust-boundary decision the owner has
+//!   declined. A launch-scoped, CheckAction-only grant does not exist yet.
+//! * **Verified connection origin**: that the process opening a connection to the
+//!   proxy is the governed agent. The proxy reads no `Proxy-Authorization`, does
+//!   no peer-PID lookup and listens on a plain loopback port, so any process of the
+//!   same user that can reach the port is indistinguishable from the agent.
+//!
+//! Until a scoped grant exists the honest attribution is none.
 
 use std::sync::Arc;
 
@@ -55,8 +62,6 @@ use aa_proto::assembly::policy::v1::{
 };
 use aa_runtime::gateway_client::GatewayClient;
 use tokio::sync::Mutex;
-
-use crate::mcp_enforce::PROXY_AGENT_ID;
 
 /// Top-level decision the proxy data path branches on after a gateway
 /// `CheckAction` response for a network-egress request.
@@ -85,13 +90,11 @@ pub enum NetworkDecision {
 /// they do not affect the allow/deny outcome — callers should still pass the
 /// real values they have (CONNECT's authority port, or a sane default) so the
 /// gateway's audit trail records an accurate destination.
+///
+/// The request claims no identity (blank `agent_id`, no token); see the module doc.
 pub fn build_network_check_action_request(host: &str, port: u16, protocol: &str) -> CheckActionRequest {
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
-        }),
+        agent_id: Some(ProtoAgentId::default()),
         credential_token: String::new(),
         trace_id: String::new(),
         span_id: String::new(),
@@ -258,5 +261,17 @@ mod tests {
             NetworkDecision::Deny { reason } => assert!(reason.contains("9999")),
             other => panic!("expected Deny, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_request_claims_no_identity_and_sends_no_token() {
+        let req = build_network_check_action_request("api.anthropic.com", 443, "https");
+        let id = req.agent_id.expect("the field is present but blank");
+        assert_eq!(
+            (id.org_id.as_str(), id.team_id.as_str(), id.agent_id.as_str()),
+            ("", "", ""),
+            "no label and no synthetic name such as `aa-proxy`"
+        );
+        assert!(req.credential_token.is_empty());
     }
 }

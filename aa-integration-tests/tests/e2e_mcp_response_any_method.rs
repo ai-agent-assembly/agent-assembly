@@ -1279,11 +1279,12 @@ async fn a_stalled_partial_event_ends_the_stream_but_idle_time_between_events_do
 }
 
 /// (6) Attribution and `alert_only`: the gateway raises one `SecretAlert` for a
-/// non-`tools/call` response, attributed to the proxy's synthetic `aa-proxy`
-/// identity even when the proxy is configured with another agent id, while the
-/// content is delivered. Control: `redact_only` records it too but withholds.
+/// non-`tools/call` response, explicitly unattributed (the all-zero sentinel)
+/// because the proxy has no verified identity to send, even when it is
+/// configured with an agent id label (AAASM-6363); the content is delivered.
+/// Control: `redact_only` records it too but withholds.
 #[tokio::test(flavor = "multi_thread")]
-async fn alert_only_response_alert_is_attributed_to_the_proxy_identity() {
+async fn alert_only_response_alert_is_explicitly_unattributed() {
     let opts = || ProxyOpts {
         agent_id: Some("agent-x".to_string()),
         ..ProxyOpts::default()
@@ -1298,7 +1299,11 @@ async fn alert_only_response_alert_is_attributed_to_the_proxy_identity() {
     .await;
     assert_forwarded(&observed, "200", PATIENT_ID);
     assert_eq!(observed.alerts.len(), 1, "got {:?}", observed.alerts);
-    assert_eq!(observed.alerts[0].agent_id, alert_key("aa-proxy"));
+    assert_eq!(
+        observed.alerts[0].agent_id,
+        aa_gateway::alerts::UNATTRIBUTED_PROXY_AGENT
+    );
+    assert_ne!(observed.alerts[0].agent_id, alert_key("aa-proxy"));
     assert_ne!(observed.alerts[0].agent_id, alert_key("agent-x"));
 
     let enforced = Scenario::new(

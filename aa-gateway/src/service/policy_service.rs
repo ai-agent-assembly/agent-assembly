@@ -25,7 +25,7 @@ use aa_security::Redaction;
 
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
-use crate::alerts::SecretAlert;
+use crate::alerts::{SecretAlert, UNATTRIBUTED_PROXY_AGENT};
 use crate::anomaly::{AnomalyDetector, AnomalyEvent, AnomalyResponder};
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
@@ -1620,15 +1620,39 @@ impl PolicyServiceImpl {
         let Some(tx) = self.secret_alert_tx.as_ref() else {
             return;
         };
-        let Some(proto_agent) = req.agent_id.as_ref() else {
-            return;
-        };
-
-        let agent_id = AgentId::from_bytes(proto_agent_id_to_key(proto_agent));
-        let team_id = if proto_agent.team_id.is_empty() {
-            None
-        } else {
-            Some(proto_agent.team_id.clone())
+        // AAASM-6363 — attribute the alert by what the gateway can stand behind.
+        //
+        //   * Bound: the credentialed owner's key. It equals the claimed key by
+        //     construction; reading the owner makes the alert's subject the
+        //     registration, not the claim.
+        //   * Unattributed (no agent claimed): emitted under the all-zero sentinel
+        //     instead of being dropped. A finding in traffic nobody can name is
+        //     still a finding, and dropping it hid exactly the traffic that most
+        //     needs an operator.
+        //   * Asserted: the claimed key, as before. The SDK path sends no token,
+        //     so this is the existing, openly weaker attribution.
+        let (agent_id, team_id) = match self.agent_identity_attribution(req) {
+            AgentIdentityAttribution::Bound { .. } => {
+                let proto_agent = req.agent_id.as_ref();
+                let key = self
+                    .credentialed_owner_key(req)
+                    .or_else(|| proto_agent.map(proto_agent_id_to_key));
+                match key {
+                    Some(key) => (
+                        AgentId::from_bytes(key),
+                        proto_agent.map(|a| a.team_id.clone()).filter(|t| !t.is_empty()),
+                    ),
+                    None => (UNATTRIBUTED_PROXY_AGENT, None),
+                }
+            }
+            AgentIdentityAttribution::Unattributed => (UNATTRIBUTED_PROXY_AGENT, None),
+            AgentIdentityAttribution::Asserted { .. } => match req.agent_id.as_ref() {
+                Some(proto_agent) => (
+                    AgentId::from_bytes(proto_agent_id_to_key(proto_agent)),
+                    Some(proto_agent.team_id.clone()).filter(|t| !t.is_empty()),
+                ),
+                None => (UNATTRIBUTED_PROXY_AGENT, None),
+            },
         };
 
         // Distinct kinds (preserve first-seen order) for the alert payload.
