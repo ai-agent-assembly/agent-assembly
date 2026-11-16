@@ -287,6 +287,11 @@ pub struct ProxyConfig {
     /// launches would need per-request/per-connection identity instead, and
     /// deliberately isn't how the golden path works.
     ///
+    /// This is a **label, not a verified identity**: the proxy copies it into its
+    /// own audit records and events, and does **not** send it to the gateway. A
+    /// gateway check carries a blank identity until a launch-scoped grant exists
+    /// (see `network_enforce`'s module documentation).
+    ///
     /// Env: `AA_AGENT_ID` — no default, absent unless set.
     pub agent_id: Option<String>,
 

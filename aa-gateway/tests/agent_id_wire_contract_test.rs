@@ -587,17 +587,14 @@ async fn every_agent_id_shape_is_refused_when_the_token_owns_a_registered_agent(
     }
 }
 
-// ── Network calls from a launch label (AAASM-6261 / J83 AC2) ─────────────────
+// ── Network calls from a governed launch's proxy (AAASM-6261 / J83 AC2) ───────
 
-/// The `NetworkCall` request `aa-proxy` sends for a launch: the launch's label
-/// as `agent_id`, no org or team, no credential token.
-fn launch_network_request(label: &str, host: &str) -> CheckActionRequest {
+/// The `NetworkCall` request `aa-proxy` sends: a blank `agent_id` and no token,
+/// whatever label the launch carries. A label is not sent because it is an
+/// assertion, and the gateway must not attribute a decision to it.
+fn proxy_network_request(host: &str) -> CheckActionRequest {
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: label.into(),
-        }),
+        agent_id: Some(ProtoAgentId::default()),
         credential_token: String::new(),
         trace_id: String::new(),
         span_id: String::new(),
@@ -615,26 +612,23 @@ fn launch_network_request(label: &str, host: &str) -> CheckActionRequest {
 }
 
 #[tokio::test]
-async fn a_launch_label_on_a_network_call_is_asserted_and_recorded_under_that_label() {
-    // The label is an unregistered triple, so it takes the tokenless path: it is
-    // evaluated by the policy (not refused as a missing-token claim), the answer
-    // says it is only asserted, and the audit entry names the label rather than
-    // the synthetic proxy id. Paired allow and deny keep the check from passing
-    // on a gateway that answers one way for everything.
+async fn a_network_call_from_the_proxy_is_explicitly_unattributed_and_still_policy_evaluated() {
+    // The decision still follows policy (paired allow and deny), and the audit
+    // entry says nobody was named: no label, no synthetic `aa-proxy`.
     const POLICY: &str = "version: \"1\"\nnetwork:\n  allowlist:\n    - allowed.example\n";
     let (addr, _registry, mut audit_rx) = start_server(POLICY).await;
 
-    let allowed = check(addr, launch_network_request("launch-a-agent", "allowed.example")).await;
+    let allowed = check(addr, proxy_network_request("allowed.example")).await;
     assert_eq!(allowed.decision, Decision::Allow as i32, "reason: {}", allowed.reason);
-    assert_eq!(allowed.agent_identity_assurance, ProtoAssurance::Asserted as i32);
+    assert_eq!(allowed.agent_identity_assurance, ProtoAssurance::Unattributed as i32);
     let p = payload(&next_entry(&mut audit_rx).await);
-    assert_eq!(p["agent_id_claimed"], "launch-a-agent");
-    assert_eq!(p["agent_identity_assurance"], "asserted");
+    assert!(p["agent_id_claimed"].is_null(), "{p}");
+    assert_eq!(p["agent_identity_assurance"], "unattributed");
 
-    let denied = check(addr, launch_network_request("launch-b-agent", "denied.example")).await;
+    let denied = check(addr, proxy_network_request("denied.example")).await;
     assert_eq!(denied.decision, Decision::Deny as i32);
-    assert_eq!(denied.agent_identity_assurance, ProtoAssurance::Asserted as i32);
+    assert_eq!(denied.agent_identity_assurance, ProtoAssurance::Unattributed as i32);
     let p = payload(&next_entry(&mut audit_rx).await);
-    assert_eq!(p["agent_id_claimed"], "launch-b-agent");
-    assert_eq!(p["agent_identity_assurance"], "asserted");
+    assert!(p["agent_id_claimed"].is_null(), "{p}");
+    assert_eq!(p["agent_identity_assurance"], "unattributed");
 }

@@ -41,17 +41,15 @@ use crate::intercept::mcp::McpToolCall;
 /// in `aa-gateway/tests/edge_langgraph_test.rs` fixtures.
 pub const MCP_TOOL_SOURCE: &str = "mcp";
 
-/// Synthetic `agent_id` the proxy uses when forwarding MCP calls without
-/// having registered an agent identity. The proxy is intentionally
-/// agent-agnostic at Layer 2 — the gateway evaluates the ToolCallContext
-/// directly. Used because `CheckActionRequest.agent_id` is a required
-/// field on the proto.
-///
-/// `pub(crate)` so [`crate::network_enforce`] (AAASM-5851) can reuse the same
-/// synthetic identity for network-egress `CheckAction` requests, keeping one
-/// definition of "who the proxy claims to be when it has no real agent
-/// identity" rather than a second, possibly-diverging constant.
-pub(crate) const PROXY_AGENT_ID: &str = "aa-proxy";
+/// The identity every MCP check claims: none (blank `agent_id`, no token), which
+/// the gateway records as unattributed. The proxy used to claim a made-up
+/// `aa-proxy` agent, which filed a `SecretAlert` and per-agent state under a name
+/// no one registered; an honest blank is attributed to the all-zero sentinel
+/// instead (AAASM-6363). See [`crate::network_enforce`] for why no identity can
+/// be verified here yet.
+fn unattributed_agent() -> ProtoAgentId {
+    ProtoAgentId::default()
+}
 
 /// Top-level decision the proxy data path branches on after a gateway
 /// `CheckAction` response. Maps the proto `Decision` enum onto the
@@ -98,11 +96,7 @@ pub fn build_check_action_request(
     // lets the policy engine match against `tool_name` alone.
     let args_json = serde_json::to_vec(&call.arguments).unwrap_or_default();
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
-        }),
+        agent_id: Some(unattributed_agent()),
         credential_token: String::new(),
         trace_id: trace_id.into(),
         span_id: span_id.into(),
@@ -124,11 +118,8 @@ pub fn build_check_action_request(
 /// data (`sensitive_patterns`, locale packs, `tool_result.*` predicates) to the
 /// body, which the proxy's built-in-only scanner cannot do.
 ///
-/// The request carries [`PROXY_AGENT_ID`], not `ProxyConfig::agent_id`, on
-/// purpose: the gateway rejects a registered agent id that arrives with an empty
-/// credential token, and the proxy holds no per-agent token. A `SecretAlert`
-/// the gateway raises for a response is therefore attributed to the proxy
-/// (`aa-proxy`), not to the agent whose traffic it was.
+/// The request claims no identity, like the request side; a `SecretAlert` the
+/// gateway raises for a response is therefore explicitly unattributed.
 pub fn build_tool_result_request(
     call: &McpToolCall,
     result_body: &[u8],
@@ -137,11 +128,7 @@ pub fn build_tool_result_request(
     span_id: &str,
 ) -> CheckActionRequest {
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
-        }),
+        agent_id: Some(unattributed_agent()),
         credential_token: String::new(),
         trace_id: trace_id.into(),
         span_id: span_id.into(),
@@ -612,6 +599,21 @@ mod tests {
                 );
             }
             other => panic!("expected Deny, got {other:?}"),
+        }
+    }
+
+    /// Both MCP requests claim no identity, so the gateway records them as
+    /// unattributed instead of filing them under an invented `aa-proxy` agent.
+    #[test]
+    fn mcp_requests_claim_no_identity() {
+        let call = sample_call();
+        for req in [
+            build_check_action_request(&call, "https://mcp.example.com/", "", ""),
+            build_tool_result_request(&call, b"{}", "https://mcp.example.com/", "", ""),
+        ] {
+            let id = req.agent_id.expect("agent_id field");
+            assert_eq!(id.agent_id, "");
+            assert!(req.credential_token.is_empty());
         }
     }
 }

@@ -1,18 +1,19 @@
-//! AAASM-6261 (J83) AC2: the gateway's network decision is attributed to the
-//! launch that opened the connection.
+//! AAASM-6261 (J83) AC2: what the proxy tells the gateway about who is behind a
+//! connection, measured against a real second OS process.
 //!
-//! `aasm run` starts one proxy per launch and hands it that launch's label in
-//! `AA_AGENT_ID`. Before this change the proxy's own audit record carried the
-//! label but the `CheckAction` it sent to the gateway always said `aa-proxy`, so
-//! the gateway's decision and its audit entry could not tell two launches apart.
+//! Two different properties are kept apart here, and the tests are named for the
+//! one they measure:
 //!
-//! The label is *asserted*, not verified: the request carries no
-//! `credential_token`. These tests pin the attribution by value; they do not
-//! claim authentication.
+//! * **proxy identity**: this proxy instance is bound to agent X by a
+//!   gateway-validated launch authorization. No such authorization exists yet, so
+//!   the proxy sends a blank identity and the gateway records it as unattributed.
+//! * **connection origin**: the process opening a connection is the governed
+//!   agent. The proxy has no mechanism for this (no `Proxy-Authorization`, no
+//!   peer-PID lookup), so a second process of the same user is indistinguishable
+//!   from the agent. The test below *measures* that, rather than arguing it.
 //!
-//! Two proxies share one gateway on purpose. A single shared proxy attributing
-//! each request to a different agent is rejected by ADR 0033 §6, so the unit of
-//! identity under test is the proxy a launch owns, not the connection.
+//! The stub gateway records exactly what each `CheckAction` claimed, so an
+//! attribution can only appear in these results if the proxy sent one.
 
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -24,7 +25,7 @@ use aa_proto::assembly::policy::v1::{
     BatchCheckRequest, BatchCheckResponse, CheckActionRequest, CheckActionResponse, OpControlMessage,
     OpControlSubscribeRequest,
 };
-use aa_proxy::audit_jsonl::{ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
+use aa_proxy::audit_jsonl::ProxyAuditEntry;
 use aa_proxy::config::{CredentialAction, ProxyConfig};
 use aa_proxy::tls::CaStore;
 use aa_runtime::pipeline::PipelineEvent;
@@ -35,50 +36,38 @@ use tonic::codegen::tokio_stream::Stream;
 use tonic::{Request, Response, Status};
 
 const HOST: &str = "hooks.example.com";
-const LAUNCH_A: &str = "launch-a-agent";
-const LAUNCH_B: &str = "launch-b-agent";
-/// What a proxy without a launch label sends, and so what "unattributed" means
-/// to the gateway. Duplicated from `aa_proxy::mcp_enforce::PROXY_AGENT_ID` on
-/// purpose: a test that imported the constant would pass if the constant were
-/// changed to equal a launch label.
-const UNATTRIBUTED: &str = "aa-proxy";
+/// A label the launch carries. It must never reach the gateway.
+const LABEL_A: &str = "label-of-launch-a";
+const LABEL_B: &str = "label-of-launch-b";
 
-/// Allows every `NetworkCall` except one claimed by `denied_agent`, and records
-/// the agent id each request claimed. Decides by the claimed id and nothing
-/// else, so a verdict can only differ between two proxies if the id did.
-struct DenyByClaimedAgent {
-    denied_agent: String,
-    seen: Arc<Mutex<Vec<String>>>,
+/// What one network `CheckAction` claimed: `(agent_id, credential_token)`.
+type Claim = (String, String);
+
+/// A gateway stand-in that records every network claim and allows it.
+struct StubGateway {
+    seen: Arc<Mutex<Vec<Claim>>>,
 }
 
 #[tonic::async_trait]
-impl PolicyService for DenyByClaimedAgent {
+impl PolicyService for StubGateway {
     async fn check_action(&self, req: Request<CheckActionRequest>) -> Result<Response<CheckActionResponse>, Status> {
         let request = req.get_ref();
-        let is_network = matches!(
+        if matches!(
             request.context.as_ref().and_then(|c| c.action.as_ref()),
             Some(Action::NetworkCall(_))
-        );
-        let claimed = request
-            .agent_id
-            .as_ref()
-            .map(|a| a.agent_id.clone())
-            .unwrap_or_default();
-        if is_network {
-            self.seen.lock().unwrap().push(claimed.clone());
+        ) {
+            let agent = request
+                .agent_id
+                .as_ref()
+                .map(|a| a.agent_id.clone())
+                .unwrap_or_default();
+            self.seen
+                .lock()
+                .unwrap()
+                .push((agent, request.credential_token.clone()));
         }
-        let deny = is_network && claimed == self.denied_agent;
         Ok(Response::new(CheckActionResponse {
-            decision: if deny {
-                aa_proto::assembly::common::v1::Decision::Deny as i32
-            } else {
-                aa_proto::assembly::common::v1::Decision::Allow as i32
-            },
-            reason: if deny {
-                format!("network egress denied for {claimed}")
-            } else {
-                String::new()
-            },
+            decision: aa_proto::assembly::common::v1::Decision::Allow as i32,
             ..Default::default()
         }))
     }
@@ -97,13 +86,12 @@ impl PolicyService for DenyByClaimedAgent {
     }
 }
 
-async fn spawn_gateway(denied_agent: &str) -> (String, Arc<Mutex<Vec<String>>>) {
+async fn spawn_gateway() -> (String, Arc<Mutex<Vec<Claim>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
-    let service = DenyByClaimedAgent {
-        denied_agent: denied_agent.to_string(),
+    let service = StubGateway {
         seen: Arc::clone(&seen),
     };
     tokio::spawn(async move {
@@ -118,7 +106,7 @@ async fn spawn_gateway(denied_agent: &str) -> (String, Arc<Mutex<Vec<String>>>) 
 
 async fn start_proxy(
     gateway: &str,
-    agent_id: Option<&str>,
+    label: Option<&str>,
     ca_dir: &std::path::Path,
 ) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -141,7 +129,7 @@ async fn start_proxy(
         gateway_endpoint: Some(gateway.to_string()),
         mcp_fail_open: false,
         network_fail_open: false,
-        agent_id: agent_id.map(str::to_string),
+        agent_id: label.map(str::to_string),
         ready_file: None,
         parent_pid: None,
         allow_private_connect_targets: true,
@@ -168,75 +156,71 @@ async fn connect_status(proxy: SocketAddr) -> String {
     line
 }
 
-async fn next_record(rx: &mut mpsc::Receiver<ProxyAuditEntry>) -> ProxyAuditEntry {
-    tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+/// The same CONNECT, opened by a **separate OS process** (`bash` with its own
+/// `/dev/tcp`) that holds no secret and no label: the stand-in for any other
+/// process of the same user that can reach the proxy's loopback port.
+async fn connect_status_from_another_process(proxy: SocketAddr) -> String {
+    let script = format!(
+        "exec 3<>/dev/tcp/127.0.0.1/{port}; printf 'CONNECT {HOST}:443 HTTP/1.1\\r\\nHost: {HOST}:443\\r\\n\\r\\n' >&3; head -n 1 <&3",
+        port = proxy.port()
+    );
+    let out = tokio::process::Command::new("bash")
+        .args(["-c", &script])
+        .output()
         .await
-        .expect("the proxy persisted no audit record within 5 s")
-        .expect("audit channel closed")
+        .expect("spawn a second process");
+    assert_ne!(out.stdout.len(), 0, "the second process got no answer: {out:?}");
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The gateway sees each launch's own label: a gateway that decides by the
-/// claimed id (a stand-in for any consumer of it) gets a different answer for
-/// each launch's connection.
+/// Neither launch's label reaches the gateway, so two launches are not told apart
+/// by it and neither is named. This pins the removal of the asserted-label
+/// attribution: a proxy that sent its label would be recorded under it.
 #[tokio::test]
-async fn each_launch_reaches_the_gateway_under_its_own_label() {
+async fn a_launch_label_is_never_sent_to_the_gateway() {
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
-    let (gateway, seen) = spawn_gateway(LAUNCH_B).await;
-    let (proxy_a, _audit_a) = start_proxy(&gateway, Some(LAUNCH_A), dir_a.path()).await;
-    let (proxy_b, mut audit_b) = start_proxy(&gateway, Some(LAUNCH_B), dir_b.path()).await;
+    let (gateway, seen) = spawn_gateway().await;
+    let (proxy_a, _audit_a) = start_proxy(&gateway, Some(LABEL_A), dir_a.path()).await;
+    let (proxy_b, _audit_b) = start_proxy(&gateway, Some(LABEL_B), dir_b.path()).await;
 
-    let status_a = connect_status(proxy_a).await;
-    assert!(
-        status_a.contains("200"),
-        "launch A is not the denied agent and must be allowed, got: {status_a:?}"
-    );
+    assert!(connect_status(proxy_a).await.contains("200"));
+    assert!(connect_status(proxy_b).await.contains("200"));
     assert_eq!(
         *seen.lock().unwrap(),
-        vec![LAUNCH_A.to_string()],
-        "the gateway must have been asked about launch A under its own label"
+        vec![(String::new(), String::new()), (String::new(), String::new())],
+        "the gateway must be told nothing about who either proxy serves"
     );
-
-    let status_b = connect_status(proxy_b).await;
-    assert!(
-        !status_b.contains("200"),
-        "launch B is the agent the gateway denies and must be refused, got: {status_b:?}"
-    );
-    assert_eq!(
-        *seen.lock().unwrap(),
-        vec![LAUNCH_A.to_string(), LAUNCH_B.to_string()],
-        "each connection must reach the gateway under the label of the proxy that carried it"
-    );
-
-    // The proxy's own record already named the launch; the point is that the
-    // gateway's view and the proxy's view now agree on who it was.
-    let refusal = next_record(&mut audit_b).await;
-    assert_eq!(refusal.decision, ProxyAuditDecision::Blocked);
-    assert_eq!(refusal.refusal_rule, Some(RefusalRule::GatewayEgressPolicy));
-    assert_eq!(refusal.agent_id.as_deref(), Some(LAUNCH_B));
 }
 
-/// A proxy started without a label stays explicitly unattributed to the
-/// gateway. This is the negative control for the label tests above: if the
-/// proxy invented a label, or if the stub keyed on anything but the claimed id,
-/// the unlabelled proxy would not be distinguishable from a launch.
+/// MEASURED: connection origin is **not** verified. A second process of the same
+/// user that reaches launch A's proxy produces the same gateway claim as launch
+/// A's own connection, because the proxy sends no identity for either. The
+/// property that holds is the narrower one: the second process is **not
+/// attributed to agent A** (nobody is named), so it cannot borrow A's identity at
+/// the gateway. It can still use A's proxy, and A's proxy-local audit record
+/// carries A's label for it, which is an assertion and not attribution.
 #[tokio::test]
-async fn a_proxy_without_a_label_stays_unattributed() {
+async fn another_same_user_process_is_indistinguishable_from_the_agent_and_is_not_attributed_to_it() {
     let dir = tempfile::tempdir().unwrap();
-    let (gateway, seen) = spawn_gateway(LAUNCH_B).await;
-    let (unlabelled, _audit) = start_proxy(&gateway, None, dir.path()).await;
+    let (gateway, seen) = spawn_gateway().await;
+    let (proxy, _audit) = start_proxy(&gateway, Some(LABEL_A), dir.path()).await;
 
-    let status = connect_status(unlabelled).await;
-    assert!(status.contains("200"), "got: {status:?}");
-    assert_eq!(*seen.lock().unwrap(), vec![UNATTRIBUTED.to_string()]);
-
-    let dir_empty = tempfile::tempdir().unwrap();
-    let (empty_label, _audit_empty) = start_proxy(&gateway, Some(""), dir_empty.path()).await;
-    let status = connect_status(empty_label).await;
-    assert!(status.contains("200"), "got: {status:?}");
+    let from_agent = connect_status(proxy).await;
+    let from_other = connect_status_from_another_process(proxy).await;
+    assert!(from_agent.contains("200"), "{from_agent:?}");
+    assert!(
+        from_other.contains("200"),
+        "measured: a second process with no secret is served by the proxy: {from_other:?}"
+    );
+    let claims = seen.lock().unwrap().clone();
+    assert_eq!(claims.len(), 2, "{claims:?}");
     assert_eq!(
-        *seen.lock().unwrap(),
-        vec![UNATTRIBUTED.to_string(), UNATTRIBUTED.to_string()],
-        "an empty label is no label"
+        claims[0], claims[1],
+        "the gateway cannot tell the agent's connection from the other process's"
+    );
+    assert!(
+        claims.iter().all(|(agent, token)| agent.is_empty() && token.is_empty()),
+        "and neither is attributed to anyone, in particular not to {LABEL_A}: {claims:?}"
     );
 }
