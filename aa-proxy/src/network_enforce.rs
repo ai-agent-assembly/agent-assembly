@@ -49,6 +49,13 @@
 //! existing tokenless path and is never rejected as a missing-token claim on a
 //! registered agent.
 //!
+//! Side effect: the gateway derives its per-agent state from this label, so a
+//! launch's network checks now share the evaluation-cache, anomaly-baseline and
+//! rate-limit state that the same label has on the SDK path, instead of being
+//! pooled under `aa-proxy`. MCP `tools/call` and tool-result checks still send
+//! `aa-proxy` ([`crate::mcp_enforce`]), so one launch appears under two
+//! identities in the gateway's audit trail.
+//!
 //! A cascade-scoped gateway (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`)
 //! still has no org or team for this request, so Org/Team-scoped network rules
 //! are not consulted; its Agent tier is looked up under the label's key. Whether
