@@ -25,19 +25,12 @@ use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use aa_core::AgentId;
-use aa_gateway::alerts::SecretAlert;
+use aa_gateway::alerts::{SecretAlert, UNATTRIBUTED_PROXY_AGENT};
 use aa_proto::assembly::telemetry::v1::redaction_telemetry_service_server::{
     RedactionTelemetryService, RedactionTelemetryServiceServer,
 };
 use aa_proto::assembly::telemetry::v1::{ReportRedactionRequest, ReportRedactionResponse};
 use aa_security::CredentialKind;
-
-/// Sentinel identity for redaction events the proxy reports without an
-/// attributed agent. All-zero UUID bytes: a well-known "unattributed proxy
-/// path" marker, never a real registered agent. Using it keeps the dashboard
-/// honest — the event is shown under a recognisably-synthetic id rather than a
-/// fabricated one that could be mistaken for a real agent.
-const UNATTRIBUTED_PROXY_AGENT: AgentId = AgentId::from_bytes([0u8; 16]);
 
 /// gRPC ingest for [`aa_proto::assembly::telemetry::v1::RedactionTelemetryService`].
 ///
@@ -237,6 +230,29 @@ mod tests {
             Some("evt-correlation-42"),
             "the alert must carry the originating RedactionEvent's event_id for dashboard correlation"
         );
+    }
+
+    /// AAASM-6363: the proxy -> aa-api telemetry hop carries no credential, so
+    /// an alert it republishes is explicitly unattributed. This pins the limit
+    /// rather than leaving it implicit: the proxy builds its event with no agent
+    /// (`new_redaction_event`), and this ingest must file that under the
+    /// sentinel, never under an identity it could not have checked.
+    #[tokio::test]
+    async fn a_proxy_telemetry_alert_without_an_agent_is_explicitly_unattributed() {
+        let (tx, mut rx) = broadcast::channel(4);
+        let ingest = RedactionTelemetryIngest::new(tx);
+        let event = aa_runtime::redaction_telemetry_client::new_redaction_event(
+            "api.anthropic.com".to_string(),
+            None,
+            vec!["AwsAccessKey".to_string()],
+            1,
+        );
+        ingest
+            .report_redaction(Request::new(ReportRedactionRequest { event: Some(event) }))
+            .await
+            .expect("report_redaction should succeed");
+        let alert = rx.try_recv().expect("the alert must be republished");
+        assert_eq!(alert.agent_id, UNATTRIBUTED_PROXY_AGENT);
     }
 
     /// A `--no-proxy` / gateway-native `SecretAlert` (never built from a
