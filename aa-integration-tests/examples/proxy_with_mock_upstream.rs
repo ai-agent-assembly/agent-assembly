@@ -69,6 +69,14 @@ const UPSTREAM_ENV: &str = "AA_TEST_PROXY_UPSTREAM";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // AAASM-6262: `aasm` asks for this before it hands any proxy the operator's
+    // provider keys on stdin (`provider_keys::preflight`), and refuses a launch
+    // whose proxy cannot answer. Mirrors `aa-proxy`'s own `--capabilities`.
+    if std::env::args().nth(1).as_deref() == Some("--capabilities") {
+        println!("{}", aa_proxy::credentials::PROVIDER_KEYS_STDIN_CAPABILITY);
+        return Ok(());
+    }
+
     // AAASM-5902: without this the binary emitted no logs at all, which blocks
     // any test that needs to correlate this process's behaviour (e.g. redaction
     // decisions) against captured stdout/stderr, and blocks a `LogLine`
@@ -112,7 +120,21 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    // AAASM-6262: same credential delivery as `aa_proxy::run` -- keys arrive on
+    // stdin from `aasm`, never in this process's environment -- so a brokered
+    // launch can be measured end to end. Without it this stand-in would start
+    // with an empty store and forward the agent's own credential header.
+    let startup_credentials = aa_proxy::credentials::CredentialStore::load_startup()
+        .map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
+    let mut server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    if let Some(store) = startup_credentials {
+        let expected = store.len();
+        server = server.with_credentials(store);
+        anyhow::ensure!(
+            server.credentials().len() == expected,
+            "refusing to start: the delivered provider credentials were not installed"
+        );
+    }
     server.run().await?;
     Ok(())
 }
