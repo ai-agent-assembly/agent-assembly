@@ -2331,7 +2331,15 @@ impl ProxyServer {
                 Some(EgressDenyReason::GatewayNetworkPolicy)
             };
         };
-        match crate::network_enforce::evaluate_network_call(gateway, host, port, protocol).await {
+        match crate::network_enforce::evaluate_network_call(
+            gateway,
+            host,
+            port,
+            protocol,
+            self.config.agent_id.as_deref(),
+        )
+        .await
+        {
             Ok(crate::network_enforce::NetworkDecision::Allow) => None,
             Ok(crate::network_enforce::NetworkDecision::Deny { reason }) => {
                 tracing::info!(%host, %reason, "network egress denied by gateway policy");

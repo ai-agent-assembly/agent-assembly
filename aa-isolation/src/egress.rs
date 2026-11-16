@@ -41,13 +41,15 @@
 //!
 //! # What this module defers
 //!
-//! * Threading a real credentialed agent identity into `aa-proxy`'s own
-//!   per-connection decision — `aa-proxy/src/network_enforce.rs` already
-//!   states that every decision there is still evaluated under the synthetic
-//!   `PROXY_AGENT_ID` at Global policy tier, and names that as a materially
-//!   new trust boundary out of scope for this ticket. [`EgressAuthority`] is a
-//!   pre-launch decision in this crate ("is this run authorized for brokered
-//!   egress at this scope"), not a per-connection identity on the proxy path.
+//! * Threading a *verified*, credentialed agent identity into `aa-proxy`'s own
+//!   per-connection decision. `aa-proxy/src/network_enforce.rs` sends the
+//!   launch's agent label (asserted, no `credential_token`) as the `agent_id`
+//!   of each network `CheckAction`, so decisions are attributed to the launch
+//!   that opened the connection; a credential reaching the proxy would let it
+//!   act as the agent it mediates, a materially new trust boundary out of scope
+//!   for this ticket. [`EgressAuthority`] is a pre-launch decision in this
+//!   crate ("is this run authorized for brokered egress at this scope"), not a
+//!   per-connection identity on the proxy path.
 //! * Quantitative connection/byte/rate *enforcement*. No accounting exists in
 //!   `aa-proxy` today; [`EgressCeilings`] states a ceiling and
 //!   [`check_ceilings`] refuses when one is stated but the broker reports no

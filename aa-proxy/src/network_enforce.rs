@@ -31,21 +31,32 @@
 //! keep denying even when the gateway (correctly) has nothing to say about a
 //! host it never sees because the SSRF/denylist check already refused it.
 //!
-//! ## Scope caveat — Global-tier evaluation under a synthetic identity
+//! ## Identity — the launch's label, asserted, not verified
 //!
-//! Like [`crate::mcp_enforce`], this module has no real agent identity to
-//! attach to the request (the proxy is agent-agnostic — see
-//! [`crate::mcp_enforce::PROXY_AGENT_ID`]), so a cascade-scoped gateway
-//! (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`) evaluates
-//! this request under a synthetic, unregistered identity, which reaches only
-//! **Global**-tier network policy — Org/Team/Agent-scoped network rules are
-//! not consulted. A single-file `AA_POLICY_PATH` deployment (the common
-//! case, routed through uncached `evaluate_primary`) is unaffected by this
-//! caveat: its `network:` section applies regardless of identity. Threading
-//! a real, credentialed agent identity through to the proxy is tracked
-//! separately (a `credential_token` reaching `aa-proxy` would let it act as
-//! the agent it mediates — a materially new trust boundary, out of scope
-//! here).
+//! `aasm run` spawns one dedicated proxy per launch and hands it the launch's
+//! agent label through `AA_AGENT_ID`. This module sends that label as the
+//! `agent_id` of the network `CheckAction`, so the gateway's decision and its
+//! audit record are attributed to the launch that opened the connection rather
+//! than to the synthetic [`crate::mcp_enforce::PROXY_AGENT_ID`]. A proxy with no
+//! label (standalone) still sends `PROXY_AGENT_ID`, which stays explicitly
+//! unattributed.
+//!
+//! The label is *asserted*: the request carries no `credential_token`, so the
+//! gateway records it with assurance `Asserted`, and any local process that
+//! reaches the proxy's loopback port is attributed to this launch. The label is
+//! an unregistered triple (a registered agent's id is its `did:key`, and a
+//! `did:key` label is refused at registration), so it takes the gateway's
+//! existing tokenless path and is never rejected as a missing-token claim on a
+//! registered agent.
+//!
+//! A cascade-scoped gateway (`aa-gateway/src/engine/mod.rs::collect_cascade_with_lineage`)
+//! evaluates the label as an unregistered identity, so Agent-scoped network
+//! rules keyed on the label apply. A single-file `AA_POLICY_PATH` deployment
+//! (the common case, routed through uncached `evaluate_primary`) is unaffected:
+//! its `network:` section applies regardless of identity. Threading a verified,
+//! credentialed identity through to the proxy (a `credential_token` reaching
+//! `aa-proxy` would let it act as the agent it mediates) is a materially new
+//! trust boundary, tracked separately (AAASM-6363) and out of scope here.
 
 use std::sync::Arc;
 
@@ -85,12 +96,25 @@ pub enum NetworkDecision {
 /// they do not affect the allow/deny outcome — callers should still pass the
 /// real values they have (CONNECT's authority port, or a sane default) so the
 /// gateway's audit trail records an accurate destination.
-pub fn build_network_check_action_request(host: &str, port: u16, protocol: &str) -> CheckActionRequest {
+///
+/// `agent_label` is the launch's asserted agent label (`ProxyConfig::agent_id`).
+/// `None` or an empty label falls back to [`PROXY_AGENT_ID`], so a standalone
+/// proxy stays explicitly unattributed.
+pub fn build_network_check_action_request(
+    host: &str,
+    port: u16,
+    protocol: &str,
+    agent_label: Option<&str>,
+) -> CheckActionRequest {
+    let agent_id = match agent_label {
+        Some(label) if !label.is_empty() => label,
+        _ => PROXY_AGENT_ID,
+    };
     CheckActionRequest {
         agent_id: Some(ProtoAgentId {
             org_id: String::new(),
             team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
+            agent_id: agent_id.into(),
         }),
         credential_token: String::new(),
         trace_id: String::new(),
@@ -160,8 +184,9 @@ pub async fn evaluate_network_call(
     host: &str,
     port: u16,
     protocol: &str,
+    agent_label: Option<&str>,
 ) -> anyhow::Result<NetworkDecision> {
-    let request = build_network_check_action_request(host, port, protocol);
+    let request = build_network_check_action_request(host, port, protocol, agent_label);
     let response = {
         let mut client = gateway.lock().await;
         tokio::time::timeout(CHECK_ACTION_TIMEOUT, client.check_action(request))
@@ -184,7 +209,7 @@ mod tests {
 
     #[test]
     fn build_request_populates_network_call_context_fields() {
-        let req = build_network_check_action_request("api.anthropic.com", 443, "https");
+        let req = build_network_check_action_request("api.anthropic.com", 443, "https", None);
         assert_eq!(req.action_type, ActionType::NetworkCall as i32);
 
         let action = req.context.expect("context").action.expect("action");
