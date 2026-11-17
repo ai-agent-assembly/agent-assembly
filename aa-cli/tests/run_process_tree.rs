@@ -509,7 +509,8 @@ async fn a_process_outside_the_tree_cannot_claim_its_authority_and_a_real_descen
 
     // This test process is a same-uid process that is in no admitted hop's tree.
     let endpoint = endpoint_of(tree.child.id());
-    let refused = admit(&endpoint, &foreign_request("intruder"), None).expect_err("a sibling must be refused");
+    let refused = admit(&endpoint, &foreign_request("intruder"), None, "did:key:intruder")
+        .expect_err("a sibling must be refused");
     assert_eq!(refused.kind, "UnrecordedPeer", "{refused}");
 
     // Control: a real descendant of that tree, asking the same thing, is admitted.

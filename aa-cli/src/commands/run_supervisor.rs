@@ -167,6 +167,9 @@ enum Request {
         spec: Box<ExecutionSpec>,
         /// What `--root-agent` named, if anything. A claim to check, never a source of lineage.
         declared_root_agent: Option<String>,
+        /// The sender's gateway registration DID. The gateway resolves a declared parent by DID, so
+        /// a `--root-agent` is matched against an ancestor's agent id OR its DID.
+        registration_did: String,
     },
     /// Revoke every lease the root issued. Safe direction only: it removes authority.
     Revoke { reason: String },
@@ -424,10 +427,12 @@ pub fn admit(
     endpoint: &Endpoint,
     spec: &ExecutionSpec,
     declared_root_agent: Option<&str>,
+    registration_did: &str,
 ) -> Result<Admission, Refusal> {
     let request = Request::Admit {
         spec: Box::new(spec.clone()),
         declared_root_agent: declared_root_agent.map(str::to_string),
+        registration_did: registration_did.to_string(),
     };
     match exchange(endpoint, &request).map_err(|e| Refusal::new("SupervisorUnreachable", e))? {
         Response::Admitted { leases, lineage } => Ok(Admission { leases, lineage }),
@@ -473,6 +478,7 @@ pub struct TreeRoot {
     ledger: Arc<DelegationLedger>,
     root_leases: Vec<LeaseId>,
     agent_id: String,
+    aliases: Vec<String>,
 }
 
 impl TreeRoot {
@@ -482,7 +488,12 @@ impl TreeRoot {
     /// The ledger trusts `trusted_issuer` only. A root lease with another issuer is
     /// not tracked, so every descendant asking for that domain is refused
     /// (`LedgerUnverifiable`); the root itself is unaffected. Their ids are returned.
-    pub fn seed(spec: &ExecutionSpec, witness: &AuthorityWitness, trusted_issuer: &str) -> (Self, Vec<LeaseId>) {
+    pub fn seed(
+        spec: &ExecutionSpec,
+        witness: &AuthorityWitness,
+        trusted_issuer: &str,
+        registration_did: &str,
+    ) -> (Self, Vec<LeaseId>) {
         let ledger = Arc::new(DelegationLedger::new().with_trusted_issuer(trusted_issuer));
         let mut root_leases = Vec::new();
         let mut untracked = Vec::new();
@@ -499,6 +510,7 @@ impl TreeRoot {
                 ledger,
                 root_leases,
                 agent_id: spec.identity().agent_id.clone(),
+                aliases: vec![spec.identity().agent_id.clone(), registration_did.to_string()],
             },
             untracked,
         )
@@ -508,6 +520,8 @@ impl TreeRoot {
 struct Hop {
     authority: ParentAuthority,
     agent_id: String,
+    /// Every name this hop and its ancestors are known by (agent id and registration DID).
+    aliases: Vec<String>,
     lineage: Vec<String>,
     /// `None` only if the kernel could not report it, which makes the hop unusable.
     start_marker: Option<u64>,
@@ -538,11 +552,24 @@ fn nearest_hop(peer: u32, hops: &HashMap<u32, Hop>, procs: &dyn Procs) -> Option
     None
 }
 
+#[cfg(test)]
 fn admit_hop(
     state: &mut State,
     peer: u32,
     spec: &ExecutionSpec,
     declared_root_agent: Option<&str>,
+    procs: &dyn Procs,
+    now: SystemTime,
+) -> Result<Admission, Refusal> {
+    admit_hop_as(state, peer, spec, declared_root_agent, "", procs, now)
+}
+
+fn admit_hop_as(
+    state: &mut State,
+    peer: u32,
+    spec: &ExecutionSpec,
+    declared_root_agent: Option<&str>,
+    registration_did: &str,
     procs: &dyn Procs,
     now: SystemTime,
 ) -> Result<Admission, Refusal> {
@@ -566,7 +593,7 @@ fn admit_hop(
     let mut lineage = parent.lineage.clone();
     lineage.push(parent.agent_id.clone());
     if let Some(declared) = declared_root_agent {
-        if !lineage.iter().any(|ancestor| ancestor == declared) {
+        if !parent.aliases.iter().any(|ancestor| ancestor == declared) {
             return Err(Refusal::new(
                 "AncestryMismatch",
                 format!(
@@ -578,6 +605,11 @@ fn admit_hop(
     }
 
     let child_id = spec.identity().agent_id.clone();
+    let mut aliases = parent.aliases.clone();
+    aliases.push(child_id.clone());
+    if !registration_did.is_empty() {
+        aliases.push(registration_did.to_string());
+    }
     let mut identity = IdentityRef::root(child_id.clone());
     identity.team_id = spec.identity().team_id.clone();
     identity.lineage = lineage.clone();
@@ -631,6 +663,7 @@ fn admit_hop(
         Hop {
             authority,
             agent_id: child_id,
+            aliases,
             lineage: lineage.clone(),
             start_marker: procs.start_marker(peer),
         },
@@ -668,6 +701,7 @@ fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
         Ok(Request::Admit {
             spec,
             declared_root_agent,
+            registration_did,
         }) => match peer_pid(stream) {
             None => Response::Refused {
                 kind: "UnrecordedPeer".to_string(),
@@ -675,11 +709,12 @@ fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
             },
             Some(peer) => {
                 let mut state = state.lock().expect("supervisor state poisoned");
-                match admit_hop(
+                match admit_hop_as(
                     &mut state,
                     peer,
                     &spec,
                     declared_root_agent.as_deref(),
+                    &registration_did,
                     procs,
                     SystemTime::now(),
                 ) {
@@ -736,6 +771,7 @@ impl TreeSupervisor {
             Hop {
                 authority: root.authority,
                 agent_id: root.agent_id,
+                aliases: root.aliases,
                 lineage: Vec::new(),
                 start_marker,
             },
@@ -897,7 +933,7 @@ mod tests {
     fn root_state(leases: Vec<CapabilityLease>, procs: &dyn Procs) -> State {
         let spec = spec_with("root", leases);
         let witness = authority_gate(&spec, &Ancestry::Root, now()).expect("root gates");
-        let (root, untracked) = TreeRoot::seed(&spec, &witness, ISSUER);
+        let (root, untracked) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
         assert!(untracked.is_empty());
         let mut hops = HashMap::new();
         hops.insert(
@@ -905,6 +941,7 @@ mod tests {
             Hop {
                 authority: root.authority,
                 agent_id: root.agent_id,
+                aliases: root.aliases,
                 lineage: Vec::new(),
                 start_marker: procs.start_marker(100),
             },
@@ -1025,6 +1062,47 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_root_agent_may_be_named_by_its_registration_did() {
+        let procs = chain();
+        let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
+        let gen2 = spec_with("gen2", vec![fs_read(sel(&["/a"]), 3600, true, "gen2")]);
+        // The gateway resolves a declared parent by DID, so a real `--root-agent` is a DID.
+        let by_did = admit_hop_as(
+            &mut state,
+            200,
+            &gen2,
+            Some("did:key:root"),
+            "did:key:gen2",
+            &procs,
+            now(),
+        );
+        assert!(by_did.is_ok(), "{by_did:?}");
+        // Control: the gen2 DID is now an alias of an ancestor of gen3, a name nobody holds is not.
+        let gen3 = spec_with("gen3", vec![fs_read(sel(&["/a"]), 3600, true, "gen3")]);
+        let refused = admit_hop_as(
+            &mut state,
+            300,
+            &gen3,
+            Some("did:key:nobody"),
+            "did:key:gen3",
+            &procs,
+            now(),
+        )
+        .expect_err("unknown DID");
+        assert_eq!(refused.kind, "AncestryMismatch", "{refused}");
+        admit_hop_as(
+            &mut state,
+            300,
+            &gen3,
+            Some("did:key:gen2"),
+            "did:key:gen3",
+            &procs,
+            now(),
+        )
+        .expect("ancestor DID");
+    }
+
+    #[test]
     fn revoking_the_root_refuses_an_already_admitted_hops_descendant_and_without_it_they_run() {
         let procs = chain();
         let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
@@ -1064,7 +1142,7 @@ mod tests {
         };
         let spec = spec_with("root", vec![foreign]);
         let witness = authority_gate(&spec, &Ancestry::Root, now()).expect("the root itself still gates");
-        let (root, untracked) = TreeRoot::seed(&spec, &witness, ISSUER);
+        let (root, untracked) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
         assert_eq!(untracked.len(), 1);
         let mut hops = HashMap::new();
         hops.insert(
@@ -1072,6 +1150,7 @@ mod tests {
             Hop {
                 authority: root.authority,
                 agent_id: root.agent_id,
+                aliases: root.aliases,
                 lineage: Vec::new(),
                 start_marker: procs.start_marker(100),
             },
@@ -1177,18 +1256,18 @@ mod tests {
 
         let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
         let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
-        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER);
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
         let supervisor = TreeSupervisor::start_in(&dir, 100, root, procs.clone()).expect("start");
         let socket = supervisor.socket().to_path_buf();
         let endpoint = locate_in(&dir, me, procs.as_ref()).unwrap().expect("index found");
         probe(&endpoint).expect("answers");
 
         let broad = spec_with("child", vec![fs_read(sel(&["/a", "/b"]), 3600, true, "child")]);
-        let refused = admit(&endpoint, &broad, None).expect_err("broader refused over the socket");
+        let refused = admit(&endpoint, &broad, None, "did:key:child").expect_err("broader refused over the socket");
         assert_eq!(refused.kind, "ChildExceedsParent", "{refused}");
 
         let ok = spec_with("child", vec![fs_read(sel(&["/a"]), 3600, true, "child")]);
-        let admission = admit(&endpoint, &ok, None).expect("narrower admitted over the socket");
+        let admission = admit(&endpoint, &ok, None, "did:key:child").expect("narrower admitted over the socket");
         assert_eq!(admission.leases[0].scope(), &sel(&["/a"]));
         assert!(
             admission.leases[0].provenance().is_some(),
@@ -1196,7 +1275,7 @@ mod tests {
         );
 
         // A second admission of the same peer is refused: a hop is admitted once.
-        let again = admit(&endpoint, &ok, None).expect_err("once");
+        let again = admit(&endpoint, &ok, None, "did:key:child").expect_err("once");
         assert_eq!(again.kind, "AlreadyAdmitted", "{again}");
 
         assert_eq!(revoke_tree(&endpoint, "test").expect("revoked"), 1);
@@ -1221,7 +1300,7 @@ mod tests {
         procs.markers.lock().unwrap().insert(me, 7);
         let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
         let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
-        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER);
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
         let supervisor = TreeSupervisor::start_in(&dir, 100, root, procs.clone()).expect("start");
         let endpoint = locate_in(&dir, me, procs.as_ref()).unwrap().expect("index found");
         probe(&endpoint).expect("answers while the socket exists");

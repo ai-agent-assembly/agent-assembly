@@ -1481,13 +1481,15 @@ mod plan {
     fn admit_handoff(
         authority: &ResolvedAuthority,
         declared_root_agent: Option<&str>,
+        registration_did: &str,
         request: &ExecutionSpec,
         effective: ExecutionSpec,
     ) -> Result<ExecutionSpec, String> {
         let Some(endpoint) = &authority.handoff else {
             return Ok(effective);
         };
-        let admission = run_supervisor::admit(endpoint, request, declared_root_agent).map_err(|r| r.to_string())?;
+        let admission = run_supervisor::admit(endpoint, request, declared_root_agent, registration_did)
+            .map_err(|r| r.to_string())?;
         let mut verified = effective.identity().clone();
         verified.lineage = admission.lineage;
         Ok(effective.with_leases(admission.leases).with_identity(verified))
@@ -1802,7 +1804,13 @@ mod plan {
                     .as_ref()
                     .and_then(|lowering| lowering.apply_to(base.clone()).ok())
                     .unwrap_or_else(|| base.clone());
-                let base = match admit_handoff(&self.authority, identity.root_agent(), &request, base.clone()) {
+                let base = match admit_handoff(
+                    &self.authority,
+                    identity.root_agent(),
+                    &handle.registration_did,
+                    &request,
+                    base.clone(),
+                ) {
                     Ok(admitted) => admitted,
                     Err(why) => {
                         let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
@@ -1829,8 +1837,12 @@ mod plan {
                         ExecutionSpec::new(base.program(), base.identity().clone()).with_leases(base.leases().to_vec());
                     match authority_gate(&view, &Ancestry::Root, now) {
                         Ok(witness) => {
-                            self.tree_root =
-                                Some(run_supervisor::TreeRoot::seed(&view, &witness, DEFAULT_LEASE_ISSUER));
+                            self.tree_root = Some(run_supervisor::TreeRoot::seed(
+                                &view,
+                                &witness,
+                                DEFAULT_LEASE_ISSUER,
+                                &handle.registration_did,
+                            ));
                         }
                         Err(refusal) => {
                             let detail = format!(
@@ -1986,7 +1998,13 @@ mod plan {
             // AAASM-6273: a descendant is admitted by its governed ancestor before
             // this launch's own gate runs; what the gate then checks is the leases
             // the ancestor issued, never the ones this launch asked for.
-            let spec = match admit_handoff(&self.authority, identity.root_agent(), &spec, spec.clone()) {
+            let spec = match admit_handoff(
+                &self.authority,
+                identity.root_agent(),
+                &handle.registration_did,
+                &spec,
+                spec.clone(),
+            ) {
                 Ok(admitted) => admitted,
                 Err(why) => {
                     let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
@@ -2023,7 +2041,12 @@ mod plan {
             // supervisor hold a `ParentAuthority` for it. The supervisor itself is
             // started by `execute`, after the whole boundary is known to launch.
             if self.authority.handoff.is_none() && !spec.leases().is_empty() {
-                self.tree_root = Some(run_supervisor::TreeRoot::seed(&spec, &witness, DEFAULT_LEASE_ISSUER));
+                self.tree_root = Some(run_supervisor::TreeRoot::seed(
+                    &spec,
+                    &witness,
+                    DEFAULT_LEASE_ISSUER,
+                    &handle.registration_did,
+                ));
             }
 
             // AAASM-6163/ADR 0038 amendment: the egress contract's gate runs
