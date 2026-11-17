@@ -57,7 +57,7 @@ aa-devtool-claude-code = { path = "../aa-devtool-claude-code", version = "0.0.1-
 # its only consumer is `run.rs`, which the `devtool` region already strips. Its
 # crate docs call for exactly this fencing — without it, `cargo publish` for
 # aa-cli fails on a dependency that is not on crates.io.
-aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.8" }
+aa-isolation         = { path = "../aa-isolation", version = "0.0.1-rc.8", features = ["serde"] }
 # AAASM-5711: a concrete Linux process-isolation backend `aasm run --isolation`
 # can select. Backends are named here rather than discovered at run time because
 # Rust has no plugin loader — but nothing downstream of selection knows the name:
