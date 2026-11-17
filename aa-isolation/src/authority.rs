@@ -1459,10 +1459,12 @@ mod tests {
             );
         }
 
-        /// AAASM-6273 / rc.8 J82 deferral: a launch that claims a parent but has
-        /// no trusted way to resolve that parent's authority (every
-        /// cross-process launch today) must be refused, never admitted with
-        /// its own, unattenuated authority. Both spec shapes are covered
+        /// AAASM-6273: a launch that claims a parent but has no trusted way to
+        /// resolve that parent's authority — in `aasm run`, a `--root-agent` claim
+        /// with no governed tree-root ancestor behind it — must be refused, never
+        /// admitted with its own, unattenuated authority. (A descendant that DOES
+        /// have a tree-root is resolved by the supervisor, in the root, and never
+        /// reaches this arm.) Both spec shapes are covered
         /// because `Ancestry::UnresolvedParent` must refuse unconditionally,
         /// not only for lease-aware specs. The controls prove the gate does
         /// not simply refuse everything: this test asserts only the genuine-root
