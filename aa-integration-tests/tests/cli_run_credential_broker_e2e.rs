@@ -49,6 +49,10 @@
 //! in a file, an argv, an environment and an open descriptor; and a launch that is
 //! not revoked must keep succeeding, so the 403 is the revocation's doing.
 
+// Only the macOS-gated module below calls `start_full_gateway`. The shared support module
+// has no blanket `allow(dead_code)`, so on any other target (CI clippy runs on Linux)
+// declaring it here would leave `start_full_gateway` unused and fail `-D warnings`.
+#[cfg(all(unix, target_os = "macos"))]
 #[allow(unused_imports)]
 mod conformance_gateway_support;
 #[allow(unused_imports)]
