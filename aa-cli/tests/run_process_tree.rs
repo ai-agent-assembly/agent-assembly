@@ -261,6 +261,25 @@ fn fs_read(selectors: &[&str], delegable: bool) -> String {
     yaml
 }
 
+/// The gateway registration DID an `aasm run` with this state directory registers as.
+///
+/// The gateway resolves `--root-agent` by DID, not by `--agent-id`, so a declared ancestor can
+/// only reach the supervisor when named by the DID of an agent that is really registered.
+/// `registration_did` reads (and on first use creates) the durable key in `AASM_STATE_DIR`,
+/// so asking before the launch yields the DID the launch will register under.
+fn did_of(state: &Path, agent: &str) -> String {
+    let _lock = aa_cli::env_guard::lock();
+    let prior = std::env::var_os("AASM_STATE_DIR");
+    std::env::set_var("AASM_STATE_DIR", state);
+    let did = aa_cli::commands::run_registration::registration_did(agent);
+    match prior {
+        Some(v) => std::env::set_var("AASM_STATE_DIR", v),
+        None => std::env::remove_var("AASM_STATE_DIR"),
+    }
+    assert!(did.starts_with("did:key:"), "no durable identity key: {did}");
+    did
+}
+
 fn endpoint_of(root_pid: u32) -> Endpoint {
     let index = registry_dir().join(format!("{root_pid}.idx"));
     let value: serde_json::Value =
@@ -542,7 +561,7 @@ async fn declaring_an_agent_that_is_not_an_ancestor_is_refused_and_declaring_the
     ]);
     let mut other_tree = f.spawn(&tree_b);
     wait_for(&tree_b_ready, Duration::from_secs(120));
-    let foreign = f.agent("tb");
+    let foreign = did_of(&f.path("state-tb"), &f.agent("tb"));
 
     let marker = f.path("ran-foreign-claim");
     let argv = [
@@ -557,7 +576,7 @@ async fn declaring_an_agent_that_is_not_an_ancestor_is_refused_and_declaring_the
     assert_refused(&outcome, &marker, "AncestryMismatch");
 
     // Control: naming the true root is accepted at generation two AND at generation three.
-    let true_root = f.agent("g1");
+    let true_root = did_of(&f.path("state-g1"), &f.agent("g1"));
     let marker = f.path("ran-true-root");
     let argv = [
         f.layer("g1", &root, &[]),
