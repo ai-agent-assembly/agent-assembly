@@ -26,7 +26,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   no governed ancestor it is still refused as before. Roots with no lease are unchanged.
   Limits, stated rather than claimed: unmodified `aasm run` in an unreparented tree only; not a
   containment boundary (a double-forking descendant leaves the chain, a patched `aasm` can skip
-  the lookup); tested `--isolation none`, same uid; ADR 0038 section 28/30 not satisfied. The ADR
+  the lookup); tested `--isolation none`, same uid; Core ADR 0038 section 28/30 not satisfied. The ADR
   amendment that would allow this without the B3 gate is PROPOSED, not accepted.
 
 ## [0.0.1-rc.8] — TBD (pre-release)
