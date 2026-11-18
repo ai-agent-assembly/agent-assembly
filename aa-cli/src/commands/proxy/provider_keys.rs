@@ -422,7 +422,8 @@ mod tests {
         std::env::remove_var(VAR);
         let cred = launch_grant();
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "env | grep -c QA6261; cat"]).stdout(Stdio::piped());
+        // The quotes keep the marker out of the command line the assertion below inspects.
+        cmd.args(["-c", "env | grep -c QA''6261; cat"]).stdout(Stdio::piped());
         configure_with(&mut cmd, true);
         let envs = envs(&cmd);
         assert!(
@@ -455,7 +456,9 @@ mod tests {
         std::env::remove_var(VAR);
         let dir = tempfile::tempdir().unwrap();
         let keys_only = stub_proxy(dir.path(), "echo provider-keys-stdin");
-        let both = stub_proxy(dir.path(), "echo provider-keys-stdin; echo launch-grant-stdin");
+        // `stub_proxy` writes one fixed file name per directory.
+        let other_dir = tempfile::tempdir().unwrap();
+        let both = stub_proxy(other_dir.path(), "echo provider-keys-stdin; echo launch-grant-stdin");
         assert!(
             preflight_with(&keys_only, true).is_err(),
             "an old proxy would ignore the token"
