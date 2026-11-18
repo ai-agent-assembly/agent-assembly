@@ -1022,7 +1022,7 @@ mod plan {
         /// bind time, and `ancestry` stays [`Ancestry::Root`] because a descendant
         /// cannot hold a [`aa_isolation::ParentAuthority`] (ADR 0038 §27) — the
         /// parent-aware gate ran in the root.
-        handoff: Option<run_supervisor::Endpoint>,
+        handoff: Option<run_supervisor::Governor>,
         /// This launch's egress contract (AAASM-6163, ADR 0038 amendment).
         /// Lowered in `resolve_isolation` from the effective policy's
         /// `egress:` node (AAASM-6278) —
@@ -1258,10 +1258,10 @@ mod plan {
     fn resolve_ancestry(
         args: &RunArgs,
         posture: PlanPosture,
-    ) -> anyhow::Result<(Ancestry, Option<run_supervisor::Endpoint>)> {
+    ) -> anyhow::Result<(Ancestry, Option<run_supervisor::Governor>)> {
         if posture == PlanPosture::Launch {
             match run_supervisor::locate_governed_ancestor() {
-                Ok(Some(endpoint)) => return Ok((Ancestry::Root, Some(endpoint))),
+                Ok(Some(governor)) => return Ok((Ancestry::Root, Some(governor))),
                 Ok(None) => {}
                 Err(detail) => {
                     posture.refuse(anyhow::anyhow!(
@@ -1447,6 +1447,9 @@ mod plan {
         /// launch that carries leases and has no governed ancestor; `execute` starts
         /// the supervisor from it before the child is spawned.
         tree_root: Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)>,
+        /// The channel this launch's own descendants must inherit (AAASM-6273), received from the
+        /// supervisor that admitted it. A tree root takes its channel from its supervisor instead.
+        child_channel: Option<std::os::fd::OwnedFd>,
     }
 
     /// Gate `spec` for this launch (AAASM-6273).
@@ -1484,18 +1487,26 @@ mod plan {
         registration_did: &str,
         request: &ExecutionSpec,
         effective: ExecutionSpec,
-    ) -> Result<ExecutionSpec, String> {
-        let Some(endpoint) = &authority.handoff else {
-            return Ok(effective);
+    ) -> Result<(ExecutionSpec, Option<std::os::fd::OwnedFd>), String> {
+        let Some(governor) = &authority.handoff else {
+            return Ok((effective, None));
         };
-        let admission = run_supervisor::admit(endpoint, request, declared_root_agent, registration_did)
+        let admission = run_supervisor::admit_via(governor, request, declared_root_agent, registration_did)
             .map_err(|r| r.to_string())?;
         let mut verified = effective.identity().clone();
         verified.lineage = admission.lineage;
-        Ok(effective.with_leases(admission.leases).with_identity(verified))
+        Ok((
+            effective.with_leases(admission.leases).with_identity(verified),
+            admission.channel,
+        ))
     }
 
     impl IsolationPlan {
+        /// Hand the admitted launch's descendant channel to the launch path (AAASM-6273).
+        pub(super) fn take_child_channel(&mut self) -> Option<std::os::fd::OwnedFd> {
+            self.child_channel.take()
+        }
+
         /// Hand the supervisor seed to the launch path (AAASM-6273).
         pub(super) fn take_tree_root(&mut self) -> Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)> {
             self.tree_root.take()
@@ -1811,7 +1822,10 @@ mod plan {
                     &request,
                     base.clone(),
                 ) {
-                    Ok(admitted) => admitted,
+                    Ok((admitted, channel)) => {
+                        self.child_channel = channel;
+                        admitted
+                    }
                     Err(why) => {
                         let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
                         let report = self.with_selection(IsolationReport::no_boundary(
@@ -2005,7 +2019,10 @@ mod plan {
                 &spec,
                 spec.clone(),
             ) {
-                Ok(admitted) => admitted,
+                Ok((admitted, channel)) => {
+                    self.child_channel = channel;
+                    admitted
+                }
                 Err(why) => {
                     let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
                     let report = self.with_selection(
@@ -2541,6 +2558,11 @@ mod plan {
             self.isolation.take_backend()
         }
 
+        /// Take the descendant channel a governed ancestor gave this launch.
+        pub(super) fn take_child_channel(&mut self) -> Option<std::os::fd::OwnedFd> {
+            self.isolation.take_child_channel()
+        }
+
         /// Take the supervisor seed of a launch that roots a delegation tree.
         pub(super) fn take_tree_root(
             &mut self,
@@ -2892,6 +2914,7 @@ mod plan {
                     resource_requirements: super::resource_requirements(args),
                     authority,
                     tree_root: None,
+                    child_channel: None,
                 });
             }
 
@@ -3017,6 +3040,7 @@ mod plan {
                     resource_requirements: resource_requirements.clone(),
                     authority: authority.clone(),
                     tree_root: None,
+                    child_channel: None,
                 });
             }
         };
@@ -3043,6 +3067,7 @@ mod plan {
                 resource_requirements: resource_requirements.clone(),
                 authority: authority.clone(),
                 tree_root: None,
+                child_channel: None,
             });
         }
 
@@ -3054,6 +3079,7 @@ mod plan {
             resource_requirements: resource_requirements.clone(),
             authority,
             tree_root: None,
+            child_channel: None,
         })
     }
 
@@ -3145,6 +3171,7 @@ mod plan {
                 resource_requirements: resource_requirements.clone(),
                 authority,
                 tree_root: None,
+                child_channel: None,
             });
         };
 
@@ -3228,6 +3255,7 @@ mod plan {
                         resource_requirements: resource_requirements.clone(),
                         authority: authority.clone(),
                         tree_root: None,
+                        child_channel: None,
                     });
                 }
                 Err(refusal) => {
@@ -3274,6 +3302,7 @@ mod plan {
             resource_requirements: resource_requirements.clone(),
             authority,
             tree_root: None,
+            child_channel: None,
         })
     }
 
@@ -8271,7 +8300,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
     // could not serve would leave every `aasm run` below it with no ceiling.
     // Held until the function returns, so the socket and index entry outlive the
     // child and go with it.
-    let _tree_supervisor = match resolved.take_tree_root() {
+    let mut tree_supervisor = match resolved.take_tree_root() {
         Some((root, untracked)) => {
             for lease in &untracked {
                 eprintln!(
@@ -8286,6 +8315,11 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         }
         None => None,
     };
+    // The channel the child's own descendants inherit: the one the governing supervisor gave a
+    // descendant launch, or this root's own (AAASM-6273).
+    let child_channel = resolved
+        .take_child_channel()
+        .or_else(|| tree_supervisor.as_mut().and_then(|s| s.take_root_channel()));
 
     // A launch the adapter cannot build fails here, before any settings write
     // (AAASM-6297). Copilot is the load-bearing case: a VS Code extension has no
@@ -8374,7 +8408,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         (Some(guard), Some(plan)) => Some((guard, plan)),
         _ => None,
     };
-    let (cmd, child_env, boundary, isolation) = bound.into_execution_parts();
+    let (mut cmd, child_env, boundary, isolation) = bound.into_execution_parts();
     let code = match boundary {
         // The launch runs inside the negotiated boundary, or not at all. There
         // is no arm below that reaches `spawn_and_wait` after a boundary was
@@ -8392,6 +8426,30 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         // reaches on this path, since no execution boundary here means no
         // execution receipt either.
         plan::Boundary::Absent => {
+            // AAASM-6273: hand the child its authority channel on a fixed descriptor, so a
+            // descendant that double-forks, scrubs its environment or outlives a deleted socket path
+            // still holds it. Not wired for a confined backend, which controls the child's fds.
+            if let Some(channel) = &child_channel {
+                use std::os::fd::AsRawFd;
+                use std::os::unix::process::CommandExt;
+                let raw = channel.as_raw_fd();
+                let target = crate::commands::run_supervisor::CHANNEL_FD;
+                // SAFETY: the closure runs between fork and exec and only calls async-signal-safe
+                // functions (dup2, fcntl).
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if raw == target {
+                            let flags = libc::fcntl(raw, libc::F_GETFD);
+                            if flags < 0 || libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        } else if libc::dup2(raw, target) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
             let withheld = withheld_from_isolation_report(&isolation);
             let code = spawn_and_wait(cmd, &child_env, args.no_proxy, &withheld).await?;
             if let Some((mut guard, plan)) = workspace_tx {

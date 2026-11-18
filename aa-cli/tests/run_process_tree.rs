@@ -450,13 +450,14 @@ async fn a_child_that_omits_the_parent_declaration_and_scrubs_its_environment_is
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_deleted_supervisor_socket_refuses_the_launch_and_the_same_launch_with_the_socket_runs() {
+async fn without_the_inherited_channel_a_deleted_supervisor_socket_refuses_the_launch_and_with_the_socket_it_runs() {
     let f = Fixture::new("socket").await;
     let root = f.policy("root", Some(&fs_read(&["/data"], true)));
     let child = f.policy("child", Some(&fs_read(&["/data"], true)));
     let script = format!(
         "{} exec \"$@\"",
-        "if [ \"$1\" = delete ]; then rm -f \"/tmp/aa-sup-$(id -u)/$PPID-\"*.sock; fi; shift;"
+        // `exec 61>&-` closes the inherited authority channel, so what is measured is the path fallback.
+        "exec 61>&-; if [ \"$1\" = delete ]; then rm -f \"/tmp/aa-sup-$(id -u)/$PPID-\"*.sock; fi; shift;"
     );
 
     for (mode, expect_run) in [("delete", false), ("keep", true)] {
@@ -478,6 +479,97 @@ async fn a_deleted_supervisor_socket_refuses_the_launch_and_the_same_launch_with
             assert_ne!(outcome.code, Some(0), "{}", outcome.stderr);
             assert!(outcome.stderr.contains("does not answer"), "{}", outcome.stderr);
             assert!(!marker.exists(), "the launch must be refused, not run as a root");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Placement that does not depend on the parent-pid chain or on a path
+// ---------------------------------------------------------------------------
+
+/// Like [`assert_refused`] but for a launch whose OWN exit status is not the child's: a descendant
+/// that was double-forked away reports to nobody.
+fn assert_refused_by_text(outcome: &Outcome, marker: &Path, kind: &str) {
+    assert!(
+        outcome.stderr.contains("refused by its governed ancestor's supervisor") && outcome.stderr.contains(kind),
+        "expected the supervisor's `{kind}` refusal in:\n{}",
+        outcome.stderr
+    );
+    assert!(!marker.exists(), "the refused program must never have started");
+}
+
+/// The tool runs the real descendant in a double fork: the intermediate shell exits at once, so the
+/// descendant is reparented to init/launchd and no parent-pid walk can reach the root from it.
+const DOUBLE_FORK: &str = "done=\"$1\"; shift; ( ( \"$@\"; touch \"$done\" ) & ); i=0; while [ ! -f \"$done\" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done";
+
+fn double_forked(f: &Fixture, root: &Path, child: &Path, done: &Path, marker: &Path) -> Vec<String> {
+    let mut argv = f.layer("g1", root, &[]);
+    argv.extend([
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        DOUBLE_FORK.to_string(),
+        "t".to_string(),
+        done.display().to_string(),
+    ]);
+    argv.extend(f.layer("g2", child, &[]));
+    argv.extend(f.marker_tail(marker));
+    argv
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_double_forked_descendant_is_still_governed_and_a_narrower_one_still_runs() {
+    let f = Fixture::new("double-fork").await;
+    let root = f.policy("root", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let narrow = f.policy("narrow", Some(&fs_read(&["/data/a/b"], true)));
+
+    let marker = f.path("ran-broad");
+    let done = f.path("done-broad");
+    let outcome = f.run(&double_forked(&f, &root, &broad, &done, &marker));
+    assert!(
+        done.exists(),
+        "the double-forked descendant must have finished:\n{}",
+        outcome.stderr
+    );
+    assert_refused_by_text(&outcome, &marker, "ChildExceedsParent");
+
+    // Control: the identical double fork with a narrower request is admitted, so the refusal above is
+    // the ceiling reaching a descendant the parent-pid chain can no longer see.
+    let marker = f.path("ran-narrow");
+    let done = f.path("done-narrow");
+    let outcome = f.run(&double_forked(&f, &root, &narrow, &done, &marker));
+    assert!(
+        marker.exists(),
+        "a narrower double-forked descendant must run:\n{}",
+        outcome.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deleting_the_registry_index_and_socket_does_not_ungovern_a_descendant() {
+    let f = Fixture::new("registry-delete").await;
+    let root = f.policy("root", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let narrow = f.policy("narrow", Some(&fs_read(&["/data/a/b"], true)));
+    // The same-uid attack on the path-based trust anchor: remove the index entry AND the socket.
+    let script = "rm -f \"/tmp/aa-sup-$(id -u)/$PPID.idx\" \"/tmp/aa-sup-$(id -u)/$PPID-\"*.sock; exec \"$@\"";
+
+    for (child, expect_run) in [(&broad, false), (&narrow, true)] {
+        let marker = f.path(if expect_run { "ran-narrow" } else { "ran-broad" });
+        let mut argv = f.layer("g1", &root, &[]);
+        argv.extend([
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            "t".to_string(),
+        ]);
+        argv.extend(f.layer("g2", child, &[]));
+        argv.extend(f.marker_tail(&marker));
+        let outcome = f.run(&argv);
+        if expect_run {
+            assert_ran(&outcome, &marker);
+        } else {
+            assert_refused(&outcome, &marker, "ChildExceedsParent");
         }
     }
 }

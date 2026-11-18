@@ -29,42 +29,53 @@
 //!
 //! # How a descendant is placed in the tree
 //!
-//! By the kernel, not by anything the descendant says. The root records its own pid
-//! (with a start-time marker so a reused pid is not mistaken for it) in a
-//! per-user index directory, and every `aasm run` — with or without
-//! `--root-agent`, and with any environment — walks its OS parent chain and looks
-//! for an index entry. On the socket the root reads the peer's pid from the kernel
-//! and walks the peer's parent chain to the nearest admitted hop. A peer that is
-//! in no admitted hop's tree is refused, which is what keeps a sibling tree's
-//! process from claiming this tree's authority. The lookup location depends only on
-//! the effective uid: if it followed `$HOME` or `$AASM_STATE_DIR`, `HOME=/elsewhere
-//! aasm run` would hide the root from its own descendant.
+//! By what it **holds**, not by where it sits or by anything it says. Each admitted hop is
+//! given a channel (one end of a datagram socketpair) that its `aasm run` passes to its tool on
+//! a fixed descriptor ([`CHANNEL_FD`], close-on-exec cleared). Descendants inherit it through
+//! `fork` and `exec`, so a descendant that double-forks, is reparented to `init`/`launchd`,
+//! scrubs its environment (the environment is never consulted) or outlives a deleted socket
+//! path still holds it. To ask anything, a descendant makes a stream pair and sends one end over
+//! the channel (`SCM_RIGHTS`); the supervisor knows which hop the request speaks for from the
+//! channel it arrived on. A process outside the tree has no way to obtain the descriptor.
+//!
+//! Alternatives weighed: process groups and sessions are changed freely by the process itself;
+//! `kqueue`/`proc_info` child tracking (`NOTE_TRACK`) is absent on modern macOS and does not
+//! follow a reparented process; a pidfd (Linux) identifies a process, it does not make it a
+//! member of a tree.
+//!
+//! When no channel is inherited the placement falls back to the earlier mechanism: the root
+//! records its own pid (with a start-time marker so a reused pid is not mistaken for it) in a
+//! per-uid index directory, and an `aasm run` walks its OS parent chain looking for an entry. That
+//! fallback keeps the parent-pid walk's limits. A governed ancestor whose socket cannot be reached
+//! refuses the launch.
 //!
 //! # What this does NOT guarantee
 //!
-//! This is a guarantee about unmodified `aasm run` in an unreparented process
-//! tree. It is **not** a containment boundary against an adversarial agent.
+//! This is a guarantee about unmodified `aasm run`. It is **not** a containment boundary against an
+//! adversarial agent.
 //!
-//! * The walk follows parent pids. A same-uid descendant that double-forks is
-//!   reparented to `init`/`launchd` and leaves the chain. Linux can set a
-//!   subreaper; macOS has none.
-//! * A patched `aasm` can skip the lookup, and a same-uid process can delete the
-//!   index entry or the socket. Removing the *socket* with the entry in place
-//!   refuses the launch; removing both is indistinguishable from "no governed
-//!   ancestor".
-//! * A pid-namespaced or VM-confined descendant sees a different pid space, so
-//!   its walk does not reach the root. That combination is not exercised here.
-//! * ADR 0038 §28 (registry write-protection under confinement) and the B3 kernel
+//! * A descendant that deliberately **closes** the channel (or whose launcher closes every
+//!   descriptor above stderr, as some `subprocess` configurations do) and then double-forks leaves
+//!   both mechanisms: it holds nothing and its parent-pid chain is gone. It is then an ungoverned
+//!   root. Passing the descriptor to a non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd`
+//!   as the same uid) hands that process the descendant's identity.
+//! * A patched `aasm` can skip the lookup and the admission.
+//! * A confined backend controls the child's descriptors; the channel is wired only for the
+//!   unconfined launch. A pid-namespaced or VM-confined descendant is not exercised.
+//! * The supervisor trusts the same-uid kernel facts it reads (peer pid, start time). A same-uid
+//!   process can `ptrace` the supervisor; ADR 0038 §28 (registry write-protection) and the B3 kernel
 //!   evidence gate are **not** implemented or satisfied by this module.
 //! * Tree-roots are only the launches that carry at least one lease. A root with
 //!   none stays on the rc.7 compatibility residual and hosts no supervisor.
 //!
-//! The wire protocol is one JSON request, half-close, one JSON response.
+//! The wire protocol is one JSON request, half-close, one JSON response (with the descendant's own
+//! channel attached to an admission).
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -90,6 +101,15 @@ const IO_TIMEOUT: Duration = Duration::from_secs(10);
 /// Parent of the per-user registry directory. Short enough for a socket address on
 /// every Unix host this ships on, and independent of the caller's environment.
 const REGISTRY_BASE: &str = "/tmp";
+/// The descriptor number every governed descendant inherits its authority channel on.
+///
+/// A path-based lookup cannot be the trust anchor: a same-uid process can delete the path, and
+/// a parent-pid walk is lost when a descendant double-forks. A descriptor is neither: it is held
+/// by the process, it survives `fork`/`exec` and reparenting, and a process outside the tree has
+/// no way to obtain one. The number is a convention, not a secret: nothing is learned from
+/// knowing it, and a process that fabricates its own fd 61 only talks to its own fake server.
+/// The environment is deliberately NOT consulted, so `env -i` cannot hide it.
+pub const CHANNEL_FD: RawFd = 61;
 
 // ---------------------------------------------------------------------------
 // Kernel process facts
@@ -173,6 +193,8 @@ enum Request {
     },
     /// Revoke every lease the root issued. Safe direction only: it removes authority.
     Revoke { reason: String },
+    /// Liveness: a supervisor that is gone must read as gone, not as "nothing to say".
+    Ping,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -189,15 +211,18 @@ enum Response {
     Revoked {
         leases: usize,
     },
+    Pong,
 }
 
 /// What a descendant is given.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Admission {
     /// The narrowed leases the root derived, in place of the ones asked for.
     pub leases: Vec<CapabilityLease>,
     /// The ancestors the root verified, outermost first.
     pub lineage: Vec<String>,
+    /// The channel this hop's own descendants must inherit on [`CHANNEL_FD`].
+    pub channel: Option<OwnedFd>,
 }
 
 /// Why a descendant was refused.
@@ -294,6 +319,151 @@ pub struct Endpoint {
     pub socket: PathBuf,
 }
 
+// ---------------------------------------------------------------------------
+// Inherited authority channel (SCM_RIGHTS rendezvous)
+// ---------------------------------------------------------------------------
+
+/// How a descendant reaches its governing supervisor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Governor {
+    /// The channel inherited on [`CHANNEL_FD`]: identity is *holding* it, independent of the parent-pid
+    /// chain and of any path.
+    Inherited(RawFd),
+    /// The path-based index found by walking the parent-pid chain. Only used when no channel was
+    /// inherited; it keeps the parent-pid walk's limits.
+    Path(Endpoint),
+}
+
+fn set_cloexec(fd: RawFd, on: bool) {
+    // SAFETY: fcntl on a descriptor this module owns; failure only leaves the flag unchanged.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFD);
+        if flags >= 0 {
+            let new = if on {
+                flags | libc::FD_CLOEXEC
+            } else {
+                flags & !libc::FD_CLOEXEC
+            };
+            libc::fcntl(fd, libc::F_SETFD, new);
+        }
+    }
+}
+
+/// Send `data` on `sock`, attaching `fd` when given. The first write carries the descriptor.
+fn sendmsg_fd(sock: RawFd, data: &[u8], fd: Option<RawFd>) -> std::io::Result<usize> {
+    let mut iov = libc::iovec {
+        iov_base: data.as_ptr() as *mut libc::c_void,
+        iov_len: data.len(),
+    };
+    let mut control = [0u64; 8];
+    // SAFETY: `msg`, `iov` and `control` outlive the call; the control buffer is large and
+    // aligned enough for one SCM_RIGHTS header carrying one descriptor.
+    unsafe {
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        if let Some(fd) = fd {
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as _;
+            let header = libc::CMSG_FIRSTHDR(&msg);
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+            std::ptr::copy_nonoverlapping(
+                (&fd as *const RawFd).cast::<u8>(),
+                libc::CMSG_DATA(header),
+                std::mem::size_of::<RawFd>(),
+            );
+        }
+        let sent = libc::sendmsg(sock, &msg, 0);
+        if sent < 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(sent as usize)
+        }
+    }
+}
+
+/// Receive into `buf`, returning the byte count and a descriptor if one was attached. The received
+/// descriptor is marked close-on-exec: it is only given to a child deliberately.
+fn recvmsg_fd(sock: RawFd, buf: &mut [u8]) -> std::io::Result<(usize, Option<OwnedFd>)> {
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr().cast(),
+        iov_len: buf.len(),
+    };
+    let mut control = [0u64; 8];
+    // SAFETY: as in `sendmsg_fd`; the received descriptor is wrapped in an `OwnedFd` immediately.
+    unsafe {
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr().cast();
+        msg.msg_controllen = std::mem::size_of_val(&control) as _;
+        let received = libc::recvmsg(sock, &mut msg, 0);
+        if received < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut fd = None;
+        let mut header = libc::CMSG_FIRSTHDR(&msg);
+        while !header.is_null() {
+            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
+                let mut raw: RawFd = -1;
+                std::ptr::copy_nonoverlapping(
+                    libc::CMSG_DATA(header),
+                    (&mut raw as *mut RawFd).cast::<u8>(),
+                    std::mem::size_of::<RawFd>(),
+                );
+                if raw >= 0 {
+                    set_cloexec(raw, true);
+                    fd = Some(OwnedFd::from_raw_fd(raw));
+                }
+            }
+            header = libc::CMSG_NXTHDR(&msg, header);
+        }
+        Ok((received as usize, fd))
+    }
+}
+
+/// A connected datagram pair: `(supervisor end, descendant end)`. Both close-on-exec until the
+/// descendant end is deliberately given to a child.
+fn channel_pair() -> std::io::Result<(UnixDatagram, OwnedFd)> {
+    let (server, client) = UnixDatagram::pair()?;
+    set_cloexec(client.as_raw_fd(), true);
+    server.set_read_timeout(Some(Duration::from_millis(200)))?;
+    Ok((server, OwnedFd::from(client)))
+}
+
+/// The inherited channel on [`CHANNEL_FD`], when this process holds a datagram socket there.
+fn inherited_channel() -> Option<RawFd> {
+    // SAFETY: read-only queries on a descriptor number; nothing is closed or modified.
+    unsafe {
+        if libc::fcntl(CHANNEL_FD, libc::F_GETFD) < 0 {
+            return None;
+        }
+        let mut kind: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+        let rc = libc::getsockopt(
+            CHANNEL_FD,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut kind as *mut libc::c_int).cast(),
+            &mut len,
+        );
+        (rc == 0 && kind == libc::SOCK_DGRAM).then_some(CHANNEL_FD)
+    }
+}
+
+/// Open a request stream to the supervisor over the inherited channel: make a stream pair and
+/// send the supervisor's end across the channel. A supervisor that is gone makes the send fail.
+fn rendezvous(channel: RawFd) -> std::io::Result<UnixStream> {
+    let (mine, theirs) = UnixStream::pair()?;
+    sendmsg_fd(channel, &[0u8], Some(theirs.as_raw_fd()))?;
+    drop(theirs);
+    mine.set_read_timeout(Some(IO_TIMEOUT))?;
+    mine.set_write_timeout(Some(IO_TIMEOUT))?;
+    Ok(mine)
+}
+
 /// Find the nearest governed ancestor of this process, if any.
 ///
 /// `Ok(None)` is "this is a root launch". `Err` is "an ancestor IS governed and
@@ -304,7 +474,19 @@ pub struct Endpoint {
 ///
 /// A readable index entry for an ancestor that is corrupt or whose process start
 /// time cannot be read, or whose socket does not answer.
-pub fn locate_governed_ancestor() -> Result<Option<Endpoint>, String> {
+pub fn locate_governed_ancestor() -> Result<Option<Governor>, String> {
+    // An inherited channel is the identity. It wins over the path: the path can be deleted and the
+    // parent-pid chain can be lost, neither of which changes what this process holds.
+    if let Some(channel) = inherited_channel() {
+        let governor = Governor::Inherited(channel);
+        return match exchange(&governor, &Request::Ping) {
+            Ok((Response::Pong, _)) => Ok(Some(governor)),
+            Ok(_) | Err(_) => Err(
+                "this process inherited a governed `aasm run` authority channel but its supervisor does not answer"
+                    .to_string(),
+            ),
+        };
+    }
     let found = locate_in(&default_registry_dir(), std::process::id(), &Kernel)?;
     if let Some(endpoint) = &found {
         probe(endpoint).map_err(|e| {
@@ -315,7 +497,7 @@ pub fn locate_governed_ancestor() -> Result<Option<Endpoint>, String> {
             )
         })?;
     }
-    Ok(found)
+    Ok(found.map(Governor::Path))
 }
 
 fn locate_in(dir: &Path, start_pid: u32, procs: &dyn Procs) -> Result<Option<Endpoint>, String> {
@@ -402,29 +584,47 @@ pub fn probe(endpoint: &Endpoint) -> std::io::Result<()> {
     connect(endpoint).map(drop)
 }
 
-fn exchange(endpoint: &Endpoint, request: &Request) -> Result<Response, String> {
-    let mut stream = connect(endpoint).map_err(|e| format!("cannot reach the tree supervisor: {e}"))?;
+fn exchange(governor: &Governor, request: &Request) -> Result<(Response, Option<OwnedFd>), String> {
+    let stream = match governor {
+        Governor::Path(endpoint) => connect(endpoint).map_err(|e| format!("cannot reach the tree supervisor: {e}")),
+        Governor::Inherited(channel) => rendezvous(*channel)
+            .map_err(|e| format!("cannot reach the tree supervisor over the inherited channel: {e}")),
+    }?;
     let body = serde_json::to_vec(request).map_err(|e| format!("cannot encode the request: {e}"))?;
-    stream
+    (&stream)
         .write_all(&body)
         .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
         .map_err(|e| format!("cannot send the request to the tree supervisor: {e}"))?;
     let mut reply = Vec::new();
-    stream
-        .take(MAX_MESSAGE_BYTES)
-        .read_to_end(&mut reply)
-        .map_err(|e| format!("cannot read the tree supervisor's reply: {e}"))?;
-    serde_json::from_slice(&reply).map_err(|e| format!("the tree supervisor's reply is malformed: {e}"))
+    let mut channel = None;
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let (n, fd) = recvmsg_fd(stream.as_raw_fd(), &mut chunk)
+            .map_err(|e| format!("cannot read the tree supervisor's reply: {e}"))?;
+        if channel.is_none() {
+            channel = fd;
+        }
+        if n == 0 {
+            break;
+        }
+        reply.extend_from_slice(&chunk[..n]);
+        if reply.len() as u64 > MAX_MESSAGE_BYTES {
+            return Err("the tree supervisor's reply is too large".to_string());
+        }
+    }
+    let response = serde_json::from_slice(&reply)
+        .map_err(|e| format!("the tree supervisor's reply is malformed or empty: {e}"))?;
+    Ok((response, channel))
 }
 
-/// Ask the tree root to admit this process as a hop.
+/// Ask the tree root to admit this process as a hop, over whichever way it reaches the root.
 ///
 /// # Errors
 ///
 /// [`Refusal`] when the root refuses, or when it cannot be reached or understood
 /// (`SupervisorUnreachable`), so a failure to ask never reads as permission.
-pub fn admit(
-    endpoint: &Endpoint,
+pub fn admit_via(
+    governor: &Governor,
     spec: &ExecutionSpec,
     declared_root_agent: Option<&str>,
     registration_did: &str,
@@ -434,14 +634,37 @@ pub fn admit(
         declared_root_agent: declared_root_agent.map(str::to_string),
         registration_did: registration_did.to_string(),
     };
-    match exchange(endpoint, &request).map_err(|e| Refusal::new("SupervisorUnreachable", e))? {
-        Response::Admitted { leases, lineage } => Ok(Admission { leases, lineage }),
-        Response::Refused { kind, detail } => Err(Refusal { kind, detail }),
-        Response::Revoked { .. } => Err(Refusal::new(
+    match exchange(governor, &request).map_err(|e| Refusal::new("SupervisorUnreachable", e))? {
+        (Response::Admitted { leases, lineage }, channel) => Ok(Admission {
+            leases,
+            lineage,
+            channel,
+        }),
+        (Response::Refused { kind, detail }, _) => Err(Refusal { kind, detail }),
+        (_, _) => Err(Refusal::new(
             "SupervisorUnreachable",
-            "the tree supervisor answered an admission with a revocation reply",
+            "the tree supervisor answered an admission with an unrelated reply",
         )),
     }
+}
+
+/// [`admit_via`] over the path-based index.
+///
+/// # Errors
+///
+/// As [`admit_via`].
+pub fn admit(
+    endpoint: &Endpoint,
+    spec: &ExecutionSpec,
+    declared_root_agent: Option<&str>,
+    registration_did: &str,
+) -> Result<Admission, Refusal> {
+    admit_via(
+        &Governor::Path(endpoint.clone()),
+        spec,
+        declared_root_agent,
+        registration_did,
+    )
 }
 
 /// Revoke every lease the tree root issued, so that no further admission below it
@@ -456,14 +679,16 @@ pub fn admit(
 /// A description of why the supervisor could not be reached or refused.
 pub fn revoke_tree(endpoint: &Endpoint, reason: &str) -> Result<usize, String> {
     match exchange(
-        endpoint,
+        &Governor::Path(endpoint.clone()),
         &Request::Revoke {
             reason: reason.to_string(),
         },
-    )? {
+    )?
+    .0
+    {
         Response::Revoked { leases } => Ok(leases),
         Response::Refused { kind, detail } => Err(format!("{kind}: {detail}")),
-        Response::Admitted { .. } => Err("the tree supervisor answered a revocation with an admission".to_string()),
+        _ => Err("the tree supervisor answered a revocation with an unrelated reply".to_string()),
     }
 }
 
@@ -579,6 +804,40 @@ fn admit_hop_as(
             format!("pid {peer} is not a descendant of any process this supervisor admitted"),
         ));
     };
+    admit_under(
+        state,
+        parent_pid,
+        peer,
+        spec,
+        declared_root_agent,
+        registration_did,
+        procs,
+        now,
+    )
+}
+
+/// Admit `peer` as a child of the hop recorded under `parent_pid`.
+///
+/// `parent_pid` comes from the caller's identity evidence: the parent-pid walk for a path
+/// connection, or the channel the request arrived on for an inherited one. Everything below is the
+/// same for both, so the two cannot disagree about what a hop is allowed.
+#[allow(clippy::too_many_arguments)]
+fn admit_under(
+    state: &mut State,
+    parent_pid: u32,
+    peer: u32,
+    spec: &ExecutionSpec,
+    declared_root_agent: Option<&str>,
+    registration_did: &str,
+    procs: &dyn Procs,
+    now: SystemTime,
+) -> Result<Admission, Refusal> {
+    if !state.hops.contains_key(&parent_pid) {
+        return Err(Refusal::new(
+            "UnrecordedPeer",
+            "the channel this request arrived on belongs to a hop that is no longer recorded",
+        ));
+    }
     if let Some(existing) = state.hops.get(&peer) {
         if existing.start_marker.is_some() && existing.start_marker == procs.start_marker(peer) {
             return Err(Refusal::new(
@@ -671,6 +930,7 @@ fn admit_hop_as(
     Ok(Admission {
         leases: derived,
         lineage,
+        channel: None,
     })
 }
 
@@ -681,19 +941,37 @@ fn revoke_all(state: &State, reason: &str) -> usize {
     state.root_leases.len()
 }
 
-fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
+/// Everything the supervisor's threads share.
+struct Shared {
+    state: Mutex<State>,
+    procs: Arc<dyn Procs>,
+    stop: AtomicBool,
+}
+
+/// How a connection proved which hop it speaks for.
+#[derive(Clone, Copy)]
+enum Via {
+    /// Connected to the path socket: identity is the peer's place in the parent-pid chain.
+    Path,
+    /// Arrived over the channel handed to the hop recorded under this pid: identity is the channel.
+    Channel(u32),
+}
+
+fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     let mut body = Vec::new();
     if (&*stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut body).is_err() || body.is_empty() {
         // A bare connection is a liveness probe.
         return;
     }
+    let mut reply_fd: Option<OwnedFd> = None;
     let response = match serde_json::from_slice::<Request>(&body) {
         Err(e) => Response::Refused {
             kind: "MalformedRequest".to_string(),
             detail: e.to_string(),
         },
+        Ok(Request::Ping) => Response::Pong,
         Ok(Request::Revoke { reason }) => {
-            let state = state.lock().expect("supervisor state poisoned");
+            let state = shared.state.lock().expect("supervisor state poisoned");
             Response::Revoked {
                 leases: revoke_all(&state, &reason),
             }
@@ -708,19 +986,48 @@ fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
                 detail: "the kernel did not report the peer's pid".to_string(),
             },
             Some(peer) => {
-                let mut state = state.lock().expect("supervisor state poisoned");
-                match admit_hop_as(
-                    &mut state,
-                    peer,
-                    &spec,
-                    declared_root_agent.as_deref(),
-                    &registration_did,
-                    procs,
-                    SystemTime::now(),
-                ) {
-                    Ok(admission) => Response::Admitted {
-                        leases: admission.leases,
-                        lineage: admission.lineage,
+                let mut state = shared.state.lock().expect("supervisor state poisoned");
+                let now = SystemTime::now();
+                let procs = shared.procs.as_ref();
+                let outcome = match via {
+                    Via::Path => admit_hop_as(
+                        &mut state,
+                        peer,
+                        &spec,
+                        declared_root_agent.as_deref(),
+                        &registration_did,
+                        procs,
+                        now,
+                    ),
+                    Via::Channel(parent) => admit_under(
+                        &mut state,
+                        parent,
+                        peer,
+                        &spec,
+                        declared_root_agent.as_deref(),
+                        &registration_did,
+                        procs,
+                        now,
+                    ),
+                };
+                match outcome {
+                    Ok(admission) => match open_channel(shared, peer) {
+                        Ok(channel) => {
+                            reply_fd = Some(channel);
+                            Response::Admitted {
+                                leases: admission.leases,
+                                lineage: admission.lineage,
+                            }
+                        }
+                        Err(e) => {
+                            // A hop that cannot be given a channel has no way to govern ITS
+                            // descendants; it must not run as a governed hop that does not exist.
+                            state.hops.remove(&peer);
+                            Response::Refused {
+                                kind: "ChannelUnavailable".to_string(),
+                                detail: format!("cannot open the descendant channel for this hop: {e}"),
+                            }
+                        }
                     },
                     Err(refusal) => Response::Refused {
                         kind: refusal.kind,
@@ -731,8 +1038,38 @@ fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
         },
     };
     if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = stream.write_all(&bytes);
+        // The descriptor rides on the first write; the rest of a large reply follows plainly.
+        let fd = reply_fd.as_ref().map(AsRawFd::as_raw_fd);
+        if let Ok(sent) = sendmsg_fd(stream.as_raw_fd(), &bytes, fd) {
+            let _ = stream.write_all(&bytes[sent.min(bytes.len())..]);
+        }
     }
+}
+
+/// Make the channel the hop recorded under `hop` hands to its descendants, and start serving it.
+/// Returns the descendant end.
+fn open_channel(shared: &Arc<Shared>, hop: u32) -> std::io::Result<OwnedFd> {
+    let (server, client) = channel_pair()?;
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 8];
+        while !shared.stop.load(Ordering::SeqCst) {
+            match recvmsg_fd(server.as_raw_fd(), &mut byte) {
+                Ok((_, Some(stream_fd))) => {
+                    let mut stream = UnixStream::from(stream_fd);
+                    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+                    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                    let shared = Arc::clone(&shared);
+                    std::thread::spawn(move || handle(&mut stream, &shared, Via::Channel(hop)));
+                }
+                Ok((0, None)) => break,
+                Ok(_) => {}
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                Err(_) => break,
+            }
+        }
+    });
+    Ok(client)
 }
 
 /// A running tree-root supervisor. Dropping it stops serving and removes its
@@ -740,8 +1077,9 @@ fn handle(stream: &mut UnixStream, state: &Mutex<State>, procs: &dyn Procs) {
 pub struct TreeSupervisor {
     socket: PathBuf,
     index: PathBuf,
-    stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    root_channel: Option<OwnedFd>,
 }
 
 impl TreeSupervisor {
@@ -776,11 +1114,15 @@ impl TreeSupervisor {
                 start_marker,
             },
         );
-        let state = Arc::new(Mutex::new(State {
-            ledger: root.ledger,
-            root_leases: root.root_leases,
-            hops,
-        }));
+        let shared = Arc::new(Shared {
+            state: Mutex::new(State {
+                ledger: root.ledger,
+                root_leases: root.root_leases,
+                hops,
+            }),
+            procs,
+            stop: AtomicBool::new(false),
+        });
 
         let Some(start_marker) = start_marker else {
             let _ = std::fs::remove_file(&socket);
@@ -799,19 +1141,19 @@ impl TreeSupervisor {
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
         std::fs::rename(&staged, &index)?;
 
-        let stop = Arc::new(AtomicBool::new(false));
+        let root_channel = open_channel(&shared, pid)?;
+
         let thread = {
-            let stop = Arc::clone(&stop);
+            let shared = Arc::clone(&shared);
             std::thread::spawn(move || {
-                while !stop.load(Ordering::SeqCst) {
+                while !shared.stop.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((mut stream, _)) => {
                             let _ = stream.set_nonblocking(false);
                             let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                             let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-                            let state = Arc::clone(&state);
-                            let procs = Arc::clone(&procs);
-                            std::thread::spawn(move || handle(&mut stream, &state, procs.as_ref()));
+                            let shared = Arc::clone(&shared);
+                            std::thread::spawn(move || handle(&mut stream, &shared, Via::Path));
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(10));
@@ -824,8 +1166,9 @@ impl TreeSupervisor {
         Ok(Self {
             socket,
             index,
-            stop,
+            shared,
             thread: Some(thread),
+            root_channel: Some(root_channel),
         })
     }
 
@@ -833,11 +1176,16 @@ impl TreeSupervisor {
     pub fn socket(&self) -> &Path {
         &self.socket
     }
+
+    /// The channel the root's own descendants must inherit on [`CHANNEL_FD`]. Handed out once.
+    pub fn take_root_channel(&mut self) -> Option<OwnedFd> {
+        self.root_channel.take()
+    }
 }
 
 impl Drop for TreeSupervisor {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        self.shared.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -1287,6 +1635,53 @@ mod tests {
             locate_in(&dir, me, procs.as_ref()).unwrap(),
             None,
             "the index must go too"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_hop_is_identified_by_the_channel_it_arrived_on_not_by_its_parent_pid_chain() {
+        let base = private_dir("channel");
+        let dir = registry_dir_in(&base);
+        let me = std::process::id();
+        // The synthetic table puts this process in NO tree: its parent chain ends at pid 1.
+        let procs = Arc::new(Fake::new(&[(me, 1), (100, 1)]));
+        procs.markers.lock().unwrap().insert(me, 7);
+
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs.clone()).expect("start");
+        let root_channel = supervisor.take_root_channel().expect("root channel");
+        let socket = supervisor.socket().to_path_buf();
+        let endpoint = Endpoint {
+            supervisor_pid: 100,
+            socket,
+        };
+
+        let ok = spec_with("child", vec![fs_read(sel(&["/a"]), 3600, true, "child")]);
+        // Control: over the PATH this process is refused, because its parent chain reaches no hop.
+        let by_path = admit(&endpoint, &ok, None, "did:key:child").expect_err("path peers need a pid chain");
+        assert_eq!(by_path.kind, "UnrecordedPeer", "{by_path}");
+
+        // Over the inherited channel the same request is admitted: holding the channel is the identity.
+        let governor = Governor::Inherited(root_channel.as_raw_fd());
+        let admission = admit_via(&governor, &ok, None, "did:key:child").expect("admitted by channel");
+        assert_eq!(admission.lineage, vec!["root".to_string()]);
+        let child_channel = admission
+            .channel
+            .expect("the admitted hop gets a channel for its own descendants");
+
+        // A grandchild, over the CHILD's channel, is judged against the child, and can only narrow it.
+        let grandchild_governor = Governor::Inherited(child_channel.as_raw_fd());
+        let broad = spec_with("grand", vec![fs_read(sel(&["/a", "/b"]), 3600, true, "grand")]);
+        let refused = admit_via(&grandchild_governor, &broad, None, "did:key:grand").expect_err("wider than the child");
+        assert_eq!(refused.kind, "ChildExceedsParent", "{refused}");
+
+        drop(supervisor);
+        assert!(
+            admit_via(&governor, &ok, None, "did:key:child").is_err(),
+            "a stopped supervisor must not answer an inherited channel"
         );
         let _ = std::fs::remove_dir_all(&base);
     }
