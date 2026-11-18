@@ -134,7 +134,9 @@ fn network_doc(agent: &Registered, allow: &[&str]) -> PolicyDocument {
         name: None,
         policy_version: None,
         version: None,
-        scope: PolicyScope::Agent(aa_core::AgentId::from_bytes(agent.key)),
+        // The engine matches Agent scope on the id derived from the claimed `agent_id`
+        // string (the same one the audit entry carries), not the registry key.
+        scope: PolicyScope::Agent(aa_core::AgentId::from_bytes(audit_id(agent))),
         network: Some(NetworkPolicy {
             allowlist: allow.iter().map(|h| (*h).to_string()).collect(),
         }),
