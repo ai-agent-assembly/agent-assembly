@@ -306,6 +306,43 @@ impl DelegationLedger {
             });
     }
 
+    /// The generation the ledger itself holds for `lease` (AAASM-6312/6273), or `None` for an id it
+    /// does not know. This, not any snapshot's own `revocation` field, is what a child's recorded
+    /// `parent_generation` is compared with: a snapshot is caller-built and chooses its own number.
+    pub(crate) fn generation(&self, lease: &LeaseId) -> Option<u64> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        entries.get(lease).map(|entry| revocation_generation(&entry.state))
+    }
+
+    /// Advance the ledger's recorded generation for `lease` to `generation`.
+    ///
+    /// Writer-side only (the ledger lives in the supervisor process; nothing else holds it).
+    /// A child derived at an earlier generation becomes stale: re-derive under the new one.
+    ///
+    /// # Errors
+    ///
+    /// * [`DelegationDenied::AncestryUnverifiable`] for an id the ledger does not know, or whose
+    ///   chain it cannot verify.
+    /// * [`DelegationDenied::ParentRevoked`] for a lease that, or whose ancestor, is revoked: a
+    ///   revocation is never undone by a reaffirmation.
+    /// * [`DelegationDenied::GenerationNotAdvanced`] when `generation` is not strictly greater.
+    ///
+    /// On any error the ledger is unchanged. The lease's content is never touched, so a
+    /// reaffirmation cannot make `content_matches` fail.
+    pub fn reaffirm(&self, lease: &LeaseId, generation: u64) -> Result<(), DelegationDenied> {
+        let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        Self::verify_chain_locked(&entries, lease).map_err(|fault| match fault {
+            ChainFault::Revoked { .. } => DelegationDenied::ParentRevoked,
+            ChainFault::Unverifiable { .. } => DelegationDenied::AncestryUnverifiable,
+        })?;
+        let entry = entries.get_mut(lease).ok_or(DelegationDenied::AncestryUnverifiable)?;
+        if generation <= revocation_generation(&entry.state) {
+            return Err(DelegationDenied::GenerationNotAdvanced);
+        }
+        entry.state = RevocationState::Active { generation };
+        Ok(())
+    }
+
     /// Whether `lease` and every ancestor above it are known, linked and
     /// active, observed under the ledger lock at the moment of the call.
     ///
