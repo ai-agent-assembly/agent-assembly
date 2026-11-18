@@ -131,6 +131,13 @@ pub fn codex_tls_client_binary() -> PathBuf {
     build_example("aa-integration-tests", "codex_tls_client")
 }
 
+/// Absolute path to a freshly built `examples/j84_probe_agent` -- the governed
+/// agent the credential-broker end-to-end test (AAASM-6262) launches. See
+/// [`proxy_with_mock_upstream_binary`] for why there is no `*_BIN_PATH` hatch.
+pub fn j84_probe_agent_binary() -> PathBuf {
+    build_example("aa-integration-tests", "j84_probe_agent")
+}
+
 /// Absolute path to a freshly built `aa-isolation-launch` — the `aasm-native`
 /// confinement backend's own launcher.
 ///
