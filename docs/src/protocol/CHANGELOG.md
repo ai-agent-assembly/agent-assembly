@@ -14,6 +14,21 @@ Protocol versioning follows the policy in [docs/versioning.md](../versioning.md)
 
 ### Added
 
+- `assembly.policy.v1.CheckActionRequest.launch_grant = 8` and
+  `assembly.agent.v1.AgentLifecycleService.MintLaunchGrant` (with `MintLaunchGrantRequest` /
+  `MintLaunchGrantResponse`) (AAASM-6261). A launch grant is a short-lived credential minted by
+  the gateway for ONE registered agent, authenticated by that agent's `credential_token`, and
+  accepted only by `PolicyService.CheckAction` / `BatchCheck`; the approval, audit, topology and
+  secrets services, `Heartbeat`, `Deregister` and `ControlStream` do not accept it. Semantics on
+  `CheckAction`: empty is unchanged; non-empty with a `credential_token` is refused; non-empty and
+  unknown, expired, revoked or bound to a different agent than `agent_id` is refused as an
+  identity-verification failure (a single generic reason to the caller; the cause is in the audit
+  entry), never evaluated as an asserted claim; valid and bound to `agent_id` yields assurance
+  `BOUND`. `BOUND` on this path means the holder presented a grant minted for that agent, not that
+  the connecting process is that agent's. Additive and wire compatible; every
+  `AgentLifecycleService` implementation must add the new method. No new assurance enum value.
+  Grants are in memory (lost on gateway restart), default 8 h, maximum 12 h, at most 8 per agent,
+  and revoked when the agent deregisters.
 - `schemas/policy/v1/policy-document.schema.json` — optional `tools.<name>.capabilities`
   (array of `filesystem_read`, `filesystem_write`, `network_egress`, `name_resolution`,
   `syscall`, `process_creation`, `ipc`, `credential`, `none`; `minItems: 1`,

@@ -2704,9 +2704,11 @@ capabilities:
   transport: https POST, HTTP/1.1, explicit Content-Length
   interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614 invoked at :834
     -> aa-gateway PolicyService.CheckAction
-  identity_source: none claimed — blank agent_id and no credential_token
-    (unattributed_agent, aa-proxy/src/mcp_enforce.rs); the gateway records the check
-    as unattributed; caller_agent_id None
+  identity_source: the registered agent of the governed launch — its triple and a
+    gateway-minted launch grant in CheckActionRequest.launch_grant
+    (claimed_agent_and_grant, aa-proxy/src/mcp_enforce.rs); proxy identity, not
+    connection origin; never the registration credential_token; a proxy with no
+    grant claims no identity (unattributed); caller_agent_id None
   policy_context:
   - tool_name
   - arguments
@@ -3085,9 +3087,10 @@ capabilities:
   interception_component: relay_event_stream aa-proxy/src/proxy/mod.rs:1600 (event framing
     SseParser aa-proxy/src/proxy/sse.rs:35) -> evaluate_response_candidate :1827 -> aa-gateway
     PolicyService.CheckAction as a ToolResult
-  identity_source: none claimed — blank agent_id and no credential_token
-    (build_tool_result_request, aa-proxy/src/mcp_enforce.rs); a SecretAlert is raised
-    under the all-zero unattributed sentinel, not attributed to an agent
+  identity_source: the registered agent of the governed launch (triple and launch grant
+    via build_tool_result_request, aa-proxy/src/mcp_enforce.rs); a SecretAlert the
+    gateway raises is attributed to that agent when bound, and to the all-zero
+    unattributed sentinel when the proxy holds no grant
   policy_context:
   - tool_name
   - tool_source=mcp
@@ -4721,7 +4724,7 @@ capabilities:
   launch_path: any
   preconditions: []
   transport: any
-  interception_component: none — the proxy claims no identity (aa-proxy/src/mcp_enforce.rs unattributed_agent);
+  interception_component: none — the proxy's gateway checks carry the launch grant (aa-proxy/src/mcp_enforce.rs claimed_agent_and_grant);
     ProxyEvent.agent_id hardcoded None at aa-proxy/src/proxy/mod.rs:1081
   identity_source: none
   policy_context:
