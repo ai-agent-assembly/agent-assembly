@@ -69,6 +69,7 @@ fn tool_call_request_with_args(args: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

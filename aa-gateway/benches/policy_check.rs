@@ -57,6 +57,7 @@ fn minimal_llm_call() -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -90,6 +91,7 @@ fn full_tool_call() -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -119,6 +121,7 @@ fn worst_case_network() -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

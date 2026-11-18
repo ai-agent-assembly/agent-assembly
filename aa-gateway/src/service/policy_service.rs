@@ -26,6 +26,11 @@ use aa_security::Redaction;
 use aa_runtime::approval::{ApprovalQueue, ApprovalRequest};
 
 use crate::alerts::{SecretAlert, UNATTRIBUTED_PROXY_AGENT};
+
+/// Minimum spacing of audit entries for benign launch-grant refusals of one agent.
+const BENIGN_GRANT_AUDIT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+/// Agents tracked by the benign-refusal throttle before it resets.
+const BENIGN_GRANT_AUDIT_CAPACITY: usize = 1024;
 use crate::anomaly::{AnomalyDetector, AnomalyEvent, AnomalyResponder};
 use crate::approval::db_escalation_scheduler::DbEscalationScheduler;
 use crate::approval::escalation::EscalationScheduler;
@@ -109,6 +114,12 @@ pub struct PolicyServiceImpl {
     /// produces non-empty `credential_findings` (AAASM-1545). `None`
     /// disables emission — used by unit tests that don't need alerts.
     secret_alert_tx: Option<broadcast::Sender<SecretAlert>>,
+    /// Last time a benign launch-grant refusal (unknown, expired, revoked or lost to
+    /// a restart) was audited for a claimed agent (AAASM-6261). A launch whose grant
+    /// has expired retries every request, so unthrottled this would flood the audit
+    /// chain and the consumers of `A2AImpersonationAttempted`. Bounded: cleared when
+    /// it passes [`BENIGN_GRANT_AUDIT_CAPACITY`] entries.
+    benign_grant_audit: Arc<std::sync::Mutex<std::collections::HashMap<[u8; 16], std::time::Instant>>>,
     /// Optional in-flight ops registry. When set, every `check_action`
     /// call ingests an op keyed by `"{trace_id}:{span_id}"` and transitions
     /// it on the engine decision (AAASM-1422). `None` disables ingestion,
@@ -158,6 +169,7 @@ impl PolicyServiceImpl {
             router: None,
             chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
+            benign_grant_audit: Default::default(),
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
@@ -186,6 +198,7 @@ impl PolicyServiceImpl {
             router: None,
             chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
+            benign_grant_audit: Default::default(),
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
@@ -216,6 +229,7 @@ impl PolicyServiceImpl {
             router: None,
             chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
+            benign_grant_audit: Default::default(),
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
@@ -251,6 +265,7 @@ impl PolicyServiceImpl {
             router: None,
             chain: Arc::new(crate::audit::AuditChain::new(audit_tx, audit_drops, initial_hash, 0)),
             secret_alert_tx: None,
+            benign_grant_audit: Default::default(),
             ops_registry: None,
             ops_publisher: None,
             anomaly: None,
@@ -371,6 +386,26 @@ impl PolicyServiceImpl {
         self
     }
 
+    /// Whether a benign launch-grant refusal for this request's claimed agent is due
+    /// an audit entry: at most one per agent per [`BENIGN_GRANT_AUDIT_INTERVAL`].
+    fn benign_grant_refusal_due(&self, req: &CheckActionRequest) -> bool {
+        let key = req.agent_id.as_ref().map(proto_agent_id_to_key).unwrap_or([0u8; 16]);
+        let now = std::time::Instant::now();
+        let Ok(mut seen) = self.benign_grant_audit.lock() else {
+            return true;
+        };
+        if seen.len() >= BENIGN_GRANT_AUDIT_CAPACITY {
+            seen.clear();
+        }
+        match seen.get(&key) {
+            Some(last) if now.duration_since(*last) < BENIGN_GRANT_AUDIT_INTERVAL => false,
+            _ => {
+                seen.insert(key, now);
+                true
+            }
+        }
+    }
+
     /// Resolve the authoritative agent key for agent-scoped controls.
     ///
     /// AAASM-4133 — `req.agent_id` is client-supplied and forgeable (the
@@ -407,10 +442,25 @@ impl PolicyServiceImpl {
     /// corroborate the claim.
     fn credentialed_owner_key(&self, req: &CheckActionRequest) -> Option<[u8; 16]> {
         let registry = self.registry.as_ref()?;
-        if req.credential_token.is_empty() {
-            return None;
+        Self::request_owner_key(registry, req)
+    }
+
+    /// The registered owner of whatever credential the request carries: its
+    /// `credential_token`, or else its `launch_grant` (AAASM-6261).
+    ///
+    /// The two never combine (a request carrying both is refused in
+    /// [`Self::validate_credential_token`] before this matters). A grant resolves
+    /// only through [`AgentRegistry::resolve_launch_grant`], a separate index, so
+    /// it can never be mistaken for a token anywhere else in the gateway.
+    fn request_owner_key(registry: &AgentRegistry, req: &CheckActionRequest) -> Option<[u8; 16]> {
+        match (req.credential_token.is_empty(), req.launch_grant.is_empty()) {
+            (false, true) => registry.find_by_credential_token(&req.credential_token),
+            (true, false) => registry.resolve_launch_grant(&req.launch_grant),
+            // Neither, or both. Both is refused in `validate_credential_token`, and
+            // it must resolve to no owner here so the refusal's own response and
+            // audit entry cannot be stamped BOUND on the strength of one of them.
+            _ => None,
         }
-        registry.find_by_credential_token(&req.credential_token)
     }
 
     /// Resolve what is known about the `agentId` this request claimed
@@ -537,10 +587,8 @@ impl PolicyServiceImpl {
             return;
         };
 
-        if !req.credential_token.is_empty() {
-            if let Some(record) = registry
-                .find_by_credential_token(&req.credential_token)
-                .and_then(|owner_key| registry.get(&owner_key))
+        if !req.credential_token.is_empty() || !req.launch_grant.is_empty() {
+            if let Some(record) = Self::request_owner_key(registry, req).and_then(|owner_key| registry.get(&owner_key))
             {
                 ctx.governance_level = record.governance_level;
                 match record.org_id {
@@ -1403,12 +1451,42 @@ impl PolicyServiceImpl {
         // dodge an `agent:<their id>` scoped rule by blanking the field", and
         // omitting the field did exactly that. Falling through with `None` sends
         // the absent shape down the same branch as the blank one.
+        // AAASM-6261 — a launch grant is judged first and on its own terms. A valid
+        // grant bound to the claimed agent passes; anything else that presents one
+        // is refused, never evaluated as an asserted claim, because a caller that
+        // chose to present a grant must not be able to fall back to a weaker path
+        // by presenting a bad one.
+        // The reason a caller is told is deliberately the same for every grant
+        // refusal: telling a holder "valid, but for a different agent" would confirm
+        // that a guessed string is a live grant. The specific cause goes to the audit
+        // entry and the log only.
+        let grant_refusal: Option<(&'static str, bool)> = if req.launch_grant.is_empty() {
+            None
+        } else if !req.credential_token.is_empty() {
+            Some(("launch grant presented together with a credential token", false))
+        } else {
+            let claimed_key = req.agent_id.as_ref().map(proto_agent_id_to_key);
+            match registry.resolve_launch_grant(&req.launch_grant) {
+                // Unknown, expired, revoked or lost to a restart: benign and expected
+                // in normal operation, so its audit entry is throttled.
+                None => Some(("launch grant invalid, expired or revoked", true)),
+                Some(owner) if Some(owner) != claimed_key => Some(("launch grant bound to a different agent", false)),
+                Some(_) => return None,
+            }
+        };
+
         let record_opt = req
             .agent_id
             .as_ref()
             .and_then(|proto_agent| registry.get(&proto_agent_id_to_key(proto_agent)));
 
-        let reason = if let Some(record) = &record_opt {
+        let mut audit_detail: Option<&'static str> = None;
+        let mut benign = false;
+        let reason = if let Some((detail, is_benign)) = grant_refusal {
+            audit_detail = Some(detail);
+            benign = is_benign;
+            "launch grant not valid for this agent"
+        } else if let Some(record) = &record_opt {
             // The claimed agent is registered at the claimed (org, team, id)
             // triple. Standard validation: empty / mismatched token rejects.
             if req.credential_token.is_empty() {
@@ -1489,14 +1567,26 @@ impl PolicyServiceImpl {
         );
         let response = self.stamp_decision_id(response, decision_id);
 
-        self.record_impersonation_audit(req, &response).await;
+        if !benign || self.benign_grant_refusal_due(req) {
+            self.record_impersonation_audit(req, &response, audit_detail).await;
+        } else {
+            tracing::debug!(
+                detail = audit_detail.unwrap_or(""),
+                "launch grant refusal not audited again within the throttle window"
+            );
+        }
         Some(response)
     }
 
     /// Emit a dedicated `A2AImpersonationAttempted` audit event for the
     /// rejected credential validation in `validate_credential_token`. Mirrors
     /// the chain-bookkeeping shape of [`PolicyServiceImpl::record_audit`].
-    async fn record_impersonation_audit(&self, req: &CheckActionRequest, response: &CheckActionResponse) {
+    async fn record_impersonation_audit(
+        &self,
+        req: &CheckActionRequest,
+        response: &CheckActionResponse,
+        detail: Option<&'static str>,
+    ) {
         // AAASM-5665 (R1) — this used to return early when the `agent_id`
         // message was absent. That was harmless while an absent `agent_id`
         // could not be refused; it is not harmless now that it can, because a
@@ -1531,6 +1621,10 @@ impl PolicyServiceImpl {
             "agent_id_claimed": claimed,
             "claimed_org_id": &proto_agent.org_id,
             "credential_token_present": !req.credential_token.is_empty(),
+            "launch_grant_present": !req.launch_grant.is_empty(),
+            // The specific cause of a launch-grant refusal. The caller is given one
+            // generic reason; this is where the difference is recorded.
+            "refusal_detail": detail,
             // AAASM-5665 — whether the refused request claimed an agent subject
             // at all, from the same predicate the assurance uses. A blank
             // `agent_id` with a foreign token is refused but claims nobody, so

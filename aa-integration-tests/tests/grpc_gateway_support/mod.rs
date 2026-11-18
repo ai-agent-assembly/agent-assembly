@@ -217,6 +217,13 @@ impl AgentLifecycleService for Observed {
         response
     }
 
+    async fn mint_launch_grant(
+        &self,
+        _: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
+    ) -> Result<Response<aa_proto::assembly::agent::v1::MintLaunchGrantResponse>, Status> {
+        Err(Status::unimplemented("not used in this test"))
+    }
+
     type ControlStreamStream = <AgentLifecycleServiceImpl as AgentLifecycleService>::ControlStreamStream;
 
     async fn control_stream(

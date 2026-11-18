@@ -177,6 +177,7 @@ fn tool_call(callee: &ProtoAgentId, token: &str, tool: &str, trace: &str) -> Che
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

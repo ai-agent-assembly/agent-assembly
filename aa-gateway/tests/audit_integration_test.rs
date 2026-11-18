@@ -159,6 +159,7 @@ fn tool_call_request(tool_name: &str) -> CheckActionRequest {
         span_id: "span-001".into(),
         credential_token: String::new(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -238,6 +239,7 @@ async fn check_action_file_op_records_path_as_action_label() {
         span_id: "span-fileop".into(),
         credential_token: String::new(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     };
 
     let resp = client.check_action(req).await.unwrap().into_inner();

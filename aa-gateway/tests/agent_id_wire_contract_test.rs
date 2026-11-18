@@ -163,6 +163,7 @@ fn bash_request(agent: Option<ProtoAgentId>, credential_token: &str, trace: &str
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -608,6 +609,7 @@ fn proxy_network_request(host: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

@@ -97,6 +97,9 @@ pub struct DecisionRecord {
     /// this proxy process's own env was started with — not the literal string
     /// `<unknown>`. See that field's doc for what this does and does not cover.
     pub agent_id: Option<String>,
+    /// The registered agent a governed proxy had the gateway bind this request
+    /// to (AAASM-6261). See [`ProxyAuditEntry::agent_identity`].
+    pub agent_identity: Option<crate::audit_jsonl::BoundAgentIdentity>,
     /// Target host, no port.
     pub host: String,
     /// HTTP method of the intercepted request.
@@ -141,8 +144,11 @@ impl DecisionRecord {
             // An allowed record with no agent id says so explicitly; for every
             // other decision `agent_id: None` keeps its existing meaning and
             // the line is byte-identical to what it was before AAASM-6261.
-            agent_unattributed: self.decision == ProxyAuditDecision::Allowed && self.agent_id.is_none(),
+            agent_unattributed: self.decision == ProxyAuditDecision::Allowed
+                && self.agent_id.is_none()
+                && self.agent_identity.is_none(),
             agent_id: self.agent_id,
+            agent_identity: self.agent_identity,
             host: self.host,
             method: self.method,
             path: self.path,
@@ -335,6 +341,7 @@ mod tests {
     fn record(host: &str) -> DecisionRecord {
         DecisionRecord {
             agent_id: None,
+            agent_identity: None,
             host: host.to_owned(),
             method: "POST".to_owned(),
             path: "/v1/do".to_owned(),

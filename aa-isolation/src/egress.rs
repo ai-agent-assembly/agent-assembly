@@ -41,15 +41,17 @@
 //!
 //! # What this module defers
 //!
-//! * Per-connection identity on the proxy path is not this module's, and is not
-//!   verified anywhere today. `aa-proxy/src/network_enforce.rs` sends a blank
-//!   identity with each network `CheckAction`, so the gateway records it as
-//!   unattributed; it no longer sends the launch's label. Verifying it needs a
-//!   launch-scoped credential the gateway validates for the proxy (the agent's
-//!   general registration token is deliberately not handed over), which does not
-//!   exist yet (AAASM-6363). [`EgressAuthority`] is a pre-launch decision in this
-//!   crate ("is this run authorized for brokered egress at this scope"), not a
-//!   per-connection identity on the proxy path.
+//! * Per-connection identity on the proxy path is not this module's. A governed
+//!   launch's proxy holds a gateway-minted, short-lived **launch grant** and sends
+//!   it with the registered triple on each network `CheckAction`
+//!   (`aa-proxy/src/network_enforce.rs`), so the gateway binds the decision to the
+//!   registered agent. That is *proxy identity*: this proxy is bound to that agent.
+//!   It is not *connection origin*: any process of the same user that reaches the
+//!   proxy's loopback port is attributed to the launch. The agent's general
+//!   registration token is deliberately not given to the proxy (AAASM-6363).
+//!   [`EgressAuthority`] is a pre-launch decision in this crate ("is this run
+//!   authorized for brokered egress at this scope"), not a per-connection
+//!   identity on the proxy path.
 //! * Quantitative connection/byte/rate *enforcement*. No accounting exists in
 //!   `aa-proxy` today; [`EgressCeilings`] states a ceiling and
 //!   [`check_ceilings`] refuses when one is stated but the broker reports no

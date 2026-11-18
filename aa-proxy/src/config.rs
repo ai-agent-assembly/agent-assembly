@@ -288,9 +288,12 @@ pub struct ProxyConfig {
     /// deliberately isn't how the golden path works.
     ///
     /// This is a **label, not a verified identity**: the proxy copies it into its
-    /// own audit records and events, and does **not** send it to the gateway. A
-    /// gateway check carries a blank identity until a launch-scoped grant exists
-    /// (see `network_enforce`'s module documentation).
+    /// own audit records (`agent_id`) and events, and does **not** send it to the
+    /// gateway. The gateway is told the registered triple and the launch grant
+    /// (`ProxyServer::with_launch_grant`), which is what binds a decision to an
+    /// agent; the proxy audit's `agent_identity` field names that bound agent
+    /// separately. Anyone reading `agent_id` in the proxy's audit file is reading
+    /// a label.
     ///
     /// Env: `AA_AGENT_ID` — no default, absent unless set.
     pub agent_id: Option<String>,
