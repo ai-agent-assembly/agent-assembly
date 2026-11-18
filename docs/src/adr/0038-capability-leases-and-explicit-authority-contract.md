@@ -1819,9 +1819,16 @@ The tree-root `aasm run` (a launch that carries at least one lease and has no go
 holds every hop's `ParentAuthority` in memory and serves a per-user Unix socket. A descendant
 `aasm run` sends only a request (its spec and the leases it asks for) and receives leases the root
 derived through `DelegationLedger::derive_child`, after `authority_gate` ran in the root against the
-descendant's verified parent. The descendant's place in the tree is read from the kernel (peer pid,
-then the parent-pid chain to the nearest admitted hop); a declared `--root-agent` is only checked
-against that chain. `aa-cli/src/commands/run_supervisor.rs` states the design and its limits.
+descendant's verified parent. The descendant's place in the tree is established by what it **holds**:
+each admitted hop is handed a channel that is inherited by its tool and every descendant on a fixed
+descriptor, so a double-forked or environment-scrubbed descendant, or one whose path-based index was
+deleted, is still identified by the channel it presents (a datagram socketpair used for an
+`SCM_RIGHTS` rendezvous). The parent-pid chain and the index path remain only as a fallback when no
+channel is inherited, and a governed ancestor whose supervisor does not answer refuses the launch. A
+declared `--root-agent` is only checked against the verified chain.
+`aa-cli/src/commands/run_supervisor.rs` states the design and its limits. The ledger additionally
+holds the authoritative generation and can `reaffirm` (the AAASM-6312 amendment's items 1-5);
+its writer-token and "refuse a child the ledger never saw" items are not implemented.
 
 Against §27: no `ParentAuthority`, witness or receipt crosses the process boundary, there is no flag
 or file, and the descendant presents no authority material, only a request the root narrows or
@@ -1845,21 +1852,24 @@ accept explicitly:
 
 ### Limits that stay true under this option
 
-- Not a containment boundary against an adversarial agent. A same-uid descendant that double-forks
-  is reparented to `init`/`launchd` and leaves the parent-pid chain; macOS has no subreaper. A
-  patched `aasm` can skip the lookup. A same-uid process can delete the index entry and the socket
-  together, which reads as "no governed ancestor". Deleting only the socket refuses the launch.
-- pid reuse is handled by a recorded start-time marker, not by a pidfd (§30.2 is not established).
-- A pid-namespaced or VM-confined descendant is not exercised and is expected not to be found by the
-  walk.
+- Not a containment boundary against an adversarial agent. A descendant that **deliberately closes**
+  the inherited channel (or whose launcher closes every descriptor above stderr) and then
+  double-forks holds nothing and has no parent-pid chain: it is an ungoverned root. Handing the
+  descriptor to a non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd` as the same uid)
+  hands it the descendant's identity. A patched `aasm` can skip the lookup. A same-uid process can
+  `ptrace` the supervisor.
+- The channel is wired for the unconfined launch only; a confined backend controls the child's
+  descriptors. A pid-namespaced or VM-confined descendant is not exercised.
+- pid reuse on the fallback path is handled by a recorded start-time marker, not by a pidfd
+  (§30.2 is not established).
 - §29.1 (registry write-protection) and §30 (Landlock, pidfs, same-uid control denial) are not
   satisfied. §29.2 is covered only for a peer outside every admitted hop's tree and for a declared
   ancestor that is not in the verified chain; §29.3 and §29.4 are covered with real separate
   processes, `--isolation none` only.
 - Roots with no lease host no supervisor and keep the rc.7 compatibility residual.
-- The ledger's issuer binding is the string comparison of `with_trusted_issuer`; the writer-token and
-  `reaffirm` design of the AAASM-6312 amendment is not implemented. Nothing outside the supervisor
-  process can write the ledger, which is what the cross-process use relies on.
+- The ledger's issuer binding is still the string comparison of `with_trusted_issuer`; the
+  writer-token item and refusing a child the ledger never saw are not implemented. Nothing outside
+  the supervisor process can write the ledger, which is what the cross-process use relies on.
 
 ### Decision requested
 
