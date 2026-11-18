@@ -1673,6 +1673,9 @@ mod tests {
             .expect("the admitted hop gets a channel for its own descendants");
 
         // A grandchild, over the CHILD's channel, is judged against the child, and can only narrow it.
+        // The test process stands in for every hop, so give it a new start marker: the supervisor then
+        // reads the recorded pid as a reused one rather than as the same hop admitted twice.
+        procs.markers.lock().unwrap().insert(me, 8);
         let grandchild_governor = Governor::Inherited(child_channel.as_raw_fd());
         let broad = spec_with("grand", vec![fs_read(sel(&["/a", "/b"]), 3600, true, "grand")]);
         let refused = admit_via(&grandchild_governor, &broad, None, "did:key:grand").expect_err("wider than the child");
