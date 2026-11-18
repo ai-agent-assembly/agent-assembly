@@ -1056,6 +1056,10 @@ fn open_channel(shared: &Arc<Shared>, hop: u32) -> std::io::Result<OwnedFd> {
         while !shared.stop.load(Ordering::SeqCst) {
             match recvmsg_fd(server.as_raw_fd(), &mut byte) {
                 Ok((_, Some(stream_fd))) => {
+                    // A stopped supervisor answers nothing, even a request already in flight.
+                    if shared.stop.load(Ordering::SeqCst) {
+                        break;
+                    }
                     let mut stream = UnixStream::from(stream_fd);
                     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
