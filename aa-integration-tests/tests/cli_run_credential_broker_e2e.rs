@@ -188,48 +188,93 @@ mod credential_broker_e2e {
         hay.windows(n.len()).filter(|w| *w == n).count()
     }
 
-    /// Run `cmd` for at most `patience`, then SIGKILL it: a stalled host tool must
-    /// not hold a queue lane. Pipes are drained on threads so a large output cannot
-    /// block the child. `None` means it could not start or had to be killed.
-    fn output_within(mut cmd: std::process::Command, patience: Duration) -> Option<std::process::Output> {
+    /// What `output_within` captured. `truncated` means a pipe was still open after the
+    /// grace period (a grandchild kept it), so `output` holds only what had arrived.
+    struct Captured {
+        output: std::process::Output,
+        truncated: bool,
+    }
+
+    /// How long, in total, to wait for both pipes to close once the child has exited.
+    const PIPE_GRACE: Duration = Duration::from_secs(2);
+
+    /// SIGKILL the whole process group of a child this test spawned (see `process_group`
+    /// below), so a grandchild such as lldb's debugserver is not left holding a pipe or
+    /// leaving a debuggee stopped. Never signals a process this test did not spawn.
+    fn kill_own_group(child: &mut std::process::Child) {
+        // SAFETY: plain signal to the group whose leader is our own spawned child.
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.kill();
+    }
+
+    /// Run `cmd` for at most `patience`, then kill it and its group: a stalled host tool
+    /// must not hold a queue lane. Pipes are drained into shared buffers on threads that
+    /// are never joined, because a grandchild can keep an inherited pipe open after the
+    /// child is gone. `None` means it could not start or had to be killed at the
+    /// deadline. After the child exits, both pipes get ONE shared `PIPE_GRACE`; output
+    /// not closed by then is kept as received and flagged `truncated`.
+    fn output_within(mut cmd: std::process::Command, patience: Duration) -> Option<Captured> {
         use std::io::Read;
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
         let mut child = cmd.spawn().ok()?;
-        let mut out = child.stdout.take()?;
-        let mut err = child.stderr.take()?;
-        // Readers report over channels and are never joined: a grandchild (lldb's
-        // debugserver) can keep an inherited pipe open after the child is gone, and a
-        // join would then block past the deadline. After a grace period the reader is
-        // detached and what it has not delivered is treated as empty.
-        let (tx_out, rx_out) = std::sync::mpsc::channel();
-        let (tx_err, rx_err) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut b = Vec::new();
-            let _ = out.read_to_end(&mut b);
-            let _ = tx_out.send(b);
-        });
-        std::thread::spawn(move || {
-            let mut b = Vec::new();
-            let _ = err.read_to_end(&mut b);
-            let _ = tx_err.send(b);
-        });
+        let out = child.stdout.take()?;
+        let err = child.stderr.take()?;
+        let drain = |mut pipe: Box<dyn Read + Send>| {
+            let buf = Arc::new(Mutex::new(Vec::new()));
+            let done = Arc::new(AtomicBool::new(false));
+            let (b, d) = (Arc::clone(&buf), Arc::clone(&done));
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = pipe.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    b.lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .extend_from_slice(&chunk[..n]);
+                }
+                d.store(true, Ordering::SeqCst);
+            });
+            (buf, done)
+        };
+        let (out_buf, out_done) = drain(Box::new(out));
+        let (err_buf, err_done) = drain(Box::new(err));
         let deadline = Instant::now() + patience;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(st)) => break Some(st),
                 Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
                 _ => {
-                    let _ = child.kill();
+                    kill_own_group(&mut child);
                     let _ = child.wait();
-                    break None;
+                    return None;
                 }
             }
         };
-        const PIPE_GRACE: Duration = Duration::from_secs(3);
-        let stdout = rx_out.recv_timeout(PIPE_GRACE).unwrap_or_default();
-        let stderr = rx_err.recv_timeout(PIPE_GRACE).unwrap_or_default();
-        status.map(|status| std::process::Output { status, stdout, stderr })
+        let grace_end = Instant::now() + PIPE_GRACE;
+        while !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst)) && Instant::now() < grace_end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let truncated = !(out_done.load(Ordering::SeqCst) && err_done.load(Ordering::SeqCst));
+        if truncated {
+            kill_own_group(&mut child);
+        }
+        let take = |b: &Arc<Mutex<Vec<u8>>>| b.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        Some(Captured {
+            output: std::process::Output {
+                status: status?,
+                stdout: take(&out_buf),
+                stderr: take(&err_buf),
+            },
+            truncated,
+        })
     }
 
     /// Combined output of a host tool. Never printed: callers only count it. A tool
@@ -238,9 +283,13 @@ mod credential_broker_e2e {
     fn tool(program: &str, args: &[&str]) -> Vec<u8> {
         let mut cmd = std::process::Command::new(program);
         cmd.args(args);
-        let o = output_within(cmd, Duration::from_secs(60))
+        let c = output_within(cmd, Duration::from_secs(60))
             .unwrap_or_else(|| panic!("host tool `{program}` did not run to completion (NOT RUN, not clean)"));
-        [o.stdout, o.stderr].concat()
+        assert!(
+            !c.truncated,
+            "host tool `{program}` output was cut short by a lingering pipe holder (not a clean verdict)"
+        );
+        [c.output.stdout, c.output.stderr].concat()
     }
 
     /// Every regular file under `root`, concatenated with its path (a descriptor
@@ -560,7 +609,10 @@ mod credential_broker_e2e {
                 .env("AASM_STATE_DIR", &self.state)
                 .env("AA_DATA_DIR", self.proxy.data_dir())
                 .args(["proxy", "revoke-credential", "--host", HOST, "--agent", AGENT_ID]);
-            output_within(cmd, Duration::from_secs(60)).expect("aasm proxy revoke-credential ran to completion")
+            let c =
+                output_within(cmd, Duration::from_secs(60)).expect("aasm proxy revoke-credential ran to completion");
+            assert!(!c.truncated, "revoke output was cut short by a lingering pipe holder");
+            c.output
         }
 
         /// Release the agent for its second call and wait for the supervisor to end.
@@ -620,7 +672,9 @@ mod credential_broker_e2e {
             .args(["--batch", "-p", &pid.to_string(), "-o"])
             .arg(format!("command script import {script}"))
             .args(["-o", "detach"]);
-        let out = output_within(cmd, Duration::from_secs(300))?;
+        // A scan line that arrived before the pipes were abandoned is a valid measurement;
+        // a missing line (including one lost to truncation) is "not measured" via `?` below.
+        let out = output_within(cmd, Duration::from_secs(300))?.output;
         let text = String::from_utf8_lossy(&[out.stdout, out.stderr].concat()).into_owned();
         let line = text.lines().find(|l| l.starts_with("J84SCAN counts=["))?;
         let inner = line.strip_prefix("J84SCAN counts=[")?.split(']').next()?;
@@ -860,27 +914,41 @@ mod credential_broker_e2e {
         Ok(())
     }
 
-    /// Control for the bound itself: a grandchild that keeps stdout open must not hold
-    /// `output_within` past its deadline, whether the child exits or has to be killed.
+    /// Control for the bound itself: a grandchild that keeps the pipes open must not hold
+    /// `output_within` past its limits, partial output must survive and be flagged
+    /// `truncated`, and a clean run must not be flagged. Expected cost is about
+    /// `PIPE_GRACE` + 1s; a regression to a join or to per-stream waits is not hidden by
+    /// the margin because the backgrounded sleep lasts 30s.
     #[test]
     fn control_output_within_returns_even_when_a_grandchild_holds_the_pipe() {
         let started = Instant::now();
-        // The shell exits at once; the backgrounded sleep inherits and keeps stdout open.
-        let mut exits = std::process::Command::new("sh");
-        exits.args(["-c", "sleep 8 & echo hi"]);
-        let out = output_within(exits, Duration::from_secs(5)).expect("the shell exits on its own");
-        assert!(out.status.success());
 
-        // The shell is still running at the deadline and has to be killed.
+        let mut clean = std::process::Command::new("sh");
+        clean.args(["-c", "echo clean"]);
+        let c = output_within(clean, Duration::from_secs(5)).expect("a clean child");
+        assert!(!c.truncated && String::from_utf8_lossy(&c.output.stdout).contains("clean"));
+
+        // The shell exits at once; the backgrounded sleep inherits both pipes.
+        let mut exits = std::process::Command::new("sh");
+        exits.args(["-c", "echo partial; sleep 30 & echo more"]);
+        let c = output_within(exits, Duration::from_secs(5)).expect("the shell exits on its own");
+        assert!(c.truncated, "a lingering pipe holder must be flagged");
+        let text = String::from_utf8_lossy(&c.output.stdout).into_owned();
+        assert!(
+            text.contains("partial") && text.contains("more"),
+            "partial output was lost"
+        );
+
+        // Still running at the deadline: killed with its group, reported as None.
         let mut stalls = std::process::Command::new("sh");
-        stalls.args(["-c", "sleep 8 & sleep 8"]);
+        stalls.args(["-c", "sleep 30 & sleep 30"]);
         assert!(
             output_within(stalls, Duration::from_secs(1)).is_none(),
             "a stalled child is reported, not waited for"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(14),
-            "output_within waited for a grandchild's pipe: {:?}",
+            started.elapsed() < Duration::from_secs(12),
+            "output_within waited on a lingering pipe holder: {:?}",
             started.elapsed()
         );
     }
