@@ -18,15 +18,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refusing it. No catalog entry declares `publication_checks` yet; that is a follow-up.
 - **Cross-process parent-to-child authority handoff for `aasm run` (AAASM-6273, J82)** — a
   launch that carries at least one lease now hosts a supervisor for the `aasm run` processes it
-  launches (per-user socket under `/tmp/aa-sup-<uid>/`). A descendant is placed in the tree from the
-  kernel's parent-pid chain, not from `--root-agent`, and receives only leases the root derived for
+  launches . A descendant is placed in the tree by the authority channel it inherits (fd 61, a datagram
+  socketpair the supervisor hands each admitted hop), not from `--root-agent`, the parent-pid chain or
+  a path, and receives only leases the root derived for
   it: equal or narrower scope, no later expiry, no larger limits, only delegable parent leases, and
   nothing a middle generation dropped. Revoking the root refuses later admissions below it. A
   `--root-agent` that names no ancestor in the verified chain is refused (`AncestryMismatch`); with
   no governed ancestor it is still refused as before. Roots with no lease are unchanged.
-  Limits, stated rather than claimed: unmodified `aasm run` in an unreparented tree only; not a
-  containment boundary (a double-forking descendant leaves the chain, a patched `aasm` can skip
-  the lookup); tested `--isolation none`, same uid; Core ADR 0038 section 28/30 not satisfied. The ADR
+  A double-forking descendant keeps the channel and stays governed; deleting the path index or socket
+  does not ungovern it; a process that holds no channel gets no authority; a supervisor that cannot be
+  reached refuses the launch. Limits, stated rather than claimed: unmodified `aasm run` only (a patched
+  `aasm`, or a descendant that deliberately closes fd 61 and has no governed ancestor on the path
+  fallback, is not contained); the channel is not yet wired for confined backends or pid-namespace/VM
+  descendants; tested `--isolation none`, same uid; Core ADR 0038 section 28/30 not satisfied. The ADR
   amendment that would allow this without the B3 gate is PROPOSED, not accepted.
 
 ## [0.0.1-rc.8] — TBD (pre-release)

@@ -2425,7 +2425,7 @@ journeys:
     scope: rc.8 release-blocking set only
     decision: Founder-approved release-scope deferral, not a PASS. The rc.8 candidate F (79a0f2d96) does not contain the handoff; the implementation lives on the AAASM-6273 branch and its ADR 0038 amendment is PROPOSED, not accepted.
     state: implemented-on-branch-with-stated-limits
-    reason: 'AAASM-6273 implements a cross-process handoff for unmodified `aasm run` descendants in an unreparented process tree: the tree-root supervisor holds each hop''s ParentAuthority in memory, places a descendant from the kernel parent-pid chain (declaration or no declaration, any environment), and re-issues only equal-or-narrower leases through the DelegationLedger; revoking the root refuses later admissions below it. Evidence is real `aasm run` processes against a real gateway, `--isolation none`, same uid (aa-cli/tests/run_process_tree.rs, 11 tests, each refusal paired with a control; five mutations each turn the intended tests red). NOT provided and not claimed: containment of an adversarial agent (a double-forking descendant leaves the parent-pid chain, macOS has no subreaper; a patched `aasm` can skip the lookup; a same-uid process can delete the index entry and socket together), pid-namespaced or VM-confined descendants (not exercised), ADR 0038 section 28 registry write-protection, the section 30 B3 kernel evidence gate, and roots that carry no lease (rc.7 compatibility residual, no supervisor).'
+    reason: 'AAASM-6273 implements a cross-process handoff for unmodified `aasm run` descendants in an unreparented process tree: the tree-root supervisor holds each hop''s ParentAuthority in memory, places a descendant by the authority channel it inherited on fd 61 (declaration or no declaration, any environment, double-fork included; the parent-pid path is only a fallback when no channel is inherited, and an unreachable supervisor refuses), and re-issues only equal-or-narrower leases through the DelegationLedger; revoking the root refuses later admissions below it. Evidence is real `aasm run` processes against a real gateway, `--isolation none`, same uid (aa-cli/tests/run_process_tree.rs, 13 tests, each refusal paired with a control; mutations each turn the intended tests red). NOT provided and not claimed: containment of an adversarial agent (a patched `aasm` can skip the lookup; a descendant that deliberately closes the channel with no governed ancestor on the fallback path is not contained), pid-namespaced or VM-confined descendants (not exercised), ADR 0038 section 28 registry write-protection, the section 30 B3 kernel evidence gate, and roots that carry no lease (rc.7 compatibility residual, no supervisor).'
     owner: AAASM-6273
     prerequisites: Founder decision on the PROPOSED ADR 0038 amendment (docs/src/adr/0038-capability-leases-and-explicit-authority-contract.md, last section); the B3 kernel evidence gate and the section 29.1 tests remain unproduced
     refusal_test: aa-cli/tests/run_process_tree.rs::a_child_that_omits_the_parent_declaration_and_scrubs_its_environment_is_still_capped
@@ -2479,10 +2479,16 @@ journeys:
     selector: aa-cli/tests/run_process_tree.rs::a_child_that_omits_the_parent_declaration_and_scrubs_its_environment_is_still_capped
   - repo: agent-assembly
     kind: test
-    selector: aa-cli/tests/run_process_tree.rs::a_deleted_supervisor_socket_refuses_the_launch_and_the_same_launch_with_the_socket_runs
+    selector: aa-cli/tests/run_process_tree.rs::without_the_inherited_channel_a_deleted_supervisor_socket_refuses_the_launch_and_with_the_socket_it_runs
   - repo: agent-assembly
     kind: test
     selector: aa-cli/tests/run_process_tree.rs::a_process_outside_the_tree_cannot_claim_its_authority_and_a_real_descendant_with_the_same_request_can
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::a_double_forked_descendant_is_still_governed_and_a_narrower_one_still_runs
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::deleting_the_registry_index_and_socket_does_not_ungovern_a_descendant
   - repo: agent-assembly
     kind: test
     selector: aa-cli/tests/run_process_tree.rs::declaring_an_agent_that_is_not_an_ancestor_is_refused_and_declaring_the_true_root_runs
