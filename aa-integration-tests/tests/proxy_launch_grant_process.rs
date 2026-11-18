@@ -1,0 +1,117 @@
+//! AAASM-6261: a launch grant reaches a real `aa-proxy` process only through its
+//! stdin pipe, and the process starts governed from it.
+//!
+//! The grant must not be readable the way a same-user process reads another
+//! process's environment: `ps -Eww` on macOS and `/proc/<pid>/environ` and
+//! `cmdline` on Linux. This test starts the real `aa-proxy` binary, delivers the
+//! grant on stdin exactly as `aasm run` does, waits for readiness, and asserts the
+//! grant appears in neither the environment nor the argv.
+//!
+//! What it does not do: it does not scan the proxy's memory (the grant is held in
+//! a zeroizing, `mlock`ed buffer, and a same-user debugger can still read it), and
+//! it does not run `aasm run` end to end. That the registration token never
+//! reaches the proxy is therefore NOT observed here: it rests on the types
+//! (`ProxyGuardOptions` carries a `LaunchGrant`, and the token is private to
+//! `run_registration`), and this test does not test it.
+
+#[path = "proxy_trust_support/mod.rs"]
+mod proxy_trust_support;
+
+use std::io::Write;
+use std::net::SocketAddr;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use aa_proxy::credentials::LaunchGrant;
+
+const GRANT: &str = "grant-QA6261-process-test-synthetic";
+
+/// Everything another process of this user can read about `pid`'s launch inputs.
+fn visible_launch_inputs(pid: u32) -> String {
+    if cfg!(target_os = "macos") {
+        let out = Command::new("ps")
+            .args(["-Eww", "-o", "command=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    } else {
+        let env = std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default();
+        let args = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        format!("{}\n{}", String::from_utf8_lossy(&env), String::from_utf8_lossy(&args))
+    }
+}
+
+#[test]
+fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv() {
+    let bin = proxy_trust_support::aa_proxy_binary();
+    let work = tempfile::tempdir().unwrap();
+    let ready_file = work.path().join("ready");
+
+    let mut cmd = Command::new(&bin);
+    cmd.env("AA_PROXY_ADDR", "127.0.0.1:0")
+        .env("AA_PROXY_READY_FILE", &ready_file)
+        .env("AA_CA_DIR", work.path().join("ca"))
+        .env("AA_PROXY_SYSTEM_TRUST_INSTALL", "never")
+        .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
+        .env_remove("AA_PROXY_PROVIDER_KEYS")
+        .env_remove("AA_PROXY_PROVIDER_KEYS_STDIN")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn the real aa-proxy");
+
+    let grant = LaunchGrant::new(String::new(), "team-a".into(), "did:key:agent-a".into(), GRANT.into());
+    {
+        let mut stdin = child.stdin.take().expect("stdin pipe");
+        stdin.write_all(&grant.encode_line().unwrap()).unwrap();
+        stdin.write_all(b"\n").unwrap();
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let addr = loop {
+        if let Some(first) = std::fs::read_to_string(&ready_file)
+            .ok()
+            .and_then(|c| c.lines().next().map(str::to_string))
+        {
+            if let Ok(addr) = first.parse::<SocketAddr>() {
+                break addr;
+            }
+        }
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the proxy exited before it was ready: a delivered grant must not stop it starting"
+        );
+        assert!(std::time::Instant::now() < deadline, "no readiness within 30s");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(addr.ip().is_loopback());
+
+    let visible = visible_launch_inputs(child.id());
+    assert!(
+        visible.contains("AA_PROXY_LAUNCH_GRANT_STDIN"),
+        "control: the probe can see this process's environment at all: {visible:?}"
+    );
+    assert!(
+        !visible.contains(GRANT),
+        "the grant is readable from the environment or argv"
+    );
+
+    // A proxy told to expect a grant and given none must not start.
+    let mut refusing = Command::new(&bin);
+    refusing
+        .env("AA_PROXY_ADDR", "127.0.0.1:0")
+        .env("AA_CA_DIR", work.path().join("ca2"))
+        .env("AA_PROXY_SYSTEM_TRUST_INSTALL", "never")
+        .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let status = refusing.status().expect("spawn");
+    assert!(
+        !status.success(),
+        "a proxy expecting a grant that never arrived must refuse to start"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
