@@ -375,11 +375,23 @@ fn sendmsg_fd(sock: RawFd, data: &[u8], fd: Option<RawFd>) -> std::io::Result<us
                 std::mem::size_of::<RawFd>(),
             );
         }
-        let sent = libc::sendmsg(sock, &msg, 0);
-        if sent < 0 {
-            Err(std::io::Error::last_os_error())
-        } else {
-            Ok(sent as usize)
+        // macOS answers a momentary mbuf shortage on a unix socket with ENOBUFS, and a signal
+        // with EINTR; neither means the peer is gone, and dropping the reply there would make a
+        // healthy supervisor look unreachable.
+        let mut attempts = 0;
+        loop {
+            let sent = libc::sendmsg(sock, &msg, 0);
+            if sent >= 0 {
+                return Ok(sent as usize);
+            }
+            let err = std::io::Error::last_os_error();
+            let transient = err.kind() == std::io::ErrorKind::Interrupted
+                || matches!(err.raw_os_error(), Some(libc::ENOBUFS | libc::EAGAIN));
+            attempts += 1;
+            if !transient || attempts > 400 {
+                return Err(err);
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
@@ -399,10 +411,16 @@ fn recvmsg_fd(sock: RawFd, buf: &mut [u8]) -> std::io::Result<(usize, Option<Own
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
         msg.msg_controllen = std::mem::size_of_val(&control) as _;
-        let received = libc::recvmsg(sock, &mut msg, 0);
-        if received < 0 {
-            return Err(std::io::Error::last_os_error());
-        }
+        let received = loop {
+            let n = libc::recvmsg(sock, &mut msg, 0);
+            if n >= 0 {
+                break n;
+            }
+            let err = std::io::Error::last_os_error();
+            if err.kind() != std::io::ErrorKind::Interrupted {
+                return Err(err);
+            }
+        };
         let mut fd = None;
         let mut header = libc::CMSG_FIRSTHDR(&msg);
         while !header.is_null() {
@@ -961,6 +979,8 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     let mut body = Vec::new();
     if (&*stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut body).is_err() || body.is_empty() {
         // A bare connection is a liveness probe.
+        #[cfg(test)]
+        eprintln!("supervisor: request body empty or unreadable");
         return;
     }
     let mut reply_fd: Option<OwnedFd> = None;
@@ -1040,8 +1060,16 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     if let Ok(bytes) = serde_json::to_vec(&response) {
         // The descriptor rides on the first write; the rest of a large reply follows plainly.
         let fd = reply_fd.as_ref().map(AsRawFd::as_raw_fd);
-        if let Ok(sent) = sendmsg_fd(stream.as_raw_fd(), &bytes, fd) {
-            let _ = stream.write_all(&bytes[sent.min(bytes.len())..]);
+        match sendmsg_fd(stream.as_raw_fd(), &bytes, fd) {
+            Ok(sent) => {
+                let _ = stream.write_all(&bytes[sent.min(bytes.len())..]);
+            }
+            Err(e) => {
+                #[cfg(test)]
+                eprintln!("supervisor: reply not sent: {e}");
+                #[cfg(not(test))]
+                let _ = e;
+            }
         }
     }
 }
