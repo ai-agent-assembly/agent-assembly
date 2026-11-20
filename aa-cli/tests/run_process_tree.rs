@@ -457,6 +457,7 @@ async fn without_the_inherited_channel_a_deleted_supervisor_socket_refuses_the_l
     let script = format!(
         "{} exec \"$@\"",
         // `exec 61>&-` closes the inherited authority channel, so what is measured is the path fallback.
+        // bash, not sh: dash (the CI runner's /bin/sh) cannot redirect a two-digit descriptor.
         "exec 61>&-; if [ \"$1\" = delete ]; then rm -f \"/tmp/aa-sup-$(id -u)/$PPID-\"*.sock; fi; shift;"
     );
 
@@ -464,7 +465,7 @@ async fn without_the_inherited_channel_a_deleted_supervisor_socket_refuses_the_l
         let marker = f.path(&format!("ran-{mode}"));
         let mut argv = f.layer("g1", &root, &[]);
         argv.extend([
-            "/bin/sh".to_string(),
+            "/bin/bash".to_string(),
             "-c".to_string(),
             script.clone(),
             "t".to_string(),
