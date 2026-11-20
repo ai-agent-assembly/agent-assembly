@@ -983,8 +983,10 @@ struct Shared {
 enum Via {
     /// Connected to the path socket: identity is the peer's place in the parent-pid chain.
     Path,
-    /// Arrived over the channel handed to the hop recorded under this pid: identity is the channel.
-    Channel(u32),
+    /// Arrived over the channel handed to the hop recorded under this pid, whose process had this
+    /// start marker when the channel was opened: identity is the channel. The marker keeps a channel
+    /// from speaking for a different process that later reused the pid.
+    Channel(u32, Option<u64>),
 }
 
 fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
@@ -1035,36 +1037,47 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
                         procs,
                         now,
                     ),
-                    Via::Channel(parent) => admit_under(
-                        &mut state,
-                        parent,
-                        peer,
-                        &spec,
-                        declared_root_agent.as_deref(),
-                        &registration_did,
-                        procs,
-                        now,
-                    ),
+                    Via::Channel(parent, marker) => {
+                        if !channel_speaks_for(&state, parent, marker) {
+                            Err(Refusal::new(
+                                "UnrecordedPeer",
+                                "the channel this request arrived on belongs to a hop that has been replaced by another process under the same pid",
+                            ))
+                        } else {
+                            admit_under(
+                                &mut state,
+                                parent,
+                                peer,
+                                &spec,
+                                declared_root_agent.as_deref(),
+                                &registration_did,
+                                procs,
+                                now,
+                            )
+                        }
+                    }
                 };
                 match outcome {
-                    Ok(admission) => match open_channel(shared, peer) {
-                        Ok(channel) => {
-                            reply_fd = Some(channel);
-                            Response::Admitted {
-                                leases: admission.leases,
-                                lineage: admission.lineage,
+                    Ok(admission) => {
+                        match open_channel(shared, peer, state.hops.get(&peer).and_then(|h| h.start_marker)) {
+                            Ok(channel) => {
+                                reply_fd = Some(channel);
+                                Response::Admitted {
+                                    leases: admission.leases,
+                                    lineage: admission.lineage,
+                                }
+                            }
+                            Err(e) => {
+                                // A hop that cannot be given a channel has no way to govern ITS
+                                // descendants; it must not run as a governed hop that does not exist.
+                                state.hops.remove(&peer);
+                                Response::Refused {
+                                    kind: "ChannelUnavailable".to_string(),
+                                    detail: format!("cannot open the descendant channel for this hop: {e}"),
+                                }
                             }
                         }
-                        Err(e) => {
-                            // A hop that cannot be given a channel has no way to govern ITS
-                            // descendants; it must not run as a governed hop that does not exist.
-                            state.hops.remove(&peer);
-                            Response::Refused {
-                                kind: "ChannelUnavailable".to_string(),
-                                detail: format!("cannot open the descendant channel for this hop: {e}"),
-                            }
-                        }
-                    },
+                    }
                     Err(refusal) => Response::Refused {
                         kind: refusal.kind,
                         detail: refusal.detail,
@@ -1090,9 +1103,15 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     }
 }
 
+/// Whether a channel opened for the process `parent` had at `marker` still speaks for the hop
+/// recorded under that pid. A recorded hop that a different process replaced (pid reuse) is not it.
+fn channel_speaks_for(state: &State, parent: u32, marker: Option<u64>) -> bool {
+    marker.is_some() && state.hops.get(&parent).map(|hop| hop.start_marker) == Some(marker)
+}
+
 /// Make the channel the hop recorded under `hop` hands to its descendants, and start serving it.
 /// Returns the descendant end.
-fn open_channel(shared: &Arc<Shared>, hop: u32) -> std::io::Result<OwnedFd> {
+fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io::Result<OwnedFd> {
     let (server, client) = channel_pair()?;
     let shared = Arc::clone(shared);
     std::thread::spawn(move || {
@@ -1108,7 +1127,7 @@ fn open_channel(shared: &Arc<Shared>, hop: u32) -> std::io::Result<OwnedFd> {
                     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
                     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
                     let shared = Arc::clone(&shared);
-                    std::thread::spawn(move || handle(&mut stream, &shared, Via::Channel(hop)));
+                    std::thread::spawn(move || handle(&mut stream, &shared, Via::Channel(hop, marker)));
                 }
                 Ok((0, None)) => break,
                 Ok(_) => {}
@@ -1189,7 +1208,7 @@ impl TreeSupervisor {
         std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
         std::fs::rename(&staged, &index)?;
 
-        let root_channel = open_channel(&shared, pid)?;
+        let root_channel = open_channel(&shared, pid, Some(start_marker))?;
 
         let thread = {
             let shared = Arc::clone(&shared);
@@ -1685,6 +1704,30 @@ mod tests {
             "the index must go too"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_channel_does_not_speak_for_a_different_process_that_reused_its_pid() {
+        struct Marker(u64);
+        impl Procs for Marker {
+            fn parent_of(&self, _: u32) -> Option<u32> {
+                None
+            }
+            fn start_marker(&self, _: u32) -> Option<u64> {
+                Some(self.0)
+            }
+        }
+        let state = root_state(Vec::new(), &Marker(7));
+        assert!(
+            channel_speaks_for(&state, 100, Some(7)),
+            "control: the hop's own channel"
+        );
+        assert!(
+            !channel_speaks_for(&state, 100, Some(8)),
+            "a channel opened for an earlier process under this pid"
+        );
+        assert!(!channel_speaks_for(&state, 100, None), "no marker, no identity");
+        assert!(!channel_speaks_for(&state, 999, Some(7)), "an unrecorded hop");
     }
 
     #[test]
