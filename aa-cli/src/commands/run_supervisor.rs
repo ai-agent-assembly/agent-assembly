@@ -77,7 +77,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
@@ -411,8 +411,15 @@ fn recvmsg_fd(sock: RawFd, buf: &mut [u8]) -> std::io::Result<(usize, Option<Own
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
         msg.msg_controllen = std::mem::size_of_val(&control) as _;
+        // `MSG_CMSG_CLOEXEC` makes the kernel set close-on-exec as it installs each descriptor,
+        // so none is inheritable even for an instant. macOS has no such flag; `set_cloexec` below
+        // covers it there.
+        #[cfg(target_os = "linux")]
+        let flags = libc::MSG_CMSG_CLOEXEC;
+        #[cfg(not(target_os = "linux"))]
+        let flags = 0;
         let received = loop {
-            let n = libc::recvmsg(sock, &mut msg, 0);
+            let n = libc::recvmsg(sock, &mut msg, flags);
             if n >= 0 {
                 break n;
             }
@@ -421,23 +428,36 @@ fn recvmsg_fd(sock: RawFd, buf: &mut [u8]) -> std::io::Result<(usize, Option<Own
                 return Err(err);
             }
         };
-        let mut fd = None;
+        // Every descriptor in every control message is owned here, so any one this function does
+        // not hand back is closed on return rather than left in the supervisor's table.
+        let mut owned: Vec<OwnedFd> = Vec::new();
         let mut header = libc::CMSG_FIRSTHDR(&msg);
         while !header.is_null() {
             if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let mut raw: RawFd = -1;
-                std::ptr::copy_nonoverlapping(
-                    libc::CMSG_DATA(header),
-                    (&mut raw as *mut RawFd).cast::<u8>(),
-                    std::mem::size_of::<RawFd>(),
-                );
-                if raw >= 0 {
-                    set_cloexec(raw, true);
-                    fd = Some(OwnedFd::from_raw_fd(raw));
+                let payload = ((*header).cmsg_len as usize).saturating_sub(libc::CMSG_LEN(0) as usize);
+                let count = payload / std::mem::size_of::<RawFd>();
+                for i in 0..count {
+                    let mut raw: RawFd = -1;
+                    std::ptr::copy_nonoverlapping(
+                        libc::CMSG_DATA(header).add(i * std::mem::size_of::<RawFd>()),
+                        (&mut raw as *mut RawFd).cast::<u8>(),
+                        std::mem::size_of::<RawFd>(),
+                    );
+                    if raw >= 0 {
+                        set_cloexec(raw, true);
+                        owned.push(OwnedFd::from_raw_fd(raw));
+                    }
                 }
             }
             header = libc::CMSG_NXTHDR(&msg, header);
         }
+        // Exactly one descriptor, untruncated, is a well-formed request; anything else is dropped
+        // (and so closed) and reads as a datagram that carried no descriptor.
+        let fd = if owned.len() == 1 && (msg.msg_flags & libc::MSG_CTRUNC) == 0 {
+            owned.pop()
+        } else {
+            None
+        };
         Ok((received as usize, fd))
     }
 }
@@ -665,6 +685,12 @@ pub fn admit_via(
         registration_did: registration_did.to_string(),
     };
     match exchange(governor, &request).map_err(|e| Refusal::new("SupervisorUnreachable", e))? {
+        // An admission with no channel would leave the parent's own channel on fd 61 in the
+        // tool, still speaking at the parent's wider authority.
+        (Response::Admitted { .. }, None) => Err(Refusal::new(
+            "SupervisorUnreachable",
+            "the tree supervisor admitted this launch without a channel for its descendants",
+        )),
         (Response::Admitted { leases, lineage }, channel) => Ok(Admission {
             leases,
             lineage,
@@ -976,6 +1002,47 @@ struct Shared {
     state: Mutex<State>,
     procs: Arc<dyn Procs>,
     stop: AtomicBool,
+    /// Channel handlers running now; bounded so one descendant cannot exhaust the supervisor.
+    handlers: Arc<AtomicUsize>,
+}
+
+/// The most channel requests served at once. Admissions are short and rare, so this is generous.
+const MAX_CONCURRENT_HANDLERS: usize = 32;
+
+/// A claim on one of the [`MAX_CONCURRENT_HANDLERS`] slots, released on drop.
+struct HandlerSlot(Arc<AtomicUsize>);
+
+impl HandlerSlot {
+    fn take(counter: &Arc<AtomicUsize>) -> Option<Self> {
+        if counter.fetch_add(1, Ordering::SeqCst) >= MAX_CONCURRENT_HANDLERS {
+            counter.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self(Arc::clone(counter)))
+    }
+}
+
+impl Drop for HandlerSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Whether `fd` is a `SOCK_STREAM` socket.
+fn is_stream_socket(fd: RawFd) -> bool {
+    let mut kind: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: a read-only query into a local `c_int` of the size passed.
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_TYPE,
+            (&mut kind as *mut libc::c_int).cast(),
+            &mut len,
+        )
+    };
+    rc == 0 && kind == libc::SOCK_STREAM
 }
 
 /// How a connection proved which hop it speaks for.
@@ -1114,28 +1181,48 @@ fn channel_speaks_for(state: &State, parent: u32, marker: Option<u64>) -> bool {
 fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io::Result<OwnedFd> {
     let (server, client) = channel_pair()?;
     let shared = Arc::clone(shared);
-    std::thread::spawn(move || {
-        let mut byte = [0u8; 8];
-        while !shared.stop.load(Ordering::SeqCst) {
-            match recvmsg_fd(server.as_raw_fd(), &mut byte) {
-                Ok((_, Some(stream_fd))) => {
-                    // A stopped supervisor answers nothing, even a request already in flight.
-                    if shared.stop.load(Ordering::SeqCst) {
-                        break;
+    // A fallible spawn: `open_channel` runs with the supervisor state locked, and a panic there
+    // would poison the lock and take down every later admission in the tree.
+    std::thread::Builder::new()
+        .name("aasm-supervisor-channel".into())
+        .spawn(move || {
+            let mut byte = [0u8; 8];
+            while !shared.stop.load(Ordering::SeqCst) {
+                match recvmsg_fd(server.as_raw_fd(), &mut byte) {
+                    Ok((_, Some(stream_fd))) => {
+                        // A stopped supervisor answers nothing, even a request already in flight.
+                        if shared.stop.load(Ordering::SeqCst) {
+                            break;
+                        }
+                        // A descriptor from a descendant is untrusted: a pipe or file would ignore the
+                        // read timeout and hold a handler for good.
+                        if !is_stream_socket(stream_fd.as_raw_fd()) {
+                            continue;
+                        }
+                        let Some(slot) = HandlerSlot::take(&shared.handlers) else {
+                            continue;
+                        };
+                        let mut stream = UnixStream::from(stream_fd);
+                        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+                        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+                        let shared = Arc::clone(&shared);
+                        let _ = std::thread::Builder::new()
+                            .name("aasm-supervisor-handler".into())
+                            .spawn(move || {
+                                let _slot = slot;
+                                handle(&mut stream, &shared, Via::Channel(hop, marker));
+                            });
                     }
-                    let mut stream = UnixStream::from(stream_fd);
-                    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-                    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-                    let shared = Arc::clone(&shared);
-                    std::thread::spawn(move || handle(&mut stream, &shared, Via::Channel(hop, marker)));
+                    // A datagram socket has no end-of-file, so an empty datagram is not a close: any
+                    // holder of the channel can send one, and treating it as one would let it silence
+                    // the hop's channel for every sibling and descendant. The loop ends on `stop`.
+                    Ok((0, None)) => std::thread::sleep(Duration::from_millis(20)),
+                    Ok(_) => {}
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    Err(_) => break,
                 }
-                Ok((0, None)) => break,
-                Ok(_) => {}
-                Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-                Err(_) => break,
             }
-        }
-    });
+        })?;
     Ok(client)
 }
 
@@ -1189,6 +1276,7 @@ impl TreeSupervisor {
             }),
             procs,
             stop: AtomicBool::new(false),
+            handlers: Arc::new(AtomicUsize::new(0)),
         });
 
         let Some(start_marker) = start_marker else {
@@ -1797,6 +1885,38 @@ mod tests {
             assert!(
                 matches!(answered, Ok((Response::Pong, _))),
                 "rendezvous {i}: {answered:?}"
+            );
+        }
+        drop(supervisor);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_hostile_datagram_on_the_channel_does_not_silence_it_or_leak_descriptors() {
+        let base = private_dir("hostile-datagram");
+        let dir = registry_dir_in(&base);
+        let procs = Arc::new(Fake::new(&[(std::process::id(), 1), (100, 1)]));
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs).expect("start");
+        let channel = supervisor.take_root_channel().expect("root channel");
+        let governor = Governor::Inherited(channel.as_raw_fd());
+
+        // Empty datagram: not an end-of-file, so the channel keeps answering afterwards.
+        sendmsg_fd(channel.as_raw_fd(), &[], None).expect("empty datagram");
+        // Descriptor that is not a stream socket (a pipe): ignored, not held by a handler forever.
+        let (pipe_read, _pipe_write) = std::io::pipe().expect("pipe");
+        sendmsg_fd(channel.as_raw_fd(), &[0u8], Some(pipe_read.as_raw_fd())).expect("pipe datagram");
+        // A datagram socket where a stream is expected: also refused.
+        let (dgram, _peer) = UnixDatagram::pair().expect("dgram pair");
+        sendmsg_fd(channel.as_raw_fd(), &[0u8], Some(dgram.as_raw_fd())).expect("dgram datagram");
+
+        for i in 0..20 {
+            let answered = exchange(&governor, &Request::Ping);
+            assert!(
+                matches!(answered, Ok((Response::Pong, _))),
+                "channel must still answer after hostile datagrams ({i}): {answered:?}"
             );
         }
         drop(supervisor);
