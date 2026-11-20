@@ -490,3 +490,22 @@ fn the_grant_lifetime_is_clamped() {
     assert_eq!(ttl(60), Duration::from_secs(60));
     assert_eq!(ttl(10_000_000), Duration::from_secs(12 * 3600));
 }
+
+#[tokio::test]
+async fn a_launch_id_that_could_forge_a_log_line_or_is_oversized_is_refused() {
+    let f = fixture();
+    for bad in ["x\ninjected", "has space", &"a".repeat(129)] {
+        let err = f
+            .lifecycle
+            .mint_launch_grant(Request::new(MintLaunchGrantRequest {
+                agent_id: Some(f.a.clone()),
+                credential_token: TOKEN_A.into(),
+                launch_id: bad.into(),
+                ttl_sec: 0,
+            }))
+            .await
+            .expect_err("bad launch_id must be refused");
+        assert_eq!(err.code(), tonic::Code::InvalidArgument, "{bad:?}");
+    }
+    assert!(mint(&f, &f.a, TOKEN_A).await.is_ok(), "control: a plain id still mints");
+}
