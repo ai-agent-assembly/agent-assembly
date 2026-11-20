@@ -1002,12 +1002,12 @@ struct Shared {
     state: Mutex<State>,
     procs: Arc<dyn Procs>,
     stop: AtomicBool,
-    /// Channel handlers running now; bounded so one descendant cannot exhaust the supervisor.
-    handlers: Arc<AtomicUsize>,
 }
 
-/// The most channel requests served at once. Admissions are short and rare, so this is generous.
-const MAX_CONCURRENT_HANDLERS: usize = 32;
+/// The most requests one channel serves at once. Admissions are short and rare, so this is generous.
+/// The budget is per channel, so a hostile descendant can only use up the slots of the channel it
+/// holds (its own hop's), never those another hop's descendants need.
+const MAX_CONCURRENT_HANDLERS: usize = 8;
 
 /// A claim on one of the [`MAX_CONCURRENT_HANDLERS`] slots, released on drop.
 struct HandlerSlot(Arc<AtomicUsize>);
@@ -1026,6 +1026,18 @@ impl Drop for HandlerSlot {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// Whether the kernel reports `fd`'s peers all gone.
+fn hung_up(fd: RawFd) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one valid `pollfd` and a zero timeout; nothing is read or modified.
+    let rc = unsafe { libc::poll(&mut poll, 1, 0) };
+    rc > 0 && (poll.revents & libc::POLLHUP) != 0
 }
 
 /// Whether `fd` is a `SOCK_STREAM` socket.
@@ -1056,9 +1068,31 @@ enum Via {
     Channel(u32, Option<u64>),
 }
 
+/// Read a request to end-of-stream, at most [`MAX_MESSAGE_BYTES`], within [`IO_TIMEOUT`] in total.
+/// The per-read socket timeout alone would let a sender that trickles a byte at a time hold the
+/// handler for as long as it likes.
+fn read_request(stream: &mut UnixStream, body: &mut Vec<u8>) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + IO_TIMEOUT;
+    let mut chunk = [0u8; 4096];
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            return Ok(());
+        }
+        body.extend_from_slice(&chunk[..n]);
+        if body.len() as u64 >= MAX_MESSAGE_BYTES {
+            body.truncate(MAX_MESSAGE_BYTES as usize);
+            return Ok(());
+        }
+    }
+}
+
 fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     let mut body = Vec::new();
-    let read = (&*stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut body);
+    let read = read_request(stream, &mut body);
     if read.is_err() || body.is_empty() {
         // A bare connection is a liveness probe.
         #[cfg(test)]
@@ -1181,6 +1215,7 @@ fn channel_speaks_for(state: &State, parent: u32, marker: Option<u64>) -> bool {
 fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io::Result<OwnedFd> {
     let (server, client) = channel_pair()?;
     let shared = Arc::clone(shared);
+    let handlers = Arc::new(AtomicUsize::new(0));
     // A fallible spawn: `open_channel` runs with the supervisor state locked, and a panic there
     // would poison the lock and take down every later admission in the tree.
     std::thread::Builder::new()
@@ -1199,7 +1234,7 @@ fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io:
                         if !is_stream_socket(stream_fd.as_raw_fd()) {
                             continue;
                         }
-                        let Some(slot) = HandlerSlot::take(&shared.handlers) else {
+                        let Some(slot) = HandlerSlot::take(&handlers) else {
                             continue;
                         };
                         let mut stream = UnixStream::from(stream_fd);
@@ -1276,7 +1311,6 @@ impl TreeSupervisor {
             }),
             procs,
             stop: AtomicBool::new(false),
-            handlers: Arc::new(AtomicUsize::new(0)),
         });
 
         let Some(start_marker) = start_marker else {
