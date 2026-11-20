@@ -694,8 +694,11 @@ impl AgentRegistry {
         // Now remove this child.
         self.control_senders.remove(&child_key);
         // AAASM-6261 — a cascaded child's launch ends with it, like a direct deregister.
+        // Remove the agent first, then revoke: a mint racing this cascade then either sees the
+        // agent gone and rolls itself back, or inserted before the revoke and is swept by it.
+        let removed = self.agents.remove(&child_key);
         self.revoke_launch_grants(&child_key);
-        if let Some((_, record)) = self.agents.remove(&child_key) {
+        if let Some((_, record)) = removed {
             if let Some(ref tid) = record.team_id {
                 if let Some(set) = self.team_index.get(tid) {
                     set.remove(&child_key);
@@ -1418,9 +1421,10 @@ impl AgentRegistry {
                 expires_at,
             },
         );
-        // deregister/cascade revoke grants before removing the agent, so a mint that
-        // landed in between would leave a grant for a removed agent that a later
-        // re-registration of the same id would resurrect. Re-check and roll back.
+        // Both deregister and the orphan cascade remove the agent and then revoke its grants, so a
+        // mint that inserted before the revoke is swept, and one that inserts after the removal
+        // fails this re-check. Without it a grant for a removed agent would survive for a later
+        // re-registration of the same id to resurrect. Re-check and roll back.
         if !self.agents.contains_key(agent_id) {
             self.launch_grants.remove(&grant);
             return Err(RegistryError::NotFound(*agent_id));
