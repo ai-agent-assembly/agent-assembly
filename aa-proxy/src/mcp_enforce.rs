@@ -218,6 +218,10 @@ pub fn decision_from_response(response: &CheckActionResponse, require_bound: boo
         Ok(Decision::Deny) => McpDecision::Deny {
             reason: response.reason.clone(),
         },
+        // A redaction still lets the call proceed, so it needs the same binding as an allow.
+        Ok(Decision::Redact) if require_bound && !response_is_bound(response) => McpDecision::Deny {
+            reason: unbound_allow_reason(response),
+        },
         Ok(Decision::Redact) => McpDecision::Redact {
             instructions: response.redact.clone().unwrap_or_default(),
         },
@@ -721,5 +725,26 @@ mod tests {
             decision_from_response(&allow(AgentIdentityAssurance::Unattributed), false),
             McpDecision::Allow
         );
+    }
+
+    #[test]
+    fn a_governed_launch_does_not_honour_a_redact_the_gateway_did_not_bind() {
+        let redact = |a: AgentIdentityAssurance| CheckActionResponse {
+            decision: Decision::Redact as i32,
+            agent_identity_assurance: a as i32,
+            ..Default::default()
+        };
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Bound), true),
+            McpDecision::Redact { .. }
+        ));
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Asserted), true),
+            McpDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Asserted), false),
+            McpDecision::Redact { .. }
+        ));
     }
 }

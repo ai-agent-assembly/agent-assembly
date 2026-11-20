@@ -997,6 +997,17 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         if req.launch_id.trim().is_empty() {
             return Err(Status::invalid_argument("missing launch_id"));
         }
+        // launch_id is stored per grant and logged: bound its size and charset.
+        if req.launch_id.len() > 128
+            || !req
+                .launch_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+        {
+            return Err(Status::invalid_argument(
+                "launch_id must be at most 128 characters of [A-Za-z0-9-_.:]",
+            ));
+        }
         let ttl = launch_grant_ttl(req.ttl_sec);
         let (grant, expires_at) = self
             .registry

@@ -1418,6 +1418,13 @@ impl AgentRegistry {
                 expires_at,
             },
         );
+        // deregister/cascade revoke grants before removing the agent, so a mint that
+        // landed in between would leave a grant for a removed agent that a later
+        // re-registration of the same id would resurrect. Re-check and roll back.
+        if !self.agents.contains_key(agent_id) {
+            self.launch_grants.remove(&grant);
+            return Err(RegistryError::NotFound(*agent_id));
+        }
         Ok((grant, expires_at))
     }
 
