@@ -473,13 +473,17 @@ fn inherited_channel() -> Option<RawFd> {
 
 /// Open a request stream to the supervisor over the inherited channel: make a stream pair and
 /// send the supervisor's end across the channel. A supervisor that is gone makes the send fail.
-fn rendezvous(channel: RawFd) -> std::io::Result<UnixStream> {
+///
+/// Returns our end and the supervisor's end. The caller keeps the supervisor's end open until the
+/// supervisor has answered: closing it straight after the send leaves it referenced only by the
+/// in-flight message, and on macOS the request already queued on it can then be discarded, so the
+/// supervisor reads end-of-file with no request (measured: 9 of 80 runs of the supervisor tests).
+fn rendezvous(channel: RawFd) -> std::io::Result<(UnixStream, UnixStream)> {
     let (mine, theirs) = UnixStream::pair()?;
     sendmsg_fd(channel, &[0u8], Some(theirs.as_raw_fd()))?;
-    drop(theirs);
     mine.set_read_timeout(Some(IO_TIMEOUT))?;
     mine.set_write_timeout(Some(IO_TIMEOUT))?;
-    Ok(mine)
+    Ok((mine, theirs))
 }
 
 /// Find the nearest governed ancestor of this process, if any.
@@ -603,9 +607,12 @@ pub fn probe(endpoint: &Endpoint) -> std::io::Result<()> {
 }
 
 fn exchange(governor: &Governor, request: &Request) -> Result<(Response, Option<OwnedFd>), String> {
-    let stream = match governor {
-        Governor::Path(endpoint) => connect(endpoint).map_err(|e| format!("cannot reach the tree supervisor: {e}")),
+    let (stream, mut supervisor_end) = match governor {
+        Governor::Path(endpoint) => connect(endpoint)
+            .map(|s| (s, None))
+            .map_err(|e| format!("cannot reach the tree supervisor: {e}")),
         Governor::Inherited(channel) => rendezvous(*channel)
+            .map(|(mine, theirs)| (mine, Some(theirs)))
             .map_err(|e| format!("cannot reach the tree supervisor over the inherited channel: {e}")),
     }?;
     let body = serde_json::to_vec(request).map_err(|e| format!("cannot encode the request: {e}"))?;
@@ -621,6 +628,11 @@ fn exchange(governor: &Governor, request: &Request) -> Result<(Response, Option<
             .map_err(|e| format!("cannot read the tree supervisor's reply: {e}"))?;
         if channel.is_none() {
             channel = fd;
+        }
+        // The first reply byte proves the supervisor holds the request stream; only now may our copy
+        // of its end go, so that its closing it ends our read.
+        if n > 0 {
+            supervisor_end = None;
         }
         if n == 0 {
             break;
@@ -977,10 +989,14 @@ enum Via {
 
 fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
     let mut body = Vec::new();
-    if (&*stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut body).is_err() || body.is_empty() {
+    let read = (&*stream).take(MAX_MESSAGE_BYTES).read_to_end(&mut body);
+    if read.is_err() || body.is_empty() {
         // A bare connection is a liveness probe.
         #[cfg(test)]
-        eprintln!("supervisor: request body empty or unreadable");
+        eprintln!(
+            "supervisor: request body empty or unreadable: read={read:?} len={}",
+            body.len()
+        );
         return;
     }
     let mut reply_fd: Option<OwnedFd> = None;
@@ -1718,6 +1734,29 @@ mod tests {
             admit_via(&governor, &ok, None, "did:key:child").is_err(),
             "a stopped supervisor must not answer an inherited channel"
         );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn many_rendezvous_over_one_inherited_channel_are_all_answered() {
+        // The request stream's far end travels as an in-flight descriptor; if the sender lets go of
+        // it too early the supervisor can read end-of-file with no request (seen on macOS).
+        let base = private_dir("rendezvous-burst");
+        let dir = registry_dir_in(&base);
+        let procs = Arc::new(Fake::new(&[(std::process::id(), 1), (100, 1)]));
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs).expect("start");
+        let channel = supervisor.take_root_channel().expect("root channel");
+        for i in 0..2000 {
+            let answered = exchange(&Governor::Inherited(channel.as_raw_fd()), &Request::Ping);
+            assert!(
+                matches!(answered, Ok((Response::Pong, _))),
+                "rendezvous {i}: {answered:?}"
+            );
+        }
+        drop(supervisor);
         let _ = std::fs::remove_dir_all(&base);
     }
 
