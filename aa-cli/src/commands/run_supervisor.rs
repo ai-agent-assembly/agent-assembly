@@ -632,7 +632,7 @@ fn exchange(governor: &Governor, request: &Request) -> Result<(Response, Option<
         // The first reply byte proves the supervisor holds the request stream; only now may our copy
         // of its end go, so that its closing it ends our read.
         if n > 0 {
-            supervisor_end = None;
+            drop(supervisor_end.take());
         }
         if n == 0 {
             break;
