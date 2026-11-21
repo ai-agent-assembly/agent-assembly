@@ -219,9 +219,11 @@ impl AgentLifecycleService for Observed {
 
     async fn mint_launch_grant(
         &self,
-        _: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
+        req: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
     ) -> Result<Response<aa_proto::assembly::agent::v1::MintLaunchGrantResponse>, Status> {
-        Err(Status::unimplemented("not used in this test"))
+        // `aasm run` mints a launch grant for every governed launch and refuses to start without
+        // one, so every suite that launches through this gateway needs the real mint.
+        self.inner.mint_launch_grant(req).await
     }
 
     type ControlStreamStream = <AgentLifecycleServiceImpl as AgentLifecycleService>::ControlStreamStream;
