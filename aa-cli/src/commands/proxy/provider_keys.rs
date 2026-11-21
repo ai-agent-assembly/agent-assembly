@@ -31,7 +31,8 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use aa_proxy::credentials::{
-    parse_provider_keys, MAX_PROVIDER_KEYS_BYTES, PROVIDER_KEYS_STDIN_CAPABILITY, PROVIDER_KEYS_STDIN_FLAG,
+    parse_provider_keys, LaunchGrant, LAUNCH_GRANT_STDIN_CAPABILITY, LAUNCH_GRANT_STDIN_FLAG, MAX_PROVIDER_KEYS_BYTES,
+    PROVIDER_KEYS_STDIN_CAPABILITY, PROVIDER_KEYS_STDIN_FLAG,
 };
 
 const VAR: &str = "AA_PROXY_PROVIDER_KEYS";
@@ -156,6 +157,28 @@ fn take_from_process_env() -> Option<std::ffi::OsString> {
 ///
 /// A sentence naming the problem (never any part of the value).
 pub fn preflight(proxy_binary: &Path) -> Result<(), String> {
+    preflight_with(proxy_binary, false)
+}
+
+/// [`preflight`] for a launch that also hands the proxy a launch grant
+/// (`with_launch_grant`, AAASM-6261).
+///
+/// Such a launch is refused when the proxy binary does not advertise
+/// [`LAUNCH_GRANT_STDIN_CAPABILITY`]: an older proxy would ignore the
+/// credential and send every gateway check unattributed, which for a governed
+/// launch is a silent downgrade rather than a refusal.
+///
+/// # Errors
+///
+/// A sentence naming the problem (never any part of a value).
+pub fn preflight_with(proxy_binary: &Path, with_launch_grant: bool) -> Result<(), String> {
+    if with_launch_grant && !probe_capability(proxy_binary, LAUNCH_GRANT_STDIN_CAPABILITY, CAPABILITY_PROBE_TIMEOUT) {
+        return Err(format!(
+            "{} cannot receive the launch's grant on stdin (it predates that delivery); \
+             install the aa-proxy that matches this aasm",
+            proxy_binary.display()
+        ));
+    }
     match current() {
         Captured::Unset => Ok(()),
         Captured::NotUtf8 => Err(format!("{VAR} is not valid UTF-8, so it cannot be delivered")),
@@ -181,6 +204,12 @@ pub fn preflight(proxy_binary: &Path) -> Result<(), String> {
 
 /// Whether `binary --capabilities` reports stdin delivery, within `timeout`.
 fn probe_stdin_delivery(binary: &Path, timeout: Duration) -> bool {
+    probe_capability(binary, PROVIDER_KEYS_STDIN_CAPABILITY, timeout)
+}
+
+/// Whether `binary --capabilities` lists `capability` on a line of its own,
+/// within `timeout`.
+fn probe_capability(binary: &Path, capability: &str, timeout: Duration) -> bool {
     let Ok(mut child) = Command::new(binary)
         .arg("--capabilities")
         .stdin(Stdio::null())
@@ -208,7 +237,7 @@ fn probe_stdin_delivery(binary: &Path, timeout: Duration) -> bool {
         .stdout
         .take()
         .is_some_and(|s| s.take(4096).read_to_string(&mut out).is_ok())
-        && out.lines().any(|l| l.trim() == PROVIDER_KEYS_STDIN_CAPABILITY)
+        && out.lines().any(|l| l.trim() == capability)
 }
 
 /// Whether the proxy about to be spawned will be given keys on stdin.
@@ -223,12 +252,29 @@ pub fn delivering() -> bool {
 /// can never choose how the proxy loads its credentials. Call after any other
 /// `stdin(...)` setting: a launch that delivers keys needs the pipe.
 pub fn configure(cmd: &mut Command) {
+    configure_with(cmd, false);
+}
+
+/// [`configure`] for a launch that also hands the proxy a launch grant.
+///
+/// The credential flag (a name, never a value) is set or removed explicitly for
+/// the same reason the provider-key flag is. The token itself is never in the
+/// `Command`: it travels in [`deliver_with`]'s stdin write, so it is not in the
+/// proxy's environment or argv, in `ps`, or in a `--dry-run` dump.
+pub fn configure_with(cmd: &mut Command, with_launch_grant: bool) {
     cmd.env_remove(VAR);
     if delivering() {
         cmd.env(PROVIDER_KEYS_STDIN_FLAG, "1");
-        cmd.stdin(Stdio::piped());
     } else {
         cmd.env_remove(PROVIDER_KEYS_STDIN_FLAG);
+    }
+    if with_launch_grant {
+        cmd.env(LAUNCH_GRANT_STDIN_FLAG, "1");
+    } else {
+        cmd.env_remove(LAUNCH_GRANT_STDIN_FLAG);
+    }
+    if delivering() || with_launch_grant {
+        cmd.stdin(Stdio::piped());
     }
 }
 
@@ -245,14 +291,40 @@ pub fn configure(cmd: &mut Command) {
 /// because a proxy without its keys would forward the agent's own credential
 /// header unchanged.
 pub fn deliver(child: &mut Child) -> std::io::Result<()> {
-    let Some(raw) = provider_keys() else {
+    deliver_with(child, None)
+}
+
+/// [`deliver`] with the launch's grant: its line first, then the
+/// provider keys (when configured), then EOF.
+///
+/// A no-op when there is neither. The credential line and the keys together stay
+/// below the pipe buffer, so the write cannot block on a reader that has not
+/// started.
+///
+/// # Errors
+///
+/// As [`deliver`], plus a credential that cannot be framed. The caller must
+/// terminate the child and refuse the launch: a governed proxy without its
+/// credential would send every check unattributed.
+pub fn deliver_with(child: &mut Child, credential: Option<&LaunchGrant>) -> std::io::Result<()> {
+    let keys = provider_keys();
+    if keys.is_none() && credential.is_none() {
         return Ok(());
-    };
+    }
     let mut stdin = child
         .stdin
         .take()
         .ok_or_else(|| std::io::Error::other("proxy stdin was not piped"))?;
-    stdin.write_all(raw.as_bytes())?;
+    if let Some(credential) = credential {
+        let line = credential
+            .encode_line()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        stdin.write_all(&line)?;
+        stdin.write_all(b"\n")?;
+    }
+    if let Some(raw) = keys {
+        stdin.write_all(raw.as_bytes())?;
+    }
     stdin.flush()
     // `stdin` drops here, which closes the pipe and delivers EOF.
 }
@@ -333,6 +405,69 @@ mod tests {
             "the child's environment held the value: {text}"
         );
         assert_eq!(lines.next(), Some("api.anthropic.com=sk-ant-QA6395-synth"), "{text}");
+    }
+
+    fn launch_grant() -> LaunchGrant {
+        LaunchGrant::new(
+            String::new(),
+            "team-a".into(),
+            "did:key:agent-a".into(),
+            "tok-QA6261-synth".into(),
+        )
+    }
+
+    #[test]
+    fn the_launch_grant_reaches_a_child_on_stdin_and_not_in_its_command_or_environment() {
+        let _lock = crate::test_support::env_guard();
+        std::env::remove_var(VAR);
+        let cred = launch_grant();
+        let mut cmd = Command::new("sh");
+        // The quotes keep the marker out of the command line the assertion below inspects.
+        cmd.args(["-c", "env | grep -c QA''6261; cat"]).stdout(Stdio::piped());
+        configure_with(&mut cmd, true);
+        let envs = envs(&cmd);
+        assert!(
+            envs.contains(&(LAUNCH_GRANT_STDIN_FLAG.to_string(), Some("1".into()))),
+            "{envs:?}"
+        );
+        assert!(
+            !format!("{envs:?}{cmd:?}").contains("QA6261"),
+            "the command carries the token"
+        );
+        let mut child = cmd.spawn().expect("sh must spawn");
+        deliver_with(&mut child, Some(&cred)).expect("write to a live child");
+        let out = child.wait_with_output().expect("wait");
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        assert_eq!(
+            lines.next(),
+            Some("0"),
+            "the child's environment held the token: {text}"
+        );
+        let line = lines.next().expect("the credential line");
+        let back = LaunchGrant::parse_line(line).expect("the proxy-side parser reads what is delivered");
+        assert_eq!(back.grant(), "tok-QA6261-synth");
+        assert_eq!(back.proto_agent_id().agent_id, "did:key:agent-a");
+    }
+
+    #[test]
+    fn a_proxy_that_predates_credential_delivery_is_refused_before_anything_is_spawned() {
+        let _lock = crate::test_support::env_guard();
+        std::env::remove_var(VAR);
+        let dir = tempfile::tempdir().unwrap();
+        let keys_only = stub_proxy(dir.path(), "echo provider-keys-stdin");
+        // `stub_proxy` writes one fixed file name per directory.
+        let other_dir = tempfile::tempdir().unwrap();
+        let both = stub_proxy(other_dir.path(), "echo provider-keys-stdin; echo launch-grant-stdin");
+        assert!(
+            preflight_with(&keys_only, true).is_err(),
+            "an old proxy would ignore the token"
+        );
+        assert!(preflight_with(&both, true).is_ok(), "positive control");
+        assert!(
+            preflight_with(&keys_only, false).is_ok(),
+            "no credential, nothing to refuse"
+        );
     }
 
     #[test]

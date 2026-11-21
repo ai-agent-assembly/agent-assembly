@@ -51,6 +51,7 @@ fn llm_request(trace_id: &str, span_id: &str) -> CheckActionRequest {
         span_id: span_id.into(),
         credential_token: String::new(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

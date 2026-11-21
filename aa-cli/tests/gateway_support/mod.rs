@@ -206,6 +206,13 @@ impl AgentLifecycleService for Recording {
         self.inner.deregister(req).await
     }
 
+    async fn mint_launch_grant(
+        &self,
+        req: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
+    ) -> Result<Response<aa_proto::assembly::agent::v1::MintLaunchGrantResponse>, Status> {
+        self.inner.mint_launch_grant(req).await
+    }
+
     type ControlStreamStream = <AgentLifecycleServiceImpl as AgentLifecycleService>::ControlStreamStream;
 
     async fn control_stream(

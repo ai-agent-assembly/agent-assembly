@@ -29,6 +29,14 @@ service AgentLifecycleService {
   // Deregister is called on clean agent shutdown to remove it from the registry.
   rpc Deregister(DeregisterRequest) returns (DeregisterResponse);
 
+  // MintLaunchGrant issues a short-lived, launch-bound grant for the calling
+  // agent (AAASM-6261). Authenticated by the agent's registration
+  // `credential_token`, exactly like Heartbeat and Deregister. The grant is
+  // valid only on PolicyService CheckAction/BatchCheck (`launch_grant`), ends at
+  // its expiry or when the agent deregisters, and is not recoverable after a
+  // gateway restart.
+  rpc MintLaunchGrant(MintLaunchGrantRequest) returns (MintLaunchGrantResponse);
+
   // ControlStream is a server-streaming RPC: the runtime opens a persistent
   // connection and receives gateway-initiated commands (suspend, resume, kill, etc.).
   rpc ControlStream(ControlStreamRequest) returns (stream ControlCommand);
@@ -234,4 +242,24 @@ message PolicyUpdateCommand {
 message KillCommand {
   // Mandatory reason; written to the immutable audit log.
   string reason = 1;
+}
+
+message MintLaunchGrantRequest {
+  // The registered agent the grant is for.
+  assembly.common.v1.AgentId agent_id         = 1;
+  // The agent's registration credential token (authenticates this call only).
+  string                     credential_token = 2;
+  // Caller-chosen identifier of the launch the grant is bound to (recorded for
+  // evidence; the grant is also bound to `agent_id`).
+  string                     launch_id        = 3;
+  // Requested lifetime in seconds. The gateway clamps it to its own maximum and
+  // minimum; 0 asks for the default.
+  int64                      ttl_sec          = 4;
+}
+
+message MintLaunchGrantResponse {
+  // Opaque grant to carry in `CheckActionRequest.launch_grant`. Treat as a secret.
+  string launch_grant        = 1;
+  // Absolute expiry, Unix epoch milliseconds, as the gateway enforces it.
+  int64  expires_at_unix_ms  = 2;
 }

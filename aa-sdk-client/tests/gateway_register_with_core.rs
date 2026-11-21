@@ -80,6 +80,13 @@ impl AgentLifecycleService for MockLifecycle {
         Err(Status::unimplemented("not used in this test"))
     }
 
+    async fn mint_launch_grant(
+        &self,
+        _: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
+    ) -> Result<Response<aa_proto::assembly::agent::v1::MintLaunchGrantResponse>, Status> {
+        Err(Status::unimplemented("not used in this test"))
+    }
+
     type ControlStreamStream = ReceiverStream<Result<ControlCommand, Status>>;
 
     async fn control_stream(
@@ -238,6 +245,13 @@ impl AgentLifecycleService for RecordingLifecycle {
     }
 
     async fn deregister(&self, _: Request<DeregisterRequest>) -> Result<Response<DeregisterResponse>, Status> {
+        Err(Status::unimplemented("not used in this test"))
+    }
+
+    async fn mint_launch_grant(
+        &self,
+        _: Request<aa_proto::assembly::agent::v1::MintLaunchGrantRequest>,
+    ) -> Result<Response<aa_proto::assembly::agent::v1::MintLaunchGrantResponse>, Status> {
         Err(Status::unimplemented("not used in this test"))
     }
 

@@ -111,6 +111,7 @@ async fn tool_call_with_credential_over_live_grpc_fires_secret_alert() {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     };
 
     let response = client

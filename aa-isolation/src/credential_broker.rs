@@ -79,10 +79,11 @@
 //!   returning-to-arbitrary-callers surface this ticket's own acceptance
 //!   criteria forbid.
 //! * Per-request/per-connection proxy identity attribution.
-//!   `aa-proxy/src/network_enforce.rs` still evaluates every decision under the
-//!   synthetic `PROXY_AGENT_ID` at Global policy tier (already named as a
-//!   residual by [`crate::egress`]'s own module documentation). Authority here
-//!   is launch-level only: this run's own [`crate::spec::IdentityRef`] and lease
+//!   `aa-proxy/src/network_enforce.rs` sends the launch's registered triple and a
+//!   gateway-minted launch grant with each network decision, binding it to the
+//!   registered agent (proxy identity, not connection origin; named as a residual
+//!   by [`crate::egress`]'s own module documentation). Authority here is
+//!   launch-level only: this run's own [`crate::spec::IdentityRef`] and lease
 //!   subject.
 //! * Quantitative use/byte-ceiling *enforcement*. [`CredentialCeilings`] states
 //!   a ceiling and [`check_ceilings`] refuses when one is stated but the broker

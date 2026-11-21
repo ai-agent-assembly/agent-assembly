@@ -1010,6 +1010,7 @@ mod tests {
             action_type: ActionType::FileOperation as i32,
             context: Default::default(),
             caller_agent_id: None,
+            launch_grant: String::new(),
         };
         let resp = CheckActionResponse {
             decision: Decision::Deny as i32,
@@ -1058,6 +1059,7 @@ mod tests {
             action_type: ActionType::ToolCall as i32,
             context: Default::default(),
             caller_agent_id: None,
+            launch_grant: String::new(),
         };
         let resp = CheckActionResponse {
             decision: Decision::Deny as i32,

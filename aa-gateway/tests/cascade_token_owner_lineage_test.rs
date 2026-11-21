@@ -124,6 +124,7 @@ fn request(proto_id: &ProtoAgentId, token: &str, tool: &str) -> CheckActionReque
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

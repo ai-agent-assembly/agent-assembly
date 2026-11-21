@@ -67,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if cli.capabilities {
         println!("{}", aa_proxy::credentials::PROVIDER_KEYS_STDIN_CAPABILITY);
+        println!("{}", aa_proxy::credentials::LAUNCH_GRANT_STDIN_CAPABILITY);
         return Ok(());
     }
 

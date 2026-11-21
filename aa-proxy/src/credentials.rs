@@ -214,6 +214,203 @@ pub const PROVIDER_KEYS_STDIN_FLAG: &str = "AA_PROXY_PROVIDER_KEYS_STDIN";
 /// keys from stdin ([`PROVIDER_KEYS_STDIN_FLAG`]).
 pub const PROVIDER_KEYS_STDIN_CAPABILITY: &str = "provider-keys-stdin";
 
+/// Environment flag (not a secret) saying the first stdin line is the launch's
+/// grant ([`LaunchGrant`], AAASM-6261).
+pub const LAUNCH_GRANT_STDIN_FLAG: &str = "AA_PROXY_LAUNCH_GRANT_STDIN";
+
+/// What `aa-proxy --capabilities` prints when this build can consume a launch
+/// grant from stdin ([`LAUNCH_GRANT_STDIN_FLAG`]).
+///
+/// A separate token from [`PROVIDER_KEYS_STDIN_CAPABILITY`] so a proxy that
+/// predates the grant is refused by `aasm` instead of silently ignoring it and
+/// sending every check unattributed.
+pub const LAUNCH_GRANT_STDIN_CAPABILITY: &str = "launch-grant-stdin";
+
+/// Line tag that opens the launch-grant line on stdin.
+const LAUNCH_GRANT_TAG: &str = "launch-grant";
+
+/// Largest launch-grant line. Together with [`MAX_PROVIDER_KEYS_BYTES`] it stays
+/// below the smallest anonymous-pipe buffer.
+pub const MAX_LAUNCH_GRANT_LINE_BYTES: usize = 1024;
+
+/// A launch grant and the registered `{org, team, agent}` triple it is bound to.
+///
+/// The grant is minted by the gateway for one registered agent and is valid only
+/// on `PolicyService` CheckAction/BatchCheck (`CheckActionRequest.launch_grant`).
+/// It is **not** the agent's registration `credential_token`: that token never
+/// reaches this process, and a grant authenticates to none of the services the
+/// token does.
+///
+/// What holding a grant proves, and nothing more: the holder was handed a grant
+/// the gateway minted for that agent. That is *proxy identity* (this proxy is
+/// bound to agent X). It is not *connection origin*: any process of the same user
+/// that can reach this proxy's loopback port, or that obtains the grant, is
+/// indistinguishable from the agent's own process until the grant expires.
+///
+/// Like [`Secret`], it has no `Display` and a redacting `Debug`, and the grant is
+/// zeroized on drop.
+pub struct LaunchGrant {
+    org_id: String,
+    team_id: String,
+    agent_id: String,
+    grant: Secret,
+}
+
+impl LaunchGrant {
+    /// Wrap a registered triple and its grant. `agent_id` and `grant` must be
+    /// non-empty for the credential to be usable ([`Self::parse_line`] enforces
+    /// that on the receiving side).
+    pub fn new(org_id: String, team_id: String, agent_id: String, grant: String) -> Self {
+        Self {
+            org_id,
+            team_id,
+            agent_id,
+            grant: Secret::new(grant.into_bytes()),
+        }
+    }
+
+    /// The registered triple, exactly as the gateway keys it.
+    pub fn proto_agent_id(&self) -> aa_proto::assembly::common::v1::AgentId {
+        aa_proto::assembly::common::v1::AgentId {
+            org_id: self.org_id.clone(),
+            team_id: self.team_id.clone(),
+            agent_id: self.agent_id.clone(),
+        }
+    }
+
+    /// The grant as the owned string a `CheckActionRequest` field requires.
+    /// The request is the one place the grant leaves this type.
+    pub fn grant(&self) -> String {
+        String::from_utf8_lossy(self.grant.expose()).into_owned()
+    }
+
+    /// The stdin line (without its newline) that [`Self::parse_line`] reads.
+    ///
+    /// Zeroizing, because it holds the token. Fields are tab-separated; a field
+    /// that contains a tab or a line break cannot be framed and is refused.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderKeysError::BadLaunchGrant`] for an unframeable field, an
+    /// empty `agent_id` or token, or a line over
+    /// [`MAX_LAUNCH_GRANT_LINE_BYTES`].
+    pub fn encode_line(&self) -> Result<zeroize::Zeroizing<Vec<u8>>, ProviderKeysError> {
+        let token = self.grant();
+        let framed = |s: &str| !s.contains(['\t', '\n', '\r']);
+        if self.agent_id.is_empty()
+            || token.is_empty()
+            || ![&self.org_id, &self.team_id, &self.agent_id, &token]
+                .into_iter()
+                .all(|s| framed(s))
+        {
+            return Err(ProviderKeysError::BadLaunchGrant);
+        }
+        let line = zeroize::Zeroizing::new(
+            format!(
+                "{LAUNCH_GRANT_TAG}\t{}\t{}\t{}\t{token}",
+                self.org_id, self.team_id, self.agent_id
+            )
+            .into_bytes(),
+        );
+        if line.len() > MAX_LAUNCH_GRANT_LINE_BYTES {
+            return Err(ProviderKeysError::BadLaunchGrant);
+        }
+        Ok(line)
+    }
+
+    /// Parse the line written by [`Self::encode_line`].
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderKeysError::BadLaunchGrant`] when the line is not
+    /// `launch-grant<TAB>org<TAB>team<TAB>agent<TAB>grant` with a non-empty
+    /// agent and token. No input text is carried in the error.
+    pub fn parse_line(line: &str) -> Result<Self, ProviderKeysError> {
+        let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
+        match (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) {
+            (Some(LAUNCH_GRANT_TAG), Some(org), Some(team), Some(agent), Some(token), None)
+                if !agent.is_empty() && !token.is_empty() =>
+            {
+                Ok(Self::new(org.into(), team.into(), agent.into(), token.into()))
+            }
+            _ => Err(ProviderKeysError::BadLaunchGrant),
+        }
+    }
+}
+
+impl fmt::Debug for LaunchGrant {
+    /// Names the registered subject and redacts the token.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LaunchGrant({:?}, grant REDACTED)", self.agent_id)
+    }
+}
+
+/// What the proxy was handed at startup on stdin and in its environment.
+#[derive(Debug, Default)]
+pub struct StartupSecrets {
+    /// Provider keys, when delivered on stdin ([`CredentialStore::load_startup`]).
+    pub provider_keys: Option<CredentialStore>,
+    /// The launch's agent credential, when delivered on stdin. `Some` is what
+    /// makes this a governed launch: every gateway check carries it and an
+    /// answer that is not bound to it is refused.
+    pub launch_grant: Option<LaunchGrant>,
+}
+
+impl StartupSecrets {
+    /// Load both from the process's own stdin and environment.
+    ///
+    /// # Errors
+    ///
+    /// A [`ProviderKeysError`]; the proxy must refuse to start on it.
+    pub fn load() -> Result<Self, ProviderKeysError> {
+        let env_present = std::env::var("AA_PROXY_PROVIDER_KEYS").is_ok_and(|v| !v.is_empty());
+        let keys_selected = std::env::var(PROVIDER_KEYS_STDIN_FLAG).is_ok_and(|v| v == "1");
+        let credential_selected = std::env::var(LAUNCH_GRANT_STDIN_FLAG).is_ok_and(|v| v == "1");
+        Self::load_with(credential_selected, keys_selected, env_present, std::io::stdin().lock())
+    }
+
+    /// [`Self::load`] with its inputs explicit.
+    fn load_with(
+        credential_selected: bool,
+        keys_selected: bool,
+        env_present: bool,
+        mut stdin: impl std::io::BufRead,
+    ) -> Result<Self, ProviderKeysError> {
+        use std::io::{BufRead, Read};
+        let launch_grant = if credential_selected {
+            let mut line = String::new();
+            stdin
+                .by_ref()
+                .take(MAX_LAUNCH_GRANT_LINE_BYTES as u64 + 2)
+                .read_line(&mut line)
+                .map_err(|_| ProviderKeysError::BadLaunchGrant)?;
+            // A line cut short by the size bound has no terminator and could still
+            // split into five fields, so an unterminated line is refused outright.
+            let parsed = if line.ends_with('\n') {
+                LaunchGrant::parse_line(&line)
+            } else {
+                Err(ProviderKeysError::BadLaunchGrant)
+            };
+            line.zeroize();
+            Some(parsed?)
+        } else {
+            None
+        };
+        let provider_keys = CredentialStore::load_with(keys_selected, env_present, stdin)?;
+        Ok(Self {
+            provider_keys,
+            launch_grant,
+        })
+    }
+}
+
 /// Largest provider-key payload accepted on stdin. Kept below the smallest
 /// anonymous-pipe buffer (16 KiB on macOS) so the supervisor's single write can
 /// never block waiting for a reader that has not started yet.
@@ -241,6 +438,9 @@ pub enum ProviderKeysError {
         /// Position of the offending entry.
         index: usize,
     },
+    /// The launch-grant line on stdin is missing or not
+    /// `launch-grant<TAB>org<TAB>team<TAB>agent<TAB>grant` (AAASM-6261).
+    BadLaunchGrant,
 }
 
 impl fmt::Display for ProviderKeysError {
@@ -252,6 +452,7 @@ impl fmt::Display for ProviderKeysError {
             Self::TooLarge => write!(f, "provider keys exceed {MAX_PROVIDER_KEYS_BYTES} bytes"),
             Self::NotUtf8 => write!(f, "provider keys are not valid UTF-8"),
             Self::Malformed { index } => write!(f, "provider key entry {index} is not host=key"),
+            Self::BadLaunchGrant => write!(f, "the agent credential on stdin is missing or malformed"),
         }
     }
 }
@@ -1031,5 +1232,87 @@ mod tests {
             CredentialStore::load_with(false, false, Untouchable),
             Ok(None)
         ));
+    }
+
+    // ── AAASM-6261: the launch's agent credential on stdin ──────────────────────
+
+    fn launch_grant() -> LaunchGrant {
+        LaunchGrant::new(
+            String::new(),
+            "team-a".into(),
+            "did:key:agent-a".into(),
+            "tok-QA6261-synth".into(),
+        )
+    }
+
+    #[test]
+    fn a_launch_grant_round_trips_and_never_prints_its_grant() {
+        let cred = launch_grant();
+        let line = cred.encode_line().expect("frameable");
+        let back = LaunchGrant::parse_line(std::str::from_utf8(&line).unwrap()).expect("parses");
+        assert_eq!(back.proto_agent_id(), cred.proto_agent_id());
+        assert_eq!(back.grant(), "tok-QA6261-synth");
+        assert!(!format!("{cred:?}").contains("QA6261"), "Debug leaked the token");
+    }
+
+    #[test]
+    fn a_credential_that_cannot_be_framed_or_is_incomplete_is_refused() {
+        let framed = |agent: &str, token: &str| {
+            LaunchGrant::new(String::new(), String::new(), agent.into(), token.into()).encode_line()
+        };
+        assert!(framed("did:key:ok", "tok").is_ok(), "positive control");
+        assert!(framed("", "tok").is_err(), "no agent");
+        assert!(framed("did:key:ok", "").is_err(), "no token");
+        assert!(framed("did:key:ok", "tok\nGET /").is_err(), "line break");
+        assert!(framed("did:key:\tok", "tok").is_err(), "tab");
+        for bad in [
+            "",
+            "launch-grant",
+            "launch-grant\t\t\t\tx",
+            "launch-grant\t\t\tdid\t",
+            "something-else\t\t\tdid\ttok",
+            "launch-grant\t\t\tdid\ttok\textra",
+        ] {
+            assert_eq!(
+                LaunchGrant::parse_line(bad).err(),
+                Some(ProviderKeysError::BadLaunchGrant),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_reads_the_credential_line_then_the_provider_keys() {
+        let cred = launch_grant();
+        let mut payload = cred.encode_line().unwrap().to_vec();
+        payload.extend_from_slice(b"\napi.anthropic.com=sk-ant-QA6261-synth");
+        let secrets = StartupSecrets::load_with(true, true, false, &payload[..]).expect("loads");
+        assert_eq!(secrets.launch_grant.expect("launch grant").grant(), "tok-QA6261-synth");
+        assert_eq!(secrets.provider_keys.expect("keys").len(), 1);
+
+        let only_credential = [cred.encode_line().unwrap().to_vec(), b"\n".to_vec()].concat();
+        let unterminated = cred.encode_line().unwrap().to_vec();
+        assert!(
+            StartupSecrets::load_with(true, false, false, &unterminated[..]).is_err(),
+            "a credential line with no terminator may have been truncated"
+        );
+        let secrets = StartupSecrets::load_with(true, false, false, &only_credential[..]).expect("loads");
+        assert!(secrets.launch_grant.is_some() && secrets.provider_keys.is_none());
+
+        let nothing = StartupSecrets::load_with(false, false, false, &b""[..]).expect("loads");
+        assert!(nothing.launch_grant.is_none() && nothing.provider_keys.is_none());
+    }
+
+    #[test]
+    fn a_selected_but_missing_or_malformed_credential_refuses_the_start() {
+        for stdin in [&b""[..], &b"not a credential\n"[..]] {
+            assert!(
+                matches!(
+                    StartupSecrets::load_with(true, false, false, stdin).err(),
+                    Some(ProviderKeysError::BadLaunchGrant)
+                ),
+                "a proxy told to expect a credential must not start without one"
+            );
+        }
     }
 }

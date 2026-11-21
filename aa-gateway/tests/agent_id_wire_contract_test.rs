@@ -43,7 +43,8 @@ use aa_proto::assembly::common::v1::{
 use aa_proto::assembly::policy::v1::policy_service_client::PolicyServiceClient;
 use aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer;
 use aa_proto::assembly::policy::v1::{
-    action_context::Action, ActionContext, BatchCheckRequest, CheckActionRequest, CheckActionResponse, ToolCallContext,
+    action_context::Action, ActionContext, BatchCheckRequest, CheckActionRequest, CheckActionResponse,
+    NetworkCallContext, ToolCallContext,
 };
 use chrono::Utc;
 use tokio::net::TcpListener;
@@ -162,6 +163,7 @@ fn bash_request(agent: Option<ProtoAgentId>, credential_token: &str, trace: &str
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -584,4 +586,51 @@ async fn every_agent_id_shape_is_refused_when_the_token_owns_a_registered_agent(
             );
         }
     }
+}
+
+// ── Network calls from a governed launch's proxy (AAASM-6261 / J83 AC2) ───────
+
+/// The `NetworkCall` request `aa-proxy` sends: a blank `agent_id` and no token,
+/// whatever label the launch carries. A label is not sent because it is an
+/// assertion, and the gateway must not attribute a decision to it.
+fn proxy_network_request(host: &str) -> CheckActionRequest {
+    CheckActionRequest {
+        agent_id: Some(ProtoAgentId::default()),
+        credential_token: String::new(),
+        trace_id: String::new(),
+        span_id: String::new(),
+        action_type: ActionType::NetworkCall as i32,
+        context: Some(ActionContext {
+            action: Some(Action::NetworkCall(NetworkCallContext {
+                host: host.into(),
+                port: 443,
+                protocol: "https".into(),
+                in_allowlist: false,
+            })),
+        }),
+        caller_agent_id: None,
+        launch_grant: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_network_call_from_the_proxy_is_explicitly_unattributed_and_still_policy_evaluated() {
+    // The decision still follows policy (paired allow and deny), and the audit
+    // entry says nobody was named: no label, no synthetic `aa-proxy`.
+    const POLICY: &str = "version: \"1\"\nnetwork:\n  allowlist:\n    - allowed.example\n";
+    let (addr, _registry, mut audit_rx) = start_server(POLICY).await;
+
+    let allowed = check(addr, proxy_network_request("allowed.example")).await;
+    assert_eq!(allowed.decision, Decision::Allow as i32, "reason: {}", allowed.reason);
+    assert_eq!(allowed.agent_identity_assurance, ProtoAssurance::Unattributed as i32);
+    let p = payload(&next_entry(&mut audit_rx).await);
+    assert!(p["agent_id_claimed"].is_null(), "{p}");
+    assert_eq!(p["agent_identity_assurance"], "unattributed");
+
+    let denied = check(addr, proxy_network_request("denied.example")).await;
+    assert_eq!(denied.decision, Decision::Deny as i32);
+    assert_eq!(denied.agent_identity_assurance, ProtoAssurance::Unattributed as i32);
+    let p = payload(&next_entry(&mut audit_rx).await);
+    assert!(p["agent_id_claimed"].is_null(), "{p}");
+    assert_eq!(p["agent_identity_assurance"], "unattributed");
 }

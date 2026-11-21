@@ -84,6 +84,7 @@ fn process_exec_request(command: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -103,6 +104,7 @@ fn tool_call_request(args: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

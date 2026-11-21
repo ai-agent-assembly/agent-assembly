@@ -76,6 +76,27 @@ message CheckActionRequest {
   //
   // Added under AAASM-1944 (F116 ST-X — Zero-trust A2A).
   assembly.common.v1.AgentId    caller_agent_id  = 7;
+  // Launch grant (AAASM-6261): a short-lived, launch-bound, revocable credential
+  // minted by `AgentLifecycleService.MintLaunchGrant` for ONE registered agent, so
+  // a launch's dedicated `aa-proxy` can have its checks bound to that agent
+  // WITHOUT holding the agent's general `credential_token`.
+  //
+  // It is accepted only here (CheckAction and BatchCheck) and is never a
+  // `credential_token`: the approval, audit, topology and secrets services, and
+  // Heartbeat/Deregister/ControlStream, resolve tokens through a separate index
+  // that does not contain grants, so a grant authenticates to none of them.
+  //
+  // Semantics, in order: empty -> no grant, the request is evaluated as before.
+  // Non-empty together with `credential_token` -> refused (ambiguous). Non-empty
+  // and unknown, expired, revoked (the agent deregistered) or bound to a
+  // different agent than `agent_id` -> refused as an identity-verification
+  // failure, never evaluated as an asserted claim. Valid and bound to `agent_id`
+  // -> the check is evaluated for that agent with assurance BOUND.
+  //
+  // BOUND here means the holder presented a grant the gateway minted for that
+  // agent. It does not prove which process is holding it: any process of the
+  // same user that obtains the grant can use it until it expires.
+  string                        launch_grant     = 8;
 }
 
 // ActionContext carries type-specific details for the action under evaluation.
