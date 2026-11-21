@@ -1250,8 +1250,15 @@ fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io:
                     }
                     // A datagram socket has no end-of-file, so an empty datagram is not a close: any
                     // holder of the channel can send one, and treating it as one would let it silence
-                    // the hop's channel for every sibling and descendant. The loop ends on `stop`.
-                    Ok((0, None)) => std::thread::sleep(Duration::from_millis(20)),
+                    // the hop's channel for every sibling and descendant. Only a kernel hang-up (every
+                    // descendant end closed) ends the loop early; otherwise it ends on `stop`. No sleep
+                    // here: the 200 ms receive timeout already bounds an idle loop, and a pause per
+                    // datagram would let a flood of empty ones delay the real requests behind them.
+                    Ok((0, None)) => {
+                        if hung_up(server.as_raw_fd()) {
+                            break;
+                        }
+                    }
                     Ok(_) => {}
                     Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
                     Err(_) => break,
