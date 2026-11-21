@@ -87,6 +87,27 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
     assert!(addr.ip().is_loopback());
 
     let visible = visible_launch_inputs(child.id());
+    // The proxy marks itself non-dumpable (`hardening::harden_process`), so on
+    // Linux `/proc/<pid>/environ` is unreadable for it by design and cannot be
+    // the control. The control is a dumpable witness given the same variable:
+    // it proves the probe reads an environment, so the proxy's lack of the
+    // grant is not just a blind probe.
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut witness = Command::new("sleep")
+            .arg("30")
+            .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
+            .spawn()
+            .expect("spawn witness");
+        let seen = visible_launch_inputs(witness.id());
+        let _ = witness.kill();
+        let _ = witness.wait();
+        assert!(
+            seen.contains("AA_PROXY_LAUNCH_GRANT_STDIN"),
+            "control: the probe can read a dumpable process's environment: {seen:?}"
+        );
+    }
+    #[cfg(target_os = "macos")]
     assert!(
         visible.contains("AA_PROXY_LAUNCH_GRANT_STDIN"),
         "control: the probe can see this process's environment at all: {visible:?}"
