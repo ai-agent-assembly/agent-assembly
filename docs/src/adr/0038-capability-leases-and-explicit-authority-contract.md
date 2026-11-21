@@ -1804,14 +1804,17 @@ The ledger issuer's identity string, the in-process `spec.identity`, what an `ap
 operation stays behind the §27 contract (the supervisor holds authority, the child presents nothing, nothing is
 serialized) and the B3 evidence on a real Linux kernel with Landlock ABI 3 or newer. This amendment activates nothing.
 
-## Amendment (AAASM-6273, PROPOSED): rc.8 handoff for unmodified `aasm run` descendants without B3
+## Amendment (AAASM-6273, ACCEPTED 2026-11-21): rc.8 handoff for unmodified `aasm run` descendants without B3
 
-**Status: PROPOSED, NOT ACCEPTED.** This section was drafted by an AI coding agent for founder
-review. It is not a founder-authored decision record and nobody has approved it. Its only basis is
-an instruction the user gave the agent in a chat session on 2026-11-16 to implement the J82 /
-GT-F2 handoff rather than defer it; a chat instruction is not a recorded ADR decision, and this
-text must not be read as one. Until the founder accepts or rejects it, the "implementation gated"
-amendment above (§27-§30) stays the recorded position and this section is a proposal against it.
+**Status: ACCEPTED (narrower variant), 2026-11-21.** The founder accepted the option below in an
+interactive decision request in the implementing session on 2026-11-21, choosing "Accept the
+narrower variant" over accepting it exactly as drafted or rejecting it. The section was drafted by
+an AI coding agent; the acceptance is the founder's, recorded here from that session. "Narrower"
+means: the four departures listed under "The option proposed" are accepted only with the limits
+below stated as limits and never as passes; any containment or adversarial-agent claim still
+requires the B3 gate (§27-§30); and release material may say no more than "implemented for
+unmodified `aasm run` descendants, unconfined, with the limits above". The "implementation
+gated" amendment above (§27-§30) remains binding for everything this section does not depart from.
 
 ### What the code on the implementing branch does
 
@@ -1873,7 +1876,6 @@ accept explicitly:
 
 ### Decision requested
 
-Accept this option, reject it (the implementing branch is then reverted and §27-§30 remain
-binding), or accept a narrower variant. Until then no claim in release material may say J82 is
-delivered beyond "implemented for unmodified `aasm run` descendants, unconfined, with the limits
-above, pending ADR acceptance".
+Decided: the narrower variant was accepted (see Status). No claim in release material may say J82
+is delivered beyond "implemented for unmodified `aasm run` descendants, unconfined, with the
+limits above".
