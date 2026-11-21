@@ -1078,7 +1078,11 @@ fn read_request(stream: &mut UnixStream, body: &mut Vec<u8>) -> std::io::Result<
         if std::time::Instant::now() >= deadline {
             return Err(std::io::ErrorKind::TimedOut.into());
         }
-        let n = stream.read(&mut chunk)?;
+        let n = match stream.read(&mut chunk) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
         if n == 0 {
             return Ok(());
         }
@@ -1088,6 +1092,24 @@ fn read_request(stream: &mut UnixStream, body: &mut Vec<u8>) -> std::io::Result<
             return Ok(());
         }
     }
+}
+
+/// Write `bytes` within [`IO_TIMEOUT`] in total. The per-write socket timeout alone resets on every
+/// partial write, so a peer that drains a byte at a time would hold the handler and its slot.
+fn write_all_within_deadline(stream: &mut UnixStream, mut bytes: &[u8]) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + IO_TIMEOUT;
+    while !bytes.is_empty() {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        match stream.write(bytes) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => bytes = &bytes[n..],
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
@@ -1192,7 +1214,7 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
         let fd = reply_fd.as_ref().map(AsRawFd::as_raw_fd);
         match sendmsg_fd(stream.as_raw_fd(), &bytes, fd) {
             Ok(sent) => {
-                let _ = stream.write_all(&bytes[sent.min(bytes.len())..]);
+                let _ = write_all_within_deadline(stream, &bytes[sent.min(bytes.len())..]);
             }
             Err(e) => {
                 #[cfg(test)]
@@ -1260,7 +1282,13 @@ fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io:
                         }
                     }
                     Ok(_) => {}
-                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                    // Also checked here: where a closed peer reads as a timeout rather than an empty
+                    // datagram, this is the only place the loop could notice every end is gone.
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {
+                        if hung_up(server.as_raw_fd()) {
+                            break;
+                        }
+                    }
                     Err(_) => break,
                 }
             }
