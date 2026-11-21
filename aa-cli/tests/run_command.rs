@@ -243,13 +243,15 @@ async fn run_command_refuses_to_launch_when_registration_is_impossible() {
     );
 }
 
-/// A claimed parent this build cannot trust-resolve stops the launch before
+/// A claimed parent nothing governed stands behind stops the launch before
 /// registration is even attempted (AAASM-6277, Owner Decision 1).
 ///
-/// `--root-agent` declares a parent, and until AAASM-6273 lands there is no
-/// cross-process mechanism to resolve that claim into a real, verified
-/// parent authority — so `aasm run` now refuses at plan time, naming
-/// `AncestryUnresolved`/AAASM-6273, rather than forwarding the claim to the
+/// `--root-agent` declares a parent. Since AAASM-6273 a parent authority is held
+/// only by the tree-root `aasm run` that launched this process and is resolved
+/// through a walk of this process's own ancestry; this test process has no such
+/// ancestor, so the claim has nothing behind it and `aasm run` refuses at plan
+/// time (the three-generation tree where it DOES resolve is
+/// `run_process_tree.rs`), rather than forwarding the claim to the
 /// gateway and letting it refuse as `InvalidArgument` (the pre-AAASM-6277
 /// behavior this test used to pin). A lineage claim nobody can verify must
 /// not be quietly dropped into a successful launch, because the resulting
@@ -279,8 +281,8 @@ async fn run_command_refuses_a_lineage_the_gateway_will_not_accept() {
 
     let text = err.to_string();
     assert!(
-        text.contains("claims a parent") && text.contains("AAASM-6273"),
-        "the refusal must name the ancestry claim and the tracking ticket: {text}"
+        text.contains("claims a parent") && text.contains("no governed `aasm run` ancestor"),
+        "the refusal must name the ancestry claim and say nothing governed stands behind it: {text}"
     );
     assert!(
         !launched.load(std::sync::atomic::Ordering::SeqCst),

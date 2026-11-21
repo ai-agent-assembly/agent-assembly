@@ -422,6 +422,7 @@ mod plan {
     use aa_runtime::lease::authored::authored_lease_from;
 
     use super::{run_registration, RegistrationHandle, RunArgs};
+    use crate::commands::run_supervisor;
 
     /// What a launch is pointed at.
     ///
@@ -1009,10 +1010,19 @@ mod plan {
         /// is claimed (`--root-agent`) and this build has no trusted,
         /// cross-process mechanism to resolve that claim into a real
         /// [`aa_isolation::ParentAuthority`] — which is every launch today.
-        /// Real resolution is tracked by **AAASM-6273**, a separate ticket;
-        /// see [`resolve_authority`]'s doc comment for why this is a
+        /// Resolution is by the tree-root supervisor (AAASM-6273): a launch with
+        /// a governed ancestor carries [`ResolvedAuthority::handoff`] instead, so
+        /// this stays [`Ancestry::UnresolvedParent`] only for a claim nothing
+        /// answers. See [`resolve_authority`]'s doc comment for why that is a
         /// deliberate fail-closed distinction rather than a residual.
         ancestry: Ancestry,
+        /// The tree-root supervisor of a governed `aasm run` ancestor, when this
+        /// process has one (AAASM-6273). `Some` means this launch is a descendant:
+        /// its leases are re-issued, and its lineage verified, by that supervisor at
+        /// bind time, and `ancestry` stays [`Ancestry::Root`] because a descendant
+        /// cannot hold a [`aa_isolation::ParentAuthority`] (ADR 0038 §27) — the
+        /// parent-aware gate ran in the root.
+        handoff: Option<run_supervisor::Governor>,
         /// This launch's egress contract (AAASM-6163, ADR 0038 amendment).
         /// Lowered in `resolve_isolation` from the effective policy's
         /// `egress:` node (AAASM-6278) —
@@ -1080,11 +1090,11 @@ mod plan {
     /// `IdentityPlan::root_agent().is_some()` — the same field
     /// `IdentityPlan::identity_ref` reads to populate `IdentityRef.lineage`,
     /// so the ancestry decision here and the lineage a spec actually carries
-    /// can never disagree. No cross-process mechanism exists today to
-    /// resolve a `--root-agent` claim into a real, supervisor-verified
-    /// [`aa_isolation::ParentAuthority`] (`AuthorityWitness` is not
-    /// serializable, and there is no IPC for it) — closing that gap for real
-    /// is **AAASM-6273**, a separate ticket this one does not touch.
+    /// can never disagree. A claim is resolved into a supervisor-verified
+    /// [`aa_isolation::ParentAuthority`] only by the tree-root `aasm run` that
+    /// launched this process (AAASM-6273, [`resolve_ancestry`]) —
+    /// `AuthorityWitness` is not serializable, so nothing else can. A claim with
+    /// no governed ancestor behind it stays unresolvable, and is refused.
     ///
     /// Reading an unresolved claim as [`Ancestry::Root`] — the design pass's
     /// original recommendation — would let a claimed-but-unverified lineage
@@ -1217,38 +1227,70 @@ mod plan {
             warn_on_uncovered_lease_domains(&lowering, &authored, args.isolation != super::IsolationIntent::None);
         }
 
+        let (ancestry, handoff) = resolve_ancestry(args, posture)?;
         Ok(ResolvedAuthority {
             lease_grants: authored,
-            ancestry: resolve_ancestry(args, posture)?,
+            ancestry,
+            handoff,
             egress,
             credential_contract: credential_contract_for(resolution),
             host_capability_contract: aa_isolation::host_capability::HostCapabilityContract::not_required(),
         })
     }
 
-    /// Owner Decision 1 (AAASM-6277): resolve this launch's position in an
-    /// execution ancestry, refusing at plan time when a parent is claimed
-    /// but cannot be trusted-resolved. See [`resolve_authority`]'s doc
-    /// comment for the full reasoning.
-    fn resolve_ancestry(args: &RunArgs, posture: PlanPosture) -> anyhow::Result<Ancestry> {
+    /// Resolve this launch's position in an execution ancestry.
+    ///
+    /// Every live launch walks its OS ancestry looking for a governed tree-root
+    /// `aasm run` (AAASM-6273), **with or without `--root-agent`**: a declaration is
+    /// a claim to be checked against what the kernel shows, never the thing that
+    /// switches the check on, or omitting it would shed the parent's ceiling.
+    ///
+    /// * a governed ancestor whose supervisor answers: this launch is a descendant
+    ///   and is admitted (or refused) by that supervisor at bind time;
+    /// * a governed ancestor that cannot be confirmed or reached: refused here,
+    ///   before registration;
+    /// * no governed ancestor and no `--root-agent`: a root launch, unchanged;
+    /// * no governed ancestor but a `--root-agent` claim: refused, as it was before
+    ///   the handoff existed (Owner Decision 1, AAASM-6277) — a lineage nobody can
+    ///   verify is not quietly dropped into a launch.
+    ///
+    /// A preview looks for nothing: it starts no process and asks no supervisor.
+    fn resolve_ancestry(
+        args: &RunArgs,
+        posture: PlanPosture,
+    ) -> anyhow::Result<(Ancestry, Option<run_supervisor::Governor>)> {
+        if posture == PlanPosture::Launch {
+            match run_supervisor::locate_governed_ancestor() {
+                Ok(Some(governor)) => return Ok((Ancestry::Root, Some(governor))),
+                Ok(None) => {}
+                Err(detail) => {
+                    posture.refuse(anyhow::anyhow!(
+                        "this launch has a governed `aasm run` ancestor and cannot reach it, so its place in \
+                         the delegation tree cannot be established: {detail}"
+                    ))?;
+                }
+            }
+        }
+
         let Some(claimed) = args.root_agent.clone() else {
-            return Ok(Ancestry::Root);
+            return Ok((Ancestry::Root, None));
         };
 
         let detail = format!(
-            "this launch claims a parent (`--root-agent {claimed}`), but this build has no trusted, \
-             cross-process mechanism to resolve that claim into a real, supervisor-verified parent \
-             authority — AuthorityWitness is not serializable across a process boundary, and there is no \
-             IPC for one. Reading this as a root launch would let a claimed-but-unverified ancestry run \
-             with full, unattenuated authority. Real cross-process ancestry resolution is tracked by \
-             AAASM-6273; until it lands, a launch that claims a parent is refused rather than silently \
-             treated as one with none."
+            "this launch claims a parent (`--root-agent {claimed}`), but no governed `aasm run` ancestor was \
+             found in this process's ancestry, so the claim cannot be resolved into a supervisor-verified \
+             parent authority. A parent authority is held only by the tree-root `aasm run` that launched this \
+             process and is never accepted from a flag or a file (AAASM-6273, ADR 0038 §27); a claim with \
+             nothing behind it is refused rather than treated as a root launch."
         );
         posture.refuse(anyhow::anyhow!("{detail}"))?;
-        Ok(Ancestry::UnresolvedParent {
-            claimed_ancestor: claimed,
-            detail,
-        })
+        Ok((
+            Ancestry::UnresolvedParent {
+                claimed_ancestor: claimed,
+                detail,
+            },
+            None,
+        ))
     }
 
     /// Non-fatal diagnostic for Owner Decision 2 (AAASM-6277): when this
@@ -1399,9 +1441,77 @@ mod plan {
         /// [`ResolvedAuthority`]'s own doc comment for why this collapsed
         /// five separate fields into one.
         authority: ResolvedAuthority,
+        /// The supervisor seed of a launch that is the root of a delegation tree
+        /// (AAASM-6273): its own gated authority and ledger, plus the ids of any of
+        /// its leases the ledger could not track. Set by `resolve_boundary` for a
+        /// launch that carries leases and has no governed ancestor; `execute` starts
+        /// the supervisor from it before the child is spawned.
+        tree_root: Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)>,
+        /// The channel this launch's own descendants must inherit (AAASM-6273), received from the
+        /// supervisor that admitted it. A tree root takes its channel from its supervisor instead.
+        child_channel: Option<std::os::fd::OwnedFd>,
+    }
+
+    /// Gate `spec` for this launch (AAASM-6273).
+    ///
+    /// A root launch is gated against its own claimed ancestry as before. A
+    /// descendant was already gated against its parent's authority, inside the tree
+    /// root that holds it; it cannot hold a `ParentAuthority` itself (ADR 0038 §27),
+    /// so what is checked here is that its re-issued leases cover what it requires.
+    /// The lineage is blanked for that check only: with it set and no resolved
+    /// parent, `authority_gate` correctly refuses `AncestryUnresolved`, and the
+    /// verified lineage the root assigned stays on the spec everything else reads.
+    fn gate_locally(
+        authority: &ResolvedAuthority,
+        spec: &ExecutionSpec,
+        now: std::time::SystemTime,
+    ) -> Result<aa_isolation::AuthorityWitness, aa_isolation::AuthorityRefusal> {
+        if authority.handoff.is_none() {
+            return authority_gate(spec, &authority.ancestry, now);
+        }
+        let mut identity = spec.identity().clone();
+        identity.lineage.clear();
+        authority_gate(&spec.clone().with_identity(identity), &Ancestry::Root, now)
+    }
+
+    /// Ask the governed ancestor's supervisor to admit this launch (AAASM-6273).
+    ///
+    /// `request` is what the launch asks for — the spec with its policy lowering
+    /// applied, whatever the backend, so a domain the policy requires is checked
+    /// even under `--isolation none`. `effective` is what is returned with its
+    /// leases and lineage replaced by the ones the supervisor issued and verified.
+    /// Without a governed ancestor this is the identity function.
+    fn admit_handoff(
+        authority: &ResolvedAuthority,
+        declared_root_agent: Option<&str>,
+        registration_did: &str,
+        request: &ExecutionSpec,
+        effective: ExecutionSpec,
+    ) -> Result<(ExecutionSpec, Option<std::os::fd::OwnedFd>), String> {
+        let Some(governor) = &authority.handoff else {
+            return Ok((effective, None));
+        };
+        let admission = run_supervisor::admit_via(governor, request, declared_root_agent, registration_did)
+            .map_err(|r| r.to_string())?;
+        let mut verified = effective.identity().clone();
+        verified.lineage = admission.lineage;
+        Ok((
+            effective.with_leases(admission.leases).with_identity(verified),
+            admission.channel,
+        ))
     }
 
     impl IsolationPlan {
+        /// Hand the admitted launch's descendant channel to the launch path (AAASM-6273).
+        pub(super) fn take_child_channel(&mut self) -> Option<std::os::fd::OwnedFd> {
+            self.child_channel.take()
+        }
+
+        /// Hand the supervisor seed to the launch path (AAASM-6273).
+        pub(super) fn take_tree_root(&mut self) -> Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)> {
+            self.tree_root.take()
+        }
+
         /// Whether a backend was selected, without taking it.
         pub(super) fn has_backend(&self) -> bool {
             self.backend.is_some()
@@ -1540,7 +1650,7 @@ mod plan {
             broker: &aa_isolation::CredentialBrokerReport,
             credentials: &CredentialPosture,
         ) -> Option<String> {
-            let witness = match authority_gate(spec, &self.authority.ancestry, now) {
+            let witness = match gate_locally(&self.authority, spec, now) {
                 Ok(witness) => witness,
                 Err(refusal) => return Some(refusal.to_string()),
             };
@@ -1694,6 +1804,76 @@ mod plan {
             // nine read `not_derived`, which is what they read before this
             // ticket and is far more benign than the truth.
             let Some(backend) = self.backend.as_mut() else {
+                // AAASM-6273: a descendant is admitted by its governed ancestor
+                // on EVERY arm, this one included — `--isolation none` establishes
+                // no boundary, but the parent's lease ceiling is a statement about
+                // authority, not about confinement. The request is lowered the
+                // way the backend arm lowers it, so a domain the policy requires
+                // is checked even though nothing here will enforce it.
+                let request = self
+                    .lowering
+                    .as_ref()
+                    .and_then(|lowering| lowering.apply_to(base.clone()).ok())
+                    .unwrap_or_else(|| base.clone());
+                let base = match admit_handoff(
+                    &self.authority,
+                    identity.root_agent(),
+                    &handle.registration_did,
+                    &request,
+                    base.clone(),
+                ) {
+                    Ok((admitted, channel)) => {
+                        self.child_channel = channel;
+                        admitted
+                    }
+                    Err(why) => {
+                        let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
+                        let report = self.with_selection(IsolationReport::no_boundary(
+                            session,
+                            identity_ref,
+                            TargetRef::of(&base),
+                            credentials,
+                            detail.clone(),
+                        ));
+                        return (Some(base), report, Boundary::Refused(detail));
+                    }
+                };
+                let identity_ref = base.identity().clone();
+                // AAASM-6273: a launch with leases and no governed ancestor is the
+                // root of a delegation tree. Its descendants are gated against a
+                // `ParentAuthority` only `authority_gate` can mint, so its leases
+                // are gated here even though this arm otherwise runs no gate. The
+                // view carries the leases and nothing else: this arm never
+                // enforced the launch's requirements and must not start refusing
+                // them now.
+                if self.authority.handoff.is_none() && !base.leases().is_empty() {
+                    let view =
+                        ExecutionSpec::new(base.program(), base.identity().clone()).with_leases(base.leases().to_vec());
+                    match authority_gate(&view, &Ancestry::Root, now) {
+                        Ok(witness) => {
+                            self.tree_root = Some(run_supervisor::TreeRoot::seed(
+                                &view,
+                                &witness,
+                                DEFAULT_LEASE_ISSUER,
+                                &handle.registration_did,
+                            ));
+                        }
+                        Err(refusal) => {
+                            let detail = format!(
+                                "the launch is refused: its own capability leases do not pass the authority gate, \
+                                 so no descendant could be gated against them: {refusal}"
+                            );
+                            let report = self.with_selection(IsolationReport::no_boundary(
+                                session,
+                                identity_ref,
+                                TargetRef::of(&base),
+                                credentials,
+                                detail.clone(),
+                            ));
+                            return (Some(base), report, Boundary::Refused(detail));
+                        }
+                    }
+                }
                 // AAASM-6262: `credential_brokerage` must be attached on this
                 // arm too, or `withheld_from_isolation_report` (what the
                 // unconfined spawn path reads to decide which ambient names
@@ -1829,7 +2009,38 @@ mod plan {
             // the top of this function — this is the one live call site, as
             // opposed to this crate's own tests, which inject a fixed
             // instant to keep expiry/not-yet-valid decisions deterministic.
-            let witness = match authority_gate(&spec, &self.authority.ancestry, now) {
+            // AAASM-6273: a descendant is admitted by its governed ancestor before
+            // this launch's own gate runs; what the gate then checks is the leases
+            // the ancestor issued, never the ones this launch asked for.
+            let spec = match admit_handoff(
+                &self.authority,
+                identity.root_agent(),
+                &handle.registration_did,
+                &spec,
+                spec.clone(),
+            ) {
+                Ok((admitted, channel)) => {
+                    self.child_channel = channel;
+                    admitted
+                }
+                Err(why) => {
+                    let detail = format!("the launch is refused by its governed ancestor's supervisor: {why}");
+                    let report = self.with_selection(
+                        IsolationReport::no_boundary(
+                            session,
+                            identity_ref,
+                            TargetRef::of(&spec),
+                            credentials,
+                            detail.clone(),
+                        )
+                        .with_policy(lowering),
+                    );
+                    return (Some(spec), report, Boundary::Refused(detail));
+                }
+            };
+            let identity_ref = spec.identity().clone();
+
+            let witness = match gate_locally(&self.authority, &spec, now) {
                 Ok(witness) => witness,
                 Err(refusal) => {
                     let authority = effective_authority_for_report(&spec);
@@ -1841,6 +2052,19 @@ mod plan {
                     return (Some(spec), report, Boundary::Refused(refusal.to_string()));
                 }
             };
+
+            // AAASM-6273: a launch with leases and no governed ancestor is the root of
+            // a delegation tree; the witness it just earned is what lets its
+            // supervisor hold a `ParentAuthority` for it. The supervisor itself is
+            // started by `execute`, after the whole boundary is known to launch.
+            if self.authority.handoff.is_none() && !spec.leases().is_empty() {
+                self.tree_root = Some(run_supervisor::TreeRoot::seed(
+                    &spec,
+                    &witness,
+                    DEFAULT_LEASE_ISSUER,
+                    &handle.registration_did,
+                ));
+            }
 
             // AAASM-6163/ADR 0038 amendment: the egress contract's gate runs
             // immediately after `authority_gate` — it needs the witness — and
@@ -2334,6 +2558,18 @@ mod plan {
             self.isolation.take_backend()
         }
 
+        /// Take the descendant channel a governed ancestor gave this launch.
+        pub(super) fn take_child_channel(&mut self) -> Option<std::os::fd::OwnedFd> {
+            self.isolation.take_child_channel()
+        }
+
+        /// Take the supervisor seed of a launch that roots a delegation tree.
+        pub(super) fn take_tree_root(
+            &mut self,
+        ) -> Option<(crate::commands::run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)> {
+            self.isolation.take_tree_root()
+        }
+
         /// The command this launch runs, how faithfully it can be described, and
         /// the adapter's own error when it had one.
         ///
@@ -2677,6 +2913,8 @@ mod plan {
                     selection: None,
                     resource_requirements: super::resource_requirements(args),
                     authority,
+                    tree_root: None,
+                    child_channel: None,
                 });
             }
 
@@ -2801,6 +3039,8 @@ mod plan {
                     selection: None,
                     resource_requirements: resource_requirements.clone(),
                     authority: authority.clone(),
+                    tree_root: None,
+                    child_channel: None,
                 });
             }
         };
@@ -2826,6 +3066,8 @@ mod plan {
                 selection: None,
                 resource_requirements: resource_requirements.clone(),
                 authority: authority.clone(),
+                tree_root: None,
+                child_channel: None,
             });
         }
 
@@ -2836,6 +3078,8 @@ mod plan {
             selection: None,
             resource_requirements: resource_requirements.clone(),
             authority,
+            tree_root: None,
+            child_channel: None,
         })
     }
 
@@ -2926,6 +3170,8 @@ mod plan {
                 selection: None,
                 resource_requirements: resource_requirements.clone(),
                 authority,
+                tree_root: None,
+                child_channel: None,
             });
         };
 
@@ -3008,6 +3254,8 @@ mod plan {
                         }),
                         resource_requirements: resource_requirements.clone(),
                         authority: authority.clone(),
+                        tree_root: None,
+                        child_channel: None,
                     });
                 }
                 Err(refusal) => {
@@ -3053,6 +3301,8 @@ mod plan {
             }),
             resource_requirements: resource_requirements.clone(),
             authority,
+            tree_root: None,
+            child_channel: None,
         })
     }
 
@@ -4971,8 +5221,8 @@ mod plan {
                 );
                 let text = err.to_string();
                 assert!(
-                    text.contains("claims a parent") && text.contains("AAASM-6273"),
-                    "the refusal must name the claim and the tracking ticket: {text}"
+                    text.contains("claims a parent") && text.contains("no governed `aasm run` ancestor"),
+                    "the refusal must name the claim and say nothing governed stands behind it: {text}"
                 );
             }
 
@@ -5523,8 +5773,8 @@ mod plan {
 
         /// Lineage is exercised only where a parent authority is not needed:
         /// an authority-less spec that claims an ancestor is refused by the
-        /// launch (`--root-agent` is refused at plan time, AAASM-6273), so the
-        /// lease scenario carries no ancestor.
+        /// launch (`--root-agent` with no governed tree-root ancestor is refused at
+        /// plan time, AAASM-6273), so the lease scenario carries no ancestor.
         fn requested_identity(root_agent: Option<&str>) -> aa_isolation::IdentityRef {
             let identity = aa_isolation::IdentityRef::root(AGENT).with_team(TEAM);
             match root_agent {
@@ -8045,6 +8295,32 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         anyhow::bail!("refusing to launch: {why}");
     }
 
+    // AAASM-6273: a launch that roots a delegation tree serves its descendants
+    // before the child exists, and refuses to launch when it cannot — a root that
+    // could not serve would leave every `aasm run` below it with no ceiling.
+    // Held until the function returns, so the socket and index entry outlive the
+    // child and go with it.
+    let mut tree_supervisor = match resolved.take_tree_root() {
+        Some((root, untracked)) => {
+            for lease in &untracked {
+                eprintln!(
+                    "warning: capability lease `{lease}` names an issuer other than the policy issuer, so a descendant \
+                     `aasm run` cannot inherit it and will be refused for that domain"
+                );
+            }
+            Some(
+                crate::commands::run_supervisor::TreeSupervisor::start(root)
+                    .map_err(|e| anyhow::anyhow!("refusing to launch: cannot serve this launch's descendants: {e}"))?,
+            )
+        }
+        None => None,
+    };
+    // The channel the child's own descendants inherit: the one the governing supervisor gave a
+    // descendant launch, or this root's own (AAASM-6273).
+    let child_channel = resolved
+        .take_child_channel()
+        .or_else(|| tree_supervisor.as_mut().and_then(|s| s.take_root_channel()));
+
     // A launch the adapter cannot build fails here, before any settings write
     // (AAASM-6297). Copilot is the load-bearing case: a VS Code extension has no
     // launch command, so `build_launch_command` always errors — applying managed
@@ -8132,7 +8408,7 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         (Some(guard), Some(plan)) => Some((guard, plan)),
         _ => None,
     };
-    let (cmd, child_env, boundary, isolation) = bound.into_execution_parts();
+    let (mut cmd, child_env, boundary, isolation) = bound.into_execution_parts();
     let code = match boundary {
         // The launch runs inside the negotiated boundary, or not at all. There
         // is no arm below that reaches `spawn_and_wait` after a boundary was
@@ -8150,6 +8426,30 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
         // reaches on this path, since no execution boundary here means no
         // execution receipt either.
         plan::Boundary::Absent => {
+            // AAASM-6273: hand the child its authority channel on a fixed descriptor, so a
+            // descendant that double-forks, scrubs its environment or outlives a deleted socket path
+            // still holds it. Not wired for a confined backend, which controls the child's fds.
+            if let Some(channel) = &child_channel {
+                use std::os::fd::AsRawFd;
+                use std::os::unix::process::CommandExt;
+                let raw = channel.as_raw_fd();
+                let target = crate::commands::run_supervisor::CHANNEL_FD;
+                // SAFETY: the closure runs between fork and exec and only calls async-signal-safe
+                // functions (dup2, fcntl).
+                unsafe {
+                    cmd.pre_exec(move || {
+                        if raw == target {
+                            let flags = libc::fcntl(raw, libc::F_GETFD);
+                            if flags < 0 || libc::fcntl(raw, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                                return Err(std::io::Error::last_os_error());
+                            }
+                        } else if libc::dup2(raw, target) < 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
             let withheld = withheld_from_isolation_report(&isolation);
             let code = spawn_and_wait(cmd, &child_env, args.no_proxy, &withheld).await?;
             if let Some((mut guard, plan)) = workspace_tx {

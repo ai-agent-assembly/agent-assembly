@@ -1803,3 +1803,77 @@ The ledger issuer's identity string, the in-process `spec.identity`, what an `ap
 `policy_rule` string means remain asserted, not authenticated; identity is owned by AAASM-5533. Cross-process
 operation stays behind the §27 contract (the supervisor holds authority, the child presents nothing, nothing is
 serialized) and the B3 evidence on a real Linux kernel with Landlock ABI 3 or newer. This amendment activates nothing.
+
+## Amendment (AAASM-6273, PROPOSED): rc.8 handoff for unmodified `aasm run` descendants without B3
+
+**Status: PROPOSED, NOT ACCEPTED.** This section was drafted by an AI coding agent for founder
+review. It is not a founder-authored decision record and nobody has approved it. Its only basis is
+an instruction the user gave the agent in a chat session on 2026-11-16 to implement the J82 /
+GT-F2 handoff rather than defer it; a chat instruction is not a recorded ADR decision, and this
+text must not be read as one. Until the founder accepts or rejects it, the "implementation gated"
+amendment above (§27-§30) stays the recorded position and this section is a proposal against it.
+
+### What the code on the implementing branch does
+
+The tree-root `aasm run` (a launch that carries at least one lease and has no governed ancestor)
+holds every hop's `ParentAuthority` in memory and serves a per-user Unix socket. A descendant
+`aasm run` sends only a request (its spec and the leases it asks for) and receives leases the root
+derived through `DelegationLedger::derive_child`, after `authority_gate` ran in the root against the
+descendant's verified parent. The descendant's place in the tree is established by what it **holds**:
+each admitted hop is handed a channel that is inherited by its tool and every descendant on a fixed
+descriptor, so a double-forked or environment-scrubbed descendant, or one whose path-based index was
+deleted, is still identified by the channel it presents (a datagram socketpair used for an
+`SCM_RIGHTS` rendezvous). The parent-pid chain and the index path remain only as a fallback when no
+channel is inherited, and a governed ancestor whose supervisor does not answer refuses the launch. A
+declared `--root-agent` is only checked against the verified chain.
+`aa-cli/src/commands/run_supervisor.rs` states the design and its limits. The ledger additionally
+holds the authoritative generation and can `reaffirm` (the AAASM-6312 amendment's items 1-5);
+its writer-token and "refuse a child the ledger never saw" items are not implemented.
+
+Against §27: no `ParentAuthority`, witness or receipt crosses the process boundary, there is no flag
+or file, and the descendant presents no authority material, only a request the root narrows or
+refuses. Leases cross the socket as data, in the direction root to descendant.
+
+### The option proposed
+
+Allow the handoff for **unmodified `aasm run` descendants in an unreparented process tree,
+including `--isolation none`, without the B3 evidence gate**, with the residuals below stated as
+limits and not as passes. That departs from this ADR in four places the founder would have to
+accept explicitly:
+
+1. The "must be neither built nor enabled until the B3 evidence gate passes" paragraph.
+2. §28's last bullet ("`--isolation none` ... cannot carry a cross-process attenuation claim: the
+   handoff stays refused for it"). The proposal admits it, because the only host the work can be
+   exercised on has no Landlock, and states the claim as narrower instead.
+3. §28's registry write-protection requirement. Not implemented: the registry is a `0700`
+   per-uid directory of index files and sockets that a same-uid process can delete or replace.
+4. The statement in the AAASM-6312 amendment that no production path may build a
+   `DelegationLedger` before the gates pass.
+
+### Limits that stay true under this option
+
+- Not a containment boundary against an adversarial agent. A descendant that **deliberately closes**
+  the inherited channel (or whose launcher closes every descriptor above stderr) and then
+  double-forks holds nothing and has no parent-pid chain: it is an ungoverned root. Handing the
+  descriptor to a non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd` as the same uid)
+  hands it the descendant's identity. A patched `aasm` can skip the lookup. A same-uid process can
+  `ptrace` the supervisor.
+- The channel is wired for the unconfined launch only; a confined backend controls the child's
+  descriptors. A pid-namespaced or VM-confined descendant is not exercised.
+- pid reuse on the fallback path is handled by a recorded start-time marker, not by a pidfd
+  (§30.2 is not established).
+- §29.1 (registry write-protection) and §30 (Landlock, pidfs, same-uid control denial) are not
+  satisfied. §29.2 is covered only for a peer outside every admitted hop's tree and for a declared
+  ancestor that is not in the verified chain; §29.3 and §29.4 are covered with real separate
+  processes, `--isolation none` only.
+- Roots with no lease host no supervisor and keep the rc.7 compatibility residual.
+- The ledger's issuer binding is still the string comparison of `with_trusted_issuer`; the
+  writer-token item and refusing a child the ledger never saw are not implemented. Nothing outside
+  the supervisor process can write the ledger, which is what the cross-process use relies on.
+
+### Decision requested
+
+Accept this option, reject it (the implementing branch is then reverted and §27-§30 remain
+binding), or accept a narrower variant. Until then no claim in release material may say J82 is
+delivered beyond "implemented for unmodified `aasm run` descendants, unconfined, with the limits
+above, pending ADR acceptance".
