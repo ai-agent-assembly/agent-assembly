@@ -99,7 +99,15 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
             .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
             .spawn()
             .expect("spawn witness");
-        let seen = visible_launch_inputs(witness.id());
+        // Between fork and exec the new process's environ reads back empty, so
+        // wait for the witness to be fully exec'd before treating a miss as a
+        // blind probe.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = visible_launch_inputs(witness.id());
+        while !seen.contains("AA_PROXY_LAUNCH_GRANT_STDIN") && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            seen = visible_launch_inputs(witness.id());
+        }
         let _ = witness.kill();
         let _ = witness.wait();
         assert!(
