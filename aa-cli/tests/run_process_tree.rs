@@ -546,6 +546,240 @@ async fn a_double_forked_descendant_is_still_governed_and_a_narrower_one_still_r
     );
 }
 
+// ---------------------------------------------------------------------------
+// A descendant that lost the channel AND was reparented (AAASM-6273, M2)
+// ---------------------------------------------------------------------------
+//
+// `a_double_forked_descendant_is_still_governed...` above passes because `/bin/sh` keeps descriptor 61
+// open, so the channel (not the parent chain) governs the descendant. It is not evidence for the
+// cases below: Node's `child_process` and Python's `subprocess` close descriptor 61 by default, and a
+// `nohup`, a backgrounded job whose parent shell exited or a daemonizer reparents the process.
+
+/// The tool closes the channel, then runs the real descendant in a double fork. bash, not sh: dash
+/// cannot redirect a two-digit descriptor.
+const CLOSED_AND_REPARENTED: &str = "exec 61>&-; done=\"$1\"; shift; ( ( \"$@\"; touch \"$done\" ) & ); i=0; while [ ! -f \"$done\" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done";
+/// As above without the reparenting: the descendant stays a direct child of the tool.
+const CLOSED_ONLY: &str = "exec 61>&-; shift; exec \"$@\"";
+/// As [`CLOSED_AND_REPARENTED`], with the marker scrubbed as well.
+const CLOSED_REPARENTED_AND_SCRUBBED: &str = "exec 61>&-; done=\"$1\"; shift; ( ( env -u AA_GOVERNED_HOP \"$@\"; touch \"$done\" ) & ); i=0; while [ ! -f \"$done\" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done";
+
+fn through_bash(f: &Fixture, script: &str, root: &Path, child: &Path, done: &Path, marker: &Path) -> Vec<String> {
+    let mut argv = f.layer("g1", root, &[]);
+    argv.extend([
+        "/bin/bash".to_string(),
+        "-c".to_string(),
+        script.to_string(),
+        "t".to_string(),
+        done.display().to_string(),
+    ]);
+    argv.extend(f.layer("g2", child, &[]));
+    argv.extend(f.marker_tail(marker));
+    argv
+}
+
+fn assert_refused_as_lost_tree(outcome: &Outcome, marker: &Path) {
+    assert!(
+        outcome.stderr.contains("AA_GOVERNED_HOP") && outcome.stderr.contains("gone or unreachable"),
+        "expected the lost-tree refusal in:\n{}",
+        outcome.stderr
+    );
+    assert!(
+        !marker.exists(),
+        "a reparented descendant must not run as a fresh root:\n{}",
+        outcome.stderr
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reparented_descendant_that_lost_the_channel_is_refused_and_one_that_was_not_reparented_is_capped_or_runs() {
+    let f = Fixture::new("m2-reparent").await;
+    let root = f.policy("root", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let narrow = f.policy("narrow", Some(&fs_read(&["/data/a/b"], true)));
+
+    // The regression: channel closed + reparented + broader than the parent. Before the marker this ran
+    // as a fresh root above its parent's ceiling.
+    let marker = f.path("ran-reparented-broad");
+    let done = f.path("done-reparented-broad");
+    let outcome = f.run(&through_bash(&f, CLOSED_AND_REPARENTED, &root, &broad, &done, &marker));
+    assert!(done.exists(), "the descendant must have finished:\n{}", outcome.stderr);
+    assert_refused_as_lost_tree(&outcome, &marker);
+
+    // Controls: the same closed channel WITHOUT the reparenting is placed by its parent chain, so the
+    // broad request meets the ceiling and the narrow one runs. The refusal above is the lost tree.
+    let marker = f.path("ran-direct-broad");
+    let outcome = f.run(&through_bash(
+        &f,
+        CLOSED_ONLY,
+        &root,
+        &broad,
+        &f.path("unused"),
+        &marker,
+    ));
+    assert_refused(&outcome, &marker, "ChildExceedsParent");
+    let marker = f.path("ran-direct-narrow");
+    let outcome = f.run(&through_bash(
+        &f,
+        CLOSED_ONLY,
+        &root,
+        &narrow,
+        &f.path("unused"),
+        &marker,
+    ));
+    assert_ran(&outcome, &marker);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_descendant_that_scrubs_the_marker_as_well_still_runs_as_an_independent_root() {
+    // Characterization of the remaining, deliberate-evasion limit: closed channel, reparented and the
+    // marker removed. Documented in ADR 0038 §27 amendment; it is not claimed to be closed.
+    let f = Fixture::new("m2-scrubbed").await;
+    let root = f.policy("root", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let marker = f.path("ran-scrubbed-broad");
+    let done = f.path("done-scrubbed-broad");
+    let outcome = f.run(&through_bash(
+        &f,
+        CLOSED_REPARENTED_AND_SCRUBBED,
+        &root,
+        &broad,
+        &done,
+        &marker,
+    ));
+    assert!(done.exists(), "{}", outcome.stderr);
+    assert!(
+        marker.exists(),
+        "with the marker scrubbed the launch is an independent root:\n{}",
+        outcome.stderr
+    );
+}
+
+fn python3() -> Option<&'static str> {
+    [
+        "/usr/bin/python3",
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+    ]
+    .into_iter()
+    .find(|p| {
+        Command::new(p)
+            .args(["-c", "import subprocess"])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// Python's `subprocess.run` closes every descriptor above stderr by default, so the child holds no
+/// channel; the parent is alive, so the parent chain places it.
+const PY_DIRECT: &str = "import subprocess,sys; sys.exit(subprocess.run(sys.argv[2:]).returncode)";
+/// The parent starts the child and exits at once; the child waits for it to be gone, then runs.
+const PY_PARENT_EXITS: &str = "import subprocess,sys,os; subprocess.Popen(['/bin/sh','-c','while kill -0 \"$1\" 2>/dev/null; do sleep 0.05; done; d=\"$2\"; shift 2; \"$@\"; touch \"$d\"','t',str(os.getpid()),sys.argv[1]]+sys.argv[2:]); os._exit(0)";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_python_subprocess_child_is_capped_by_its_live_parent_and_refused_once_the_parent_is_gone() {
+    let Some(python) = python3() else {
+        eprintln!("NOT_RUN: python3 is not available on this host");
+        return;
+    };
+    let f = Fixture::new("m2-python").await;
+    let root = f.policy("root", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let narrow = f.policy("narrow", Some(&fs_read(&["/data/a/b"], true)));
+    let build = |script: &str, child: &Path, done: &Path, marker: &Path| {
+        let mut argv = f.layer("g1", &root, &[]);
+        argv.extend([
+            python.to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            done.display().to_string(),
+        ]);
+        argv.extend(f.layer("g2", child, &[]));
+        argv.extend(f.marker_tail(marker));
+        argv
+    };
+
+    // Parent alive: the descriptor-less child is placed by its parent chain, bound to the hop its marker
+    // names. Narrower runs, broader meets the ceiling.
+    let marker = f.path("ran-py-narrow");
+    assert_ran(&f.run(&build(PY_DIRECT, &narrow, &f.path("unused"), &marker)), &marker);
+    let marker = f.path("ran-py-broad");
+    assert_refused(
+        &f.run(&build(PY_DIRECT, &broad, &f.path("unused"), &marker)),
+        &marker,
+        "ChildExceedsParent",
+    );
+
+    // Parent gone: the same child, reparented, refuses instead of becoming a root.
+    let marker = f.path("ran-py-orphan-broad");
+    let done = f.path("done-py-orphan-broad");
+    let mut spawned = f.spawn(&build(PY_PARENT_EXITS, &broad, &done, &marker));
+    let code = wait(&mut spawned.child, WAIT);
+    wait_for(&done, WAIT);
+    let outcome = spawned.finish(code);
+    assert_refused_as_lost_tree(&outcome, &marker);
+}
+
+/// The tool of the middle hop `g2` starts `g3` after `g2`'s own `aasm run` has exited, with the channel
+/// closed: the hop that governed it is gone, and so is its supervisor entry.
+const HOP_EXITS_FIRST: &str = "exec 61>&-; done=\"$1\"; shift; hop=$PPID; ( ( while kill -0 \"$hop\" 2>/dev/null; do sleep 0.05; done; \"$@\"; touch \"$done\" ) & ); exit 0";
+/// Control: the same launch while `g2` is alive, as its direct child.
+const HOP_ALIVE: &str = "exec 61>&-; shift; exec \"$@\"";
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_grandchild_started_after_its_hop_exited_is_refused_and_while_the_hop_is_alive_it_is_capped_by_that_hop() {
+    let f = Fixture::new("m2-hop-exit").await;
+    let root = f.policy("root", Some(&fs_read(&["/data"], true)));
+    let hop = f.policy("hop", Some(&fs_read(&["/data/a"], true)));
+    let broad = f.policy("broad", Some(&fs_read(&["/data"], true)));
+    let narrow = f.policy("narrow", Some(&fs_read(&["/data/a/b"], true)));
+    // g1 stays alive (its tool waits for `hold`) so that the tree root is reachable when g3 starts.
+    let g1_tool =
+        "hold=\"$1\"; shift; \"$@\"; i=0; while [ ! -f \"$hold\" ] && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done";
+    let build = |script: &str, grand: &Path, done: &Path, marker: &Path| {
+        let mut argv = f.layer("g1", &root, &[]);
+        argv.extend([
+            "/bin/bash".to_string(),
+            "-c".to_string(),
+            g1_tool.to_string(),
+            "t".to_string(),
+            done.display().to_string(),
+        ]);
+        argv.extend(f.layer("g2", &hop, &[]));
+        argv.extend([
+            "/bin/bash".to_string(),
+            "-c".to_string(),
+            script.to_string(),
+            "t".to_string(),
+            done.display().to_string(),
+        ]);
+        argv.extend(f.layer("g3", grand, &[]));
+        argv.extend(f.marker_tail(marker));
+        argv
+    };
+
+    // Control: while the hop is alive, the broad grandchild meets the HOP's ceiling and the narrow runs.
+    let marker = f.path("ran-alive-narrow");
+    let done = f.path("done-alive-narrow");
+    std::fs::write(&done, b"").expect("release the root's wait");
+    let outcome = f.run(&build(HOP_ALIVE, &narrow, &done, &marker));
+    assert!(marker.exists(), "{}", outcome.stderr);
+    let marker = f.path("ran-alive-broad");
+    let done = f.path("done-alive-broad");
+    std::fs::write(&done, b"").expect("release the root's wait");
+    let outcome = f.run(&build(HOP_ALIVE, &broad, &done, &marker));
+    assert!(outcome.stderr.contains("ChildExceedsParent"), "{}", outcome.stderr);
+    assert!(!marker.exists());
+
+    // The hop has exited when the grandchild starts: refused, though the tree root is still alive.
+    let marker = f.path("ran-exited-broad");
+    let done = f.path("done-exited-broad");
+    let mut spawned = f.spawn(&build(HOP_EXITS_FIRST, &broad, &done, &marker));
+    wait_for(&done, WAIT);
+    let outcome_code = wait(&mut spawned.child, WAIT);
+    let outcome = spawned.finish(outcome_code);
+    assert_refused_as_lost_tree(&outcome, &marker);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn deleting_the_registry_index_and_socket_does_not_ungovern_a_descendant() {
     let f = Fixture::new("registry-delete").await;
