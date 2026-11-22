@@ -388,16 +388,21 @@ unenforced number was honored.
 
 ### What this amendment does not decide
 
-- **`aa-proxy` still evaluates every egress decision under the synthetic,
-  unregistered `PROXY_AGENT_ID` at Global policy tier.** `aa-proxy/src/network_enforce.rs`
-  already states this and rules out threading a real credentialed agent identity
-  into that per-connection path as a materially new trust boundary, out of scope for
-  this ticket. `EgressAuthority` is a **pre-launch** decision in `aa-isolation` — "is
-  this run authorized for brokered egress at this scope" — checked once, before any
-  backend is consulted; it is not a per-connection identity on the proxy path, and
-  nothing in this amendment changes what identity `aa-proxy` itself reasons under.
-  This is the residual most likely to be misread later, so it is stated plainly here
-  rather than left implicit.
+- **`aa-proxy` evaluates each egress decision for the agent the launch
+  registered, bound by a launch grant; this is proxy identity, not connection
+  origin.** `aa-proxy/src/network_enforce.rs` sends the registered triple and a
+  gateway-minted, short-lived grant with each network `CheckAction` (AAASM-6261);
+  the gateway answers `BOUND` and the proxy refuses an `Allow` that is not bound.
+  The grant is accepted only by `CheckAction`/`BatchCheck`, expires, and dies with
+  the registration; the agent's general registration token never reaches the
+  proxy. It does not prove the connecting process is the agent's: any local
+  process that reaches the proxy's loopback port is attributed to the launch. A
+  proxy with no grant sends a blank claim and is recorded as unattributed.
+  `EgressAuthority` is a **pre-launch** decision in `aa-isolation` — "is this run
+  authorized for brokered egress at this scope" — checked once, before any backend
+  is consulted; it is not a per-connection identity on the proxy path. This is the
+  residual most likely to be misread later, so it is stated plainly here rather
+  than left implicit.
 - No quantitative connection/byte/rate *enforcement* — see §17. Only the truthful
   statement and the refusal-on-mismatch exist after this amendment.
 - No credential injection (a separate ticket) — no type in `aa-isolation/src/egress.rs`
@@ -537,11 +542,11 @@ egress, applied here.
   anywhere in this repository. `check_required_mode` refuses, rather than
   silently passing, when a contract requires `RequiredMode::RunBoundEphemeralOnly`
   and no reported service offers it — see §20.
-- **Per-request/per-connection proxy identity attribution is unchanged.**
-  `aa-proxy/src/network_enforce.rs` still evaluates every decision under the
-  synthetic `PROXY_AGENT_ID` at Global policy tier, exactly as this document's
-  "What this amendment does not decide" for AAASM-6163 already states for egress.
-  Authority here is launch-level only: this
+- **Per-connection proxy identity is the launch's registered agent, bound by a
+  launch grant.** `aa-proxy/src/network_enforce.rs` evaluates each decision for the
+  agent the launch registered (AAASM-6261); that is proxy identity, not connection
+  origin (see the AAASM-6163 residual above). Authority here is launch-level only:
+  this
   run's own `IdentityRef` and credential lease subject, never a per-request
   identity on the proxy path.
 - **No revocation-latency claim.** `RevocationState`'s own existing documentation

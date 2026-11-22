@@ -2704,8 +2704,11 @@ capabilities:
   transport: https POST, HTTP/1.1, explicit Content-Length
   interception_component: evaluate_mcp_request aa-proxy/src/proxy/mod.rs:614 invoked at :834
     -> aa-gateway PolicyService.CheckAction
-  identity_source: CONSTANT 'aa-proxy' — PROXY_AGENT_ID aa-proxy/src/mcp_enforce.rs:48,99-102;
-    org_id/team_id/credential_token empty; caller_agent_id None at :116
+  identity_source: the registered agent of the governed launch — its triple and a
+    gateway-minted launch grant in CheckActionRequest.launch_grant
+    (claimed_agent_and_grant, aa-proxy/src/mcp_enforce.rs); proxy identity, not
+    connection origin; never the registration credential_token; a proxy with no
+    grant claims no identity (unattributed); caller_agent_id None
   policy_context:
   - tool_name
   - arguments
@@ -3084,9 +3087,10 @@ capabilities:
   interception_component: relay_event_stream aa-proxy/src/proxy/mod.rs:1600 (event framing
     SseParser aa-proxy/src/proxy/sse.rs:35) -> evaluate_response_candidate :1827 -> aa-gateway
     PolicyService.CheckAction as a ToolResult
-  identity_source: CONSTANT 'aa-proxy' — PROXY_AGENT_ID aa-proxy/src/mcp_enforce.rs:54,
-    build_tool_result_request :143; a SecretAlert is attributed to the proxy, not to the
-    agent
+  identity_source: the registered agent of the governed launch (triple and launch grant
+    via build_tool_result_request, aa-proxy/src/mcp_enforce.rs); a SecretAlert the
+    gateway raises is attributed to that agent when bound, and to the all-zero
+    unattributed sentinel when the proxy holds no grant
   policy_context:
   - tool_name
   - tool_source=mcp
@@ -4720,7 +4724,7 @@ capabilities:
   launch_path: any
   preconditions: []
   transport: any
-  interception_component: none — PROXY_AGENT_ID constant at aa-proxy/src/mcp_enforce.rs:48,99-102;
+  interception_component: none — the proxy's gateway checks carry the launch grant (aa-proxy/src/mcp_enforce.rs claimed_agent_and_grant);
     ProxyEvent.agent_id hardcoded None at aa-proxy/src/proxy/mod.rs:1081
   identity_source: none
   policy_context:

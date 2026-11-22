@@ -117,6 +117,7 @@ fn tool_call_request(agent: &ProtoAgentId, credential_token: &str, tool_name: &s
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

@@ -114,6 +114,7 @@ fn forged_request(token: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

@@ -135,6 +135,7 @@ fn tool_call_request_for(proto_id: &ProtoAgentId, credential_token: &str, tool_n
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

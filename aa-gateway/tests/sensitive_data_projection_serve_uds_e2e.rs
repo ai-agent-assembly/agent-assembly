@@ -204,6 +204,7 @@ fn leaky_request(agent: &ProtoAgentId) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

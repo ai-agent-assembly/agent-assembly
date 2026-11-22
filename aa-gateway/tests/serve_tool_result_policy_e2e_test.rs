@@ -109,6 +109,7 @@ async fn check_result(gw: &mut LiveGateway, body: &str) -> CheckActionResponse {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     };
     gw.client
         .check_action(tonic::Request::new(req))

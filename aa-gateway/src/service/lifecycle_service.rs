@@ -16,7 +16,8 @@ use aa_core::{AuditEntry, AuditEventType};
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_server::AgentLifecycleService;
 use aa_proto::assembly::agent::v1::{
     ChallengeRequest, ChallengeResponse, ControlCommand, ControlStreamRequest, DeregisterRequest, DeregisterResponse,
-    HeartbeatRequest, HeartbeatResponse, RegisterRequest, RegisterResponse,
+    HeartbeatRequest, HeartbeatResponse, MintLaunchGrantRequest, MintLaunchGrantResponse, RegisterRequest,
+    RegisterResponse,
 };
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 
@@ -30,6 +31,22 @@ use crate::registry::token::{generate_credential_token, validate_token};
 use crate::registry::{AgentRegistry, AgentStatus, LineageError, OrphanMode, RegistryError, SuspendReason};
 use crate::service::org_binding::{OrgBinder, ResolvedOrg};
 use crate::service::TenancyMode;
+
+/// Lifetime a launch grant gets when the caller asks for none (AAASM-6261).
+pub const LAUNCH_GRANT_DEFAULT_TTL: Duration = Duration::from_secs(8 * 3600);
+/// Longest lifetime the gateway will grant, whatever is asked.
+pub const LAUNCH_GRANT_MAX_TTL: Duration = Duration::from_secs(12 * 3600);
+/// Shortest lifetime the gateway will grant.
+pub const LAUNCH_GRANT_MIN_TTL: Duration = Duration::from_secs(10);
+
+/// The lifetime a request for `ttl_sec` seconds is granted: the default for `0`
+/// or a negative value, otherwise clamped into `[MIN, MAX]`.
+pub fn launch_grant_ttl(ttl_sec: i64) -> Duration {
+    if ttl_sec <= 0 {
+        return LAUNCH_GRANT_DEFAULT_TTL;
+    }
+    Duration::from_secs(ttl_sec as u64).clamp(LAUNCH_GRANT_MIN_TTL, LAUNCH_GRANT_MAX_TTL)
+}
 
 /// Default heartbeat interval returned to agents at registration (seconds).
 const DEFAULT_HEARTBEAT_INTERVAL_SEC: i64 = 30;
@@ -959,6 +976,49 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         Ok(Response::new(DeregisterResponse {
             success: true,
             agent_id: proto_id.agent_id.clone(),
+        }))
+    }
+
+    /// AAASM-6261 — mint a launch grant for the calling agent, authenticated by
+    /// its registration token like `deregister`. The grant is valid only on
+    /// PolicyService CheckAction/BatchCheck and dies with the registration.
+    async fn mint_launch_grant(
+        &self,
+        request: Request<MintLaunchGrantRequest>,
+    ) -> Result<Response<MintLaunchGrantResponse>, Status> {
+        let req = request.into_inner();
+        let proto_id = req
+            .agent_id
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("missing agent_id"))?;
+        let agent_key = proto_agent_id_to_key(proto_id);
+        validate_token(&self.registry, &agent_key, &req.credential_token)
+            .map_err(|_| Status::unauthenticated("invalid credential token"))?;
+        if req.launch_id.trim().is_empty() {
+            return Err(Status::invalid_argument("missing launch_id"));
+        }
+        // launch_id is stored per grant and logged: bound its size and charset.
+        if req.launch_id.len() > 128
+            || !req
+                .launch_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+        {
+            return Err(Status::invalid_argument(
+                "launch_id must be at most 128 characters of [A-Za-z0-9-_.:]",
+            ));
+        }
+        let ttl = launch_grant_ttl(req.ttl_sec);
+        let (grant, expires_at) = self
+            .registry
+            .mint_launch_grant(&agent_key, &req.launch_id, ttl)
+            .map_err(|e| Status::not_found(e.to_string()))?;
+        let expires_at_unix_ms =
+            Utc::now().timestamp_millis() + expires_at.saturating_duration_since(Instant::now()).as_millis() as i64;
+        tracing::info!(agent_id = ?proto_id.agent_id, launch_id = %req.launch_id, ttl_sec = ttl.as_secs(), "launch grant minted");
+        Ok(Response::new(MintLaunchGrantResponse {
+            launch_grant: grant,
+            expires_at_unix_ms,
         }))
     }
 

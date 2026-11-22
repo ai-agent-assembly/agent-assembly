@@ -277,19 +277,6 @@ fn run_codex_stand_in(
         .env("AA_TEST_PROXY_UPSTREAM", upstream_addr.to_string())
         .env("AA_PROXY_LLM_ONLY", "false")
         .env("AA_PROXY_SKIP_UPSTREAM_TLS_VERIFY", "1")
-        // AAASM-5851: once a gateway endpoint is configured, the dedicated
-        // proxy's CONNECT-time egress check is authoritative via the
-        // gateway's `policy.network` PolicyService RPC and fails closed when
-        // that RPC is unreachable. `GrpcGateway` here registers only
-        // `AgentLifecycleService` (identity registration) — the same fixture
-        // `real_binary_governed_launch` in cli_run_claude_governed_launch.rs
-        // uses, which never actually exercises this path because it is
-        // gated behind a real installed `claude` binary and returns early on
-        // a CI runner without one. This test's subject is the CA-trust
-        // launch environment, not gateway network-policy enforcement, so
-        // failing open here is the narrow, documented fixture gap — not a
-        // silent weakening of what the test asserts.
-        .env("AA_PROXY_NETWORK_FAIL_OPEN", "1")
         .env("AASM5920_OUTCOME_FILE", &fixture.outcome_path)
         .env("AASM5920_TARGET_HOST", TARGET_HOST)
         // A developer's ambient value must not supply the thing under test —
@@ -347,7 +334,10 @@ async fn a_governed_codex_launch_has_its_request_redacted_and_the_secret_never_r
     let proxy_url = proxy.expected_proxy_url();
 
     // ── the gateway ─────────────────────────────────────────────────────────
-    let gateway = GrpcGateway::start().await?;
+    // AAASM-6261: this launch is governed, so the proxy's CONNECT-time check is answered by a
+    // real `PolicyService` and never fails open; this test's subject is the CA-trust launch
+    // environment, not network policy, hence the allow-all policy behind it.
+    let gateway = GrpcGateway::start_with_policy().await?;
 
     // ── the install — production EngineLifecycle wiring ────────────────────
     install(&fixture, &proxy_url).await?;

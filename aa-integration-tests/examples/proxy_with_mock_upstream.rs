@@ -69,6 +69,15 @@ const UPSTREAM_ENV: &str = "AA_TEST_PROXY_UPSTREAM";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // `aasm run` asks a proxy what it can receive on stdin before it hands one a
+    // launch grant, and refuses a proxy that does not answer. This binary stands
+    // in for `aa-proxy`, so it answers exactly as the shipped binary does.
+    if std::env::args().any(|a| a == "--capabilities") {
+        println!("{}", aa_proxy::credentials::PROVIDER_KEYS_STDIN_CAPABILITY);
+        println!("{}", aa_proxy::credentials::LAUNCH_GRANT_STDIN_CAPABILITY);
+        return Ok(());
+    }
+
     // AAASM-5902: without this the binary emitted no logs at all, which blocks
     // any test that needs to correlate this process's behaviour (e.g. redaction
     // decisions) against captured stdout/stderr, and blocks a `LogLine`
@@ -86,6 +95,14 @@ async fn main() -> anyhow::Result<()> {
     let upstream: SocketAddr = raw
         .parse()
         .map_err(|e| anyhow::anyhow!("{UPSTREAM_ENV}={raw:?} is not a socket address: {e}"))?;
+
+    // Read before anything else can fail, as `aa_proxy::run` does: a governed
+    // launch delivers its grant on stdin, and a stand-in that ignored it would
+    // run ungoverned while looking governed.
+    let aa_proxy::credentials::StartupSecrets {
+        provider_keys,
+        launch_grant,
+    } = aa_proxy::credentials::StartupSecrets::load().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
 
     let mut config = aa_proxy::ProxyConfig::from_env()?;
     config.upstream_override = Some(upstream);
@@ -112,7 +129,17 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    let mut server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
+    if let Some(store) = provider_keys {
+        server = server.with_credentials(store);
+    }
+    if let Some(grant) = launch_grant {
+        server = server.with_launch_grant(grant);
+        anyhow::ensure!(
+            server.is_governed(),
+            "refusing to start: the delivered launch grant was not installed"
+        );
+    }
     server.run().await?;
     Ok(())
 }

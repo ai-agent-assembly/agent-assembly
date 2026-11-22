@@ -55,6 +55,7 @@ fn tool_call_request() -> CheckActionRequest {
         span_id: "span-seq".into(),
         credential_token: String::new(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

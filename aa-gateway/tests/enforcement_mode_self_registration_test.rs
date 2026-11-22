@@ -199,6 +199,7 @@ async fn self_registration_with_observe_mode_is_ignored_deny_still_enforced() {
                 })),
             }),
             caller_agent_id: None,
+            launch_grant: String::new(),
         })
         .await
         .unwrap()

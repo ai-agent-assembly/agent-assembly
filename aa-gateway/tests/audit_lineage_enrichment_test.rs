@@ -102,6 +102,7 @@ fn llm_request() -> CheckActionRequest {
         span_id: "span-lineage".into(),
         credential_token: "child-token".into(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

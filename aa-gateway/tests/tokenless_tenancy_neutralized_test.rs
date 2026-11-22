@@ -102,6 +102,7 @@ fn tool_request(agent: ProtoAgentId, token: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -122,6 +123,7 @@ fn llm_request(agent: ProtoAgentId, token: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

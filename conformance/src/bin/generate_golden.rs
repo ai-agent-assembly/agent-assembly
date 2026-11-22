@@ -79,6 +79,7 @@ fn main() {
                 )),
             }),
             caller_agent_id: None,
+            launch_grant: String::new(),
         },
     );
 

@@ -26,7 +26,8 @@
 
 use std::sync::Arc;
 
-use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, Decision};
+use crate::credentials::LaunchGrant;
+use aa_proto::assembly::common::v1::{ActionType, AgentId as ProtoAgentId, AgentIdentityAssurance, Decision};
 use aa_proto::assembly::policy::v1::{
     action_context::Action, ActionContext, CheckActionRequest, CheckActionResponse, RedactInstructions,
     ToolCallContext, ToolResultContext,
@@ -41,17 +42,40 @@ use crate::intercept::mcp::McpToolCall;
 /// in `aa-gateway/tests/edge_langgraph_test.rs` fixtures.
 pub const MCP_TOOL_SOURCE: &str = "mcp";
 
-/// Synthetic `agent_id` the proxy uses when forwarding MCP calls without
-/// having registered an agent identity. The proxy is intentionally
-/// agent-agnostic at Layer 2 — the gateway evaluates the ToolCallContext
-/// directly. Used because `CheckActionRequest.agent_id` is a required
-/// field on the proto.
+/// The `agent_id` and `launch_grant` a gateway check carries (AAASM-6261).
 ///
-/// `pub(crate)` so [`crate::network_enforce`] (AAASM-5851) can reuse the same
-/// synthetic identity for network-egress `CheckAction` requests, keeping one
-/// definition of "who the proxy claims to be when it has no real agent
-/// identity" rather than a second, possibly-diverging constant.
-pub(crate) const PROXY_AGENT_ID: &str = "aa-proxy";
+/// A governed launch sends the agent it registered, triple and launch grant, so
+/// the gateway can bind the check to it. No grant sends a blank `agent_id` and no
+/// grant: the gateway records that as unattributed rather than the proxy
+/// inventing a name for itself. One definition for every check the proxy sends
+/// (network, MCP call, MCP result), so they cannot disagree about who the launch
+/// is. The registration `credential_token` is never sent; the grant travels in
+/// its own field.
+pub(crate) fn claimed_agent_and_grant(grant: Option<&LaunchGrant>) -> (ProtoAgentId, String) {
+    match grant {
+        Some(grant) => (grant.proto_agent_id(), grant.grant()),
+        None => (ProtoAgentId::default(), String::new()),
+    }
+}
+
+/// Whether the gateway answered that this check was bound to the registered agent.
+///
+/// `Bound` means the gateway matched the presented grant to the agent it minted
+/// it for: proxy identity. It does not prove which process opened the connection.
+pub(crate) fn response_is_bound(response: &CheckActionResponse) -> bool {
+    response.agent_identity_assurance == AgentIdentityAssurance::Bound as i32
+}
+
+/// Why an `Allow` that the gateway did not bind to the launch's agent is refused.
+pub(crate) fn unbound_allow_reason(response: &CheckActionResponse) -> String {
+    let assurance = AgentIdentityAssurance::try_from(response.agent_identity_assurance)
+        .map(|a| a.as_str_name())
+        .unwrap_or("UNKNOWN");
+    format!(
+        "the gateway did not bind this governed launch's grant (assurance {assurance}) — \
+         refusing (fail-closed)"
+    )
+}
 
 /// Top-level decision the proxy data path branches on after a gateway
 /// `CheckAction` response. Maps the proto `Decision` enum onto the
@@ -90,7 +114,9 @@ pub fn build_check_action_request(
     target_url: &str,
     trace_id: &str,
     span_id: &str,
+    grant: Option<&LaunchGrant>,
 ) -> CheckActionRequest {
+    let (agent_id, launch_grant) = claimed_agent_and_grant(grant);
     // Serialise arguments back to JSON bytes for `ToolCallContext.args_json`.
     // Failure here is "synthesise an empty payload" rather than propagate —
     // an arguments value that round-trips serde once cannot round-trip
@@ -98,11 +124,7 @@ pub fn build_check_action_request(
     // lets the policy engine match against `tool_name` alone.
     let args_json = serde_json::to_vec(&call.arguments).unwrap_or_default();
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
-        }),
+        agent_id: Some(agent_id),
         credential_token: String::new(),
         trace_id: trace_id.into(),
         span_id: span_id.into(),
@@ -116,6 +138,7 @@ pub fn build_check_action_request(
             })),
         }),
         caller_agent_id: None,
+        launch_grant,
     }
 }
 
@@ -124,24 +147,20 @@ pub fn build_check_action_request(
 /// data (`sensitive_patterns`, locale packs, `tool_result.*` predicates) to the
 /// body, which the proxy's built-in-only scanner cannot do.
 ///
-/// The request carries [`PROXY_AGENT_ID`], not `ProxyConfig::agent_id`, on
-/// purpose: the gateway rejects a registered agent id that arrives with an empty
-/// credential token, and the proxy holds no per-agent token. A `SecretAlert`
-/// the gateway raises for a response is therefore attributed to the proxy
-/// (`aa-proxy`), not to the agent whose traffic it was.
+/// The request carries the launch's grant like the request side, so a
+/// `SecretAlert` the gateway raises for a response is attributed to the agent
+/// whose traffic it was; a launch with no grant stays unattributed.
 pub fn build_tool_result_request(
     call: &McpToolCall,
     result_body: &[u8],
     source_url: &str,
     trace_id: &str,
     span_id: &str,
+    grant: Option<&LaunchGrant>,
 ) -> CheckActionRequest {
+    let (agent_id, launch_grant) = claimed_agent_and_grant(grant);
     CheckActionRequest {
-        agent_id: Some(ProtoAgentId {
-            org_id: String::new(),
-            team_id: String::new(),
-            agent_id: PROXY_AGENT_ID.into(),
-        }),
+        agent_id: Some(agent_id),
         credential_token: String::new(),
         trace_id: trace_id.into(),
         span_id: span_id.into(),
@@ -155,6 +174,7 @@ pub fn build_tool_result_request(
             })),
         }),
         caller_agent_id: None,
+        launch_grant,
     }
 }
 
@@ -167,8 +187,9 @@ pub async fn evaluate_mcp_result(
     source_url: &str,
     trace_id: &str,
     span_id: &str,
+    grant: Option<&LaunchGrant>,
 ) -> anyhow::Result<McpDecision> {
-    let request = build_tool_result_request(call, result_body, source_url, trace_id, span_id);
+    let request = build_tool_result_request(call, result_body, source_url, trace_id, span_id, grant);
     let response = {
         let mut client = gateway.lock().await;
         client
@@ -176,7 +197,7 @@ pub async fn evaluate_mcp_result(
             .await
             .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction (tool result) failed: {e}"))?
     };
-    Ok(decision_from_response(&response))
+    Ok(decision_from_response(&response, grant.is_some()))
 }
 
 /// Convert a `CheckActionResponse` into an [`McpDecision`].
@@ -185,11 +206,21 @@ pub async fn evaluate_mcp_result(
 /// reason explaining the conservative downgrade — the proxy cannot block
 /// on a human approval queue inside the MitM tunnel, so any non-deterministic
 /// verdict is treated as a refusal at this layer.
-pub fn decision_from_response(response: &CheckActionResponse) -> McpDecision {
+///
+/// `require_bound` is true for a governed launch: an `Allow` the gateway did not
+/// bind to the registered agent is refused (see [`crate::network_enforce`]).
+pub fn decision_from_response(response: &CheckActionResponse, require_bound: bool) -> McpDecision {
     match Decision::try_from(response.decision) {
+        Ok(Decision::Allow) if require_bound && !response_is_bound(response) => McpDecision::Deny {
+            reason: unbound_allow_reason(response),
+        },
         Ok(Decision::Allow) => McpDecision::Allow,
         Ok(Decision::Deny) => McpDecision::Deny {
             reason: response.reason.clone(),
+        },
+        // A redaction still lets the call proceed, so it needs the same binding as an allow.
+        Ok(Decision::Redact) if require_bound && !response_is_bound(response) => McpDecision::Deny {
+            reason: unbound_allow_reason(response),
         },
         Ok(Decision::Redact) => McpDecision::Redact {
             instructions: response.redact.clone().unwrap_or_default(),
@@ -234,8 +265,18 @@ pub async fn evaluate_mcp_call(
     target_url: &str,
     trace_id: &str,
     span_id: &str,
+    grant: Option<&LaunchGrant>,
 ) -> anyhow::Result<McpDecision> {
-    evaluate_mcp_call_within(MCP_CALL_CHECK_TIMEOUT, gateway, call, target_url, trace_id, span_id).await
+    evaluate_mcp_call_within(
+        MCP_CALL_CHECK_TIMEOUT,
+        gateway,
+        call,
+        target_url,
+        trace_id,
+        span_id,
+        grant,
+    )
+    .await
 }
 
 /// [`evaluate_mcp_call`] with the bound as a parameter, so a test can exercise
@@ -247,8 +288,9 @@ async fn evaluate_mcp_call_within(
     target_url: &str,
     trace_id: &str,
     span_id: &str,
+    grant: Option<&LaunchGrant>,
 ) -> anyhow::Result<McpDecision> {
-    let request = build_check_action_request(call, target_url, trace_id, span_id);
+    let request = build_check_action_request(call, target_url, trace_id, span_id, grant);
     // One deadline for the whole evaluation (lock wait plus RPC), so the worst
     // case is `bound`, not twice it, and there is no window at the hand-off
     // between the two stages. The lock wait still fails as `GatewayContended`
@@ -262,7 +304,7 @@ async fn evaluate_mcp_call_within(
         .map_err(|_| anyhow::anyhow!("PolicyService.CheckAction timed out after {bound:?}"))?
         .map_err(|e| anyhow::anyhow!("PolicyService.CheckAction failed: {e}"))?;
     drop(client);
-    Ok(decision_from_response(&response))
+    Ok(decision_from_response(&response, grant.is_some()))
 }
 
 /// The shared gateway client stayed locked past the bound: this call never
@@ -313,7 +355,7 @@ mod tests {
     #[test]
     fn build_request_populates_tool_call_context_fields() {
         let call = sample_call();
-        let req = build_check_action_request(&call, "https://mcp.example.com/tools", "trace-abc", "span-1");
+        let req = build_check_action_request(&call, "https://mcp.example.com/tools", "trace-abc", "span-1", None);
 
         assert_eq!(req.action_type, ActionType::ToolCall as i32);
         assert_eq!(req.trace_id, "trace-abc");
@@ -419,6 +461,7 @@ mod tests {
                 "https://mcp.example.com/",
                 "",
                 "",
+                None,
             ),
         )
         .await
@@ -441,6 +484,7 @@ mod tests {
             "https://mcp.example.com/",
             "",
             "",
+            None,
         )
         .await
         .expect("a live gateway answers");
@@ -466,6 +510,7 @@ mod tests {
                 "https://mcp.example.com/",
                 "",
                 "",
+                None,
             ),
         )
         .await
@@ -481,6 +526,7 @@ mod tests {
             "https://mcp.example.com/",
             "",
             "",
+            None,
         )
         .await
         .expect("the lock is free again");
@@ -523,6 +569,7 @@ mod tests {
             "https://mcp.example.com/",
             "",
             "",
+            None,
         )
         .await
         .expect_err("the gateway never answers");
@@ -548,13 +595,13 @@ mod tests {
     #[test]
     fn decision_allow_maps_to_mcp_allow() {
         let resp = response_with(Decision::Allow, "ok");
-        assert_eq!(decision_from_response(&resp), McpDecision::Allow);
+        assert_eq!(decision_from_response(&resp, false), McpDecision::Allow);
     }
 
     #[test]
     fn decision_deny_maps_to_mcp_deny_with_reason() {
         let resp = response_with(Decision::Deny, "tool_name read_file blocked on /etc paths");
-        match decision_from_response(&resp) {
+        match decision_from_response(&resp, false) {
             McpDecision::Deny { reason } => {
                 assert_eq!(reason, "tool_name read_file blocked on /etc paths");
             }
@@ -569,7 +616,10 @@ mod tests {
             redact: Some(RedactInstructions::default()),
             ..Default::default()
         };
-        assert!(matches!(decision_from_response(&resp), McpDecision::Redact { .. }));
+        assert!(matches!(
+            decision_from_response(&resp, false),
+            McpDecision::Redact { .. }
+        ));
     }
 
     #[test]
@@ -578,7 +628,7 @@ mod tests {
         // tunnel, so PENDING must surface as a wire-level Deny.
         let mut resp = response_with(Decision::Pending, "");
         resp.approval_id = "queue-7".into();
-        match decision_from_response(&resp) {
+        match decision_from_response(&resp, false) {
             McpDecision::Deny { reason } => {
                 assert!(
                     reason.contains("queue-7") || reason.contains("PENDING"),
@@ -592,7 +642,7 @@ mod tests {
     #[test]
     fn decision_unspecified_downgrades_to_deny() {
         let resp = response_with(Decision::Unspecified, "");
-        assert!(matches!(decision_from_response(&resp), McpDecision::Deny { .. }));
+        assert!(matches!(decision_from_response(&resp, false), McpDecision::Deny { .. }));
     }
 
     #[test]
@@ -604,7 +654,7 @@ mod tests {
             decision: 9999,
             ..Default::default()
         };
-        match decision_from_response(&resp) {
+        match decision_from_response(&resp, false) {
             McpDecision::Deny { reason } => {
                 assert!(
                     reason.contains("9999"),
@@ -613,5 +663,88 @@ mod tests {
             }
             other => panic!("expected Deny, got {other:?}"),
         }
+    }
+
+    fn grant() -> LaunchGrant {
+        LaunchGrant::new(
+            String::new(),
+            "team-a".into(),
+            "did:key:agent-a".into(),
+            "grant-a-synthetic".into(),
+        )
+    }
+
+    /// Both MCP requests carry the launch's registered triple and grant, never a
+    /// `credential_token`; a launch with no grant claims no identity.
+    #[test]
+    fn mcp_requests_carry_the_grant_in_its_own_field_or_claim_nothing() {
+        let call = sample_call();
+        let g = grant();
+        for req in [
+            build_check_action_request(&call, "https://mcp.example.com/", "", "", Some(&g)),
+            build_tool_result_request(&call, b"{}", "https://mcp.example.com/", "", "", Some(&g)),
+        ] {
+            let id = req.agent_id.expect("agent_id");
+            assert_eq!(
+                (id.team_id.as_str(), id.agent_id.as_str()),
+                ("team-a", "did:key:agent-a")
+            );
+            assert_eq!(req.launch_grant, "grant-a-synthetic");
+            assert!(
+                req.credential_token.is_empty(),
+                "the registration token must never be sent"
+            );
+        }
+        for req in [
+            build_check_action_request(&call, "", "", "", None),
+            build_tool_result_request(&call, b"{}", "", "", "", None),
+        ] {
+            assert_eq!(req.agent_id.expect("agent_id").agent_id, "");
+            assert!(req.launch_grant.is_empty() && req.credential_token.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_governed_launch_honours_an_mcp_allow_only_when_the_gateway_bound_it() {
+        let allow = |a: AgentIdentityAssurance| CheckActionResponse {
+            decision: Decision::Allow as i32,
+            agent_identity_assurance: a as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            decision_from_response(&allow(AgentIdentityAssurance::Bound), true),
+            McpDecision::Allow
+        );
+        for a in [AgentIdentityAssurance::Asserted, AgentIdentityAssurance::Unattributed] {
+            assert!(
+                matches!(decision_from_response(&allow(a), true), McpDecision::Deny { .. }),
+                "{a:?}"
+            );
+        }
+        assert_eq!(
+            decision_from_response(&allow(AgentIdentityAssurance::Unattributed), false),
+            McpDecision::Allow
+        );
+    }
+
+    #[test]
+    fn a_governed_launch_does_not_honour_a_redact_the_gateway_did_not_bind() {
+        let redact = |a: AgentIdentityAssurance| CheckActionResponse {
+            decision: Decision::Redact as i32,
+            agent_identity_assurance: a as i32,
+            ..Default::default()
+        };
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Bound), true),
+            McpDecision::Redact { .. }
+        ));
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Asserted), true),
+            McpDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            decision_from_response(&redact(AgentIdentityAssurance::Asserted), false),
+            McpDecision::Redact { .. }
+        ));
     }
 }

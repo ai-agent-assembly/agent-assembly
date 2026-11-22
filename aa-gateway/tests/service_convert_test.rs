@@ -27,6 +27,7 @@ fn base_request(action: Action) -> CheckActionRequest {
         action_type: ActionType::ToolCall as i32,
         context: Some(ActionContext { action: Some(action) }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
@@ -287,6 +288,7 @@ fn empty_metadata_fields_are_omitted() {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     };
     let (ctx, _) = request_to_core(&req).unwrap();
     // AAASM-5665 — the claimed `agent_id` is now deposited into the evaluation

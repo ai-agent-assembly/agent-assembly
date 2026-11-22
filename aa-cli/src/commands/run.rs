@@ -8214,12 +8214,21 @@ pub async fn execute_with_adapters(args: &RunArgs, adapters: &HashMap<&str, Box<
             Some(_) => aa_proxy::config::SystemTrustInstall::Never,
             None => aa_proxy::config::SystemTrustInstall::Auto,
         };
+        // AAASM-6261: the registration token stays here; the proxy gets a grant that
+        // only CheckAction/BatchCheck accept, bound to this agent and this launch.
+        // Refused rather than degraded: a governed proxy without a grant would be
+        // unattributed.
+        let launch_grant = registration
+            .mint_launch_grant(&handle.session_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("refusing to launch ungoverned: could not obtain a launch grant: {e}"))?;
         let opts = governed_proxy_options(
             state,
             ca_dir,
             &handle.agent_id,
             system_trust_install,
             resolved.policy().resolution(),
+            launch_grant,
         );
         Some(
             ProxyGuard::spawn(opts)
@@ -8530,6 +8539,7 @@ fn governed_proxy_options(
     agent_id: &str,
     system_trust_install: aa_proxy::config::SystemTrustInstall,
     resolution: &run_policy::PolicyResolution,
+    launch_grant: aa_proxy::credentials::LaunchGrant,
 ) -> ProxyGuardOptions {
     ProxyGuardOptions {
         ready_file: state.ready_file,
@@ -8539,6 +8549,10 @@ fn governed_proxy_options(
         audit_jsonl_path: Some(state.audit_jsonl_path),
         system_trust_install,
         credential_action: crate::commands::proxy::guard::credential_action_for_policy(resolution.credential_action()),
+        // AAASM-6261: unconditional for a governed launch. The proxy then binds
+        // every gateway decision to the agent this launch registered, and refuses
+        // one the gateway cannot bind, instead of asserting a label.
+        launch_grant: Some(launch_grant),
     }
 }
 
@@ -9094,6 +9108,12 @@ mod tests {
                 "agent-1",
                 aa_proxy::config::SystemTrustInstall::Never,
                 &resolution,
+                aa_proxy::credentials::LaunchGrant::new(
+                    String::new(),
+                    String::new(),
+                    "did:key:test".into(),
+                    "tok-test".into(),
+                ),
             );
             assert_eq!(opts.credential_action, expected, "policy data: {data:?}");
         }

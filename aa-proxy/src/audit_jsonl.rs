@@ -166,6 +166,21 @@ pub enum RefusalRule {
     CredentialRevoked,
 }
 
+/// The registered agent a request was bound to, and how.
+///
+/// `assurance` is `"bound"`: the gateway validated the presented launch grant
+/// as one it minted for the DID it registered. That is proxy identity: this proxy
+/// holds a grant for that agent. It does **not** mean the caller's identity was
+/// verified, and it does not mean the process that opened the connection was the
+/// agent's own: connection origin is not verified.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundAgentIdentity {
+    /// Always `"bound"`; named so a reader sees the claim rather than infers it.
+    pub assurance: String,
+    /// The registered agent id (DID) the gateway bound the request to.
+    pub agent: String,
+}
+
 /// A single audit record emitted by the proxy's data path.
 ///
 /// `redacted_body` carries the *post-scan* body bytes (the form that was or
@@ -192,6 +207,19 @@ pub struct ProxyAuditEntry {
     /// changes shape, and defaulted on read, so older lines still parse.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent_unattributed: bool,
+    /// The registered agent a governed proxy had the gateway bind this request
+    /// to (AAASM-6261), on an [`ProxyAuditDecision::Allowed`] record.
+    ///
+    /// Distinct from [`Self::agent_id`], which is the `AA_AGENT_ID` label: this is
+    /// the DID the launch registered, which is what the gateway's own audit entry
+    /// for the same request carries. Derived, not echoed per request: a governed
+    /// proxy refuses any `Allow` the gateway did not bind, so a request it let
+    /// through was bound when it was checked. Absent when the proxy holds no
+    /// grant, has no gateway to bind it, or is configured to fail open (an
+    /// unanswered check was bound to nothing), and on every non-allowed record.
+    /// See [`BoundAgentIdentity`] for what binding does and does not prove.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<BoundAgentIdentity>,
     /// Target host (no port) from the CONNECT line.
     pub host: String,
     /// HTTP method of the intercepted request inside the tunnel.
@@ -1643,6 +1671,7 @@ mod tests {
             ts_ms: 1_700_000_000_000,
             agent_id: Some("agent-1".into()),
             agent_unattributed: false,
+            agent_identity: None,
             host: "api.openai.com".into(),
             method: "POST".into(),
             path: "/v1/chat/completions".into(),
@@ -1692,6 +1721,7 @@ mod tests {
             ts_ms: 1_700_000_000_000,
             agent_id: None,
             agent_unattributed: false,
+            agent_identity: None,
             host: host.into(),
             method: "GET".into(),
             path: "/".into(),
@@ -1914,6 +1944,7 @@ mod tests {
             ts_ms: 42,
             agent_id: Some("agent-x".into()),
             agent_unattributed: false,
+            agent_identity: None,
             host: "api.example".into(),
             method: "POST".into(),
             path: "/v1/do".into(),
@@ -2298,6 +2329,7 @@ mod retention_tests {
             ts_ms: now_ms(),
             agent_id: None,
             agent_unattributed: false,
+            agent_identity: None,
             host: host.into(),
             method: "POST".into(),
             path: "/v1/do".into(),
@@ -3306,6 +3338,7 @@ mod retention_tests {
     fn dropped_record(host: &str) -> DecisionRecord {
         DecisionRecord {
             agent_id: None,
+            agent_identity: None,
             host: host.into(),
             method: "POST".into(),
             path: "/v1/do".into(),
