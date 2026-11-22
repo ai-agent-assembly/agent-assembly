@@ -664,10 +664,21 @@ fn exchange(governor: &Governor, request: &Request) -> Result<(Response, Option<
             .map_err(|e| format!("cannot reach the tree supervisor over the inherited channel: {e}")),
     }?;
     let body = serde_json::to_vec(request).map_err(|e| format!("cannot encode the request: {e}"))?;
-    (&stream)
+    let sent = (&stream)
         .write_all(&body)
-        .and_then(|()| stream.shutdown(std::net::Shutdown::Write))
-        .map_err(|e| format!("cannot send the request to the tree supervisor: {e}"))?;
+        .and_then(|()| stream.shutdown(std::net::Shutdown::Write));
+    match sent {
+        Ok(()) => {}
+        // A supervisor that refused before our bytes landed has already queued its answer and
+        // closed; the peer-gone write error must not hide that answer. When nothing was queued the
+        // read below fails or returns an empty reply, and that error names the real problem.
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            ) => {}
+        Err(e) => return Err(format!("cannot send the request to the tree supervisor: {e}")),
+    }
     let mut reply = Vec::new();
     let mut channel = None;
     let mut chunk = vec![0u8; 64 * 1024];
@@ -1080,8 +1091,10 @@ fn refuse_busy(stream_fd: OwnedFd) {
     let mut drained = 0u64;
     while drained < MAX_MESSAGE_BYTES {
         match stream.read(&mut sink) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(n) => drained += n as u64,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
         }
     }
 }
