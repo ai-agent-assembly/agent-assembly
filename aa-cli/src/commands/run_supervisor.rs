@@ -471,6 +471,18 @@ fn channel_pair() -> std::io::Result<(UnixDatagram, OwnedFd)> {
     Ok((server, OwnedFd::from(client)))
 }
 
+/// Stop this process's own children inheriting the channel it was handed.
+///
+/// The descriptor is this hop's parent's channel: it carries the parent's authority, which is
+/// wider than this hop's. A confined launch does not wire a channel of its own, and nothing
+/// else this process spawns (the proxy, the confinement launcher) should hold it either, so a
+/// nested `aasm run` below would otherwise be admitted as a sibling of this hop. The unconfined
+/// launch re-clears the flag on the descriptor it gives its child, which is this hop's own
+/// channel by then (`dup2` in the child's `pre_exec`), not this one.
+fn seal_inherited_channel(fd: RawFd) {
+    set_cloexec(fd, true);
+}
+
 /// The inherited channel on [`CHANNEL_FD`], when this process holds a datagram socket there.
 fn inherited_channel() -> Option<RawFd> {
     // SAFETY: read-only queries on a descriptor number; nothing is closed or modified.
@@ -522,7 +534,10 @@ pub fn locate_governed_ancestor() -> Result<Option<Governor>, String> {
     if let Some(channel) = inherited_channel() {
         let governor = Governor::Inherited(channel);
         return match exchange(&governor, &Request::Ping) {
-            Ok((Response::Pong, _)) => Ok(Some(governor)),
+            Ok((Response::Pong, _)) => {
+                seal_inherited_channel(channel);
+                Ok(Some(governor))
+            }
             Ok(_) | Err(_) => Err(
                 "this process inherited a governed `aasm run` authority channel but its supervisor does not answer"
                     .to_string(),
@@ -2009,6 +2024,29 @@ mod tests {
         }
         drop(supervisor);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// H1 (review): a confined descendant must not hand the parent hop's wider channel to
+    /// anything it spawns. Measured with a real exec: the child asks the OS whether the
+    /// descriptor exists in its own table, first without the seal (control: it is inherited, so
+    /// the probe can see an inherited descriptor at all), then with it.
+    #[test]
+    fn a_sealed_inherited_channel_is_not_passed_to_spawned_children() {
+        use std::os::fd::AsRawFd;
+        let (held, _peer) = std::os::unix::net::UnixDatagram::pair().expect("socketpair");
+        let fd = held.as_raw_fd();
+        let inherits = |fd: RawFd| {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("[ -e /dev/fd/{fd} ]"))
+                .status()
+                .expect("spawn sh")
+                .success()
+        };
+        set_cloexec(fd, false);
+        assert!(inherits(fd), "control: an unsealed descriptor is visible to the child");
+        seal_inherited_channel(fd);
+        assert!(!inherits(fd), "a sealed channel must not reach a spawned child");
     }
 
     #[test]
