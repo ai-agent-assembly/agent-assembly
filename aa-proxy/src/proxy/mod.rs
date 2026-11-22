@@ -550,6 +550,16 @@ impl ProxyServer {
     /// launch it serves (AAASM-6261). Same sharing rule as [`Self::with_credentials`].
     pub fn with_launch_grant(mut self: Arc<Self>, grant: LaunchGrant) -> Arc<Self> {
         if let Some(inner) = Arc::get_mut(&mut self) {
+            // A governed launch is fail-closed by contract: every allowed request must
+            // carry a gateway answer bound to the launched agent. The fail-open knobs
+            // are ambient environment (`AA_PROXY_*_FAIL_OPEN`), so a user who exported
+            // one for another purpose would otherwise forward unchecked, with no bound
+            // answer, whenever the gateway is slow or down. Governance wins over them.
+            if inner.config.mcp_fail_open || inner.config.network_fail_open {
+                tracing::warn!("governed launch: ignoring AA_PROXY_MCP_FAIL_OPEN / AA_PROXY_NETWORK_FAIL_OPEN");
+            }
+            inner.config.mcp_fail_open = false;
+            inner.config.network_fail_open = false;
             inner.launch_grant = Some(grant);
         } else {
             tracing::warn!("with_launch_grant called on a shared ProxyServer; ignoring");
