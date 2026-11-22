@@ -153,6 +153,16 @@ async fn start_proxy(
     label: Option<&str>,
     ca_dir: &std::path::Path,
 ) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
+    start_proxy_with(gateway, grant, label, ca_dir, false).await
+}
+
+async fn start_proxy_with(
+    gateway: &str,
+    grant: Option<LaunchGrant>,
+    label: Option<&str>,
+    ca_dir: &std::path::Path,
+    fail_open: bool,
+) -> (SocketAddr, mpsc::Receiver<ProxyAuditEntry>) {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let ca = CaStore::load_or_create(ca_dir).await.unwrap();
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -170,8 +180,8 @@ async fn start_proxy(
         credential_action: CredentialAction::AlertOnly,
         upstream_override: None,
         gateway_endpoint: Some(gateway.to_string()),
-        mcp_fail_open: false,
-        network_fail_open: false,
+        mcp_fail_open: fail_open,
+        network_fail_open: fail_open,
         agent_id: label.map(str::to_string),
         ready_file: None,
         parent_pid: None,
@@ -320,4 +330,60 @@ async fn another_same_user_process_reaching_the_proxy_is_attributed_to_the_launc
         "the gateway cannot tell the agent's connection from the other process's"
     );
     assert_eq!(claims[1], (DID_A.to_string(), GRANT_A.to_string(), String::new()));
+}
+
+/// A gateway whose `CheckAction` always errors: the case the fail-open knobs exist for.
+struct BrokenGateway;
+
+#[tonic::async_trait]
+impl PolicyService for BrokenGateway {
+    async fn check_action(&self, _req: Request<CheckActionRequest>) -> Result<Response<CheckActionResponse>, Status> {
+        Err(Status::unavailable("gateway down"))
+    }
+
+    async fn batch_check(&self, _req: Request<BatchCheckRequest>) -> Result<Response<BatchCheckResponse>, Status> {
+        Err(Status::unimplemented("stub"))
+    }
+
+    type OpControlStreamStream = Pin<Box<dyn Stream<Item = Result<OpControlMessage, Status>> + Send + 'static>>;
+
+    async fn op_control_stream(
+        &self,
+        _req: Request<OpControlSubscribeRequest>,
+    ) -> Result<Response<Self::OpControlStreamStream>, Status> {
+        Err(Status::unimplemented("stub"))
+    }
+}
+
+async fn spawn_broken_gateway() -> String {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    tokio::spawn(async move {
+        let _ = tonic::transport::Server::builder()
+            .add_service(PolicyServiceServer::new(BrokenGateway))
+            .serve(addr)
+            .await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn an_ambient_fail_open_flag_does_not_open_a_governed_launch() {
+    let (dir_open, dir_governed) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let gateway = spawn_broken_gateway().await;
+    // Positive control: the same fail-open config without a grant does forward
+    // when the gateway errors, so the refusal below is the grant's doing.
+    let (open, _o) = start_proxy_with(&gateway, None, None, dir_open.path(), true).await;
+    assert!(
+        connect_status(open).await.contains("200"),
+        "positive control: an ungoverned fail-open proxy forwards past a failing gateway"
+    );
+    let (governed, _g) = start_proxy_with(&gateway, Some(grant(DID_A, GRANT_A)), None, dir_governed.path(), true).await;
+    let status = connect_status(governed).await;
+    assert!(
+        !status.contains("200"),
+        "a governed launch must not forward without a bound gateway answer: {status:?}"
+    );
 }

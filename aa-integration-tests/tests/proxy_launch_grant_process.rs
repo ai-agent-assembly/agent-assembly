@@ -114,6 +114,16 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
             seen.contains("AA_PROXY_LAUNCH_GRANT_STDIN"),
             "control: the probe can read a dumpable process's environment: {seen:?}"
         );
+        // Say what the proxy half can and cannot show: its environ is unreadable
+        // here (non-dumpable), so only its argv is actually inspected below. The
+        // environment guarantee itself rests on the stdin-delivery code path and
+        // its unit tests, not on this probe.
+        assert!(
+            std::fs::read(format!("/proc/{}/environ", child.id()))
+                .map(|b| b.is_empty())
+                .unwrap_or(true),
+            "the proxy's environ should be unreadable once it is hardened"
+        );
     }
     #[cfg(target_os = "macos")]
     assert!(
