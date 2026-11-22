@@ -2425,7 +2425,7 @@ journeys:
     scope: rc.8 release-blocking set only
     decision: Founder-approved release-scope deferral, not a PASS. The rc.8 candidate F (79a0f2d96) does not contain the handoff; the implementation lives on the AAASM-6273 branch and its ADR 0038 amendment is PROPOSED, not accepted.
     state: implemented-on-branch-with-stated-limits
-    reason: 'AAASM-6273 implements a cross-process handoff for unmodified `aasm run` descendants in an unreparented process tree: the tree-root supervisor holds each hop''s ParentAuthority in memory, places a descendant by the authority channel it inherited on fd 61 (declaration or no declaration, any environment, double-fork included; the parent-pid path is only a fallback when no channel is inherited, and an unreachable supervisor refuses), and re-issues only equal-or-narrower leases through the DelegationLedger; revoking the root refuses later admissions below it. Evidence is real `aasm run` processes against a real gateway, `--isolation none`, same uid (aa-cli/tests/run_process_tree.rs, 13 tests, each refusal paired with a control; mutations each turn the intended tests red). NOT provided and not claimed: containment of an adversarial agent (a patched `aasm` can skip the lookup; a descendant that deliberately closes the channel with no governed ancestor on the fallback path is not contained), pid-namespaced or VM-confined descendants (not exercised), ADR 0038 section 28 registry write-protection, the section 30 B3 kernel evidence gate, and roots that carry no lease (rc.7 compatibility residual, no supervisor).'
+    reason: 'AAASM-6273 implements a cross-process handoff for unmodified `aasm run` descendants: the tree-root supervisor holds each hop''s ParentAuthority in memory, places a descendant by the authority channel it inherited on fd 61 (declaration or no declaration, any environment; the parent-pid path is only a fallback when no channel is inherited, and an unreachable supervisor refuses). A descendant that lost the channel (Node child_process and Python subprocess close fd 61 by default) and was reparented is refused through the AA_GOVERNED_HOP marker every governed hop exports (AAASM-6273 M2); a path admission is bound to the hop the marker names (ParentHopMismatch), and re-issues only equal-or-narrower leases through the DelegationLedger; revoking the root refuses later admissions below it. Evidence is real `aasm run` processes against a real gateway, `--isolation none`, same uid (aa-cli/tests/run_process_tree.rs, including the M2 reparented-descendant tests, each refusal paired with a control; mutations each turn the intended tests red). NOT provided and not claimed: containment of an adversarial agent (a patched `aasm` can skip the lookup; a deliberate env -u AA_GOVERNED_HOP together with a closed channel and a reparent, a process started outside the tree such as via launchctl, systemd-run, cron or ssh, a different uid, and on Linux a third-party subreaper with a scrubbed marker are not contained), pid-namespaced or VM-confined descendants (not exercised), ADR 0038 section 28 registry write-protection, the section 30 B3 kernel evidence gate, and roots that carry no lease (rc.7 compatibility residual, no supervisor).'
     owner: AAASM-6273
     prerequisites: Founder decision on the PROPOSED ADR 0038 amendment (docs/src/adr/0038-capability-leases-and-explicit-authority-contract.md, last section); the B3 kernel evidence gate and the section 29.1 tests remain unproduced
     refusal_test: aa-cli/tests/run_process_tree.rs::a_child_that_omits_the_parent_declaration_and_scrubs_its_environment_is_still_capped
@@ -2489,6 +2489,27 @@ journeys:
   - repo: agent-assembly
     kind: test
     selector: aa-cli/tests/run_process_tree.rs::deleting_the_registry_index_and_socket_does_not_ungovern_a_descendant
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::a_reparented_descendant_that_lost_the_channel_is_refused_and_one_that_was_not_reparented_is_capped_or_runs
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::a_descendant_that_scrubs_the_marker_as_well_still_runs_as_an_independent_root
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::a_python_subprocess_child_is_capped_by_its_live_parent_and_refused_once_the_parent_is_gone
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/tests/run_process_tree.rs::a_grandchild_started_after_its_hop_exited_is_refused_and_while_the_hop_is_alive_it_is_capped_by_that_hop
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run_supervisor.rs::tests::a_marker_turns_every_lost_tree_exit_into_a_refusal_and_without_it_the_walk_reports_a_root
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run_supervisor.rs::tests::a_path_admission_bound_to_the_hop_its_marker_names_is_admitted_and_a_different_hop_is_refused
+  - repo: agent-assembly
+    kind: test
+    selector: aa-cli/src/commands/run.rs::authority_collapse_tests::a_governed_launch_tags_its_tool_with_its_own_hop_and_an_ungoverned_one_scrubs_an_inherited_tag
   - repo: agent-assembly
     kind: test
     selector: aa-cli/tests/run_process_tree.rs::declaring_an_agent_that_is_not_an_ancestor_is_refused_and_declaring_the_true_root_runs

@@ -33,8 +33,8 @@
 //! given a channel (one end of a datagram socketpair) that its `aasm run` passes to its tool on
 //! a fixed descriptor ([`CHANNEL_FD`], close-on-exec cleared). Descendants inherit it through
 //! `fork` and `exec`, so a descendant that double-forks, is reparented to `init`/`launchd`,
-//! scrubs its environment (the environment is never consulted) or outlives a deleted socket
-//! path still holds it. To ask anything, a descendant makes a stream pair and sends one end over
+//! scrubs its environment (the environment is never consulted for placement) or outlives a deleted
+//! socket path still holds it, for as long as it holds the descriptor. To ask anything, a descendant makes a stream pair and sends one end over
 //! the channel (`SCM_RIGHTS`); the supervisor knows which hop the request speaks for from the
 //! channel it arrived on. A process outside the tree has no way to obtain the descriptor.
 //!
@@ -45,28 +45,48 @@
 //!
 //! When no channel is inherited the placement falls back to the earlier mechanism: the root
 //! records its own pid (with a start-time marker so a reused pid is not mistaken for it) in a
-//! per-uid index directory, and an `aasm run` walks its OS parent chain looking for an entry. That
-//! fallback keeps the parent-pid walk's limits. A governed ancestor whose socket cannot be reached
-//! refuses the launch.
+//! per-uid index directory, and an `aasm run` walks its OS parent chain looking for an entry. A
+//! governed ancestor whose socket cannot be reached refuses the launch.
+//!
+//! # A descendant that lost the channel (AAASM-6273, M2)
+//!
+//! Node's `child_process` and Python's `subprocess` close descriptor 61 by default, and `nohup`, a
+//! backgrounded job whose parent shell exited and a daemonizer reparent the process, so such a
+//! descendant holds no channel and its parent chain no longer reaches the root. Every governed hop
+//! therefore exports [`GOVERNED_HOP_ENV`] (`v1:<pid>:<start marker>` of its own `aasm run`) to its
+//! tool, overwriting its parent's value. The marker is never admission evidence: it places nothing
+//! and widens nothing, and can only cause a refusal.
+//!
+//! * No channel, a marker present (malformed counts) and no governed ancestor reachable by any exit
+//!   of the walk: refused. The tree the process was born in is gone or unreachable; running it as a
+//!   fresh root would put it above its parent's ceiling.
+//! * On the path route the marker is sent as `expected_parent`; the supervisor refuses
+//!   (`ParentHopMismatch`) unless the parent-pid walk lands on exactly that hop.
+//! * A process that holds the channel is governed by it and its marker is ignored.
+//!
+//! `PR_SET_CHILD_SUBREAPER` is deliberately not used: it would keep a reparented descendant's parent
+//! chain looking intact, which is the evidence this design must not rely on.
 //!
 //! # What this does NOT guarantee
 //!
 //! This is a guarantee about unmodified `aasm run`. It is **not** a containment boundary against an
 //! adversarial agent.
 //!
-//! * A descendant that deliberately **closes** the channel (or whose launcher closes every
-//!   descriptor above stderr, as some `subprocess` configurations do) and then double-forks leaves
-//!   both mechanisms: it holds nothing and its parent-pid chain is gone. It is then an ungoverned
-//!   root. Passing the descriptor to a non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd`
-//!   as the same uid) hands that process the descendant's identity.
+//! * A deliberate `env -u AA_GOVERNED_HOP` / `env -i` combined with a closed channel and a reparent
+//!   leaves every mechanism: the process holds nothing, names nothing and has no parent chain. It is
+//!   then an ungoverned root. Passing the descriptor to a non-descendant (`SCM_RIGHTS`,
+//!   `pidfd_getfd`, `/proc/<pid>/fd` as the same uid) hands that process the descendant's identity.
+//! * A process started outside the tree (`launchctl`, `systemd-run`, `cron`, `ssh`, a daemon the tool
+//!   asks to start) never inherited anything, and one running as a different uid cannot be seen.
+//! * On Linux, a third-party subreaper together with a scrubbed marker hides the reparenting.
 //! * A patched `aasm` can skip the lookup and the admission.
 //! * A confined backend controls the child's descriptors; the channel is wired only for the
 //!   unconfined launch. A pid-namespaced or VM-confined descendant is not exercised.
 //! * The supervisor trusts the same-uid kernel facts it reads (peer pid, start time). A same-uid
 //!   process can `ptrace` the supervisor; ADR 0038 §28 (registry write-protection) and the B3 kernel
 //!   evidence gate are **not** implemented or satisfied by this module.
-//! * Tree-roots are only the launches that carry at least one lease. A root with
-//!   none stays on the rc.7 compatibility residual and hosts no supervisor.
+//! * Tree-roots are only the launches that carry at least one lease. A root with none stays on the
+//!   rc.7 compatibility residual and hosts no supervisor.
 //!
 //! The wire protocol is one JSON request, half-close, one JSON response (with the descendant's own
 //! channel attached to an admission).
@@ -108,7 +128,8 @@ const REGISTRY_BASE: &str = "/tmp";
 /// by the process, it survives `fork`/`exec` and reparenting, and a process outside the tree has
 /// no way to obtain one. The number is a convention, not a secret: nothing is learned from
 /// knowing it, and a process that fabricates its own fd 61 only talks to its own fake server.
-/// The environment is deliberately NOT consulted, so `env -i` cannot hide it.
+/// The environment is deliberately NOT consulted to place a process that holds it, so `env -i` cannot
+/// hide it ([`GOVERNED_HOP_ENV`] only ever adds a refusal for one that does not).
 pub const CHANNEL_FD: RawFd = 61;
 
 // ---------------------------------------------------------------------------

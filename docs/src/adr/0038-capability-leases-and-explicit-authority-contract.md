@@ -1860,12 +1860,24 @@ accept explicitly:
 
 ### Limits that stay true under this option
 
-- Not a containment boundary against an adversarial agent. A descendant that **deliberately closes**
-  the inherited channel (or whose launcher closes every descriptor above stderr) and then
-  double-forks holds nothing and has no parent-pid chain: it is an ungoverned root. Handing the
-  descriptor to a non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd` as the same uid)
-  hands it the descendant's identity. A patched `aasm` can skip the lookup. A same-uid process can
-  `ptrace` the supervisor.
+- Not a containment boundary against an adversarial agent. Handing the descriptor to a
+  non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd` as the same uid) hands it the
+  descendant's identity. A patched `aasm` can skip the lookup. A same-uid process can `ptrace` the
+  supervisor.
+- A descendant that **loses** the channel is no longer an ungoverned root by accident (AAASM-6273
+  M2 amendment, last section). Node `child_process` and Python `subprocess` close descriptor 61 by default,
+  and `nohup`, a backgrounded job whose parent shell exited and a daemonizer reparent the process.
+  Every governed hop now exports `AA_GOVERNED_HOP=v1:<pid>:<start marker>` of its own `aasm run`,
+  overwriting its parent's value. A launch that holds no channel, finds no governed ancestor and
+  carries the marker is refused (the tree it was born in is gone or unreachable), and a path
+  admission is refused (`ParentHopMismatch`) unless the parent-pid walk lands on exactly the hop the
+  marker names. The marker is never admission evidence: it cannot place a process in a tree or
+  widen anything, it can only cause a refusal, so §27 is unchanged. What remains unenforceable, and
+  is not claimed: a deliberate `env -u AA_GOVERNED_HOP` / `env -i` combined with a closed channel
+  and a reparent; a process started outside the tree (`launchctl`, `systemd-run`, `cron`, `ssh`, a
+  daemon the tool asks to start); a different uid; on Linux, a third-party subreaper together with
+  a scrubbed marker (`PR_SET_CHILD_SUBREAPER` is deliberately not used: it would make the parent
+  chain look intact while the process is already outside the tree); a patched `aasm` or `ptrace`.
 - The channel is wired for the unconfined launch only; a confined backend controls the child's
   descriptors. A pid-namespaced or VM-confined descendant is not exercised.
 - pid reuse on the fallback path is handled by a recorded start-time marker, not by a pidfd
@@ -1884,3 +1896,15 @@ accept explicitly:
 Decided: the narrower variant was accepted (see Status). No claim in release material may say J82
 is delivered beyond "implemented for unmodified `aasm run` descendants, unconfined, with the
 limits above".
+
+### Amendment 2026-11-22 (AAASM-6273 M2): a descendant that lost the channel
+
+Routine engineering inside the decided design; §27 is unchanged. Node `child_process` and Python
+`subprocess` close descriptor 61 by default, and a reparented process (`nohup`, a backgrounded job
+after its parent shell exits, a daemonizer) has no parent chain to the root, so such a descendant
+ran as a fresh root above its parent's ceiling. Each governed hop now exports
+`AA_GOVERNED_HOP=v1:<pid>:<start marker>`; the first bullet of "Limits that stay true" above states
+the rule and what remains unenforceable. The marker is never admission evidence: it can only cause
+a refusal, so no parent authority is serialized, passed or re-derived. Consequence worth knowing: an
+`aasm run` nested inside a confined (VM or pid-namespaced) governed hop carries the marker while its
+parent walk is blind, and is therefore refused rather than run as a root.
