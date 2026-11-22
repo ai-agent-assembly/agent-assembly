@@ -72,6 +72,18 @@ impl Session {
 impl GrpcGateway {
     /// Bind on a free loopback port and serve until dropped.
     pub async fn start() -> anyhow::Result<Self> {
+        Self::start_serving(false).await
+    }
+
+    /// As [`Self::start`], and also serve the real `PolicyService` over the same registry with an
+    /// allow-all policy. A governed launch (AAASM-6261) never fails open on the proxy's gateway
+    /// check, so a fixture whose subject is not network policy must still answer that RPC; the
+    /// real service answers it bound to the launched agent, which a stub could not honestly do.
+    pub async fn start_with_policy() -> anyhow::Result<Self> {
+        Self::start_serving(true).await
+    }
+
+    async fn start_serving(with_policy: bool) -> anyhow::Result<Self> {
         let registry = Arc::new(AgentRegistry::new());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
@@ -82,9 +94,38 @@ impl GrpcGateway {
             inner: AgentLifecycleServiceImpl::new(Arc::clone(&registry)),
             seen: seen.clone(),
         };
+        // Held for the life of the serving task: the engine was loaded from this file.
+        let mut policy_file = tempfile::NamedTempFile::new()?;
+        let policy = if with_policy {
+            use std::io::Write as _;
+            write!(policy_file, "{}", aa_gateway::policy::resolve::ALLOW_ALL_TEMPLATE)?;
+            policy_file.flush()?;
+            let (alert_tx, _) = tokio::sync::broadcast::channel::<aa_gateway::budget::BudgetAlert>(64);
+            let engine = aa_gateway::PolicyEngine::load_from_file(policy_file.path(), alert_tx)
+                .map_err(|e| anyhow::anyhow!("allow-all policy: {e:?}"))?;
+            let (audit_tx, mut audit_rx) = tokio::sync::mpsc::channel::<aa_core::AuditEntry>(4096);
+            // The audit chain needs a live receiver or every decision would be dropped.
+            tokio::spawn(async move { while audit_rx.recv().await.is_some() {} });
+            Some(aa_gateway::service::PolicyServiceImpl::with_registry(
+                Arc::new(engine),
+                Arc::clone(&registry),
+                audit_tx,
+                Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                [0u8; 32],
+            ))
+        } else {
+            None
+        };
         let serving = tokio::spawn(async move {
-            let _ = tonic::transport::Server::builder()
-                .add_service(AgentLifecycleServiceServer::new(service))
+            let _policy_file = policy_file;
+            let mut server = tonic::transport::Server::builder();
+            let mut router = server.add_service(AgentLifecycleServiceServer::new(service));
+            if let Some(policy) = policy {
+                router = router.add_service(
+                    aa_proto::assembly::policy::v1::policy_service_server::PolicyServiceServer::new(policy),
+                );
+            }
+            let _ = router
                 .serve_with_incoming_shutdown(tokio_stream::wrappers::TcpListenerStream::new(listener), async {
                     let _ = rx.await;
                 })
