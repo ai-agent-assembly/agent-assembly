@@ -471,6 +471,23 @@ fn channel_pair() -> std::io::Result<(UnixDatagram, OwnedFd)> {
     Ok((server, OwnedFd::from(client)))
 }
 
+/// Confirm the inherited channel is served, then keep it from this process's own children.
+///
+/// One step so that sealing cannot be skipped on the way to being governed by the channel.
+fn adopt_inherited_channel(channel: RawFd) -> Result<Governor, String> {
+    let governor = Governor::Inherited(channel);
+    match exchange(&governor, &Request::Ping) {
+        Ok((Response::Pong, _)) => {
+            seal_inherited_channel(channel);
+            Ok(governor)
+        }
+        Ok(_) | Err(_) => Err(
+            "this process inherited a governed `aasm run` authority channel but its supervisor does not answer"
+                .to_string(),
+        ),
+    }
+}
+
 /// Stop this process's own children inheriting the channel it was handed.
 ///
 /// The descriptor is this hop's parent's channel: it carries the parent's authority, which is
@@ -532,17 +549,7 @@ pub fn locate_governed_ancestor() -> Result<Option<Governor>, String> {
     // An inherited channel is the identity. It wins over the path: the path can be deleted and the
     // parent-pid chain can be lost, neither of which changes what this process holds.
     if let Some(channel) = inherited_channel() {
-        let governor = Governor::Inherited(channel);
-        return match exchange(&governor, &Request::Ping) {
-            Ok((Response::Pong, _)) => {
-                seal_inherited_channel(channel);
-                Ok(Some(governor))
-            }
-            Ok(_) | Err(_) => Err(
-                "this process inherited a governed `aasm run` authority channel but its supervisor does not answer"
-                    .to_string(),
-            ),
-        };
+        return adopt_inherited_channel(channel).map(Some);
     }
     let found = locate_in(&default_registry_dir(), std::process::id(), &Kernel)?;
     if let Some(endpoint) = &found {
@@ -2022,6 +2029,36 @@ mod tests {
                 "channel must still answer after hostile datagrams ({i}): {answered:?}"
             );
         }
+        drop(supervisor);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Adopting a served channel is what seals it: removing the seal from the adoption path
+    /// must fail here, not only the helper's own test.
+    #[test]
+    fn adopting_a_served_inherited_channel_seals_it_against_spawned_children() {
+        use std::os::fd::AsRawFd;
+        let base = private_dir("adopt-seals");
+        let dir = registry_dir_in(&base);
+        let procs = Arc::new(Fake::new(&[(std::process::id(), 1), (100, 1)]));
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs).expect("start");
+        let channel = supervisor.take_root_channel().expect("root channel");
+        let fd = channel.as_raw_fd();
+        let inherits = || {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("[ -e /dev/fd/{fd} ]"))
+                .status()
+                .expect("spawn sh")
+                .success()
+        };
+        set_cloexec(fd, false);
+        assert!(inherits(), "control: before adoption the child sees the descriptor");
+        adopt_inherited_channel(fd).expect("a served channel is adopted");
+        assert!(!inherits(), "adoption must keep the channel from spawned children");
         drop(supervisor);
         let _ = std::fs::remove_dir_all(&base);
     }
