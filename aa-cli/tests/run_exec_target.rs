@@ -399,8 +399,8 @@ async fn exec_refuses_a_lineage_the_gateway_will_not_accept() {
 
     let text = err.to_string();
     assert!(
-        text.contains("claims a parent") && text.contains("AAASM-6273"),
-        "the refusal must name the ancestry claim and the tracking ticket: {text}"
+        text.contains("claims a parent") && text.contains("no governed `aasm run` ancestor"),
+        "the refusal must name the ancestry claim and say nothing governed stands behind it: {text}"
     );
     assert!(
         !marker.exists(),
