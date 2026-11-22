@@ -1507,6 +1507,25 @@ mod plan {
             self.child_channel.take()
         }
 
+        /// Name this hop to its tool (AAASM-6273, M2), or scrub an inherited name.
+        ///
+        /// A governed hop (a tree root holding leases, or an admitted descendant) tells its tool
+        /// which `aasm run` governs it, overwriting its parent's value so the marker always names the
+        /// nearest hop. A launch that is neither removes any inherited value: it governs nothing, and a
+        /// stale marker would make a later independent root refuse. The marker is never admission
+        /// evidence; it can only turn a lost tree into a refusal.
+        pub(super) fn tag_governed_hop(&self, env: &mut HashMap<String, String>) {
+            let governed = self.authority.handoff.is_some() || !self.authority.lease_grants.is_empty();
+            match governed.then(run_supervisor::governed_hop_value).flatten() {
+                Some(value) => {
+                    env.insert(run_supervisor::GOVERNED_HOP_ENV.to_string(), value);
+                }
+                None => {
+                    env.remove(run_supervisor::GOVERNED_HOP_ENV);
+                }
+            }
+        }
+
         /// Hand the supervisor seed to the launch path (AAASM-6273).
         pub(super) fn take_tree_root(&mut self) -> Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)> {
             self.tree_root.take()
@@ -2467,6 +2486,7 @@ mod plan {
                 self.network.no_proxy(),
                 self.enforcement_mode,
             );
+            self.isolation.tag_governed_hop(&mut child_env);
             self.policy.resolution.annotate_env(&mut child_env);
 
             let (mut command, fidelity, adapter_error) = self.launch_command(handle);
@@ -5051,6 +5071,41 @@ mod plan {
             )
         }
 
+        /// AAASM-6273 (M2): a governed launch (leases held, or admitted by a governor) tags its tool
+        /// with its own hop and overwrites an inherited tag; a launch that governs nothing removes an
+        /// inherited one. Each arm has the opposite arm as its control.
+        #[test]
+        fn a_governed_launch_tags_its_tool_with_its_own_hop_and_an_ungoverned_one_scrubs_an_inherited_tag() {
+            let name = run_supervisor::GOVERNED_HOP_ENV;
+            let stale = || HashMap::from([(name.to_string(), "v1:1:2".to_string())]);
+            let args = base_args();
+            let with_leases =
+                resolution_with_leases("    - domain: network_egress\n      scope: whole\n      reason: tag test\n");
+            let holder = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &with_leases).expect("plan");
+            let bare = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &plain_resolution()).expect("plan");
+            let mut admitted =
+                RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &plain_resolution()).expect("plan");
+            admitted.authority.handoff = Some(run_supervisor::Governor::Inherited(61));
+
+            let own = format!("v1:{}:", std::process::id());
+            for (label, plan) in [("tree root with leases", &holder), ("admitted descendant", &admitted)] {
+                let mut env = stale();
+                plan.tag_governed_hop(&mut env);
+                assert!(env[name].starts_with(&own), "{label}: {}", env[name]);
+                assert_ne!(env[name], "v1:1:2", "{label}: the parent's tag must be overwritten");
+            }
+
+            let mut env = stale();
+            bare.tag_governed_hop(&mut env);
+            assert!(
+                !env.contains_key(name),
+                "a launch that governs nothing scrubs the inherited tag"
+            );
+            let mut env = HashMap::new();
+            bare.tag_governed_hop(&mut env);
+            assert!(!env.contains_key(name), "and does not invent one");
+        }
+
         /// Group A: a policy's `authority.leases` grants reach `plan.authority.lease_grants`,
         /// converted exactly as `authored_lease_from` would, across every
         /// `IsolationPlan` construction site this ticket rewired. Control:
@@ -5718,7 +5773,16 @@ mod plan {
 
         /// Run the real launch path into a recording backend and return what
         /// the backend received.
-        fn launch(mut plan: IsolationPlan, network: NetworkPlan, root_agent: Option<&str>) -> Captured {
+        fn launch(plan: IsolationPlan, network: NetworkPlan, root_agent: Option<&str>) -> Captured {
+            launch_with_env(plan, network, root_agent, &child_environment())
+        }
+
+        fn launch_with_env(
+            mut plan: IsolationPlan,
+            network: NetworkPlan,
+            root_agent: Option<&str>,
+            child_env: &std::collections::BTreeMap<String, String>,
+        ) -> Captured {
             let _env = crate::test_support::env_guard();
             let state = tempfile::tempdir().unwrap();
             // The receipt `run_confined` writes goes under this, never the
@@ -5735,7 +5799,7 @@ mod plan {
                 &identity,
                 &handle,
                 &command(),
-                &child_environment(),
+                child_env,
                 non_default_credentials(),
                 &network,
             );
@@ -5769,6 +5833,50 @@ mod plan {
 
             let mut guard = captured.lock().unwrap();
             std::mem::take(&mut *guard)
+        }
+
+        /// A resource ceiling gives the launch a non-empty requirement set; an empty one is refused as
+        /// "an unrestricted boundary is not what an empty requirement set means".
+        fn confined_plan() -> IsolationPlan {
+            let mut args = run_args(None);
+            args.max_pids = Some(64);
+            IsolationPlan {
+                lowering: Some(empty_lowering()),
+                resource_requirements: super::super::resource_requirements(&args),
+                ..Default::default()
+            }
+        }
+
+        /// AAASM-6273 (M2): the hop tag is part of the environment a confined backend is handed, and
+        /// no sanitiser strips it on the way. The control is the same launch without the tag.
+        #[test]
+        fn the_governed_hop_tag_reaches_a_confined_backend_unstripped() {
+            let name = run_supervisor::GOVERNED_HOP_ENV;
+            let mut env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            env.insert("UNRELATED_SETTING".to_string(), "kept".to_string());
+            let mut governed = IsolationPlan::default();
+            governed.authority.handoff = Some(run_supervisor::Governor::Inherited(61));
+            governed.tag_governed_hop(&mut env);
+            assert!(env.contains_key(name), "a governed plan must tag its tool");
+
+            for no_proxy in [false, true] {
+                let command = std::process::Command::new("tool");
+                let (effective, removed) = super::super::effective_child_env(&command, &env, no_proxy, &[]);
+                assert!(effective.contains_key(name), "no_proxy={no_proxy}: {effective:?}");
+                assert!(!removed.iter().any(|n| n == name));
+            }
+
+            let (effective, _) =
+                super::super::effective_child_env(&std::process::Command::new("tool"), &env, false, &[]);
+            let captured = launch_with_env(confined_plan(), network(), None, &effective);
+            let received = captured.child_env.expect("the backend was handed an environment");
+            assert_eq!(received.get(name), effective.get(name));
+
+            // Control: without the tag the backend's environment has none.
+            let (bare, _) =
+                super::super::effective_child_env(&std::process::Command::new("tool"), &HashMap::new(), false, &[]);
+            let captured = launch_with_env(confined_plan(), network(), None, &bare);
+            assert!(!captured.child_env.expect("environment").contains_key(name));
         }
 
         /// Lineage is exercised only where a parent authority is not needed:
