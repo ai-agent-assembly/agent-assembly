@@ -5835,9 +5835,14 @@ mod plan {
             std::mem::take(&mut *guard)
         }
 
+        /// A resource ceiling gives the launch a non-empty requirement set; an empty one is refused as
+        /// "an unrestricted boundary is not what an empty requirement set means".
         fn confined_plan() -> IsolationPlan {
+            let mut args = run_args(None);
+            args.max_pids = Some(64);
             IsolationPlan {
                 lowering: Some(empty_lowering()),
+                resource_requirements: super::super::resource_requirements(&args),
                 ..Default::default()
             }
         }
