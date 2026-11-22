@@ -1507,6 +1507,25 @@ mod plan {
             self.child_channel.take()
         }
 
+        /// Name this hop to its tool (AAASM-6273, M2), or scrub an inherited name.
+        ///
+        /// A governed hop (a tree root holding leases, or an admitted descendant) tells its tool
+        /// which `aasm run` governs it, overwriting its parent's value so the marker always names the
+        /// nearest hop. A launch that is neither removes any inherited value: it governs nothing, and a
+        /// stale marker would make a later independent root refuse. The marker is never admission
+        /// evidence; it can only turn a lost tree into a refusal.
+        pub(super) fn tag_governed_hop(&self, env: &mut HashMap<String, String>) {
+            let governed = self.authority.handoff.is_some() || !self.authority.lease_grants.is_empty();
+            match governed.then(run_supervisor::governed_hop_value).flatten() {
+                Some(value) => {
+                    env.insert(run_supervisor::GOVERNED_HOP_ENV.to_string(), value);
+                }
+                None => {
+                    env.remove(run_supervisor::GOVERNED_HOP_ENV);
+                }
+            }
+        }
+
         /// Hand the supervisor seed to the launch path (AAASM-6273).
         pub(super) fn take_tree_root(&mut self) -> Option<(run_supervisor::TreeRoot, Vec<aa_isolation::LeaseId>)> {
             self.tree_root.take()
@@ -2467,6 +2486,7 @@ mod plan {
                 self.network.no_proxy(),
                 self.enforcement_mode,
             );
+            self.isolation.tag_governed_hop(&mut child_env);
             self.policy.resolution.annotate_env(&mut child_env);
 
             let (mut command, fidelity, adapter_error) = self.launch_command(handle);
