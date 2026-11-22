@@ -1072,6 +1072,18 @@ fn refuse_busy(stream_fd: OwnedFd) {
     if let Ok(bytes) = serde_json::to_vec(&busy) {
         let _ = stream.write(&bytes);
     }
+    // Closing a socket that still holds unread request bytes makes Linux reset the connection and
+    // discard the reply just written, so the requester would see ECONNRESET instead of the refusal.
+    // Half-close, then drain what has already arrived, without blocking.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let mut sink = [0u8; 4096];
+    let mut drained = 0u64;
+    while drained < MAX_MESSAGE_BYTES {
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => drained += n as u64,
+        }
+    }
 }
 
 /// Whether the kernel reports `fd`'s peers all gone.
