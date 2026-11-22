@@ -546,9 +546,15 @@ fn rendezvous(channel: RawFd) -> std::io::Result<(UnixStream, UnixStream)> {
 /// A readable index entry for an ancestor that is corrupt or whose process start
 /// time cannot be read, or whose socket does not answer.
 pub fn locate_governed_ancestor() -> Result<Option<Governor>, String> {
+    locate_governed_ancestor_via(inherited_channel())
+}
+
+/// [`locate_governed_ancestor`] with the channel this process holds on [`CHANNEL_FD`] passed in, so
+/// a test can drive the real adoption route without owning the process-global descriptor 61.
+fn locate_governed_ancestor_via(inherited: Option<RawFd>) -> Result<Option<Governor>, String> {
     // An inherited channel is the identity. It wins over the path: the path can be deleted and the
     // parent-pid chain can be lost, neither of which changes what this process holds.
-    if let Some(channel) = inherited_channel() {
+    if let Some(channel) = inherited {
         return adopt_inherited_channel(channel).map(Some);
     }
     let found = locate_in(&default_registry_dir(), std::process::id(), &Kernel)?;
@@ -2067,6 +2073,40 @@ mod tests {
     /// anything it spawns. Measured with a real exec: the child asks the OS whether the
     /// descriptor exists in its own table, first without the seal (control: it is inherited, so
     /// the probe can see an inherited descriptor at all), then with it.
+    /// The route a launch actually takes is `locate_governed_ancestor`: if it ever stopped going
+    /// through the adoption step, the parent hop's wider channel would reach every child again.
+    #[test]
+    fn locating_through_an_inherited_channel_seals_it_against_spawned_children() {
+        use std::os::fd::AsRawFd;
+        let base = private_dir("locate-seals");
+        let dir = registry_dir_in(&base);
+        let procs = Arc::new(Fake::new(&[(std::process::id(), 1), (100, 1)]));
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs).expect("start");
+        let channel = supervisor.take_root_channel().expect("root channel");
+        let fd = channel.as_raw_fd();
+        let inherits = || {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("[ -e /dev/fd/{fd} ]"))
+                .status()
+                .expect("spawn sh")
+                .success()
+        };
+        set_cloexec(fd, false);
+        assert!(inherits(), "control: before locating, the child sees the descriptor");
+        let located = locate_governed_ancestor_via(Some(fd)).expect("a served channel is located");
+        assert!(located.is_some(), "an inherited channel is the governor");
+        assert!(
+            !inherits(),
+            "locating the governor must keep the channel from spawned children"
+        );
+        drop(supervisor);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn a_sealed_inherited_channel_is_not_passed_to_spawned_children() {
         use std::os::fd::AsRawFd;
