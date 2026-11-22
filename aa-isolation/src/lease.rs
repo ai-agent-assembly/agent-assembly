@@ -292,6 +292,9 @@ pub enum DelegationDenied {
     /// snapshot is refused here instead of being believed because its id is
     /// known.
     ContentMismatch,
+    /// A reaffirmation named a generation that does not advance the ledger's own
+    /// recorded one (AAASM-6273): equal or lower. A generation never moves backwards.
+    GenerationNotAdvanced,
     /// A root lease named an issuer the ledger was not built to trust
     /// (AAASM-6312). Asserted-only: this compares the lease's own claimed
     /// issuer id and is not authentication of that issuer.
