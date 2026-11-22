@@ -1269,7 +1269,14 @@ jobs:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@3f7f2bd74f95d407a45d96b106f26d4f6c238fab # cargo-llvm-cov
+        # AAASM-6479: the previous pin (3f7f2bd, April 2026) knows cargo-llvm-cov only up to
+        # 0.8.5, which cannot find nextest's test binaries under rustc 1.100.0 (stable since
+        # 2026-11-13): the report then holds no unit-test coverage and still exits 0. 0.8.7 is
+        # the version verified against both 1.99.1 and 1.100.0; the pinned action commit is
+        # the one whose manifest lists it.
+        uses: taiki-e/install-action@41e135bca37b18b5a9cc134855b5b3bccbedbf26 # cargo-llvm-cov
+        with:
+          tool: cargo-llvm-cov@0.8.7
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83c419a40a2e48673b2c523337e57f602dfe53c9 # cargo-nextest
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -1344,7 +1351,10 @@ jobs:
           if [ "${{ matrix.shard }}" = "4" ]; then
             cargo llvm-cov nextest --no-report -p aa-devtool-claude-code --no-tests=pass
           fi
-          cargo llvm-cov --no-run --lcov --output-path lcov.info
+          cargo llvm-cov report --lcov --output-path lcov.info
+      - name: Check the report holds the unit tests (AAASM-6479)
+        # The report command exits 0 when it finds no test binaries, so assert on the data.
+        run: python scripts/check_lcov_unit_tests.py lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
@@ -1388,7 +1398,7 @@ jobs:
           path: shard-lcov
       - name: Test the merger
         working-directory: scripts
-        run: python -m unittest test_merge_lcov -v
+        run: python -m unittest test_merge_lcov test_check_lcov_unit_tests -v
       - name: Merge the shard reports
         run: |
           set -euo pipefail
