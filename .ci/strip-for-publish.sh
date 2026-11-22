@@ -151,6 +151,11 @@ DELETED_FILES=(
     # being left behind importing a held-back dep.
     "${REPO_ROOT}/aa-cli/src/commands/run_workspace_tx.rs"
     "${REPO_ROOT}/aa-integration-tests/tests/cli_run_workspace_tx.rs"
+    # AAASM-6273: the tree-root supervisor and the descendant-side handoff client.
+    # Consume aa-isolation (publish = false) and are only reached from run.rs;
+    # the process-tree suite drives real `aasm run` descendants.
+    "${REPO_ROOT}/aa-cli/src/commands/run_supervisor.rs"
+    "${REPO_ROOT}/aa-cli/tests/run_process_tree.rs"
     "${REPO_ROOT}/aa-cli/src/commands/tools.rs"
     "${REPO_ROOT}/aa-cli/tests/run_command.rs"
     # AAASM-6259: drives `aasm run --dry-run`, which the published binary lacks.

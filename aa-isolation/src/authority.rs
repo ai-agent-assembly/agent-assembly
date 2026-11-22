@@ -65,10 +65,7 @@ use std::time::SystemTime;
 
 use crate::attenuation::{Ancestry, ChainFault, ParentAuthority};
 use crate::capability::CapabilityDomain;
-use crate::lease::{
-    limits_narrower_or_equal, revocation_generation, CapabilityLease, DelegationRule, LeaseId, LeaseInvalid,
-    ScopeOrdering,
-};
+use crate::lease::{limits_narrower_or_equal, CapabilityLease, DelegationRule, LeaseId, LeaseInvalid, ScopeOrdering};
 use crate::spec::{ExecutionSpec, IdentityRef, RequirementScope};
 
 #[cfg(feature = "serde")]
@@ -985,7 +982,9 @@ fn check_attenuation(
         if delegation_rank(child_lease.delegation()) > delegation_rank(provenance.parent_delegation) {
             return Err(AuthorityRefusal::DelegationRightsExceedParent { domain });
         }
-        if provenance.parent_generation != revocation_generation(parent_lease.revocation()) {
+        // AAASM-6273: compared with the generation the LEDGER holds, not the snapshot's own
+        // `revocation` field, which a caller-built snapshot chooses for itself.
+        if parent.ledger().generation(parent_lease.id()) != Some(provenance.parent_generation) {
             return Err(AuthorityRefusal::StaleParentGeneration { domain });
         }
     }
@@ -1459,10 +1458,12 @@ mod tests {
             );
         }
 
-        /// AAASM-6273 / rc.8 J82 deferral: a launch that claims a parent but has
-        /// no trusted way to resolve that parent's authority (every
-        /// cross-process launch today) must be refused, never admitted with
-        /// its own, unattenuated authority. Both spec shapes are covered
+        /// AAASM-6273: a launch that claims a parent but has no trusted way to
+        /// resolve that parent's authority — in `aasm run`, a `--root-agent` claim
+        /// with no governed tree-root ancestor behind it — must be refused, never
+        /// admitted with its own, unattenuated authority. (A descendant that DOES
+        /// have a tree-root is resolved by the supervisor, in the root, and never
+        /// reaches this arm.) Both spec shapes are covered
         /// because `Ancestry::UnresolvedParent` must refuse unconditionally,
         /// not only for lease-aware specs. The controls prove the gate does
         /// not simply refuse everything: this test asserts only the genuine-root
@@ -1492,6 +1493,104 @@ mod tests {
             // Control: a genuine root (no claimed parent) is admitted.
             let root = ExecutionSpec::new("echo", IdentityRef::root("root-agent")).with_requirement(requirement);
             assert!(authority_gate(&root, &Ancestry::Root, t(1_500)).is_ok());
+        }
+
+        /// AAASM-6273: the ledger holds the generation. A child derived before a reaffirmation is stale,
+        /// one derived after is admitted, and a snapshot rewritten to the child's stamped generation
+        /// cannot hide the reaffirmation (the pre-fix comparison read the snapshot and admitted it).
+        #[test]
+        fn the_ledger_holds_the_generation_so_a_reaffirmation_stales_older_children_and_a_forged_snapshot_cannot_hide_it(
+        ) {
+            let scope = RequirementScope::Selectors(vec!["permit-only:/workspace/sub".to_string()]);
+            let parent_lease = parent_fs_lease(RequirementScope::Selectors(vec!["permit-only:/workspace".to_string()]));
+            let ledger = Arc::new(DelegationLedger::new());
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let derive = |id: &str| {
+                ledger
+                    .derive_child(
+                        &parent_lease,
+                        ChildLeaseRequest {
+                            child_id: crate::lease::LeaseId::new(id),
+                            child_subject: child_identity(),
+                            child_scope: scope.clone(),
+                            child_expires_at: t(4_000),
+                            mode: InheritanceMode::Narrower,
+                            child_delegation: DelegationRule::NotDelegable,
+                            child_limits: None,
+                        },
+                        t(1_100),
+                    )
+                    .expect("derives")
+            };
+            let before = derive("child-before");
+            let honest = Ancestry::Parent(Box::new(gated_parent_in(Arc::clone(&ledger), parent_lease.clone())));
+            // Control: before any reaffirmation the child is admitted.
+            assert!(authority_gate(&child_spec_with_lease(before.clone(), scope.clone()), &honest, t(1_500)).is_ok());
+
+            ledger.reaffirm(parent_lease.id(), 1).expect("advances");
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(before.clone(), scope.clone()), &honest, t(1_500)),
+                Err(AuthorityRefusal::StaleParentGeneration {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+            // A snapshot whose own generation is rewritten to the child's stamped one does not help.
+            let forged = Ancestry::Parent(Box::new(gated_parent_in(
+                Arc::clone(&ledger),
+                parent_lease
+                    .clone()
+                    .with_revocation(RevocationState::Active { generation: 0 }),
+            )));
+            assert_eq!(
+                authority_gate(&child_spec_with_lease(before, scope.clone()), &forged, t(1_500)),
+                Err(AuthorityRefusal::StaleParentGeneration {
+                    domain: CapabilityDomain::FilesystemRead
+                })
+            );
+            // Re-derived under the new generation, the same shape is admitted.
+            let after = derive("child-after");
+            assert!(authority_gate(&child_spec_with_lease(after, scope), &honest, t(1_500)).is_ok());
+        }
+
+        /// A reaffirmation only ever advances an active, verifiable lease, and never touches content.
+        #[test]
+        fn reaffirm_advances_only_and_never_changes_content_or_resurrects() {
+            let parent_lease = parent_fs_lease(RequirementScope::Whole);
+            let ledger = DelegationLedger::new();
+            ledger.register_parent(&parent_lease).expect("root registers");
+            let id = parent_lease.id().clone();
+            assert_eq!(
+                ledger.reaffirm(&id, 0),
+                Err(crate::lease::DelegationDenied::GenerationNotAdvanced)
+            );
+            ledger.reaffirm(&id, 3).expect("advances");
+            assert_eq!(ledger.generation(&id), Some(3));
+            assert_eq!(
+                ledger.reaffirm(&id, 3),
+                Err(crate::lease::DelegationDenied::GenerationNotAdvanced)
+            );
+            assert_eq!(
+                ledger.reaffirm(&id, 2),
+                Err(crate::lease::DelegationDenied::GenerationNotAdvanced)
+            );
+            assert_eq!(
+                ledger.generation(&id),
+                Some(3),
+                "a refused reaffirmation leaves the ledger unchanged"
+            );
+            assert!(
+                ledger.content_matches(&parent_lease),
+                "a reaffirmation never changes content"
+            );
+            assert_eq!(
+                ledger.reaffirm(&crate::lease::LeaseId::new("nobody"), 9),
+                Err(crate::lease::DelegationDenied::AncestryUnverifiable)
+            );
+            ledger.revoke(&id, 4, "revoked");
+            assert_eq!(
+                ledger.reaffirm(&id, 99),
+                Err(crate::lease::DelegationDenied::ParentRevoked)
+            );
         }
 
         /// §4.3: a child requesting a path outside its parent's grant is

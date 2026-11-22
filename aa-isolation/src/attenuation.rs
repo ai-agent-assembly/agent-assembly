@@ -223,9 +223,10 @@ pub struct DelegationLedger {
 impl DelegationLedger {
     /// A ledger tracking no leases yet and trusting ANY root issuer.
     ///
-    /// Unrestricted on purpose for in-process and test use; no production path
-    /// builds a ledger today (AAASM-6273 will). Anything that seeds a chain from
-    /// outside this process must use [`with_trusted_issuer`](Self::with_trusted_issuer).
+    /// Unrestricted on purpose for in-process and test use. The one production
+    /// caller, `aasm run`'s tree-root supervisor (AAASM-6273), builds its ledger
+    /// with [`with_trusted_issuer`](Self::with_trusted_issuer), and anything else
+    /// that seeds a chain from outside this process must do the same.
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -303,6 +304,43 @@ impl DelegationLedger {
                 link: Link::Unlinked,
                 content: None,
             });
+    }
+
+    /// The generation the ledger itself holds for `lease` (AAASM-6312/6273), or `None` for an id it
+    /// does not know. This, not any snapshot's own `revocation` field, is what a child's recorded
+    /// `parent_generation` is compared with: a snapshot is caller-built and chooses its own number.
+    pub(crate) fn generation(&self, lease: &LeaseId) -> Option<u64> {
+        let entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        entries.get(lease).map(|entry| revocation_generation(&entry.state))
+    }
+
+    /// Advance the ledger's recorded generation for `lease` to `generation`.
+    ///
+    /// Writer-side only (the ledger lives in the supervisor process; nothing else holds it).
+    /// A child derived at an earlier generation becomes stale: re-derive under the new one.
+    ///
+    /// # Errors
+    ///
+    /// * [`DelegationDenied::AncestryUnverifiable`] for an id the ledger does not know, or whose
+    ///   chain it cannot verify.
+    /// * [`DelegationDenied::ParentRevoked`] for a lease that, or whose ancestor, is revoked: a
+    ///   revocation is never undone by a reaffirmation.
+    /// * [`DelegationDenied::GenerationNotAdvanced`] when `generation` is not strictly greater.
+    ///
+    /// On any error the ledger is unchanged. The lease's content is never touched, so a
+    /// reaffirmation cannot make `content_matches` fail.
+    pub fn reaffirm(&self, lease: &LeaseId, generation: u64) -> Result<(), DelegationDenied> {
+        let mut entries = self.entries.lock().expect("DelegationLedger mutex poisoned");
+        Self::verify_chain_locked(&entries, lease).map_err(|fault| match fault {
+            ChainFault::Revoked { .. } => DelegationDenied::ParentRevoked,
+            ChainFault::Unverifiable { .. } => DelegationDenied::AncestryUnverifiable,
+        })?;
+        let entry = entries.get_mut(lease).ok_or(DelegationDenied::AncestryUnverifiable)?;
+        if generation <= revocation_generation(&entry.state) {
+            return Err(DelegationDenied::GenerationNotAdvanced);
+        }
+        entry.state = RevocationState::Active { generation };
+        Ok(())
     }
 
     /// Whether `lease` and every ancestor above it are known, linked and
