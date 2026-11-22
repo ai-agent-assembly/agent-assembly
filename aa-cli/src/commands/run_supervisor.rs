@@ -179,6 +179,67 @@ fn kernel_proc(_pid: u32) -> Option<(u32, u64)> {
 // Wire protocol
 // ---------------------------------------------------------------------------
 
+/// Names the environment variable a governed `aasm run` sets for its tool (AAASM-6273, M2).
+///
+/// Its value is `v1:<pid>:<start marker>` of the `aasm run` that governs the tool. It is never
+/// admission evidence: it cannot place a process in a tree or widen anything. It can only make a
+/// launch that lost both its channel and its parent chain refuse instead of running as a fresh root
+/// above its parent's ceiling, and make a path admission refuse when the parent chain does not land on
+/// the hop it names. The name avoids `KEY`/`TOKEN`/`SECRET` so no credential scrubber strips it.
+pub const GOVERNED_HOP_ENV: &str = "AA_GOVERNED_HOP";
+
+/// A hop as named by [`GOVERNED_HOP_ENV`]: the `aasm run` pid and its start marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HopKey {
+    /// The governing `aasm run` process.
+    pub pid: u32,
+    /// Its start marker, so a reused pid is not mistaken for it.
+    pub start: u64,
+}
+
+/// What this process's environment says about the hop that governs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HopMarker {
+    /// No marker: this process was not born under a governed `aasm run` (or scrubbed it).
+    Absent,
+    /// A well-formed marker.
+    Present(HopKey),
+    /// Set but unparseable. Counts as present: a broken marker is evidence of a governed ancestry.
+    Malformed,
+}
+
+impl HopMarker {
+    fn is_present(self) -> bool {
+        !matches!(self, Self::Absent)
+    }
+
+    fn parse(raw: Option<&std::ffi::OsStr>) -> Self {
+        let Some(raw) = raw else { return Self::Absent };
+        let parsed = raw.to_str().and_then(|text| {
+            let mut parts = text.split(':');
+            (parts.next()? == "v1").then_some(())?;
+            let key = HopKey {
+                pid: parts.next()?.parse().ok()?,
+                start: parts.next()?.parse().ok()?,
+            };
+            parts.next().is_none().then_some(key)
+        });
+        parsed.map_or(Self::Malformed, Self::Present)
+    }
+}
+
+/// The marker in this process's environment.
+pub fn hop_marker_from_env() -> HopMarker {
+    HopMarker::parse(std::env::var_os(GOVERNED_HOP_ENV).as_deref())
+}
+
+/// The value this process sets for its tool as [`GOVERNED_HOP_ENV`], or `None` when the kernel
+/// cannot report this process's start marker (the variable is then left unset).
+pub fn governed_hop_value() -> Option<String> {
+    let pid = std::process::id();
+    Kernel.start_marker(pid).map(|start| format!("v1:{pid}:{start}"))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 enum Request {
@@ -190,6 +251,11 @@ enum Request {
         /// The sender's gateway registration DID. The gateway resolves a declared parent by DID, so
         /// a `--root-agent` is matched against an ancestor's agent id OR its DID.
         registration_did: String,
+        /// The hop the sender's environment says it was born under (`AA_GOVERNED_HOP`), sent only on
+        /// the path route. A claim that can only cause refusal: the supervisor refuses when the
+        /// parent-pid walk does not land on exactly this hop.
+        #[serde(default)]
+        expected_parent: Option<HopKey>,
     },
     /// Revoke every lease the root issued. Safe direction only: it removes authority.
     Revoke { reason: String },
@@ -546,18 +612,21 @@ fn rendezvous(channel: RawFd) -> std::io::Result<(UnixStream, UnixStream)> {
 /// A readable index entry for an ancestor that is corrupt or whose process start
 /// time cannot be read, or whose socket does not answer.
 pub fn locate_governed_ancestor() -> Result<Option<Governor>, String> {
-    locate_governed_ancestor_via(inherited_channel())
+    locate_governed_ancestor_via(inherited_channel(), hop_marker_from_env())
 }
 
 /// [`locate_governed_ancestor`] with the channel this process holds on [`CHANNEL_FD`] passed in, so
 /// a test can drive the real adoption route without owning the process-global descriptor 61.
-fn locate_governed_ancestor_via(inherited: Option<RawFd>) -> Result<Option<Governor>, String> {
+///
+/// `marker` is consulted only when no channel is held: a process that holds the channel is governed by
+/// it, whatever its environment says.
+fn locate_governed_ancestor_via(inherited: Option<RawFd>, marker: HopMarker) -> Result<Option<Governor>, String> {
     // An inherited channel is the identity. It wins over the path: the path can be deleted and the
     // parent-pid chain can be lost, neither of which changes what this process holds.
     if let Some(channel) = inherited {
         return adopt_inherited_channel(channel).map(Some);
     }
-    let found = locate_in(&default_registry_dir(), std::process::id(), &Kernel)?;
+    let found = locate_marked(&default_registry_dir(), std::process::id(), &Kernel, marker)?;
     if let Some(endpoint) = &found {
         probe(endpoint).map_err(|e| {
             format!(
@@ -568,6 +637,19 @@ fn locate_governed_ancestor_via(inherited: Option<RawFd>) -> Result<Option<Gover
         })?;
     }
     Ok(found.map(Governor::Path))
+}
+
+/// [`locate_in`] with the reparenting tripwire: a process that carries [`GOVERNED_HOP_ENV`] was born
+/// under a governed `aasm run`, so a walk that ends without finding the tree (for any of the ways it
+/// can end) means that tree is gone or unreachable, which is a refusal and never a fresh root.
+fn locate_marked(dir: &Path, start_pid: u32, procs: &dyn Procs, marker: HopMarker) -> Result<Option<Endpoint>, String> {
+    let found = locate_in(dir, start_pid, procs)?;
+    if found.is_none() && marker.is_present() {
+        return Err(format!(
+            "{GOVERNED_HOP_ENV} is set, so this process was started inside a governed `aasm run` tree, but that tree is gone or unreachable (the process lost its authority channel and no governed ancestor is reachable through its parent chain); it will not run as a fresh root above its parent's ceiling"
+        ));
+    }
+    Ok(found)
 }
 
 fn locate_in(dir: &Path, start_pid: u32, procs: &dyn Procs) -> Result<Option<Endpoint>, String> {
@@ -718,10 +800,46 @@ pub fn admit_via(
     declared_root_agent: Option<&str>,
     registration_did: &str,
 ) -> Result<Admission, Refusal> {
+    admit_expecting(
+        governor,
+        spec,
+        declared_root_agent,
+        registration_did,
+        hop_marker_from_env(),
+    )
+}
+
+/// [`admit_via`] with the environment marker passed in. On the path route the marker is sent so the
+/// supervisor can check the parent-pid walk landed on the hop the process was born under; over a
+/// channel the channel is the identity and the marker is not sent.
+///
+/// # Errors
+///
+/// As [`admit_via`]; a malformed marker on the path route is refused as `ParentHopMismatch`.
+pub fn admit_expecting(
+    governor: &Governor,
+    spec: &ExecutionSpec,
+    declared_root_agent: Option<&str>,
+    registration_did: &str,
+    marker: HopMarker,
+) -> Result<Admission, Refusal> {
+    if matches!((governor, marker), (Governor::Path(_), HopMarker::Malformed)) {
+        return Err(Refusal::new(
+            "ParentHopMismatch",
+            format!(
+                "{GOVERNED_HOP_ENV} is set but malformed, so the hop this process was born under cannot be established"
+            ),
+        ));
+    }
+    let expected_parent = match (governor, marker) {
+        (Governor::Path(_), HopMarker::Present(key)) => Some(key),
+        _ => None,
+    };
     let request = Request::Admit {
         spec: Box::new(spec.clone()),
         declared_root_agent: declared_root_agent.map(str::to_string),
         registration_did: registration_did.to_string(),
+        expected_parent,
     };
     match exchange(governor, &request).map_err(|e| Refusal::new("SupervisorUnreachable", e))? {
         // An admission with no channel would leave the parent's own channel on fd 61 in the
@@ -881,15 +999,17 @@ fn admit_hop(
     procs: &dyn Procs,
     now: SystemTime,
 ) -> Result<Admission, Refusal> {
-    admit_hop_as(state, peer, spec, declared_root_agent, "", procs, now)
+    admit_hop_as(state, peer, spec, declared_root_agent, "", None, procs, now)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn admit_hop_as(
     state: &mut State,
     peer: u32,
     spec: &ExecutionSpec,
     declared_root_agent: Option<&str>,
     registration_did: &str,
+    expected_parent: Option<HopKey>,
     procs: &dyn Procs,
     now: SystemTime,
 ) -> Result<Admission, Refusal> {
@@ -899,6 +1019,24 @@ fn admit_hop_as(
             format!("pid {peer} is not a descendant of any process this supervisor admitted"),
         ));
     };
+    // The process was born under the hop its environment names; a parent chain that lands on a
+    // different hop (or on none of that name) is a process that was moved above its parent.
+    if let Some(key) = expected_parent {
+        let bound = parent_pid == key.pid
+            && state
+                .hops
+                .get(&key.pid)
+                .is_some_and(|h| h.start_marker == Some(key.start));
+        if !bound {
+            return Err(Refusal::new(
+                "ParentHopMismatch",
+                format!(
+                    "pid {peer} was born under governed hop pid {} but its parent chain reaches hop pid {parent_pid}",
+                    key.pid
+                ),
+            ));
+        }
+    }
     admit_under(
         state,
         parent_pid,
@@ -1212,6 +1350,7 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
             spec,
             declared_root_agent,
             registration_did,
+            expected_parent,
         }) => match peer_pid(stream) {
             None => Response::Refused {
                 kind: "UnrecordedPeer".to_string(),
@@ -1228,6 +1367,7 @@ fn handle(stream: &mut UnixStream, shared: &Arc<Shared>, via: Via) {
                         &spec,
                         declared_root_agent.as_deref(),
                         &registration_did,
+                        expected_parent,
                         procs,
                         now,
                     ),
@@ -1717,6 +1857,7 @@ mod tests {
             &gen2,
             Some("did:key:root"),
             "did:key:gen2",
+            None,
             &procs,
             now(),
         );
@@ -1729,6 +1870,7 @@ mod tests {
             &gen3,
             Some("did:key:nobody"),
             "did:key:gen3",
+            None,
             &procs,
             now(),
         )
@@ -1740,6 +1882,7 @@ mod tests {
             &gen3,
             Some("did:key:gen2"),
             "did:key:gen3",
+            None,
             &procs,
             now(),
         )
@@ -2122,7 +2265,7 @@ mod tests {
         };
         set_cloexec(fd, false);
         assert!(inherits(), "control: before locating, the child sees the descriptor");
-        let located = locate_governed_ancestor_via(Some(fd)).expect("a served channel is located");
+        let located = locate_governed_ancestor_via(Some(fd), HopMarker::Absent).expect("a served channel is located");
         assert!(located.is_some(), "an inherited channel is the governor");
         assert!(
             !inherits(),
