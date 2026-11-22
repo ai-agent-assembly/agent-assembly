@@ -2382,4 +2382,179 @@ mod tests {
             "two processes must not share a start marker"
         );
     }
+
+    // --- AAASM-6273 M2: the reparenting tripwire and hop binding ---
+
+    fn present() -> HopMarker {
+        HopMarker::Present(HopKey { pid: 100, start: 101 })
+    }
+
+    /// One walk per way `locate_in` can end in `Ok(None)`: `(label, registry dir, start pid)`.
+    fn lost_tree_exits(base: &Path) -> Vec<(&'static str, PathBuf, u32)> {
+        let usable = registry_dir_in(base);
+        ensure_registry_dir(&usable).unwrap();
+        let shared = base.join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+        vec![
+            ("registry dir missing", base.join("absent"), 300),
+            ("dir not exclusively owned", shared, 300),
+            ("parent_of is None", usable.clone(), 777),
+            ("parent is init", usable.clone(), 500),
+            ("depth exhausted", usable, 2000),
+        ]
+    }
+
+    fn lost_tree_table() -> Fake {
+        let mut edges = vec![(110, 100), (200, 110), (210, 200), (300, 210), (999, 1), (500, 999)];
+        // A chain longer than MAX_ANCESTRY_DEPTH that never meets an index or init.
+        edges.extend((2000..2100).map(|p| (p, p + 1)));
+        Fake::new(&edges)
+    }
+
+    #[test]
+    fn a_marker_turns_every_lost_tree_exit_into_a_refusal_and_without_it_the_walk_reports_a_root() {
+        let base = private_dir("tripwire");
+        let procs = lost_tree_table();
+        for (label, dir, start) in lost_tree_exits(&base) {
+            // Control: with no marker the very same walk is a root launch.
+            assert_eq!(
+                locate_marked(&dir, start, &procs, HopMarker::Absent).unwrap(),
+                None,
+                "{label}: control"
+            );
+            for marker in [present(), HopMarker::Malformed] {
+                let err = locate_marked(&dir, start, &procs, marker).expect_err(label);
+                assert!(
+                    err.contains(GOVERNED_HOP_ENV) && err.contains("gone or unreachable"),
+                    "{label}: {err}"
+                );
+            }
+        }
+
+        // The marker never replaces a found tree: with an index for pid 100 the walk finds it.
+        let dir = registry_dir_in(&base);
+        let entry = IndexEntry {
+            supervisor_pid: 100,
+            start_marker: procs.start_marker(100).unwrap(),
+            socket: dir.join("x.sock"),
+        };
+        std::fs::write(dir.join("100.idx"), serde_json::to_vec(&entry).unwrap()).unwrap();
+        let found = locate_marked(&dir, 300, &procs, present()).unwrap();
+        assert_eq!(found.map(|e| e.supervisor_pid), Some(100));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn only_a_well_formed_v1_value_is_a_marker_and_any_other_value_counts_as_present() {
+        use std::ffi::OsStr;
+        let key = HopKey { pid: 12, start: 34 };
+        assert_eq!(HopMarker::parse(Some(OsStr::new("v1:12:34"))), HopMarker::Present(key));
+        assert_eq!(HopMarker::parse(None), HopMarker::Absent);
+        for bad in [
+            "",
+            "v1",
+            "v1:12",
+            "v2:12:34",
+            "v1:x:34",
+            "v1:12:y",
+            "v1:12:34:5",
+            "12:34",
+        ] {
+            assert_eq!(HopMarker::parse(Some(OsStr::new(bad))), HopMarker::Malformed, "{bad:?}");
+        }
+        assert!(governed_hop_value().is_some_and(|v| v.starts_with(&format!("v1:{}:", std::process::id()))));
+    }
+
+    /// `100 (root) <- 110 <- 200 (hop H, admitted) <- 210 <- 300 (R)`, and a second table in which
+    /// 300 hangs directly below the root although H (200) is recorded.
+    fn hop_key(procs: &Fake, pid: u32) -> HopKey {
+        HopKey {
+            pid,
+            start: procs.start_marker(pid).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_path_admission_bound_to_the_hop_its_marker_names_is_admitted_and_a_different_hop_is_refused() {
+        let leases = |who: &str| vec![fs_read(sel(&["/a"]), 3600, true, who)];
+        let admit_r = |state: &mut State, procs: &Fake, expected: Option<HopKey>| {
+            let r = spec_with("r", leases("r"));
+            admit_hop_as(state, 300, &r, None, "", expected, procs, now())
+        };
+
+        // P -> H -> R: the walk lands on H and the marker names H.
+        let procs = chain();
+        let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
+        admit_hop(&mut state, 200, &spec_with("h", leases("h")), None, &procs, now()).expect("H admitted");
+        let under_h = admit_r(&mut state, &procs, Some(hop_key(&procs, 200))).expect("R admitted under H");
+        assert_eq!(under_h.lineage, vec!["root".to_string(), "h".to_string()]);
+
+        // P -> R with H recorded: the marker names H but R's chain reaches only the root.
+        let procs = Fake::new(&[(110, 100), (200, 110), (300, 110)]);
+        let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
+        admit_hop(&mut state, 200, &spec_with("h", leases("h")), None, &procs, now()).expect("H admitted");
+        let refused = admit_r(&mut state, &procs, Some(hop_key(&procs, 200))).expect_err("wrong hop");
+        assert_eq!(refused.kind, "ParentHopMismatch", "{refused}");
+        // Controls: the marker naming the hop the walk does land on, and no marker at all
+        // (characterization: an unmarked process is placed by its walk and admitted under the root).
+        let ok = admit_r(&mut state, &procs, Some(hop_key(&procs, 100))).expect("marker names the root");
+        assert_eq!(ok.lineage, vec!["root".to_string()]);
+        let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
+        admit_hop(&mut state, 200, &spec_with("h", leases("h")), None, &procs, now()).expect("H admitted");
+        let unmarked = admit_r(&mut state, &procs, None).expect("no marker is the old behaviour");
+        assert_eq!(unmarked.lineage, vec!["root".to_string()]);
+
+        // An unknown hop, a wrong start marker and a reused pid are all refused.
+        let procs = chain();
+        let mut state = root_state(vec![fs_read(sel(&["/a"]), 3600, true, "root")], &procs);
+        admit_hop(&mut state, 200, &spec_with("h", leases("h")), None, &procs, now()).expect("H admitted");
+        for (label, key) in [
+            ("unknown hop", HopKey { pid: 4321, start: 4322 }),
+            ("wrong start marker", HopKey { pid: 200, start: 5 }),
+        ] {
+            let refused = admit_r(&mut state, &procs, Some(key)).expect_err(label);
+            assert_eq!(refused.kind, "ParentHopMismatch", "{label}: {refused}");
+        }
+        let named = hop_key(&procs, 200);
+        procs.markers.lock().unwrap().insert(200, 9_999_999);
+        let refused = admit_r(&mut state, &procs, Some(named)).expect_err("reused pid");
+        assert_eq!(refused.kind, "ParentHopMismatch", "{refused}");
+    }
+
+    #[test]
+    fn the_marker_is_sent_over_the_path_and_checked_by_the_supervisor_and_ignored_over_a_channel() {
+        let base = private_dir("marker-wire");
+        let dir = registry_dir_in(&base);
+        let me = std::process::id();
+        let procs = Arc::new(Fake::new(&[(me, 100), (100, 1)]));
+        procs.markers.lock().unwrap().insert(me, 7);
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs.clone()).expect("start");
+        let root_channel = supervisor.take_root_channel().expect("root channel");
+        let endpoint = Endpoint {
+            supervisor_pid: 100,
+            socket: supervisor.socket().to_path_buf(),
+        };
+        let ask = spec_with("child", vec![fs_read(sel(&["/a"]), 3600, true, "child")]);
+        let path = Governor::Path(endpoint);
+        let wrong = HopMarker::Present(HopKey { pid: 4242, start: 1 });
+
+        let refused = admit_expecting(&path, &ask, None, "did:key:c", wrong).expect_err("wrong hop");
+        assert_eq!(refused.kind, "ParentHopMismatch", "{refused}");
+        let malformed = admit_expecting(&path, &ask, None, "did:key:c", HopMarker::Malformed).expect_err("malformed");
+        assert_eq!(malformed.kind, "ParentHopMismatch", "{malformed}");
+
+        // Controls: the marker that names the walk's hop, and then a channel, which ignores a marker
+        // that would have been refused on the path.
+        let right = HopMarker::Present(hop_key(&procs, 100));
+        admit_expecting(&path, &ask, None, "did:key:c", right).expect("the right hop is admitted");
+        procs.markers.lock().unwrap().insert(me, 8);
+        let channel = Governor::Inherited(root_channel.as_raw_fd());
+        admit_expecting(&channel, &ask, None, "did:key:c", wrong).expect("a channel ignores the marker");
+        drop(supervisor);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
