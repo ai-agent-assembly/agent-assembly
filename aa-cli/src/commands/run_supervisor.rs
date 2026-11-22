@@ -1028,6 +1028,24 @@ impl Drop for HandlerSlot {
     }
 }
 
+/// Tell a requester the channel's handler budget is full, instead of letting it wait out its read
+/// timeout with no answer. One non-blocking write: the refusal is a few dozen bytes, so it fits the
+/// socket buffer, and a peer that is not reading must not hold the channel loop (a blocking write
+/// here would let a hostile descendant stall every other request on its hop's channel).
+fn refuse_busy(stream_fd: OwnedFd) {
+    let mut stream = UnixStream::from(stream_fd);
+    if stream.set_nonblocking(true).is_err() {
+        return;
+    }
+    let busy = Response::Refused {
+        kind: "SupervisorBusy".to_string(),
+        detail: format!("this hop's channel is already serving {MAX_CONCURRENT_HANDLERS} requests; retry shortly"),
+    };
+    if let Ok(bytes) = serde_json::to_vec(&busy) {
+        let _ = stream.write(&bytes);
+    }
+}
+
 /// Whether the kernel reports `fd`'s peers all gone.
 fn hung_up(fd: RawFd) -> bool {
     let mut poll = libc::pollfd {
@@ -1257,6 +1275,7 @@ fn open_channel(shared: &Arc<Shared>, hop: u32, marker: Option<u64>) -> std::io:
                             continue;
                         }
                         let Some(slot) = HandlerSlot::take(&handlers) else {
+                            refuse_busy(stream_fd);
                             continue;
                         };
                         let mut stream = UnixStream::from(stream_fd);
@@ -1988,6 +2007,53 @@ mod tests {
                 "channel must still answer after hostile datagrams ({i}): {answered:?}"
             );
         }
+        drop(supervisor);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_full_handler_budget_answers_busy_instead_of_dropping_the_request() {
+        let base = private_dir("busy-budget");
+        let dir = registry_dir_in(&base);
+        let procs = Arc::new(Fake::new(&[(std::process::id(), 1), (100, 1)]));
+        let spec = spec_with("root", vec![fs_read(sel(&["/a"]), 3600, true, "root")]);
+        let witness = authority_gate(&spec, &Ancestry::Root, now()).unwrap();
+        let (root, _) = TreeRoot::seed(&spec, &witness, ISSUER, "did:key:root");
+        let mut supervisor = TreeSupervisor::start_in(&dir, 100, root, procs).expect("start");
+        let channel = supervisor.take_root_channel().expect("root channel");
+
+        // Requests that connect and then say nothing hold a handler until the read times out.
+        let mut silent = Vec::new();
+        for _ in 0..MAX_CONCURRENT_HANDLERS {
+            let (mine, theirs) = UnixStream::pair().expect("pair");
+            sendmsg_fd(channel.as_raw_fd(), &[0u8], Some(theirs.as_raw_fd())).expect("send");
+            silent.push(mine);
+        }
+        let started = std::time::Instant::now();
+        let answered = exchange(&Governor::Inherited(channel.as_raw_fd()), &Request::Ping);
+        match answered {
+            Ok((Response::Refused { kind, .. }, _)) => assert_eq!(kind, "SupervisorBusy"),
+            other => panic!("a full budget must refuse explicitly, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < IO_TIMEOUT,
+            "the refusal must not wait out the read timeout"
+        );
+
+        // Once the silent requests are gone the channel serves again.
+        drop(silent);
+        let mut served = false;
+        for _ in 0..200 {
+            if matches!(
+                exchange(&Governor::Inherited(channel.as_raw_fd()), &Request::Ping),
+                Ok((Response::Pong, _))
+            ) {
+                served = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(served, "slots must be released when the held requests end");
         drop(supervisor);
         let _ = std::fs::remove_dir_all(&base);
     }
