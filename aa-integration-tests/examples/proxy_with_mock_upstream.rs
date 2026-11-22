@@ -69,11 +69,12 @@ const UPSTREAM_ENV: &str = "AA_TEST_PROXY_UPSTREAM";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // AAASM-6262: `aasm` asks for this before it hands any proxy the operator's
-    // provider keys on stdin (`provider_keys::preflight`), and refuses a launch
-    // whose proxy cannot answer. Mirrors `aa-proxy`'s own `--capabilities`.
-    if std::env::args().nth(1).as_deref() == Some("--capabilities") {
+    // `aasm run` asks a proxy what it can receive on stdin before it hands one a
+    // launch grant, and refuses a proxy that does not answer. This binary stands
+    // in for `aa-proxy`, so it answers exactly as the shipped binary does.
+    if std::env::args().any(|a| a == "--capabilities") {
         println!("{}", aa_proxy::credentials::PROVIDER_KEYS_STDIN_CAPABILITY);
+        println!("{}", aa_proxy::credentials::LAUNCH_GRANT_STDIN_CAPABILITY);
         return Ok(());
     }
 
@@ -94,6 +95,14 @@ async fn main() -> anyhow::Result<()> {
     let upstream: SocketAddr = raw
         .parse()
         .map_err(|e| anyhow::anyhow!("{UPSTREAM_ENV}={raw:?} is not a socket address: {e}"))?;
+
+    // Read before anything else can fail, as `aa_proxy::run` does: a governed
+    // launch delivers its grant on stdin, and a stand-in that ignored it would
+    // run ungoverned while looking governed.
+    let aa_proxy::credentials::StartupSecrets {
+        provider_keys,
+        launch_grant,
+    } = aa_proxy::credentials::StartupSecrets::load().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
 
     let mut config = aa_proxy::ProxyConfig::from_env()?;
     config.upstream_override = Some(upstream);
@@ -120,19 +129,15 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    // AAASM-6262: same credential delivery as `aa_proxy::run` -- keys arrive on
-    // stdin from `aasm`, never in this process's environment -- so a brokered
-    // launch can be measured end to end. Without it this stand-in would start
-    // with an empty store and forward the agent's own credential header.
-    let startup_credentials = aa_proxy::credentials::CredentialStore::load_startup()
-        .map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
     let mut server = aa_proxy::proxy::ProxyServer::new_with_audit_sink(config, ca, event_tx, audit_jsonl_tx);
-    if let Some(store) = startup_credentials {
-        let expected = store.len();
+    if let Some(store) = provider_keys {
         server = server.with_credentials(store);
+    }
+    if let Some(grant) = launch_grant {
+        server = server.with_launch_grant(grant);
         anyhow::ensure!(
-            server.credentials().len() == expected,
-            "refusing to start: the delivered provider credentials were not installed"
+            server.is_governed(),
+            "refusing to start: the delivered launch grant was not installed"
         );
     }
     server.run().await?;

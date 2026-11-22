@@ -72,6 +72,7 @@ fn llm_call_request(model: &str, prompt_tokens: i32) -> CheckActionRequest {
         span_id: "span-budget".into(),
         credential_token: String::new(),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

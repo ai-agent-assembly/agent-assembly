@@ -388,16 +388,21 @@ unenforced number was honored.
 
 ### What this amendment does not decide
 
-- **`aa-proxy` still evaluates every egress decision under the synthetic,
-  unregistered `PROXY_AGENT_ID` at Global policy tier.** `aa-proxy/src/network_enforce.rs`
-  already states this and rules out threading a real credentialed agent identity
-  into that per-connection path as a materially new trust boundary, out of scope for
-  this ticket. `EgressAuthority` is a **pre-launch** decision in `aa-isolation` — "is
-  this run authorized for brokered egress at this scope" — checked once, before any
-  backend is consulted; it is not a per-connection identity on the proxy path, and
-  nothing in this amendment changes what identity `aa-proxy` itself reasons under.
-  This is the residual most likely to be misread later, so it is stated plainly here
-  rather than left implicit.
+- **`aa-proxy` evaluates each egress decision for the agent the launch
+  registered, bound by a launch grant; this is proxy identity, not connection
+  origin.** `aa-proxy/src/network_enforce.rs` sends the registered triple and a
+  gateway-minted, short-lived grant with each network `CheckAction` (AAASM-6261);
+  the gateway answers `BOUND` and the proxy refuses an `Allow` that is not bound.
+  The grant is accepted only by `CheckAction`/`BatchCheck`, expires, and dies with
+  the registration; the agent's general registration token never reaches the
+  proxy. It does not prove the connecting process is the agent's: any local
+  process that reaches the proxy's loopback port is attributed to the launch. A
+  proxy with no grant sends a blank claim and is recorded as unattributed.
+  `EgressAuthority` is a **pre-launch** decision in `aa-isolation` — "is this run
+  authorized for brokered egress at this scope" — checked once, before any backend
+  is consulted; it is not a per-connection identity on the proxy path. This is the
+  residual most likely to be misread later, so it is stated plainly here rather
+  than left implicit.
 - No quantitative connection/byte/rate *enforcement* — see §17. Only the truthful
   statement and the refusal-on-mismatch exist after this amendment.
 - No credential injection (a separate ticket) — no type in `aa-isolation/src/egress.rs`
@@ -537,11 +542,11 @@ egress, applied here.
   anywhere in this repository. `check_required_mode` refuses, rather than
   silently passing, when a contract requires `RequiredMode::RunBoundEphemeralOnly`
   and no reported service offers it — see §20.
-- **Per-request/per-connection proxy identity attribution is unchanged.**
-  `aa-proxy/src/network_enforce.rs` still evaluates every decision under the
-  synthetic `PROXY_AGENT_ID` at Global policy tier, exactly as this document's
-  "What this amendment does not decide" for AAASM-6163 already states for egress.
-  Authority here is launch-level only: this
+- **Per-connection proxy identity is the launch's registered agent, bound by a
+  launch grant.** `aa-proxy/src/network_enforce.rs` evaluates each decision for the
+  agent the launch registered (AAASM-6261); that is proxy identity, not connection
+  origin (see the AAASM-6163 residual above). Authority here is launch-level only:
+  this
   run's own `IdentityRef` and credential lease subject, never a per-request
   identity on the proxy path.
 - **No revocation-latency claim.** `RevocationState`'s own existing documentation
@@ -1803,3 +1808,103 @@ The ledger issuer's identity string, the in-process `spec.identity`, what an `ap
 `policy_rule` string means remain asserted, not authenticated; identity is owned by AAASM-5533. Cross-process
 operation stays behind the §27 contract (the supervisor holds authority, the child presents nothing, nothing is
 serialized) and the B3 evidence on a real Linux kernel with Landlock ABI 3 or newer. This amendment activates nothing.
+
+## Amendment (AAASM-6273, ACCEPTED 2026-11-21): rc.8 handoff for unmodified `aasm run` descendants without B3
+
+**Status: ACCEPTED (narrower variant), 2026-11-21.** The founder accepted the option below in an
+interactive decision request in the implementing session on 2026-11-21, choosing "Accept the
+narrower variant" over accepting it exactly as drafted or rejecting it. The section was drafted by
+an AI coding agent; the acceptance is the founder's, recorded here from that session. "Narrower"
+means: the four departures listed under "The option proposed" are accepted only with the limits
+below stated as limits and never as passes; any containment or adversarial-agent claim still
+requires the B3 gate (§27-§30); and release material may say no more than "implemented for
+unmodified `aasm run` descendants, unconfined, with the limits above". The "implementation
+gated" amendment above (§27-§30) remains binding for everything this section does not depart from.
+
+### What the code on the implementing branch does
+
+The tree-root `aasm run` (a launch that carries at least one lease and has no governed ancestor)
+holds every hop's `ParentAuthority` in memory and serves a per-user Unix socket. A descendant
+`aasm run` sends only a request (its spec and the leases it asks for) and receives leases the root
+derived through `DelegationLedger::derive_child`, after `authority_gate` ran in the root against the
+descendant's verified parent. The descendant's place in the tree is established by what it **holds**:
+each admitted hop is handed a channel that is inherited by its tool and every descendant on a fixed
+descriptor, so a double-forked or environment-scrubbed descendant, or one whose path-based index was
+deleted, is still identified by the channel it presents (a datagram socketpair used for an
+`SCM_RIGHTS` rendezvous). The parent-pid chain and the index path remain only as a fallback when no
+channel is inherited, and a governed ancestor whose supervisor does not answer refuses the launch. A
+declared `--root-agent` is only checked against the verified chain.
+`aa-cli/src/commands/run_supervisor.rs` states the design and its limits. The ledger additionally
+holds the authoritative generation and can `reaffirm` (the AAASM-6312 amendment's items 1-5);
+its writer-token and "refuse a child the ledger never saw" items are not implemented.
+
+Against §27: no `ParentAuthority`, witness or receipt crosses the process boundary, there is no flag
+or file, and the descendant presents no authority material, only a request the root narrows or
+refuses. Leases cross the socket as data, in the direction root to descendant.
+
+### The option proposed
+
+Allow the handoff for **unmodified `aasm run` descendants in an unreparented process tree,
+including `--isolation none`, without the B3 evidence gate**, with the residuals below stated as
+limits and not as passes. That departs from this ADR in four places the founder would have to
+accept explicitly:
+
+1. The "must be neither built nor enabled until the B3 evidence gate passes" paragraph.
+2. §28's last bullet ("`--isolation none` ... cannot carry a cross-process attenuation claim: the
+   handoff stays refused for it"). The proposal admits it, because the only host the work can be
+   exercised on has no Landlock, and states the claim as narrower instead.
+3. §28's registry write-protection requirement. Not implemented: the registry is a `0700`
+   per-uid directory of index files and sockets that a same-uid process can delete or replace.
+4. The statement in the AAASM-6312 amendment that no production path may build a
+   `DelegationLedger` before the gates pass.
+
+### Limits that stay true under this option
+
+- Not a containment boundary against an adversarial agent. Handing the descriptor to a
+  non-descendant (`SCM_RIGHTS`, `pidfd_getfd`, `/proc/<pid>/fd` as the same uid) hands it the
+  descendant's identity. A patched `aasm` can skip the lookup. A same-uid process can `ptrace` the
+  supervisor.
+- A descendant that **loses** the channel is no longer an ungoverned root by accident (AAASM-6273
+  M2 amendment, last section). Node `child_process` and Python `subprocess` close descriptor 61 by default,
+  and `nohup`, a backgrounded job whose parent shell exited and a daemonizer reparent the process.
+  Every governed hop now exports `AA_GOVERNED_HOP=v1:<pid>:<start marker>` of its own `aasm run`,
+  overwriting its parent's value. A launch that holds no channel, finds no governed ancestor and
+  carries the marker is refused (the tree it was born in is gone or unreachable), and a path
+  admission is refused (`ParentHopMismatch`) unless the parent-pid walk lands on exactly the hop the
+  marker names. The marker is never admission evidence: it cannot place a process in a tree or
+  widen anything, it can only cause a refusal, so §27 is unchanged. What remains unenforceable, and
+  is not claimed: a deliberate `env -u AA_GOVERNED_HOP` / `env -i` combined with a closed channel
+  and a reparent; a process started outside the tree (`launchctl`, `systemd-run`, `cron`, `ssh`, a
+  daemon the tool asks to start); a different uid; on Linux, a third-party subreaper together with
+  a scrubbed marker (`PR_SET_CHILD_SUBREAPER` is deliberately not used: it would make the parent
+  chain look intact while the process is already outside the tree); a patched `aasm` or `ptrace`.
+- The channel is wired for the unconfined launch only; a confined backend controls the child's
+  descriptors. A pid-namespaced or VM-confined descendant is not exercised.
+- pid reuse on the fallback path is handled by a recorded start-time marker, not by a pidfd
+  (§30.2 is not established).
+- §29.1 (registry write-protection) and §30 (Landlock, pidfs, same-uid control denial) are not
+  satisfied. §29.2 is covered only for a peer outside every admitted hop's tree and for a declared
+  ancestor that is not in the verified chain; §29.3 and §29.4 are covered with real separate
+  processes, `--isolation none` only.
+- Roots with no lease host no supervisor and keep the rc.7 compatibility residual.
+- The ledger's issuer binding is still the string comparison of `with_trusted_issuer`; the
+  writer-token item and refusing a child the ledger never saw are not implemented. Nothing outside
+  the supervisor process can write the ledger, which is what the cross-process use relies on.
+
+### Decision requested
+
+Decided: the narrower variant was accepted (see Status). No claim in release material may say J82
+is delivered beyond "implemented for unmodified `aasm run` descendants, unconfined, with the
+limits above".
+
+### Amendment 2026-11-22 (AAASM-6273 M2): a descendant that lost the channel
+
+Routine engineering inside the decided design; §27 is unchanged. Node `child_process` and Python
+`subprocess` close descriptor 61 by default, and a reparented process (`nohup`, a backgrounded job
+after its parent shell exits, a daemonizer) has no parent chain to the root, so such a descendant
+ran as a fresh root above its parent's ceiling. Each governed hop now exports
+`AA_GOVERNED_HOP=v1:<pid>:<start marker>`; the first bullet of "Limits that stay true" above states
+the rule and what remains unenforceable. The marker is never admission evidence: it can only cause
+a refusal, so no parent authority is serialized, passed or re-derived. Consequence worth knowing: an
+`aasm run` nested inside a confined (VM or pid-namespaced) governed hop carries the marker while its
+parent walk is blind, and is therefore refused rather than run as a root.

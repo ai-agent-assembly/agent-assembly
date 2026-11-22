@@ -64,8 +64,13 @@ pub async fn run(
     // AAASM-6395: provider keys delivered on stdin are read here, before anything
     // else can fail, and a bad payload refuses the start. The legacy environment
     // path is left to the server constructor.
-    let startup_credentials =
-        credentials::CredentialStore::load_startup().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
+    //
+    // AAASM-6261: the launch's grant arrives the same way, so it is
+    // never in this process's environment or argv either.
+    let credentials::StartupSecrets {
+        provider_keys: startup_credentials,
+        launch_grant,
+    } = credentials::StartupSecrets::load().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
 
     // AAASM-3131: shout if upstream TLS verification is disabled. This is a
     // debug-only test affordance (the env var is ignored in release builds);
@@ -155,6 +160,13 @@ pub async fn run(
         if server.credentials().len() != expected {
             anyhow::bail!("refusing to start: the delivered provider credentials were not installed");
         }
+    }
+    if let Some(credential) = launch_grant {
+        server = server.with_launch_grant(credential);
+        if !server.is_governed() {
+            anyhow::bail!("refusing to start: the delivered launch grant was not installed");
+        }
+        tracing::info!("governed launch: gateway checks carry the launch's grant");
     }
     server.run().await?;
     Ok(())

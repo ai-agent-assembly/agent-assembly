@@ -77,6 +77,7 @@ fn connect_request(host: &str) -> CheckActionRequest {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

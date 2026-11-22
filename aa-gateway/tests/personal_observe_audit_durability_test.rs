@@ -171,6 +171,7 @@ async fn personal_observe_deny_is_audited_dry_run_and_survives_a_restart() {
                 })),
             }),
             caller_agent_id: None,
+            launch_grant: String::new(),
         })
         .await
         .unwrap()

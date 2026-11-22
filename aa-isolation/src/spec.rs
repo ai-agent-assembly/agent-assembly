@@ -410,6 +410,28 @@ impl ExecutionSpec {
         self
     }
 
+    /// Replace the carried leases with `leases` (AAASM-6273).
+    ///
+    /// For a launch whose leases were re-issued by a supervisor that holds the
+    /// parent's authority: the leases a launch *asked for* are discarded and
+    /// the narrowed ones it was *given* take their place. [`with_lease`](Self::with_lease)
+    /// only appends, which would keep the asked-for lease beside the given one.
+    #[must_use]
+    pub fn with_leases(mut self, leases: Vec<CapabilityLease>) -> Self {
+        self.leases = leases;
+        self
+    }
+
+    /// Replace the identity this spec is attributed to (AAASM-6273).
+    ///
+    /// For a supervisor that knows the launch's real ancestry and must not
+    /// accept the lineage the launch asserted for itself.
+    #[must_use]
+    pub fn with_identity(mut self, identity: IdentityRef) -> Self {
+        self.identity = identity;
+        self
+    }
+
     /// The program to execute.
     pub fn program(&self) -> &str {
         &self.program
@@ -490,5 +512,37 @@ mod field_sync_tests {
         // here, not a runtime check. The touch below only silences
         // "unused variable" for an intentionally un-asserted destructure.
         let _ = (program, args, working_dir, identity, requirements, credentials, leases);
+    }
+
+    /// AAASM-6273: the supervisor re-issues a launch's leases and rewrites its
+    /// lineage; both must REPLACE what the launch asserted, not sit beside it.
+    #[test]
+    fn with_leases_and_with_identity_replace_rather_than_append() {
+        use crate::capability::CapabilityDomain;
+        use crate::lease::{CapabilityLease, LeaseBasis, LeaseId};
+        use std::time::{Duration, SystemTime};
+
+        let issued = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+        let lease = |id: &str| {
+            CapabilityLease::new(
+                LeaseId::new(id),
+                IdentityRef::root("agent"),
+                CapabilityDomain::FilesystemRead,
+                RequirementScope::Whole,
+                issued,
+                issued + Duration::from_secs(60),
+                LeaseBasis::new(IdentityRef::root("issuer"), "test"),
+            )
+        };
+        let spec =
+            ExecutionSpec::new("prog", IdentityRef::root("agent").with_ancestor("claimed")).with_lease(lease("asked"));
+
+        let replaced = spec
+            .with_leases(vec![lease("given")])
+            .with_identity(IdentityRef::root("agent").with_ancestor("verified"));
+
+        assert_eq!(replaced.leases().len(), 1);
+        assert_eq!(replaced.leases()[0].id(), &LeaseId::new("given"));
+        assert_eq!(replaced.identity().lineage, vec!["verified".to_string()]);
     }
 }

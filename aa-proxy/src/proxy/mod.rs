@@ -23,7 +23,7 @@ use aa_runtime::redaction_telemetry_client::{new_redaction_event, RedactionTelem
 
 use crate::audit_jsonl::{bound_persisted_body, ProxyAuditDecision, ProxyAuditEntry, RefusalRule};
 use crate::config::ProxyConfig;
-use crate::credentials::{CredentialStore, Injection};
+use crate::credentials::{CredentialStore, Injection, LaunchGrant};
 use crate::error::ProxyError;
 use crate::intercept::detect::{detect_api, LlmApiPattern};
 use crate::intercept::event::ProxyEvent;
@@ -475,6 +475,12 @@ pub struct ProxyServer {
     /// never sees these. Empty by default — when no key is configured for a
     /// host the agent's own request is forwarded unchanged (backward compat).
     credentials: Arc<CredentialStore>,
+    /// The launch grant of the governed launch this proxy serves (AAASM-6261),
+    /// delivered on an inherited pipe. `Some` makes the proxy send the registered
+    /// triple and grant on every gateway check and refuse an answer the gateway
+    /// did not bind to it; `None` (a standalone proxy) sends a blank identity and
+    /// records the traffic as unattributed.
+    launch_grant: Option<LaunchGrant>,
     /// AAASM-5922 (ADR 0036) — the validated, DNS-pinned trusted-upstream-
     /// proxy-chaining configuration, once [`ProxyServer::run`] validates it.
     /// `Some(None)` means [`crate::config::ProxyConfig::trusted_config_path`]
@@ -517,6 +523,7 @@ impl ProxyServer {
             gateway_client: OnceCell::new(),
             telemetry_client: OnceCell::new(),
             credentials: Arc::new(CredentialStore::from_env()),
+            launch_grant: None,
             chained: OnceCell::new(),
         })
     }
@@ -537,6 +544,46 @@ impl ProxyServer {
             tracing::warn!("with_credentials called on a shared ProxyServer; ignoring");
         }
         self
+    }
+
+    /// Give an as-yet-unshared `ProxyServer` the launch grant of the governed
+    /// launch it serves (AAASM-6261). Same sharing rule as [`Self::with_credentials`].
+    pub fn with_launch_grant(mut self: Arc<Self>, grant: LaunchGrant) -> Arc<Self> {
+        if let Some(inner) = Arc::get_mut(&mut self) {
+            // A governed launch is fail-closed by contract: every allowed request must
+            // carry a gateway answer bound to the launched agent. The fail-open knobs
+            // are ambient environment (`AA_PROXY_*_FAIL_OPEN`), so a user who exported
+            // one for another purpose would otherwise forward unchecked, with no bound
+            // answer, whenever the gateway is slow or down. Governance wins over them.
+            if inner.config.mcp_fail_open || inner.config.network_fail_open {
+                tracing::warn!("governed launch: ignoring AA_PROXY_MCP_FAIL_OPEN / AA_PROXY_NETWORK_FAIL_OPEN");
+            }
+            inner.config.mcp_fail_open = false;
+            inner.config.network_fail_open = false;
+            inner.launch_grant = Some(grant);
+        } else {
+            tracing::warn!("with_launch_grant called on a shared ProxyServer; ignoring");
+        }
+        self
+    }
+
+    /// The registered agent this proxy's allowed traffic was bound to, for the audit
+    /// record: only a governed proxy that has a gateway and does not fail open,
+    /// since a fail-open forward happens with no gateway answer to bind.
+    fn bound_identity(&self) -> Option<crate::audit_jsonl::BoundAgentIdentity> {
+        let grant = self.launch_grant.as_ref()?;
+        (self.config.gateway_endpoint.is_some() && !self.config.network_fail_open && !self.config.mcp_fail_open).then(
+            || crate::audit_jsonl::BoundAgentIdentity {
+                assurance: "bound".to_string(),
+                agent: grant.proto_agent_id().agent_id,
+            },
+        )
+    }
+
+    /// Whether this proxy serves a governed launch and so must have every gateway
+    /// answer bound to the launch's registered agent.
+    pub fn is_governed(&self) -> bool {
+        self.launch_grant.is_some()
     }
 
     /// The shared credential store, so whatever owns a control surface for this
@@ -782,6 +829,7 @@ impl ProxyServer {
     fn emit_rule_refusal(&self, id: RequestIdentity<'_>, rule: RefusalRule, probe_correlation: Option<String>) {
         DecisionRecord {
             agent_id: self.config.agent_id.clone(),
+            agent_identity: None,
             host: id.host.to_owned(),
             method: id.method.to_owned(),
             path: self.interceptor.redact_target(id.target),
@@ -819,6 +867,7 @@ impl ProxyServer {
         };
         DecisionRecord {
             agent_id: self.config.agent_id.clone(),
+            agent_identity: None,
             host: id.host.to_owned(),
             method: id.method.to_owned(),
             // The target can carry a secret in its query string (`?key=…`,
@@ -974,6 +1023,10 @@ impl ProxyServer {
     fn allowed_record(&self, id: RequestIdentity<'_>, probe_correlation: Option<String>) -> DecisionRecord {
         DecisionRecord {
             agent_id: self.config.agent_id.clone(),
+            // A governed proxy with a gateway refuses any Allow the gateway did not
+            // bind to the launch's registered agent, so an allowed record was bound
+            // to that agent, unless a failed check was forwarded anyway.
+            agent_identity: self.bound_identity(),
             host: id.host.to_owned(),
             method: id.method.to_owned(),
             path: self.interceptor.redact_target(id.target),
@@ -1386,7 +1439,7 @@ impl ProxyServer {
         let args_bytes = serde_json::to_vec(&call.arguments).unwrap_or_default();
 
         let decision = match gateway {
-            Some(gw) => evaluate_mcp_call(gw, &call, &target_url, "", "").await,
+            Some(gw) => evaluate_mcp_call(gw, &call, &target_url, "", "", self.launch_grant.as_ref()).await,
             None => Err(anyhow::anyhow!(
                 "no live gateway client (the startup connect to the configured endpoint failed)"
             )),
@@ -1923,7 +1976,7 @@ impl ProxyServer {
         for body in &bodies {
             let evaluation = tokio::time::timeout(
                 MCP_GATEWAY_RPC_TIMEOUT,
-                evaluate_mcp_result(gateway, call, body, source_url, "", ""),
+                evaluate_mcp_result(gateway, call, body, source_url, "", "", self.launch_grant.as_ref()),
             )
             .await;
             match evaluation {
@@ -2331,7 +2384,9 @@ impl ProxyServer {
                 Some(EgressDenyReason::GatewayNetworkPolicy)
             };
         };
-        match crate::network_enforce::evaluate_network_call(gateway, host, port, protocol).await {
+        match crate::network_enforce::evaluate_network_call(gateway, host, port, protocol, self.launch_grant.as_ref())
+            .await
+        {
             Ok(crate::network_enforce::NetworkDecision::Allow) => None,
             Ok(crate::network_enforce::NetworkDecision::Deny { reason }) => {
                 tracing::info!(%host, %reason, "network egress denied by gateway policy");

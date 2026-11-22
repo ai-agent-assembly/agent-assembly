@@ -185,6 +185,7 @@ fn bash_check_request(proto_id: ProtoAgentId, credential_token: &str) -> CheckAc
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 

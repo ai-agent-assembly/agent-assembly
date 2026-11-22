@@ -50,6 +50,17 @@ ignore = [
     # owner-only isolation guarantee. Owner-authorized 2026-11-12 for rc.8 only, conditional on
     # AAASM-6460 merging; removal tracked in AAASM-6461.
     { id = "RUSTSEC-2026-0459", reason = "SQLite WAL heap disclosure; unfixable by released deps (sqlx-sqlite caps libsqlite3-sys); local attack, stores owner-only; rc.8 only; expires: 2026-12-31 (AAASM-6461)" },
+    # RUSTSEC-2026-0543 (chrono), RUSTSEC-2026-0555 (chrono-tz 0.10.4) and RUSTSEC-2026-0542
+    # (humantime 2.4.0) -- all three are UNMAINTAINED notices (not vulnerabilities, not unsound) and
+    # no released version of any of them clears the notice. They are shipped paths: chrono is used by
+    # aa-api, aa-cli, aa-core, aa-gateway, aa-policy and aa-storage-postgres and, transitively, by
+    # chrono-tz, cron and sqlx-core/-postgres/-sqlite 0.8.6 (which we cannot migrate); chrono-tz by
+    # aa-api, aa-gateway and aa-policy; humantime by aa-gateway and aa-policy. Owner-authorized
+    # 2026-11-21 for rc.8 only; removal tracked in AAASM-6478. Declining would leave the Dependency
+    # gate red, so no PR could merge.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained notice; no fix available, sqlx 0.8.6 requires it; rc.8 only; expires: 2026-12-31 (AAASM-6478)" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained notice; no fix available; rc.8 only; expires: 2026-12-31 (AAASM-6478)" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained notice; no fix available; rc.8 only; expires: 2026-12-31 (AAASM-6478)" },
 ]
 
 [licenses]

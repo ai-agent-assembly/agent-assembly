@@ -144,6 +144,7 @@ fn tool_call_request(
             })),
         }),
         caller_agent_id: caller.cloned(),
+        launch_grant: String::new(),
     }
 }
 

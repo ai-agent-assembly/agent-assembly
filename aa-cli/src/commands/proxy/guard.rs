@@ -87,6 +87,23 @@ pub struct ProxyGuardOptions {
     /// from the launch's resolved policy ([`credential_action_for_policy`]);
     /// [`Default`] (`redact_only`) is what a policy that states none resolves to.
     pub credential_action: aa_proxy::config::CredentialAction,
+    /// The launch grant the gateway minted for the agent this launch registered
+    /// (AAASM-6261), delivered to the proxy on its stdin pipe (an inherited fd)
+    /// and never in its environment, argv or a file.
+    ///
+    /// It lets the proxy send the registered `{org, team, agent}` triple and the
+    /// grant on every gateway check, so the gateway binds the decision and its
+    /// audit entry to that agent instead of a label the proxy asserts. It is NOT
+    /// the agent's registration `credential_token`, which never leaves
+    /// `run_registration`: the gateway accepts a grant only on
+    /// `CheckAction`/`BatchCheck`, it expires, and it dies with the registration.
+    ///
+    /// `None` only where no agent is registered. It also makes the proxy refuse an
+    /// answer the gateway did not bind, so a governed launch passes it always.
+    ///
+    /// What it proves is proxy identity. It does not prove connection origin:
+    /// another process of the same user can still reach the proxy's port.
+    pub launch_grant: Option<aa_proxy::credentials::LaunchGrant>,
 }
 
 /// The proxy action that carries out a policy's `data.credential_action`.
@@ -280,7 +297,7 @@ fn build_command_with_control(
     cmd.stdin(std::process::Stdio::null());
     // AAASM-6395: provider keys travel on stdin, never in this proxy's (or the
     // governed tool's) environment. Must follow the `stdin(null)` above.
-    super::provider_keys::configure(&mut cmd);
+    super::provider_keys::configure_with(&mut cmd, opts.launch_grant.is_some());
 
     // ADR 0036 D6: this boundary has no `--no-proxy` concept (it spawns the
     // dedicated `aa-proxy` itself, not a governed tool) and never has a
@@ -354,7 +371,7 @@ impl ProxyGuard {
 
         // AAASM-6395: refuse a launch whose provider keys the proxy would refuse,
         // before anything is spawned.
-        super::provider_keys::preflight(binary)
+        super::provider_keys::preflight_with(binary, opts.launch_grant.is_some())
             .map_err(|reason| ProxyGuardError::SpawnFailed(std::io::Error::other(reason)))?;
 
         // AAASM-6262 (AC3): a launch that brokers a credential must be able to
@@ -373,7 +390,7 @@ impl ProxyGuard {
 
         let mut cmd = build_command_with_control(binary, &opts, control_path.as_deref());
         let mut child = cmd.spawn().map_err(ProxyGuardError::SpawnFailed)?;
-        if let Err(e) = super::provider_keys::deliver(&mut child) {
+        if let Err(e) = super::provider_keys::deliver_with(&mut child, opts.launch_grant.as_ref()) {
             // A proxy without its keys would forward the agent's own credential
             // header unchanged, so the launch is refused rather than degraded.
             terminate_gracefully(&mut child);
@@ -688,6 +705,7 @@ mod tests {
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Never,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         }
     }
 
@@ -697,6 +715,44 @@ mod tests {
         cmd.get_envs()
             .find(|(k, _)| *k == std::ffi::OsStr::new("AA_PROXY_CONTROL_SOCKET"))
             .map(|(_, v)| v.map(std::ffi::OsStr::to_os_string))
+    }
+
+    /// AAASM-6261: the agent credential is selected by a flag that names it and is
+    /// never itself in the proxy's command. The token travels only on stdin, so it
+    /// is absent from the environment, argv, and anything that dumps them (`ps`,
+    /// `/proc`, `--dry-run`).
+    #[test]
+    fn the_launch_grant_is_flagged_but_never_in_the_command() {
+        let bin = std::path::Path::new("/usr/bin/aa-proxy");
+        let mut opts = options_with_ready_file(std::path::Path::new("/tmp/runs/a-1/ready"));
+        opts.launch_grant = Some(aa_proxy::credentials::LaunchGrant::new(
+            String::new(),
+            "team-a".into(),
+            "did:key:agent-a".into(),
+            "tok-QA6261-synth-token".into(),
+        ));
+        let cmd = build_command_with_control(bin, &opts, None);
+        let flag = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "AA_PROXY_LAUNCH_GRANT_STDIN")
+            .and_then(|(_, v)| v.map(std::ffi::OsStr::to_os_string));
+        assert_eq!(flag, Some(std::ffi::OsString::from("1")));
+        let dump = format!(
+            "{:?}{:?}",
+            cmd.get_envs().collect::<Vec<_>>(),
+            cmd.get_args().collect::<Vec<_>>()
+        );
+        assert!(!dump.contains("QA6261"), "the grant reached the command: {dump}");
+        assert!(!format!("{cmd:?}").contains("QA6261"));
+
+        // With no credential the flag is removed explicitly, so an ambient value cannot select it.
+        opts.launch_grant = None;
+        let cmd = build_command_with_control(bin, &opts, None);
+        let flag = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "AA_PROXY_LAUNCH_GRANT_STDIN")
+            .map(|(_, v)| v.map(std::ffi::OsStr::to_os_string));
+        assert_eq!(flag, Some(None));
     }
 
     #[test]
@@ -978,6 +1034,7 @@ while True:
             audit_jsonl_path: Some(PathBuf::from("/tmp/audit.jsonl")),
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1125,6 +1182,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Never,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1151,6 +1209,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1190,6 +1249,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1221,6 +1281,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let cmd = build_command(std::path::Path::new("/usr/bin/aa-proxy"), &opts);
         let env: std::collections::HashMap<_, _> = cmd.get_envs().collect();
@@ -1272,6 +1333,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1331,6 +1393,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1382,6 +1445,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let mut cmd = build_command(&stub, &opts);
         let mut child = cmd.spawn().expect("stub must spawn");
@@ -1433,6 +1497,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
 
         // Exercise the same spawn + wait_for_ready_file sequence spawn()
@@ -1520,6 +1585,7 @@ while True:
             audit_jsonl_path: None,
             system_trust_install: aa_proxy::config::SystemTrustInstall::Auto,
             credential_action: aa_proxy::config::CredentialAction::default(),
+            launch_grant: None,
         };
         let guard = ProxyGuard::spawn_with_binary(&stub, opts).expect("stub must report ready");
 

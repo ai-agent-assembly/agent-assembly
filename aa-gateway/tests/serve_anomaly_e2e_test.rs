@@ -92,6 +92,7 @@ async fn process_exec_over_live_grpc_fires_anomaly_event() {
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     };
 
     client

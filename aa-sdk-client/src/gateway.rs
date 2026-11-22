@@ -14,7 +14,8 @@
 
 use aa_proto::assembly::agent::v1::agent_lifecycle_service_client::AgentLifecycleServiceClient;
 use aa_proto::assembly::agent::v1::{
-    ChallengeRequest, ChallengeResponse, DeregisterRequest, DeregisterResponse, RegisterRequest, RegisterResponse,
+    ChallengeRequest, ChallengeResponse, DeregisterRequest, DeregisterResponse, MintLaunchGrantRequest,
+    MintLaunchGrantResponse, RegisterRequest, RegisterResponse,
 };
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use tonic::transport::Channel;
@@ -119,6 +120,22 @@ impl GatewayRegistrationClient {
         let resp = self
             .client
             .deregister(request)
+            .await
+            .map_err(|status| SdkClientError::RegisterFailed(status.message().to_string()))?;
+        Ok(resp.into_inner())
+    }
+
+    /// Call `AgentLifecycleService.MintLaunchGrant` (AAASM-6261): a short-lived
+    /// grant, valid only on `CheckAction`/`BatchCheck`, bound to the calling
+    /// agent and one launch, authenticated by the registration `credential_token`
+    /// in the request exactly as [`deregister`](Self::deregister) is.
+    pub async fn mint_launch_grant(
+        &mut self,
+        request: MintLaunchGrantRequest,
+    ) -> Result<MintLaunchGrantResponse, SdkClientError> {
+        let resp = self
+            .client
+            .mint_launch_grant(request)
             .await
             .map_err(|status| SdkClientError::RegisterFailed(status.message().to_string()))?;
         Ok(resp.into_inner())

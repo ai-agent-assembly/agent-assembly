@@ -7,7 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Reparented governed descendants no longer run as fresh roots (AAASM-6273, J82 M2)** — a governed descendant that lost its authority channel (Node `child_process` and Python `subprocess` close descriptor 61 by default) and was then reparented (`nohup`, a backgrounded job after its parent shell exited, a daemonizer) ran as a new root above its parent's ceiling. Each governed `aasm run` now exports `AA_GOVERNED_HOP` (its own pid and start marker) to its tool; a launch with no channel and no reachable governed ancestor that carries it is refused, and a path admission is refused with `ParentHopMismatch` unless the parent-pid walk lands on the hop the marker names. The marker is never admission evidence, so it can only cause a refusal. Not closed: a deliberately scrubbed marker with a closed channel and a reparent, processes started outside the tree (`launchctl`, `systemd-run`, `cron`, `ssh`), a different uid, a Linux third-party subreaper with a scrubbed marker, a patched `aasm`, `ptrace`.
+
 ### Added
+
+- **Launch grant: proxy identity for governed launches (AAASM-6261)** — `aasm run` now has the gateway mint a short-lived launch grant for the agent it registered (`MintLaunchGrant`, `CheckActionRequest.launch_grant`) and hands it to the launch's dedicated `aa-proxy` on its stdin pipe; the proxy sends the registered triple and the grant on every network and MCP check, the gateway answers `BOUND` and audits the decision under that agent, and a governed proxy refuses an `Allow` that is not bound. The agent's registration token is never given to the proxy, and a grant is accepted only by `CheckAction`/`BatchCheck`. This is proxy identity, not connection origin: any process of the same user that reaches the proxy's loopback port is attributed to the launch, and one that obtains the grant can call `CheckAction` as the agent until it expires, which lets it burn that agent's budget and rate limits, feed its anomaly state, create approval-queue entries and write audit attributed to it. Behaviour changes: `aasm run` refuses to launch against a gateway that cannot mint a grant; a gateway restart drops grants, so a running launch is refused egress until it is started again; MCP checks move from the synthetic `aa-proxy` agent to the registered agent; benign refusals of an expired grant are audited once per agent per 30 s. Not approved for merge: an open owner decision.
 
 - **Prebuilt macOS `aa-proxy` in release archives (AAASM-4542)** — the release workflow now builds and packages `aa-proxy` on both darwin legs, publishing `aasm-proxy-<tag>-darwin-arm64.tar.gz` and `aasm-proxy-<tag>-darwin-amd64.tar.gz` under the same `SHA256SUMS` and cosign signature as the Linux ones, so `install.sh --profile full` installs it on macOS instead of stopping with `component 'proxy' is not published`. A new archive-set gate (`scripts/release/check_release_archive_set.py`) fails a release whose os/arch legs lack any component tarball, and `check-release-completeness.sh` fails a release build list that is OS-conditional. Certificate trust is unchanged: installing the proxy never trusts its CA; on macOS that is still attempted only at proxy start, behind the System Keychain admin prompt. The Homebrew tap and GHCR still carry no macOS proxy; releases through `0.0.1-rc.7` have no macOS proxy tarball.
 - **Release gate: `PUBLICATION_PENDING` / `CANDIDATE_VERIFIED` (AAASM-6419, Core ADR 0042)** — a
@@ -16,6 +22,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   PASS: the verdict is `CANDIDATE_VERIFIED`, the evidence checker exits 3 for it, and
   `release.yml`'s evidence gate, `release-tag-guard.sh` and `release-readiness.sh` all keep
   refusing it. No catalog entry declares `publication_checks` yet; that is a follow-up.
+- **Cross-process parent-to-child authority handoff for `aasm run` (AAASM-6273, J82)** — a
+  launch that carries at least one lease now hosts a supervisor for the `aasm run` processes it
+  launches . A descendant is placed in the tree by the authority channel it inherits (fd 61, a datagram
+  socketpair the supervisor hands each admitted hop), not from `--root-agent`, the parent-pid chain or
+  a path, and receives only leases the root derived for
+  it: equal or narrower scope, no later expiry, no larger limits, only delegable parent leases, and
+  nothing a middle generation dropped. Revoking the root refuses later admissions below it. A
+  `--root-agent` that names no ancestor in the verified chain is refused (`AncestryMismatch`); with
+  no governed ancestor it is still refused as before. Roots with no lease are unchanged.
+  A double-forking descendant keeps the channel and stays governed; deleting the path index or socket
+  does not ungovern it; a process that holds no channel gets no authority; a supervisor that cannot be
+  reached refuses the launch. Limits, stated rather than claimed: unmodified `aasm run` only (a patched
+  `aasm`, or a descendant that deliberately closes fd 61 and has no governed ancestor on the path
+  fallback, is not contained); the channel is not yet wired for confined backends or pid-namespace/VM
+  descendants; tested `--isolation none`, same uid; Core ADR 0038 section 28/30 not satisfied. The ADR
+  amendment that would allow this without the B3 gate is PROPOSED, not accepted.
 
 ## [0.0.1-rc.8] — TBD (pre-release)
 

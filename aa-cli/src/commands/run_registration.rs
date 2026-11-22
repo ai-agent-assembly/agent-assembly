@@ -49,7 +49,7 @@ use std::fmt;
 #[cfg(not(test))]
 use std::sync::OnceLock;
 
-use aa_proto::assembly::agent::v1::{DeregisterRequest, RegisterRequest};
+use aa_proto::assembly::agent::v1::{DeregisterRequest, MintLaunchGrantRequest, RegisterRequest};
 use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
 use aa_sdk_client::gateway::{build_challenge_request, build_register_request, GatewayRegistrationClient};
 use aa_sdk_client::{AssemblyConfig, SdkClientError};
@@ -110,6 +110,68 @@ pub struct GovernedRegistration {
     /// Where the accepted registration lives, so the teardown reaches the same
     /// gateway that issued the token.
     endpoint: String,
+}
+
+impl GovernedRegistration {
+    /// The `{org, team, agent}` triple this registration is keyed under at the
+    /// gateway. The DID is the `agent_id` component, which is what the registry
+    /// hashes: reporting under any other string addresses a different agent.
+    ///
+    /// One definition for every request this launch makes as its agent
+    /// (`report_launch`, `deregister`, the proxy's credential), so they cannot
+    /// disagree about who the launch is.
+    fn triple(&self) -> ProtoAgentId {
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: self.team_id.clone().unwrap_or_default(),
+            agent_id: self.registration_did.clone(),
+        }
+    }
+
+    /// Ask the gateway for a launch grant for this registration (AAASM-6261) and
+    /// wrap it with the registered triple, ready for the launch's dedicated proxy.
+    ///
+    /// The registration `credential_token` stays in this module: it authenticates
+    /// this one call to the gateway and is never given to the proxy or the launched
+    /// tool. What leaves is a grant that the gateway accepts only on
+    /// `CheckAction`/`BatchCheck`, that expires, and that dies when this
+    /// registration is deregistered. `launch_id` binds it to this launch.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistrationError::GatewayUnreachable`] or
+    /// [`RegistrationError::RegistrationRefused`] (a gateway that predates the RPC
+    /// answers `Unimplemented`). The caller refuses the launch: a governed proxy
+    /// without a grant would be unattributed.
+    pub async fn mint_launch_grant(
+        &self,
+        launch_id: &str,
+    ) -> Result<aa_proxy::credentials::LaunchGrant, RegistrationError> {
+        let mut client = GatewayRegistrationClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|_| RegistrationError::GatewayUnreachable {
+                endpoint: self.endpoint.clone(),
+            })?;
+        let triple = self.triple();
+        let response = client
+            .mint_launch_grant(MintLaunchGrantRequest {
+                agent_id: Some(triple.clone()),
+                credential_token: self.credential_token.clone(),
+                launch_id: launch_id.to_string(),
+                ttl_sec: 0,
+            })
+            .await
+            .map_err(|e| RegistrationError::RegistrationRefused {
+                endpoint: self.endpoint.clone(),
+                reason: reason_of(e),
+            })?;
+        Ok(aa_proxy::credentials::LaunchGrant::new(
+            triple.org_id,
+            triple.team_id,
+            triple.agent_id,
+            response.launch_grant,
+        ))
+    }
 }
 
 /// Why a session could not be registered.
@@ -484,11 +546,7 @@ pub async fn report_launch(
     no_proxy: bool,
     proxy_build: Option<&crate::commands::proxy::build_identity::ProxyBuildEvidence>,
 ) {
-    let agent_id = ProtoAgentId {
-        org_id: String::new(),
-        team_id: registration.team_id.clone().unwrap_or_default(),
-        agent_id: registration.registration_did.clone(),
-    };
+    let agent_id = registration.triple();
     let record = crate::commands::run_audit::GovernedLaunchRecord {
         endpoint: &registration.endpoint,
         credential_token: &registration.credential_token,
@@ -517,11 +575,7 @@ pub async fn deregister(registration: &GovernedRegistration, reason: &str) {
     };
     let _ = client
         .deregister(DeregisterRequest {
-            agent_id: Some(ProtoAgentId {
-                org_id: String::new(),
-                team_id: registration.team_id.clone().unwrap_or_default(),
-                agent_id: registration.registration_did.clone(),
-            }),
+            agent_id: Some(registration.triple()),
             credential_token: registration.credential_token.clone(),
             reason: reason.to_string(),
         })

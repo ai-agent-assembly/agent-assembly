@@ -203,6 +203,14 @@ pub struct AgentRegistry {
     /// emit `A2AImpersonationAttempted` instead of silently allowing
     /// the request to fall through to policy evaluation.
     credential_index: DashMap<String, [u8; 16]>,
+    /// AAASM-6261 — launch grants, deliberately a SEPARATE index from
+    /// `credential_index`. Everything that authenticates by registration token
+    /// (Heartbeat, Deregister, ControlStream, the approval/audit/topology/secrets
+    /// interceptor) resolves through `credential_index`, so a grant is accepted by
+    /// none of them. Only `PolicyService` CheckAction/BatchCheck consult this map,
+    /// through [`AgentRegistry::resolve_launch_grant`]. In memory only: a gateway
+    /// restart drops every grant.
+    launch_grants: DashMap<String, LaunchGrant>,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
     /// All active suspension reasons per agent. Supports multi-reason coexistence:
@@ -218,6 +226,23 @@ pub struct AgentRegistry {
     /// constructs an [`AgentRegistry::new`] without storage. Wired in by
     /// Epic 18 Story S-I.2 (AAASM-1864).
     storage: Option<Arc<dyn StorageBackend>>,
+}
+
+/// Most launch grants one agent may hold at once (AAASM-6261). A launch needs one;
+/// the headroom covers a relaunch before the previous grant expires.
+pub const MAX_LAUNCH_GRANTS_PER_AGENT: usize = 8;
+
+/// A launch grant's binding (AAASM-6261). The grant string itself is the map key.
+struct LaunchGrant {
+    /// The one agent the grant authenticates a check for.
+    agent_id: [u8; 16],
+    /// Caller-chosen launch identifier, kept for evidence.
+    #[allow(dead_code)] // recorded for evidence; read by tests and a future status surface
+    launch_id: String,
+    /// Monotonic expiry. `Instant` does not advance while the host sleeps, so on a
+    /// laptop a grant outlives the wall-clock `expires_at_unix_ms` reported at mint
+    /// time by however long the machine slept; it never expires earlier.
+    expires_at: std::time::Instant,
 }
 
 /// Validated outcome of a reparent precheck: the values the mutation step of
@@ -238,6 +263,7 @@ impl AgentRegistry {
             team_index: DashMap::new(),
             org_index: DashMap::new(),
             credential_index: DashMap::new(),
+            launch_grants: DashMap::new(),
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
@@ -487,6 +513,8 @@ impl AgentRegistry {
         if !record.credential_token.is_empty() {
             self.credential_index.remove(&record.credential_token);
         }
+        // AAASM-6261 — the launch ends with the registration: its grants die here.
+        self.revoke_launch_grants(agent_id);
 
         // Apply orphan policy to each direct child recursively.
         let mut effects = Vec::new();
@@ -665,7 +693,12 @@ impl AgentRegistry {
 
         // Now remove this child.
         self.control_senders.remove(&child_key);
-        if let Some((_, record)) = self.agents.remove(&child_key) {
+        // AAASM-6261 — a cascaded child's launch ends with it, like a direct deregister.
+        // Remove the agent first, then revoke: a mint racing this cascade then either sees the
+        // agent gone and rolls itself back, or inserted before the revoke and is swept by it.
+        let removed = self.agents.remove(&child_key);
+        self.revoke_launch_grants(&child_key);
+        if let Some((_, record)) = removed {
             if let Some(ref tid) = record.team_id {
                 if let Some(set) = self.team_index.get(tid) {
                     set.remove(&child_key);
@@ -1342,6 +1375,92 @@ impl AgentRegistry {
     /// token whose owner is unknown).
     pub fn find_by_credential_token(&self, token: &str) -> Option<[u8; 16]> {
         self.credential_index.get(token).map(|e| *e.value())
+    }
+
+    /// Mint a launch grant for a registered agent (AAASM-6261).
+    ///
+    /// The grant is a fresh UUID v4 bound to `agent_id` and `launch_id`, valid for
+    /// `ttl` (the caller clamps it). It is stored only in `launch_grants`.
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::NotFound`] when the agent is not registered.
+    pub fn mint_launch_grant(
+        &self,
+        agent_id: &[u8; 16],
+        launch_id: &str,
+        ttl: std::time::Duration,
+    ) -> Result<(String, std::time::Instant), RegistryError> {
+        if !self.agents.contains_key(agent_id) {
+            return Err(RegistryError::NotFound(*agent_id));
+        }
+        let now = std::time::Instant::now();
+        // Sweep expired grants on every mint so the map is bounded by live grants,
+        // then keep at most MAX_LAUNCH_GRANTS_PER_AGENT per agent by dropping the
+        // soonest-to-expire one, so a fresh launch can always mint.
+        self.launch_grants.retain(|_, g| g.expires_at > now);
+        let mut mine: Vec<(String, std::time::Instant)> = self
+            .launch_grants
+            .iter()
+            .filter(|e| e.agent_id == *agent_id)
+            .map(|e| (e.key().clone(), e.expires_at))
+            .collect();
+        if mine.len() >= MAX_LAUNCH_GRANTS_PER_AGENT {
+            mine.sort_by_key(|(_, at)| *at);
+            for (stale, _) in mine.iter().take(mine.len() + 1 - MAX_LAUNCH_GRANTS_PER_AGENT) {
+                self.launch_grants.remove(stale);
+            }
+        }
+        let grant = uuid::Uuid::new_v4().to_string();
+        let expires_at = now + ttl;
+        self.launch_grants.insert(
+            grant.clone(),
+            LaunchGrant {
+                agent_id: *agent_id,
+                launch_id: launch_id.to_string(),
+                expires_at,
+            },
+        );
+        // Both deregister and the orphan cascade remove the agent and then revoke its grants, so a
+        // mint that inserted before the revoke is swept, and one that inserts after the removal
+        // fails this re-check. Without it a grant for a removed agent would survive for a later
+        // re-registration of the same id to resurrect. Re-check and roll back.
+        if !self.agents.contains_key(agent_id) {
+            self.launch_grants.remove(&grant);
+            return Err(RegistryError::NotFound(*agent_id));
+        }
+        Ok((grant, expires_at))
+    }
+
+    /// The agent a launch grant is bound to, or `None` when the grant is unknown,
+    /// expired, revoked, or its agent is no longer registered (AAASM-6261).
+    ///
+    /// An expired entry is dropped here as well, so the map does not grow without
+    /// bound under churn.
+    pub fn resolve_launch_grant(&self, grant: &str) -> Option<[u8; 16]> {
+        if grant.is_empty() {
+            return None;
+        }
+        let entry = self.launch_grants.get(grant)?;
+        let (agent_id, expired) = (entry.agent_id, entry.expires_at <= std::time::Instant::now());
+        drop(entry);
+        if expired {
+            self.launch_grants.remove(grant);
+            return None;
+        }
+        self.agents.contains_key(&agent_id).then_some(agent_id)
+    }
+
+    /// How many launch grants are held, live or not yet swept (AAASM-6261).
+    pub fn launch_grant_count(&self) -> usize {
+        self.launch_grants.len()
+    }
+
+    /// Revoke every launch grant of `agent_id` (AAASM-6261). Returns how many.
+    pub fn revoke_launch_grants(&self, agent_id: &[u8; 16]) -> usize {
+        let before = self.launch_grants.len();
+        self.launch_grants.retain(|_, g| g.agent_id != *agent_id);
+        before.saturating_sub(self.launch_grants.len())
     }
 
     /// Return the registry keys of all root agents (depth == 0).
@@ -2781,5 +2900,169 @@ mod tenant_id_validation_tests {
             matches!(result, Err(RegistryError::InvalidTenantId { field: "team_id" })),
             "expected InvalidTenantId for team_id with tab"
         );
+    }
+}
+
+/// AAASM-6261 — the launch-grant index. Each layer that keeps a dead agent's grant
+/// from resolving is pinned on its own, so removing either one fails a test.
+#[cfg(test)]
+mod launch_grant_tests {
+    use super::*;
+    use crate::registry::{AgentStatus, OrphanMode};
+    use std::time::Duration;
+
+    fn rec(id: [u8; 16], parent_key: Option<[u8; 16]>, depth: u32) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "agent".into(),
+            framework: "test".into(),
+            version: "0.0.1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "deadbeef".into(),
+            credential_token: format!("tok-{}", id[0]),
+            metadata: Default::default(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: Default::default(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: None,
+            depth,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+            org_id: None,
+        }
+    }
+
+    const HOUR: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn a_grant_is_not_a_credential_token() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+        assert_eq!(reg.resolve_launch_grant(&grant), Some([1; 16]));
+        assert_eq!(
+            reg.find_by_credential_token(&grant),
+            None,
+            "grants live in their own index"
+        );
+        assert_eq!(reg.find_by_credential_token("tok-1"), Some([1; 16]), "control");
+    }
+
+    #[test]
+    fn minting_for_an_unregistered_agent_is_refused() {
+        let reg = AgentRegistry::new();
+        assert!(reg.mint_launch_grant(&[9; 16], "launch", HOUR).is_err());
+    }
+
+    /// Layer 1: deregistering the agent removes its grants from the index.
+    #[test]
+    fn deregistering_an_agent_removes_its_grants_from_the_index() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        reg.register(rec([2; 16], None, 0)).unwrap();
+        reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+        let (other, _) = reg.mint_launch_grant(&[2; 16], "launch", HOUR).unwrap();
+        reg.deregister(&[1; 16], OrphanMode::Suspend).unwrap();
+        assert_eq!(
+            reg.launch_grant_count(),
+            1,
+            "only the deregistered agent's grant is revoked"
+        );
+        assert_eq!(
+            reg.resolve_launch_grant(&other),
+            Some([2; 16]),
+            "control: the other agent's grant lives"
+        );
+    }
+
+    /// Layer 2: even with the grant still in the map, a grant whose agent is no
+    /// longer registered does not resolve.
+    #[test]
+    fn a_grant_whose_agent_is_gone_does_not_resolve_even_if_still_indexed() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+        reg.agents.remove(&[1; 16]); // bypass `deregister` so only the resolve-time check is left
+        assert_eq!(reg.launch_grant_count(), 1, "the grant is still indexed");
+        assert_eq!(reg.resolve_launch_grant(&grant), None);
+    }
+
+    /// The cascade path removes a child without going through `deregister`, so it
+    /// must revoke too. Re-registering the same id must not revive the old grant.
+    #[test]
+    fn a_cascaded_child_loses_its_grants_and_a_re_registered_id_does_not_revive_them() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        reg.register(rec([2; 16], Some([1; 16]), 1)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[2; 16], "launch", HOUR).unwrap();
+        reg.deregister(&[1; 16], OrphanMode::CascadeDeregister).unwrap();
+        assert_eq!(reg.launch_grant_count(), 0, "the cascade revoked the child's grant");
+        reg.register(rec([2; 16], None, 0)).unwrap();
+        assert_eq!(
+            reg.resolve_launch_grant(&grant),
+            None,
+            "a new registration is a new launch"
+        );
+    }
+
+    #[test]
+    fn an_expired_grant_does_not_resolve_and_is_dropped() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg
+            .mint_launch_grant(&[1; 16], "launch", Duration::from_millis(150))
+            .unwrap();
+        assert_eq!(
+            reg.resolve_launch_grant(&grant),
+            Some([1; 16]),
+            "control: live before expiry"
+        );
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(reg.resolve_launch_grant(&grant), None);
+        assert_eq!(reg.launch_grant_count(), 0);
+    }
+
+    #[test]
+    fn minting_sweeps_expired_grants_and_caps_each_agent() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        reg.mint_launch_grant(&[1; 16], "stale", Duration::from_millis(100))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        let mut newest = String::new();
+        let mut first = String::new();
+        for n in 0..(MAX_LAUNCH_GRANTS_PER_AGENT + 3) {
+            let (g, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+            if n == 0 {
+                first = g.clone();
+            }
+            newest = g;
+        }
+        assert_eq!(
+            reg.launch_grant_count(),
+            MAX_LAUNCH_GRANTS_PER_AGENT,
+            "expired swept, agent capped"
+        );
+        assert_eq!(
+            reg.resolve_launch_grant(&newest),
+            Some([1; 16]),
+            "a fresh launch can always mint"
+        );
+        assert_eq!(reg.resolve_launch_grant(&first), None, "the oldest was evicted");
     }
 }

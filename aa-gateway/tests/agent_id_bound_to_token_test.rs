@@ -129,6 +129,7 @@ fn bash_request(agent: &ProtoAgentId, credential_token: &str) -> CheckActionRequ
             })),
         }),
         caller_agent_id: None,
+        launch_grant: String::new(),
     }
 }
 
