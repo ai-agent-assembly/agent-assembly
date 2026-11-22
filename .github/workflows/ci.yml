@@ -1354,7 +1354,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
       - name: Check the report holds the unit tests (AAASM-6479)
         # The report command exits 0 when it finds no test binaries, so assert on the data.
-        run: python scripts/check_lcov_unit_tests.py lcov.info
+        run: python3 scripts/check_lcov_unit_tests.py lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
