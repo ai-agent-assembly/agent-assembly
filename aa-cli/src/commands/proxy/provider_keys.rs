@@ -30,7 +30,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 use aa_proxy::credentials::{
     parse_provider_keys, LaunchGrant, LAUNCH_GRANT_STDIN_CAPABILITY, LAUNCH_GRANT_STDIN_FLAG, MAX_PROVIDER_KEYS_BYTES,
@@ -252,7 +252,13 @@ pub fn preflight_with(proxy_binary: &Path, with_launch_grant: bool) -> Result<()
                     "{VAR} is longer than the {MAX_PROVIDER_KEYS_BYTES}-byte limit the proxy accepts"
                 ));
             }
-            parse_provider_keys(&raw).map_err(|e| format!("{VAR} is not usable: {e}"))?;
+            // The parse is only a validity check here, and its key bytes are plain
+            // `Vec<u8>`: wipe them now instead of leaving a second copy to be freed
+            // unwiped (AAASM-6487).
+            let mut parsed = parse_provider_keys(&raw).map_err(|e| format!("{VAR} is not usable: {e}"))?;
+            for (_, key) in &mut parsed {
+                key.zeroize();
+            }
             if probe_stdin_delivery(proxy_binary, CAPABILITY_PROBE_TIMEOUT) {
                 Ok(())
             } else {
