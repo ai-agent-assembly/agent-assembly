@@ -133,6 +133,28 @@ pub fn delivered_hosts() -> Option<Vec<String>> {
     }
 }
 
+/// The lower-cased host of each well-formed `host=key` entry of `raw`; never a key.
+///
+/// Lives here, not in `run_credential_broker`: that module is inside the
+/// `devtool` strip-for-publish fence, so a published `aa-cli` does not have it
+/// and this module must not name it.
+pub(crate) fn hosts_of(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            match entry.split_once('=') {
+                Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
+                    Some(host.trim().to_ascii_lowercase())
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Clear the captured plaintext now that the proxy has its copy.
 ///
 /// The `aasm` process has no further use for the keys, and without this it
@@ -150,7 +172,7 @@ pub fn erase_after_delivery() {
     let Some(slot) = CAPTURED.get() else { return };
     let mut state = lock(slot);
     if let Captured::Keys(keys) = &*state {
-        let hosts = crate::commands::run_credential_broker::hosts_of(keys.0.as_str());
+        let hosts = hosts_of(keys.0.as_str());
         *state = Captured::Delivered(hosts);
     }
 }
@@ -811,18 +833,5 @@ mod tests {
         let shown = format!("{:?}", current());
         assert!(!shown.contains("sk-ant-QA6487"), "Debug printed a key: {shown}");
         assert!(!shown.contains("k2-QA6487"), "Debug printed a key: {shown}");
-    }
-
-    #[test]
-    fn the_credential_report_still_names_the_hosts_after_delivery() {
-        let _lock = crate::test_support::env_guard();
-        capture_synthetic_keys();
-        let mut child = cat_child();
-        deliver(&mut child).expect("write to a live child");
-        drop(child.wait_with_output());
-        assert_eq!(
-            crate::commands::run_credential_broker::provider_key_hosts_env(),
-            vec!["api.anthropic.com".to_string(), "other.example".to_string()]
-        );
     }
 }

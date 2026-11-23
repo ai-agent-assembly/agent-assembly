@@ -35,27 +35,9 @@ pub fn provider_key_hosts_env() -> Vec<String> {
     // keys were delivered and cleared (AAASM-6487) only the host names remain,
     // which is all this function ever returns.
     match crate::commands::proxy::provider_keys::provider_keys() {
-        Some(val) => hosts_of(&val),
+        Some(val) => crate::commands::proxy::provider_keys::hosts_of(&val),
         None => crate::commands::proxy::provider_keys::delivered_hosts().unwrap_or_default(),
     }
-}
-
-/// The lower-cased host of each well-formed `host=key` entry of `raw`; never a key.
-pub(crate) fn hosts_of(raw: &str) -> Vec<String> {
-    raw.split(',')
-        .filter_map(|entry| {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                return None;
-            }
-            match entry.split_once('=') {
-                Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
-                    Some(host.trim().to_ascii_lowercase())
-                }
-                _ => None,
-            }
-        })
-        .collect()
 }
 
 /// Whether `host` is MitM'd for this launch, under the same scope
@@ -258,5 +240,34 @@ mod tests {
             SupportLevel::Unsupported { reason } => assert!(!reason.is_empty()),
             SupportLevel::Full | SupportLevel::Partial { .. } => panic!("no credential accounting exists today"),
         }
+    }
+
+    /// AAASM-6487: once the keys were delivered to the proxy and cleared, the
+    /// credential report must still name the hosts and nothing else. Process-global
+    /// state, so this runs in its own process under nextest like the provider-key
+    /// tests it mirrors.
+    #[test]
+    fn provider_key_hosts_env_still_names_hosts_after_the_keys_were_delivered_and_cleared() {
+        use crate::commands::proxy::provider_keys as pk;
+        use std::process::{Command, Stdio};
+
+        let _lock = ENV_LOCK.lock().unwrap();
+        std::env::set_var(
+            "AA_PROXY_PROVIDER_KEYS",
+            "api.anthropic.com=sk-ant-QA6487-synth,other.example=k2-QA6487",
+        );
+        pk::capture_and_scrub();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]).stdout(Stdio::piped());
+        pk::configure(&mut cmd);
+        let mut child = cmd.spawn().expect("sh must spawn");
+        pk::deliver(&mut child).expect("write to a live child");
+        drop(child.wait_with_output());
+
+        assert!(pk::provider_keys().is_none(), "control: the plaintext was cleared");
+        assert_eq!(
+            provider_key_hosts_env(),
+            vec!["api.anthropic.com".to_string(), "other.example".to_string()]
+        );
     }
 }
