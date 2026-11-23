@@ -27,8 +27,10 @@
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
+
+use zeroize::Zeroizing;
 
 use aa_proxy::credentials::{
     parse_provider_keys, LaunchGrant, LAUNCH_GRANT_STDIN_CAPABILITY, LAUNCH_GRANT_STDIN_FLAG, MAX_PROVIDER_KEYS_BYTES,
@@ -40,15 +42,32 @@ const VAR: &str = "AA_PROXY_PROVIDER_KEYS";
 /// How long to wait for `aa-proxy --capabilities`. It only prints a line.
 const CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The plaintext payload. Wiped when dropped, and never printed: a `{:?}` of a
+/// value that holds keys must not be able to leak them into a log.
+#[derive(Clone)]
+struct Secret(Zeroizing<String>);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
 /// What the environment held for [`VAR`] when it was captured.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Captured {
     /// Unset, or blank (nothing but whitespace): no keys are configured.
     Unset,
-    Keys(String),
+    Keys(Secret),
     /// Set but not valid UTF-8. Treating this as unset would start a proxy with no
     /// credentials, so it is carried as a refusal instead.
     NotUtf8,
+    /// The keys were written to the proxy and the plaintext was cleared
+    /// (AAASM-6487). The launch still brokers credentials, so this is not
+    /// [`Captured::Unset`]: a second proxy must be refused, never started
+    /// without them. Only the host names stay, which are not secret and which
+    /// the launch's credential report still prints.
+    Delivered(Vec<String>),
 }
 
 impl Captured {
@@ -57,19 +76,26 @@ impl Captured {
             None => Self::Unset,
             Some(v) => match v.into_string() {
                 Ok(s) if s.trim().is_empty() => Self::Unset,
-                Ok(s) => Self::Keys(s),
+                Ok(s) => Self::Keys(Secret(Zeroizing::new(s))),
                 Err(_) => Self::NotUtf8,
             },
         }
     }
 }
 
-/// The value captured by [`capture_and_scrub`].
-static CAPTURED: OnceLock<Captured> = OnceLock::new();
+/// The value captured by [`capture_and_scrub`]. Behind a lock so
+/// [`erase_after_delivery`] can clear it once the proxy has its copy.
+static CAPTURED: OnceLock<Mutex<Captured>> = OnceLock::new();
+
+fn lock(slot: &Mutex<Captured>) -> MutexGuard<'_, Captured> {
+    // A poisoned lock only means another thread panicked while holding it; the
+    // value is still the single source of truth for what this launch brokers.
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn current() -> Captured {
     match CAPTURED.get() {
-        Some(captured) => captured.clone(),
+        Some(slot) => lock(slot).clone(),
         None => Captured::from_os(std::env::var_os(VAR)),
     }
 }
@@ -81,17 +107,51 @@ fn current() -> Captured {
 /// relies on `environ` still pointing at the strings the kernel handed to this
 /// process. Idempotent; later calls change nothing.
 pub fn capture_and_scrub() {
-    CAPTURED.get_or_init(|| Captured::from_os(take_from_process_env()));
+    CAPTURED.get_or_init(|| Mutex::new(Captured::from_os(take_from_process_env())));
 }
 
 /// The provider keys for this launch, or `None` when none are configured.
 ///
 /// After [`capture_and_scrub`] this is the captured value; otherwise (library
 /// callers, tests) it reads the environment variable.
-pub fn provider_keys() -> Option<String> {
+///
+/// `None` once the keys were delivered and cleared ([`erase_after_delivery`]).
+/// The returned copy wipes itself when dropped.
+pub fn provider_keys() -> Option<Zeroizing<String>> {
     match current() {
-        Captured::Keys(keys) => Some(keys),
-        Captured::Unset | Captured::NotUtf8 => None,
+        Captured::Keys(keys) => Some(keys.0.clone()),
+        Captured::Unset | Captured::NotUtf8 | Captured::Delivered(_) => None,
+    }
+}
+
+/// The host names of the keys that were delivered and cleared, or `None` when
+/// nothing was cleared. Never a key.
+pub fn delivered_hosts() -> Option<Vec<String>> {
+    match current() {
+        Captured::Delivered(hosts) => Some(hosts),
+        _ => None,
+    }
+}
+
+/// Clear the captured plaintext now that the proxy has its copy.
+///
+/// The `aasm` process has no further use for the keys, and without this it
+/// kept them readable in its own memory until it exited (AAASM-6487, J84-01).
+/// The wrapper is zeroized as it is dropped, and the state becomes
+/// [`Captured::Delivered`], so a later delivery is refused instead of starting a
+/// proxy with no credentials. Only the `capture_and_scrub` state is cleared; a
+/// value read straight from the environment (library callers, tests) is the
+/// caller's own variable and is not touched.
+///
+/// Best effort, and it does not claim more: bytes the allocator already
+/// reallocated or paged out, the pipe's kernel buffer, and an active attacker of
+/// the same user (ADR 0038) are outside what a wipe in this process can reach.
+pub fn erase_after_delivery() {
+    let Some(slot) = CAPTURED.get() else { return };
+    let mut state = lock(slot);
+    if let Captured::Keys(keys) = &*state {
+        let hosts = crate::commands::run_credential_broker::hosts_of(keys.0.as_str());
+        *state = Captured::Delivered(hosts);
     }
 }
 
@@ -182,7 +242,11 @@ pub fn preflight_with(proxy_binary: &Path, with_launch_grant: bool) -> Result<()
     match current() {
         Captured::Unset => Ok(()),
         Captured::NotUtf8 => Err(format!("{VAR} is not valid UTF-8, so it cannot be delivered")),
+        Captured::Delivered(_) => Err(format!(
+            "{VAR} was already delivered to an earlier proxy and cleared; a second proxy cannot be started without it"
+        )),
         Captured::Keys(raw) => {
+            let raw = raw.0;
             if raw.len() > MAX_PROVIDER_KEYS_BYTES {
                 return Err(format!(
                     "{VAR} is longer than the {MAX_PROVIDER_KEYS_BYTES}-byte limit the proxy accepts"
@@ -242,7 +306,7 @@ fn probe_capability(binary: &Path, capability: &str, timeout: Duration) -> bool 
 
 /// Whether the proxy about to be spawned will be given keys on stdin.
 pub fn delivering() -> bool {
-    provider_keys().is_some()
+    matches!(current(), Captured::Keys(_) | Captured::Delivered(_))
 }
 
 /// Set the provider-key wiring on a proxy `Command`.
@@ -307,10 +371,26 @@ pub fn deliver(child: &mut Child) -> std::io::Result<()> {
 /// terminate the child and refuse the launch: a governed proxy without its
 /// credential would send every check unattributed.
 pub fn deliver_with(child: &mut Child, credential: Option<&LaunchGrant>) -> std::io::Result<()> {
+    if matches!(current(), Captured::Delivered(_)) {
+        return Err(std::io::Error::other(
+            "the provider keys were already delivered to an earlier proxy and cleared; \
+             refusing to start another proxy without them",
+        ));
+    }
     let keys = provider_keys();
     if keys.is_none() && credential.is_none() {
         return Ok(());
     }
+    let wrote = write_credentials(child, credential, keys.as_deref().map(String::as_str));
+    // Clear on success and on failure alike: a failed delivery refuses the launch,
+    // so the plaintext has no remaining use either way.
+    if keys.is_some() {
+        erase_after_delivery();
+    }
+    wrote
+}
+
+fn write_credentials(child: &mut Child, credential: Option<&LaunchGrant>, keys: Option<&str>) -> std::io::Result<()> {
     let mut stdin = child
         .stdin
         .take()
@@ -518,10 +598,10 @@ mod tests {
     #[test]
     fn a_value_that_is_not_utf8_refuses_the_launch_instead_of_vanishing() {
         use std::os::unix::ffi::OsStringExt;
-        assert_eq!(
+        assert!(matches!(
             Captured::from_os(Some(std::ffi::OsString::from_vec(b"h=\xff\xfe".to_vec()))),
             Captured::NotUtf8
-        );
+        ));
         let _lock = crate::test_support::env_guard();
         std::env::set_var(VAR, std::ffi::OsString::from_vec(b"h=\xff\xfe".to_vec()));
         let dir = tempfile::tempdir().unwrap();

@@ -31,25 +31,31 @@ pub const BROKERED_PROVIDER_ENV_NAMES: &[(&str, &str)] = &[
 /// fewer.
 pub fn provider_key_hosts_env() -> Vec<String> {
     // Through `provider_keys()`, not the environment: `aasm` scrubs the variable
-    // at startup (AAASM-6395), so the environment no longer holds it.
+    // at startup (AAASM-6395), so the environment no longer holds it. Once the
+    // keys were delivered and cleared (AAASM-6487) only the host names remain,
+    // which is all this function ever returns.
     match crate::commands::proxy::provider_keys::provider_keys() {
-        Some(val) => val
-            .split(',')
-            .filter_map(|entry| {
-                let entry = entry.trim();
-                if entry.is_empty() {
-                    return None;
-                }
-                match entry.split_once('=') {
-                    Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
-                        Some(host.trim().to_ascii_lowercase())
-                    }
-                    _ => None,
-                }
-            })
-            .collect(),
-        _ => Vec::new(),
+        Some(val) => hosts_of(&val),
+        None => crate::commands::proxy::provider_keys::delivered_hosts().unwrap_or_default(),
     }
+}
+
+/// The lower-cased host of each well-formed `host=key` entry of `raw`; never a key.
+pub(crate) fn hosts_of(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            match entry.split_once('=') {
+                Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
+                    Some(host.trim().to_ascii_lowercase())
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Whether `host` is MitM'd for this launch, under the same scope
