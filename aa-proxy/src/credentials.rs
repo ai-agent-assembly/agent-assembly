@@ -459,6 +459,18 @@ impl fmt::Display for ProviderKeysError {
 
 impl std::error::Error for ProviderKeysError {}
 
+/// Whether `host=key` can be a provider-key entry (AAASM-6485).
+///
+/// Both halves must be non-empty, and neither may contain a control character. The key is
+/// written byte for byte into the upstream request's header block, so a CR or LF inside it
+/// would end the header line and let the rest of the value be read as further headers; a
+/// payload that cannot be one header value must never be counted as brokered or started with.
+/// Every path that builds a [`CredentialStore`] from operator text goes through this, so the
+/// CLI preflight, the strict stdin parser and the lenient environment loader agree.
+fn is_well_formed_entry(host: &str, key: &str) -> bool {
+    !host.trim().is_empty() && !key.is_empty() && !host.chars().chain(key.chars()).any(char::is_control)
+}
+
 /// Parse `host=key,host2=key2` strictly.
 ///
 /// Unlike [`CredentialStore::from_env`], which skips a bad entry so a typo does
@@ -469,13 +481,13 @@ impl std::error::Error for ProviderKeysError {}
 /// # Errors
 ///
 /// [`ProviderKeysError::Malformed`] for a non-empty entry that is not
-/// `host=key` with both halves non-empty; [`ProviderKeysError::Empty`] when no
+/// `host=key` with both halves non-empty and free of control characters; [`ProviderKeysError::Empty`] when no
 /// entry remains.
 pub fn parse_provider_keys(raw: &str) -> Result<Vec<(String, Vec<u8>)>, ProviderKeysError> {
     let mut pairs = Vec::new();
     for (position, entry) in raw.split(',').map(str::trim).filter(|e| !e.is_empty()).enumerate() {
         match entry.split_once('=') {
-            Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
+            Some((host, key)) if is_well_formed_entry(host, key) => {
                 pairs.push((host.trim().to_string(), key.as_bytes().to_vec()));
             }
             _ => return Err(ProviderKeysError::Malformed { index: position + 1 }),
@@ -579,7 +591,7 @@ impl CredentialStore {
                             return None;
                         }
                         match entry.split_once('=') {
-                            Some((host, key)) if !host.trim().is_empty() && !key.is_empty() => {
+                            Some((host, key)) if is_well_formed_entry(host, key) => {
                                 Some((host.trim().to_string(), key.as_bytes().to_vec()))
                             }
                             _ => {
@@ -1150,6 +1162,35 @@ mod tests {
             parse_provider_keys("api.x.com=ok,SECRETMARK6395").unwrap_err(),
             ProviderKeysError::Malformed { index: 2 }
         );
+    }
+
+    /// AAASM-6485: a key with a line break would end the injected header line and smuggle the
+    /// remainder in as further headers. The strict parser refuses it (so the CLI preflight and the
+    /// proxy start refuse the same payloads), the lenient environment path skips it, and the
+    /// refusal never quotes the key.
+    #[test]
+    fn a_key_that_cannot_be_one_header_value_is_refused_and_never_quoted() {
+        for bad in [
+            "api.x.com=sk-ok\r\nX-Injected: SECRETMARK6485",
+            "api.x.com=sk-ok\nX-Injected: SECRETMARK6485",
+            "api.x.com=sk-ok\0SECRETMARK6485",
+            "api.x.com=sk-ok\tSECRETMARK6485",
+            "api.x.com=sk-ok\x7fSECRETMARK6485",
+            "api\r.x.com=SECRETMARK6485",
+        ] {
+            let err = parse_provider_keys(bad).unwrap_err();
+            assert_eq!(err, ProviderKeysError::Malformed { index: 1 }, "{bad:?}");
+            let text = format!("{err} / {err:?}");
+            assert!(!text.contains("SECRETMARK6485"), "error quoted the key: {text}");
+        }
+        // Controls: an ordinary key, a key with a trailing newline (trimmed, as before) and an
+        // opaque non-ASCII-control key all still parse.
+        assert!(parse_provider_keys("api.x.com=sk-ok").is_ok());
+        assert_eq!(
+            parse_provider_keys("api.x.com=sk-ok\n").unwrap(),
+            vec![("api.x.com".to_string(), b"sk-ok".to_vec())]
+        );
+        assert!(parse_provider_keys("api.x.com=sk_ok.-+/=").is_ok());
     }
 
     #[test]
