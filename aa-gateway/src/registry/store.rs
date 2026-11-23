@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use aa_core::GovernanceLevel;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use subtle::ConstantTimeEq;
 use tokio::sync::mpsc;
 use tonic::Status;
 
@@ -236,6 +237,11 @@ pub const MAX_LAUNCH_GRANTS_PER_AGENT: usize = 8;
 struct LaunchGrant {
     /// The one agent the grant authenticates a check for.
     agent_id: [u8; 16],
+    /// The registration credential that authenticated the mint. An agent id outlives a
+    /// registration (deregister, then register the same id again), so the id alone cannot
+    /// tell the registration that asked for this grant from its successor: the grant counts
+    /// only while the live record still carries this credential.
+    registration_token: String,
     /// Caller-chosen launch identifier, kept for evidence.
     #[allow(dead_code)] // recorded for evidence; read by tests and a future status surface
     launch_id: String,
@@ -1379,19 +1385,27 @@ impl AgentRegistry {
 
     /// Mint a launch grant for a registered agent (AAASM-6261).
     ///
-    /// The grant is a fresh UUID v4 bound to `agent_id` and `launch_id`, valid for
-    /// `ttl` (the caller clamps it). It is stored only in `launch_grants`.
+    /// The grant is a fresh UUID v4 bound to `agent_id`, `launch_id` and the registration
+    /// credential `registration_token` that authenticated the request, valid for `ttl`
+    /// (the caller clamps it). It is stored only in `launch_grants`.
+    ///
+    /// The caller validates `registration_token` before calling, but validation and
+    /// minting are separate steps, and a deregister plus a re-register of the same agent id
+    /// can land between them. So the binding is re-checked here against the live record,
+    /// before and after the insert, and a mint whose registration has been replaced fails.
     ///
     /// # Errors
     ///
-    /// [`RegistryError::NotFound`] when the agent is not registered.
+    /// [`RegistryError::NotFound`] when the agent is not registered, or is registered
+    /// under a different credential than `registration_token`.
     pub fn mint_launch_grant(
         &self,
         agent_id: &[u8; 16],
+        registration_token: &str,
         launch_id: &str,
         ttl: std::time::Duration,
     ) -> Result<(String, std::time::Instant), RegistryError> {
-        if !self.agents.contains_key(agent_id) {
+        if !self.registration_is_live(agent_id, registration_token) {
             return Err(RegistryError::NotFound(*agent_id));
         }
         let now = std::time::Instant::now();
@@ -1417,6 +1431,7 @@ impl AgentRegistry {
             grant.clone(),
             LaunchGrant {
                 agent_id: *agent_id,
+                registration_token: registration_token.to_string(),
                 launch_id: launch_id.to_string(),
                 expires_at,
             },
@@ -1424,8 +1439,10 @@ impl AgentRegistry {
         // Both deregister and the orphan cascade remove the agent and then revoke its grants, so a
         // mint that inserted before the revoke is swept, and one that inserts after the removal
         // fails this re-check. Without it a grant for a removed agent would survive for a later
-        // re-registration of the same id to resurrect. Re-check and roll back.
-        if !self.agents.contains_key(agent_id) {
+        // re-registration of the same id to resurrect. The re-check is on the registration, not
+        // the id: a re-registration that landed after the check above is a different registration
+        // under the same id and must not inherit this grant. Re-check and roll back.
+        if !self.registration_is_live(agent_id, registration_token) {
             self.launch_grants.remove(&grant);
             return Err(RegistryError::NotFound(*agent_id));
         }
@@ -1442,13 +1459,31 @@ impl AgentRegistry {
             return None;
         }
         let entry = self.launch_grants.get(grant)?;
-        let (agent_id, expired) = (entry.agent_id, entry.expires_at <= std::time::Instant::now());
+        let (agent_id, registration_token, expired) = (
+            entry.agent_id,
+            entry.registration_token.clone(),
+            entry.expires_at <= std::time::Instant::now(),
+        );
         drop(entry);
         if expired {
             self.launch_grants.remove(grant);
             return None;
         }
-        self.agents.contains_key(&agent_id).then_some(agent_id)
+        // The registration that asked for the grant, not merely the same agent id.
+        self.registration_is_live(&agent_id, &registration_token)
+            .then_some(agent_id)
+    }
+
+    /// Whether `agent_id` is registered right now under the credential `token`.
+    ///
+    /// A record that holds no credential is never live for a grant: records rehydrated from
+    /// durable storage come back with an empty credential (AAASM-6450), and two empty strings
+    /// compare equal, so without this an empty token would match them.
+    fn registration_is_live(&self, agent_id: &[u8; 16], token: &str) -> bool {
+        self.agents.get(agent_id).is_some_and(|record| {
+            !record.credential_token.is_empty()
+                && bool::from(record.credential_token.as_bytes().ct_eq(token.as_bytes()))
+        })
     }
 
     /// How many launch grants are held, live or not yet swept (AAASM-6261).
@@ -2953,7 +2988,7 @@ mod launch_grant_tests {
     fn a_grant_is_not_a_credential_token() {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
-        let (grant, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
         assert_eq!(reg.resolve_launch_grant(&grant), Some([1; 16]));
         assert_eq!(
             reg.find_by_credential_token(&grant),
@@ -2966,7 +3001,7 @@ mod launch_grant_tests {
     #[test]
     fn minting_for_an_unregistered_agent_is_refused() {
         let reg = AgentRegistry::new();
-        assert!(reg.mint_launch_grant(&[9; 16], "launch", HOUR).is_err());
+        assert!(reg.mint_launch_grant(&[9; 16], "tok-9", "launch", HOUR).is_err());
     }
 
     /// Layer 1: deregistering the agent removes its grants from the index.
@@ -2975,8 +3010,8 @@ mod launch_grant_tests {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
         reg.register(rec([2; 16], None, 0)).unwrap();
-        reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
-        let (other, _) = reg.mint_launch_grant(&[2; 16], "launch", HOUR).unwrap();
+        reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
+        let (other, _) = reg.mint_launch_grant(&[2; 16], "tok-2", "launch", HOUR).unwrap();
         reg.deregister(&[1; 16], OrphanMode::Suspend).unwrap();
         assert_eq!(
             reg.launch_grant_count(),
@@ -2996,7 +3031,7 @@ mod launch_grant_tests {
     fn a_grant_whose_agent_is_gone_does_not_resolve_even_if_still_indexed() {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
-        let (grant, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
         reg.agents.remove(&[1; 16]); // bypass `deregister` so only the resolve-time check is left
         assert_eq!(reg.launch_grant_count(), 1, "the grant is still indexed");
         assert_eq!(reg.resolve_launch_grant(&grant), None);
@@ -3009,7 +3044,7 @@ mod launch_grant_tests {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
         reg.register(rec([2; 16], Some([1; 16]), 1)).unwrap();
-        let (grant, _) = reg.mint_launch_grant(&[2; 16], "launch", HOUR).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[2; 16], "tok-2", "launch", HOUR).unwrap();
         reg.deregister(&[1; 16], OrphanMode::CascadeDeregister).unwrap();
         assert_eq!(reg.launch_grant_count(), 0, "the cascade revoked the child's grant");
         reg.register(rec([2; 16], None, 0)).unwrap();
@@ -3025,7 +3060,7 @@ mod launch_grant_tests {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
         let (grant, _) = reg
-            .mint_launch_grant(&[1; 16], "launch", Duration::from_millis(150))
+            .mint_launch_grant(&[1; 16], "tok-1", "launch", Duration::from_millis(150))
             .unwrap();
         assert_eq!(
             reg.resolve_launch_grant(&grant),
@@ -3041,13 +3076,13 @@ mod launch_grant_tests {
     fn minting_sweeps_expired_grants_and_caps_each_agent() {
         let reg = AgentRegistry::new();
         reg.register(rec([1; 16], None, 0)).unwrap();
-        reg.mint_launch_grant(&[1; 16], "stale", Duration::from_millis(100))
+        reg.mint_launch_grant(&[1; 16], "tok-1", "stale", Duration::from_millis(100))
             .unwrap();
         std::thread::sleep(Duration::from_millis(500));
         let mut newest = String::new();
         let mut first = String::new();
         for n in 0..(MAX_LAUNCH_GRANTS_PER_AGENT + 3) {
-            let (g, _) = reg.mint_launch_grant(&[1; 16], "launch", HOUR).unwrap();
+            let (g, _) = reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
             if n == 0 {
                 first = g.clone();
             }

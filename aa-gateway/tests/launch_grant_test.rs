@@ -279,7 +279,12 @@ async fn a_wrong_expired_revoked_or_forged_grant_is_refused_and_never_bound() {
     // Expiry.
     let (short, _) = f
         .registry
-        .mint_launch_grant(&proto_agent_id_to_key(&f.a), "launch-short", Duration::from_millis(200))
+        .mint_launch_grant(
+            &proto_agent_id_to_key(&f.a),
+            TOKEN_A,
+            "launch-short",
+            Duration::from_millis(200),
+        )
         .unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await;
     assert_refused_not_bound(

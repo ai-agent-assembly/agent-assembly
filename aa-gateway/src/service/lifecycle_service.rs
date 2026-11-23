@@ -1011,7 +1011,7 @@ impl AgentLifecycleService for AgentLifecycleServiceImpl {
         let ttl = launch_grant_ttl(req.ttl_sec);
         let (grant, expires_at) = self
             .registry
-            .mint_launch_grant(&agent_key, &req.launch_id, ttl)
+            .mint_launch_grant(&agent_key, &req.credential_token, &req.launch_id, ttl)
             .map_err(|e| Status::not_found(e.to_string()))?;
         let expires_at_unix_ms =
             Utc::now().timestamp_millis() + expires_at.saturating_duration_since(Instant::now()).as_millis() as i64;

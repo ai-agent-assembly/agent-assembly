@@ -81,7 +81,7 @@ fn registered(label: &str, team: &str) -> Registered {
 /// the agent's dedicated proxy.
 fn grant_for(registry: &AgentRegistry, agent: &Registered) -> LaunchGrant {
     let (grant, _) = registry
-        .mint_launch_grant(&agent.key, "launch-1", Duration::from_secs(3600))
+        .mint_launch_grant(&agent.key, &agent.token, "launch-1", Duration::from_secs(3600))
         .expect("mint a launch grant");
     LaunchGrant::new(
         agent.triple.org_id.clone(),
