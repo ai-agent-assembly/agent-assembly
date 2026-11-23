@@ -455,7 +455,10 @@ impl PolicyServiceImpl {
     fn request_owner_key(registry: &AgentRegistry, req: &CheckActionRequest) -> Option<[u8; 16]> {
         match (req.credential_token.is_empty(), req.launch_grant.is_empty()) {
             (false, true) => registry.find_by_credential_token(&req.credential_token),
-            (true, false) => registry.resolve_launch_grant(&req.launch_grant),
+            // Only reached for a request that `validate_credential_token` already admitted (or for
+            // one it refused, which resolves no credential: see `refusal_attribution`). The
+            // post-admission lookup keeps one request's attribution consistent across an expiry.
+            (true, false) => registry.owner_of_admitted_launch_grant(&req.launch_grant),
             // Neither, or both. Both is refused in `validate_credential_token`, and
             // it must resolve to no owner here so the refusal's own response and
             // audit entry cannot be stamped BOUND on the strength of one of them.
@@ -475,6 +478,18 @@ impl PolicyServiceImpl {
             .credentialed_owner_key(req)
             .map(|owner_key| req.agent_id.as_ref().map(proto_agent_id_to_key) == Some(owner_key));
         AgentIdentityAttribution::from_claim(convert::claimed_agent_id(req), agreement)
+    }
+
+    /// The attribution of a request this service is refusing for its credential
+    /// (AAASM-6483).
+    ///
+    /// A refusal never resolves a credential: the credential is what was just judged
+    /// invalid, so it cannot be what vouches for the identity in the refusal's own response
+    /// and audit entry. Taken from the claim alone, it is `Asserted` when a subject was
+    /// claimed and `Unattributed` otherwise, which is what resolving a refused credential
+    /// always produced (a refused credential never names the claimed agent).
+    fn refusal_attribution(req: &CheckActionRequest) -> AgentIdentityAttribution {
+        AgentIdentityAttribution::from_claim(convert::claimed_agent_id(req), None)
     }
 
     /// Deposit the resolved assurance onto the policy evaluation context
@@ -1553,18 +1568,16 @@ impl PolicyServiceImpl {
         // answer "refused impersonations where a subject was claimed" — reading
         // `agent_identity_assurance != "unattributed"` would silently drop the
         // blank-subject rows.
-        let response = self.stamp_identity_assurance(
-            req,
-            CheckActionResponse {
-                decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
-                reason: reason.into(),
-                policy_rule: "a2a_identity_verification".into(),
-                approval_id: String::new(),
-                redact: None,
-                decision_latency_us: 0,
-                ..Default::default()
-            },
-        );
+        let response = CheckActionResponse {
+            decision: aa_proto::assembly::common::v1::Decision::Deny as i32,
+            reason: reason.into(),
+            policy_rule: "a2a_identity_verification".into(),
+            approval_id: String::new(),
+            redact: None,
+            decision_latency_us: 0,
+            agent_identity_assurance: proto_assurance(Self::refusal_attribution(req).assurance()),
+            ..Default::default()
+        };
         let response = self.stamp_decision_id(response, decision_id);
 
         if !benign || self.benign_grant_refusal_due(req) {
@@ -1635,7 +1648,7 @@ impl PolicyServiceImpl {
             // identity established?" for its refusals as well as its verdicts.
             // Scoped to this service: other audit producers in the gateway do
             // not write the key.
-            "agent_identity_assurance": self.agent_identity_attribution(req).assurance().as_str(),
+            "agent_identity_assurance": Self::refusal_attribution(req).assurance().as_str(),
         })
         .to_string();
 

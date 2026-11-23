@@ -212,6 +212,12 @@ pub struct AgentRegistry {
     /// through [`AgentRegistry::resolve_launch_grant`]. In memory only: a gateway
     /// restart drops every grant.
     launch_grants: DashMap<String, LaunchGrant>,
+    /// Serialises the count-evict-insert step of [`AgentRegistry::mint_launch_grant`], so
+    /// concurrent mints for one agent cannot each see room under the per-agent cap and all
+    /// insert (AAASM-6483). Minting is rare (once per launch); lookups never take it.
+    launch_mint_lock: Mutex<()>,
+    /// [`ADMITTED_GRANT_GRACE`], held per registry so a test can shorten it.
+    admitted_grace: std::time::Duration,
     /// Serialises the validate-then-insert step to prevent TOCTOU races.
     registration_lock: Mutex<()>,
     /// All active suspension reasons per agent. Supports multi-reason coexistence:
@@ -232,6 +238,24 @@ pub struct AgentRegistry {
 /// Most launch grants one agent may hold at once (AAASM-6261). A launch needs one;
 /// the headroom covers a relaunch before the previous grant expires.
 pub const MAX_LAUNCH_GRANTS_PER_AGENT: usize = 8;
+
+/// How long past its expiry a grant that was admitted stays resolvable to its owner
+/// ([`AgentRegistry::owner_of_admitted_launch_grant`]) and stays indexed.
+///
+/// A check is admitted by [`AgentRegistry::resolve_launch_grant`], which is strict about
+/// expiry, and is then attributed (tenancy, spend, audit, assurance) by several later
+/// lookups. Without a grace, a grant admitted a moment before its expiry could resolve to
+/// nobody halfway through the same request, which would evaluate it under anonymous
+/// tenancy after side effects had already accrued. The grace is far longer than any
+/// request and is never used to admit anything.
+pub const ADMITTED_GRANT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether `grant` is past its expiry by more than [`ADMITTED_GRANT_GRACE`] (or already gone).
+fn entry_lapsed(grants: &DashMap<String, LaunchGrant>, grant: &str, grace: std::time::Duration) -> bool {
+    grants
+        .get(grant)
+        .is_none_or(|g| g.expires_at + grace <= std::time::Instant::now())
+}
 
 /// A launch grant's binding (AAASM-6261). The grant string itself is the map key.
 struct LaunchGrant {
@@ -270,6 +294,8 @@ impl AgentRegistry {
             org_index: DashMap::new(),
             credential_index: DashMap::new(),
             launch_grants: DashMap::new(),
+            launch_mint_lock: Mutex::new(()),
+            admitted_grace: ADMITTED_GRANT_GRACE,
             registration_lock: Mutex::new(()),
             suspend_reasons: DashMap::new(),
             team_max_age_secs: DashMap::new(),
@@ -1383,6 +1409,14 @@ impl AgentRegistry {
         self.credential_index.get(token).map(|e| *e.value())
     }
 
+    /// A registry whose admitted-grant grace is `grace`, so a test need not wait the real
+    /// [`ADMITTED_GRANT_GRACE`] (AAASM-6483).
+    #[cfg(test)]
+    fn with_admitted_grace(mut self, grace: std::time::Duration) -> Self {
+        self.admitted_grace = grace;
+        self
+    }
+
     /// Mint a launch grant for a registered agent (AAASM-6261).
     ///
     /// The grant is a fresh UUID v4 bound to `agent_id`, `launch_id` and the registration
@@ -1405,6 +1439,8 @@ impl AgentRegistry {
         launch_id: &str,
         ttl: std::time::Duration,
     ) -> Result<(String, std::time::Instant), RegistryError> {
+        // Held across the live check, the count, the eviction and the insert: see `launch_mint_lock`.
+        let _mint = self.launch_mint_lock.lock().unwrap_or_else(|e| e.into_inner());
         if !self.registration_is_live(agent_id, registration_token) {
             return Err(RegistryError::NotFound(*agent_id));
         }
@@ -1412,7 +1448,8 @@ impl AgentRegistry {
         // Sweep expired grants on every mint so the map is bounded by live grants,
         // then keep at most MAX_LAUNCH_GRANTS_PER_AGENT per agent by dropping the
         // soonest-to-expire one, so a fresh launch can always mint.
-        self.launch_grants.retain(|_, g| g.expires_at > now);
+        let grace = self.admitted_grace;
+        self.launch_grants.retain(|_, g| g.expires_at + grace > now);
         let mut mine: Vec<(String, std::time::Instant)> = self
             .launch_grants
             .iter()
@@ -1466,10 +1503,39 @@ impl AgentRegistry {
         );
         drop(entry);
         if expired {
-            self.launch_grants.remove(grant);
+            // Refused for admission now, but kept until the grace has passed: a request this
+            // grant admitted a moment ago is still being attributed through it.
+            if entry_lapsed(&self.launch_grants, grant, self.admitted_grace) {
+                self.launch_grants.remove(grant);
+            }
             return None;
         }
         // The registration that asked for the grant, not merely the same agent id.
+        self.registration_is_live(&agent_id, &registration_token)
+            .then_some(agent_id)
+    }
+
+    /// The owner of a grant that a request was already admitted with, for the lookups that
+    /// attribute that request after admission (AAASM-6483).
+    ///
+    /// Same liveness rules as [`Self::resolve_launch_grant`] (unknown, revoked, or a different
+    /// registration resolves to nothing) except expiry is read with [`ADMITTED_GRANT_GRACE`]. It
+    /// must never be used to admit: an expired grant is refused by `resolve_launch_grant`, and a
+    /// refusal must not resolve a credential at all.
+    pub fn owner_of_admitted_launch_grant(&self, grant: &str) -> Option<[u8; 16]> {
+        if grant.is_empty() {
+            return None;
+        }
+        let entry = self.launch_grants.get(grant)?;
+        let (agent_id, registration_token, lapsed) = (
+            entry.agent_id,
+            entry.registration_token.clone(),
+            entry.expires_at + self.admitted_grace <= std::time::Instant::now(),
+        );
+        drop(entry);
+        if lapsed {
+            return None;
+        }
         self.registration_is_live(&agent_id, &registration_token)
             .then_some(agent_id)
     }
@@ -3119,8 +3185,8 @@ mod launch_grant_tests {
     }
 
     #[test]
-    fn an_expired_grant_does_not_resolve_and_is_dropped() {
-        let reg = AgentRegistry::new();
+    fn an_expired_grant_does_not_resolve_and_is_dropped_once_past_the_grace() {
+        let reg = AgentRegistry::new().with_admitted_grace(Duration::from_millis(100));
         reg.register(rec([1; 16], None, 0)).unwrap();
         let (grant, _) = reg
             .mint_launch_grant(&[1; 16], "tok-1", "launch", Duration::from_millis(150))
@@ -3132,7 +3198,70 @@ mod launch_grant_tests {
         );
         std::thread::sleep(Duration::from_millis(700));
         assert_eq!(reg.resolve_launch_grant(&grant), None);
+        assert_eq!(reg.owner_of_admitted_launch_grant(&grant), None);
         assert_eq!(reg.launch_grant_count(), 0);
+    }
+
+    /// AAASM-6483: a request admitted a moment before its grant expires is attributed through
+    /// several later lookups. Admission is strict, but those lookups must still name the owner
+    /// for the length of one request, or the same check would run under anonymous tenancy.
+    #[test]
+    fn an_admitted_grant_still_names_its_owner_just_after_it_expires_but_admits_nothing() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg
+            .mint_launch_grant(&[1; 16], "tok-1", "launch", Duration::from_millis(100))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+
+        assert_eq!(
+            reg.resolve_launch_grant(&grant),
+            None,
+            "an expired grant is refused for admission"
+        );
+        assert_eq!(
+            reg.owner_of_admitted_launch_grant(&grant),
+            Some([1; 16]),
+            "within the grace it still names the owner of a request it admitted"
+        );
+        assert_eq!(
+            reg.launch_grant_count(),
+            1,
+            "the refusal did not drop it inside the grace"
+        );
+    }
+
+    /// The grace is for attribution only: a grant that is revoked, or whose registration was
+    /// replaced, names no owner however recently it was live.
+    #[test]
+    fn the_grace_never_outlives_revocation_or_a_replaced_registration() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
+        reg.agents.insert([1; 16], successor([1; 16], "tok-1-second"));
+        assert_eq!(reg.owner_of_admitted_launch_grant(&grant), None);
+
+        let reg = AgentRegistry::new();
+        reg.register(rec([2; 16], None, 0)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[2; 16], "tok-2", "launch", HOUR).unwrap();
+        reg.revoke_launch_grants(&[2; 16]);
+        assert_eq!(reg.owner_of_admitted_launch_grant(&grant), None);
+    }
+
+    /// AAASM-6483: two mints that both counted room under the cap used to both insert. Racing
+    /// mints for one agent must leave at most the cap.
+    #[test]
+    fn concurrent_mints_for_one_agent_keep_to_the_cap() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..(MAX_LAUNCH_GRANTS_PER_AGENT * 8) {
+                scope.spawn(|| {
+                    reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
+                });
+            }
+        });
+        assert_eq!(reg.launch_grant_count(), MAX_LAUNCH_GRANTS_PER_AGENT);
     }
 
     #[test]
