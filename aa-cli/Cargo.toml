@@ -96,6 +96,7 @@ aa-policy            = { path = "../aa-policy", version = "0.0.1-rc.8" }
 aa-proto             = { path = "../aa-proto", version = "0.0.1-rc.8" }
 aa-runtime           = { path = "../aa-runtime", version = "0.0.1-rc.8" }
 aa-proxy             = { path = "../aa-proxy", version = "0.0.1-rc.8" }
+zeroize              = { workspace = true }
 # strip-for-publish:begin sdkclient
 # AAASM-5323: `aasm run` registers through the gateway's gRPC
 # `AgentLifecycleService`, building the request with the same `aa-sdk-client`
