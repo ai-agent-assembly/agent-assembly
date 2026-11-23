@@ -1441,6 +1441,11 @@ mod plan {
         /// [`ResolvedAuthority`]'s own doc comment for why this collapsed
         /// five separate fields into one.
         authority: ResolvedAuthority,
+        /// A stand-in for the kernel's process table, so a test can make the start-marker lookup
+        /// fail inside `resolve_boundary` without breaking the host kernel (AAASM-6484). Production
+        /// code never sets it and always reads the real kernel.
+        #[cfg(test)]
+        hop_procs: Option<std::sync::Arc<dyn run_supervisor::Procs>>,
         /// The supervisor seed of a launch that is the root of a delegation tree
         /// (AAASM-6273): its own gated authority and ledger, plus the ids of any of
         /// its leases the ledger could not track. Set by `resolve_boundary` for a
@@ -1764,7 +1769,14 @@ mod plan {
 
             // AAASM-6484: a governed hop that cannot export its marker does not start. Refused here,
             // with no backend consulted, rather than launched with the tripwire silently absent.
-            if let Some(reason) = self.hop_marker_refusal(&run_supervisor::Kernel) {
+            #[cfg(test)]
+            let procs: &dyn run_supervisor::Procs = self
+                .hop_procs
+                .as_deref()
+                .unwrap_or(&run_supervisor::Kernel as &dyn run_supervisor::Procs);
+            #[cfg(not(test))]
+            let procs: &dyn run_supervisor::Procs = &run_supervisor::Kernel;
+            if let Some(reason) = self.hop_marker_refusal(procs) {
                 let target = TargetRef::new(
                     command.get_program().to_string_lossy().into_owned(),
                     command.get_args().len(),
@@ -2976,6 +2988,8 @@ mod plan {
                     authority,
                     tree_root: None,
                     child_channel: None,
+                    #[cfg(test)]
+                    hop_procs: None,
                 });
             }
 
@@ -3102,6 +3116,8 @@ mod plan {
                     authority: authority.clone(),
                     tree_root: None,
                     child_channel: None,
+                    #[cfg(test)]
+                    hop_procs: None,
                 });
             }
         };
@@ -3129,6 +3145,8 @@ mod plan {
                 authority: authority.clone(),
                 tree_root: None,
                 child_channel: None,
+                #[cfg(test)]
+                hop_procs: None,
             });
         }
 
@@ -3141,6 +3159,8 @@ mod plan {
             authority,
             tree_root: None,
             child_channel: None,
+            #[cfg(test)]
+            hop_procs: None,
         })
     }
 
@@ -3233,6 +3253,8 @@ mod plan {
                 authority,
                 tree_root: None,
                 child_channel: None,
+                #[cfg(test)]
+                hop_procs: None,
             });
         };
 
@@ -3317,6 +3339,8 @@ mod plan {
                         authority: authority.clone(),
                         tree_root: None,
                         child_channel: None,
+                        #[cfg(test)]
+                        hop_procs: None,
                     });
                 }
                 Err(refusal) => {
@@ -3364,6 +3388,8 @@ mod plan {
             authority,
             tree_root: None,
             child_channel: None,
+            #[cfg(test)]
+            hop_procs: None,
         })
     }
 
@@ -5200,6 +5226,56 @@ mod plan {
                 bare.hop_marker_refusal(&NoStartMarker),
                 None,
                 "a launch that governs nothing has no hop to name and is not refused"
+            );
+        }
+
+        /// AAASM-6484: the refusal is wired into `resolve_boundary`, not only decided by
+        /// `hop_marker_refusal`. A governed plan whose kernel cannot report the start marker comes
+        /// back refused with no spec built; the same plan with a reportable marker is not refused for
+        /// the hop. Deleting the call from `resolve_boundary` turns the first half red.
+        #[test]
+        fn resolve_boundary_refuses_a_governed_hop_that_cannot_name_itself() {
+            let args = base_args();
+            let with_leases =
+                resolution_with_leases("    - domain: network_egress\n      scope: whole\n      reason: tag test\n");
+            let mut plan = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &with_leases).expect("plan");
+            let identity = IdentityPlan::of(&args);
+            let handle = identity.preview_handle();
+            let network = NetworkPlan {
+                endpoint: None,
+                no_proxy: false,
+            };
+            let posture = CredentialPosture {
+                removed: vec![],
+                delegated: vec![],
+                ambient_unremoved: vec![],
+            };
+            let hop_refusal = |boundary: &Boundary| matches!(boundary, Boundary::Refused(why) if why.contains(run_supervisor::GOVERNED_HOP_ENV));
+
+            plan.hop_procs = Some(std::sync::Arc::new(NoStartMarker));
+            let (spec, _report, boundary) = plan.resolve_boundary(
+                &identity,
+                &handle,
+                &std::process::Command::new("echo"),
+                &std::collections::BTreeMap::new(),
+                posture.clone(),
+                &network,
+            );
+            assert!(spec.is_none(), "no spec is built for a launch refused before it starts");
+            assert!(hop_refusal(&boundary), "expected the hop-marker refusal");
+
+            plan.hop_procs = Some(std::sync::Arc::new(FixedStartMarker));
+            let (_, _, boundary) = plan.resolve_boundary(
+                &identity,
+                &handle,
+                &std::process::Command::new("echo"),
+                &std::collections::BTreeMap::new(),
+                posture,
+                &network,
+            );
+            assert!(
+                !hop_refusal(&boundary),
+                "control: a plan whose kernel reports the marker is not refused for the hop"
             );
         }
 
