@@ -3055,6 +3055,69 @@ mod launch_grant_tests {
         );
     }
 
+    /// The record for `id` as a later registration of the same agent id writes it: same id,
+    /// a credential issued to that registration.
+    fn successor(id: [u8; 16], credential: &str) -> AgentRecord {
+        let mut record = rec(id, None, 0);
+        record.credential_token = credential.to_string();
+        record
+    }
+
+    /// AAASM-6483: the mint was authenticated by one registration, and by the time it ran the
+    /// same agent id had been deregistered and registered again. The id is registered, so an
+    /// id-only check accepts it; the registration that asked is gone.
+    #[test]
+    fn a_mint_authenticated_by_a_replaced_registration_is_refused() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        reg.deregister(&[1; 16], OrphanMode::Suspend).unwrap();
+        reg.register(successor([1; 16], "tok-1-second")).unwrap();
+
+        assert!(
+            reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).is_err(),
+            "the old registration's credential must not mint against its successor"
+        );
+        assert_eq!(reg.launch_grant_count(), 0, "a refused mint leaves nothing behind");
+        let (grant, _) = reg
+            .mint_launch_grant(&[1; 16], "tok-1-second", "launch", HOUR)
+            .expect("control: the live registration's own credential still mints");
+        assert_eq!(reg.resolve_launch_grant(&grant), Some([1; 16]));
+    }
+
+    /// AAASM-6483: a grant already in the index (the in-flight mint that lands after the
+    /// sweep) must not resolve once the id belongs to a different registration. The record is
+    /// replaced directly, bypassing `deregister`'s sweep, which is exactly the ordering the
+    /// race produces.
+    #[test]
+    fn a_grant_does_not_resolve_against_a_successor_registration_of_the_same_id() {
+        let reg = AgentRegistry::new();
+        reg.register(rec([1; 16], None, 0)).unwrap();
+        let (grant, _) = reg.mint_launch_grant(&[1; 16], "tok-1", "launch", HOUR).unwrap();
+        assert_eq!(
+            reg.resolve_launch_grant(&grant),
+            Some([1; 16]),
+            "control: live under its own registration"
+        );
+
+        reg.agents.insert([1; 16], successor([1; 16], "tok-1-second"));
+        assert_eq!(reg.launch_grant_count(), 1, "the grant is still indexed");
+        assert_eq!(
+            reg.resolve_launch_grant(&grant),
+            None,
+            "a grant belongs to the registration that minted it, not to the agent id"
+        );
+    }
+
+    /// Records rehydrated from durable storage carry no credential (AAASM-6450); two empty
+    /// strings compare equal, so an empty token must not be accepted for them.
+    #[test]
+    fn a_record_with_no_credential_cannot_mint_a_grant() {
+        let reg = AgentRegistry::new();
+        reg.register(successor([1; 16], "")).unwrap();
+        assert!(reg.mint_launch_grant(&[1; 16], "", "launch", HOUR).is_err());
+        assert_eq!(reg.launch_grant_count(), 0);
+    }
+
     #[test]
     fn an_expired_grant_does_not_resolve_and_is_dropped() {
         let reg = AgentRegistry::new();
