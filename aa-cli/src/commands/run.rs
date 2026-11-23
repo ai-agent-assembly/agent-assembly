@@ -1515,8 +1515,7 @@ mod plan {
         /// stale marker would make a later independent root refuse. The marker is never admission
         /// evidence; it can only turn a lost tree into a refusal.
         pub(super) fn tag_governed_hop(&self, env: &mut HashMap<String, String>) {
-            let governed = self.authority.handoff.is_some() || !self.authority.lease_grants.is_empty();
-            match governed.then(run_supervisor::governed_hop_value).flatten() {
+            match self.governs_a_hop().then(run_supervisor::governed_hop_value).flatten() {
                 Some(value) => {
                     env.insert(run_supervisor::GOVERNED_HOP_ENV.to_string(), value);
                 }
@@ -1524,6 +1523,31 @@ mod plan {
                     env.remove(run_supervisor::GOVERNED_HOP_ENV);
                 }
             }
+        }
+
+        /// Whether this launch is a governed hop: a tree root holding leases, or an admitted
+        /// descendant.
+        fn governs_a_hop(&self) -> bool {
+            self.authority.handoff.is_some() || !self.authority.lease_grants.is_empty()
+        }
+
+        /// Why this launch must be refused because it cannot name its own hop, if it cannot
+        /// (AAASM-6484).
+        ///
+        /// [`Self::tag_governed_hop`] leaves the marker out when the kernel will not report this
+        /// process's start marker. For a governed hop that is not a harmless omission: the marker is
+        /// what makes a descendant that later loses its authority channel refuse instead of starting
+        /// as a fresh root above its parent's ceiling, so a hop that cannot export one must not
+        /// start. A launch that governs nothing is unaffected.
+        pub(super) fn hop_marker_refusal(&self, procs: &dyn run_supervisor::Procs) -> Option<String> {
+            (self.governs_a_hop() && run_supervisor::governed_hop_value_with(procs).is_none()).then(|| {
+                format!(
+                    "this is a governed launch and the kernel did not report this process's start marker, so it \
+                     cannot name itself to its tool as {}: a descendant that later lost its authority channel \
+                     would be indistinguishable from a fresh root, so the launch is refused",
+                    run_supervisor::GOVERNED_HOP_ENV
+                )
+            })
         }
 
         /// Hand the supervisor seed to the launch path (AAASM-6273).
@@ -1737,6 +1761,23 @@ mod plan {
             // (an `issued_at` a hair after the gate's `now` would read as
             // not-yet-valid).
             let now = std::time::SystemTime::now();
+
+            // AAASM-6484: a governed hop that cannot export its marker does not start. Refused here,
+            // with no backend consulted, rather than launched with the tripwire silently absent.
+            if let Some(reason) = self.hop_marker_refusal(&run_supervisor::Kernel) {
+                let target = TargetRef::new(
+                    command.get_program().to_string_lossy().into_owned(),
+                    command.get_args().len(),
+                );
+                let report = self.with_selection(IsolationReport::no_boundary(
+                    session,
+                    identity_ref,
+                    target,
+                    credentials,
+                    reason.clone(),
+                ));
+                return (None, report, Boundary::Refused(reason));
+            }
 
             let Some(base) = self.base_spec(identity, handle, command, credentials.clone()) else {
                 // The lossy rendering is a label for humans, which is all
@@ -5104,6 +5145,62 @@ mod plan {
             let mut env = HashMap::new();
             bare.tag_governed_hop(&mut env);
             assert!(!env.contains_key(name), "and does not invent one");
+        }
+
+        /// A kernel that will not report any process's start marker.
+        struct NoStartMarker;
+
+        impl run_supervisor::Procs for NoStartMarker {
+            fn parent_of(&self, _pid: u32) -> Option<u32> {
+                None
+            }
+            fn start_marker(&self, _pid: u32) -> Option<u64> {
+                None
+            }
+        }
+
+        /// A kernel that reports one.
+        struct FixedStartMarker;
+
+        impl run_supervisor::Procs for FixedStartMarker {
+            fn parent_of(&self, _pid: u32) -> Option<u32> {
+                None
+            }
+            fn start_marker(&self, _pid: u32) -> Option<u64> {
+                Some(7)
+            }
+        }
+
+        /// AAASM-6484: a governed hop that cannot export its marker is refused rather than launched
+        /// with the tripwire silently absent. The controls are the same plans with a kernel that can
+        /// report the marker, and a launch that governs nothing, which neither needs nor is refused for one.
+        #[test]
+        fn a_governed_hop_that_cannot_export_its_marker_is_refused() {
+            let args = base_args();
+            let with_leases =
+                resolution_with_leases("    - domain: network_egress\n      scope: whole\n      reason: tag test\n");
+            let holder = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &with_leases).expect("plan");
+            let bare = RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &plain_resolution()).expect("plan");
+            let mut admitted =
+                RunPlanner::resolve_isolation(&args, PlanPosture::Preview, &plain_resolution()).expect("plan");
+            admitted.authority.handoff = Some(run_supervisor::Governor::Inherited(61));
+
+            for (label, plan) in [("tree root with leases", &holder), ("admitted descendant", &admitted)] {
+                let reason = plan
+                    .hop_marker_refusal(&NoStartMarker)
+                    .unwrap_or_else(|| panic!("{label}: must be refused when no marker can be exported"));
+                assert!(reason.contains(run_supervisor::GOVERNED_HOP_ENV), "{label}: {reason}");
+                assert_eq!(
+                    plan.hop_marker_refusal(&FixedStartMarker),
+                    None,
+                    "{label}: control: the same plan with a reportable marker is not refused"
+                );
+            }
+            assert_eq!(
+                bare.hop_marker_refusal(&NoStartMarker),
+                None,
+                "a launch that governs nothing has no hop to name and is not refused"
+            );
         }
 
         /// Group A: a policy's `authority.leases` grants reach `plan.authority.lease_grants`,

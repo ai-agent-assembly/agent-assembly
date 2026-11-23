@@ -257,8 +257,14 @@ pub fn hop_marker_from_env() -> HopMarker {
 /// The value this process sets for its tool as [`GOVERNED_HOP_ENV`], or `None` when the kernel
 /// cannot report this process's start marker (the variable is then left unset).
 pub fn governed_hop_value() -> Option<String> {
+    governed_hop_value_with(&Kernel)
+}
+
+/// [`governed_hop_value`] over an injected process table, so a test can make the start-marker
+/// lookup fail without breaking the host kernel.
+pub(crate) fn governed_hop_value_with(procs: &dyn Procs) -> Option<String> {
     let pid = std::process::id();
-    Kernel.start_marker(pid).map(|start| format!("v1:{pid}:{start}"))
+    procs.start_marker(pid).map(|start| format!("v1:{pid}:{start}"))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
