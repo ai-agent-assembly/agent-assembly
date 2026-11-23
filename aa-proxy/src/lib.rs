@@ -71,6 +71,7 @@ pub async fn run(
         provider_keys: startup_credentials,
         launch_grant,
     } = credentials::StartupSecrets::load().map_err(|e| anyhow::anyhow!("refusing to start: {e}"))?;
+    require_gateway_for_grant(launch_grant.is_some(), config.gateway_endpoint.as_deref())?;
 
     // AAASM-3131: shout if upstream TLS verification is disabled. This is a
     // debug-only test affordance (the env var is ignored in release builds);
@@ -170,4 +171,46 @@ pub async fn run(
     }
     server.run().await?;
     Ok(())
+}
+
+/// A governed launch must have a gateway to ask (AAASM-6483).
+///
+/// The launch grant exists so every gateway answer is bound to the launch's registered
+/// agent. With no `gateway_endpoint` the proxy never connects to a gateway, performs no
+/// check, and would forward whatever passes its local rules while still reporting itself
+/// governed, so a grant without an endpoint is refused at start rather than left to be
+/// noticed in traffic.
+fn require_gateway_for_grant(has_grant: bool, gateway_endpoint: Option<&str>) -> anyhow::Result<()> {
+    let missing = match gateway_endpoint {
+        None => true,
+        Some(endpoint) => endpoint.trim().is_empty(),
+    };
+    if has_grant && missing {
+        anyhow::bail!(
+            "refusing to start: a launch grant was delivered but no gateway endpoint is configured, \
+             so no check could be bound to the launch's agent"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod governed_start_tests {
+    use super::require_gateway_for_grant;
+
+    #[test]
+    fn a_grant_without_a_gateway_endpoint_refuses_the_start() {
+        assert!(require_gateway_for_grant(true, None).is_err());
+        assert!(require_gateway_for_grant(true, Some("")).is_err());
+        assert!(require_gateway_for_grant(true, Some("   ")).is_err());
+    }
+
+    #[test]
+    fn controls_a_grant_with_an_endpoint_and_an_ungoverned_proxy_both_start() {
+        assert!(require_gateway_for_grant(true, Some("http://127.0.0.1:50051")).is_ok());
+        assert!(
+            require_gateway_for_grant(false, None).is_ok(),
+            "no grant: the proxy is not governed, endpoint or not"
+        );
+    }
 }
