@@ -2487,3 +2487,130 @@ mod attribution_context_tests {
         assert_eq!(ctx.metadata.get("team_id").map(String::as_str), Some("team-1"));
     }
 }
+
+#[cfg(test)]
+mod grant_attribution_tests {
+    //! AAASM-6483 — what a check is attributed to once it has been admitted with a launch grant,
+    //! and what a refusal is never attributed to.
+
+    use super::*;
+    use crate::registry::convert::proto_agent_id_to_key;
+    use crate::registry::store::AgentRecord;
+    use crate::registry::AgentStatus;
+    use aa_proto::assembly::common::v1::AgentId as ProtoAgentId;
+    use std::collections::{BTreeMap, VecDeque};
+    use std::time::Duration;
+
+    fn claimed_agent() -> ProtoAgentId {
+        ProtoAgentId {
+            org_id: String::new(),
+            team_id: "team-a".into(),
+            agent_id: "did:key:agent-a".into(),
+        }
+    }
+
+    fn record(id: [u8; 16], token: &str) -> AgentRecord {
+        AgentRecord {
+            agent_id: id,
+            name: "agent-a".into(),
+            framework: "test".into(),
+            version: "1".into(),
+            risk_tier: 0,
+            tool_names: vec![],
+            public_key: "pk".into(),
+            credential_token: token.into(),
+            metadata: BTreeMap::new(),
+            registered_at: chrono::Utc::now(),
+            last_heartbeat: chrono::Utc::now(),
+            status: AgentStatus::Active,
+            pid: None,
+            session_count: 0,
+            last_event: None,
+            active_sessions: vec![],
+            recent_events: VecDeque::new(),
+            recent_traces: vec![],
+            layer: None,
+            governance_level: aa_core::GovernanceLevel::default(),
+            parent_agent_id: None,
+            team_id: Some("team-a".into()),
+            depth: 0,
+            delegation_reason: None,
+            spawned_by_tool: None,
+            root_agent_id: None,
+            children: vec![],
+            parent_key: None,
+            enforcement_mode: None,
+            enforcement_mode_expires_at: None,
+            org_id: None,
+        }
+    }
+
+    fn request_with(grant: &str) -> CheckActionRequest {
+        CheckActionRequest {
+            agent_id: Some(claimed_agent()),
+            launch_grant: grant.into(),
+            ..Default::default()
+        }
+    }
+
+    /// Admission is strict about expiry and is followed by several attribution lookups. A request
+    /// admitted a moment before its grant expires must still be attributed to the grant's owner
+    /// through `request_owner_key`, or the same check would run under anonymous tenancy after its
+    /// side effects had accrued. Reverting `request_owner_key` to the strict lookup turns the last
+    /// assertion red.
+    #[test]
+    fn a_request_admitted_just_before_its_grant_expires_is_still_attributed_to_its_owner() {
+        let key = proto_agent_id_to_key(&claimed_agent());
+        let registry = AgentRegistry::new();
+        registry.register(record(key, "tok-a")).unwrap();
+        let (grant, _) = registry
+            .mint_launch_grant(&key, "tok-a", "launch", Duration::from_millis(100))
+            .unwrap();
+        let req = request_with(&grant);
+
+        assert_eq!(
+            PolicyServiceImpl::request_owner_key(&registry, &req),
+            Some(key),
+            "control: a live grant names its owner"
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(
+            registry.resolve_launch_grant(&grant),
+            None,
+            "admission itself is strict"
+        );
+        assert_eq!(
+            PolicyServiceImpl::request_owner_key(&registry, &req),
+            Some(key),
+            "attribution of an already-admitted request survives the expiry"
+        );
+    }
+
+    /// The grace must never let a refusal be stamped as a bound identity. Here the grant is live
+    /// and names the claimed agent, so a lookup-based attribution would be `Bound`; the refusal's
+    /// own attribution comes from the claim alone and is `Asserted`.
+    #[test]
+    fn a_refusal_is_attributed_from_the_claim_never_from_a_credential() {
+        let key = proto_agent_id_to_key(&claimed_agent());
+        let registry = AgentRegistry::new();
+        registry.register(record(key, "tok-a")).unwrap();
+        let (grant, _) = registry
+            .mint_launch_grant(&key, "tok-a", "launch", Duration::from_secs(60))
+            .unwrap();
+        let req = request_with(&grant);
+
+        let via_lookup = AgentIdentityAttribution::from_claim(
+            convert::claimed_agent_id(&req),
+            PolicyServiceImpl::request_owner_key(&registry, &req).map(|owner| owner == key),
+        );
+        assert_eq!(
+            via_lookup.assurance(),
+            aa_core::identity_attribution::AgentIdentityAssurance::Bound,
+            "control: resolving the live grant would have vouched for the identity"
+        );
+        assert_eq!(
+            PolicyServiceImpl::refusal_attribution(&req).assurance(),
+            aa_core::identity_attribution::AgentIdentityAssurance::Asserted
+        );
+    }
+}
