@@ -14,6 +14,8 @@
 //! (`ProxyGuardOptions` carries a `LaunchGrant`, and the token is private to
 //! `run_registration`), and this test does not test it.
 
+#[path = "grpc_gateway_support/mod.rs"]
+mod grpc_gateway_support;
 #[path = "proxy_trust_support/mod.rs"]
 mod proxy_trust_support;
 
@@ -46,6 +48,10 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
     let bin = proxy_trust_support::aa_proxy_binary();
     let work = tempfile::tempdir().unwrap();
     let ready_file = work.path().join("ready");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let gateway = runtime
+        .block_on(grpc_gateway_support::GrpcGateway::start_with_policy())
+        .expect("start a gateway for the governed proxy to reach");
 
     let mut cmd = Command::new(&bin);
     cmd.env("AA_PROXY_ADDR", "127.0.0.1:0")
@@ -53,11 +59,15 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
         .env("AA_CA_DIR", work.path().join("ca"))
         .env("AA_PROXY_SYSTEM_TRUST_INSTALL", "never")
         .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
+        // A governed proxy needs a reachable gateway and ignores the fail-open knobs (AAASM-6483),
+        // so it is given a real one. The test is about what the grant is visible in, not about
+        // enforcement; the gateway only has to be there.
+        .env("AA_PROXY_GATEWAY_ENDPOINT", gateway.endpoint())
         .env_remove("AA_PROXY_PROVIDER_KEYS")
         .env_remove("AA_PROXY_PROVIDER_KEYS_STDIN")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(std::fs::File::create(work.path().join("proxy.stderr")).unwrap());
     let mut child = cmd.spawn().expect("spawn the real aa-proxy");
 
     let grant = LaunchGrant::new(String::new(), "team-a".into(), "did:key:agent-a".into(), GRANT.into());
@@ -79,7 +89,8 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
         }
         assert!(
             child.try_wait().unwrap().is_none(),
-            "the proxy exited before it was ready: a delivered grant must not stop it starting"
+            "the proxy exited before it was ready: a delivered grant must not stop it starting; its stderr:\n{}",
+            std::fs::read_to_string(work.path().join("proxy.stderr")).unwrap_or_default()
         );
         assert!(std::time::Instant::now() < deadline, "no readiness within 30s");
         std::thread::sleep(Duration::from_millis(50));
@@ -153,4 +164,54 @@ fn the_grant_reaches_a_real_proxy_on_stdin_and_is_not_in_its_environment_or_argv
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// AAASM-6483: a grant is delivered but no gateway endpoint is configured. The proxy would
+/// never connect to a gateway and so never bind a single answer to the launch's agent while
+/// still reporting itself governed, so the real binary must refuse to start.
+#[test]
+fn a_grant_without_a_gateway_endpoint_stops_a_real_proxy_starting() {
+    let bin = proxy_trust_support::aa_proxy_binary();
+    let work = tempfile::tempdir().unwrap();
+    let ready_file = work.path().join("ready");
+
+    let mut cmd = Command::new(&bin);
+    cmd.env("AA_PROXY_ADDR", "127.0.0.1:0")
+        .env("AA_PROXY_READY_FILE", &ready_file)
+        .env("AA_CA_DIR", work.path().join("ca"))
+        .env("AA_PROXY_SYSTEM_TRUST_INSTALL", "never")
+        .env("AA_PROXY_LAUNCH_GRANT_STDIN", "1")
+        .env_remove("AA_PROXY_GATEWAY_ENDPOINT")
+        .env_remove("AA_PROXY_PROVIDER_KEYS")
+        .env_remove("AA_PROXY_PROVIDER_KEYS_STDIN")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn().expect("spawn the real aa-proxy");
+    let grant = LaunchGrant::new(String::new(), "team-a".into(), "did:key:agent-a".into(), GRANT.into());
+    {
+        let mut stdin = child.stdin.take().expect("stdin pipe");
+        stdin.write_all(&grant.encode_line().unwrap()).unwrap();
+        stdin.write_all(b"\n").unwrap();
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the proxy neither exited nor refused within 60s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(
+        !status.success(),
+        "a governed proxy with no gateway endpoint must refuse to start"
+    );
+    assert!(
+        !ready_file.exists(),
+        "it must refuse before it reports readiness, not after"
+    );
 }
