@@ -252,9 +252,10 @@ pub const ADMITTED_GRANT_GRACE: std::time::Duration = std::time::Duration::from_
 
 /// Whether `grant` is past its expiry by more than [`ADMITTED_GRANT_GRACE`] (or already gone).
 fn entry_lapsed(grants: &DashMap<String, LaunchGrant>, grant: &str, grace: std::time::Duration) -> bool {
-    grants
-        .get(grant)
-        .is_none_or(|g| g.expires_at + grace <= std::time::Instant::now())
+    match grants.get(grant) {
+        None => true,
+        Some(g) => g.expires_at + grace <= std::time::Instant::now(),
+    }
 }
 
 /// A launch grant's binding (AAASM-6261). The grant string itself is the map key.

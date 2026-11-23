@@ -181,7 +181,11 @@ pub async fn run(
 /// governed, so a grant without an endpoint is refused at start rather than left to be
 /// noticed in traffic.
 fn require_gateway_for_grant(has_grant: bool, gateway_endpoint: Option<&str>) -> anyhow::Result<()> {
-    if has_grant && gateway_endpoint.is_none_or(|e| e.trim().is_empty()) {
+    let missing = match gateway_endpoint {
+        None => true,
+        Some(endpoint) => endpoint.trim().is_empty(),
+    };
+    if has_grant && missing {
         anyhow::bail!(
             "refusing to start: a launch grant was delivered but no gateway endpoint is configured, \
              so no check could be bound to the launch's agent"
