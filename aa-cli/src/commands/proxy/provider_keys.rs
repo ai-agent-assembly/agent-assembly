@@ -707,4 +707,116 @@ mod tests {
             "capture_and_scrub must hide the value from ps/proc and still hold it"
         );
     }
+
+    // AAASM-6487 (J84-01). The state is process-global, so each of these runs in
+    // its own process under nextest, and each captures the variable the way
+    // `main` does before it spawns anything.
+    const SYNTH: &str = "api.anthropic.com=sk-ant-QA6487-synth,other.example=k2-QA6487";
+
+    fn capture_synthetic_keys() {
+        std::env::set_var(VAR, SYNTH);
+        capture_and_scrub();
+        assert!(
+            delivering(),
+            "the synthetic keys must be captured before the test starts"
+        );
+    }
+
+    fn cat_child() -> Child {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]).stdout(Stdio::piped());
+        configure(&mut cmd);
+        cmd.spawn().expect("sh must spawn")
+    }
+
+    #[test]
+    fn delivery_clears_the_plaintext_but_the_launch_still_counts_as_brokered() {
+        let _lock = crate::test_support::env_guard();
+        capture_synthetic_keys();
+        assert!(
+            provider_keys().is_some(),
+            "control: the keys are readable before delivery"
+        );
+
+        let mut child = cat_child();
+        deliver(&mut child).expect("write to a live child");
+
+        let out = child.wait_with_output().expect("wait");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            SYNTH,
+            "control: the proxy received the exact payload"
+        );
+        assert!(
+            provider_keys().is_none(),
+            "the supervisor still holds the plaintext after delivery"
+        );
+        assert!(
+            delivering(),
+            "a cleared launch must still count as brokered, or a later proxy would start without its keys"
+        );
+        assert_eq!(
+            delivered_hosts(),
+            Some(vec!["api.anthropic.com".to_string(), "other.example".to_string()]),
+            "the host names stay for the credential report and nothing else does"
+        );
+    }
+
+    #[test]
+    fn a_second_delivery_is_refused_and_never_a_silent_no_op() {
+        let _lock = crate::test_support::env_guard();
+        capture_synthetic_keys();
+        let mut first = cat_child();
+        deliver(&mut first).expect("first delivery");
+        drop(first.wait_with_output());
+
+        let mut second = cat_child();
+        let err = deliver(&mut second).expect_err("a second proxy must not start without its keys");
+        assert!(!err.to_string().contains("sk-ant"), "the refusal quoted a key: {err}");
+        let _ = second.kill();
+
+        let refusal = preflight(Path::new("/nonexistent/aa-proxy")).expect_err("preflight must refuse too");
+        assert!(refusal.contains("already delivered"), "{refusal}");
+        assert!(!refusal.contains("sk-ant"), "{refusal}");
+    }
+
+    #[test]
+    fn a_failed_delivery_clears_the_plaintext_as_well() {
+        let _lock = crate::test_support::env_guard();
+        capture_synthetic_keys();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]).stdin(Stdio::null()).stdout(Stdio::null());
+        let mut child = cmd.spawn().expect("sh must spawn");
+
+        deliver(&mut child).expect_err("a child with no stdin pipe cannot be delivered to");
+        let _ = child.kill();
+
+        assert!(
+            provider_keys().is_none(),
+            "a refused launch left the plaintext in the supervisor"
+        );
+        assert!(delivering(), "the refused launch still brokered credentials");
+    }
+
+    #[test]
+    fn formatting_a_captured_value_never_prints_the_keys() {
+        let _lock = crate::test_support::env_guard();
+        capture_synthetic_keys();
+        let shown = format!("{:?}", current());
+        assert!(!shown.contains("sk-ant-QA6487"), "Debug printed a key: {shown}");
+        assert!(!shown.contains("k2-QA6487"), "Debug printed a key: {shown}");
+    }
+
+    #[test]
+    fn the_credential_report_still_names_the_hosts_after_delivery() {
+        let _lock = crate::test_support::env_guard();
+        capture_synthetic_keys();
+        let mut child = cat_child();
+        deliver(&mut child).expect("write to a live child");
+        drop(child.wait_with_output());
+        assert_eq!(
+            crate::commands::run_credential_broker::provider_key_hosts_env(),
+            vec!["api.anthropic.com".to_string(), "other.example".to_string()]
+        );
+    }
 }
