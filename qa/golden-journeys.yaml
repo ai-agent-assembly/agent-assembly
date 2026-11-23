@@ -2637,7 +2637,7 @@ journeys:
     selector: aa-gateway/tests/launch_grant_test.rs::a_wrong_expired_revoked_or_forged_grant_is_refused_and_never_bound
   - repo: agent-assembly
     kind: test
-    selector: aa-gateway/tests/launch_grant_test.rs::a_gateway_restart_invalidates_every_grant
+    selector: aa-gateway/tests/launch_grant_test.rs::a_gateway_instance_that_did_not_mint_a_grant_does_not_recognise_it
   - repo: agent-assembly
     kind: test
     selector: aa-gateway/tests/launch_grant_test.rs::only_the_registration_token_can_mint_a_grant
@@ -3299,7 +3299,7 @@ journeys:
     selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_install_over_a_malformed_config_refuses_and_changes_nothing
   - repo: agent-assembly
     kind: test
-    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_managed_values_written_today_are_the_ones_codex_0_160_rejects
+    selector: aa-integration-tests/tests/devtool_adapter_nondestructive_install.rs::codex_managed_values_are_accepted_by_the_current_codex_cli
   execution_lanes:
   - pr
   - main
