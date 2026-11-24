@@ -1,6 +1,11 @@
 # agent-assembly
 
-> Governance-native runtime for AI agents — open-source core.
+> Write down what your AI agents may do. Agent Assembly checks the actions you
+> route through it against that policy and records every decision in an audit
+> trail you can verify offline. Anything you did not route through it is not
+> inspected.
+>
+> Open-source core. Release candidate: see [Project Status](#project-status).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=main&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
@@ -130,8 +135,8 @@ brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
 
 ## Overview
 
-`agent-assembly` brings governance to AI agents at scale. An action on a governed
-path — a tool call, a network request, a budget spend — is checked against your
+An action on a governed path — a tool call, a network request, a budget spend —
+is checked against your
 **policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
 and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
 `aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
@@ -171,6 +176,59 @@ A mechanism that is not deployed is reported as absent — nothing underneath
 silently picks up what it would have done. See the
 [Architecture overview](docs/src/architecture/README.md) for the full picture, or
 jump straight to the [Quickstart](#quickstart).
+
+### See one decision before you enforce anything
+
+Your team has an agent with a `shell` tool, and someone has to decide whether it
+may run commands near customer data. The person who owns that risk — a platform or
+security engineer — writes the policy; the rule lives in a YAML file, not in the
+agent's code. Before it governs anything, replay a recorded session against it and
+read what it would have decided. Save the two files below as `policy.yaml` (allow
+reads, refuse the shell) and `session.jsonl` (two recorded tool calls, one audit
+event per line). It needs only the `aasm` binary from a published release —
+checked on `v0.0.1-rc.7` (macOS arm64 tarball, SHA-256 verified against the
+release's `SHA256SUMS`) — with no gateway, proxy or agent running.
+
+```yaml
+apiVersion: agent-assembly/v1
+kind: Policy
+metadata: { name: no-shell, version: "1.0.0" }
+spec:
+  tools:
+    file_read: { allow: true }
+    shell:     { allow: false }
+```
+
+```jsonl
+{"event_type":"ToolCallIntercepted","agent_id":"support-bot","payload":"{\"ToolCall\":{\"name\":\"file_read\",\"args\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}"}
+{"event_type":"ToolCallIntercepted","agent_id":"support-bot","payload":"{\"ToolCall\":{\"name\":\"shell\",\"args\":\"{\\\"command\\\":\\\"rm -rf ./customer-data\\\"}\"}}"}
+```
+
+```console
+$ aasm policy simulate --policy policy.yaml --against session.jsonl
+Simulation Report
+--------------------------------------------------
+Total events:       2
+Allowed:            1
+Denied:             1
+Approval required:  0
+
+EVENT#   ACTION               DECISION     REASON
+----------------------------------------------------------------------
+1        tool:shell           deny         tool denied by policy
+$ echo $?
+1
+```
+
+The read passes; the `rm -rf` is the one decision you can inspect, with its reason,
+and the non-zero exit lets CI refuse a policy change that would let it through
+(`--output-file` writes the same report as JSON). This is a **dry run**: it
+enforces nothing. Enforcement starts when the policy is applied to a gateway
+(`aasm policy apply`) and the agent's actions are routed through one of the
+mechanisms above — then each decision lands in the audit trail you query with
+`aasm audit list --result deny` and re-verify offline with `aasm audit verify-chain`.
+Next: [`aasm policy`](docs/src/cli/policy.md), [`aasm audit`](docs/src/cli/audit.md),
+or [restrict where an agent may connect](docs/src/usage-guide/enforce-egress-policy.md).
 
 ### Governing an AI dev tool
 
