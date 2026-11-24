@@ -416,6 +416,36 @@ mod deterministic_conformance {
             }
         });
 
+        // `aasm run` deregisters its agent when the session ends
+        // (`run_registration::deregister`), and the gateway's `deregister`
+        // removes the record — so the registration can only be observed while
+        // the session is live, never by a lookup after the launcher exits.
+        // Poll the real registry, under the key the durable identity derives,
+        // for the whole launch; the attribution assertion below reads what this
+        // saw. Errors while the identity is still being enrolled are expected
+        // and simply retried.
+        let registered_during_launch = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observer = {
+            let registry = std::sync::Arc::clone(&registry);
+            let seen = std::sync::Arc::clone(&registered_during_launch);
+            let identity_dir = state.join("identity");
+            tokio::spawn(async move {
+                loop {
+                    if let Ok(identity) = aa_sdk_client::IdentityStore::at(&identity_dir).load(AGENT_ID) {
+                        let key = proto_agent_id_to_key(&ProtoAgentId {
+                            org_id: String::new(),
+                            team_id: String::new(),
+                            agent_id: identity.did_key(),
+                        });
+                        if registry.get(&key).is_some() {
+                            seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+        };
+
         // ── wait for evidence, then stop the session ───────────────────────
         // `-p` is a single-turn print-and-exit invocation, so the child exits
         // on its own once the scripted conversation reaches its final text
@@ -455,6 +485,7 @@ mod deterministic_conformance {
         }
         let launcher_exit = child.wait()?;
         patch_handle.abort();
+        observer.abort();
         let stdout = std::fs::read_to_string(&stdout_path).unwrap_or_default();
         let stderr = std::fs::read_to_string(&stderr_path).unwrap_or_default();
         println!(
@@ -594,16 +625,22 @@ mod deterministic_conformance {
         // this Story's platform notes warn about, which would derive a
         // completely different (or no) key.
         let did = expected_did(&state, AGENT_ID);
+        assert!(
+            registered_during_launch.load(std::sync::atomic::Ordering::SeqCst),
+            "no registry record was ever observed for the derived did `{did}` while the session was live — \
+             the session either never registered or registered under a different identity than the one it derived"
+        );
+        // The same lookup after the launcher exited: the record must be gone,
+        // proving the session's registration ended with it (the behaviour the
+        // old after-the-fact lookup tripped over).
         let key = proto_agent_id_to_key(&ProtoAgentId {
             org_id: String::new(),
             team_id: String::new(),
             agent_id: did.clone(),
         });
-        let record = registry.get(&key);
         assert!(
-            record.is_some(),
-            "no registry record found for the derived did `{did}` — the session either never \
-             registered or registered under a different identity than the one it derived"
+            registry.get(&key).is_none(),
+            "the registry still holds `{did}` after the session ended — `aasm run` did not deregister it"
         );
 
         real_home.assert_unchanged(SCENARIO);
