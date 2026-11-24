@@ -1,6 +1,11 @@
 # agent-assembly
 
-> Governance-native runtime for AI agents — open-source core.
+> Write down what your AI agents may do. Agent Assembly checks the actions you
+> route through it against that policy and records every decision in an audit
+> trail you can verify offline. Anything you did not route through it is not
+> inspected.
+>
+> Open-source core. Release candidate: see [Project Status](#project-status).
 
 [![CI](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/ci.yml?branch=main&logo=githubactions&logoColor=white&label=CI)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/github/actions/workflow/status/ai-agent-assembly/agent-assembly/docs.yml?branch=main&logo=githubactions&logoColor=white&label=docs)](https://github.com/ai-agent-assembly/agent-assembly/actions/workflows/docs.yml)
@@ -130,8 +135,8 @@ brew uninstall aasm            # plus aasm-runtime / aasm-proxy if installed
 
 ## Overview
 
-`agent-assembly` brings governance to AI agents at scale. An action on a governed
-path — a tool call, a network request, a budget spend — is checked against your
+An action on a governed path — a tool call, a network request, a budget spend —
+is checked against your
 **policy**, by a central **gateway** or by the sidecar proxy's local egress rules,
 and the outcome is recorded in a hash-chained, **tamper-evident** audit trail that
 `aasm audit verify-chain` re-verifies offline. Where nothing inspected the payload,
