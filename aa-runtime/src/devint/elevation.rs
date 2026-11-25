@@ -33,6 +33,16 @@ use super::codec::{self, DiFrame, DiResponseFrame};
 /// How long an operator gets to answer one elevation request.
 pub const DEFAULT_ELEVATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// How long a client may spend on one elevation before it must give up on its
+/// own, measured from the moment it receives the request.
+///
+/// Deliberately shorter than [`DEFAULT_ELEVATION_TIMEOUT`]. After the runtime's
+/// timeout it has cancelled the operation, rolled back and closed the
+/// connection; a client that went on to mutate the host then would change it
+/// behind a receipt that says it did not. The margin covers the transit of the
+/// request and the client's own cleanup after its last decision.
+pub const CLIENT_ELEVATION_BUDGET: Duration = Duration::from_secs(8 * 60);
+
 /// One elevation request on its way from a blocking broker to the connection
 /// task that owns the socket.
 pub(crate) struct BrokerCall {
@@ -184,6 +194,14 @@ where
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_client_budget_ends_well_before_the_runtime_gives_up() {
+        assert!(
+            CLIENT_ELEVATION_BUDGET + Duration::from_secs(60) <= DEFAULT_ELEVATION_TIMEOUT,
+            "a client must stop mutating at least a minute before the runtime cancels"
+        );
+    }
 
     fn operation() -> ElevatedOperation {
         ElevatedOperation {
