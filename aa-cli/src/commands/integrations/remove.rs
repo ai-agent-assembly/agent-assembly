@@ -194,12 +194,20 @@ pub fn run(args: RemoveArgs, options: SessionOptions, output: OutputFormat) -> E
         // is sent that could mutate: a removal that cannot be authorized should
         // say so now, not after "y". A runtime too old to carry terminal
         // authorization is refused here too, rather than left to open a dialog.
-        if privileged && !args.dry_run {
+        // A step that names no path cannot be ruled out as touching the managed
+        // file, so against a runtime too old to carry terminal authorization it
+        // is refused as well (fail closed).
+        let undetermined = preview.steps.iter().any(|s| {
+            elevation::any_unnamed(s.artifact_paths.iter().map(String::as_str)) || s.artifact_paths.is_empty()
+        });
+        if !args.dry_run {
             elevation::refuse_terminal_below_v8(
                 args.admin_auth,
-                privileged,
+                privileged || undetermined,
                 session.client.negotiated().di_api_version,
             )?;
+        }
+        if privileged && !args.dry_run {
             if matches!(args.admin_auth, AdminAuthArg::Terminal) {
                 elevation::preflight()?;
             }

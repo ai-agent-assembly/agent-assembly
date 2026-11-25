@@ -224,13 +224,17 @@ pub fn run(args: RepairArgs, options: SessionOptions, output: OutputFormat) -> E
         // the installation; say how before asking, and refuse now if that way
         // is not available (AAASM-6491).
         let privileged = elevation::involves_managed_file(drifted.iter().map(String::as_str));
+        // Drift labels that name no path cannot be ruled out as the managed file:
+        // refuse them too against a runtime that cannot carry terminal
+        // authorization (fail closed).
+        let undetermined = elevation::any_unnamed(drifted.iter().map(String::as_str));
+        elevation::refuse_terminal_below_v8(
+            args.admin_auth,
+            privileged || undetermined,
+            session.client.negotiated().di_api_version,
+        )?;
         if privileged {
             eprintln!("  {}", args.admin_auth.disclosure_line());
-            elevation::refuse_terminal_below_v8(
-                args.admin_auth,
-                privileged,
-                session.client.negotiated().di_api_version,
-            )?;
             if matches!(args.admin_auth, AdminAuthArg::Terminal) {
                 elevation::preflight()?;
             }

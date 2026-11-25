@@ -271,6 +271,12 @@ pub fn method_to_send(admin: AdminAuthArg, likely_privileged: bool, negotiated_v
     }
 }
 
+/// True when any label names nothing, so the managed file cannot be positively
+/// ruled out as part of the operation.
+pub fn any_unnamed<'a>(labels: impl IntoIterator<Item = &'a str>) -> bool {
+    labels.into_iter().any(|l| l.trim().is_empty())
+}
+
 /// Refuse, before anything is sent, a terminal-authorized operation that
 /// involves the managed file against a runtime that cannot carry it: it would
 /// ignore the field and open the GUI dialog.
@@ -447,40 +453,55 @@ pub fn read_verified_staged(path: &Path, uid: u32, expected_sha256: &str) -> Res
 
 // ── running sudo ────────────────────────────────────────────────────────────
 
+/// The dispositions found before the outermost guard ignored the signals, and
+/// how many guards are live. Nested guards must not record the already-ignored
+/// state as "original", or a child would be handed `SIG_IGN` for good.
+static SIGNAL_STATE: Mutex<(usize, [libc::sighandler_t; 4])> = Mutex::new((0, [libc::SIG_DFL; 4]));
+const GUARDED_SIGNALS: [libc::c_int; 4] = [libc::SIGINT, libc::SIGQUIT, libc::SIGTERM, libc::SIGHUP];
+
 /// Ignore the interrupting signals in this process while `sudo` owns the
 /// terminal and while an operation is cleaned up, so a ^C aimed at a password
 /// prompt cannot kill `aasm` between an operation and its cleanup. `sudo` itself
 /// still receives them. It wraps only sudo children and cleanup — never a y/N
-/// prompt, which ^C must be able to cancel. Nests: each guard restores what it
-/// found.
-struct SignalGuard {
-    previous: [(libc::c_int, libc::sighandler_t); 4],
-}
+/// prompt, which ^C must be able to cancel. SIGTERM and SIGHUP too: a closed
+/// terminal or a `kill` must not skip the `sudo -k`. Nests.
+struct SignalGuard;
 
 impl SignalGuard {
     fn ignore() -> Self {
-        // SIGTERM and SIGHUP as well: a closed terminal or a `kill` must not skip
-        // the `sudo -k` and the cleanup that follow an operation.
-        let mut previous = [
-            (libc::SIGINT, libc::SIG_DFL),
-            (libc::SIGQUIT, libc::SIG_DFL),
-            (libc::SIGTERM, libc::SIG_DFL),
-            (libc::SIGHUP, libc::SIG_DFL),
-        ];
-        for entry in &mut previous {
-            // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
-            // changes the disposition, and the old one is restored in `Drop`.
-            entry.1 = unsafe { libc::signal(entry.0, libc::SIG_IGN) };
+        let mut state = SIGNAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 == 0 {
+            for (i, signal) in GUARDED_SIGNALS.iter().enumerate() {
+                // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
+                // changes the disposition, and the old one is restored when the
+                // outermost guard drops.
+                state.1[i] = unsafe { libc::signal(*signal, libc::SIG_IGN) };
+            }
         }
-        Self { previous }
+        state.0 += 1;
+        Self
+    }
+
+    /// The dispositions to give a child: what this process had before any guard.
+    fn originals() -> [libc::sighandler_t; 4] {
+        let state = SIGNAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        if state.0 == 0 {
+            [libc::SIG_DFL; 4]
+        } else {
+            state.1
+        }
     }
 }
 
 impl Drop for SignalGuard {
     fn drop(&mut self) {
-        for (signal, handler) in self.previous {
-            // SAFETY: restoring a disposition `signal` itself returned.
-            unsafe { libc::signal(signal, handler) };
+        let mut state = SIGNAL_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.0 = state.0.saturating_sub(1);
+        if state.0 == 0 {
+            for (i, signal) in GUARDED_SIGNALS.iter().enumerate() {
+                // SAFETY: restoring a disposition `signal` itself returned.
+                unsafe { libc::signal(*signal, state.1[i]) };
+            }
         }
     }
 }
@@ -495,6 +516,7 @@ struct Ran {
 fn run(argv: &[OsString], input: Option<&[u8]>) -> Result<Ran, String> {
     let (program, args) = argv.split_first().ok_or_else(|| "empty command".to_string())?;
     let _guard = SignalGuard::ignore();
+    let originals = SignalGuard::originals();
     let mut command = Command::new(program);
     command
         .args(args)
@@ -505,14 +527,15 @@ fn run(argv: &[OsString], input: Option<&[u8]>) -> Result<Ran, String> {
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     // SAFETY: runs between fork and exec and only calls async-signal-safe
-    // `signal`, undoing the ignore above so `sudo` gets default dispositions
-    // (an ignored signal would otherwise survive the exec).
+    // `signal`, restoring the dispositions this process had before any guard
+    // (an ignored signal would otherwise survive the exec) — not forcing the
+    // default, so a parent that was started with a signal ignored (nohup) keeps
+    // that for its child.
     unsafe {
-        command.pre_exec(|| {
-            libc::signal(libc::SIGINT, libc::SIG_DFL);
-            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
-            libc::signal(libc::SIGTERM, libc::SIG_DFL);
-            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+        command.pre_exec(move || {
+            for (signal, handler) in GUARDED_SIGNALS.iter().zip(originals) {
+                libc::signal(*signal, handler);
+            }
             Ok(())
         });
     }
@@ -888,38 +911,38 @@ impl Elevator {
         if let Some(late) = self.out_of_time() {
             return late;
         }
-        // Whether the directory is ours to remove again is decided before the
-        // idempotent `install -d` makes it exist.
+        // The managed directory is created only when it is absent. An existing
+        // one is not touched at all — `install -d` would rewrite its mode and
+        // group — and is instead checked, without privilege, before anything is
+        // placed in it.
         let existed = Path::new(&paths.dir).exists();
         if existed {
             if let Err(why) = check_managed_dir(Path::new(&paths.dir), paths.sudo == SUDO) {
                 return O::Unavailable(why);
             }
-        }
-        match run(&mkdir_argv(&paths.sudo, &paths.dir), None) {
-            Ok(ran) if ran.success => {}
-            Ok(ran) => return self.noninteractive_or(ran, "preparing the managed directory"),
-            Err(e) => return O::Unavailable(e),
+        } else {
+            match run(&mkdir_argv(&paths.sudo, &paths.dir), None) {
+                Ok(ran) if ran.success => {}
+                Ok(ran) => return self.noninteractive_or(ran, "creating the managed directory"),
+                Err(e) => return O::Unavailable(e),
+            }
         }
         let created_dir = !existed;
         let outcome = self.write_and_install(paths, body);
         // The temporary goes on every path, success included; a leftover is
         // reported, never papered over.
-        let leftover = !matches!(run(&remove_argv(&paths.sudo, &paths.tmp), None), Ok(ran) if ran.success)
-            || Path::new(&paths.tmp).exists();
+        let _ = run(&remove_argv(&paths.sudo, &paths.tmp), None);
+        let leftover = Path::new(&paths.tmp).exists();
         if outcome != O::Completed && created_dir {
             // Only a directory this run created, and `rmdir` refuses a non-empty one.
             let _ = run(&rmdir_argv(&paths.sudo, &paths.dir), None);
         }
-        if leftover {
+        // A real failure stays the answer; only a success is overridden, because a
+        // placement that leaves its temporary behind is not a clean success.
+        if leftover && outcome == O::Completed {
             return O::Cancelled(format!(
-                "the temporary file {} could not be removed and may still be there; remove it with `sudo rm -f`{}",
-                paths.tmp,
-                if self.placed_this_op {
-                    "; the managed-settings file itself WAS placed"
-                } else {
-                    ""
-                }
+                "the temporary file {} could not be removed and may still be there; remove it with `sudo rm -f`; the managed-settings file itself WAS placed",
+                paths.tmp
             ));
         }
         outcome
@@ -1000,30 +1023,49 @@ impl Drop for Elevator {
 
 /// Read one line from `fd`, giving up at `deadline` (or never, with `None`).
 ///
-/// `poll(2)` rather than a blocking read, so an operator who walks away from a
-/// y/N cannot leave the command holding a question the runtime has long since
-/// stopped waiting on. `None` is a timeout, EOF or error: all read as "no".
+/// `select(2)`, not `poll(2)`: on macOS `poll` reports `POLLNVAL` immediately for
+/// a tty device such as `/dev/tty`, which reads as "ready" and sends the caller
+/// into a blocking read with no deadline. Timeout, error, EOF with nothing read
+/// and a descriptor `select` cannot hold all read as "no"; a partial line at EOF
+/// (`y` then ^D) is the answer.
 pub fn read_answer_with_deadline(fd: libc::c_int, deadline: Option<Instant>) -> Option<String> {
+    if fd < 0 || fd as usize >= libc::FD_SETSIZE {
+        return None;
+    }
     let mut line = Vec::new();
     loop {
-        let timeout_ms: libc::c_int = match deadline {
-            None => -1,
-            Some(d) => {
-                let left = d.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return None;
-                }
-                // Round up so a sub-millisecond remainder cannot spin.
-                libc::c_int::try_from(left.as_millis().saturating_add(1)).unwrap_or(libc::c_int::MAX)
+        // The remaining time is recomputed on every pass, so an interrupted
+        // `select` cannot extend the wait.
+        let mut timeout = deadline.map(|d| {
+            let left = d.saturating_duration_since(Instant::now());
+            libc::timeval {
+                tv_sec: left.as_secs() as _,
+                tv_usec: left.subsec_micros() as _,
             }
+        });
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return None;
+        }
+        // SAFETY: `set` is zeroed then initialised by FD_ZERO; `fd` is below
+        // FD_SETSIZE, checked above.
+        let mut set: libc::fd_set = unsafe { std::mem::zeroed() };
+        unsafe {
+            libc::FD_ZERO(&mut set);
+            libc::FD_SET(fd, &mut set);
+        }
+        let timeout_ptr = timeout
+            .as_mut()
+            .map_or(std::ptr::null_mut(), |t| t as *mut libc::timeval);
+        // SAFETY: every pointer is either null or valid for the call.
+        let ready = unsafe {
+            libc::select(
+                fd + 1,
+                &mut set,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                timeout_ptr,
+            )
         };
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `pfd` is a valid, initialised `pollfd` and the count is 1.
-        let ready = unsafe { libc::poll(&mut pfd, 1, timeout_ms) };
         if ready < 0 {
             if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
                 continue;
@@ -1036,8 +1078,15 @@ pub fn read_answer_with_deadline(fd: libc::c_int, deadline: Option<Instant>) -> 
         let mut buf = [0u8; 256];
         // SAFETY: `buf` is valid for `buf.len()` writable bytes.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if n <= 0 {
+        if n < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
             return None;
+        }
+        if n == 0 {
+            // EOF: a partial line is still an answer.
+            return (!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned());
         }
         line.extend_from_slice(&buf[..n as usize]);
         if let Some(end) = line.iter().position(|b| *b == b'\n') {
@@ -1143,7 +1192,8 @@ pub fn failure_after(base: Failure, record: &Record) -> Failure {
         O::Unavailable(detail) => Failure::new(
             Outcome::Unsupported,
             format!("Unavailable: terminal authorization could not be used ({detail}); nothing was changed"),
-            "pass --admin-auth gui to use the macOS dialog",
+            "if the message above names a directory permission problem, fix that directory's owner and mode \
+             (it must be root-owned and not group- or world-writable); otherwise pass --admin-auth gui to use the macOS dialog",
         ),
         O::Completed => base,
     }
@@ -1578,14 +1628,14 @@ mod tests {
             r#"#!/bin/sh
 for a in "$@"; do printf 'ARG:%s\n' "$a" >> '{rec}'; done
 echo CALL_END >> '{rec}'
-case "$1" in -v|-k) exit 0 ;; esac
+case "$1" in -v) [ -e '{slow_v}' ] && sleep 1; exit 0 ;; -k) exit 0 ;; esac
 shift
 [ "$1" = "--" ] && shift
 cmd=$1; shift
 last=; penult=
 for a in "$@"; do penult=$last; last=$a; done
 case "$cmd" in
-  /usr/bin/tee) cat > "$last" ;;
+  /usr/bin/tee) cat > "$last"; [ -e '{slow_tee}' ] && sleep 1 ;;
   /usr/bin/install)
     if [ "$1" = "-d" ]; then mkdir -p "$last"; exit 0; fi
     [ -e '{fail}' ] && exit 1
@@ -1596,7 +1646,9 @@ case "$cmd" in
 esac
 "#,
             rec = record.display(),
-            fail = dir.join("fail-install").display()
+            fail = dir.join("fail-install").display(),
+            slow_tee = dir.join("slow-tee").display(),
+            slow_v = dir.join("slow-v").display()
         );
         std::fs::write(&path, script).expect("write stub");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -1690,6 +1742,44 @@ esac
         assert!(!elevator.placed_this_op);
     }
 
+    /// Time that runs out *during* the sequence, not before it: the stub sleeps
+    /// in the named step and the budget is shorter than that sleep.
+    fn expire_during(marker: &str) -> (tempfile::TempDir, PathBuf, PathBuf, ElevationOutcome) {
+        let scratch = tempfile::tempdir().expect("tempdir");
+        let record = scratch.path().join("record");
+        let stub = write_stub(scratch.path(), &record);
+        std::fs::write(scratch.path().join(marker), "").expect("marker");
+        let target = scratch.path().join("ClaudeCode").join("managed-settings.json");
+        let paths = Paths::new(stub.to_str().unwrap(), target.to_str().unwrap());
+        let mut elevator = Elevator::new(Mode::Install, None, new_record());
+        elevator.budget = Duration::from_millis(400);
+        elevator.begin();
+        let outcome = elevator.place(&paths, "body");
+        (scratch, record, target, outcome)
+    }
+
+    #[test]
+    fn time_running_out_during_the_password_prompt_places_nothing() {
+        let (_s, record, target, outcome) = expire_during("slow-v");
+        assert!(matches!(outcome, O::Cancelled(_)), "{outcome:?}");
+        assert!(!target.exists());
+        let seen = std::fs::read_to_string(&record).expect("record");
+        assert!(!seen.contains("/usr/bin/tee"), "{seen}");
+        assert!(seen.trim_end().ends_with("ARG:-k\nCALL_END"), "{seen}");
+    }
+
+    #[test]
+    fn time_running_out_after_the_temporary_is_written_never_installs_it() {
+        let (scratch, record, target, outcome) = expire_during("slow-tee");
+        assert!(matches!(outcome, O::Cancelled(_)), "{outcome:?}");
+        assert!(!target.exists(), "install must not run once time is up");
+        let seen = std::fs::read_to_string(&record).expect("record");
+        assert!(seen.contains("/usr/bin/tee") && !seen.contains("ARG:-m"), "{seen}");
+        assert!(seen.contains("/bin/rm"), "the temporary is still removed: {seen}");
+        assert!(leftover_tmps(&scratch.path().join("ClaudeCode")).is_empty());
+        assert!(seen.trim_end().ends_with("ARG:-k\nCALL_END"), "{seen}");
+    }
+
     #[test]
     fn a_delete_after_the_budget_is_spent_is_not_performed() {
         let scratch = tempfile::tempdir().expect("tempdir");
@@ -1704,6 +1794,65 @@ esac
 
         assert!(matches!(elevator.delete(&paths), O::Cancelled(_)));
         assert!(target.exists(), "a delete past the budget must not run");
+    }
+
+    #[test]
+    fn an_undetermined_scope_is_refused_below_v8_like_a_known_managed_one() {
+        assert!(any_unnamed(["/etc/x", "  "]));
+        assert!(!any_unnamed(["/etc/x", MANAGED_SETTINGS_PATH]));
+        // The callers pass `known || any_unnamed(..)`; the gate itself is the same.
+        let refused = refuse_terminal_below_v8(AdminAuthArg::Terminal, true, 7).expect_err("refused");
+        assert_eq!(refused.outcome, Outcome::Incompatible);
+        assert!(refused.remediation.contains("upgrade the runtime"));
+    }
+
+    #[test]
+    fn a_partial_line_at_end_of_input_is_the_answer() {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `pipe` fills two valid descriptors on success.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        // SAFETY: valid open write end and buffer; then closed so the reader sees EOF.
+        unsafe {
+            assert_eq!(libc::write(fds[1], b"y".as_ptr().cast(), 1), 1);
+            libc::close(fds[1]);
+        }
+        assert_eq!(
+            read_answer_with_deadline(fds[0], Some(Instant::now() + Duration::from_secs(5))).as_deref(),
+            Some("y")
+        );
+        // SAFETY: closing a descriptor this test opened.
+        unsafe { libc::close(fds[0]) };
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tty_device_times_out_and_reads_through_select() {
+        // The case poll(2) gets wrong on macOS: a real tty descriptor.
+        // SAFETY: standard pty setup; every descriptor is closed below.
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let name = std::ffi::CStr::from_ptr(libc::ptsname(master)).to_owned();
+            let slave = libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY);
+            assert!(slave >= 0);
+
+            let started = Instant::now();
+            assert_eq!(
+                read_answer_with_deadline(slave, Some(Instant::now() + Duration::from_millis(200))),
+                None
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+
+            assert_eq!(libc::write(master, b"y\n".as_ptr().cast(), 2), 2);
+            assert_eq!(
+                read_answer_with_deadline(slave, Some(Instant::now() + Duration::from_secs(5))).as_deref(),
+                Some("y")
+            );
+            libc::close(slave);
+            libc::close(master);
+        }
     }
 
     #[test]
