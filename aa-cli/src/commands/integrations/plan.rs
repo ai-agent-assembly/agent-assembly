@@ -141,7 +141,14 @@ pub(crate) async fn author(session: &mut Session, args: &PlanArgs) -> Result<Pla
         })
         .await
         .map_err(verb_failure)?;
-    Ok(PlanReport::from_view(runtime, &view).with_authorization(args.admin_auth.disclosure_line()))
+    let report = PlanReport::from_view(runtime, &view);
+    // The line belongs to the managed-settings write only; other privileged host
+    // steps (trust stores, launch agents) are not authorized this way.
+    Ok(if privileged {
+        report.with_authorization(args.admin_auth.disclosure_line())
+    } else {
+        report
+    })
 }
 
 /// The scope this plan writes, refusing the administrator surface unless it was
