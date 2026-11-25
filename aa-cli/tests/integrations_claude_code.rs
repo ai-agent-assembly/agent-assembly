@@ -2215,7 +2215,12 @@ fn installed_behind_a_v7_runtime(steps: Option<Vec<wire::StepView>>) -> (Harness
         Some(PASSWORD),
     );
     assert!(install.status.success(), "{}{}", stdout(&install), stderr(&install));
-    let listen = h.dir.path().join("run").join("devint-v7.sock");
+    // Its own directory: the CLI counts every runtime socket in the directory it
+    // is pointed at, and a second one beside the real runtime is an ambiguity it
+    // rightly refuses (exit 10).
+    let proxy_dir = h.dir.path().join("v7-proxy");
+    std::fs::create_dir_all(&proxy_dir).expect("proxy dir");
+    let listen = proxy_dir.join("devint.sock");
     let proxy = VersionProxy::start(h.socket.clone(), listen.clone(), 7, steps);
     h.point_cli_at(&listen);
     (h, proxy)
